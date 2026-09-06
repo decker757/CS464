@@ -1,13 +1,16 @@
+---
+name: User Story
+about: A user story with acceptance criteria
+title: "[X.X] "
+labels: ""
+---
+
 **Story**
-As an admin, I want to draft a market with question, outcomes,
-close time and resolution time, so traders know exactly what
-they are betting on.
+As an admin, I want to ...
 
 **Acceptance Criteria**
-- [ ] Required fields: question, outcome set, close time,
-      resolution time, resolution source
-- [ ] Close time before resolution time, both in the future
-- [ ] Saves with status DRAFT, not visible to traders
+- [ ] 
+- [ ] 
 
 **Definition of Done**
 - [ ] Unit tests written and passing
@@ -15,5 +18,5 @@ they are betting on.
 - [ ] PR reviewed and merged to dev
 
 **Notes**
-Spec: [link to Google Doc section]
-Depends on: #<issue>
+Spec: 
+Depends on:
