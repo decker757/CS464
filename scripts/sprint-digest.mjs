@@ -56,8 +56,8 @@ fragment proj on ProjectV2Owner {
       nodes {
         content {
           __typename
-          ... on Issue        { number title url state assignees(first:10){ nodes { login } } }
-          ... on PullRequest  { number title url state assignees(first:10){ nodes { login } } }
+          ... on Issue        { number title url state assignees(first:10){ nodes { login } } labels(first:20){ nodes { name } } }
+          ... on PullRequest  { number title url state assignees(first:10){ nodes { login } } labels(first:20){ nodes { name } } }
         }
         fieldValues(first:20) {
           nodes {
@@ -174,17 +174,51 @@ async function main() {
   const done = inSprint.filter(isDone).length;
   const pct = total ? Math.round((done / total) * 100) : 0;
 
-  // Group the remaining (not-done) work by assignee.
+  // Split remaining (not-done) work into assigned vs unassigned,
+  // each broken down by epic (from the "epic:" label).
   const remaining = inSprint.filter((it) => !isDone(it));
-  const byAssignee = new Map(); // login -> [item]
-  for (const it of remaining) {
-    const logins = it.content.assignees?.nodes.map((a) => a.login) ?? [];
-    const keys = logins.length ? logins : ['__unassigned__'];
-    for (const k of keys) {
-      if (!byAssignee.has(k)) byAssignee.set(k, []);
-      byAssignee.get(k).push(it);
+
+  const assigneesOf = (it) => it.content.assignees?.nodes.map((a) => a.login) ?? [];
+  const epicOf = (it) => {
+    const label = (it.content.labels?.nodes ?? []).find((l) => /^epic:/i.test(l.name));
+    return label ? label.name.replace(/^epic:\s*/i, '') : 'No epic';
+  };
+  const groupByEpic = (items) => {
+    const m = new Map();
+    for (const it of items) {
+      const e = epicOf(it);
+      if (!m.has(e)) m.set(e, []);
+      m.get(e).push(it);
     }
-  }
+    return m;
+  };
+  // Epics alphabetical, "No epic" last.
+  const sortedEpics = (m) =>
+    [...m.keys()].sort((a, b) => {
+      if (a === 'No epic') return 1;
+      if (b === 'No epic') return -1;
+      return a.localeCompare(b);
+    });
+
+  const renderSection = (header, items, showAssignee) => {
+    if (!items.length) return [];
+    const out = [header];
+    const byEpic = groupByEpic(items);
+    for (const epic of sortedEpics(byEpic)) {
+      out.push(`  🏷 <b>${esc(epic)}</b>`);
+      for (const it of byEpic.get(epic)) {
+        const c = it.content;
+        const who = showAssignee
+          ? ` — ${assigneesOf(it).map((a) => `@${esc(a)}`).join(', ')}`
+          : '';
+        out.push(
+          `    • [${esc(statusOf(it))}] <a href="${esc(c.url)}">#${c.number}</a> ${esc(c.title)}${who}`,
+        );
+      }
+    }
+    out.push('');
+    return out;
+  };
 
   // Build the Telegram message (HTML parse_mode).
   const lines = [];
@@ -196,23 +230,10 @@ async function main() {
   if (!remaining.length) {
     lines.push('🎉 Nothing left — all sprint items are done!');
   } else {
-    // Unassigned last, everyone else alphabetical.
-    const keys = [...byAssignee.keys()].sort((a, b) => {
-      if (a === '__unassigned__') return 1;
-      if (b === '__unassigned__') return -1;
-      return a.localeCompare(b);
-    });
-    for (const key of keys) {
-      const header = key === '__unassigned__' ? '🧟 <b>Unassigned</b>' : `👤 <b>@${esc(key)}</b>`;
-      lines.push(header);
-      for (const it of byAssignee.get(key)) {
-        const c = it.content;
-        lines.push(
-          `  • [${esc(statusOf(it))}] <a href="${esc(c.url)}">#${c.number}</a> ${esc(c.title)}`,
-        );
-      }
-      lines.push('');
-    }
+    const assigned = remaining.filter((it) => assigneesOf(it).length > 0);
+    const unassigned = remaining.filter((it) => assigneesOf(it).length === 0);
+    lines.push(...renderSection('✅ <b>Assigned</b>', assigned, true));
+    lines.push(...renderSection('🧟 <b>Unassigned</b>', unassigned, false));
   }
 
   const message = lines.join('\n').trim();
