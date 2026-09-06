@@ -68,12 +68,19 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC_ID: ${{ vars.TELEGRAM_TOPIC_ID }}
           REF: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Only send message_thread_id when a topic is configured; otherwise post to General.
+          THREAD_ARG=()
+          if [ -n "${TELEGRAM_TOPIC_ID}" ]; then
+            THREAD_ARG=(--data-urlencode "message_thread_id=${TELEGRAM_TOPIC_ID}")
+          fi
           curl -sS --fail \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            "${THREAD_ARG[@]}" \
             --data-urlencode "text=❌ CI failed on ${REF} by ${ACTOR}
           ${RUN_URL}"
