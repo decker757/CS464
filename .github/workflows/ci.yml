@@ -1,0 +1,57 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push or pull request events but only for the "main" branch
+  push:
+    branches: [ "dev", "staging", "main" ]
+  pull_request:
+    branches: [ "dev", "staging", "main" ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: once the backend stack is decided, add setup + install + test steps here.
+      # The job fails automatically if any step exits non-zero (e.g. a failing test run).
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Clean, reproducible install from the lockfile.
+      - name: Install dependencies
+        run: npm ci
+
+      # Runs only if a "lint" script exists; won't fail the build if there isn't one.
+      - name: Lint
+        run: npm run lint --if-present
+
+      # No --if-present here on purpose: if there is no test script (or a test fails),
+      # this step exits non-zero and the whole job fails. That is what enforces "tests must pass".
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
