@@ -1,0 +1,6 @@
+{
+  "_comment": "Map each GitHub login -> Telegram username (WITHOUT the @). Unmapped or empty-string users show their GitHub login and won't be pinged. Keys are case-sensitive GitHub logins.",
+  "decker757": "deckerrrr",
+  "ihsankoolz": "ihsanaeong",
+  "michelletan2024": "michelletty"
+}

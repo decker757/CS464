@@ -1,9 +1,14 @@
 // Weekly sprint digest for a GitHub Projects (v2) board -> Telegram.
 //
-// Reads the current iteration from the project, groups not-done items by
-// assignee ("what's left on your plate"), and reports Done/total progress.
+// Reads the current iteration from the project and reports Done/total progress,
+// then lists not-done work: Assigned (grouped by user, then epic) and
+// Unassigned (grouped by epic).
 //
 // Self-contained: no npm deps, uses Node 20+ global fetch.
+//
+// GitHub login -> Telegram handle mapping lives in ./telegram-users.json
+// (mapped users are shown as @handle and get pinged; unmapped fall back to
+// their GitHub login).
 //
 // Required env:
 //   GH_TOKEN         PAT with read:project (+ repo for private repo issue data)
@@ -13,6 +18,8 @@
 //   TELEGRAM_BOT_TOKEN
 //   TELEGRAM_CHAT_ID
 //   STATUS_DONE      comma-separated status names counted as "done" (default "Done")
+
+import { readFileSync } from 'node:fs';
 
 const {
   GH_TOKEN,
@@ -117,6 +124,18 @@ function pickCurrentIteration(iterationField) {
 const esc = (s) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+// GitHub login -> Telegram handle. Missing/empty entries fall back to the login.
+let USER_MAP = {};
+try {
+  USER_MAP = JSON.parse(readFileSync(new URL('./telegram-users.json', import.meta.url), 'utf8'));
+} catch {
+  // No mapping file (or unreadable) — everyone shows as their GitHub login.
+}
+const mention = (login) => {
+  const handle = USER_MAP[login];
+  return handle ? `@${esc(handle)}` : esc(login);
+};
+
 async function main() {
   // Fetch first project owner that is non-null, paging through items.
   let owner = null;
@@ -200,23 +219,19 @@ async function main() {
       return a.localeCompare(b);
     });
 
-  const renderSection = (header, items, showAssignee) => {
-    if (!items.length) return [];
-    const out = [header];
+  // Render items grouped by epic, at a given indent.
+  const renderEpics = (items, indent) => {
+    const out = [];
     const byEpic = groupByEpic(items);
     for (const epic of sortedEpics(byEpic)) {
-      out.push(`  🏷 <b>${esc(epic)}</b>`);
+      out.push(`${indent}🏷 <b>${esc(epic)}</b>`);
       for (const it of byEpic.get(epic)) {
         const c = it.content;
-        const who = showAssignee
-          ? ` — ${assigneesOf(it).map((a) => `@${esc(a)}`).join(', ')}`
-          : '';
         out.push(
-          `    • [${esc(statusOf(it))}] <a href="${esc(c.url)}">#${c.number}</a> ${esc(c.title)}${who}`,
+          `${indent}  • [${esc(statusOf(it))}] <a href="${esc(c.url)}">#${c.number}</a> ${esc(c.title)}`,
         );
       }
     }
-    out.push('');
     return out;
   };
 
@@ -232,8 +247,29 @@ async function main() {
   } else {
     const assigned = remaining.filter((it) => assigneesOf(it).length > 0);
     const unassigned = remaining.filter((it) => assigneesOf(it).length === 0);
-    lines.push(...renderSection('✅ <b>Assigned</b>', assigned, true));
-    lines.push(...renderSection('🧟 <b>Unassigned</b>', unassigned, false));
+
+    if (assigned.length) {
+      lines.push('✅ <b>Assigned</b>');
+      // Group by user (an item with multiple assignees appears under each).
+      const byUser = new Map();
+      for (const it of assigned) {
+        for (const login of assigneesOf(it)) {
+          if (!byUser.has(login)) byUser.set(login, []);
+          byUser.get(login).push(it);
+        }
+      }
+      for (const login of [...byUser.keys()].sort((a, b) => a.localeCompare(b))) {
+        lines.push(`  👤 <b>${mention(login)}</b>`);
+        lines.push(...renderEpics(byUser.get(login), '    '));
+      }
+      lines.push('');
+    }
+
+    if (unassigned.length) {
+      lines.push('🧟 <b>Unassigned</b>');
+      lines.push(...renderEpics(unassigned, '  '));
+      lines.push('');
+    }
   }
 
   const message = lines.join('\n').trim();
