@@ -1,0 +1,27 @@
+name: Weekly Sprint Digest
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'   # Mon 09:00 SGT (01:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Reads the Projects (v2) board and sends the digest to Telegram.
+      # The script exits non-zero on any API/Telegram error, so a broken run fails loudly.
+      - name: Build and send sprint digest
+        env:
+          GH_TOKEN: ${{ secrets.PROJECTS_TOKEN }}
+          PROJECT_OWNER: decker757
+          PROJECT_NUMBER: '6'  
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scripts/sprint-digest.mjs

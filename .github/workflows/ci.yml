@@ -55,3 +55,25 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  notify:
+    needs: [backend, frontend]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      # GitHub context values are passed via env (not inlined into the script)
+      # to avoid shell injection from branch names / actor. --data-urlencode
+      # encodes the message safely; --fail makes a bad send show as a failed step.
+      - name: Notify Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REF: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS --fail \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=❌ CI failed on ${REF} by ${ACTOR}
+          ${RUN_URL}"
