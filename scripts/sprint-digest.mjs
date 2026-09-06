@@ -17,7 +17,8 @@
 // Optional env (if set, the digest is also sent to Telegram; otherwise it just prints):
 //   TELEGRAM_BOT_TOKEN
 //   TELEGRAM_CHAT_ID
-//   STATUS_DONE      comma-separated status names counted as "done" (default "Done")
+//   TELEGRAM_TOPIC_ID  forum topic's message_thread_id; if set, posts into that topic
+//   STATUS_DONE        comma-separated status names counted as "done" (default "Done")
 
 import { readFileSync } from 'node:fs';
 
@@ -27,6 +28,7 @@ const {
   PROJECT_NUMBER,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
+  TELEGRAM_TOPIC_ID,
   STATUS_DONE = 'Done',
 } = process.env;
 
@@ -283,6 +285,7 @@ async function main() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: TELEGRAM_CHAT_ID,
+          ...(TELEGRAM_TOPIC_ID ? { message_thread_id: Number(TELEGRAM_TOPIC_ID) } : {}),
           text: message,
           parse_mode: 'HTML',
           disable_web_page_preview: true,
