@@ -19,6 +19,7 @@ services:
       # Consumed by sql/00-init.sh to create the per-service login roles.
       AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?}
       LEDGER_DB_PASSWORD: ${LEDGER_DB_PASSWORD:?}
+      MARKET_DB_PASSWORD: ${MARKET_DB_PASSWORD:?}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:

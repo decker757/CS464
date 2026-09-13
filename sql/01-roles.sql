@@ -5,6 +5,7 @@
 
 CREATE ROLE auth_svc   LOGIN PASSWORD :'auth_password';
 CREATE ROLE ledger_svc LOGIN PASSWORD :'ledger_password';
+CREATE ROLE market_svc LOGIN PASSWORD :'market_password';
 
 -- Add a role here when a new service lands, then give it a schema in
 -- 02-schemas.sql. [F-1] #41 already has ledger_svc waiting.
