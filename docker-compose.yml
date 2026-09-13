@@ -1,0 +1,48 @@
+# [5.1] #17 — the whole backend stack with one command.
+# Every environment difference comes from the environment, nothing hardcoded.
+#
+#   docker compose up -d db       # just Postgres, for running tests on the host
+#   docker compose up --build     # the full stack
+
+name: cs464
+
+services:
+  db:
+    image: postgres:17.2-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cs464}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env at the repo root}
+      POSTGRES_DB: ${POSTGRES_DB:-cs464}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Creates the separate database the test suite truncates, so tests can
+      # never wipe your development data.
+      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/10-init-test-db.sql:ro
+    healthcheck:
+      # `auth` waits on this, so it never starts against a database that is
+      # still initialising.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cs464} -d ${POSTGRES_DB:-cs464}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  auth:
+    build:
+      context: ./backend/auth_service
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cs464}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env at the repo root}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${AUTH_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
