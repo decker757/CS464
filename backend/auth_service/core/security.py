@@ -18,6 +18,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 from core.config import get_settings
+from core.roles import UserRole
 
 # Argon2id with the argon2-cffi defaults, which track the OWASP recommendation.
 _hasher = PasswordHasher()
@@ -64,15 +65,26 @@ def needs_rehash(stored_hash: str) -> bool:
 class TokenClaims:
     user_id: uuid.UUID
     username: str
+    role: UserRole
     expires_at: datetime
 
 
-def create_access_token(user_id: uuid.UUID, username: str) -> str:
+def create_access_token(user_id: uuid.UUID, username: str, role: UserRole) -> str:
+    """Mint an access token.
+
+    `role` is required rather than defaulted. A default would let a new call
+    site forget it and quietly mint a token whose authority does not match the
+    row it was minted from.
+    """
     settings = get_settings()
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "username": username,
+        # Read by every other service to authorise admin-only routes. Services
+        # cannot query auth.users across the schema boundary, so this claim is
+        # the whole channel. See docs/adr/0003-market-service-boundary.md.
+        "role": UserRole(role).value,
         "iss": settings.jwt_issuer,
         "iat": now,
         "exp": now + timedelta(seconds=settings.access_token_ttl_seconds),
@@ -95,10 +107,25 @@ def decode_access_token(token: str) -> TokenClaims | None:
         return TokenClaims(
             user_id=uuid.UUID(payload["sub"]),
             username=payload["username"],
+            role=_read_role(payload.get("role")),
             expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
         )
     except (jwt.InvalidTokenError, KeyError, ValueError):
         return None
+
+
+def _read_role(raw: object) -> UserRole:
+    """Fail closed: anything unrecognised is the least privileged role.
+
+    Covers a token minted before the claim existed and a token carrying a role
+    this build has never heard of, such as one issued by a newer deploy during
+    a rollout. Neither is grounds for rejecting an otherwise valid token, but
+    neither is grounds for granting authority either.
+    """
+    try:
+        return UserRole(raw)
+    except ValueError:
+        return UserRole.TRADER
 
 
 # --------------------------------------------------------------------------

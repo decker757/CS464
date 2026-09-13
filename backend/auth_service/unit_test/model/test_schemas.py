@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from core.roles import UserRole
 from model.schemas import LoginRequest, RegisterRequest, UserOut
 from unit_test.conftest import VALID_PASSWORD
 
@@ -82,7 +83,7 @@ def test_user_output_carries_no_secret_fields() -> None:
 
     assert "password" not in fields
     assert "password_hash" not in fields
-    assert fields == {"id", "username", "email", "created_at"}
+    assert fields == {"id", "username", "email", "role", "created_at"}
 
 
 def test_a_naive_timestamp_is_stamped_as_utc() -> None:
@@ -91,6 +92,7 @@ def test_a_naive_timestamp_is_stamped_as_utc() -> None:
         id=uuid.uuid4(),
         username="ernest_t",
         email="ernest@example.com",
+        role=UserRole.TRADER,
         created_at=datetime(2026, 9, 13, 8, 0, 0),
     )
 
@@ -102,7 +104,11 @@ def test_an_aware_timestamp_is_left_alone() -> None:
     when = datetime(2026, 9, 13, 8, 0, 0, tzinfo=UTC)
 
     out = UserOut(
-        id=uuid.uuid4(), username="ernest_t", email="e@example.com", created_at=when
+        id=uuid.uuid4(),
+        username="ernest_t",
+        email="e@example.com",
+        role=UserRole.TRADER,
+        created_at=when,
     )
 
     assert out.created_at == when

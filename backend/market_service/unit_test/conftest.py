@@ -1,0 +1,222 @@
+"""Shared fixtures.
+
+Tests run against Postgres, not SQLite, as `market_svc` under the same grants
+the service uses in production. The two engines disagree about naive versus
+aware timestamps, and this service is almost entirely about timestamps, so
+testing on the engine we deploy is the only way those differences show up
+before production.
+
+Start the database with `docker compose up -d db` from the repo root. The suite
+uses the separate `cs464_test` database created by `sql/00-init.sh`, so it can
+truncate without touching development data.
+
+Tokens here are minted with PyJWT directly rather than by importing anything
+from the auth service. That is deliberate: the market service has no minting
+code and never will, so a test that signs its own token is exercising the same
+path a real request takes, and it stays honest about the fact that the two
+services agree on a wire format rather than on an implementation.
+"""
+
+from __future__ import annotations
+
+import os
+import pathlib
+import secrets
+import uuid
+
+
+def _load_repo_env() -> None:
+    """Read the repo-root .env, the same file docker compose reads.
+
+    Real connection details live there and it is gitignored, so nothing in the
+    repository carries a credential. Anything already exported wins.
+    """
+    root_env = pathlib.Path(__file__).resolve().parents[3] / ".env"
+    if not root_env.is_file():
+        return
+    for line in root_env.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_repo_env()
+
+_test_db = os.environ.get("MARKET_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+if not _test_db:
+    raise RuntimeError(
+        "No test database configured.\n"
+        "Add MARKET_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
+        "  export MARKET_TEST_DATABASE_URL="
+        "postgresql+asyncpg://market_svc:PASSWORD@localhost:PORT/cs464_test\n"
+        "Start the database first with:  docker compose up -d db"
+    )
+
+# Set before any project module is imported: core.config.get_settings is cached
+# on first call, and importing main.py triggers it.
+os.environ["DATABASE_URL"] = _test_db
+# Fresh per run. Nothing signed here outlives the process, and no key-shaped
+# string needs to sit in the repository.
+os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
+
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+import jwt  # noqa: E402
+import pytest  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
+
+from core.config import get_settings  # noqa: E402
+from core.database import (  # noqa: E402
+    Base,
+    dispose_engine,
+    get_engine,
+    get_session_factory,
+)
+from core.roles import UserRole  # noqa: E402
+
+_UNREACHABLE = (
+    "Cannot reach the test database.\n"
+    "Start it with:  docker compose up -d db\n"
+    "Or point MARKET_TEST_DATABASE_URL at your own Postgres."
+)
+
+
+def mint_token(
+    user_id: uuid.UUID,
+    role: UserRole = UserRole.ADMIN,
+    *,
+    username: str = "ernest_t",
+    expires_in: int = 900,
+    issuer: str | None = None,
+    secret: str | None = None,
+) -> str:
+    """Sign a token the way the auth service does, for tests only.
+
+    The overridable issuer and secret are what let a test prove this service
+    rejects a token from a system it does not trust.
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "username": username,
+            "role": UserRole(role).value,
+            "iss": issuer if issuer is not None else settings.jwt_issuer,
+            "iat": now,
+            "exp": now + timedelta(seconds=expires_in),
+            "jti": secrets.token_urlsafe(16),
+        },
+        secret if secret is not None else settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
+    return {"Authorization": f"Bearer {mint_token(user_id, role)}"}
+
+
+@pytest.fixture
+async def clean_database():
+    """Create the schema if absent, then empty every table.
+
+    Deliberately not autouse. Only `session` and `client` depend on it, so the
+    pure unit tests under core/, model/ and the validation rules never need
+    Postgres running.
+    """
+    from model import entities  # noqa: F401  - registers the mappers
+
+    engine = get_engine()
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            tables = ", ".join(
+                f"{t.schema}.{t.name}" if t.schema else t.name
+                for t in Base.metadata.sorted_tables
+            )
+            await conn.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
+    except SQLAlchemyError as exc:
+        pytest.fail(f"{_UNREACHABLE}\n\n{exc}")
+
+    yield
+
+    await dispose_engine()
+
+
+@pytest.fixture
+async def session(clean_database):
+    """A session for driving the service layer directly, without HTTP."""
+    async with get_session_factory()() as s:
+        yield s
+
+
+@pytest.fixture
+async def client(clean_database):
+    """An HTTP client bound to the app, for controller-layer tests.
+
+    `create_app` is imported here rather than at module scope so that running
+    only the pure layers never constructs the application, in keeping with the
+    rule that nothing below the controller knows HTTP exists.
+    """
+    from main import create_app  # noqa: PLC0415
+
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://test"
+    ) as c:
+        yield c
+
+
+@pytest.fixture
+def admin_id() -> uuid.UUID:
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def admin_headers(admin_id: uuid.UUID) -> dict[str, str]:
+    return bearer(admin_id, UserRole.ADMIN)
+
+
+@pytest.fixture
+def other_admin_id() -> uuid.UUID:
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def other_admin_headers(other_admin_id: uuid.UUID) -> dict[str, str]:
+    """A second, equally legitimate administrator. Must not see the first's drafts."""
+    return bearer(other_admin_id, UserRole.ADMIN)
+
+
+@pytest.fixture
+def trader_headers() -> dict[str, str]:
+    return bearer(uuid.uuid4(), UserRole.TRADER)
+
+
+def future(**kwargs) -> str:
+    """An ISO timestamp with an explicit offset, which the schema requires."""
+    return (datetime.now(UTC) + timedelta(**kwargs)).isoformat()
+
+
+@pytest.fixture
+def submittable_payload() -> dict[str, object]:
+    """A market that passes every rule in service/validation.py."""
+    return {
+        "draft_key": str(uuid.uuid4()),
+        "status": "submitted",
+        "question": "Will Singapore core inflation be below 2% for December 2026?",
+        "description": "Measured on the first published print.",
+        "outcomes": [{"label": "Yes"}, {"label": "No"}],
+        "close_time": future(days=30),
+        "resolution_time": future(days=45),
+        "resolution_criteria": (
+            "Resolves YES if the MAS core inflation print for December 2026, as "
+            "first published, is strictly below 2.0%. Later revisions do not count."
+        ),
+        "resolution_sources": [
+            {"url": "https://www.mas.gov.sg/statistics", "label": "MAS statistics"}
+        ],
+    }

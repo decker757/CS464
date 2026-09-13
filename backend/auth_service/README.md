@@ -32,27 +32,27 @@ for the frontend sub-issues #46, #47 and #48.
 
 ```bash
 docker compose up -d db          # from the repo root
-.venv/bin/pytest                 # 91 tests
+.venv/bin/pytest                 # 97 tests
 .venv/bin/pytest unit_test/core  # no database needed
 ```
 
-The suite reads `TEST_DATABASE_URL` from the repo-root `.env`, the same
+The suite reads `AUTH_TEST_DATABASE_URL` from the repo-root `.env`, the same
 gitignored file docker compose reads, so no connection string lives in the
 repository. Copy `.env.example` and fill it in once. Exporting the variable
 overrides the file.
 
 | Layer | Tests | Needs Postgres |
 | --- | --- | --- |
-| `core/` | 17 | no |
+| `core/` | 21 | no |
 | `model/` | 20 | no |
-| `service/` | 25 | yes |
-| `controller/` | 24 | yes |
+| `service/` | 27 | yes |
+| `controller/` | 29 | yes |
 
 Database access is opt-in: only the `session` and `client` fixtures pull it in,
 so `core/` and `model/` run in under a second with nothing else started.
 
 The database-backed tests use Postgres rather than SQLite, in the separate
-`cs464_test` database that `scripts/init-test-db.sql` creates, truncating
+`cs464_test` database that `sql/00-init.sh` creates, truncating
 between tests rather than recreating the schema. Testing on the engine we
 deploy is deliberate: SQLite and Postgres disagree about naive versus aware
 timestamps and about functional unique indexes, and both differences have
@@ -63,7 +63,7 @@ A rule for where a new test goes: if it asserts a business rule, it belongs in
 cookie, or a response shape, it belongs in `controller/`.
 
 Already running Postgres on 5432? Set `POSTGRES_PORT=5433` in the root `.env`
-and point `TEST_DATABASE_URL` at the same port.
+and point `AUTH_TEST_DATABASE_URL` at the same port.
 
 ## Configuration
 
@@ -82,6 +82,11 @@ published key that would silently sign real sessions.
 | POST | `/auth/logout` | [A-3] #31 | Unauthenticated on purpose, always 200 |
 | GET | `/auth/me` | [A-3] #31 | Reference protected route |
 | GET | `/health` | | Liveness and readiness probe |
+
+`UserOut` carries a `role`, either `trader` or `admin`, and the access token
+carries the same value as a `role` claim. That claim is the only way another
+service can tell an administrator from a trader, because no other service can
+read `auth.users`. See [ADR 0003](../../docs/adr/0003-market-service-boundary.md).
 
 Errors share one shape, so the frontend parses a single case:
 
@@ -124,6 +129,23 @@ Imports only ever point down: `controller` may use `service`, `service` may use
 `core` and `model`, and nothing below reaches back up. That is why the error
 classes sit in `core` while the handler that turns them into responses sits in
 `controller`.
+
+## Promoting an administrator
+
+A deliberately manual step. There is no bootstrap environment variable and no
+self-service endpoint, because either would be a way to grant authority that
+nobody reviewed.
+
+```bash
+docker compose exec db psql -U cs464 -d cs464 \
+  -c "UPDATE auth.users SET role = 'admin' WHERE lower(username) = 'ernest_t';"
+```
+
+The user must log in again afterwards: the token already in their browser still
+says `trader` until it is reissued. [4.4] #16 replaces this with real role
+management, splitting `admin` into MARKET_CREATOR, RESOLVER and SUPER_ADMIN.
+The column is a VARCHAR with a CHECK rather than a Postgres ENUM precisely so
+that widening it is an ordinary migration.
 
 ## Two things still open
 
