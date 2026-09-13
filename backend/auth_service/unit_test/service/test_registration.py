@@ -10,7 +10,9 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import security
 from core.errors import DuplicateUser
+from core.roles import UserRole
 from model.entities import User
 from model.schemas import RegisterRequest
 from service import auth_service
@@ -110,6 +112,33 @@ async def test_a_retry_leaves_exactly_one_account(
 
 async def test_a_new_account_starts_unsuspended(registered_user: User) -> None:
     assert registered_user.is_suspended is False
+
+
+async def test_a_new_account_starts_as_a_trader(registered_user: User) -> None:
+    """Registration never grants authority. Promotion is a deliberate UPDATE.
+
+    Guards the obvious catastrophe in [1.1] #1: if the column defaulted the
+    other way, anyone who signed up could create markets.
+    """
+    assert registered_user.role is UserRole.TRADER
+
+
+async def test_the_issued_token_carries_the_role_on_the_row(
+    session: AsyncSession, registered_user: User
+) -> None:
+    """A promoted user's next token must reflect the promotion.
+
+    The market service has no other way to learn it, so a token minted from a
+    stale in-memory role would leave an admin locked out of their own markets.
+    """
+    registered_user.role = UserRole.ADMIN
+    await session.flush()
+
+    pair = await auth_service.issue_tokens(session, registered_user)
+
+    claims = security.decode_access_token(pair.access_token)
+    assert claims is not None
+    assert claims.role is UserRole.ADMIN
 
 
 def test_register_takes_no_ledger_dependency() -> None:

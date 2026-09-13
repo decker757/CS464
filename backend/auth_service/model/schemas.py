@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from core.config import get_settings
+from core.roles import UserRole
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -60,6 +61,10 @@ class UserOut(BaseModel):
     id: uuid.UUID
     username: str
     email: EmailStr
+    # Exposed so [FE][1.1] #45 can decide whether to render the market-creation
+    # UI at all. It is a hint for the interface only: every admin-only route
+    # re-reads the role from the signed token and never trusts the client.
+    role: UserRole
     created_at: datetime
 
     @field_validator("created_at")

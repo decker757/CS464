@@ -40,13 +40,20 @@ def _load_repo_env() -> None:
 
 _load_repo_env()
 
-_test_db = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+# One variable per service now that market_service has its own suite and its
+# own role. TEST_DATABASE_URL is the old single-service name, still honoured so
+# an existing .env keeps working.
+_test_db = (
+    os.environ.get("AUTH_TEST_DATABASE_URL")
+    or os.environ.get("TEST_DATABASE_URL")
+    or os.environ.get("DATABASE_URL")
+)
 if not _test_db:
     raise RuntimeError(
         "No test database configured.\n"
-        "Add TEST_DATABASE_URL to the repo-root .env, or export it:\n"
-        "  export TEST_DATABASE_URL="
-        "postgresql+asyncpg://USER:PASSWORD@localhost:PORT/cs464_test\n"
+        "Add AUTH_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
+        "  export AUTH_TEST_DATABASE_URL="
+        "postgresql+asyncpg://auth_svc:PASSWORD@localhost:PORT/cs464_test\n"
         "Start the database first with:  docker compose up -d db"
     )
 
