@@ -10,8 +10,10 @@ in GitHub Project v2 #6.
 
 ```
 backend/auth_service/   registration, login, logout, sessions   [A-1..A-3]
+backend/market_service/ drafting and submitting markets         [1.1]
 sql/                    roles, schemas and grants for the shared Postgres
 docs/adr/               decisions that were expensive to make
+docs/api/               endpoint contracts for the frontend
 scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 ```
@@ -23,11 +25,11 @@ More services are coming: a ledger ([F-1] #41), an LMSR pricing engine
 
 ```bash
 cp .env.example .env          # fill in every blank; compose refuses to start otherwise
-docker compose up --build     # http://localhost:8000/docs
+docker compose up --build     # auth :8000/docs, market :8001/docs
 ```
 
 ```bash
-cd backend/auth_service
+cd backend/auth_service       # or backend/market_service
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
 ```
@@ -43,10 +45,23 @@ service refuses to boot without them.
 init scripts only on first initialisation of the data volume. Without the `-v`
 your changes appear to do nothing. It destroys local data.
 
-**Tests run against Postgres, not SQLite**, as `auth_svc` under production
-grants. The two engines disagree about naive versus aware timestamps and about
-functional unique indexes, and both differences have already caused bugs here.
-Do not "simplify" this to SQLite.
+**Tests run against Postgres, not SQLite**, each suite as its own service role
+under production grants, from its own `<SERVICE>_TEST_DATABASE_URL`. The two
+engines disagree about naive versus aware timestamps and about functional
+unique indexes, and both differences have already caused bugs here. Do not
+"simplify" this to SQLite, and do not point a suite at the superuser: the
+cross-schema denial tests would pass while proving nothing.
+
+**An admin is made by hand, and needs a fresh login.** Registration always
+creates a trader. Promotion is `UPDATE auth.users SET role = 'admin' WHERE
+lower(username) = '...'`, and the user must log in again, because authority
+rides in the access token rather than being looked up. [4.4] #16 replaces this.
+
+**Replacing a child collection in SQLAlchemy needs its own flush.** Within one
+flush the INSERTs for the new rows are issued before the DELETEs for the
+orphans, so a unique constraint on the child sees both. `market_service`'s
+`_clear_children` exists for exactly this; remove it and every autosave after
+the first returns a 500.
 
 **Never commit a credential, including in an example file.** GitGuardian runs
 on every pull request and it is usually right. Use angle-bracket placeholders:
@@ -84,7 +99,10 @@ convenient; that is a decision to couple two services.
 
 The auth service does not know that credits exist. There are tests that fail if
 the word appears in a response or on the `register` signature. If you need a
-balance, that is the ledger's job.
+balance, that is the ledger's job. The same rule runs the other way: the market
+service holds no user table and authorises entirely from the `role` claim in a
+signed token, so it never learns that an account was suspended or deleted until
+that token expires. See `docs/adr/0003-market-service-boundary.md`.
 
 ## Frontend and backend split
 
@@ -109,6 +127,8 @@ Do not relitigate these without reading them: `docs/adr/`.
 
 - **0001** self-hosting auth rather than a managed provider
 - **0002** cookies for browsers, bearer tokens for services
+- **0003** a separate market service, and admin authority carried in the token
+- **0004** one idempotent endpoint for both draft autosave and submission
 
 Two known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. And a `SameSite=Lax`
