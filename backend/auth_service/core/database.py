@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -15,8 +16,14 @@ from sqlalchemy.orm import DeclarativeBase
 from core.config import get_settings
 
 
+# This service's schema, created and granted in sql/02-schemas.sql. Named
+# explicitly rather than left to search_path, so a connection that arrives
+# without one cannot quietly create these tables in public.
+SCHEMA = "auth"
+
+
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(schema=SCHEMA)
 
 
 _engine: AsyncEngine | None = None

@@ -97,7 +97,10 @@ async def clean_database():
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+            tables = ", ".join(
+                f"{t.schema}.{t.name}" if t.schema else t.name
+                for t in Base.metadata.sorted_tables
+            )
             await conn.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
     except SQLAlchemyError as exc:
         pytest.fail(f"{_UNREACHABLE}\n\n{exc}")
