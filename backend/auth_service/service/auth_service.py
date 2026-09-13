@@ -72,8 +72,8 @@ async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, 
     """[A-1] #29. Create the account and open its first session.
 
     Deliberately does NOT grant starting credits. That is [B-1] #32, and this
-    service does not know that credits exist. See the note in the README about
-    how the ledger learns a user was created.
+    service does not know that credits exist. The ledger mints the grant
+    itself on a user's first balance read; see the README for why.
     """
     if (taken := await _taken_field(session, data.username, data.email)) is not None:
         raise DuplicateUser(taken)

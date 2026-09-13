@@ -130,26 +130,28 @@ classes sit in `core` while the handler that turns them into responses sits in
 **Starting credits are not granted here, by design.** This service owns users
 and credentials and nothing else. It does not know that credits exist, and
 `test_registration.py` has a guard asserting the word never appears in a
-response. [B-1] #32 is the ledger's job.
+response. [B-1] #32 is the ledger's job, and nothing about it needs auth.
 
-That leaves an open question for [F-1] #41. [B-1] says account creation and the
-grant must succeed or fail atomically, and you cannot get a real transaction
-across two services with two databases. Three ways to close it, in the order I
-would consider them:
+The plan for [F-1] #41 is that the ledger mints the grant itself, lazily. A
+user with no entries is by definition a user who has not been granted yet, so
+the first time anything reads their balance or tries to trade, the ledger
+writes the genesis entry keyed on `signup-grant:<user_id>` and carries on. A
+unique constraint on that key makes it idempotent, so concurrent first requests
+race safely and the loser simply re-reads.
 
-1. **Outbox.** Registration commits the user row and an `events` row in one
-   transaction. The ledger consumes the event and grants, keyed idempotently on
-   the user id. Auth emits "a user was created" and still knows nothing about
-   credits. Truly atomic on the auth side, exactly-once on the ledger side.
-2. **The ledger polls** for users it has not granted yet. Simplest to build, no
-   event plumbing, at the cost of grant latency.
-3. **The ledger is a module, not a service**, imported by auth and sharing its
-   database, so one transaction covers both. Literally satisfies [B-1], but it
-   is the option that puts credits back inside this process.
+Why this and not an event, an outbox, or a shared transaction:
 
-Whichever way, a new account exists briefly with no credits. Worth confirming
-with Michelle that this satisfies the intent of [B-1], because the acceptance
-criterion as written says "atomically".
+- The grant is a real ledger entry, so [B-1]'s rule that a balance equals the
+  sum of a user's entries still holds. A `balance` column would break it, and
+  a prediction market cannot afford two sources of truth for money.
+- No cross-service transaction, no event bus, no outbox table, no polling job.
+- Retrying registration cannot double-grant, because the key is the user id.
+- There is no observable window where a balance is wrong. An outbox has one;
+  this does not. That satisfies the intent of [B-1]'s "atomically" better than
+  a distributed transaction would, without pretending to be one.
+
+The only oddity is that the first read performs a write. That is normal for a
+welcome grant and costs one insert per user, ever.
 
 **Schema creation is `create_all`, not migrations.** Fine while this service
 owns its database alone. Move to Alembic when #41 shares it, because two
