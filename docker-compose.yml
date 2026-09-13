@@ -11,7 +11,10 @@ services:
     image: postgres:17.2-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cs464}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env at the repo root}
+      # Required. Empty or unset and compose refuses to start, rather than
+      # falling back to a default. The guidance lives in this comment, not in
+      # the value, so secret scanners read the line as a pure interpolation.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
       POSTGRES_DB: ${POSTGRES_DB:-cs464}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -37,7 +40,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cs464}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env at the repo root}
+      # Required, same as POSTGRES_PASSWORD above. Copy .env.example to .env
+      # and fill both in.
+      JWT_SECRET: ${JWT_SECRET:?}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
     ports:
