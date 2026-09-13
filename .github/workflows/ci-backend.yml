@@ -12,6 +12,7 @@ on:
     branches: [ "dev", "staging", "main" ]
     paths:
       - "backend/**"
+      - "sql/**"
       - "docker-compose.yml"
       - ".github/workflows/ci-backend.yml"
       - ".github/workflows/notify-failure.yml"
@@ -19,6 +20,7 @@ on:
     branches: [ "dev", "staging", "main" ]
     paths:
       - "backend/**"
+      - "sql/**"
       - "docker-compose.yml"
       - ".github/workflows/ci-backend.yml"
       - ".github/workflows/notify-failure.yml"
@@ -57,10 +59,11 @@ jobs:
           --health-retries 10
 
     env:
-      # Passwordless, matching POSTGRES_HOST_AUTH_METHOD above.
-      TEST_DATABASE_URL: postgresql+asyncpg://cs464@localhost:5432/cs464_test
+      # Connects as auth_svc, not the superuser, so the suite runs under the
+      # same grants as production. Passwordless, matching the trust auth above.
+      TEST_DATABASE_URL: postgresql+asyncpg://auth_svc@localhost:5432/cs464_test
       # The boot check reads DATABASE_URL, which has no default by design.
-      DATABASE_URL: postgresql+asyncpg://cs464@localhost:5432/cs464_test
+      DATABASE_URL: postgresql+asyncpg://auth_svc@localhost:5432/cs464_test
 
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +78,21 @@ jobs:
       # requirements-dev.txt pulls in requirements.txt, so this is one install.
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+
+      # A service container cannot mount init scripts the way compose does, so
+      # apply the same files by hand. Running the real sql/ means CI exercises
+      # the actual grants rather than a simplified copy that could drift.
+      # Passwords are ignored under trust auth but the files still expect them.
+      - name: Apply roles, schemas and grants
+        working-directory: .
+        env:
+          ADMIN_URL: postgresql://cs464@localhost:5432/cs464_test
+        run: |
+          psql -v ON_ERROR_STOP=1 "$ADMIN_URL" \
+            -v auth_password=unused -v ledger_password=unused \
+            -f sql/01-roles.sql
+          psql -v ON_ERROR_STOP=1 "$ADMIN_URL" \
+            -v db_name=cs464_test -f sql/02-schemas.sql
 
       # Minted per run and never stored. Nothing it signs outlives the job, so
       # there is no key-shaped string to commit.
