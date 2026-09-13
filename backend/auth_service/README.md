@@ -153,6 +153,26 @@ Why this and not an event, an outbox, or a shared transaction:
 The only oddity is that the first read performs a write. That is normal for a
 welcome grant and costs one insert per user, ever.
 
+## Database boundary
+
+This service connects as `auth_svc` and owns the `auth` schema. It cannot read
+or write any other service's schema, and no other service can read ours. That
+is enforced by ownership and the absence of cross grants, not by convention, so
+a join across the boundary fails with a permission error while someone is
+writing it rather than succeeding quietly.
+
+The roles, schemas and grants live in `sql/` at the repo root, applied by
+compose on first initialisation of the data volume and by CI before the suite
+runs, so both exercise the same files.
+
+One Postgres instance keeps the hosting cost to a single instance. Schemas
+rather than separate databases is a portability choice: several managed
+providers bill per database or give one per project, and schemas survive a move
+to any of them.
+
+Changing the boundary means editing `sql/02-schemas.sql`, and
+`docker compose down -v` to re-run it, which destroys development data.
+
 **Schema creation is `create_all`, not migrations.** Fine while this service
 owns its database alone. Move to Alembic when #41 shares it, because two
 services issuing `create_all` against one database will race.

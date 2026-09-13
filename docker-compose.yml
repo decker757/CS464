@@ -16,13 +16,19 @@ services:
       # the value, so secret scanners read the line as a pure interpolation.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
       POSTGRES_DB: ${POSTGRES_DB:-cs464}
+      # Consumed by sql/00-init.sh to create the per-service login roles.
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?}
+      LEDGER_DB_PASSWORD: ${LEDGER_DB_PASSWORD:?}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Creates the separate database the test suite truncates, so tests can
-      # never wipe your development data.
-      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/10-init-test-db.sql:ro
+      # The .sql files mount outside the init directory so the entrypoint does
+      # not run them directly, without the variables they expect. The shim
+      # applies them in order. First initialisation only: re-running means
+      # `docker compose down -v`.
+      - ./sql:/sql:ro
+      - ./sql/00-init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
     healthcheck:
       # `auth` waits on this, so it never starts against a database that is
       # still initialising.
@@ -39,7 +45,9 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cs464}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      # Connects as auth_svc, not the superuser, so the grants in
+      # sql/02-schemas.sql actually constrain this service.
+      DATABASE_URL: postgresql+asyncpg://auth_svc:${AUTH_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
       # Required, same as POSTGRES_PASSWORD above. Copy .env.example to .env
       # and fill both in.
       JWT_SECRET: ${JWT_SECRET:?}
