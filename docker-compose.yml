@@ -58,5 +58,25 @@ services:
       - "${AUTH_PORT:-8000}:8000"
     restart: unless-stopped
 
+  # [1.1] #1. Owns the market schema, connects as market_svc, and cannot read
+  # auth.users. It recognises an administrator from the signed access token
+  # alone, which is why it needs the same JWT_SECRET and nothing else from auth.
+  market:
+    build:
+      context: ./backend/market_service
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://market_svc:${MARKET_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      # The same value the auth service signs with. Under HS256 that means this
+      # service could also mint tokens; ADR 0002 records why that is acceptable
+      # today and what the upgrade is.
+      JWT_SECRET: ${JWT_SECRET:?}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${MARKET_PORT:-8001}:8000"
+    restart: unless-stopped
+
 volumes:
   pgdata:
