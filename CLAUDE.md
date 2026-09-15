@@ -92,7 +92,12 @@ cross-schema denial tests would pass while proving nothing.
 **An admin is made by hand, and needs a fresh login.** Registration always
 creates a trader. Promotion is `UPDATE auth.users SET role = 'admin' WHERE
 lower(username) = '...'`, and the user must log in again, because authority
-rides in the access token rather than being looked up. [4.4] #16 replaces this.
+rides in the access token rather than being looked up.
+
+The *first* admin stays a manual UPDATE permanently: ADR 0007 declines the
+bootstrap account and the SUPER_ADMIN tier both. Every admin after the first is
+promoted through the role-change endpoint by an existing one, and the fresh
+login is still required either way.
 
 **Replacing a child collection in SQLAlchemy needs its own flush.** Within one
 flush the INSERTs for the new rows are issued before the DELETEs for the
@@ -202,6 +207,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0004** one idempotent endpoint for both draft autosave and submission
 - **0005** a composite trading service, and positions with the ledger
 - **0006** one shared audit log, written in the acting service's transaction
+- **0007** a flat admin tier, with role changes audited rather than approved
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

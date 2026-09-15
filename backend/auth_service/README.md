@@ -76,17 +76,33 @@ published key that would silently sign real sessions.
 
 | Method | Path | Story | Notes |
 | --- | --- | --- | --- |
-| POST | `/auth/register` | [A-1] #29 | 201, sets both cookies, grants starting credits |
+| POST | `/auth/register` | [A-1] #29 | 201, sets both cookies, always creates a trader |
 | POST | `/auth/login` | [A-2] #30 | `identifier` takes a username or an email |
 | POST | `/auth/refresh` | [A-3] #31 | Single use, rotates the refresh token |
 | POST | `/auth/logout` | [A-3] #31 | Unauthenticated on purpose, always 200 |
 | GET | `/auth/me` | [A-3] #31 | Reference protected route |
+| PATCH | `/admin/users/{user_id}/role` | [4.4] #16 | Admin only, audited, cannot target self or the last admin |
 | GET | `/health` | | Liveness and readiness probe |
 
 `UserOut` carries a `role`, either `trader` or `admin`, and the access token
 carries the same value as a `role` claim. That claim is the only way another
 service can tell an administrator from a trader, because no other service can
 read `auth.users`. See [ADR 0003](../../docs/adr/0003-market-service-boundary.md).
+
+There are two roles and no tier above them, so any administrator may promote or
+demote any other user and the control against misuse is that the audit log
+records every one. The first administrator is still a manual `UPDATE`,
+permanently: the account that may grant administrative authority cannot itself
+be granted it. See
+[ADR 0007](../../docs/adr/0007-admin-tiers-and-role-changes.md), which also
+explains why MARKET_CREATOR, RESOLVER and SUPER_ADMIN are not being built and
+what would change that.
+
+Note the asymmetry a role change creates. This service authorises from the row,
+so a demotion binds `/admin/*` on the very next request. The market service
+authorises from the token claim and cannot read `auth.users`, so it honours the
+target's existing token until it expires. The endpoint reports that bound as
+`takes_effect_within_seconds`.
 
 Errors share one shape, so the frontend parses a single case:
 

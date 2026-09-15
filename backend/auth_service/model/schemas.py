@@ -101,3 +101,45 @@ class AuthResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class RoleChangeRequest(BaseModel):
+    """[4.4] #16. Move one user between `trader` and `admin`.
+
+    `role` is the role the user should end up with, not a delta, so the same
+    request repeated is the same outcome. There are two roles and no tier above
+    them; docs/adr/0007-admin-tiers-and-role-changes.md argues why, and names
+    the condition under which that stops being the right answer.
+
+    `reason` is optional and lands in the audit entry verbatim. The log records
+    the change either way — an unexplained privilege grant is still a grant
+    with a name and a timestamp on it — but "covering for Ihsan over reading
+    week" is the difference between an entry that answers the question and one
+    that only raises it.
+    """
+
+    role: UserRole
+    reason: str | None = Field(
+        default=None,
+        max_length=500,
+        examples=["Taking over market resolution while Ihsan is away."],
+    )
+
+
+class RoleChangeResponse(BaseModel):
+    """The user as they now are, and how long the old authority can linger."""
+
+    user: UserOut
+
+    takes_effect_within_seconds: int = Field(
+        description=(
+            "Upper bound, in seconds, on how long other services may still act "
+            "on the previous role. Authority travels in the access token "
+            "(ADR 0003), so a service that authorises from the claim rather "
+            "than from this database — the market service does — keeps "
+            "honouring the token it was given until it expires. This service's "
+            "own routes are not affected: they read the row. Zero would be "
+            "wrong to report and a promise this design cannot keep."
+        ),
+        examples=[900],
+    )

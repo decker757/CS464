@@ -60,6 +60,13 @@ if not _test_db:
 # Set before any project module is imported: core.config.get_settings is cached
 # on first call, and importing main.py triggers it.
 os.environ["DATABASE_URL"] = _test_db
+
+# [4.4] #16. The role-change tests read back what this service appended, and
+# they cannot do it on the connection that wrote it: auth_svc holds INSERT on
+# audit.admin_actions and no SELECT, so that no service can read another's
+# actions. They come in as audit_svc instead. Only the audit tests need this,
+# so it is resolved here but never required.
+_audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 # Fresh per run. Nothing signed here outlives the process, and no key-shaped
 # string needs to sit in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
@@ -140,3 +147,97 @@ def registration_payload() -> dict[str, str]:
         "email": "ernest@example.com",
         "password": VALID_PASSWORD,
     }
+
+
+_NO_AUDIT_READER = (
+    "No audit reader configured.\n"
+    "The audit-log tests read back what this service appended, and they must "
+    "do it as audit_svc, because auth_svc holds INSERT on audit.admin_actions "
+    "and no SELECT.\n"
+    "Add AUDIT_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
+    "  export AUDIT_TEST_DATABASE_URL="
+    "postgresql+asyncpg://audit_svc:PASSWORD@localhost:PORT/cs464_test"
+)
+
+
+@pytest.fixture
+async def audit_reader():
+    """A session on `audit.admin_actions`, connected as the role that may read it.
+
+    Separate engine, separate role, and deliberately not the one under test.
+
+    Note what this fixture does NOT do: clean up. The log is append-only and no
+    role holds DELETE or TRUNCATE, so rows from every previous test in this
+    database are still present and always will be. Tests scope themselves by
+    filtering on an actor id nothing else has used, which is a more honest
+    assertion than a truncated table anyway: it is what reading a real audit
+    log looks like.
+    """
+    from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+        async_sessionmaker,
+        create_async_engine,
+    )
+    from sqlalchemy.pool import NullPool  # noqa: PLC0415
+
+    if not _audit_db:
+        pytest.fail(_NO_AUDIT_READER)
+
+    engine = create_async_engine(_audit_db, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+            yield s
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def admin_client(client: AsyncClient, session) -> AsyncClient:
+    """A client signed in as an administrator, made the way the README says.
+
+    Register, then promote with a manual UPDATE. That is not a shortcut around
+    the endpoint under test: ADR 0007 keeps the first administrator a manual
+    UPDATE permanently, because the account that may grant administrative
+    authority cannot itself be granted it. Every administrator after this one
+    is made through the route these tests exercise.
+
+    No fresh login afterwards, deliberately. The cookie from registration still
+    carries `role: trader`, and these routes work anyway, because this service
+    reads the row rather than the claim. `test_a_promotion_binds_without_a_new_token`
+    asserts that on purpose rather than leaving it as a happy accident here.
+    """
+    await client.post(
+        "/auth/register",
+        json={
+            "username": "admin_one",
+            "email": "admin.one@example.com",
+            "password": VALID_PASSWORD,
+        },
+    )
+    await session.execute(
+        text("UPDATE auth.users SET role = 'admin' WHERE lower(username) = 'admin_one'")
+    )
+    await session.commit()
+    return client
+
+
+@pytest.fixture
+async def target_user_id(session) -> str:
+    """Somebody for an administrator to act on. Starts a trader, like everyone.
+
+    Created through the service layer rather than through the API, because the
+    client fixture holds one cookie jar: a second /auth/register on it would
+    quietly re-authenticate the caller as this user and every admin-route test
+    would then be asserting the wrong thing.
+    """
+    from model.schemas import RegisterRequest  # noqa: PLC0415
+    from service import auth_service  # noqa: PLC0415
+
+    user, _ = await auth_service.register(
+        session,
+        RegisterRequest(
+            username="michelle_l",
+            email="michelle@example.com",
+            password=VALID_PASSWORD,
+        ),
+    )
+    return str(user.id)
