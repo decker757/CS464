@@ -12,28 +12,29 @@ in GitHub Project v2 #6.
 backend/auth_service/   registration, login, logout, sessions   [A-1..A-3]
 backend/market_service/ drafting, submitting, publishing markets [1.1] [1.3]
 backend/audit_service/  reading the shared admin action log     [4.3]
+backend/ledger_service/ credits, append-only, balances derived   [F-1]
 sql/                    roles, schemas and grants for the shared Postgres
-sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
+sql/migrations/         hand-applied ALTERs, until Alembic ([F-5] #75)
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
 scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 ```
 
-More services are coming: a ledger ([F-1] #41), a stateless trading composite
-(the [T-*] epic), and a websocket server ([F-2] #42). The LMSR pricing engine
-([F-3] #43) is a module rather than a service, and lives wherever `q` lives;
-ADR 0005 says why.
+More services are coming: a stateless trading composite (the [T-*] epic) and a
+websocket server ([F-2] #42). The LMSR pricing engine ([F-3] #43) is a module
+rather than a service, and lives wherever `q` lives; ADR 0005 says why — which
+means it lives with the ledger.
 
 ## Running things
 
 ```bash
 cp .env.example .env          # fill in every blank; compose refuses to start otherwise
-docker compose up --build     # auth :8000/docs, market :8001/docs, audit :8002/docs
+docker compose up --build     # auth :8000, market :8001, audit :8002, ledger :8003
 ```
 
 ```bash
-cd backend/auth_service       # or market_service, or audit_service
+cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
 ```
@@ -79,7 +80,7 @@ runs before any service exists, when there is no table to alter.
 
 The test databases handle themselves: `unit_test/conftest.py` drops and
 recreates the schema per test, so a model change is picked up automatically
-there. It is the long-lived `cs464` database that drifts. [F-1] #41 replaces
+there. It is the long-lived `cs464` database that drifts. [F-5] #75 replaces
 all of this with Alembic.
 
 **Tests run against Postgres, not SQLite**, each suite as its own service role
@@ -128,6 +129,48 @@ flush the INSERTs for the new rows are issued before the DELETEs for the
 orphans, so a unique constraint on the child sees both. `market_service`'s
 `_clear_children` exists for exactly this; remove it and every autosave after
 the first returns a 500.
+
+**A balance is never stored, and the platform account is supposed to be
+negative.** `ledger.accounts` has no balance column and must not grow one:
+a balance is `SUM(amount)` over that account's entries, derived on every read.
+Three separate acceptance criteria ([B-1] #32, [B-2] #33, [4.1] #13) say the
+displayed balance equals the sum of the entries, and deriving it is how that is
+true by construction instead of by vigilance.
+
+Every movement writes legs that sum to zero, and credits are minted by the one
+`PLATFORM` account going negative — its balance is minus the credits in
+circulation, and it is the only account exempt from the overdraft check. So
+`SELECT SUM(amount) FROM ledger.entries` is always exactly zero over the whole
+table. If it is not, something is badly wrong; `test_concurrency.py` asserts it,
+and also asserts it per transaction, because a whole-table zero would survive
+two mistakes that cancelled.
+
+**Reading a balance writes, once per user, ever.** Registration does not grant
+starting credits and the auth service still does not know that credits exist.
+The ledger mints the grant lazily instead, on the first read of a balance or a
+history, keyed `signup-grant:<user_id>`. A user with no entries is by definition
+a user who has not been granted. There is no event, no outbox and no window in
+which a new account's balance is observably wrong. ADR 0009.
+
+Changing `STARTING_CREDITS` does not re-grant anybody: the transaction has been
+written and nothing rewrites an entry.
+
+**The ledger's write path has no HTTP endpoint, on purpose.**
+`ledger_service/service/posting.py` holds the double entry, the idempotency key
+and the row lock, and nothing routes to it. Adding a write route means first
+answering how a *service* proves it is a service — every route in this
+repository authenticates a person from a signed token, and a ledger write route
+that accepted a trader's own token is a route for minting yourself credits.
+That decision belongs to [T-2] #22, which has the caller. The primitive is not
+untested scaffolding: the starting grant goes through it.
+
+**`ledger.entries` is append-only via a trigger that ships with the table.**
+`model/entities.py` attaches it as an `after_create` DDL event, so it is
+installed by `create_all` and by the per-test schema rebuild alike. Do not move
+it into `sql/`: these are the service's own tables, so the first conftest
+rebuild would drop the trigger and never restore it. It is one step weaker than
+the audit log's, because `ledger_svc` owns this table and could drop its own
+trigger; the README says so and names the upgrade.
 
 **The audit log is written by the acting service, not posted to the audit
 service.** There is no write endpoint on :8002 and there will not be one. An
@@ -235,6 +278,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0006** one shared audit log, written in the acting service's transaction
 - **0007** a flat admin tier, with role changes audited rather than approved
 - **0008** publishing as its own endpoint, from SUBMITTED only, and one way
+- **0009** double-entry with derived balances, and a lazily minted grant
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

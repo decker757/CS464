@@ -8,8 +8,8 @@ name: Backend CI
 # check would leave frontend-only pull requests waiting forever. Require the
 # JOB, not the workflow — and note the job names now carry the matrix value,
 # so they read "test (auth_service, auth_svc)", "test (market_service,
-# market_svc)" and "test (audit_service, audit_svc)". Never mark `notify`
-# required; it only runs on failure.
+# market_svc)", "test (audit_service, audit_svc)" and "test (ledger_service,
+# ledger_svc)". Never mark `notify` required; it only runs on failure.
 on:
   push:
     branches: [ "dev", "staging", "main" ]
@@ -47,6 +47,10 @@ jobs:
           # [4.3] #15. Reads the shared audit log; owns no schema.
           - service: audit_service
             role: audit_svc
+          # [F-1] #41. Owns the ledger schema, which sql/02-schemas.sql has
+          # reserved since #67, so this job needs nothing the others do not.
+          - service: ledger_service
+            role: ledger_svc
 
     defaults:
       run:

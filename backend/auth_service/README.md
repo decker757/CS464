@@ -163,19 +163,26 @@ management, splitting `admin` into MARKET_CREATOR, RESOLVER and SUPER_ADMIN.
 The column is a VARCHAR with a CHECK rather than a Postgres ENUM precisely so
 that widening it is an ordinary migration.
 
-## Two things still open
+## Two things worth knowing
 
 **Starting credits are not granted here, by design.** This service owns users
 and credentials and nothing else. It does not know that credits exist, and
 `test_registration.py` has a guard asserting the word never appears in a
 response. [B-1] #32 is the ledger's job, and nothing about it needs auth.
 
-The plan for [F-1] #41 is that the ledger mints the grant itself, lazily. A
-user with no entries is by definition a user who has not been granted yet, so
-the first time anything reads their balance or tries to trade, the ledger
-writes the genesis entry keyed on `signup-grant:<user_id>` and carries on. A
-unique constraint on that key makes it idempotent, so concurrent first requests
-race safely and the loser simply re-reads.
+[F-1] #41 has landed and does exactly what this section planned: the ledger
+mints the grant itself, lazily. A user with no entries is by definition a user
+who has not been granted yet, so the first time anything reads their balance,
+the ledger writes the genesis transaction keyed on `signup-grant:<user_id>` and
+carries on. A unique constraint on that key makes it idempotent, so concurrent
+first requests race safely and the loser simply re-reads. See
+`backend/ledger_service/service/grants.py` and
+[ADR 0009](../../docs/adr/0009-the-ledger-write-path.md).
+
+Nothing in this service changed to make that work, which was the point. There
+is no call to the ledger, no event, and no new dependency: registration commits
+a user row and the ledger finds out the first time somebody asks what that user
+holds.
 
 Why this and not an event, an outbox, or a shared transaction:
 

@@ -14,6 +14,7 @@ see why the code looks the way it does without reconstructing the argument.
 | [0006](0006-audit-log-write-path.md) | One shared audit log, written in the acting service's transaction | Accepted |
 | [0007](0007-admin-tiers-and-role-changes.md) | A flat admin tier, and role changes audited rather than approved | Accepted |
 | [0008](0008-publishing-a-market.md) | Publishing is its own endpoint, from SUBMITTED only, and one way | Accepted |
+| [0009](0009-the-ledger-write-path.md) | Double-entry with derived balances, and a lazily minted grant | Accepted |
 
 Supersede rather than edit. If a decision changes, add a new record and mark
 the old one superseded, so the reasoning trail survives.

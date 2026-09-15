@@ -19,8 +19,10 @@ database automatically and an existing one not at all, and the service then
 fails every request with `column ... does not exist` on a model change that is
 perfectly correct.
 
-These files close that gap until [F-1] #41 brings Alembic, which is where this
-directory is headed.
+These files close that gap until [F-5] #75 brings Alembic, which is where this
+directory is headed. [F-1] #41 was meant to and did not: the ledger's schema
+and role had been in `sql/` since #67, so it needed no migration to land, and
+retrofitting four services was a change of its own size.
 
 ## Applying them
 

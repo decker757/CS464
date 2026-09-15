@@ -1,0 +1,356 @@
+"""Persistence models for the ledger service. [F-1] #41
+
+Three tables and one invariant: **every transaction's entries sum to zero.**
+Credits are never created or destroyed by a movement, only moved, and the
+platform account going negative is what "minted" means here. A balance is
+therefore `SUM(amount)` over an account's entries and is never a column, never
+cached, and never mutated in place.
+
+`ledger.entries` is append-only. There is no code path that updates or deletes
+one, and a statement-level trigger at the bottom of this file refuses both at
+the database. Correcting a mistake means appending the transaction that
+reverses it, exactly as the audit log's hint says.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+from enum import StrEnum
+
+from sqlalchemy import (
+    CheckConstraint,
+    DDL,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+    Uuid,
+    event,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from core.database import SCHEMA, Base
+
+# Money, everywhere in this service. Matches `market.markets.seed_subsidy`,
+# which is the same credits seen from the other side of a service boundary:
+# a subsidy the admin promised there is a balance somebody spends here, and the
+# two arithmetics have to agree down to the last place.
+AMOUNT_PRECISION = 18
+AMOUNT_SCALE = 4
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class AccountKind(StrEnum):
+    """Who can hold credits.
+
+    Stored as a non-native `Enum`, so the column is a plain `varchar(24)` with
+    no CHECK — SQLAlchemy has defaulted `create_constraint` to False since 1.4.
+    Adding a member is therefore a Python change and never an ALTER TYPE
+    against a live database, which is the whole reason [T-2] #22 can add
+    MARKET_POOL without a migration. CLAUDE.md says the same thing about
+    `MarketStatus`, and the verification query there works here too.
+    """
+
+    # One per registered user, created on the first read of their balance.
+    USER = "user"
+
+    # The house. Exactly one row, and the only account allowed to go negative:
+    # its balance is minus the credits in circulation, which is what makes the
+    # starting grant a movement rather than an invention. See service/grants.py.
+    PLATFORM = "platform"
+
+
+class TransactionKind(StrEnum):
+    """Why credits moved.
+
+    SIGNUP_GRANT is the only member today because it is the only movement any
+    shipped code performs. TRADE_BUY, TRADE_SELL and SETTLEMENT arrive with
+    [T-2] #22, [T-3] #23 and [3.4] #12, and are Python-only additions for the
+    same reason as `AccountKind`.
+    """
+
+    SIGNUP_GRANT = "signup_grant"
+
+
+_ACCOUNT_KIND_COLUMN = Enum(
+    AccountKind,
+    name="ledger_account_kind",
+    native_enum=False,
+    length=24,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+_TRANSACTION_KIND_COLUMN = Enum(
+    TransactionKind,
+    name="ledger_transaction_kind",
+    native_enum=False,
+    length=32,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+
+class Account(Base):
+    """A party that can hold credits.
+
+    Note how little is here. There is no balance column and there will not be
+    one: a balance is derived by summing this account's entries, which is
+    [B-1] #32's third acceptance criterion and [4.1] #13's third. Two sources
+    of truth for money is the failure mode this whole design exists to avoid.
+
+    So this table has exactly two jobs. It gives an account an identity that a
+    foreign key can point at, and it gives the write path a single row to take
+    `SELECT ... FOR UPDATE` on, which is what serialises two concurrent trades
+    from one user instead of letting both read the same balance and overdraw
+    it. Without this table there would be nothing to lock.
+    """
+
+    __tablename__ = "accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    kind: Mapped[AccountKind] = mapped_column(_ACCOUNT_KIND_COLUMN, nullable=False)
+
+    # For a USER account this names a row in `auth.users`, and it cannot be a
+    # foreign key: ledger_svc has no grant on the auth schema, by design. The
+    # value comes from the `sub` claim of a signature-checked token, never from
+    # a request body. Same trade as `market.markets.creator_id`; ADR 0003.
+    #
+    # NOT NULL rather than nullable-for-the-platform-account, which is the
+    # obvious shape and the wrong one. Postgres treats every NULL in a unique
+    # key as distinct from every other, so `UNIQUE (kind, owner_id)` would
+    # happily admit two platform accounts and the ledger would start summing to
+    # zero across a house that was two houses. PLATFORM_OWNER_ID below is a
+    # fixed sentinel instead, and the constraint means what it looks like it
+    # means.
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    __table_args__ = (
+        # The account identity. `service/accounts.py` leans on this: two
+        # concurrent first reads for one user both find nothing and both
+        # insert, and this is what turns the loser into an IntegrityError it
+        # can retry rather than a second account nobody notices.
+        UniqueConstraint("kind", "owner_id", name="uq_accounts_kind_owner"),
+    )
+
+
+# The one PLATFORM account's owner_id. A constant rather than a NULL, for the
+# reason on `owner_id` above, and the all-zero UUID rather than a random one so
+# that it is obviously not somebody's user id and is the same value in every
+# database this service has ever run against.
+PLATFORM_OWNER_ID = uuid.UUID(int=0)
+
+
+class Transaction(Base):
+    """One movement of credits, whose entries sum to zero.
+
+    A transaction is the unit a caller retries and the unit a reader
+    understands; an entry on its own is half a sentence.
+    """
+
+    __tablename__ = "transactions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    kind: Mapped[TransactionKind] = mapped_column(
+        _TRANSACTION_KIND_COLUMN, nullable=False
+    )
+
+    # The issue's "idempotency key on writes", and the reason retrying a trade
+    # cannot execute it twice ([T-2] #22) and retrying registration cannot
+    # double-grant ([B-1] #32). Unique across the whole ledger rather than per
+    # account, because the caller that generates it does not always know which
+    # accounts the transaction will touch, and a key that means different
+    # things in different scopes is not a key.
+    #
+    # Callers namespace it: `signup-grant:<user_id>` is the one this service
+    # generates for itself.
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+
+    # A hash of the legs, so a replayed key can be told from a reused one.
+    #
+    # Without it, a caller that reuses a key for a genuinely different
+    # transaction is told their new movement succeeded, and handed the old one
+    # as proof. That is the classic idempotency-key bug and in a ledger it
+    # means somebody is shown a trade they did not make. With it, the same
+    # request replays and a different request is refused.
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # Supplied by the service rather than defaulted by the database, so that a
+    # test can inject a clock without freezing the system one. Same reason as
+    # `audit.admin_actions.occurred_at`.
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    # Whatever else this kind of movement needs to be reconstructible later:
+    # the market and outcome of a trade, the resolution a payout came from.
+    # jsonb rather than more columns for the same reason
+    # `audit.admin_actions.context` is: this table is append-only by design, so
+    # every future movement shape would otherwise be an ALTER on a table that
+    # is meant never to change.
+    context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Lazy, unlike its inverse below, and unlike every other collection in this
+    # repository. Nothing reads it from the database: `posting.post` builds it
+    # in memory on a transaction it is creating, and the history feed travels
+    # the other way. Making it eager would put this relationship and
+    # `Entry.transaction` in a cycle, so reading one page of entries would fetch
+    # their transactions and then those transactions' entries again.
+    entries: Mapped[list[Entry]] = relationship(
+        back_populates="transaction", order_by="Entry.id"
+    )
+
+
+class Entry(Base):
+    """One side of one movement. Append-only.
+
+    `amount` is signed: negative is a debit, positive a credit, and the entries
+    of a transaction sum to zero. The alternative — a positive amount beside a
+    direction column — makes every balance query a CASE expression and every
+    balance check a place to get a sign wrong. Signed means a balance is
+    `SUM(amount)` and the invariant is `SUM(amount) = 0`, both of which are
+    statements you can hand to Postgres without writing any arithmetic down
+    twice.
+
+    There is deliberately no `balance_after` column. It would be a second
+    source of truth that a concurrent write could make wrong, and it is one
+    aggregate away at read time for [4.1] #13, which is the only story that
+    wants it.
+    """
+
+    __tablename__ = "entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    transaction_id: Mapped[uuid.UUID] = mapped_column(
+        # No ondelete. Every other parent/child pair in this repository
+        # cascades; this one must not, because there is no delete to cascade
+        # from. A cascade here would be a working mechanism for removing
+        # ledger rows, sitting one careless `session.delete` away from the
+        # thing this table exists to make impossible.
+        ForeignKey("transactions.id"),
+        nullable=False,
+        index=True,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id"), nullable=False
+    )
+
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+
+    # Copied from the transaction rather than defaulted per row, so that both
+    # halves of one movement carry the identical timestamp. The history feed
+    # orders on it, and two sides of one trade appearing a microsecond apart
+    # would let a page boundary fall between them.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    # Eager, because the history feed renders every entry beside the kind and
+    # context of the movement it belongs to, and a lazy load reached from a
+    # response model raises MissingGreenlet under asyncio rather than quietly
+    # issuing a query.
+    #
+    # There is deliberately no `account` relationship to match. Nothing needs
+    # one — balances and history both filter on `account_id` — and an unused
+    # lazy relationship on an async model is a trap rather than documentation.
+    transaction: Mapped[Transaction] = relationship(
+        back_populates="entries", lazy="selectin"
+    )
+
+    __table_args__ = (
+        # A zero-amount entry is not a movement. It would pass the sum-to-zero
+        # invariant while saying nothing, and it would appear on somebody's
+        # statement as a transaction that did not happen.
+        CheckConstraint("amount <> 0", name="ck_entries_amount_nonzero"),
+        # Serves both reads this service performs: the balance sum for one
+        # account, and its history page newest-first. Spelled DESC to match the
+        # keyset ordering in core/paging.py exactly, and to read the same way
+        # as the audit feed indexes in sql/02-schemas.sql — Postgres would scan
+        # an ascending index backwards just as happily.
+        Index(
+            "ix_ledger_entries_account_feed",
+            "account_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Append-only, at the database.
+# ---------------------------------------------------------------------------
+#
+# The same statement-level trigger `sql/02-schemas.sql` puts on
+# `audit.admin_actions`, and for the same reason: a grant protects against an
+# application role, a trigger protects against the table's owner too, so a
+# stray UPDATE from a psql session fails as loudly as one from this service
+# would. Statement-level rather than row-level, which is what lets one trigger
+# cover TRUNCATE alongside UPDATE and DELETE, and what makes it fire even when
+# the statement matches no rows.
+#
+# Attached as an `after_create` DDL event rather than written into `sql/`,
+# because these tables are this service's own: `create_all` makes them at
+# startup and `unit_test/conftest.py` rebuilds them per test, and a trigger
+# that lived in `sql/` would be dropped by the first rebuild and never come
+# back. Here it ships with the table, everywhere the table ships.
+#
+# Be honest about what this is worth. It is one step weaker than the audit
+# log's, because ledger_svc owns `ledger.entries` and could therefore drop its
+# own trigger, where no writer can touch `audit.admin_actions` at all. What it
+# buys is the audit log's actual argument: a guarantee somebody has to
+# deliberately delete a line to break is much harder to break by accident than
+# one that was merely never written down. If the ledger ever needs the stronger
+# version, the move is to put these tables in `sql/` under the superuser and
+# grant ledger_svc INSERT and SELECT and nothing else — at the cost of every
+# future column becoming hand-applied SQL. README.md records that trade.
+
+# The message is assembled with `||` rather than RAISE's `%` placeholder,
+# which is what `sql/02-schemas.sql` uses. Not a style preference: SQLAlchemy
+# runs every DDL string through Python's `%` interpolation before sending it,
+# so a literal percent sign in the body raises at create_all time. Doubling it
+# would work and would also be the kind of thing somebody quietly un-doubles
+# while editing the SQL.
+_REJECT_MUTATION = DDL(
+    f"""
+    CREATE OR REPLACE FUNCTION {SCHEMA}.reject_mutation() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+        RAISE EXCEPTION
+            USING ERRCODE = 'restrict_violation',
+                  MESSAGE = '{SCHEMA}.entries is append-only; '
+                            || TG_OP || ' is not permitted',
+                  HINT = 'Reverse a wrong entry by appending the '
+                         'transaction that undoes it.';
+    END;
+    $$;
+    """
+)
+
+_INSTALL_TRIGGER = DDL(
+    f"""
+    CREATE TRIGGER entries_append_only
+        BEFORE UPDATE OR DELETE OR TRUNCATE ON {SCHEMA}.entries
+        FOR EACH STATEMENT EXECUTE FUNCTION {SCHEMA}.reject_mutation();
+    """
+)
+
+event.listen(Entry.__table__, "after_create", _REJECT_MUTATION)
+event.listen(Entry.__table__, "after_create", _INSTALL_TRIGGER)
