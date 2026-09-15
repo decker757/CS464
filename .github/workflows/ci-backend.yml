@@ -8,8 +8,9 @@ name: Backend CI
 # check would leave frontend-only pull requests waiting forever. Require the
 # JOB, not the workflow — and note the job names now carry the matrix value,
 # so they read "test (auth_service, auth_svc)", "test (market_service,
-# market_svc)", "test (audit_service, audit_svc)" and "test (ledger_service,
-# ledger_svc)". Never mark `notify` required; it only runs on failure.
+# market_svc)", "test (audit_service, audit_svc)", "test (ledger_service,
+# ledger_svc)" and "test (realtime_service, none)". Never mark `notify`
+# required; it only runs on failure.
 on:
   push:
     branches: [ "dev", "staging", "main" ]
@@ -51,6 +52,13 @@ jobs:
           # reserved since #67, so this job needs nothing the others do not.
           - service: ledger_service
             role: ledger_svc
+          # [F-2] #42. The one service with no database at all: no role, no
+          # schema, nothing in sql/. `none` is not a Postgres role — it is the
+          # value the two database steps below skip on, spelled out rather than
+          # left empty so the job name reads "test (realtime_service, none)"
+          # instead of trailing a blank. This suite needs Redis instead.
+          - service: realtime_service
+            role: none
 
     defaults:
       run:
@@ -77,6 +85,20 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
+      # [F-2] #42. Used by one matrix leg and started for all five, because a
+      # service container cannot be made conditional on a matrix value. It costs
+      # a couple of seconds on the other four and it is not worth a second job
+      # to avoid. Same major version as docker-compose.yml.
+      redis:
+        image: redis:8.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     env:
       # Connects as the service's OWN role, never the superuser, so each suite
       # runs under the same grants as production and the cross-schema denial
@@ -96,6 +118,11 @@ jobs:
       # Passwordless here, matching the trust auth above.
       AUDIT_TEST_DATABASE_URL: postgresql+asyncpg://audit_svc@localhost:5432/cs464_test
 
+      # [F-2] #42. Read only by the realtime suite, which has no DATABASE_URL to
+      # read instead. No password: this container lives for one job on the
+      # runner's private network, the same reasoning as the trust auth above.
+      REDIS_URL: redis://localhost:6379/0
+
     steps:
       - uses: actions/checkout@v4
 
@@ -114,7 +141,12 @@ jobs:
       # apply the same files by hand. Running the real sql/ means CI exercises
       # the actual grants rather than a simplified copy that could drift.
       # Passwords are ignored under trust auth but the files still expect them.
+      # Skipped for realtime_service, which holds no role and owns no schema.
+      # Running them would still succeed — they are idempotent and do not depend
+      # on the matrix leg — but a job that sets up a database it never opens is
+      # a job that reads as though it might.
       - name: Apply roles, schemas and grants
+        if: matrix.role != 'none'
         working-directory: .
         env:
           ADMIN_URL: postgresql://cs464@localhost:5432/cs464_test

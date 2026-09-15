@@ -167,6 +167,13 @@ trade commit. The composite is the only place that knows both that a trade
 committed and what the resulting price is, so the producer side of #42 belongs
 there rather than in the ledger.
 
+> **Amended by [ADR 0010](0010-realtime-price-broadcast.md).** This predates ADR
+> 0009 settling that the ledger owns the write path. The composite owns no role
+> and no schema, so it cannot hold the transaction a trade commits in — and the
+> producer has to be whoever does, or it cannot publish strictly after the
+> commit. The composite may still be what calls the trade; it is not what
+> decides one committed.
+
 **The ledger trusts the composite's arithmetic, for now.** If the ledger does
 not evaluate the cost function itself, a bug in the composite writes an
 inconsistent price and the ledger records it faithfully and append-only. The

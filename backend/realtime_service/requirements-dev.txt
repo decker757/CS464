@@ -1,0 +1,7 @@
+-r requirements.txt
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+# Starlette's TestClient drives the socket over ASGI rather than over a real
+# network, and it needs httpx to do it. Same pin as the other four suites.
+httpx==0.28.1
