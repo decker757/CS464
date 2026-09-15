@@ -20,6 +20,7 @@ services:
       AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?}
       LEDGER_DB_PASSWORD: ${LEDGER_DB_PASSWORD:?}
       MARKET_DB_PASSWORD: ${MARKET_DB_PASSWORD:?}
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:?}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -80,6 +81,33 @@ services:
       DEFAULT_LIQUIDITY_B: ${DEFAULT_LIQUIDITY_B:-100}
     ports:
       - "${MARKET_PORT:-8001}:8000"
+    restart: unless-stopped
+
+  # [4.3] #15. Reads the shared audit log and nothing else. Unlike the two
+  # above it owns no schema: `audit.admin_actions` belongs to the superuser and
+  # is created by sql/02-schemas.sql, because several services append to it and
+  # none of them should be able to define it. This service holds SELECT, the
+  # writers hold INSERT, and nobody anywhere holds UPDATE or DELETE.
+  #
+  # Note what is missing: no service depends on this one. An admin action
+  # writes its own audit entry inside its own database transaction, so a
+  # container that is down, redeploying or removed entirely cannot lose an
+  # entry or fail an action. It is a reader of a table that is already being
+  # written. See docs/adr/0006-audit-log-write-path.md.
+  audit:
+    build:
+      context: ./backend/audit_service
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://audit_svc:${AUDIT_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      # The same value the auth service signs with. Verification only; there is
+      # no encode path in this service and a test asserts one does not appear.
+      JWT_SECRET: ${JWT_SECRET:?}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${AUDIT_PORT:-8002}:8000"
     restart: unless-stopped
 
 volumes:

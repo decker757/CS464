@@ -35,11 +35,34 @@ docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
 needed. Re-running is safe: every file here must be idempotent
 (`IF NOT EXISTS`), because nothing records which have been applied.
 
-The **test** databases need nothing. `unit_test/conftest.py` drops and
+Some need extra variables. `0002` creates a login role, so it needs the
+password and the database name, and unlike `0001` it belongs on the test
+database too if yours predates it — the audit table lives in `sql/` rather than
+in a service's `create_all`, so a `cs464_test` created before [4.3] #15 does
+not have it and no conftest will add it:
+
+```bash
+docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
+  -v db_name=cs464 -v audit_password="$AUDIT_DB_PASSWORD" \
+  -f /sql/migrations/0002-audit-admin-actions.sql
+```
+
+The **test** databases usually need nothing. `unit_test/conftest.py` drops and
 recreates the schema from the models on every test, so a suite always matches
-`model/entities.py`. It is only the long-lived `cs464` database that drifts.
+`model/entities.py`, and it is only the long-lived `cs464` database that
+drifts.
+
+The exception is anything created by `sql/` rather than by a model, because no
+conftest rebuilds that. `audit.admin_actions` is the first of these: it is
+owned by the superuser and appears in `sql/02-schemas.sql`, so a `cs464_test`
+from before [4.3] #15 is missing it and stays missing it. Say so in the file
+when a migration is in that category.
 
 ## Adding one
 
 Name it `NNNN-<service>-<what-changed>.sql`, make every statement idempotent,
 say which ticket it came from, and state which databases it belongs on.
+
+If the change is already written idempotently in `sql/02-schemas.sql`, prefer
+`\i /sql/02-schemas.sql` over copying the statements across. `0002` does that,
+and it is why there is only one definition of the audit table to keep in step.

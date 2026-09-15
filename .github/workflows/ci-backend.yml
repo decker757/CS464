@@ -7,8 +7,9 @@ name: Backend CI
 # filter never reports a status at all, so marking "Backend CI" a required
 # check would leave frontend-only pull requests waiting forever. Require the
 # JOB, not the workflow — and note the job names now carry the matrix value,
-# so they read "test (auth_service, auth_svc)" and "test (market_service,
-# market_svc)". Never mark `notify` required; it only runs on failure.
+# so they read "test (auth_service, auth_svc)", "test (market_service,
+# market_svc)" and "test (audit_service, audit_svc)". Never mark `notify`
+# required; it only runs on failure.
 on:
   push:
     branches: [ "dev", "staging", "main" ]
@@ -43,6 +44,9 @@ jobs:
             role: auth_svc
           - service: market_service
             role: market_svc
+          # [4.3] #15. Reads the shared audit log; owns no schema.
+          - service: audit_service
+            role: audit_svc
 
     defaults:
       run:
@@ -79,6 +83,15 @@ jobs:
       # back to this, so one variable per job is enough.
       DATABASE_URL: postgresql+asyncpg://${{ matrix.role }}@localhost:5432/cs464_test
 
+      # [4.3] #15. Set for every job, and actually used by two of them.
+      #
+      # The audit service's own suite connects with it, and so does the market
+      # service's, because market_svc holds INSERT on audit.admin_actions and
+      # no SELECT: a test that appends an entry cannot read it back over the
+      # connection that wrote it, and has to come in as the reader instead.
+      # Passwordless here, matching the trust auth above.
+      AUDIT_TEST_DATABASE_URL: postgresql+asyncpg://audit_svc@localhost:5432/cs464_test
+
     steps:
       - uses: actions/checkout@v4
 
@@ -106,6 +119,7 @@ jobs:
             -v auth_password=unused \
             -v ledger_password=unused \
             -v market_password=unused \
+            -v audit_password=unused \
             -f sql/01-roles.sql
           psql -v ON_ERROR_STOP=1 "$ADMIN_URL" \
             -v db_name=cs464_test -f sql/02-schemas.sql

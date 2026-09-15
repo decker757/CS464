@@ -75,3 +75,27 @@ async def test_it_cannot_create_tables_in_public(session: AsyncSession) -> None:
     with pytest.raises(ProgrammingError):
         await session.execute(text("CREATE TABLE public.sneaky (id int)"))
     await session.rollback()
+
+
+async def test_the_audit_grant_is_exactly_insert(session: AsyncSession) -> None:
+    """[4.3] #15's one deliberate exception, stated precisely.
+
+    `sql/02-schemas.sql` grants nothing between the service schemas and one
+    thing into the audit schema. This asserts the shape of that exception
+    rather than its existence: INSERT and nothing else.
+
+    SELECT here would let this service read what auth and ledger did, which is
+    the coupling the rest of that file prevents. UPDATE or DELETE would end the
+    append-only guarantee the whole story is about. Either turns this red.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT privilege_type FROM information_schema.table_privileges "
+                "WHERE table_schema = 'audit' AND table_name = 'admin_actions' "
+                "AND grantee = 'market_svc'"
+            )
+        )
+    ).scalars()
+
+    assert set(rows) == {"INSERT"}

@@ -11,6 +11,7 @@ in GitHub Project v2 #6.
 ```
 backend/auth_service/   registration, login, logout, sessions   [A-1..A-3]
 backend/market_service/ drafting and submitting markets         [1.1]
+backend/audit_service/  reading the shared admin action log     [4.3]
 sql/                    roles, schemas and grants for the shared Postgres
 sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
 docs/adr/               decisions that were expensive to make
@@ -28,11 +29,11 @@ ADR 0005 says why.
 
 ```bash
 cp .env.example .env          # fill in every blank; compose refuses to start otherwise
-docker compose up --build     # auth :8000/docs, market :8001/docs
+docker compose up --build     # auth :8000/docs, market :8001/docs, audit :8002/docs
 ```
 
 ```bash
-cd backend/auth_service       # or backend/market_service
+cd backend/auth_service       # or market_service, or audit_service
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
 ```
@@ -48,10 +49,19 @@ service refuses to boot without them.
 init scripts only on first initialisation of the data volume. Without the `-v`
 your changes appear to do nothing. It destroys local data.
 
+Every statement in `sql/02-schemas.sql` is idempotent, so re-running that file
+against a live database is a safe way to pick up a schema or grant change
+without the wipe. That is all `sql/migrations/0002-audit-admin-actions.sql`
+does, plus creating a login role, which is the one thing that file cannot do
+for itself because the password is not in the repository. Roles are
+cluster-wide; schemas and grants are per database, so apply it to `cs464` and
+to `cs464_test` if yours predates the change.
+
 **Adding a column does not reach a database that already has the table.**
-Both services call `create_all` at startup, and that only ever issues CREATE
-TABLE IF NOT EXISTS, so a new column in `model/entities.py` reaches a fresh
-database automatically and an existing one never. The service then dies on
+The auth and market services call `create_all` at startup (the audit service
+does not; it owns no table), and that only ever issues CREATE TABLE IF NOT
+EXISTS, so a new column in `model/entities.py` reaches a fresh database
+automatically and an existing one never. The service then dies on
 every request with `column ... does not exist`, which reads like a code bug and
 is not one. [1.2] #2 hit this on both the dev and the test database.
 
@@ -90,6 +100,32 @@ orphans, so a unique constraint on the child sees both. `market_service`'s
 `_clear_children` exists for exactly this; remove it and every autosave after
 the first returns a 500.
 
+**The audit log is written by the acting service, not posted to the audit
+service.** There is no write endpoint on :8002 and there will not be one. An
+admin action appends its own entry through `service/audit.py`, on the request's
+own session, and does not commit — the action's transaction commits both or
+neither. That single fact is the whole durability argument, and it is why there
+is no queue, no retry and no broker anywhere near this. ADR 0006.
+
+If you add an admin action, log the decision and never the keystrokes. Draft
+autosave fires every three seconds and is deliberately not logged; logging it
+would bury every real action within one sitting.
+
+**`audit.admin_actions` must never be added to a service's `Base.metadata`.**
+Everything mapped there is created by `create_all` at startup and dropped by
+`unit_test/conftest.py` per test. Either against this table fails — no service
+has CREATE or DROP on the audit schema — and the service dies at boot. Writers
+declare it as a standalone `Table` on its own `MetaData` (see
+`market_service/model/audit.py`); the audit service maps it but has no
+`create_all` at all.
+
+**A writing service cannot read the log it writes to, including in its own
+tests.** It holds INSERT and no SELECT, so that no service can read another's
+actions. `market_service`'s audit tests open a second engine as `audit_svc`
+from `AUDIT_TEST_DATABASE_URL`, which is why that variable is set for its CI
+job too. Nothing anywhere holds UPDATE, DELETE or TRUNCATE, so no suite can
+clean the table: tests scope themselves to a fresh actor id instead.
+
 **Never commit a credential, including in an example file.** GitGuardian runs
 on every pull request and it is usually right. Use angle-bracket placeholders:
 `postgresql+asyncpg://user:<PASSWORD>@host:<PORT>/db`. A real-looking username
@@ -124,6 +160,14 @@ no cross grants, so a join across a service boundary fails with a permission
 error rather than quietly working. Do not add a grant to make something
 convenient; that is a decision to couple two services.
 
+There is exactly one exception, and it is narrow on purpose: every service
+holds `INSERT` on `audit.admin_actions` and nothing else — no SELECT, so it
+still cannot read another service's data. That schema is owned by the superuser
+rather than by any service, and `audit_svc` is the only role that may read it.
+`market_service`'s `test_the_audit_grant_is_exactly_insert` asserts the shape
+of the exception, so widening it turns a test red. ADR 0006 argues why it is a
+different kind of thing from the grants above.
+
 The auth service does not know that credits exist. There are tests that fail if
 the word appears in a response or on the `register` signature. If you need a
 balance, that is the ledger's job. The same rule runs the other way: the market
@@ -157,8 +201,12 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0003** a separate market service, and admin authority carried in the token
 - **0004** one idempotent endpoint for both draft autosave and submission
 - **0005** a composite trading service, and positions with the ledger
+- **0006** one shared audit log, written in the acting service's transaction
 
-Two known constraints recorded there. Logout cannot revoke an already-issued
-access token, so the 15-minute lifetime bounds the window. And a `SameSite=Lax`
+Three known constraints recorded there. Logout cannot revoke an already-issued
+access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
 cookie is not sent cross-site, so the frontend and API must share a registrable
-domain or the scheme changes before [5.3] #19.
+domain or the scheme changes before [5.3] #19. And the audit log's atomicity
+holds only while every service shares one database: split them and the service
+that moves needs an outbox and a relay, which is the machinery ADR 0006 exists
+to avoid paying for while it is unnecessary.

@@ -6,6 +6,11 @@ from the code and authoritative if this page ever disagrees, at
 
 Covers [1.1] #1, [1.2] #2 and the backend half of [FE][1.1] #45.
 
+A successful submission also appends an entry to the shared audit log, in the
+same database transaction, so the two can never disagree. An autosave does not.
+See [`audit-service.md`](audit-service.md) and
+[ADR 0006](../adr/0006-audit-log-write-path.md).
+
 Why it is a separate service and how it knows who is an admin:
 [ADR 0003](../adr/0003-market-service-boundary.md). Why one endpoint does both
 autosave and submit: [ADR 0004](../adr/0004-draft-autosave-and-submission.md).
