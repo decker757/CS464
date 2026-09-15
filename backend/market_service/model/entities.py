@@ -30,19 +30,32 @@ def _utcnow() -> datetime:
 
 
 class MarketStatus(StrEnum):
-    """The part of the lifecycle [1.1] #1 owns.
+    """The part of the lifecycle [1.1] #1 and [1.3] #3 own.
 
     DRAFT is a scratchpad the creator's browser writes to on an idle timer.
     SUBMITTED means the creator pressed the button and every rule passed, so
     the terms are complete and internally consistent. Neither is visible to a
-    trader: publishing to OPEN is [1.3] #3, and CLOSED, PENDING_RESOLUTION and
-    RESOLVED arrive with [F-4] #44 and epic 3. Members are added here as those
-    land, which is why this is stored as a VARCHAR with a CHECK rather than a
-    native Postgres enum.
+    trader.
+
+    OPEN is the one traders see, and reaching it is the whole of [1.3] #3. It
+    is also the one value outside this service's own walls: the trader browse
+    query in [BE][X] #62 is `status == MarketStatus.OPEN`, and that predicate
+    is the entire contract between the two tickets. #62 is built in this
+    service, so it imports the member below rather than retyping the string,
+    and `ix_market_markets_status` already indexes the column it filters on.
+
+    CLOSED, PENDING_RESOLUTION and RESOLVED arrive with [F-4] #44 and epic 3.
+    Members are added here as those land, which is why this is stored as a
+    VARCHAR rather than a native Postgres enum: a new member is a Python change
+    and never an ALTER TYPE against a live database. SQLAlchemy writes no CHECK
+    constraint for it either (`create_constraint` has defaulted to False since
+    1.4), so the value set is enforced here and at the API edge, where a bad
+    value is a 422 rather than an IntegrityError surfacing as a 500.
     """
 
     DRAFT = "draft"
     SUBMITTED = "submitted"
+    OPEN = "open"
 
 
 _STATUS_COLUMN = Enum(
@@ -130,6 +143,19 @@ class Market(Base):
         onupdate=_utcnow,
     )
     submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # When this market became tradeable. [1.3] #3.
+    #
+    # Separate from `submitted_at` rather than replacing it, because they
+    # record two different decisions and the gap between them is the thing
+    # worth being able to see: the terms were finalised here, and somebody
+    # chose to put them in front of traders there. Null for every market that
+    # has not been published, which is what makes it safe to read as "is this
+    # live" without consulting the status, though `status` remains the
+    # authority.
+    published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

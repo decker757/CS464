@@ -80,3 +80,10 @@ class AdminAction(StrEnum):
     """
 
     MARKET_SUBMITTED = "market.submitted"
+
+    # [1.3] #3. Recorded separately from the submission rather than folded into
+    # it, because they are two decisions and only the second one exposed
+    # anything to a trader. "Who made this market tradeable, and on what terms"
+    # is the question the log will actually be asked once money is moving, and
+    # a market can sit submitted for a week before anybody answers it.
+    MARKET_PUBLISHED = "market.published"

@@ -122,6 +122,9 @@ async def test_every_market_route_requires_a_token(client: AsyncClient) -> None:
     """Guards against a route being added later without the dependency."""
     assert (await client.get("/markets")).status_code == 401
     assert (await client.get(f"/markets/{uuid.uuid4()}")).status_code == 401
+    assert (
+        await client.post(f"/markets/{uuid.uuid4()}/publish")
+    ).status_code == 401
 
 
 async def test_health_is_open(client: AsyncClient) -> None:
@@ -292,6 +295,223 @@ async def test_an_autosave_after_submission_is_409(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "market_not_editable"
+
+
+# --- publishing [1.3] #3 --------------------------------------------------
+async def _submit(client: AsyncClient, headers: dict[str, str], **overrides: object) -> str:
+    created = await client.post(
+        "/markets", json=_payload(status="submitted", **overrides), headers=headers
+    )
+    assert created.status_code == 201
+    return created.json()["market"]["id"]
+
+
+async def test_publishing_returns_the_open_market(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """The whole market comes back, not an acknowledgement, so the form can
+    repaint without a second round trip."""
+    market_id = await _submit(client, admin_headers)
+
+    response = await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "open"
+    assert body["published_at"] is not None
+
+
+async def test_published_at_carries_an_offset(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """A new timestamp on the wire gets the same guard as every other one."""
+    market_id = await _submit(client, admin_headers)
+
+    body = (
+        await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+    ).json()
+
+    assert body["published_at"].endswith("Z") or "+" in body["published_at"]
+
+
+async def test_publishing_takes_no_body(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """Nothing about the terms travels with a publish, so there is no request
+    that can change a market and expose it in the same call."""
+    market_id = await _submit(client, admin_headers, question="The submitted question?")
+
+    body = (
+        await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+    ).json()
+
+    assert body["question"] == "The submitted question?"
+
+
+async def test_publishing_a_draft_is_409(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    created = await client.post("/markets", json=_payload(), headers=admin_headers)
+    market_id = created.json()["market"]["id"]
+
+    response = await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_not_submitted"
+
+
+async def test_publishing_twice_is_409(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """A distinct code from the one above, because the remedy differs: submit
+    it, versus reload and stop offering the button."""
+    market_id = await _submit(client, admin_headers)
+    await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+
+    response = await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_already_open"
+
+
+async def test_a_trader_cannot_publish(
+    client: AsyncClient, admin_headers: dict[str, str], trader_headers: dict[str, str]
+) -> None:
+    market_id = await _submit(client, admin_headers)
+
+    response = await client.post(f"/markets/{market_id}/publish", headers=trader_headers)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_another_administrator_cannot_publish_it(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+) -> None:
+    """404, like reading it. A 403 would confirm the market exists."""
+    market_id = await _submit(client, admin_headers)
+
+    response = await client.post(
+        f"/markets/{market_id}/publish", headers=other_admin_headers
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "market_not_found"
+
+
+async def test_publishing_an_unknown_id_is_404(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        f"/markets/{uuid.uuid4()}/publish", headers=admin_headers
+    )
+
+    assert response.status_code == 404
+
+
+async def test_a_malformed_id_on_publish_is_422_not_500(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post("/markets/banana/publish", headers=admin_headers)
+
+    assert response.status_code == 422
+
+
+async def test_a_blocked_publish_is_422_and_lists_every_field(
+    client: AsyncClient, admin_headers: dict[str, str], session
+) -> None:
+    """The market was complete when it was submitted and has since gone stale.
+
+    Aged through the database rather than by moving the clock, because that is
+    what actually happens: a market sits submitted until its close time passes.
+    The envelope is the same `draft_incomplete` shape the submit button returns,
+    so the form needs no second branch.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    market_id = await _submit(client, admin_headers)
+    await session.execute(
+        text("UPDATE market.markets SET close_time = now() - interval '1 day' "
+             "WHERE id = :id"),
+        {"id": uuid.UUID(market_id)},
+    )
+    await session.commit()
+
+    response = await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "draft_incomplete"
+    assert "close_time" in {d["field"] for d in error["details"]}
+
+
+async def test_a_blocked_publish_leaves_the_market_submitted(
+    client: AsyncClient, admin_headers: dict[str, str], session
+) -> None:
+    """Atomicity on the real request path, where get_session rolls back as the
+    error propagates."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    market_id = await _submit(client, admin_headers)
+    await session.execute(
+        text("UPDATE market.markets SET close_time = now() - interval '1 day' "
+             "WHERE id = :id"),
+        {"id": uuid.UUID(market_id)},
+    )
+    await session.commit()
+
+    await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+
+    reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
+    assert reread.json()["status"] == "submitted"
+    assert reread.json()["published_at"] is None
+
+
+async def test_an_autosave_after_publication_is_409(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """The form may still be open behind the publish button. Michelle stops the
+    timer on this, the same as she does on `market_not_editable`."""
+    payload = _payload(status="submitted")
+    created = await client.post("/markets", json=payload, headers=admin_headers)
+    market_id = created.json()["market"]["id"]
+    await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+
+    response = await client.post(
+        "/markets", json={**payload, "status": "draft"}, headers=admin_headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_already_open"
+
+
+async def test_open_is_not_a_status_the_save_endpoint_accepts(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """`open` is a real MarketStatus member, and the save request must not take
+    it. Publishing goes through its own endpoint precisely so that no request
+    can change a market's terms and expose it to traders in one call."""
+    response = await client.post(
+        "/markets", json=_payload(status="open"), headers=admin_headers
+    )
+
+    assert response.status_code == 422
+
+
+async def test_the_documented_statuses_are_the_only_ones_offered(
+    client: AsyncClient,
+) -> None:
+    """/docs is the contract Michelle codes against, so the schema has to say
+    which two values she may send rather than listing all of MarketStatus."""
+    schema = (await client.get("/openapi.json")).json()
+    status_field = schema["components"]["schemas"]["MarketDraftRequest"]["properties"][
+        "status"
+    ]
+
+    assert set(status_field["enum"]) == {"draft", "submitted"}
 
 
 # --- reading --------------------------------------------------------------

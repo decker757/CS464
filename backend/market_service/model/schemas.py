@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import (
     AwareDatetime,
@@ -93,12 +94,20 @@ class MarketDraftRequest(BaseModel):
         ),
     )
 
-    status: MarketStatus = Field(
+    # Deliberately narrower than MarketStatus. `open` is a real member of that
+    # enum and this field must not accept it: publishing is POST
+    # /markets/{id}/publish, a request that carries no terms at all, precisely
+    # so that nothing can change a market and expose it to traders in one call.
+    # Typed as a Literal rather than guarded by a validator so that /docs shows
+    # Michelle the two values she may send, and so a third status arriving with
+    # [F-4] #44 does not silently become settable from the form. ADR 0008.
+    status: Literal[MarketStatus.DRAFT, MarketStatus.SUBMITTED] = Field(
         default=MarketStatus.DRAFT,
         description=(
             "`draft` for the autosave, which never validates completeness. "
             "`submitted` for the form's submit button, which is refused with "
-            "422 unless every rule passes."
+            "422 unless every rule passes. Publishing is a separate endpoint "
+            "and `open` is not accepted here."
         ),
     )
 
@@ -241,6 +250,11 @@ class MarketOut(_UtcTimestamps):
     created_at: datetime
     updated_at: datetime
     submitted_at: datetime | None
+
+    # [1.3] #3. Null until the market is published, and never cleared. Read
+    # `status` to decide what a market is; read this to find out when it became
+    # that. The two are written in the same transaction and cannot disagree.
+    published_at: datetime | None
 
     # --- derived, read-only -------------------------------------------------
     # [1.2] #2's second and third acceptance criteria. Both are the q = 0 case
