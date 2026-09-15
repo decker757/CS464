@@ -81,8 +81,41 @@ def test_the_liquidity_default_is_configured_and_has_a_value() -> None:
     assert _settings().default_liquidity_b == Decimal("100")
 
 
-def test_the_liquidity_default_can_be_overridden_from_the_environment() -> None:
-    assert _settings(default_liquidity_b="250").default_liquidity_b == Decimal("250")
+def test_the_liquidity_default_can_be_overridden_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sets DEFAULT_LIQUIDITY_B rather than passing a keyword argument.
+
+    A constructor kwarg skips the settings source entirely, so it proves the
+    field parses and nothing about the path a deploy actually takes. That gap
+    is how the CORS_ORIGINS decoding bug reached a container.
+    """
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
+    )
+    monkeypatch.setenv("JWT_SECRET", "a" * 32)
+    monkeypatch.setenv("DEFAULT_LIQUIDITY_B", "250")
+
+    assert Settings(_env_file=None).default_liquidity_b == Decimal("250")
+
+
+def test_the_liquidity_default_is_read_from_the_environment_as_a_decimal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An environment variable is always a string; the field must not stay one.
+
+    `"250" * 2` is `"250250"`, and this value is multiplied by a logarithm.
+    """
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
+    )
+    monkeypatch.setenv("JWT_SECRET", "a" * 32)
+    monkeypatch.setenv("DEFAULT_LIQUIDITY_B", "12.5")
+
+    parsed = Settings(_env_file=None).default_liquidity_b
+
+    assert isinstance(parsed, Decimal)
+    assert parsed == Decimal("12.5")
 
 
 @pytest.mark.parametrize("bad", ["0", "-5"])
