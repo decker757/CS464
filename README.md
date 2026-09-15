@@ -16,7 +16,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Ledger | [F-1] #41 | shipped; the write path has no endpoint until [T-2] #22 |
 | LMSR pricing | [F-3] #43 | not started |
 | Trading | epic, 8 issues | not started |
-| Realtime | [F-2] #42 | not started |
+| Realtime | [F-2] #42 | socket, pub/sub and auth shipped; the snapshot lands with #43 and #22 |
 
 ## Running it
 
@@ -45,6 +45,11 @@ http://localhost:8001, the audit service on http://localhost:8002 and the
 ledger on http://localhost:8003, each with interactive API docs at `/docs`. Those pages are the contract the frontend
 codes against, alongside [`docs/api/`](docs/api/).
 
+The realtime service comes up on http://localhost:8004 and is the exception:
+its `/docs` describes only `/health`, because OpenAPI has no vocabulary for a
+WebSocket. Its contract is
+[`docs/api/realtime-service.md`](docs/api/realtime-service.md).
+
 Creating a market needs an administrator, and registration never grants one.
 Register normally, then promote by hand and log in again:
 
@@ -54,16 +59,20 @@ docker compose exec db psql -U cs464 -d cs464 \
 ```
 
 Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
-`.env` and point `TEST_DATABASE_URL` at the same port.
+`.env` and point `TEST_DATABASE_URL` at the same port. Same for Redis on 6379
+and `REDIS_PORT`.
 
 ## Tests
 
 ```bash
-docker compose up -d db
-cd backend/auth_service       # or market_service, or audit_service
+docker compose up -d db redis
+cd backend/auth_service       # or market_service, audit_service, ledger_service
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest
 ```
+
+`realtime_service` is the odd one out: it opens no database at all and wants
+Redis instead, from `REDIS_URL`.
 
 They run against Postgres rather than SQLite, as the same restricted role the
 service uses in production, so engine and permission differences surface here
@@ -80,16 +89,17 @@ superuser. That is what makes the cross-schema denial tests mean something.
 ## How it is put together
 
 ```
-backend/auth_service/   registration, login, logout, sessions
-backend/market_service/ drafting and submitting markets
-backend/audit_service/  reading the shared admin action log
-backend/ledger_service/ credits: append-only entries, derived balances
-sql/                    roles, schemas and grants for the shared Postgres
-sql/migrations/         hand-applied ALTERs, until Alembic ([F-5] #75)
-docs/adr/               decisions and why they were made
-docs/api/               endpoint contracts for the frontend
-scripts/                weekly sprint digest to Telegram
-.github/workflows/      CI, one path-filtered workflow per area
+backend/auth_service/     registration, login, logout, sessions
+backend/market_service/   drafting and submitting markets
+backend/audit_service/    reading the shared admin action log
+backend/ledger_service/   credits: append-only entries, derived balances
+backend/realtime_service/ live prices over a websocket; owns no data
+sql/                      roles, schemas and grants for the shared Postgres
+sql/migrations/           hand-applied ALTERs, until Alembic ([F-5] #75)
+docs/adr/                 decisions and why they were made
+docs/api/                 endpoint contracts for the frontend
+scripts/                  weekly sprint digest to Telegram
+.github/workflows/        CI, one path-filtered workflow per area
 ```
 
 Python 3.13, FastAPI, SQLAlchemy 2 on async Postgres. Each backend service owns
@@ -136,3 +146,5 @@ to make and would be expensive to reverse.
   from SUBMITTED only, and one way
 - [0009](docs/adr/0009-the-ledger-write-path.md) double-entry with derived
   balances, and a lazily minted starting grant
+- [0010](docs/adr/0010-realtime-price-broadcast.md) a relay that owns nothing,
+  and a bus that is not the database

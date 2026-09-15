@@ -9,11 +9,12 @@ in GitHub Project v2 #6.
 ## Layout
 
 ```
-backend/auth_service/   registration, login, logout, sessions   [A-1..A-3]
-backend/market_service/ drafting, submitting, publishing markets [1.1] [1.3]
-backend/audit_service/  reading the shared admin action log     [4.3]
-backend/ledger_service/ credits, append-only, balances derived   [F-1]
-sql/                    roles, schemas and grants for the shared Postgres
+backend/auth_service/     registration, login, logout, sessions   [A-1..A-3]
+backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3]
+backend/audit_service/    reading the shared admin action log     [4.3]
+backend/ledger_service/   credits, append-only, balances derived   [F-1]
+backend/realtime_service/ live prices over a websocket, owns no data [F-2]
+sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/         hand-applied ALTERs, until Alembic ([F-5] #75)
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
@@ -21,22 +22,32 @@ scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 ```
 
-More services are coming: a stateless trading composite (the [T-*] epic) and a
-websocket server ([F-2] #42). The LMSR pricing engine ([F-3] #43) is a module
-rather than a service, and lives wherever `q` lives; ADR 0005 says why — which
-means it lives with the ledger.
+One more service is coming: the stateless trading composite (the [T-*] epic).
+The LMSR pricing engine ([F-3] #43) is a module rather than a service, and
+lives wherever `q` lives; ADR 0005 says why — which means it lives with the
+ledger.
+
+The websocket server ([F-2] #42) has landed, but only the transport half: the
+socket, the pub/sub relay, the auth and the staleness rules. The authoritative
+snapshot endpoint and the `state_version` it reports need `q` and `b`, so they
+land with [F-3] #43 and [T-2] #22, on the ledger. `docs/api/realtime-service.md`
+specifies them.
 
 ## Running things
 
 ```bash
 cp .env.example .env          # fill in every blank; compose refuses to start otherwise
-docker compose up --build     # auth :8000, market :8001, audit :8002, ledger :8003
+docker compose up --build     # auth :8000, market :8001, audit :8002,
+                              # ledger :8003, realtime :8004
 ```
 
 ```bash
 cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
+
+cd backend/realtime_service   # the exception: no database, wants Redis
+.venv/bin/pytest              # needs `docker compose up -d redis`
 ```
 
 ## Things that will waste your time if you do not know them
@@ -200,6 +211,41 @@ from `AUDIT_TEST_DATABASE_URL`, which is why that variable is set for its CI
 job too. Nothing anywhere holds UPDATE, DELETE or TRUNCATE, so no suite can
 clean the table: tests scope themselves to a fresh actor id instead.
 
+**CORS does not apply to a WebSocket, so the socket checks the origin itself.**
+There is no preflight on a handshake and the browser enforces nothing about who
+may open one, so `CORSMiddleware` in the realtime service guards `/health` and
+`/docs` and never sees the socket. `controller/transport.py::origin_allowed` is
+the hand-written check, and `CORS_ORIGINS` is doing two unrelated jobs in that
+service. Deleting it looks like removing a duplicate of the middleware and is
+actually removing the only thing that will stand between a logged-in user and a
+feed opened by another site on the day ADR 0002's `SameSite=None` possibility
+arrives. A test fails if it goes.
+
+The same asymmetry explains the auth flow there. A browser cannot set request
+headers on a WebSocket — the JavaScript API has no parameter for them — so the
+cookie is its only transport, and ADR 0002's same-registrable-domain constraint
+decides whether live prices work at all rather than being a deployment
+footnote. There is deliberately no token in the query string.
+
+**The realtime service has no database and must not grow one.** No role in
+`sql/01-roles.sql`, no schema in `sql/02-schemas.sql`, no `DATABASE_URL`, and
+SQLAlchemy is absent from its `requirements.txt` on purpose. It is the only
+backend service that cannot be broken by anything in `sql/` and the only one
+that never needs `docker compose down -v`, and that is most of why a fifth
+service was affordable at all. Anything it appears to need from the database is
+a sign the work belongs in the service that owns the data. ADR 0010.
+
+**A price is published after the trade commits, and the publish must never fail
+the trade.** Publishing first announces a price that a rollback then un-makes.
+Nothing subscribes on the producer's behalf and nothing acknowledges, so if the
+publish throws, the trade has still happened and is still correct — log it and
+carry on. The crash window between the commit and the publish is real and
+accepted: a client that reconnects fetches a snapshot, which is the same
+recovery path [X-4] #37 already requires. That is why there is no outbox here,
+and it is the one place this repository knowingly does something ADR 0006
+refused to do for the audit log — because a briefly stale price on a screen
+that is about to reconcile is not a lost audit entry. ADR 0010.
+
 **Never commit a credential, including in an example file.** GitGuardian runs
 on every pull request and it is usually right. Use angle-bracket placeholders:
 `postgresql+asyncpg://user:<PASSWORD>@host:<PORT>/db`. A real-looking username
@@ -279,6 +325,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0007** a flat admin tier, with role changes audited rather than approved
 - **0008** publishing as its own endpoint, from SUBMITTED only, and one way
 - **0009** double-entry with derived balances, and a lazily minted grant
+- **0010** a websocket relay that owns nothing, and Redis rather than the database
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

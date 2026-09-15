@@ -1,0 +1,19 @@
+# Runtime dependencies. Pinned so CI and production resolve identically, and
+# pinned to the same versions as the other four services so one JWT library and
+# one Pydantic are in play across the backend.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
+
+# The bus. This is the only service that talks to Redis, and the only one that
+# needs it: ADR 0010 has the argument against carrying the price events on the
+# database everything else already shares.
+redis==8.1.0
+
+# Token verification only. This service never signs.
+PyJWT==2.14.0
+
+# Note what is NOT here: SQLAlchemy and asyncpg. This service owns no schema,
+# holds no role and opens no connection to Postgres. Adding either is a
+# decision to give it durable state, which ADR 0010 argues it must not have.

@@ -1,7 +1,7 @@
 # [5.1] #17 — the whole backend stack with one command.
 # Every environment difference comes from the environment, nothing hardcoded.
 #
-#   docker compose up -d db       # just Postgres, for running tests on the host
+#   docker compose up -d db redis # just the backing services, for tests on the host
 #   docker compose up --build     # the full stack
 
 name: cs464
@@ -136,6 +136,65 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
     ports:
       - "${AUDIT_PORT:-8002}:8000"
+    restart: unless-stopped
+
+  # [F-2] #42. The pub/sub bus, and the only thing in this stack that is not
+  # Postgres or a Python service.
+  #
+  # Deliberately without persistence. A price event is worth broadcasting for
+  # about as long as it takes to reach a socket, and anything that misses it
+  # recovers by fetching a snapshot rather than by replaying a log — so an RDB
+  # file on disk would be writing down something nobody will ever read back.
+  # It also means this container can be deleted and recreated at any time
+  # without losing anything that existed.
+  redis:
+    image: redis:8.2-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      # `realtime` waits on this, so it never starts against a bus that is
+      # still coming up — though it would survive that anyway; the subscriber
+      # retries with backoff rather than exiting.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # [F-2] #42. Holds the websocket connections and fans each committed trade's
+  # new price out to whoever is watching that market.
+  #
+  # Note what is missing, because it is most of the file above. No DATABASE_URL,
+  # no dependency on `db`, no role in sql/01-roles.sql and no schema in
+  # sql/02-schemas.sql — this is the only backend service that needs nothing
+  # from `sql/` and cannot be broken by a change to it. It owns no data at all:
+  # it holds sockets, and every number it repeats belongs to the service that
+  # published it. ADR 0010 has the argument for why that is what made a fifth
+  # service affordable.
+  #
+  # It does not depend on the trading service either, and will not. The producer
+  # publishes to Redis and never learns whether anybody was listening, which is
+  # what keeps a trade from failing because a websocket server was restarting.
+  realtime:
+    build:
+      context: ./backend/realtime_service
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # The same value the auth service signs with. Verification only; there is
+      # no encode path in this service and a test asserts one does not appear.
+      JWT_SECRET: ${JWT_SECRET:?}
+      # Does double duty here, and only here. Everywhere else this configures
+      # the CORS middleware; in this service it is ALSO the socket's origin
+      # allowlist, because CORS does not apply to WebSocket handshakes. An
+      # origin missing from this list cannot open a socket.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${REALTIME_PORT:-8004}:8000"
     restart: unless-stopped
 
 volumes:
