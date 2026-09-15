@@ -6,14 +6,6 @@ also let it sign, so the restriction is architectural rather than
 cryptographic — ADR 0002 records that, and the fix is RS256 with a published
 public key, at which point this file only ever holds the public half.
 
-Copied from the market service rather than shared. ADR 0003 argued that case
-at two occurrences and ADR 0005 marked token verification as one of the three
-things worth extracting once the ledger lands, which is [F-6] #76. This is
-the occurrence that
-makes the count, and the extraction is still blocked on the same thing: each
-service builds from its own directory with `COPY . .`, so a shared module is
-not importable until the build contexts change.
-
 Nothing else in the service imports jwt.
 """
 
@@ -45,8 +37,9 @@ def decode_access_token(token: str) -> TokenClaims | None:
     """Return the claims, or None for any malformed, expired or foreign token.
 
     `require` is what stops an unsigned or stripped-down token from arriving
-    with no subject and being treated as somebody. `issuer` is what stops a
-    token minted for a different system that happens to share our secret.
+    with no subject and being treated as somebody — which here would mean being
+    treated as somebody's balance. `issuer` is what stops a token minted for a
+    different system that happens to share our secret.
     """
     settings = get_settings()
     try:

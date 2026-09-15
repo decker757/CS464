@@ -178,4 +178,4 @@ account and no cascade will clean it up. ADR 0003 has the argument.
 
 **Schema creation is `create_all`, not migrations.** Two services now issue it
 against one database. They touch disjoint schemas so they do not race, but this
-is the last change that gets away with it. Alembic should arrive with [F-1] #41.
+is the last change that gets away with it. Alembic should arrive with [F-5] #75.

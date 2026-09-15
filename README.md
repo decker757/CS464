@@ -12,8 +12,8 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | --- | --- | --- |
 | Authentication | #29, #30, #31 closed | backend shipped; UI is #46, #47, #48 |
 | Market creation | [1.1] #1 | draft and submit shipped; UI is #45 |
-| Credit balance | [B-1] #32, [B-2] #33 | waiting on the ledger |
-| Ledger | [F-1] #41 | not started |
+| Credit balance | [B-1] #32, [B-2] #33 | backend shipped with the ledger; UI is unbuilt |
+| Ledger | [F-1] #41 | shipped; the write path has no endpoint until [T-2] #22 |
 | LMSR pricing | [F-3] #43 | not started |
 | Trading | epic, 8 issues | not started |
 | Realtime | [F-2] #42 | not started |
@@ -41,8 +41,8 @@ docker compose up --build
 ```
 
 The auth service comes up on http://localhost:8000, the market service on
-http://localhost:8001 and the audit service on http://localhost:8002, each with
-interactive API docs at `/docs`. Those pages are the contract the frontend
+http://localhost:8001, the audit service on http://localhost:8002 and the
+ledger on http://localhost:8003, each with interactive API docs at `/docs`. Those pages are the contract the frontend
 codes against, alongside [`docs/api/`](docs/api/).
 
 Creating a market needs an administrator, and registration never grants one.
@@ -83,8 +83,9 @@ superuser. That is what makes the cross-schema denial tests mean something.
 backend/auth_service/   registration, login, logout, sessions
 backend/market_service/ drafting and submitting markets
 backend/audit_service/  reading the shared admin action log
+backend/ledger_service/ credits: append-only entries, derived balances
 sql/                    roles, schemas and grants for the shared Postgres
-sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
+sql/migrations/         hand-applied ALTERs, until Alembic ([F-5] #75)
 docs/adr/               decisions and why they were made
 docs/api/               endpoint contracts for the frontend
 scripts/                weekly sprint digest to Telegram
@@ -127,3 +128,11 @@ to make and would be expensive to reverse.
   endpoint for both autosave and submission
 - [0005](docs/adr/0005-trading-service-boundary.md) a composite trading
   service, and positions with the ledger
+- [0006](docs/adr/0006-audit-log-write-path.md) one shared audit log, written
+  in the acting service's transaction
+- [0007](docs/adr/0007-admin-tiers-and-role-changes.md) a flat admin tier, and
+  role changes audited rather than approved
+- [0008](docs/adr/0008-publishing-a-market.md) publishing as its own endpoint,
+  from SUBMITTED only, and one way
+- [0009](docs/adr/0009-the-ledger-write-path.md) double-entry with derived
+  balances, and a lazily minted starting grant

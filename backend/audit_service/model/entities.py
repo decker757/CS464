@@ -4,7 +4,7 @@ This service does not own this table. `sql/02-schemas.sql` creates it, the
 superuser owns it, several services append to it, and `audit_svc` is the only
 role that may read it. What follows is therefore a description of a table
 somebody else defines, and the two have to be kept in step by hand until
-[F-1] #41 brings Alembic.
+[F-5] #75 brings Alembic.
 
 It is mapped read-only, and there is no `create_all` in this service to issue
 a CREATE TABLE from it. If these columns drift from the SQL, queries fail with

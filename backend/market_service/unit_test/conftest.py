@@ -151,7 +151,7 @@ async def clean_database():
 
     The cost is a drop and create per test, which is a few milliseconds for
     three small tables and buys a suite that always matches the models. When
-    [F-1] #41 brings Alembic, this becomes "migrate to head" instead.
+    [F-5] #75 brings Alembic, this becomes "migrate to head" instead.
 
     Deliberately not autouse. Only `session` and `client` depend on it, so the
     pure unit tests under core/, model/ and the validation rules never need

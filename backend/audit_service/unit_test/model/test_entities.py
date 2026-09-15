@@ -3,7 +3,7 @@
 This service does not own `audit.admin_actions`. `sql/02-schemas.sql` creates
 it, and `model/entities.py` is a hand-written description of somebody else's
 table with no `create_all` to reconcile the two. Nothing but this file stops
-them drifting until [F-1] #41 brings Alembic.
+them drifting until [F-5] #75 brings Alembic.
 
 Drift is not hypothetical here. A column added to the SQL for a new action type
 would be invisible to every query this service runs, and a column renamed in
