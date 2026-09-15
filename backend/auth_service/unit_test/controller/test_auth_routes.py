@@ -44,9 +44,48 @@ async def test_a_duplicate_maps_to_409_in_the_error_envelope(
     assert second.json() == {
         "error": {
             "code": "duplicate_user",
-            "message": "That username is already registered.",
+            "message": "That username and email are already registered.",
+            "details": [
+                {"field": "username", "message": "That username is already registered."},
+                {"field": "email", "message": "That email is already registered."},
+            ],
         }
     }
+
+
+@pytest.mark.parametrize(
+    ("changed_field", "value", "expected_clash"),
+    [
+        ("email", "someone.else@example.com", "username"),
+        ("username", "someone_else", "email"),
+    ],
+)
+async def test_a_duplicate_names_only_the_clashing_field(
+    client: AsyncClient,
+    registration_payload: dict[str, str],
+    changed_field: str,
+    value: str,
+    expected_clash: str,
+) -> None:
+    await client.post("/auth/register", json=registration_payload)
+
+    second = await client.post(
+        "/auth/register", json={**registration_payload, changed_field: value}
+    )
+
+    assert second.status_code == 409
+    assert [problem["field"] for problem in second.json()["error"]["details"]] == [
+        expected_clash
+    ]
+
+
+async def test_an_unattributable_error_carries_no_details(client: AsyncClient) -> None:
+    response = await client.post(
+        "/auth/login", json={"identifier": "nobody_at_all", "password": "wrong-password-here"}
+    )
+
+    assert response.status_code == 401
+    assert "details" not in response.json()["error"]
 
 
 @pytest.mark.parametrize(
