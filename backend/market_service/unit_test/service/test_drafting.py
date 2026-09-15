@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
 from core.errors import DraftIncomplete, MarketNotEditable, MarketNotFound
 from model.entities import Market, MarketStatus
 from model.schemas import MarketDraftRequest
@@ -29,6 +31,9 @@ def _request(**overrides: object) -> MarketDraftRequest:
         "resolution_time": datetime.now(UTC) + timedelta(days=45),
         "resolution_criteria": "Resolves YES on the first published MAS print below 2.0%.",
         "resolution_sources": [{"url": "https://www.mas.gov.sg/statistics"}],
+        # No liquidity_b: omitting it is the common case, and it exercises the
+        # configured default on every test that submits.
+        "seed_subsidy": Decimal("250"),
     }
     base.update(overrides)
     return MarketDraftRequest(**base)  # type: ignore[arg-type]
@@ -351,3 +356,76 @@ async def test_the_list_is_empty_for_an_administrator_with_no_markets(
     session: AsyncSession,
 ) -> None:
     assert await market_service.list_for_creator(session, uuid.uuid4()) == []
+
+
+# --- pricing [1.2] #2 -----------------------------------------------------
+async def test_an_omitted_liquidity_takes_the_configured_default(
+    session: AsyncSession,
+) -> None:
+    """"b defaults to a configured value", so a market is priceable from the
+    first save and the form can show a worst case immediately."""
+    market, _, _ = await market_service.save(session, uuid.uuid4(), _request())
+
+    assert market.liquidity_b == get_settings().default_liquidity_b
+
+
+async def test_an_explicit_liquidity_overrides_the_default(
+    session: AsyncSession,
+) -> None:
+    market, _, _ = await market_service.save(
+        session, uuid.uuid4(), _request(liquidity_b=Decimal("250"))
+    )
+
+    assert market.liquidity_b == Decimal("250")
+
+
+async def test_the_liquidity_can_be_changed_by_a_later_autosave(
+    session: AsyncSession,
+) -> None:
+    """The admin raises b, sees the larger worst case, and puts it back.
+
+    Last-write-wins on the whole document, the same as every other term, so
+    reverting has to work as well as setting.
+    """
+    creator, key = uuid.uuid4(), uuid.uuid4()
+
+    await market_service.save(
+        session, creator, _request(draft_key=key, liquidity_b=Decimal("500"))
+    )
+    market, _, _ = await market_service.save(
+        session, creator, _request(draft_key=key, liquidity_b=Decimal("100"))
+    )
+
+    assert market.liquidity_b == Decimal("100")
+
+
+async def test_an_omitted_subsidy_stays_null_rather_than_taking_a_default(
+    session: AsyncSession,
+) -> None:
+    """There is no sensible platform-wide answer to how much this particular
+    market is worth underwriting, so absence is left for the admin to fill."""
+    market, problems, _ = await market_service.save(
+        session, uuid.uuid4(), _request(seed_subsidy=None)
+    )
+
+    assert market.seed_subsidy is None
+    assert "seed_subsidy" in {p.field for p in problems}
+
+
+async def test_a_market_seeded_below_its_worst_case_still_submits(
+    session: AsyncSession,
+) -> None:
+    """b = 100 over two outcomes risks about 69.31; this seeds 1.
+
+    Deliberate, and recorded in service/validation._liquidity_problems: the
+    worst case is reported on every save, so underfunding is a choice the admin
+    makes with the number in front of them.
+    """
+    market, problems, _ = await market_service.save(
+        session,
+        uuid.uuid4(),
+        _request(status="submitted", liquidity_b=Decimal("100"), seed_subsidy=Decimal("1")),
+    )
+
+    assert market.status is MarketStatus.SUBMITTED
+    assert problems == []

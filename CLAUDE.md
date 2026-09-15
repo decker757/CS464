@@ -18,8 +18,10 @@ scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 ```
 
-More services are coming: a ledger ([F-1] #41), an LMSR pricing engine
-([F-3] #43), and a websocket server ([F-2] #42).
+More services are coming: a ledger ([F-1] #41), a stateless trading composite
+(the [T-*] epic), and a websocket server ([F-2] #42). The LMSR pricing engine
+([F-3] #43) is a module rather than a service, and lives wherever `q` lives;
+ADR 0005 says why.
 
 ## Running things
 
@@ -44,6 +46,23 @@ service refuses to boot without them.
 **Changing anything in `sql/` needs `docker compose down -v`.** Postgres runs
 init scripts only on first initialisation of the data volume. Without the `-v`
 your changes appear to do nothing. It destroys local data.
+
+**Adding a column does not reach a database that already has the table.**
+There are no migrations yet. Both services call `create_all` at startup, and
+that only ever issues CREATE TABLE IF NOT EXISTS, so a new column in
+`model/entities.py` never lands on an existing table. The service then dies on
+every request with `column ... does not exist`, which reads like a code bug and
+is not one. [1.2] #2 hit this on both the dev and test databases. Until [F-1]
+#41 brings Alembic, apply the column by hand:
+
+```bash
+docker compose exec -T db psql -U cs464 -d cs464 -c \
+  "ALTER TABLE market.markets ADD COLUMN IF NOT EXISTS liquidity_b numeric(18,4);"
+```
+
+The test databases handle themselves: `unit_test/conftest.py` drops and
+recreates the schema per test, so a model change is picked up automatically
+there. It is the long-lived `cs464` database that needs the ALTER.
 
 **Tests run against Postgres, not SQLite**, each suite as its own service role
 under production grants, from its own `<SERVICE>_TEST_DATABASE_URL`. The two
@@ -129,6 +148,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0002** cookies for browsers, bearer tokens for services
 - **0003** a separate market service, and admin authority carried in the token
 - **0004** one idempotent endpoint for both draft autosave and submission
+- **0005** a composite trading service, and positions with the ledger
 
 Two known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. And a `SameSite=Lax`

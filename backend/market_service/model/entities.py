@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 
 from sqlalchemy import (
@@ -12,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -92,6 +94,29 @@ class Market(Base):
     # and not what to look for, and that gap is what [3.3] #11's dispute window
     # exists to absorb.
     resolution_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # How this market will be priced. [1.2] #2.
+    #
+    # `liquidity_b` sets how far a trade moves the price, and with it the most
+    # the automated market maker can lose: b*ln(n), which `core/lmsr.py`
+    # derives. `seed_subsidy` is the mock credits put up to cover that loss.
+    # Nothing here is charged to anybody — moving credits is the ledger's job
+    # ([F-1] #41) and this service holds no balances.
+    #
+    # Numeric rather than double precision because the subsidy is money and
+    # will share arithmetic with the ledger's entries. Four decimal places is
+    # more than mock credits need and costs nothing.
+    #
+    # Nullable like every other term: an autosave fires on a half-typed form
+    # and must never be the thing that fails. `liquidity_b` is in practice
+    # always set, because `_apply` falls back to the configured default, but
+    # the column stays nullable so a row written before [1.2] is still legal.
+    #
+    # These two are also the payload of ADR 0005's publish-time handoff: [1.3]
+    # #3 snapshots them to the trading side, where they are safe to copy
+    # precisely because [1.4] #4 forbids editing a published market.
+    liquidity_b: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    seed_subsidy: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()

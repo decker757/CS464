@@ -71,6 +71,7 @@ def problems_blocking_submission(
     problems += _outcome_problems(market)
     problems += _timing_problems(market, now)
     problems += _resolution_problems(market)
+    problems += _liquidity_problems(market)
 
     return problems
 
@@ -208,6 +209,59 @@ def _resolution_problems(market: Market) -> list[ValidationProblem]:
                 "resolution_sources",
                 "At least one resolution source is required, so traders can "
                 "verify the outcome themselves.",
+            )
+        )
+
+    return problems
+
+
+def _liquidity_problems(market: Market) -> list[ValidationProblem]:
+    """[1.2] #2. A market cannot go live without knowing how it is priced.
+
+    Note what is deliberately NOT checked: whether the subsidy actually covers
+    `b*ln(n)`. An administrator may knowingly seed a market for less than its
+    worst case, and the response tells them the number every time they save, so
+    this is an informed choice rather than an accident. [2.2] #6 flags the
+    related but different quantity — realised exposure once traders hold shares
+    — at the point where it can actually be acted on.
+
+    The `<= 0` branches are unreachable through the API, because
+    `MarketDraftRequest` refuses those with a 422 before a row is written. They
+    are here because this function is the single definition of "ready" that
+    [1.3] #3 and [1.4] #4 also call, and it takes an entity, not a request.
+    """
+    problems: list[ValidationProblem] = []
+
+    if market.liquidity_b is None:
+        problems.append(
+            ValidationProblem(
+                "liquidity_b",
+                "A liquidity parameter is required. It decides how far each "
+                "trade moves the price.",
+            )
+        )
+    elif market.liquidity_b <= 0:
+        problems.append(
+            ValidationProblem(
+                "liquidity_b",
+                "The liquidity parameter must be greater than zero. At zero "
+                "the market has no liquidity and cannot be priced.",
+            )
+        )
+
+    if market.seed_subsidy is None:
+        problems.append(
+            ValidationProblem(
+                "seed_subsidy",
+                "A seed subsidy is required. It is the credits the platform "
+                "puts up to cover the market maker's losses.",
+            )
+        )
+    elif market.seed_subsidy <= 0:
+        problems.append(
+            ValidationProblem(
+                "seed_subsidy",
+                "The seed subsidy must be greater than zero.",
             )
         )
 

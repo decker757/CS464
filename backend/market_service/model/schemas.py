@@ -14,9 +14,19 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
+from core.lmsr import max_platform_loss, uniform_initial_price
 from model.entities import MarketStatus
 
 # Shape ceilings, not domain rules, so they live here rather than in config:
@@ -116,6 +126,33 @@ class MarketDraftRequest(BaseModel):
         default_factory=list, max_length=MAX_RESOLUTION_SOURCES
     )
 
+    # [1.2] #2. Both optional here, like every other term, because a draft is
+    # allowed to be incomplete. Their absence is a submission rule and lives in
+    # service/validation.py.
+    #
+    # `gt=0` is shape rather than completeness, so it belongs here: a negative
+    # or zero `b` is not a half-finished thought, it is a value no stage of the
+    # form should ever hold. A market priced at b = 0 has no liquidity at all.
+    liquidity_b: Decimal | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "LMSR liquidity. Higher means prices move less per trade and the "
+            "platform's worst-case loss is larger. Omit to accept the "
+            "server's configured default."
+        ),
+        examples=[100],
+    )
+    seed_subsidy: Decimal | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Mock credits put up to cover the market maker's worst case. "
+            "Compare against `max_platform_loss` in the response."
+        ),
+        examples=[100],
+    )
+
 
 class OutcomeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -123,6 +160,11 @@ class OutcomeOut(BaseModel):
     id: uuid.UUID
     position: int
     label: str
+
+    # Filled in by MarketOut, not computed here: an outcome on its own does not
+    # know how many siblings it has, and 1/n needs n. Null until there are at
+    # least two outcomes to price.
+    initial_price: float | None = None
 
 
 class ResolutionSourceOut(BaseModel):
@@ -169,9 +211,55 @@ class MarketOut(_UtcTimestamps):
     resolution_criteria: str | None
     resolution_sources: list[ResolutionSourceOut]
 
+    # Floats on the way out, though they are Numeric in the database and
+    # Decimal on the way in. Pydantic serialises a Decimal as a JSON *string*,
+    # which would hand the form `"100"` from a fresh save and `"100.0000"` once
+    # the same row came back from Postgres, and would sit a string next to
+    # `max_platform_loss`, a number, while the form is meant to compare the two.
+    # `"250" + 10` is `"25010"` in a browser. Exactness is kept where it
+    # matters, in the column; the wire carries a number.
+    liquidity_b: float | None
+    seed_subsidy: float | None
+
     created_at: datetime
     updated_at: datetime
     submitted_at: datetime | None
+
+    # --- derived, read-only -------------------------------------------------
+    # [1.2] #2's second and third acceptance criteria. Both are the q = 0 case
+    # of LMSR, which is arithmetic rather than the engine; see core/lmsr.py and
+    # ADR 0005 for why the engine itself is not in this service.
+    #
+    # Derived on every read rather than stored, so they cannot drift from the
+    # `b` and outcome count they come from, and so they appear on all three
+    # routes without the controller or the service layer assembling them.
+
+    @computed_field(  # type: ignore[prop-decorator]
+        description=(
+            "The most the platform can lose over this market's life, b*ln(n). "
+            "Null until `liquidity_b` is set and there are at least two "
+            "outcomes. Show this beside `seed_subsidy`; do not recompute it in "
+            "the browser."
+        ),
+        examples=[69.31471805599453],
+    )
+    @property
+    def max_platform_loss(self) -> float | None:
+        return max_platform_loss(self.liquidity_b, len(self.outcomes))
+
+    @model_validator(mode="after")
+    def _price_the_outcomes(self) -> MarketOut:
+        """Give every outcome its opening price.
+
+        Uniform by definition: before anybody has traded, no outcome is more
+        likely than another, so each opens at 1/n. That is the whole of [1.2]
+        #2's third criterion, and it depends on the outcome count rather than
+        on `b`, which is why it appears as soon as a second outcome is typed.
+        """
+        price = uniform_initial_price(len(self.outcomes))
+        for outcome in self.outcomes:
+            outcome.initial_price = price
+        return self
 
 
 class ValidationProblemOut(BaseModel):

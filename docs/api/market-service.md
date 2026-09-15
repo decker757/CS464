@@ -4,11 +4,13 @@ Base URL `http://localhost:8001` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
-Covers [1.1] #1 and the backend half of [FE][1.1] #45.
+Covers [1.1] #1, [1.2] #2 and the backend half of [FE][1.1] #45.
 
 Why it is a separate service and how it knows who is an admin:
 [ADR 0003](../adr/0003-market-service-boundary.md). Why one endpoint does both
 autosave and submit: [ADR 0004](../adr/0004-draft-autosave-and-submission.md).
+Why the LMSR engine itself is not in this service:
+[ADR 0005](../adr/0005-trading-service-boundary.md).
 
 ## Endpoints
 
@@ -63,7 +65,10 @@ One endpoint for both the autosave and the submit button. The difference is the
   "resolution_criteria": "Resolves YES if the MAS core inflation print for December 2026, as first published, is strictly below 2.0%. Later revisions do not change it.",
   "resolution_sources": [
     { "url": "https://www.mas.gov.sg/statistics", "label": "MAS statistics" }
-  ]
+  ],
+
+  "liquidity_b": 100,        // optional; omit to take the server's default
+  "seed_subsidy": 250        // no default; required to submit
 }
 ```
 
@@ -86,6 +91,27 @@ because guessing UTC would put a Singapore close time eight hours out.
 
 **`creator_id` in the body is ignored.** The creator is taken from the token.
 
+### Pricing — [1.2] #2
+
+`liquidity_b` is the LMSR liquidity parameter. Higher means each trade moves
+the price less, and the platform's worst-case loss is larger. **Omit it and the
+server applies its configured default** (`DEFAULT_LIQUIDITY_B`, 100 unless
+deployed otherwise), so a market is priceable from the very first autosave and
+the form can show a worst case immediately. Send a value to override it, on that
+save or any later one.
+
+`seed_subsidy` is the mock credits the platform puts up to cover that loss. It
+has **no default** — there is no sensible platform-wide answer to how much a
+particular market is worth underwriting — so it must be filled in before the
+market can be submitted.
+
+Both must be greater than zero if present: `0` or a negative number is a `422`
+even on an autosave. Absence is fine at any point; it is a submission rule, not
+a shape rule.
+
+Nothing is charged to anybody. Recording a subsidy does not move credits — that
+is the ledger's job ([F-1] #41) and this service holds no balances.
+
 ### Response
 
 `201` the first time a `draft_key` is seen, `200` on every later save.
@@ -99,14 +125,22 @@ because guessing UTC would put a Singapore close time eight hours out.
     "status": "draft",
     "question": "Will Singapore core inflation be below 2% for December 2026?",
     "description": null,
-    "outcomes": [{ "id": "...", "position": 0, "label": "Yes" }],
+    "outcomes": [
+      { "id": "...", "position": 0, "label": "Yes", "initial_price": 0.5 },
+      { "id": "...", "position": 1, "label": "No",  "initial_price": 0.5 }
+    ],
     "close_time": null,
     "resolution_time": null,
     "resolution_criteria": null,
     "resolution_sources": [],
+    "liquidity_b": 100.0,
+    "seed_subsidy": 250.0,
     "created_at": "2026-09-13T14:06:38.907220Z",
     "updated_at": "2026-09-13T14:06:38.907222Z",
-    "submitted_at": null
+    "submitted_at": null,
+
+    // derived, read-only — see below
+    "max_platform_loss": 69.31471805599453
   },
   "blocking_submission": [
     { "field": "close_time", "message": "A close time is required." },
@@ -114,6 +148,27 @@ because guessing UTC would put a Singapore close time eight hours out.
   ]
 }
 ```
+
+**`max_platform_loss` and `initial_price` are derived and read-only.** Sending
+them changes nothing.
+
+`max_platform_loss` is `b × ln(n)` — the most the platform can lose over this
+market's life, whatever traders do. Show it beside `seed_subsidy`; that
+comparison is the whole point of [1.2] #2's second criterion. It is `null` until
+`liquidity_b` is set and there are at least two outcomes.
+
+`initial_price` is what each outcome costs before anyone has traded: `1/n`,
+identical across outcomes, which is the third criterion. It appears as soon as a
+second outcome is typed and does not depend on `b`. It is `null` below two
+outcomes, where a price would be meaningless. The values are unrounded so they
+sum to 1 — three outcomes give `0.3333…` each, and formatting is the browser's
+job.
+
+Both are computed server-side so there is one definition. Do not reimplement
+either in the frontend.
+
+All four pricing values come back as JSON **numbers**, not strings, so
+`seed_subsidy` and `max_platform_loss` can be compared and formatted directly.
 
 **`blocking_submission` is the useful part.** A draft is never rejected for
 being incomplete, but every response lists exactly what still stands between it
@@ -136,6 +191,8 @@ the acceptance criteria of [1.1] #1.
 | `close_time` | strictly before `resolution_time` |
 | `resolution_criteria` | present, at least 10 characters |
 | `resolution_sources` | at least one openable `http`/`https` URL |
+| `liquidity_b` | present and greater than zero (the default satisfies this) |
+| `seed_subsidy` | present and greater than zero |
 
 **A refused submission writes nothing**, including any edits that came with it.
 Nothing is lost: the autosave saves them three seconds later.
@@ -221,3 +278,8 @@ Branch on the presence of `error`.
    `new Date(value).toISOString()` produces one.
 7. `status: "submitted"` is not published. The publish control is [1.3] #3 and
    the endpoint does not exist yet.
+8. Render `max_platform_loss` beside the subsidy input and let it update on
+   every save. Do not compute `b × ln(n)` in the browser — the server is the
+   one definition, and a second one will drift.
+9. A subsidy smaller than `max_platform_loss` **is allowed** and submits
+   normally. Warn in the UI if you like; do not disable the button for it.

@@ -1,5 +1,6 @@
 """Runtime configuration, read once from the environment at import time."""
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated
 
@@ -28,6 +29,22 @@ class Settings(BaseSettings):
     # Browsers send the access token as this cookie; services send a bearer
     # header. Must match the auth service's ACCESS_COOKIE_NAME.
     access_cookie_name: str = "access_token"
+
+    # --- Market pricing ---------------------------------------------------
+    # The liquidity parameter a new market gets when the administrator does not
+    # choose one. [1.2] #2 requires a configured default that a per-market value
+    # may override, and the override arrives in the request body.
+    #
+    # Unlike the two settings above this one HAS a default, because it is not a
+    # credential. A wrong database URL connects to the wrong database and a
+    # published signing key forges sessions; a wrong `b` makes prices move at
+    # the wrong speed, which is visible, harmless in mock credits, and fixable
+    # per market. Making it required would mean every teammate edits .env before
+    # compose will start, to restate a number nobody disagrees about.
+    #
+    # Decimal rather than float for the same reason the columns are Numeric: it
+    # shares arithmetic with the seed subsidy, which is credits.
+    default_liquidity_b: Decimal = Field(default=Decimal("100"), gt=0)
 
     # --- CORS -------------------------------------------------------------
     # NoDecode is load-bearing: without it pydantic-settings JSON-parses a

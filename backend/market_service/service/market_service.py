@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
 from core.errors import (
     DraftIncomplete,
     MarketNotEditable,
@@ -90,7 +92,10 @@ async def _save_once(
 
         await _clear_children(session, market)
 
-    _apply(market, data)
+    # Read at the edge rather than inside `_apply`, so the rule that a
+    # market falls back to the configured liquidity stays a pure function
+    # of its arguments and can be tested without touching the environment.
+    _apply(market, data, get_settings().default_liquidity_b)
 
     problems = problems_blocking_submission(market, now=now)
 
@@ -163,7 +168,9 @@ async def _clear_children(session: AsyncSession, market: Market) -> None:
     await session.flush()
 
 
-def _apply(market: Market, data: MarketDraftRequest) -> None:
+def _apply(
+    market: Market, data: MarketDraftRequest, default_liquidity_b: Decimal
+) -> None:
     """Overwrite the market's terms with what the form last held.
 
     Last-write-wins on the whole document, because that is what an autosave of
@@ -177,6 +184,17 @@ def _apply(market: Market, data: MarketDraftRequest) -> None:
     market.close_time = data.close_time
     market.resolution_time = data.resolution_time
     market.resolution_criteria = _blank_to_none(data.resolution_criteria)
+
+    # [1.2] #2. An omitted `b` takes the configured default rather than staying
+    # null, so a market is always priceable and the form can show a max loss
+    # from the very first save. An explicit value overrides it, including on a
+    # later save: the admin can raise `b`, see the larger worst case, and put
+    # it back. The subsidy has no default — there is no sensible platform-wide
+    # answer to how much this particular market is worth underwriting.
+    market.liquidity_b = (
+        data.liquidity_b if data.liquidity_b is not None else default_liquidity_b
+    )
+    market.seed_subsidy = data.seed_subsidy
 
     # Replaced wholesale rather than diffed; `_clear_children` has already
     # emptied and flushed whatever was there.
