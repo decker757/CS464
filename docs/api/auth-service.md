@@ -4,7 +4,7 @@ Base URL `http://localhost:8000` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8000/docs).
 
-Covers [A-1] #29, [A-2] #30 and [A-3] #31, and the frontend halves
+Covers [A-1] #29, [A-2] #30, [A-3] #31 and [4.4] #16, and the frontend halves
 [FE][A-1] #46, [FE][A-2] #47 and [FE][A-3] #48.
 
 Why we host this ourselves rather than buying it:
@@ -24,6 +24,7 @@ a balance field anywhere below.
 | POST | `/auth/refresh` | Exchange a refresh token for a new session |
 | POST | `/auth/logout` | Revoke the refresh token and clear both cookies |
 | GET | `/auth/me` | The current user |
+| PATCH | `/admin/users/{user_id}/role` | Move a user between `trader` and `admin` |
 
 ## Authentication
 
@@ -44,6 +45,9 @@ Two ways in, one verification.
 The refresh cookie is path-scoped so the long-lived credential is not attached
 to every API call. It still reaches `/auth/refresh` and `/auth/logout`, which
 are the two routes that need it.
+
+The access cookie's `/` is what lets `/admin/*` work from a browser at all.
+Do not "tidy" it to `/auth` to match its sibling.
 
 **The cookies are `SameSite=Lax`, so they are not sent cross-site.** The
 frontend and the API must share a registrable domain or none of this works in
@@ -159,6 +163,59 @@ The `user` object above, on its own. The reference protected route: `401`
 without a valid access token, `403` if the account has been suspended since the
 token was issued.
 
+## PATCH /admin/users/{user_id}/role
+
+`200` on success. Administrator only. [4.4] #16.
+
+```json
+{ "role": "admin", "reason": "Covering market resolution while Ihsan is away." }
+```
+
+`role` is the role the user should end up with, not a delta, so the same
+request sent twice is the same outcome — a double-submitted form is not an
+error. `reason` is optional and lands in the audit log verbatim.
+
+```json
+{
+  "user": { "id": "...", "username": "michelle_l", "role": "admin", "...": "..." },
+  "takes_effect_within_seconds": 900
+}
+```
+
+**There are two roles and there is no tier above them.** Any administrator may
+promote or demote any other user; the control against misuse is the audit log,
+not a super-admin. [ADR 0007](../adr/0007-admin-tiers-and-role-changes.md)
+argues why, and names the condition that would change it. A `role` this service
+does not recognise — `super_admin`, from an older version of the ticket — is a
+`422` from the schema, not a silent no-op.
+
+**An administrator cannot change their own role** (`403
+cannot_change_own_role`), so do not offer the control on the signed-in user's
+own row.
+
+**`409 last_administrator` means the demotion would leave nobody in charge.**
+You will almost certainly never see it: the caller is an administrator and
+cannot be their own target, so a demotion normally leaves at least the caller
+behind. It exists for the case where two administrators demote each other at
+the same instant, where without it both would succeed. A suspended
+administrator does not count towards keeping the set alive, since they cannot
+sign in to undo anything — but they can still be demoted. Show the message and
+leave the row as it was — it is not retryable until somebody else is promoted.
+
+**`takes_effect_within_seconds` is never zero, and the screen should say so.**
+Authority travels in the access token, so the market service on `:8001` keeps
+honouring whatever the target's current token says until it expires. The auth
+service itself reads the row and is current immediately. The target picks the
+new role up on their next access token — an ordinary `/auth/refresh` supplies
+that just as well as a fresh login, so in practice the wait is however long
+until their client next refreshes, bounded by this number.
+
+**The first administrator is not made here.** Registration always creates a
+trader, and the account that may grant administrative authority cannot itself
+be granted it, so administrator number one is a manual `UPDATE` against the
+database — permanently, by design. Everyone after that comes through this
+route.
+
 ## Errors
 
 The same envelope the market service uses, so one parser covers both:
@@ -172,6 +229,10 @@ The same envelope the market service uses, so one parser covers both:
 | 401 | `invalid_credentials` | wrong password, or no such account — deliberately the same |
 | 401 | `invalid_token` | no access token, or it is expired, forged or malformed |
 | 403 | `account_suspended` | credentials were right; the account is suspended |
+| 403 | `not_an_administrator` | signed in, but not an admin — same code the market service uses |
+| 403 | `cannot_change_own_role` | an administrator targeting their own row |
+| 404 | `user_not_found` | no user with that id |
+| 409 | `last_administrator` | the demotion would leave no administrator; see above |
 | 409 | `duplicate_user` | username or email already registered; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
 

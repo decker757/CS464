@@ -79,3 +79,64 @@ class InvalidToken(AuthError):
     status_code = 401
     code = "invalid_token"
     message = "Not authenticated."
+
+
+class NotAnAdministrator(AuthError):
+    """[4.4] #16 - authenticated, but not carrying the admin role.
+
+    Same code and message as the market service's error of the same name, so
+    the frontend handles one shape for "you are signed in and still may not do
+    this" across both services.
+    """
+
+    status_code = 403
+    code = "not_an_administrator"
+    message = "This action requires an administrator account."
+
+
+class UserNotFound(AuthError):
+    """[4.4] #16 - no user with that id.
+
+    Not deliberately vague, unlike InvalidCredentials. The caller is already a
+    proven administrator, so telling them an id does not exist reveals nothing
+    they could not learn from the user list they are entitled to read.
+    """
+
+    status_code = 404
+    code = "user_not_found"
+    message = "No user with that id."
+
+
+class CannotChangeOwnRole(AuthError):
+    """[4.4] #16 - an administrator may not change their own role.
+
+    One line, and it is the invariant that keeps the administrator set from
+    emptying: a change must come from an administrator and may not target
+    themselves, so the last remaining administrator has no legal target whose
+    demotion would leave zero. docs/adr/0007-admin-tiers-and-role-changes.md
+    explains why that matters more than the self-footgun it also prevents.
+    """
+
+    status_code = 403
+    code = "cannot_change_own_role"
+    message = "An administrator cannot change their own role."
+
+
+class LastAdministrator(AuthError):
+    """[4.4] #16 - demoting this user would leave the system with no administrator.
+
+    The self-change rule alone does not prevent this. Two administrators can
+    demote each other at the same instant: each targets somebody else, so each
+    passes that check, and both transactions commit. Sequentially the set can
+    only shrink to one; concurrently it can reach zero, and nothing short of a
+    manual UPDATE gets it back.
+
+    A conflict rather than a forbidden action. The caller is entitled to do
+    this and the request is well formed; it is the state of the system that
+    refuses, and a moment later — once somebody else is promoted — the very
+    same request would succeed.
+    """
+
+    status_code = 409
+    code = "last_administrator"
+    message = "This is the only administrator. Promote another one first."
