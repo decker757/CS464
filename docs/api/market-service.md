@@ -4,30 +4,45 @@ Base URL `http://localhost:8001` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
-Covers [1.1] #1, [1.2] #2 and the backend half of [FE][1.1] #45.
+Covers [1.1] #1, [1.2] #2, [1.3] #3 and the backend half of [FE][1.1] #45.
 
-A successful submission also appends an entry to the shared audit log, in the
-same database transaction, so the two can never disagree. An autosave does not.
-See [`audit-service.md`](audit-service.md) and
+A successful submission or publication also appends an entry to the shared
+audit log, in the same database transaction, so the two can never disagree. An
+autosave does not. See [`audit-service.md`](audit-service.md) and
 [ADR 0006](../adr/0006-audit-log-write-path.md).
 
 Why it is a separate service and how it knows who is an admin:
 [ADR 0003](../adr/0003-market-service-boundary.md). Why one endpoint does both
 autosave and submit: [ADR 0004](../adr/0004-draft-autosave-and-submission.md).
 Why the LMSR engine itself is not in this service:
-[ADR 0005](../adr/0005-trading-service-boundary.md).
+[ADR 0005](../adr/0005-trading-service-boundary.md). Why publishing is a
+separate endpoint rather than a third status on the save:
+[ADR 0008](../adr/0008-publishing-a-market.md).
 
 ## Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/markets` | Save a draft, or submit a market |
+| POST | `/markets/{id}/publish` | Publish a submitted market |
 | GET | `/markets` | List my own markets |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
 
 Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is [BE][X] #62.
+
+## The three statuses
+
+| Status | Set by | Traders see it |
+| --- | --- | --- |
+| `draft` | the three-second autosave | no |
+| `submitted` | the submit button | no |
+| `open` | `POST /markets/{id}/publish` | yes |
+
+The path is `draft → submitted → open` and nothing skips a step. `open` is
+terminal for now: there is no unpublish, and every later save on an open market
+is a `409`.
 
 ## Authentication
 
@@ -57,7 +72,7 @@ One endpoint for both the autosave and the submit button. The difference is the
 ```jsonc
 {
   "draft_key": "3f6b1c62-6a1e-4a1d-9f2f-2a3e4b5c6d7e",  // required
-  "status": "draft",                                     // "draft" | "submitted"
+  "status": "draft",                                     // "draft" | "submitted" only
 
   "question": "Will Singapore core inflation be below 2% for December 2026?",
   "description": "Measured on the first published print.",
@@ -89,6 +104,9 @@ so the three-second autosave updates one market rather than creating one per
 tick. Keep it for as long as the form is open; start a new one for a new market.
 
 **`status` defaults to `draft`.** Send `submitted` only from the submit button.
+`open` is **not accepted here** and is a `422` — publishing is
+`POST /markets/{id}/publish`, which carries no terms at all, so that no single
+request can change a market and expose it to traders at the same time.
 
 **Timestamps must carry an offset.** `2027-01-05T12:00:00Z` or
 `2027-01-05T20:00:00+08:00`. A value without one is a 422 rather than a guess,
@@ -150,6 +168,7 @@ is the ledger's job ([F-1] #41) and this service holds no balances.
     "created_at": "2026-09-13T14:06:38.907220Z",
     "updated_at": "2026-09-13T14:06:38.907222Z",
     "submitted_at": null,
+    "published_at": null,
 
     // derived, read-only — see below
     "max_platform_loss": 69.31471805599453
@@ -219,6 +238,58 @@ where to look; the criteria say what settles it — first print or revised, and
 what happens if publication slips. That gap is what [3.3] #11's dispute window
 exists to absorb.
 
+## POST /markets/{id}/publish — [1.3] #3
+
+Moves a market from `submitted` to `open`, which is the status traders browse
+on. This is what makes a market tradeable.
+
+**No request body.** The terms that go live are the terms that were submitted.
+Addressed by the market's `id`, not by `draft_key`: this is not a save and it
+cannot create anything.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it
+— not wrapped in `{ "market": ... }`, because there is no `blocking_submission`
+to sit beside. `status` is `open` and `published_at` is set. Repaint from this
+rather than issuing a second `GET`.
+
+### When it is refused
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 404 | `market_not_found` | no such market, or it is not yours | nothing; it is not there |
+| 409 | `market_not_submitted` | it is still a draft | press submit first |
+| 409 | `market_already_open` | it is already live | reload; hide the button |
+| 422 | `draft_incomplete` | the terms no longer pass | fix the fields in `details` |
+
+**Every submission rule runs again, against the clock now.** That is not
+belt-and-braces. A market is validated at submission against the time it was
+submitted, and `close_time` has to be in the future — so a market that sat
+submitted past its own close time would otherwise go live already closed.
+
+The `422` is the **same** `draft_incomplete` envelope the submit button
+returns, with the same `details` array keyed the same way. A form that already
+renders a refused submission renders a refused publish with no new branch. Only
+the message differs.
+
+**A refused publish writes nothing.** The market stays `submitted`,
+`published_at` stays null, and no audit entry is appended.
+
+### Publishing is one way
+
+Once a market is `open` its terms are frozen. `POST /markets` on it returns
+`409 market_already_open`, whether the request says `draft` or `submitted` —
+which is what stops the autosave, still running behind the publish button, from
+quietly reverting a live market. There is no unpublish.
+
+### Trader visibility
+
+Publishing sets the status; it does not build the trader-facing list. The
+public browse and detail API is **[BE][X] #62**, and it filters on
+`status == "open"`. Until it lands, a published market is visible through the
+admin routes on this page and nowhere else.
+
 ## GET /markets
 
 Every market belonging to the calling administrator, most recently updated
@@ -274,7 +345,9 @@ additive, so a client that ignores it still reads `code` and `message`:
 | 403 | `not_an_administrator` | valid session, but a trader |
 | 404 | `market_not_found` | no such market, or it is not yours |
 | 409 | `market_not_editable` | an autosave arrived for an already-submitted market |
-| 422 | `draft_incomplete` | submission refused; see `details` |
+| 409 | `market_not_submitted` | publish asked for on a market that is still a draft |
+| 409 | `market_already_open` | a publish or a save arrived for an already-published market |
+| 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
 
 Two `422`s exist and they do not look alike. `draft_incomplete` is ours and
@@ -290,15 +363,23 @@ Branch on the presence of `error`.
 3. Paint `blocking_submission` as inline hints. Disable the submit button while
    it is non-empty and you will never see a 422 from `draft_incomplete`.
 4. On submit, POST the same `draft_key` with `status: "submitted"`.
-5. A `409` means the market is already submitted — stop the autosave timer.
+5. A `409 market_not_editable` means the market is already submitted — stop the
+   autosave timer. A `409 market_already_open` means it is published: stop the
+   timer and hide the edit controls, because nothing will be accepted again.
 6. Send timestamps as ISO 8601 **with an offset**:
    `new Date(value).toISOString()` produces one.
-7. `status: "submitted"` is not published. The publish control is [1.3] #3 and
-   the endpoint does not exist yet.
-8. Render `max_platform_loss` beside the subsidy input and let it update on
+7. `status: "submitted"` is not published. Show the publish control only on a
+   submitted market, and POST to `/markets/{id}/publish` with no body. Sending
+   `status: "open"` to `POST /markets` is a `422`; publishing has its own
+   endpoint so that one call can never both change terms and expose them.
+8. A publish can come back `422 draft_incomplete` even though the market
+   submitted cleanly — most often because its `close_time` has passed in the
+   meantime. Reuse the same `details` renderer you already have; there is no
+   new error shape to handle.
+9. Render `max_platform_loss` beside the subsidy input and let it update on
    every save. Do not compute `b × ln(n)` in the browser — the server is the
    one definition, and a second one will drift.
-9. A subsidy smaller than `max_platform_loss` **is allowed** and submits
-   normally. Warn in the UI if you like; do not disable the button for it.
-10. Round pricing inputs to four decimal places before sending, and keep them
+10. A subsidy smaller than `max_platform_loss` **is allowed** and submits
+    normally. Warn in the UI if you like; do not disable the button for it.
+11. Round pricing inputs to four decimal places before sending, and keep them
     under `99999999999999.9999`, or the save comes back `422`.

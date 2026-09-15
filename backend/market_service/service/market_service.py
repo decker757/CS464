@@ -1,4 +1,5 @@
-"""Business rules for drafting and submitting a market. [1.1] #1.
+"""Business rules for drafting, submitting and publishing a market. [1.1] #1,
+[1.3] #3.
 
 HTTP is not mentioned in this file; failures are raised as domain errors. Every
 function takes the caller's id as an argument rather than reading it from
@@ -19,8 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import get_settings
 from core.errors import (
     DraftIncomplete,
+    MarketAlreadyOpen,
     MarketNotEditable,
     MarketNotFound,
+    MarketNotSubmitted,
     ValidationProblem,
 )
 from model.audit import AdminAction
@@ -90,6 +93,15 @@ async def _save_once(
         market = Market(creator_id=actor.id, draft_key=data.draft_key)
         session.add(market)
     else:
+        if market.status is MarketStatus.OPEN:
+            # [1.3] #3. Published terms are frozen, so no save of any kind gets
+            # through — not an autosave from a form still open behind the
+            # publish button, and not a resubmission either. Checked before the
+            # rule below and without consulting `data.status`, because the
+            # market being live is what decides this, not what the request
+            # wanted to do. Traders are pricing against these terms.
+            raise MarketAlreadyOpen
+
         if market.status is MarketStatus.SUBMITTED and data.status is MarketStatus.DRAFT:
             # An autosave arriving after the submit button was pressed. Letting
             # it through would silently revert a finished market to a draft,
@@ -135,14 +147,102 @@ async def _save_once(
     return market, problems, created
 
 
-async def get(session: AsyncSession, creator_id: uuid.UUID, market_id: uuid.UUID) -> Market:
+async def publish(
+    session: AsyncSession,
+    actor: Actor,
+    market_id: uuid.UUID,
+    *,
+    now: datetime | None = None,
+) -> Market:
+    """Move one submitted market to OPEN, making it tradeable. [1.3] #3.
+
+    Addressed by the market's own id rather than by `draft_key`, because this
+    is not a save. Nothing about the terms travels with the request: publishing
+    takes what was already submitted and nothing else, so there is no shape of
+    request that can change a market and expose it in the same call. That is
+    what makes the audit entry below a truthful record of what went live.
+
+    Three things have to hold, and each fails differently on purpose:
+
+    - the market is the caller's own, or it is a 404 like every other read
+    - it is SUBMITTED — a draft is a 409 asking for the submit button first,
+      and one already open is a 409 saying so
+    - it still passes every rule in `service/validation.py`
+
+    That last check is not belt-and-braces. A market is validated at submission
+    against the clock at submission, and `close_time` must be in the future;
+    leave a submitted market alone for long enough and that stops being true.
+    Publishing it then would put a market in front of traders that closes in
+    the past. Re-running the same pure function against the clock now is the
+    whole of the ticket's first acceptance criterion, and ADR 0004 wrote
+    `problems_blocking_submission` to be reused here rather than restated.
+
+    One way. There is no unpublish, and `_save_once` refuses every later write.
+    Exactly once, too: the row is locked for the status check, so two requests
+    racing cannot both report having published the same market.
+    """
+    now = now or datetime.now(UTC)
+
+    # Reuses the read rule rather than restating it, so "not yours" is a 404
+    # here for exactly the reason it is a 404 there: a 403 would confirm the
+    # market exists. Publication stays with the creator even though ADR 0007
+    # makes the admin tier flat, because every other route in this service is
+    # already scoped that way and widening it is a decision for a ticket that
+    # asks for it.
+    #
+    # Locked, because the check below and the write after it are one decision
+    # and an admin double-clicking the publish button sends two requests. Read
+    # unlocked, both would see SUBMITTED, both would flip the status, and the
+    # log would carry two entries claiming to be the moment this market went
+    # live. Under READ COMMITTED the loser blocks here and re-reads the row the
+    # winner committed, so it sees OPEN and is refused.
+    market = await get(session, actor.id, market_id, for_update=True)
+
+    if market.status is MarketStatus.OPEN:
+        raise MarketAlreadyOpen
+    if market.status is not MarketStatus.SUBMITTED:
+        raise MarketNotSubmitted
+
+    problems = problems_blocking_submission(market, now=now)
+    if problems:
+        raise DraftIncomplete(problems, message=_PUBLISH_BLOCKED)
+
+    market.status = MarketStatus.OPEN
+    market.published_at = now
+
+    # Flushed before the entry and committed after it, for the same reason
+    # submission is: the action and the record of it are one write. A crash
+    # between them cannot leave a market visible to traders with nothing saying
+    # who made it so. ADR 0006.
+    await session.flush()
+    await _record_publication(session, actor, market, now)
+    await session.commit()
+
+    return market
+
+
+async def get(
+    session: AsyncSession,
+    creator_id: uuid.UUID,
+    market_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> Market:
     """One of the caller's own markets.
 
     `creator_id` is part of the query rather than a check after the fact. A
     filter cannot be forgotten the way an `if` can, and an unfiltered read
     followed by a permission check is how a draft leaks.
+
+    `for_update` takes a row lock, and only `publish` asks for one. Reads must
+    not: a lock on every GET would serialise the list page behind whatever
+    happened to be writing. The lock covers the parent row alone — the selectin
+    loaders fetch the children unlocked — which is all that is needed, because
+    the only thing being serialised is a status transition on this row.
     """
     stmt = select(Market).where(Market.id == market_id, Market.creator_id == creator_id)
+    if for_update:
+        stmt = stmt.with_for_update()
     market = (await session.execute(stmt)).scalar_one_or_none()
     if market is None:
         raise MarketNotFound
@@ -174,13 +274,6 @@ async def _record_submission(
     string would be worse than a null. The stories that do demand a reason —
     [2.3] #7 closing a market early, [4.2] #14 suspending an account — pass one
     through the same argument.
-
-    The terms go into `context` rather than being left to a later read of
-    `market.markets`, because [1.4] #4 will allow a submitted market to be
-    edited by submitting it again. Without the snapshot, the log would say that
-    a market was submitted and the table would only ever show its latest terms,
-    so the one question the log exists to answer — what did they actually
-    approve — would need a row that no longer exists.
     """
     await audit.record(
         session,
@@ -189,25 +282,78 @@ async def _record_submission(
         target_type="market",
         target_id=market.id,
         target_label=market.question,
-        context={
-            # Stringified rather than floated. Nothing reads these to do
-            # arithmetic with, unlike MarketOut's wire format, and the subsidy
-            # is money: a record of what was approved should say 250.0000 and
-            # not something that once rounded to it.
-            "liquidity_b": _decimal_or_none(market.liquidity_b),
-            "seed_subsidy": _decimal_or_none(market.seed_subsidy),
-            "outcomes": [outcome.label for outcome in market.outcomes],
-            "close_time": market.close_time.isoformat() if market.close_time else None,
-            "resolution_time": (
-                market.resolution_time.isoformat() if market.resolution_time else None
-            ),
-            "resolution_sources": [
-                source.url for source in market.resolution_sources
-            ],
-        },
+        context=_terms_snapshot(market),
         now=now,
     )
 
+
+async def _record_publication(
+    session: AsyncSession, actor: Actor, market: Market, now: datetime
+) -> None:
+    """Append the audit entry for a market becoming tradeable. [1.3] #3.
+
+    The ticket's third acceptance criterion, and the entry that matters most in
+    this file. A submission is an administrator agreeing with themselves about
+    some terms; a publication is the moment those terms were put in front of
+    people who will commit credits to them. If one entry in this log is ever
+    read in anger, it is this one.
+
+    Carries the same snapshot as the submission rather than pointing back at
+    it, and the duplication is the point. [1.4] #4 lets a submitted market be
+    edited by submitting it again, so the terms that went live are not
+    necessarily the terms of any one earlier entry, and a reader should not have
+    to replay the whole history of a market to find out which set traders
+    actually saw.
+    """
+    await audit.record(
+        session,
+        actor=actor,
+        action=AdminAction.MARKET_PUBLISHED,
+        target_type="market",
+        target_id=market.id,
+        target_label=market.question,
+        context=_terms_snapshot(market),
+        now=now,
+    )
+
+
+def _terms_snapshot(market: Market) -> dict[str, object]:
+    """What this market said, at the moment of an action worth recording.
+
+    Written into `context` rather than left to a later read of `market.markets`,
+    because [1.4] #4 will allow a submitted market to be edited by submitting it
+    again. Without the snapshot the log would say that a market was submitted,
+    or published, and the table would only ever show its latest terms — so the
+    one question the log exists to answer, what did they actually approve, would
+    need a row that no longer exists.
+
+    Shared by both entries above so the two cannot describe one market in two
+    shapes, which is what would make them hard to compare in the one case that
+    matters: seeing whether anything changed between submission and going live.
+    """
+    return {
+        # Stringified rather than floated. Nothing reads these to do arithmetic
+        # with, unlike MarketOut's wire format, and the subsidy is money: a
+        # record of what was approved should say 250.0000 and not something
+        # that once rounded to it.
+        "liquidity_b": _decimal_or_none(market.liquidity_b),
+        "seed_subsidy": _decimal_or_none(market.seed_subsidy),
+        "outcomes": [outcome.label for outcome in market.outcomes],
+        "close_time": market.close_time.isoformat() if market.close_time else None,
+        "resolution_time": (
+            market.resolution_time.isoformat() if market.resolution_time else None
+        ),
+        "resolution_sources": [source.url for source in market.resolution_sources],
+    }
+
+
+# Said instead of "cannot be submitted yet" when the same rules refuse a
+# publish. The error code and its `details` list are identical either way,
+# because the offending fields are the same fields and a frontend that renders
+# a refused submission should not need a second branch to render this.
+_PUBLISH_BLOCKED = (
+    "This market cannot be published yet. Its terms no longer pass every rule."
+)
 
 # The scale the pricing columns hold, borrowed from the request schema so one
 # change to Numeric(18, 4) moves both.

@@ -10,7 +10,7 @@ in GitHub Project v2 #6.
 
 ```
 backend/auth_service/   registration, login, logout, sessions   [A-1..A-3]
-backend/market_service/ drafting and submitting markets         [1.1]
+backend/market_service/ drafting, submitting, publishing markets [1.1] [1.3]
 backend/audit_service/  reading the shared admin action log     [4.3]
 sql/                    roles, schemas and grants for the shared Postgres
 sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
@@ -89,6 +89,14 @@ unique indexes, and both differences have already caused bugs here. Do not
 "simplify" this to SQLite, and do not point a suite at the superuser: the
 cross-schema denial tests would pass while proving nothing.
 
+**A published market is frozen, and the autosave has to be told.** Publication
+([1.3] #3) is one way: `_save_once` refuses every write to an OPEN market,
+whatever status the request asks for. Remove that branch and the create form —
+which may still be open behind the publish button — reverts a live market to a
+draft on its next three-second tick. Publishing also re-runs every submission
+rule against the clock at publish time, because a market that sat submitted
+past its own close time would otherwise go live already closed. ADR 0008.
+
 **An admin is made by hand, and needs a fresh login.** Registration always
 creates a trader. Promotion is `UPDATE auth.users SET role = 'admin' WHERE
 lower(username) = '...'`, and the user must log in again, because authority
@@ -98,6 +106,22 @@ The *first* admin stays a manual UPDATE permanently: ADR 0007 declines the
 bootstrap account and the SUPER_ADMIN tier both. Every admin after the first is
 promoted through the role-change endpoint by an existing one, and the fresh
 login is still required either way.
+
+**A market's status is a Python enum and needs no migration; a new column
+does.** `market.markets.status` is a non-native `Enum`, and SQLAlchemy has
+defaulted `create_constraint` to False since 1.4, so the column is a plain
+`varchar(24)` with no CHECK. Adding a member to `MarketStatus` is a Python
+change and nothing else. Verify before trusting that:
+
+```bash
+docker compose exec -T db psql -U cs464 -d cs464 \
+  -c "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint \
+      WHERE conrelid = 'market.markets'::regclass;"
+```
+
+A new *column* is the usual story and still needs a hand-applied `ALTER TABLE`,
+as below. [1.3] #3 added one member and one column, and only the column needed
+`sql/migrations/0003-market-published-at.sql`.
 
 **Replacing a child collection in SQLAlchemy needs its own flush.** Within one
 flush the INSERTs for the new rows are issued before the DELETEs for the
@@ -114,7 +138,9 @@ is no queue, no retry and no broker anywhere near this. ADR 0006.
 
 If you add an admin action, log the decision and never the keystrokes. Draft
 autosave fires every three seconds and is deliberately not logged; logging it
-would bury every real action within one sitting.
+would bury every real action within one sitting. Submission and publication are
+logged separately, because a market can sit submitted for a week and only the
+second of the two put anything in front of a trader.
 
 **`audit.admin_actions` must never be added to a service's `Base.metadata`.**
 Everything mapped there is created by `create_all` at startup and dropped by
@@ -208,6 +234,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0005** a composite trading service, and positions with the ledger
 - **0006** one shared audit log, written in the acting service's transaction
 - **0007** a flat admin tier, with role changes audited rather than approved
+- **0008** publishing as its own endpoint, from SUBMITTED only, and one way
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

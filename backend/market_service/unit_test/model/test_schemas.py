@@ -156,6 +156,7 @@ class _FakeMarket:
         self.created_at = datetime(2026, 9, 13, 8, 0, 0)
         self.updated_at = datetime(2026, 9, 13, 8, 0, 0)
         self.submitted_at = None
+        self.published_at = None
 
 
 def test_naive_timestamps_are_stamped_as_utc_on_the_way_out() -> None:

@@ -24,8 +24,9 @@ from model.schemas import (
 from service import market_service
 
 # Every route below depends on CurrentAdmin, so a trader's valid token gets a
-# 403 rather than an empty list. There is no unauthenticated read here at all:
-# the public market API is [BE][X] #62 and belongs to a different reader.
+# 403 rather than an empty list. There is no unauthenticated read here at all,
+# including after [1.3] #3: publishing sets the status traders browse on, and
+# the browse query itself is [BE][X] #62, which belongs to a different reader.
 router = APIRouter(prefix="/markets", tags=["markets"])
 
 
@@ -71,6 +72,46 @@ async def save_market(
             ValidationProblemOut(field=p.field, message=p.message) for p in problems
         ],
     )
+
+
+@router.post(
+    "/{market_id}/publish",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Publish a submitted market, making it tradeable",
+    description=(
+        "[1.3] #3. Moves a market from `submitted` to `open`, which is the "
+        "status traders browse on.\n\n"
+        "Carries no body. The terms that go live are the terms that were "
+        "submitted, so there is no request that can change a market and expose "
+        "it in the same call.\n\n"
+        "Every rule in the submission checklist is re-run against the clock "
+        "now, because a market submitted last week may have a close time that "
+        "has since passed. A failure is the same `draft_incomplete` 422 the "
+        "submit button returns, with the same `details` list.\n\n"
+        "One way. There is no unpublish, and every later save on this market "
+        "is refused with 409.\n\n"
+        "Appends a `market.published` entry to the audit log ([4.3] #15) in "
+        "the same transaction, so a market cannot become tradeable without a "
+        "record of who made it so."
+    ),
+    responses={
+        403: {"description": "Authenticated, but not an administrator."},
+        404: {"description": "No such market, or it belongs to another administrator."},
+        409: {
+            "description": (
+                "`market_not_submitted` — still a draft, so submit it first. "
+                "`market_already_open` — it is already live."
+            )
+        },
+        422: {"description": "Publish refused; `error.details` lists every problem."},
+    },
+)
+async def publish_market(
+    market_id: uuid.UUID, actor: CurrentActor, session: DbSession
+) -> MarketOut:
+    market = await market_service.publish(session, actor, market_id)
+    return MarketOut.model_validate(market)
 
 
 @router.get(

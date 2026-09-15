@@ -167,6 +167,134 @@ async def test_each_submission_appends_rather_than_replacing(
     assert entries[1]["target_label"] == "First terms here"
 
 
+# --- publication [1.3] #3 -------------------------------------------------
+async def _publish(session: AsyncSession, actor: Actor, **overrides: object):
+    market, _, _ = await _save(session, actor, status="submitted", **overrides)
+    return await market_service.publish(session, actor, market.id)
+
+
+async def test_a_publication_is_recorded(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """[1.3] #3's third criterion.
+
+    The entry that matters most in this file: the moment a set of terms was put
+    in front of people who will commit credits to them.
+    """
+    actor = _actor()
+    before = datetime.now(UTC)
+
+    market = await _publish(session, actor)
+
+    published = [
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_PUBLISHED.value
+    ]
+    assert len(published) == 1
+
+    entry = published[0]
+    assert entry["actor_id"] == actor.id
+    assert entry["target_type"] == "market"
+    assert entry["target_id"] == market.id
+    assert entry["source_service"] == "market_service"
+    assert entry["occurred_at"] >= before
+
+
+async def test_submitting_and_publishing_leave_two_distinct_entries(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """Two decisions, two records.
+
+    A market can sit submitted for a week before anybody publishes it, and only
+    the second of those exposed anything to a trader. Folding them into one
+    would lose the question the log will actually be asked.
+    """
+    actor = _actor()
+
+    await _publish(session, actor)
+
+    entries = await _entries(audit_reader, actor)
+    assert {e["action_type"] for e in entries} == {
+        AdminAction.MARKET_SUBMITTED.value,
+        AdminAction.MARKET_PUBLISHED.value,
+    }
+    assert len(entries) == 2
+
+
+async def test_a_publication_records_the_terms_that_went_live(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """Carried on the entry rather than pointed at from it.
+
+    [1.4] #4 lets a submitted market be edited by submitting it again, so the
+    terms that went live are not necessarily the terms of any one earlier
+    entry, and a reader should not have to replay a market's history to find
+    out which set traders actually saw.
+    """
+    actor = _actor()
+
+    await _publish(
+        session,
+        actor,
+        liquidity_b=Decimal("250"),
+        seed_subsidy=Decimal("500"),
+        question="Will the MAS core inflation print for December 2026 be below 2%?",
+    )
+
+    entry = next(
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_PUBLISHED.value
+    )
+    assert entry["target_label"].startswith("Will the MAS core inflation print")
+    assert entry["context"]["liquidity_b"] == "250.0000"
+    assert entry["context"]["seed_subsidy"] == "500.0000"
+    assert entry["context"]["outcomes"] == ["Yes", "No"]
+
+
+async def test_the_two_snapshots_have_the_same_shape(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """One function builds both, so an unchanged market gives identical terms.
+
+    The one case this log is genuinely useful for is seeing whether anything
+    moved between submission and going live, and that comparison is only
+    possible if the two entries describe a market the same way.
+    """
+    actor = _actor()
+
+    await _publish(session, actor)
+
+    entries = await _entries(audit_reader, actor)
+    submitted = next(
+        e for e in entries if e["action_type"] == AdminAction.MARKET_SUBMITTED.value
+    )
+    published = next(
+        e for e in entries if e["action_type"] == AdminAction.MARKET_PUBLISHED.value
+    )
+    assert published["context"] == submitted["context"]
+
+
+async def test_the_publication_entry_and_the_status_commit_together(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """ADR 0006's claim, on the action this ticket adds.
+
+    `audit_reader` is a separate connection in a separate transaction, so an
+    entry visible there is genuinely committed. A market cannot become
+    tradeable without a record of who made it so.
+    """
+    actor = _actor()
+
+    market = await _publish(session, actor)
+
+    published = [
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_PUBLISHED.value
+    ]
+    assert len(published) == 1
+    assert published[0]["target_id"] == market.id
+
+
 # --- what does not get recorded -------------------------------------------
 async def test_an_autosave_is_not_recorded(
     session: AsyncSession, audit_reader: AsyncSession
@@ -182,6 +310,47 @@ async def test_an_autosave_is_not_recorded(
         await _save(session, actor, question=word)
 
     assert await _entries(audit_reader, actor) == []
+
+
+async def test_a_refused_publish_records_nothing(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """A market that fails the completeness gate at publish time leaves the
+    submission entry alone and adds nothing of its own.
+
+    Sixty days on, the close time this market was submitted with has passed, so
+    publishing it would put an already-closed market in front of traders.
+    """
+    from datetime import timedelta as _timedelta  # noqa: PLC0415
+
+    actor = _actor()
+    market, _, _ = await _save(session, actor, status="submitted")
+
+    with pytest.raises(DraftIncomplete):
+        await market_service.publish(
+            session, actor, market.id, now=datetime.now(UTC) + _timedelta(days=60)
+        )
+
+    await session.rollback()
+    entries = await _entries(audit_reader, actor)
+    assert [e["action_type"] for e in entries] == [AdminAction.MARKET_SUBMITTED.value]
+
+
+async def test_publishing_someone_elses_market_records_nothing(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The 404 must not be a refusal that also wrote an entry naming the
+    administrator who tried."""
+    from core.errors import MarketNotFound  # noqa: PLC0415
+
+    owner, intruder = _actor(), _actor()
+    market, _, _ = await _save(session, owner, status="submitted")
+
+    with pytest.raises(MarketNotFound):
+        await market_service.publish(session, intruder, market.id)
+
+    await session.rollback()
+    assert await _entries(audit_reader, intruder) == []
 
 
 async def test_a_refused_submission_records_nothing(

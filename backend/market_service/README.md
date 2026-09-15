@@ -1,7 +1,7 @@
 # Market service
 
-Drafting and submitting prediction markets. Covers [1.1] #1 and the backend
-half of [FE][1.1] #45.
+Drafting, submitting and publishing prediction markets. Covers [1.1] #1,
+[1.2] #2, [1.3] #3 and the backend half of [FE][1.1] #45.
 
 Owns markets, their outcomes and their resolution sources. Knows nothing about
 users beyond the id in a signed access token, and cannot read the `auth` schema
@@ -10,6 +10,7 @@ even if it wanted to.
 - Endpoint contract, for the frontend: [`docs/api/market-service.md`](../../docs/api/market-service.md)
 - Why a separate service, and where admin authority comes from: [ADR 0003](../../docs/adr/0003-market-service-boundary.md)
 - Why one endpoint does both autosave and submit: [ADR 0004](../../docs/adr/0004-draft-autosave-and-submission.md)
+- Why publishing is a separate endpoint instead: [ADR 0008](../../docs/adr/0008-publishing-a-market.md)
 
 ## Running it
 
@@ -52,7 +53,7 @@ replaces this with real role management.
 
 ```bash
 docker compose up -d db          # from the repo root
-.venv/bin/pytest                 # 130 tests
+.venv/bin/pytest                 # 239 tests
 .venv/bin/pytest unit_test/core unit_test/model unit_test/service/test_validation.py
 ```
 
@@ -62,11 +63,11 @@ repository.
 
 | Layer | Tests | Needs Postgres |
 | --- | --- | --- |
-| `core/` | 24 | no |
-| `model/` | 18 | no |
-| `service/validation.py` | 34 | no |
-| `service/` drafting and boundary | 27 | yes |
-| `controller/` | 27 | yes |
+| `core/` | 47 | no |
+| `model/` | 43 | no |
+| `service/validation.py` | 39 | no |
+| `service/` drafting, publishing, audit, boundary | 69 | yes |
+| `controller/` | 41 | yes |
 
 Database access is opt-in: only the `session` and `client` fixtures pull it in,
 so the pure layers run in about a second with nothing else started. That
@@ -97,6 +98,7 @@ reasons as the auth service. `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_ISSUER` and
 | Method | Path | Story | Notes |
 | --- | --- | --- | --- |
 | POST | `/markets` | [1.1] #1 | Autosave and submit. 201 first, 200 after |
+| POST | `/markets/{id}/publish` | [1.3] #3 | SUBMITTED to OPEN. No body, one way |
 | GET | `/markets` | [1.1] #1 | The caller's own markets only |
 | GET | `/markets/{id}` | [1.1] #1 | 404, not 403, for someone else's |
 | GET | `/health` | | Liveness and readiness probe |
@@ -109,14 +111,15 @@ Full request and response shapes: [`docs/api/market-service.md`](../../docs/api/
 main.py                     create_app(), and nothing else
 
 controller/                 the HTTP boundary. No business rules live here.
-    routes.py               the three endpoints
+    routes.py               the four endpoints
     dependencies.py         DbSession, the token guard, the admin guard
     transport.py            cookie and bearer extraction. Read-only.
     errors.py               the one mapping from domain error to status code
 
 service/                    business rules. Raises domain errors, knows no HTTP.
-    market_service.py       the upsert, and creator-scoped reads
+    market_service.py       the upsert, publication, creator-scoped reads
     validation.py           pure: when may a market leave DRAFT?
+    audit.py                one append, on the caller's own transaction
 
 core/                       this service's own plumbing
     config.py               settings, read from the environment once
@@ -135,7 +138,7 @@ unit_test/                  mirrors the layers above
 Imports only ever point down, as in the auth service: `controller` may use
 `service`, `service` may use `core` and `model`, nothing below reaches back up.
 
-## Two things worth knowing before changing this
+## Three things worth knowing before changing this
 
 **A draft is allowed to be nonsense.** Every column but the identifiers is
 nullable, blank outcomes persist, and no business rule runs on an autosave. The
@@ -152,6 +155,14 @@ exactly when the admin is mid-thought. Label uniqueness is a submission rule.
 attached. Within one flush SQLAlchemy issues the INSERTs before the DELETEs, so
 the new position 0 meets the old position 0 and `uq_outcome_position` fires.
 Remove that flush and every autosave after the first returns a 500.
+
+**An OPEN market refuses every save, and that guard is load-bearing.** [1.3] #3
+made publication one way, but the create form may still be open behind the
+publish button when its three-second timer next fires. Without the first branch
+in `_save_once`, that tick reverts a live market to a draft under the traders
+pricing against it. `publish` also re-runs every submission rule against the
+clock now, because a market that sat submitted past its own close time would
+otherwise go live already closed. ADR 0008.
 
 ## Database boundary
 
