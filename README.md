@@ -40,10 +40,10 @@ Then:
 docker compose up --build
 ```
 
-The auth service comes up on http://localhost:8000 and the market service on
-http://localhost:8001, each with interactive API docs at `/docs`. Those pages
-are the contract the frontend codes against, alongside
-[`docs/api/`](docs/api/).
+The auth service comes up on http://localhost:8000, the market service on
+http://localhost:8001 and the audit service on http://localhost:8002, each with
+interactive API docs at `/docs`. Those pages are the contract the frontend
+codes against, alongside [`docs/api/`](docs/api/).
 
 Creating a market needs an administrator, and registration never grants one.
 Register normally, then promote by hand and log in again:
@@ -60,7 +60,7 @@ Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
 
 ```bash
 docker compose up -d db
-cd backend/auth_service       # or backend/market_service
+cd backend/auth_service       # or market_service, or audit_service
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest
 ```
@@ -82,6 +82,7 @@ superuser. That is what makes the cross-schema denial tests mean something.
 ```
 backend/auth_service/   registration, login, logout, sessions
 backend/market_service/ drafting and submitting markets
+backend/audit_service/  reading the shared admin action log
 sql/                    roles, schemas and grants for the shared Postgres
 sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
 docs/adr/               decisions and why they were made

@@ -61,11 +61,21 @@ os.environ["DATABASE_URL"] = _test_db
 # string needs to sit in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 
+# [4.3] #15. A second connection, as the audit reader, purely so the suite can
+# check what this service appended to `audit.admin_actions`.
+#
+# It needs its own role because `market_svc` genuinely cannot read that table —
+# it holds INSERT and nothing else, which is what stops one service reading
+# another's actions. A test that could read the log back through the service's
+# own connection would be proving the grants are weaker than they are.
+_audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
+
 from datetime import UTC, datetime, timedelta  # noqa: E402
 
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import NullPool  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -81,6 +91,16 @@ _UNREACHABLE = (
     "Cannot reach the test database.\n"
     "Start it with:  docker compose up -d db\n"
     "Or point MARKET_TEST_DATABASE_URL at your own Postgres."
+)
+
+_NO_AUDIT_READER = (
+    "No audit reader configured.\n"
+    "The audit-log tests read back what this service appended, and they must "
+    "do it as audit_svc, because market_svc holds INSERT on "
+    "audit.admin_actions and no SELECT.\n"
+    "Add AUDIT_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
+    "  export AUDIT_TEST_DATABASE_URL="
+    "postgresql+asyncpg://audit_svc:PASSWORD@localhost:PORT/cs464_test"
 )
 
 
@@ -228,3 +248,29 @@ def submittable_payload() -> dict[str, object]:
         # default, which is the common case from the form.
         "seed_subsidy": 250,
     }
+
+
+@pytest.fixture
+async def audit_reader():
+    """A session on `audit.admin_actions`, connected as the role that may read it.
+
+    Separate engine, separate role, and deliberately not the one under test.
+
+    Note what this fixture does NOT do: clean up. The log is append-only and no
+    role holds DELETE or TRUNCATE, so rows from every previous test in this
+    database are still present and always will be. Tests scope themselves by
+    filtering on an actor id nothing else has used — see `_actor()` in
+    unit_test/service/test_drafting.py — which is a more honest assertion than
+    a truncated table anyway: it is what reading a real audit log looks like.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: PLC0415
+
+    if not _audit_db:
+        pytest.fail(_NO_AUDIT_READER)
+
+    engine = create_async_engine(_audit_db, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+            yield s
+    finally:
+        await engine.dispose()

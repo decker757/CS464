@@ -23,19 +23,27 @@ from core.errors import (
     MarketNotFound,
     ValidationProblem,
 )
+from model.audit import AdminAction
 from model.entities import Market, MarketOutcome, MarketStatus, ResolutionSource
-from model.schemas import MarketDraftRequest
+from model.schemas import PRICING_DECIMAL_PLACES, MarketDraftRequest
+from service import audit
+from service.audit import Actor
 from service.validation import problems_blocking_submission
 
 
 async def save(
     session: AsyncSession,
-    creator_id: uuid.UUID,
+    actor: Actor,
     data: MarketDraftRequest,
     *,
     now: datetime | None = None,
 ) -> tuple[Market, list[ValidationProblem], bool]:
     """Create or update the caller's market identified by `data.draft_key`.
+
+    Takes the whole `Actor` rather than a bare creator id because a submission
+    writes an audit entry, and that entry has to name who the administrator was
+    at the time. This service cannot look a user id up in `auth.users`, so the
+    username and role travel with the request or not at all. [4.3] #15.
 
     Returns the market, the problems that would block submission, and whether
     this call created it, which the controller turns into 201 versus 200.
@@ -53,7 +61,7 @@ async def save(
     now = now or datetime.now(UTC)
 
     try:
-        return await _save_once(session, creator_id, data, now)
+        return await _save_once(session, actor, data, now)
     except IntegrityError:
         # Two autosaves for the same form were in flight at once — a slow
         # request still running when the timer fired again — and both saw no
@@ -65,21 +73,21 @@ async def save(
         # write to, so the second pass finds it and updates it. Letting the
         # IntegrityError out would 500 on a request that is entirely valid.
         await session.rollback()
-        return await _save_once(session, creator_id, data, now)
+        return await _save_once(session, actor, data, now)
 
 
 async def _save_once(
     session: AsyncSession,
-    creator_id: uuid.UUID,
+    actor: Actor,
     data: MarketDraftRequest,
     now: datetime,
 ) -> tuple[Market, list[ValidationProblem], bool]:
     """One attempt. Raises IntegrityError if it lost an insert race."""
-    market = await _find_by_draft_key(session, creator_id, data.draft_key)
+    market = await _find_by_draft_key(session, actor.id, data.draft_key)
     created = market is None
 
     if market is None:
-        market = Market(creator_id=creator_id, draft_key=data.draft_key)
+        market = Market(creator_id=actor.id, draft_key=data.draft_key)
         session.add(market)
     else:
         if market.status is MarketStatus.SUBMITTED and data.status is MarketStatus.DRAFT:
@@ -98,12 +106,14 @@ async def _save_once(
     _apply(market, data, get_settings().default_liquidity_b)
 
     problems = problems_blocking_submission(market, now=now)
+    submitting = data.status is MarketStatus.SUBMITTED
 
-    if data.status is MarketStatus.SUBMITTED:
+    if submitting:
         if problems:
             # Nothing is committed. The caller's session dependency rolls the
             # transaction back as this propagates, so the edits that arrived
-            # with the rejected submission are discarded too.
+            # with the rejected submission are discarded too — and so does the
+            # audit entry below, which is never reached anyway.
             raise DraftIncomplete(problems)
         market.status = MarketStatus.SUBMITTED
         market.submitted_at = now
@@ -111,6 +121,16 @@ async def _save_once(
         market.status = MarketStatus.DRAFT
 
     await session.flush()
+
+    if submitting:
+        # After the flush, so a market created by this very call already has
+        # the id the entry names. Before the commit, so the entry and the
+        # submission are one atomic write: if the commit fails, there is no
+        # orphan record of a submission that never happened, and if it
+        # succeeds there is no submission with no record of who made it.
+        # [4.3] #15.
+        await _record_submission(session, actor, market, now)
+
     await session.commit()
     return market, problems, created
 
@@ -137,6 +157,76 @@ async def list_for_creator(session: AsyncSession, creator_id: uuid.UUID) -> list
         .order_by(Market.updated_at.desc())
     )
     return list((await session.execute(stmt)).scalars())
+
+
+async def _record_submission(
+    session: AsyncSession, actor: Actor, market: Market, now: datetime
+) -> None:
+    """Append the audit entry for a market leaving DRAFT. [4.3] #15.
+
+    Submission is logged; autosave is not. An autosave fires every three
+    seconds while the form is open, so recording it would bury every real
+    decision under thousands of keystroke entries. Submission is the moment the
+    administrator committed to a set of terms, and it is the moment worth being
+    able to point at later.
+
+    No `reason` is recorded, because the form does not ask for one and an empty
+    string would be worse than a null. The stories that do demand a reason —
+    [2.3] #7 closing a market early, [4.2] #14 suspending an account — pass one
+    through the same argument.
+
+    The terms go into `context` rather than being left to a later read of
+    `market.markets`, because [1.4] #4 will allow a submitted market to be
+    edited by submitting it again. Without the snapshot, the log would say that
+    a market was submitted and the table would only ever show its latest terms,
+    so the one question the log exists to answer — what did they actually
+    approve — would need a row that no longer exists.
+    """
+    await audit.record(
+        session,
+        actor=actor,
+        action=AdminAction.MARKET_SUBMITTED,
+        target_type="market",
+        target_id=market.id,
+        target_label=market.question,
+        context={
+            # Stringified rather than floated. Nothing reads these to do
+            # arithmetic with, unlike MarketOut's wire format, and the subsidy
+            # is money: a record of what was approved should say 250.0000 and
+            # not something that once rounded to it.
+            "liquidity_b": _decimal_or_none(market.liquidity_b),
+            "seed_subsidy": _decimal_or_none(market.seed_subsidy),
+            "outcomes": [outcome.label for outcome in market.outcomes],
+            "close_time": market.close_time.isoformat() if market.close_time else None,
+            "resolution_time": (
+                market.resolution_time.isoformat() if market.resolution_time else None
+            ),
+            "resolution_sources": [
+                source.url for source in market.resolution_sources
+            ],
+        },
+        now=now,
+    )
+
+
+# The scale the pricing columns hold, borrowed from the request schema so one
+# change to Numeric(18, 4) moves both.
+_PRICING_QUANTUM = Decimal(1).scaleb(-PRICING_DECIMAL_PLACES)
+
+
+def _decimal_or_none(value: Decimal | None) -> str | None:
+    """Stringify at the column's scale, so two entries for one value match.
+
+    A market created by this very call still holds the Decimal the request
+    carried, while one loaded from Postgres holds the value as Numeric(18, 4)
+    returned it. Left alone, the same 250 credits would be logged as "250" on
+    the first submission and "250.0000" on the next, and a reader comparing two
+    entries would have to work out whether anything had actually changed.
+
+    Never rounds: model/schemas.py already refuses anything with more decimal
+    places than the column can hold, so this only ever pads.
+    """
+    return str(value.quantize(_PRICING_QUANTUM)) if value is not None else None
 
 
 async def _find_by_draft_key(

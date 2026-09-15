@@ -11,6 +11,7 @@ set -euo pipefail
 : "${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is required}"
 : "${LEDGER_DB_PASSWORD:?LEDGER_DB_PASSWORD is required}"
 : "${MARKET_DB_PASSWORD:?MARKET_DB_PASSWORD is required}"
+: "${AUDIT_DB_PASSWORD:?AUDIT_DB_PASSWORD is required}"
 
 SQL_DIR=/sql
 MAIN_DB="${POSTGRES_DB:-cs464}"
@@ -23,6 +24,7 @@ run --dbname "$MAIN_DB" \
     -v auth_password="$AUTH_DB_PASSWORD" \
     -v ledger_password="$LEDGER_DB_PASSWORD" \
     -v market_password="$MARKET_DB_PASSWORD" \
+    -v audit_password="$AUDIT_DB_PASSWORD" \
     -f "$SQL_DIR/01-roles.sql"
 
 # A separate database for the suite, so it can truncate without touching

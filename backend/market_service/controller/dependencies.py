@@ -35,6 +35,7 @@ from core import security
 from core.database import get_session
 from core.errors import NotAnAdministrator, NotAuthenticated
 from core.security import TokenClaims
+from service.audit import Actor
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
@@ -73,3 +74,22 @@ async def require_admin(claims: CurrentUser) -> TokenClaims:
 
 
 CurrentAdmin = Annotated[TokenClaims, Depends(require_admin)]
+
+
+async def get_actor(claims: CurrentAdmin) -> Actor:
+    """Narrow verified claims to what the service layer is allowed to know.
+
+    The audit log has to name who acted, and this service cannot resolve a user
+    id against `auth.users`, so the username and role have to come off the
+    token. This is the one place that reads them off it. [4.3] #15.
+
+    The conversion lives here rather than in `service/` on purpose: it keeps
+    the promise this module's docstring makes, that nothing below the
+    controller knows a JWT was involved. When an API gateway terminates
+    authentication, this function reads the trusted header instead and every
+    layer beneath it is unchanged.
+    """
+    return Actor(id=claims.user_id, username=claims.username, role=claims.role.value)
+
+
+CurrentActor = Annotated[Actor, Depends(get_actor)]

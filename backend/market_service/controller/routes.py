@@ -12,7 +12,7 @@ import uuid
 
 from fastapi import APIRouter, Response, status
 
-from controller.dependencies import CurrentAdmin, DbSession
+from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
 from model.schemas import (
     MarketDraftRequest,
     MarketListResponse,
@@ -42,7 +42,10 @@ router = APIRouter(prefix="/markets", tags=["markets"])
         "first time, 200 after that.\n\n"
         "A draft is never rejected for being incomplete, but the response "
         "always reports what would block submission. A submission is refused "
-        "with 422 unless that list is empty, and writes nothing when refused."
+        "with 422 unless that list is empty, and writes nothing when refused.\n\n"
+        "A successful submission appends an entry to the audit log ([4.3] "
+        "#15), in the same transaction, so the two cannot disagree. An "
+        "autosave does not."
     ),
     responses={
         201: {"description": "A market was created for this draft_key."},
@@ -53,11 +56,11 @@ router = APIRouter(prefix="/markets", tags=["markets"])
 )
 async def save_market(
     payload: MarketDraftRequest,
-    admin: CurrentAdmin,
+    actor: CurrentActor,
     session: DbSession,
     response: Response,
 ) -> MarketSaveResponse:
-    market, problems, created = await market_service.save(session, admin.user_id, payload)
+    market, problems, created = await market_service.save(session, actor, payload)
 
     if created:
         response.status_code = status.HTTP_201_CREATED

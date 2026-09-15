@@ -19,6 +19,24 @@ from core.errors import DraftIncomplete, MarketNotEditable, MarketNotFound
 from model.entities import Market, MarketStatus
 from model.schemas import MarketDraftRequest
 from service import market_service
+from service.audit import Actor
+
+
+def _actor(**overrides: object) -> Actor:
+    """A distinct administrator.
+
+    Every test gets a fresh id, which is what keeps the audit assertions
+    independent: `audit.admin_actions` is append-only, so `clean_database`
+    cannot truncate it and rows from earlier tests are still there. Filtering
+    on an id nothing else has used is how a test sees only its own entries.
+    """
+    base: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "username": "ernest_t",
+        "role": "admin",
+    }
+    base.update(overrides)
+    return Actor(**base)  # type: ignore[arg-type]
 
 
 def _request(**overrides: object) -> MarketDraftRequest:
@@ -45,7 +63,7 @@ async def _count(session: AsyncSession) -> int:
 
 # --- autosave idempotency -------------------------------------------------
 async def test_the_first_save_creates_one_market(session: AsyncSession) -> None:
-    market, _, created = await market_service.save(session, uuid.uuid4(), _request())
+    market, _, created = await market_service.save(session, _actor(), _request())
 
     assert created is True
     assert market.status is MarketStatus.DRAFT
@@ -58,7 +76,7 @@ async def test_repeated_autosaves_update_one_market(session: AsyncSession) -> No
     A three-second idle timer on an open form fires dozens of times. Without
     the key this would be dozens of abandoned drafts.
     """
-    creator = uuid.uuid4()
+    creator = _actor()
     key = uuid.uuid4()
 
     for attempt in range(5):
@@ -79,8 +97,8 @@ async def test_the_same_draft_key_from_two_creators_makes_two_markets(
     one administrator write over another's market."""
     key = uuid.uuid4()
 
-    await market_service.save(session, uuid.uuid4(), _request(draft_key=key))
-    await market_service.save(session, uuid.uuid4(), _request(draft_key=key))
+    await market_service.save(session, _actor(), _request(draft_key=key))
+    await market_service.save(session, _actor(), _request(draft_key=key))
 
     assert await _count(session) == 2
 
@@ -89,7 +107,7 @@ async def test_a_draft_may_be_almost_empty(session: AsyncSession) -> None:
     """Autosave never refuses. The admin opened the form and typed one word."""
     market, problems, _ = await market_service.save(
         session,
-        uuid.uuid4(),
+        _actor(),
         MarketDraftRequest(draft_key=uuid.uuid4(), question="Will"),
     )
 
@@ -101,7 +119,7 @@ async def test_a_draft_reports_what_would_block_submission(session: AsyncSession
     """So the form can show the admin how far off they are, with no extra call
     and without duplicating the rules in the browser."""
     _, problems, _ = await market_service.save(
-        session, uuid.uuid4(), _request(close_time=None, resolution_sources=[])
+        session, _actor(), _request(close_time=None, resolution_sources=[])
     )
 
     fields = {p.field for p in problems}
@@ -112,7 +130,7 @@ async def test_a_draft_reports_what_would_block_submission(session: AsyncSession
 async def test_clearing_a_field_stores_null_rather_than_an_empty_string(
     session: AsyncSession,
 ) -> None:
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key))
 
     market, _, _ = await market_service.save(
@@ -125,7 +143,7 @@ async def test_clearing_a_field_stores_null_rather_than_an_empty_string(
 async def test_outcomes_are_replaced_wholesale_and_keep_their_order(
     session: AsyncSession,
 ) -> None:
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key))
 
     market, _, _ = await market_service.save(
@@ -151,7 +169,7 @@ async def test_two_blank_outcomes_do_not_break_the_autosave(
     mid-thought; label uniqueness is a submission rule instead.
     """
     market, _, _ = await market_service.save(
-        session, uuid.uuid4(), _request(outcomes=[{"label": ""}, {"label": ""}])
+        session, _actor(), _request(outcomes=[{"label": ""}, {"label": ""}])
     )
 
     assert len(market.outcomes) == 2
@@ -160,7 +178,7 @@ async def test_two_blank_outcomes_do_not_break_the_autosave(
 # --- submission -----------------------------------------------------------
 async def test_a_complete_market_submits(session: AsyncSession) -> None:
     market, problems, _ = await market_service.save(
-        session, uuid.uuid4(), _request(status="submitted")
+        session, _actor(), _request(status="submitted")
     )
 
     assert market.status is MarketStatus.SUBMITTED
@@ -174,7 +192,7 @@ async def test_an_incomplete_market_is_refused_with_every_reason(
     with pytest.raises(DraftIncomplete) as raised:
         await market_service.save(
             session,
-            uuid.uuid4(),
+            _actor(),
             _request(status="submitted", question=None, resolution_criteria=None),
         )
 
@@ -188,7 +206,7 @@ async def test_a_refused_submission_writes_nothing(session: AsyncSession) -> Non
     seconds later is what keeps the edits from being lost."""
     with pytest.raises(DraftIncomplete):
         await market_service.save(
-            session, uuid.uuid4(), _request(status="submitted", close_time=None)
+            session, _actor(), _request(status="submitted", close_time=None)
         )
 
     await session.rollback()
@@ -198,7 +216,7 @@ async def test_a_refused_submission_writes_nothing(session: AsyncSession) -> Non
 async def test_a_refused_submission_leaves_an_existing_draft_untouched(
     session: AsyncSession,
 ) -> None:
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key, question="Original"))
 
     with pytest.raises(DraftIncomplete):
@@ -219,7 +237,7 @@ async def test_a_market_can_be_submitted_after_being_drafted(
 ) -> None:
     """The real sequence: the timer saves a few times, then the admin presses
     the button on the same form."""
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key, question="Half"))
 
     market, _, created = await market_service.save(
@@ -236,7 +254,7 @@ async def test_a_late_autosave_cannot_revert_a_submitted_market(
 ) -> None:
     """The form is still open after the submit button, and the timer fires
     again. Letting that through would silently un-submit a finished market."""
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key, status="submitted"))
 
     with pytest.raises(MarketNotEditable):
@@ -245,7 +263,7 @@ async def test_a_late_autosave_cannot_revert_a_submitted_market(
 
 async def test_a_submitted_market_can_be_submitted_again(session: AsyncSession) -> None:
     """A deliberate edit is allowed; it just has to pass every rule again."""
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key, status="submitted"))
 
     market, _, _ = await market_service.save(
@@ -267,7 +285,7 @@ async def test_submission_is_judged_against_the_clock_it_is_given(
 
     with pytest.raises(DraftIncomplete):
         await market_service.save(
-            session, uuid.uuid4(), request, now=datetime.now(UTC) + timedelta(days=60)
+            session, _actor(), request, now=datetime.now(UTC) + timedelta(days=60)
         )
 
 
@@ -284,7 +302,7 @@ async def test_losing_an_insert_race_still_saves(
     which puts this pass in the loser's position deterministically instead of
     depending on scheduling.
     """
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key, question="Winner"))
 
     real_lookup = market_service._find_by_draft_key
@@ -310,16 +328,16 @@ async def test_losing_an_insert_race_still_saves(
 
 # --- visibility -----------------------------------------------------------
 async def test_a_creator_can_read_their_own_market(session: AsyncSession) -> None:
-    creator = uuid.uuid4()
+    creator = _actor()
     market, _, _ = await market_service.save(session, creator, _request())
 
-    assert (await market_service.get(session, creator, market.id)).id == market.id
+    assert (await market_service.get(session, creator.id, market.id)).id == market.id
 
 
 async def test_another_administrator_cannot_read_it(session: AsyncSession) -> None:
     """[1.1] #1: a draft is visible to its creator and to nobody else,
     including other administrators."""
-    market, _, _ = await market_service.save(session, uuid.uuid4(), _request())
+    market, _, _ = await market_service.save(session, _actor(), _request())
 
     with pytest.raises(MarketNotFound):
         await market_service.get(session, uuid.uuid4(), market.id)
@@ -330,7 +348,7 @@ async def test_a_missing_market_and_someone_elses_are_indistinguishable(
 ) -> None:
     """Same error for both, so the response cannot be used to discover that a
     market exists."""
-    market, _, _ = await market_service.save(session, uuid.uuid4(), _request())
+    market, _, _ = await market_service.save(session, _actor(), _request())
     intruder = uuid.uuid4()
 
     with pytest.raises(MarketNotFound) as theirs:
@@ -343,13 +361,13 @@ async def test_a_missing_market_and_someone_elses_are_indistinguishable(
 
 
 async def test_the_list_holds_only_the_callers_markets(session: AsyncSession) -> None:
-    mine, theirs = uuid.uuid4(), uuid.uuid4()
+    mine, theirs = _actor(), _actor()
     await market_service.save(session, mine, _request())
     await market_service.save(session, mine, _request())
     await market_service.save(session, theirs, _request())
 
-    assert len(await market_service.list_for_creator(session, mine)) == 2
-    assert len(await market_service.list_for_creator(session, theirs)) == 1
+    assert len(await market_service.list_for_creator(session, mine.id)) == 2
+    assert len(await market_service.list_for_creator(session, theirs.id)) == 1
 
 
 async def test_the_list_is_empty_for_an_administrator_with_no_markets(
@@ -364,7 +382,7 @@ async def test_an_omitted_liquidity_takes_the_configured_default(
 ) -> None:
     """"b defaults to a configured value", so a market is priceable from the
     first save and the form can show a worst case immediately."""
-    market, _, _ = await market_service.save(session, uuid.uuid4(), _request())
+    market, _, _ = await market_service.save(session, _actor(), _request())
 
     assert market.liquidity_b == get_settings().default_liquidity_b
 
@@ -373,7 +391,7 @@ async def test_an_explicit_liquidity_overrides_the_default(
     session: AsyncSession,
 ) -> None:
     market, _, _ = await market_service.save(
-        session, uuid.uuid4(), _request(liquidity_b=Decimal("250"))
+        session, _actor(), _request(liquidity_b=Decimal("250"))
     )
 
     assert market.liquidity_b == Decimal("250")
@@ -387,7 +405,7 @@ async def test_the_liquidity_can_be_changed_by_a_later_autosave(
     Last-write-wins on the whole document, the same as every other term, so
     reverting has to work as well as setting.
     """
-    creator, key = uuid.uuid4(), uuid.uuid4()
+    creator, key = _actor(), uuid.uuid4()
 
     await market_service.save(
         session, creator, _request(draft_key=key, liquidity_b=Decimal("500"))
@@ -405,7 +423,7 @@ async def test_an_omitted_subsidy_stays_null_rather_than_taking_a_default(
     """There is no sensible platform-wide answer to how much this particular
     market is worth underwriting, so absence is left for the admin to fill."""
     market, problems, _ = await market_service.save(
-        session, uuid.uuid4(), _request(seed_subsidy=None)
+        session, _actor(), _request(seed_subsidy=None)
     )
 
     assert market.seed_subsidy is None
@@ -423,7 +441,7 @@ async def test_a_market_seeded_below_its_worst_case_still_submits(
     """
     market, problems, _ = await market_service.save(
         session,
-        uuid.uuid4(),
+        _actor(),
         _request(status="submitted", liquidity_b=Decimal("100"), seed_subsidy=Decimal("1")),
     )
 
