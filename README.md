@@ -123,3 +123,5 @@ to make and would be expensive to reverse.
   and admin authority carried in the token
 - [0004](docs/adr/0004-draft-autosave-and-submission.md) one idempotent
   endpoint for both autosave and submission
+- [0005](docs/adr/0005-trading-service-boundary.md) a composite trading
+  service, and positions with the ledger
