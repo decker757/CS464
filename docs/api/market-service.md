@@ -109,6 +109,13 @@ Both must be greater than zero if present: `0` or a negative number is a `422`
 even on an autosave. Absence is fine at any point; it is a submission rule, not
 a shape rule.
 
+**Both are bounded by what the column stores** — at most `99999999999999.9999`,
+and at most four decimal places. A larger value or a fifth decimal place is a
+`422` naming the field. The scale matters more than it looks: without it
+`0.00001` would pass, round to `0.0000` in the database, and reload as a market
+that fails its own "greater than zero" rule while the save response still
+reported `0.00001`.
+
 Nothing is charged to anybody. Recording a subsidy does not move credits — that
 is the ledger's job ([F-1] #41) and this service holds no balances.
 
@@ -155,14 +162,19 @@ them changes nothing.
 `max_platform_loss` is `b × ln(n)` — the most the platform can lose over this
 market's life, whatever traders do. Show it beside `seed_subsidy`; that
 comparison is the whole point of [1.2] #2's second criterion. It is `null` until
-`liquidity_b` is set and there are at least two outcomes.
+`liquidity_b` is set and at least two outcomes are named.
 
 `initial_price` is what each outcome costs before anyone has traded: `1/n`,
 identical across outcomes, which is the third criterion. It appears as soon as a
-second outcome is typed and does not depend on `b`. It is `null` below two
-outcomes, where a price would be meaningless. The values are unrounded so they
-sum to 1 — three outcomes give `0.3333…` each, and formatting is the browser's
-job.
+second outcome is named and does not depend on `b`. The values are unrounded so
+they sum to 1 — three outcomes give `0.3333…` each, and formatting is the
+browser's job.
+
+**`n` counts only named outcomes.** A row the admin has added but not yet
+labelled is not an outcome: it gets `initial_price: null` and does not move
+`max_platform_loss`. Two named outcomes beside two empty rows price as `b × ln
+2` and `0.5` apiece, which is the market that will actually submit — the same
+count `blocking_submission` uses. Below two named outcomes both are `null`.
 
 Both are computed server-side so there is one definition. Do not reimplement
 either in the frontend.
@@ -283,3 +295,5 @@ Branch on the presence of `error`.
    one definition, and a second one will drift.
 9. A subsidy smaller than `max_platform_loss` **is allowed** and submits
    normally. Warn in the UI if you like; do not disable the button for it.
+10. Round pricing inputs to four decimal places before sending, and keep them
+    under `99999999999999.9999`, or the save comes back `422`.

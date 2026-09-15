@@ -39,6 +39,19 @@ MAX_LABEL_LENGTH = 120
 MAX_QUESTION_LENGTH = 500
 MAX_URL_LENGTH = 2048
 
+# Mirrors Numeric(18, 4) on the pricing columns in model/entities.py: fourteen
+# digits before the point and four after. Both halves are load-bearing, and
+# neither is a domain opinion about a sensible liquidity — they are what the
+# column can hold.
+#
+# Without the ceiling, Postgres raises `numeric field overflow` and the driver
+# error escapes as a 500 on a value the admin typed. Without the scale, a fifth
+# decimal place is rounded away silently, so `0.00001` is accepted, stored as
+# `0.0000`, and reloads as a market that fails its own `b > 0` rule — while the
+# response reports the value as sent, because it is the in-memory object.
+PRICING_DECIMAL_PLACES = 4
+MAX_PRICING_VALUE = Decimal("99999999999999.9999")
+
 
 class OutcomeIn(BaseModel):
     """Blank is allowed. The admin may have added a row before naming it."""
@@ -136,6 +149,8 @@ class MarketDraftRequest(BaseModel):
     liquidity_b: Decimal | None = Field(
         default=None,
         gt=0,
+        le=MAX_PRICING_VALUE,
+        decimal_places=PRICING_DECIMAL_PLACES,
         description=(
             "LMSR liquidity. Higher means prices move less per trade and the "
             "platform's worst-case loss is larger. Omit to accept the "
@@ -146,6 +161,8 @@ class MarketDraftRequest(BaseModel):
     seed_subsidy: Decimal | None = Field(
         default=None,
         gt=0,
+        le=MAX_PRICING_VALUE,
+        decimal_places=PRICING_DECIMAL_PLACES,
         description=(
             "Mock credits put up to cover the market maker's worst case. "
             "Compare against `max_platform_loss` in the response."
@@ -235,30 +252,48 @@ class MarketOut(_UtcTimestamps):
     # `b` and outcome count they come from, and so they appear on all three
     # routes without the controller or the service layer assembling them.
 
+    @property
+    def _named_outcomes(self) -> list[OutcomeOut]:
+        """The outcomes that actually exist yet.
+
+        A blank row is a row the admin has added and not named, and it is the
+        normal state of a form mid-edit. Counting it would price a market that
+        `service/validation.py` will refuse, because MIN_OUTCOMES is checked
+        against named outcomes: two real outcomes beside two empty rows would
+        advertise b*ln(4) and 0.25 apiece for a market that submits as b*ln(2)
+        and 0.5. The number on screen has to be the number the admin is going
+        to get.
+        """
+        return [o for o in self.outcomes if (o.label or "").strip()]
+
     @computed_field(  # type: ignore[prop-decorator]
         description=(
-            "The most the platform can lose over this market's life, b*ln(n). "
-            "Null until `liquidity_b` is set and there are at least two "
-            "outcomes. Show this beside `seed_subsidy`; do not recompute it in "
-            "the browser."
+            "The most the platform can lose over this market's life, b*ln(n), "
+            "counting only named outcomes. Null until `liquidity_b` is set and "
+            "at least two outcomes are named. Show this beside `seed_subsidy`; "
+            "do not recompute it in the browser."
         ),
         examples=[69.31471805599453],
     )
     @property
     def max_platform_loss(self) -> float | None:
-        return max_platform_loss(self.liquidity_b, len(self.outcomes))
+        return max_platform_loss(self.liquidity_b, len(self._named_outcomes))
 
     @model_validator(mode="after")
     def _price_the_outcomes(self) -> MarketOut:
-        """Give every outcome its opening price.
+        """Give every named outcome its opening price.
 
         Uniform by definition: before anybody has traded, no outcome is more
         likely than another, so each opens at 1/n. That is the whole of [1.2]
         #2's third criterion, and it depends on the outcome count rather than
-        on `b`, which is why it appears as soon as a second outcome is typed.
+        on `b`, which is why it appears as soon as a second outcome is named.
+
+        An unnamed row keeps a null price. It is not an outcome yet, and
+        quoting one would be quoting a thing that does not exist.
         """
-        price = uniform_initial_price(len(self.outcomes))
-        for outcome in self.outcomes:
+        named = self._named_outcomes
+        price = uniform_initial_price(len(named))
+        for outcome in named:
             outcome.initial_price = price
         return self
 

@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from model.entities import MarketStatus
 from model.schemas import (
     MAX_OUTCOMES,
+    MAX_PRICING_VALUE,
     MAX_QUESTION_LENGTH,
     MarketDraftRequest,
     MarketOut,
@@ -119,10 +120,10 @@ def test_a_status_this_ticket_does_not_own_is_refused(status: str) -> None:
 
 
 class _FakeOutcome:
-    def __init__(self, position: int) -> None:
+    def __init__(self, position: int, label: str | None = None) -> None:
         self.id = uuid.uuid4()
         self.position = position
-        self.label = f"Outcome {position}"
+        self.label = f"Outcome {position}" if label is None else label
 
 
 class _FakeMarket:
@@ -132,6 +133,7 @@ class _FakeMarket:
         self,
         *,
         outcomes: int = 0,
+        labels: list[str] | None = None,
         liquidity_b: Decimal | None = Decimal("100"),
     ) -> None:
         self.id = uuid.uuid4()
@@ -140,7 +142,11 @@ class _FakeMarket:
         self.status = MarketStatus.DRAFT
         self.question = "Will it rain in Singapore tomorrow?"
         self.description = None
-        self.outcomes = [_FakeOutcome(i) for i in range(outcomes)]
+        self.outcomes = (
+            [_FakeOutcome(i, label) for i, label in enumerate(labels)]
+            if labels is not None
+            else [_FakeOutcome(i) for i in range(outcomes)]
+        )
         self.liquidity_b = liquidity_b
         self.seed_subsidy = Decimal("250")
         self.close_time = datetime(2027, 1, 1, 8, 0, 0)
@@ -258,3 +264,74 @@ def test_the_pricing_numbers_serialise_as_numbers_not_strings() -> None:
         assert isinstance(payload[field], float), f"{field} is {type(payload[field])}"
 
     assert isinstance(payload["outcomes"][0]["initial_price"], float)
+
+
+# --- pricing bounds, mirroring Numeric(18, 4) -----------------------------
+@pytest.mark.parametrize("field", ["liquidity_b", "seed_subsidy"])
+def test_a_value_too_large_for_the_column_is_refused(field: str) -> None:
+    """Otherwise Postgres raises `numeric field overflow` and the driver error
+    escapes as a 500 on a number the admin typed into a form."""
+    with pytest.raises(ValidationError):
+        MarketDraftRequest(**_payload(**{field: MAX_PRICING_VALUE + 1}))
+
+
+@pytest.mark.parametrize("field", ["liquidity_b", "seed_subsidy"])
+def test_the_largest_storable_value_is_accepted(field: str) -> None:
+    """The bound is the column's, not an opinion about a sensible liquidity, so
+    the value one step inside it has to pass."""
+    parsed = MarketDraftRequest(**_payload(**{field: MAX_PRICING_VALUE}))
+
+    assert getattr(parsed, field) == MAX_PRICING_VALUE
+
+
+@pytest.mark.parametrize("field", ["liquidity_b", "seed_subsidy"])
+def test_a_fifth_decimal_place_is_refused_rather_than_rounded(field: str) -> None:
+    """`0.00001` passes `gt=0`, and Numeric(18, 4) then rounds it to `0.0000`.
+
+    The market reloads violating the `b > 0` rule its own validator enforces,
+    while the save response reports the value as sent, because that is the
+    in-memory object rather than the column. Refusing beats storing a number
+    the admin did not ask for and then reporting a different one.
+    """
+    with pytest.raises(ValidationError):
+        MarketDraftRequest(**_payload(**{field: "0.00001"}))
+
+
+@pytest.mark.parametrize("field", ["liquidity_b", "seed_subsidy"])
+def test_four_decimal_places_are_kept(field: str) -> None:
+    parsed = MarketDraftRequest(**_payload(**{field: "100.1234"}))
+
+    assert getattr(parsed, field) == Decimal("100.1234")
+
+
+# --- blank rows are not outcomes ------------------------------------------
+def test_an_unnamed_row_is_not_counted_or_priced() -> None:
+    """The normal state of a form mid-edit, and it must not move the numbers.
+
+    Counting the blanks would advertise b*ln(4) and 0.25 apiece for a market
+    that `service/validation.py` will accept as b*ln(2) and 0.5, so the admin
+    would be shown a worst case they are not going to get.
+    """
+    out = MarketOut.model_validate(_FakeMarket(labels=["Yes", "No", "", "   "]))
+
+    assert out.max_platform_loss == pytest.approx(69.31471805599453)
+    assert [o.initial_price for o in out.outcomes] == [
+        pytest.approx(0.5),
+        pytest.approx(0.5),
+        None,
+        None,
+    ]
+
+
+def test_rows_that_are_all_blank_price_nothing() -> None:
+    out = MarketOut.model_validate(_FakeMarket(labels=["", ""]))
+
+    assert out.max_platform_loss is None
+    assert all(o.initial_price is None for o in out.outcomes)
+
+
+def test_one_named_outcome_beside_a_blank_is_still_too_few() -> None:
+    out = MarketOut.model_validate(_FakeMarket(labels=["Yes", ""]))
+
+    assert out.max_platform_loss is None
+    assert all(o.initial_price is None for o in out.outcomes)
