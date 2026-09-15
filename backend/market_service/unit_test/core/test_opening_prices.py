@@ -1,7 +1,8 @@
 """The q = 0 pricing arithmetic. [1.2] #2.
 
 Pure functions, so these are plain assertions about numbers. The boundary this
-file also defends: `core/lmsr.py` must stay the degenerate case and must not
+file also defends: `core/opening_prices.py` must stay the degenerate case and
+must not
 grow into a second copy of the engine that ADR 0005 puts on the trading side.
 """
 
@@ -12,7 +13,7 @@ from decimal import Decimal
 
 import pytest
 
-from core import lmsr
+from core import opening_prices
 
 
 # --- max platform loss ----------------------------------------------------
@@ -28,7 +29,7 @@ from core import lmsr
 def test_the_worst_case_is_b_times_the_log_of_the_outcome_count(
     b: Decimal, outcomes: int, expected: float
 ) -> None:
-    assert lmsr.max_platform_loss(b, outcomes) == pytest.approx(expected)
+    assert opening_prices.max_platform_loss(b, outcomes) == pytest.approx(expected)
 
 
 def test_a_binary_market_at_b_of_one_hundred_loses_at_most_about_seventy() -> None:
@@ -37,22 +38,22 @@ def test_a_binary_market_at_b_of_one_hundred_loses_at_most_about_seventy() -> No
     If a refactor changes it, the form starts advertising a different worst
     case and the test should say so rather than tracking the code.
     """
-    assert lmsr.max_platform_loss(Decimal("100"), 2) == pytest.approx(69.31471805599453)
+    assert opening_prices.max_platform_loss(Decimal("100"), 2) == pytest.approx(69.31471805599453)
 
 
 @pytest.mark.parametrize("b", [Decimal("0"), Decimal("-1")])
 def test_a_non_positive_liquidity_has_no_worst_case(b: Decimal) -> None:
-    assert lmsr.max_platform_loss(b, 2) is None
+    assert opening_prices.max_platform_loss(b, 2) is None
 
 
 def test_an_unset_liquidity_has_no_worst_case() -> None:
-    assert lmsr.max_platform_loss(None, 2) is None
+    assert opening_prices.max_platform_loss(None, 2) is None
 
 
 # --- initial prices -------------------------------------------------------
 @pytest.mark.parametrize("count", [2, 3, 5, 10])
 def test_every_outcome_opens_at_one_over_n(count: int) -> None:
-    assert lmsr.uniform_initial_price(count) == pytest.approx(1 / count)
+    assert opening_prices.uniform_initial_price(count) == pytest.approx(1 / count)
 
 
 @pytest.mark.parametrize("count", [2, 3, 7])
@@ -63,7 +64,7 @@ def test_the_opening_prices_sum_to_one(count: int) -> None:
     0.3333 sum to 0.9999 and read as a bug in the maths rather than a display
     choice. Rounding is the browser's job.
     """
-    price = lmsr.uniform_initial_price(count)
+    price = opening_prices.uniform_initial_price(count)
 
     assert price is not None
     assert price * count == pytest.approx(1.0)
@@ -78,8 +79,8 @@ def test_neither_number_exists_below_two_outcomes(count: int) -> None:
     that the platform cannot lose and the result is certain. Both are useless,
     so they are reported as absent.
     """
-    assert lmsr.max_platform_loss(Decimal("100"), count) is None
-    assert lmsr.uniform_initial_price(count) is None
+    assert opening_prices.max_platform_loss(Decimal("100"), count) is None
+    assert opening_prices.uniform_initial_price(count) is None
 
 
 # --- boundary -------------------------------------------------------------
@@ -93,10 +94,10 @@ def test_this_module_does_not_grow_a_cost_function() -> None:
     """
     defined_here = {
         name
-        for name, value in vars(lmsr).items()
+        for name, value in vars(opening_prices).items()
         if not name.startswith("_")
         and callable(value)
-        and getattr(value, "__module__", None) == lmsr.__name__
+        and getattr(value, "__module__", None) == opening_prices.__name__
     }
 
     assert defined_here == {"max_platform_loss", "uniform_initial_price"}

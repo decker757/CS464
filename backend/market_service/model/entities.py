@@ -98,7 +98,8 @@ class Market(Base):
     # How this market will be priced. [1.2] #2.
     #
     # `liquidity_b` sets how far a trade moves the price, and with it the most
-    # the automated market maker can lose: b*ln(n), which `core/lmsr.py`
+    # the automated market maker can lose: b*ln(n), which
+    # `core/opening_prices.py`
     # derives. `seed_subsidy` is the mock credits put up to cover that loss.
     # Nothing here is charged to anybody — moving credits is the ledger's job
     # ([F-1] #41) and this service holds no balances.

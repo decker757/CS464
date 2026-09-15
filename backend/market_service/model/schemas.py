@@ -26,7 +26,7 @@ from pydantic import (
     model_validator,
 )
 
-from core.lmsr import max_platform_loss, uniform_initial_price
+from core.opening_prices import max_platform_loss, uniform_initial_price
 from model.entities import MarketStatus
 
 # Shape ceilings, not domain rules, so they live here rather than in config:
@@ -227,7 +227,8 @@ class MarketOut(_UtcTimestamps):
 
     # --- derived, read-only -------------------------------------------------
     # [1.2] #2's second and third acceptance criteria. Both are the q = 0 case
-    # of LMSR, which is arithmetic rather than the engine; see core/lmsr.py and
+    # of LMSR, which is arithmetic rather than the engine; see
+    # core/opening_prices.py and
     # ADR 0005 for why the engine itself is not in this service.
     #
     # Derived on every read rather than stored, so they cannot drift from the
