@@ -83,6 +83,7 @@ superuser. That is what makes the cross-schema denial tests mean something.
 backend/auth_service/   registration, login, logout, sessions
 backend/market_service/ drafting and submitting markets
 sql/                    roles, schemas and grants for the shared Postgres
+sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
 docs/adr/               decisions and why they were made
 docs/api/               endpoint contracts for the frontend
 scripts/                weekly sprint digest to Telegram
