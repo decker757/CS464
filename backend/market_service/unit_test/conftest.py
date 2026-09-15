@@ -66,7 +66,6 @@ from datetime import UTC, datetime, timedelta  # noqa: E402
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from sqlalchemy import text  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -122,7 +121,17 @@ def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str
 
 @pytest.fixture
 async def clean_database():
-    """Create the schema if absent, then empty every table.
+    """Rebuild the schema, then hand over an empty database.
+
+    Dropped and recreated rather than created-if-absent. `create_all` only ever
+    issues CREATE TABLE IF NOT EXISTS, so a column added to `model/entities.py`
+    never reaches a test database that already has the table, and the suite
+    fails with "column ... does not exist" on a model change that is perfectly
+    correct. [1.2] #2 added two columns and hit exactly that.
+
+    The cost is a drop and create per test, which is a few milliseconds for
+    three small tables and buys a suite that always matches the models. When
+    [F-1] #41 brings Alembic, this becomes "migrate to head" instead.
 
     Deliberately not autouse. Only `session` and `client` depend on it, so the
     pure unit tests under core/, model/ and the validation rules never need
@@ -133,12 +142,8 @@ async def clean_database():
     engine = get_engine()
     try:
         async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
-            tables = ", ".join(
-                f"{t.schema}.{t.name}" if t.schema else t.name
-                for t in Base.metadata.sorted_tables
-            )
-            await conn.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
     except SQLAlchemyError as exc:
         pytest.fail(f"{_UNREACHABLE}\n\n{exc}")
 
@@ -219,4 +224,7 @@ def submittable_payload() -> dict[str, object]:
         "resolution_sources": [
             {"url": "https://www.mas.gov.sg/statistics", "label": "MAS statistics"}
         ],
+        # [1.2] #2. No liquidity_b: omitting it exercises the configured
+        # default, which is the common case from the form.
+        "seed_subsidy": 250,
     }

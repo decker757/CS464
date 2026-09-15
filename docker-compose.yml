@@ -74,6 +74,10 @@ services:
       # today and what the upgrade is.
       JWT_SECRET: ${JWT_SECRET:?}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      # [1.2] #2. Optional, unlike the two above: a liquidity parameter is not
+      # a credential, so a default here is a tuning choice rather than a
+      # published secret. An admin overrides it per market.
+      DEFAULT_LIQUIDITY_B: ${DEFAULT_LIQUIDITY_B:-100}
     ports:
       - "${MARKET_PORT:-8001}:8000"
     restart: unless-stopped

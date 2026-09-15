@@ -24,6 +24,9 @@ def _payload(**overrides: object) -> dict[str, object]:
         "resolution_time": future(days=45),
         "resolution_criteria": "Resolves YES on the first published MAS print below 2.0%.",
         "resolution_sources": [{"url": "https://www.mas.gov.sg/statistics"}],
+        # [1.2] #2. No liquidity_b: leaving it out is the common case from the
+        # form and lets the configured default apply.
+        "seed_subsidy": 250,
     }
     base.update(overrides)
     return base

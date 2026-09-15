@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -65,6 +67,66 @@ def test_the_token_settings_default_to_the_auth_service_contract() -> None:
     assert parsed.jwt_algorithm == "HS256"
     assert parsed.jwt_issuer == "cs464-auth"
     assert parsed.access_cookie_name == "access_token"
+
+
+def test_the_liquidity_default_is_configured_and_has_a_value() -> None:
+    """[1.2] #2: "b defaults to a configured value and accepts override".
+
+    Unlike DATABASE_URL and JWT_SECRET this one HAS a default, and the contrast
+    is the point. Those two are refused without a value because a default is a
+    credential; a liquidity parameter is not, and making it required would mean
+    every teammate edits .env before compose will start in order to restate a
+    number none of them disagrees about.
+    """
+    assert _settings().default_liquidity_b == Decimal("100")
+
+
+def test_the_liquidity_default_can_be_overridden_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sets DEFAULT_LIQUIDITY_B rather than passing a keyword argument.
+
+    A constructor kwarg skips the settings source entirely, so it proves the
+    field parses and nothing about the path a deploy actually takes. That gap
+    is how the CORS_ORIGINS decoding bug reached a container.
+    """
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
+    )
+    monkeypatch.setenv("JWT_SECRET", "a" * 32)
+    monkeypatch.setenv("DEFAULT_LIQUIDITY_B", "250")
+
+    assert Settings(_env_file=None).default_liquidity_b == Decimal("250")
+
+
+def test_the_liquidity_default_is_read_from_the_environment_as_a_decimal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An environment variable is always a string; the field must not stay one.
+
+    `"250" * 2` is `"250250"`, and this value is multiplied by a logarithm.
+    """
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
+    )
+    monkeypatch.setenv("JWT_SECRET", "a" * 32)
+    monkeypatch.setenv("DEFAULT_LIQUIDITY_B", "12.5")
+
+    parsed = Settings(_env_file=None).default_liquidity_b
+
+    assert isinstance(parsed, Decimal)
+    assert parsed == Decimal("12.5")
+
+
+@pytest.mark.parametrize("bad", ["0", "-5"])
+def test_a_non_positive_liquidity_default_refuses_to_boot(bad: str) -> None:
+    """Fail at startup rather than writing an unpriceable market to every row.
+
+    The per-market field is validated in model/schemas.py; this is the same
+    rule for the value that applies when the admin does not choose one.
+    """
+    with pytest.raises(ValidationError):
+        _settings(default_liquidity_b=bad)
 
 
 def test_no_authentication_policy_knobs_live_here() -> None:

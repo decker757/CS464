@@ -83,6 +83,7 @@ superuser. That is what makes the cross-schema denial tests mean something.
 backend/auth_service/   registration, login, logout, sessions
 backend/market_service/ drafting and submitting markets
 sql/                    roles, schemas and grants for the shared Postgres
+sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
 docs/adr/               decisions and why they were made
 docs/api/               endpoint contracts for the frontend
 scripts/                weekly sprint digest to Telegram
@@ -123,3 +124,5 @@ to make and would be expensive to reverse.
   and admin authority carried in the token
 - [0004](docs/adr/0004-draft-autosave-and-submission.md) one idempotent
   endpoint for both autosave and submission
+- [0005](docs/adr/0005-trading-service-boundary.md) a composite trading
+  service, and positions with the ledger

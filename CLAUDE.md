@@ -12,14 +12,17 @@ in GitHub Project v2 #6.
 backend/auth_service/   registration, login, logout, sessions   [A-1..A-3]
 backend/market_service/ drafting and submitting markets         [1.1]
 sql/                    roles, schemas and grants for the shared Postgres
+sql/migrations/         hand-applied ALTERs, until Alembic ([F-1] #41)
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
 scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 ```
 
-More services are coming: a ledger ([F-1] #41), an LMSR pricing engine
-([F-3] #43), and a websocket server ([F-2] #42).
+More services are coming: a ledger ([F-1] #41), a stateless trading composite
+(the [T-*] epic), and a websocket server ([F-2] #42). The LMSR pricing engine
+([F-3] #43) is a module rather than a service, and lives wherever `q` lives;
+ADR 0005 says why.
 
 ## Running things
 
@@ -44,6 +47,30 @@ service refuses to boot without them.
 **Changing anything in `sql/` needs `docker compose down -v`.** Postgres runs
 init scripts only on first initialisation of the data volume. Without the `-v`
 your changes appear to do nothing. It destroys local data.
+
+**Adding a column does not reach a database that already has the table.**
+Both services call `create_all` at startup, and that only ever issues CREATE
+TABLE IF NOT EXISTS, so a new column in `model/entities.py` reaches a fresh
+database automatically and an existing one never. The service then dies on
+every request with `column ... does not exist`, which reads like a code bug and
+is not one. [1.2] #2 hit this on both the dev and the test database.
+
+Write an idempotent `ALTER TABLE` in `sql/migrations/` and apply it by hand:
+
+```bash
+docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
+  -f /sql/migrations/0001-market-lmsr-parameters.sql
+```
+
+These do **not** belong in `sql/` itself. `00-init.sh` names its two files
+explicitly and runs only on first initialisation of the volume, so a file added
+there would never run on the database that needs it — and on a fresh volume it
+runs before any service exists, when there is no table to alter.
+
+The test databases handle themselves: `unit_test/conftest.py` drops and
+recreates the schema per test, so a model change is picked up automatically
+there. It is the long-lived `cs464` database that drifts. [F-1] #41 replaces
+all of this with Alembic.
 
 **Tests run against Postgres, not SQLite**, each suite as its own service role
 under production grants, from its own `<SERVICE>_TEST_DATABASE_URL`. The two
@@ -129,6 +156,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0002** cookies for browsers, bearer tokens for services
 - **0003** a separate market service, and admin authority carried in the token
 - **0004** one idempotent endpoint for both draft autosave and submission
+- **0005** a composite trading service, and positions with the ledger
 
 Two known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. And a `SameSite=Lax`

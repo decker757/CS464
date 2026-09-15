@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -27,6 +28,8 @@ def _market(**overrides: object) -> Market:
         "close_time": NOW + timedelta(days=30),
         "resolution_time": NOW + timedelta(days=45),
         "resolution_criteria": "Resolves YES on the first published MAS print below 2.0%.",
+        "liquidity_b": Decimal("100"),
+        "seed_subsidy": Decimal("250"),
     }
     defaults.update(overrides)
 
@@ -208,3 +211,40 @@ def test_every_problem_is_reported_not_just_the_first() -> None:
         "resolution_criteria",
         "resolution_sources",
     }
+
+
+# --- pricing [1.2] #2 -----------------------------------------------------
+def test_the_liquidity_parameter_is_required() -> None:
+    assert "liquidity_b" in _fields(_market(liquidity_b=None))
+
+
+def test_the_seed_subsidy_is_required() -> None:
+    assert "seed_subsidy" in _fields(_market(seed_subsidy=None))
+
+
+@pytest.mark.parametrize("b", [Decimal("0"), Decimal("-1")])
+def test_a_non_positive_liquidity_is_a_problem(b: Decimal) -> None:
+    """Unreachable through the API, where the request schema refuses it first.
+
+    Asserted anyway because this function is the single definition of "ready"
+    that [1.3] #3 and [1.4] #4 also call, and it is handed an entity rather
+    than a request.
+    """
+    assert "liquidity_b" in _fields(_market(liquidity_b=b))
+
+
+def test_a_subsidy_below_the_worst_case_does_not_block_submission() -> None:
+    """The deliberate omission, and the reason it is a test rather than a gap.
+
+    b = 100 across two outcomes can lose about 69.31, and this market seeds 1.
+    The admin is told the number on every save — MarketOut.max_platform_loss —
+    so underfunding is an informed choice rather than an accident, and these
+    are mock credits. [2.2] #6 flags the related but different quantity,
+    realised exposure once traders hold shares, where it can be acted on.
+
+    If this ever should block, the rule belongs in _liquidity_problems and this
+    test inverts.
+    """
+    underfunded = _market(liquidity_b=Decimal("100"), seed_subsidy=Decimal("1"))
+
+    assert problems_blocking_submission(underfunded, now=NOW) == []
