@@ -69,7 +69,52 @@ async def test_a_duplicate_is_refused_and_names_the_clashing_field(
     with pytest.raises(DuplicateUser) as caught:
         await auth_service.register(session, second)
 
-    assert caught.value.field == expected_clash
+    assert [problem.field for problem in caught.value.problems] == [expected_clash]
+
+
+async def test_a_duplicate_names_every_clashing_field(
+    session: AsyncSession,
+    registered_user: User,
+    registration_payload: dict[str, str],
+) -> None:
+    """Both clashes are reported together, not one submission at a time."""
+    second = RegisterRequest(**registration_payload)
+
+    with pytest.raises(DuplicateUser) as caught:
+        await auth_service.register(session, second)
+
+    assert [problem.field for problem in caught.value.problems] == ["username", "email"]
+
+
+async def test_a_lost_race_still_names_the_clashing_field(
+    session: AsyncSession,
+    registered_user: User,
+    registration_payload: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The insert, not the pre-check, catches a concurrent registration.
+
+    The pre-check is forced to miss once, which is exactly what losing the race
+    looks like: the winning row is not visible when we look, and the unique
+    index refuses the insert a moment later. The frontend still gets a field,
+    so `details` is present on every duplicate rather than usually present.
+    """
+    real_taken_fields = auth_service._taken_fields
+    calls = {"n": 0}
+
+    async def _miss_once(*args: object, **kwargs: object) -> list[str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return []
+        return await real_taken_fields(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(auth_service, "_taken_fields", _miss_once)
+
+    with pytest.raises(DuplicateUser) as caught:
+        await auth_service.register(session, RegisterRequest(**registration_payload))
+
+    assert calls["n"] == 2
+    assert [problem.field for problem in caught.value.problems] == ["username", "email"]
 
 
 @pytest.mark.parametrize("variant", ["Ernest_T", "ERNEST_T"])

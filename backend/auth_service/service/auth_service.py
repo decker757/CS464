@@ -30,18 +30,27 @@ async def _find_by_identifier(session: AsyncSession, identifier: str) -> User | 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _taken_field(session: AsyncSession, username: str, email: str) -> str | None:
-    """Return which field is already registered, or None."""
+async def _taken_fields(session: AsyncSession, username: str, email: str) -> list[str]:
+    """Return every field already registered, in form order.
+
+    Both are reported when both clash, so the form can mark them together
+    rather than sending the user round the loop twice. Uniqueness bounds this
+    to at most two rows.
+    """
     stmt = select(User).where(
         or_(
             func.lower(User.username) == username.lower(),
             func.lower(User.email) == email.lower(),
         )
     )
-    existing = (await session.execute(stmt)).scalars().first()
-    if existing is None:
-        return None
-    return "username" if existing.username.lower() == username.lower() else "email"
+    existing = (await session.execute(stmt)).scalars().all()
+
+    taken = []
+    if any(user.username.lower() == username.lower() for user in existing):
+        taken.append("username")
+    if any(user.email.lower() == email.lower() for user in existing):
+        taken.append("email")
+    return taken
 
 
 async def issue_tokens(session: AsyncSession, user: User) -> TokenPair:
@@ -75,7 +84,7 @@ async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, 
     service does not know that credits exist. The ledger mints the grant
     itself on a user's first balance read; see the README for why.
     """
-    if (taken := await _taken_field(session, data.username, data.email)) is not None:
+    if taken := await _taken_fields(session, data.username, data.email):
         raise DuplicateUser(taken)
 
     user = User(
@@ -91,7 +100,12 @@ async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, 
         await session.flush()
     except IntegrityError as exc:
         await session.rollback()
-        raise DuplicateUser("username or email") from exc
+        # The winner of the race is committed and visible now, so the lookup
+        # that came back clear a moment ago can name the field this time. The
+        # error carries the constraint name too, but reading it would couple
+        # this to asyncpg and to the index names in model/entities.py.
+        # Still possibly empty, if the winning account was deleted in between.
+        raise DuplicateUser(await _taken_fields(session, data.username, data.email)) from exc
 
     pair = await issue_tokens(session, user)
     await session.commit()
