@@ -197,7 +197,9 @@ own row.
 You will almost certainly never see it: the caller is an administrator and
 cannot be their own target, so a demotion normally leaves at least the caller
 behind. It exists for the case where two administrators demote each other at
-the same instant, where without it both would succeed. Show the message and
+the same instant, where without it both would succeed. A suspended
+administrator does not count towards keeping the set alive, since they cannot
+sign in to undo anything — but they can still be demoted. Show the message and
 leave the row as it was — it is not retryable until somebody else is promoted.
 
 **`takes_effect_within_seconds` is never zero, and the screen should say so.**

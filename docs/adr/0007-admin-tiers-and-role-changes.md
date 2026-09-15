@@ -181,13 +181,34 @@ succeed. The database is then left with no administrator at all — no route can
 make one, because every route that could requires an administrator to call it,
 and the only way back is the manual `UPDATE` that made the first one.
 
-So a demotion takes `SELECT id FROM auth.users WHERE role = 'admin' FOR UPDATE`
-before it decides. Postgres re-evaluates a locked row against the current
-committed state once it stops waiting for it, so the second of the two
-transactions sees the first's work and finds itself looking at the last
-administrator, which it refuses with a 409. Exactly one wins. The lock is taken
-only on the demotion path; a promotion cannot empty the set and is not worth
-serialising.
+So a demotion locks the administrator rows before it decides. Postgres
+re-evaluates a locked row against the current committed state once it stops
+waiting for it, so the second of the two transactions sees the first's work and
+finds itself looking at the last administrator, which it refuses with a 409.
+Exactly one wins. The lock is taken only on the demotion path; a promotion
+cannot empty the set and is not worth serialising.
+
+**The predicate counts administrators who could act, not rows whose `role`
+column says `admin`:**
+
+```sql
+SELECT id FROM auth.users WHERE role = 'admin' AND is_suspended = false FOR UPDATE
+```
+
+Leaving `is_suspended` out of it was the second version of the same mistake,
+and it is reachable today without [4.2] #14 existing, because the column is
+already there and is already set by hand. A suspended administrator is an
+administrator on paper and nobody in practice: `authenticate` and
+`get_current_user` both refuse the account before the role is ever consulted,
+so they cannot call the route that would undo the demotion. Counting them makes
+an empty set look survivable, and the guard then passes while handing back a
+database whose only administrator cannot log in.
+
+The distinction has a second edge, easy to break while fixing the first: a
+suspended administrator is excluded from the *count* and must stay eligible as
+a *target*. Stripping the role from a suspended account is the obvious thing to
+want on the way to cleaning one up, and an implementation that treats "absent
+from the locked set" as "already demoted" silently refuses exactly that.
 
 The refusal is sequentially unreachable and that is not a reason to drop it.
 Through the route, the caller is an administrator and cannot be their own
@@ -196,9 +217,12 @@ behind. The race is the only way in.
 
 **[4.2] #14 has the same hole and does not go through this route.** Suspending
 the last administrator empties the effective set just as thoroughly as demoting
-them, and two administrators suspending each other is the same race. That story
-needs the same lock and the same refusal, and neither rule here will give it to
-it for free.
+them, and two administrators suspending each other is the same race. Nothing
+here can see it coming, because suspension never touches `role`: the count
+above would still return the suspended administrator's peers and find the set
+healthy while nobody can log in. That story needs the same lock and a refusal
+of its own, in the other direction — refuse to suspend the last administrator
+who is not already suspended.
 
 **A role change takes effect at different moments in different services, and
 the endpoint has to say which.** The asymmetry is not obvious and will be

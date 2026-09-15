@@ -331,3 +331,119 @@ async def test_a_suspended_user_can_still_have_their_role_changed(
 
     assert updated.role is UserRole.ADMIN
     assert updated.is_suspended is True
+
+
+# --- a suspended administrator is not an administrator --------------------
+async def test_a_suspended_administrator_does_not_count_toward_the_last_one(
+    session: AsyncSession, registered_user: User
+) -> None:
+    """The guard has to count who can act, not who the column calls privileged.
+
+    A suspended administrator cannot authenticate — `authenticate` and
+    `get_current_user` both refuse the account before the role is consulted —
+    so they cannot call the route that would undo a demotion. Counting them
+    makes the set look survivable when it is already empty, and the demotion
+    is then allowed to produce a database nothing but a manual UPDATE can
+    rescue.
+    """
+    suspended = User(
+        username="admin_ghost",
+        email="admin.ghost@example.com",
+        password_hash="x",
+        role=UserRole.ADMIN,
+        is_suspended=True,
+    )
+    session.add(suspended)
+    registered_user.role = UserRole.ADMIN
+    await session.commit()
+
+    with pytest.raises(LastAdministrator):
+        await user_admin.change_role(
+            session, actor=_actor(), target_id=registered_user.id, role=UserRole.TRADER
+        )
+
+
+async def test_a_suspended_administrator_can_still_be_demoted(
+    session: AsyncSession, registered_user: User
+) -> None:
+    """The other half of the same rule, and the one easy to break while fixing it.
+
+    Excluding suspended administrators from the locked set must not also
+    exclude them from being acted on. Stripping the role from a suspended
+    account is the obvious thing to want on the way to cleaning one up.
+    """
+    suspended = User(
+        username="admin_ghost",
+        email="admin.ghost@example.com",
+        password_hash="x",
+        role=UserRole.ADMIN,
+        is_suspended=True,
+    )
+    session.add(suspended)
+    registered_user.role = UserRole.ADMIN
+    await session.commit()
+
+    updated = await user_admin.change_role(
+        session, actor=_actor(), target_id=suspended.id, role=UserRole.TRADER
+    )
+
+    assert updated.role is UserRole.TRADER
+    assert updated.is_suspended is True
+
+
+async def test_a_suspended_administrator_does_not_save_a_mutual_demotion(
+    session: AsyncSession, registered_user: User
+) -> None:
+    """The race again, with a suspended administrator standing by.
+
+    Two active administrators demote each other while a third sits suspended.
+    If the guard counts the suspended one, both demotions look safe and both
+    commit, leaving a database whose only administrator cannot log in.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_session_factory  # noqa: PLC0415
+
+    ghost = User(
+        username="admin_ghost",
+        email="admin.ghost@example.com",
+        password_hash="x",
+        role=UserRole.ADMIN,
+        is_suspended=True,
+    )
+    other = User(
+        username="admin_two",
+        email="admin.two@example.com",
+        password_hash="x",
+        role=UserRole.ADMIN,
+    )
+    session.add_all([ghost, other])
+    registered_user.role = UserRole.ADMIN
+    await session.commit()
+
+    first, second = registered_user.id, other.id
+    factory = get_session_factory()
+
+    async def demote(actor_id: uuid.UUID, target_id: uuid.UUID) -> str:
+        async with factory() as own_session:
+            try:
+                await user_admin.change_role(
+                    own_session,
+                    actor=_actor(actor_id),
+                    target_id=target_id,
+                    role=UserRole.TRADER,
+                )
+            except LastAdministrator:
+                return "refused"
+            return "applied"
+
+    outcomes = await asyncio.gather(demote(first, second), demote(second, first))
+    assert sorted(outcomes) == ["applied", "refused"]
+
+    session.expunge_all()
+    usable = [
+        user.id
+        for user in (await session.execute(select(User))).scalars()
+        if user.role is UserRole.ADMIN and not user.is_suspended
+    ]
+    assert len(usable) == 1

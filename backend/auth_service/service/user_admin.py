@@ -25,7 +25,7 @@ from service.audit import Actor
 
 
 async def _administrators_for_update(session: AsyncSession) -> set[uuid.UUID]:
-    """Every administrator, with their rows locked until this transaction ends.
+    """Every administrator who could actually act, rows locked for this transaction.
 
     The lock is the point; the ids are a by-product. Postgres re-evaluates a
     `FOR UPDATE` row against the current committed state after waiting for it,
@@ -35,11 +35,27 @@ async def _administrators_for_update(session: AsyncSession) -> set[uuid.UUID]:
     arrives second sees the first's work and finds itself looking at the last
     administrator.
 
+    **`is_suspended` is part of the predicate, and leaving it out is a bug this
+    once had.** A suspended administrator is an administrator on paper and
+    nobody at all in practice: `authenticate` and `get_current_user` both
+    refuse the account before the role is ever consulted, so they cannot call
+    the route that would undo any of this. Counting them makes the set look
+    survivable when it is already empty, and the check passes while handing
+    back a database only a manual UPDATE can rescue. What matters is who can
+    still act, not who the column says is privileged.
+
     Taken only on the demotion path. A promotion cannot empty the set, and
     there is no reason to serialise those against each other.
+
+    [4.2] #14 has to take this same lock when it suspends, for the same
+    reason in the other direction: suspending the last unsuspended
+    administrator empties the set without touching `role` at all, so nothing
+    here can see it coming.
     """
     rows = await session.execute(
-        select(User.id).where(User.role == UserRole.ADMIN).with_for_update()
+        select(User.id)
+        .where(User.role == UserRole.ADMIN, User.is_suspended.is_(False))
+        .with_for_update()
     )
     return set(rows.scalars())
 
@@ -79,22 +95,30 @@ async def change_role(
     if target is None:
         raise UserNotFound
 
+    if target.role is UserRole.ADMIN and role is not UserRole.ADMIN:
+        # A demotion. Lock first, then re-read: the lock is what makes the
+        # re-read worth anything, because it is what stops the answer changing
+        # between the question and the decision.
+        remaining = await _administrators_for_update(session)
+        await session.refresh(target)
+
+        # Discard rather than check membership. The target may legitimately be
+        # absent from the locked set — a suspended administrator is excluded
+        # from it by design — and that is not the same fact as their having
+        # been demoted by somebody else a moment ago. Conflating the two makes
+        # demoting a suspended administrator silently do nothing, which is the
+        # one account most likely to need it.
+        remaining.discard(target.id)
+
+        if target.role is UserRole.ADMIN and not remaining:
+            raise LastAdministrator
+
+    # Read after the guard, so the idempotent case below sees the refreshed
+    # value and a demotion that somebody else already applied is a no-op here
+    # rather than a second entry claiming a change that did not happen.
     previous = target.role
     if previous is role:
         return target
-
-    if previous is UserRole.ADMIN and role is not UserRole.ADMIN:
-        administrators = await _administrators_for_update(session)
-
-        if target.id not in administrators:
-            # Demoted by a concurrent request while this one was deciding. The
-            # outcome being asked for is already the outcome, so this is the
-            # idempotent case above arriving a moment later: no write, no entry.
-            await session.refresh(target)
-            return target
-
-        if administrators == {target.id}:
-            raise LastAdministrator
 
     target.role = role
 
