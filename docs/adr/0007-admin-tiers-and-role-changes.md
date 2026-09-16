@@ -253,6 +253,14 @@ importable until that changes. This is that prediction coming true one story
 earlier than expected — 0006 named [4.2] #14 as the trigger; this arrives
 first, and #14 will then reuse it within the service rather than copying again.
 
+> **Partly overtaken by [ADR 0012](0012-the-shared-package.md), [F-6] #76.** The
+> build context is no longer the reason these are copied. `backend/shared/`
+> exists and the audit writer could move into it; ADR 0012 deliberately kept
+> the extraction to what ADR 0005 authorised and left this one to ADR 0006,
+> whose consequences section carries the same note. The copies are now a
+> choice, and someone rereading this record should not conclude that sharing
+> them is impossible.
+
 **[4.4] #16 will not be delivered as written.** Two of its three acceptance
 criteria are answered by something other than what they ask for, and the first
 is declined outright. The ticket should be updated to say so, with a link to

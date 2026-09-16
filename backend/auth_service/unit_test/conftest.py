@@ -17,28 +17,15 @@ pure unit tests under core/ and model/ run with no database at all.
 from __future__ import annotations
 
 import os
-import pathlib
 import secrets
 
-
-def _load_repo_env() -> None:
-    """Read the repo-root .env, the same file docker compose reads.
-
-    Real connection details live there and it is gitignored, so nothing in the
-    repository carries a credential. Anything already exported wins.
-    """
-    root_env = pathlib.Path(__file__).resolve().parents[3] / ".env"
-    if not root_env.is_file():
-        return
-    for line in root_env.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
+from shared.testing import load_repo_env
 
 
-_load_repo_env()
+# Before any project module is imported. `get_settings` is lru_cached, so the
+# first call wins, and importing main.py triggers it. [F-6] #76 moved the
+# reader itself to `shared/testing.py`; it was identical in all five suites.
+load_repo_env()
 
 # One variable per service now that market_service has its own suite and its
 # own role. TEST_DATABASE_URL is the old single-service name, still honoured so

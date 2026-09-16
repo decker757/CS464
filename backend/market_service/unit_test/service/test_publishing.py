@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 
 import pytest
 from sqlalchemy import select, text
@@ -23,14 +22,14 @@ from core.errors import (
     MarketNotSubmitted,
 )
 from model.entities import Market, MarketStatus
-from model.schemas import MarketDraftRequest
 from service import market_service
 from service.audit import Actor
 
-# The suite's one actor factory. Aliased rather than imported under its own
-# name because every helper below takes an `actor` argument, which would
-# shadow it.
+# The suite's one actor factory and one market builder. Aliased rather than
+# imported under their own names because every helper below takes an `actor`
+# argument, which would shadow the first.
 from unit_test.conftest import actor as _actor
+from unit_test.conftest import draft_request as _request
 
 
 # Read back as audit_svc: market_svc holds INSERT on this table and no SELECT.
@@ -38,22 +37,6 @@ _PUBLISHED_ENTRIES = text(
     "SELECT id FROM audit.admin_actions "
     "WHERE actor_id = :actor AND action_type = 'market.published'"
 )
-
-
-def _request(**overrides: object) -> MarketDraftRequest:
-    base: dict[str, object] = {
-        "draft_key": uuid.uuid4(),
-        "status": "draft",
-        "question": "Will Singapore core inflation be below 2% in December 2026?",
-        "outcomes": [{"label": "Yes"}, {"label": "No"}],
-        "close_time": datetime.now(UTC) + timedelta(days=30),
-        "resolution_time": datetime.now(UTC) + timedelta(days=45),
-        "resolution_criteria": "Resolves YES on the first published MAS print below 2.0%.",
-        "resolution_sources": [{"url": "https://www.mas.gov.sg/statistics"}],
-        "seed_subsidy": Decimal("250"),
-    }
-    base.update(overrides)
-    return MarketDraftRequest(**base)  # type: ignore[arg-type]
 
 
 async def _submitted(session: AsyncSession, actor: Actor, **overrides: object) -> Market:

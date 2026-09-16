@@ -202,6 +202,14 @@ own directory with `COPY . .`, so a shared module is not importable until that
 changes. When it does, this writer belongs in the extraction alongside token
 verification and the LMSR engine.
 
+> **Partly overtaken by [ADR 0012](0012-the-shared-package.md), [F-6] #76.** The
+> build context is no longer the reason. `backend/shared/` exists and the
+> writer could now move into it. It deliberately did not: ADR 0012 kept the
+> extraction to what ADR 0005 authorised, and the audit writer is this
+> record's to move. What is left to decide is narrow — the `Table` is
+> identical, `AdminAction` is per service by design — and it is a decision
+> about the audit log rather than about packaging.
+
 **The audit table is not in any service's `Base.metadata`, and that is
 load-bearing.** Everything mapped there is created by `create_all` at startup
 and dropped by `unit_test/conftest.py` per test. Either against this table

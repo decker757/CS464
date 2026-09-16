@@ -37,18 +37,21 @@ async def _taken_fields(session: AsyncSession, username: str, email: str) -> lis
     rather than sending the user round the loop twice. Uniqueness bounds this
     to at most two rows.
     """
+    wanted_username = username.lower()
+    wanted_email = email.lower()
+
     stmt = select(User).where(
         or_(
-            func.lower(User.username) == username.lower(),
-            func.lower(User.email) == email.lower(),
+            func.lower(User.username) == wanted_username,
+            func.lower(User.email) == wanted_email,
         )
     )
     existing = (await session.execute(stmt)).scalars().all()
 
     taken = []
-    if any(user.username.lower() == username.lower() for user in existing):
+    if any(user.username.lower() == wanted_username for user in existing):
         taken.append("username")
-    if any(user.email.lower() == email.lower() for user in existing):
+    if any(user.email.lower() == wanted_email for user in existing):
         taken.append("email")
     return taken
 

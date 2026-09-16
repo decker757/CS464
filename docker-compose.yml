@@ -42,7 +42,10 @@ services:
 
   auth:
     build:
-      context: ./backend/auth_service
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: auth_service/Dockerfile
     depends_on:
       db:
         condition: service_healthy
@@ -64,7 +67,10 @@ services:
   # alone, which is why it needs the same JWT_SECRET and nothing else from auth.
   market:
     build:
-      context: ./backend/market_service
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: market_service/Dockerfile
     depends_on:
       db:
         condition: service_healthy
@@ -106,7 +112,10 @@ services:
   # window in which a new account's balance is observably wrong.
   ledger:
     build:
-      context: ./backend/ledger_service
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: ledger_service/Dockerfile
     depends_on:
       db:
         condition: service_healthy
@@ -136,7 +145,10 @@ services:
   # written. See docs/adr/0006-audit-log-write-path.md.
   audit:
     build:
-      context: ./backend/audit_service
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: audit_service/Dockerfile
     depends_on:
       db:
         condition: service_healthy
@@ -191,7 +203,10 @@ services:
   # what keeps a trade from failing because a websocket server was restarting.
   realtime:
     build:
-      context: ./backend/realtime_service
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: realtime_service/Dockerfile
     depends_on:
       redis:
         condition: service_healthy

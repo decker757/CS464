@@ -20,29 +20,16 @@ services agree on a wire format rather than on an implementation.
 from __future__ import annotations
 
 import os
-import pathlib
 import secrets
 import uuid
 
-
-def _load_repo_env() -> None:
-    """Read the repo-root .env, the same file docker compose reads.
-
-    Real connection details live there and it is gitignored, so nothing in the
-    repository carries a credential. Anything already exported wins.
-    """
-    root_env = pathlib.Path(__file__).resolve().parents[3] / ".env"
-    if not root_env.is_file():
-        return
-    for line in root_env.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
+from shared.testing import load_repo_env
 
 
-_load_repo_env()
+# Before any project module is imported. `get_settings` is lru_cached, so the
+# first call wins, and importing main.py triggers it. [F-6] #76 moved the
+# reader itself to `shared/testing.py`; it was identical in all five suites.
+load_repo_env()
 
 _test_db = os.environ.get("MARKET_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
 if not _test_db:
@@ -71,6 +58,7 @@ os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 _audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 
 from datetime import UTC, datetime, timedelta  # noqa: E402
+from decimal import Decimal  # noqa: E402
 
 import jwt  # noqa: E402
 import pytest  # noqa: E402
@@ -86,6 +74,7 @@ from core.database import (  # noqa: E402
     get_session_factory,
 )
 from core.roles import UserRole  # noqa: E402
+from model.schemas import MarketDraftRequest  # noqa: E402
 from service.audit import Actor  # noqa: E402
 
 _UNREACHABLE = (
@@ -238,33 +227,92 @@ def trader_headers() -> dict[str, str]:
     return bearer(uuid.uuid4(), UserRole.TRADER)
 
 
-def future(**kwargs) -> str:
-    """An ISO timestamp with an explicit offset, which the schema requires."""
-    return (datetime.now(UTC) + timedelta(**kwargs)).isoformat()
+# The terms of one complete market, named once. Every suite in this service
+# builds its markets from these, so a rule change that needs the fixture to move
+# — a longer minimum question, a second required source, a different default
+# subsidy — is one edit rather than a hunt through five files that had drifted
+# into agreeing by coincidence.
+QUESTION = "Will Singapore core inflation be below 2% in December 2026?"
+CRITERIA = "Resolves YES on the first published MAS print below 2.0%."
+SOURCE_URL = "https://www.mas.gov.sg/statistics"
+CLOSE_IN = timedelta(days=30)
+RESOLVE_IN = timedelta(days=45)
+SEED_SUBSIDY = 250
 
 
-@pytest.fixture
-def submittable_payload() -> dict[str, object]:
-    """A market that passes every rule in service/validation.py."""
-    return {
-        "draft_key": str(uuid.uuid4()),
-        "status": "submitted",
-        "question": "Will Singapore core inflation be below 2% for December 2026?",
-        "description": "Measured on the first published print.",
-        "outcomes": [{"label": "Yes"}, {"label": "No"}],
-        "close_time": future(days=30),
-        "resolution_time": future(days=45),
-        "resolution_criteria": (
-            "Resolves YES if the MAS core inflation print for December 2026, as "
-            "first published, is strictly below 2.0%. Later revisions do not count."
-        ),
-        "resolution_sources": [
-            {"url": "https://www.mas.gov.sg/statistics", "label": "MAS statistics"}
-        ],
-        # [1.2] #2. No liquidity_b: omitting it exercises the configured
-        # default, which is the common case from the form.
-        "seed_subsidy": 250,
+def _outcomes() -> list[dict[str, str]]:
+    """A fresh list per call.
+
+    Returned rather than held as a constant because a test that appends to what
+    it is given would otherwise edit the fixture for everything after it, and
+    that failure arrives in an unrelated test.
+    """
+    return [{"label": "Yes"}, {"label": "No"}]
+
+
+def _sources() -> list[dict[str, str]]:
+    return [{"url": SOURCE_URL}]
+
+
+def market_terms(**overrides: object) -> dict[str, object]:
+    """A market that passes every rule in service/validation.py.
+
+    In the shape the service layer takes: real `datetime` and `Decimal`
+    objects, not their wire forms. `market_json` is the same market as a
+    request body, built from the same values.
+
+    Overrides are applied last and are not validated, so a test can ask for
+    terms that break exactly one rule.
+    """
+    now = datetime.now(UTC)
+    base: dict[str, object] = {
+        "draft_key": uuid.uuid4(),
+        "status": "draft",
+        "question": QUESTION,
+        "outcomes": _outcomes(),
+        "close_time": now + CLOSE_IN,
+        "resolution_time": now + RESOLVE_IN,
+        "resolution_criteria": CRITERIA,
+        "resolution_sources": _sources(),
+        # [1.2] #2. No liquidity_b: omitting it is the common case from the
+        # form, and it exercises the configured default on every submission.
+        "seed_subsidy": Decimal(SEED_SUBSIDY),
     }
+    base.update(overrides)
+    return base
+
+
+def draft_request(**overrides: object) -> MarketDraftRequest:
+    """`market_terms` parsed, for driving the service layer without HTTP."""
+    return MarketDraftRequest(**market_terms(**overrides))  # type: ignore[arg-type]
+
+
+def market_json(**overrides: object) -> dict[str, object]:
+    """The same market as a JSON request body, for driving routes.
+
+    Shares every value with `market_terms` and differs only in serialisation,
+    so a rule change moves both. It is not built by dumping `draft_request`,
+    because the controller suite's whole job is what happens to a body that
+    never parses: it sends `status="open"`, a naive `close_time` and unknown
+    fields on purpose, and a builder that validated first could not express any
+    of those tests. Overrides are applied raw, after serialisation, for the
+    same reason.
+    """
+    now = datetime.now(UTC)
+    base: dict[str, object] = {
+        "draft_key": str(uuid.uuid4()),
+        "status": "draft",
+        "question": QUESTION,
+        "outcomes": _outcomes(),
+        "close_time": (now + CLOSE_IN).isoformat(),
+        "resolution_time": (now + RESOLVE_IN).isoformat(),
+        "resolution_criteria": CRITERIA,
+        "resolution_sources": _sources(),
+        "seed_subsidy": SEED_SUBSIDY,
+    }
+    base.update(overrides)
+    return base
+
 
 
 @pytest.fixture

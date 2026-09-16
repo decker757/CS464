@@ -18,8 +18,11 @@ other people's events, and not before.
 it has no `q`, no `b` and no opinion about what anything costs. `publish` below
 exists as the executable half of the contract — the suite and
 `scripts/publish_test_price.py` drive the service through it, and [T-2] #22
-copies its four lines rather than importing them, because Docker build contexts
-cannot reach across service directories (ADR 0005).
+copies its four lines rather than importing them. That was once forced — Docker
+build contexts could not reach across service directories — and since [F-6] #76
+it is not: `backend/shared/` is importable everywhere. Four lines of
+`redis.publish` are still below the bar that package sets for itself, so the
+copy stands on its own merits now.
 """
 
 from __future__ import annotations

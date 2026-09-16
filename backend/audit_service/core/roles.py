@@ -1,20 +1,17 @@
-"""The reader's copy of the auth service's role vocabulary.
+"""This service's handle on the shared role vocabulary. [F-6] #76
 
-Deliberately duplicated rather than imported, for the reasons ADR 0003 gives:
-services in this repository share no code and no schema, and a package that
-both import would be the first thread tying them together. The coupling that
-exists is the `role` claim in the access token, which is a wire contract.
+Re-exported rather than redefined. Until #76 these five files were five copies
+of one enum, kept in step by hand and failing closed when they drifted — a
+service that had not heard of a role treated its holder as a TRADER, which is
+silent by design and therefore silent when it is wrong.
 
-Keep in step with `backend/auth_service/core/roles.py`. A value this file has
-never heard of is treated as TRADER, so the two drifting apart costs authority
-rather than granting it.
+The module stays, rather than every caller importing `shared.roles` directly,
+because the layering rule in CLAUDE.md is that `service` and `model` reach into
+`core` and no further. This is the seam that keeps that true.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
+from shared.roles import UserRole
 
-
-class UserRole(StrEnum):
-    TRADER = "trader"
-    ADMIN = "admin"
+__all__ = ["UserRole"]

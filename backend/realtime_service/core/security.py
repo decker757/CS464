@@ -1,85 +1,33 @@
-"""Access-token verification.
+"""Access-token verification, bound to this service's settings. [F-6] #76
 
-There is no minting path in this file, on purpose. This service consumes
-identity; it never issues it. Under HS256 the secret it verifies with would
-also let it sign, so the restriction is architectural rather than
+The rule itself is in `shared/security.py`, which four services held identical
+copies of before #76. What stays here is the binding: the shared verifier takes
+its secret, algorithm and issuer as arguments so that nothing in `shared/`
+imports a service's `core.config`, and this is where this service supplies its
+own.
+
+There is still no minting path reachable from this service, which is the
+property `unit_test/core/test_security.py` asserts. Under HS256 the secret used
+to verify would also sign, so the restriction is architectural rather than
 cryptographic — ADR 0002 records that, and the fix is RS256 with a published
-public key, at which point this file only ever holds the public half.
-
-Nothing else in the service imports jwt.
+public key.
 """
 
 from __future__ import annotations
 
-import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime
-
-import jwt
-
 from core.config import get_settings
-from core.roles import UserRole
+from shared import security as _shared
+from shared.security import TokenClaims
 
-
-@dataclass(frozen=True)
-class TokenClaims:
-    user_id: uuid.UUID
-    username: str
-    role: UserRole
-    expires_at: datetime
-
-    @property
-    def is_admin(self) -> bool:
-        return self.role is UserRole.ADMIN
-
-    def seconds_until_expiry(self, *, now: datetime | None = None) -> float:
-        """How long this token has left, floored at zero.
-
-        This service is the only one that has to care. Every other service
-        checks `exp` once per request and is done inside a few milliseconds; a
-        socket accepted on a fifteen-minute token can still be open hours
-        later, and an authorisation decision nobody ever revisits is not an
-        authorisation decision. `controller/routes.py` closes the connection
-        when this reaches zero. ADR 0010.
-        """
-        remaining = (self.expires_at - (now or datetime.now(UTC))).total_seconds()
-        return max(remaining, 0.0)
+__all__ = ["TokenClaims", "decode_access_token"]
 
 
 def decode_access_token(token: str) -> TokenClaims | None:
-    """Return the claims, or None for any malformed, expired or foreign token.
-
-    `require` is what stops an unsigned or stripped-down token from arriving
-    with no subject and being treated as somebody. `issuer` is what stops a
-    token minted for a different system that happens to share our secret.
-    """
+    """Return the claims, or None for any malformed, expired or foreign token."""
     settings = get_settings()
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-            issuer=settings.jwt_issuer,
-            options={"require": ["exp", "iat", "sub", "iss"]},
-        )
-        return TokenClaims(
-            user_id=uuid.UUID(payload["sub"]),
-            username=payload["username"],
-            role=_read_role(payload.get("role")),
-            expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
-        )
-    except (jwt.InvalidTokenError, KeyError, ValueError):
-        return None
-
-
-def _read_role(raw: object) -> UserRole:
-    """Fail closed: anything unrecognised is the least privileged role.
-
-    Covers a token minted before the claim existed and a token carrying a role
-    only a newer auth deploy knows about. Neither is grounds for rejecting an
-    otherwise valid token, and neither is grounds for granting authority.
-    """
-    try:
-        return UserRole(raw)
-    except ValueError:
-        return UserRole.TRADER
+    return _shared.decode_access_token(
+        token,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        issuer=settings.jwt_issuer,
+    )

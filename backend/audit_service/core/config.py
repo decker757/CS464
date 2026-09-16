@@ -1,31 +1,27 @@
-"""Runtime configuration, read once from the environment at import time."""
+"""Runtime configuration, read once from the environment at import time.
+
+Extends `shared.config.ServiceSettings`, which carries the settings every
+service reads identically — the JWT trio, the access cookie name and CORS.
+[F-6] #76. Those are the ones where drift does not fail loudly: a service
+verifying against a different issuer fails as "you are not logged in" on a
+request carrying a perfectly good session. What stays here is what only this
+service has.
+"""
 
 from functools import lru_cache
-from typing import Annotated
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic import Field
+
+from shared.config import ServiceSettings
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
+class Settings(ServiceSettings):
     # --- Database -------------------------------------------------------
     # Required, with no default, for the same reasons as the other services: a
     # default is a credential in the repository, and it would let a
     # misconfigured deploy start quietly against the wrong database.
     # Form: postgresql+asyncpg://audit_svc:PASSWORD@HOST:PORT/NAME
     database_url: str = Field(min_length=1)
-
-    # --- Token verification ---------------------------------------------
-    # Verification only, like the market service. There is no encode path in
-    # core/security.py and there is no reason for one to appear: this service
-    # issues nothing and owns no users.
-    jwt_secret: str = Field(min_length=16)
-    jwt_algorithm: str = "HS256"
-    jwt_issuer: str = "cs464-auth"
-
-    access_cookie_name: str = "access_token"
 
     # --- Paging -----------------------------------------------------------
     # An audit log only grows, so an unbounded read is a question that gets
@@ -35,24 +31,6 @@ class Settings(BaseSettings):
     # differ between a laptop and a deploy.
     default_page_size: int = Field(default=50, gt=0)
     max_page_size: int = Field(default=200, gt=0)
-
-    # --- CORS -------------------------------------------------------------
-    # NoDecode is load-bearing: without it pydantic-settings JSON-parses a
-    # complex field straight from the environment before any validator runs, so
-    # a comma-separated CORS_ORIGINS raises at import time and the container
-    # never starts. Both other services were bitten by exactly this.
-    cors_origins: Annotated[list[str], NoDecode] = [
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ]
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def _split_origins(cls, v: object) -> object:
-        """Accept CORS_ORIGINS="http://a.com,http://b.com" from the environment."""
-        if isinstance(v, str):
-            return [o.strip() for o in v.split(",") if o.strip()]
-        return v
 
 
 @lru_cache

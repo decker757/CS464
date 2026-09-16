@@ -62,16 +62,46 @@ def test_a_short_signing_key_is_refused() -> None:
 
 
 def test_cors_origins_parse_from_a_comma_separated_string() -> None:
-    """Guards the deployment path, not just the default.
+    """The field parses a comma-separated value.
 
-    pydantic-settings JSON-decodes a complex field straight from the
-    environment before any validator runs, which is why cors_origins is
-    annotated NoDecode. Without it this raises at import time and the container
-    crash-loops while every defaults-only test still passes.
+    Note what this does NOT prove: a keyword argument comes from the init
+    source, which never JSON-decodes, so this passes with or without
+    `NoDecode`. The test below is the one that guards the annotation.
     """
     parsed = _settings(cors_origins="http://a.com, http://b.com")
 
     assert parsed.cors_origins == ["http://a.com", "http://b.com"]
+
+
+def test_cors_origins_parse_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression every service in this repository has already had, guarded
+    on the path that actually breaks.
+
+    Without `NoDecode`, pydantic-settings JSON-decodes a complex field straight
+    from the environment *before* any validator runs, so a comma-separated
+    CORS_ORIGINS raises at import time and the container crash-loops.
+
+    The test above cannot catch that, and this suite was the last one still
+    relying on it. The other four services grew this test after the bug
+    recurred; market_service was named in the bug journal as the remaining gap,
+    and [F-6] #76 is the change that made closing it matter more — the field
+    now lives on `shared.config.ServiceSettings`, so one missing annotation
+    would break every service at once rather than one.
+
+    CI does not set CORS_ORIGINS, so without this the guard would depend on
+    whether the developer running the suite happens to have it in their .env.
+    """
+    monkeypatch.setenv("CORS_ORIGINS", "http://a.test, http://b.test")
+
+    # `_env_file=None` like every other parsing test in this file: without it
+    # the suite reads backend/market_service/.env, which on some machines sets
+    # CORS_ORIGINS, so the test would be coupled to a developer-local file
+    # instead of to the variable it just set.
+    settings = _settings(_env_file=None)
+
+    assert settings.cors_origins == ["http://a.test", "http://b.test"]
 
 
 def test_the_token_settings_default_to_the_auth_service_contract() -> None:

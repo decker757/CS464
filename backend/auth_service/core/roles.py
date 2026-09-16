@@ -1,24 +1,17 @@
-"""Who a user is allowed to be.
+"""This service's handle on the shared role vocabulary. [F-6] #76
 
-A deliberately small slice of [4.4] #16. That ticket splits administration
-into MARKET_CREATOR, RESOLVER and SUPER_ADMIN so that creating a market and
-resolving it cannot be the same person. None of that is decided here; this
-file exists because [1.1] #1 needs a market service to know whether the
-caller is an administrator at all, and the only channel it has for that is
-the access token.
+Re-exported rather than redefined. Until #76 these five files were five copies
+of one enum, kept in step by hand and failing closed when they drifted — a
+service that had not heard of a role treated its holder as a TRADER, which is
+silent by design and therefore silent when it is wrong.
 
-Adding a member here changes the cross-service contract, because the value
-travels in the `role` claim and every service reads it. Keep it in step with
-`backend/market_service/core/roles.py`, which holds the reader's copy.
+The module stays, rather than every caller importing `shared.roles` directly,
+because the layering rule in CLAUDE.md is that `service` and `model` reach into
+`core` and no further. This is the seam that keeps that true.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
+from shared.roles import UserRole
 
-
-class UserRole(StrEnum):
-    """The value stored on `auth.users.role` and carried in the JWT."""
-
-    TRADER = "trader"
-    ADMIN = "admin"
+__all__ = ["UserRole"]

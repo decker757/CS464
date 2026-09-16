@@ -190,6 +190,12 @@ narrow `backend/shared/` when the trading service lands, and named the blocker:
 `COPY . .` build contexts. This makes the case one service stronger and does not
 change the blocker.
 
+> **Resolved by [ADR 0012](0012-the-shared-package.md), [F-6] #76.** The blocker
+> is gone — every service builds from `backend/` — and the verification path is
+> now `backend/shared/security.py`, imported by all five. This service's
+> `core/security.py` is the seam that binds its settings to it. The fifth copy
+> this section counts was part of what made the case.
+
 ## What this does not settle
 
 **Where the trade write path runs.** All three writes a trade performs — ledger

@@ -6,10 +6,17 @@ It cannot SELECT the log, cannot UPDATE or DELETE a row, and cannot alter the
 table. See docs/adr/0006-audit-log-write-path.md.
 
 This file is a copy of `market_service/model/audit.py` with a different
-`SOURCE_SERVICE` and a different vocabulary. ADR 0006 predicted the copy and
-attributed it to the Docker build context: each service builds from its own
-directory with `COPY . .`, so a shared module is not importable until that
-changes. Keep the two in step.
+`SOURCE_SERVICE` and a different vocabulary. Keep the two in step.
+
+ADR 0006 predicted the copy and attributed it to the Docker build context.
+**That blocker is gone** — [F-6] #76 moved the contexts to `backend/` and
+`backend/shared/` exists — so the copy is now a choice rather than a
+constraint, and it is still the right one for the moment. What differs between
+the two files is `AdminAction`: this service logs things done to users, the
+market service logs things done to markets, and the enum is the vocabulary a
+reader filters the feed on. Sharing the `Table` while each service kept its own
+enum is a real option and a small one; it is ADR 0006's call to make, not
+something to fold into a refactor of `core`.
 
 Two details below are load-bearing rather than stylistic.
 

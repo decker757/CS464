@@ -95,11 +95,18 @@ def test_nothing_in_this_service_mints_a_token() -> None:
     `unit_test/` is excluded: the suite mints its own tokens on purpose, to
     exercise the same path a real request takes.
     """
+    # The service's own tree AND the shared package. [F-6] #76 moved the
+    # verifier into `backend/shared/security.py`, so a scan rooted at this
+    # service alone would no longer look at the file that actually decodes a
+    # token — and adding `create_access_token` there would hand a minting path
+    # to all four consuming services with this test still green.
     service_root = pathlib.Path(__file__).resolve().parents[2]
+    shared_root = service_root.parent / "shared"
 
     encoders = [
         path
-        for path in service_root.rglob("*.py")
+        for root in (service_root, shared_root)
+        for path in root.rglob("*.py")
         if ".venv" not in path.parts
         and "unit_test" not in path.parts
         and "jwt.encode" in path.read_text()
