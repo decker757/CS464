@@ -25,11 +25,12 @@ from service.posting import Leg
 ZERO = Decimal(0)
 
 
-async def _spend(user_id: uuid.UUID, amount: Decimal) -> str:
+async def _spend(user_id: uuid.UUID, amount: Decimal, key: str | None = None) -> str:
     """One withdrawal, in its own session and its own transaction.
 
     Returns what happened rather than raising, so a caller can gather all of
-    them and count the outcomes.
+    them and count the outcomes. `key` is for the one test that needs several
+    of these to be the same withdrawal.
     """
     async with get_session_factory()() as session:
         user = await accounts.ensure(session, AccountKind.USER, user_id)
@@ -37,7 +38,7 @@ async def _spend(user_id: uuid.UUID, amount: Decimal) -> str:
         try:
             await posting.post(
                 session,
-                idempotency_key=f"spend:{uuid.uuid4()}",
+                idempotency_key=key or f"spend:{uuid.uuid4()}",
                 kind=TransactionKind.SIGNUP_GRANT,
                 legs=[
                     Leg(account=user, amount=-amount),
@@ -191,3 +192,39 @@ async def test_concurrent_first_reads_create_one_account(
     ids = await asyncio.gather(*(ensure_once() for _ in range(6)))
 
     assert len(set(ids)) == 1
+
+
+async def test_a_retry_racing_its_original_is_answered_with_its_transaction(
+    session: AsyncSession,
+) -> None:
+    """A client resends a withdrawal whose response was lost while the original
+    is still in flight, and the balance covers it exactly once.
+
+    Every copy finds no transaction under the key, because none has committed
+    yet. The lock queues them, and the first writes and commits. Looked up
+    before the lock, each of the rest then judged its overdraft against the
+    balance the first had just emptied and answered `InsufficientFunds` — for a
+    withdrawal that had succeeded. Looked up under the lock, each finds the
+    committed transaction and is answered with it.
+    """
+    user_id = uuid.uuid4()
+    await _grant(user_id, Decimal("100"))
+    key = f"retry:{uuid.uuid4()}"
+
+    outcomes = await asyncio.gather(
+        *(_spend(user_id, Decimal("100"), key=key) for _ in range(4))
+    )
+
+    assert outcomes == ["accepted"] * 4
+
+    written = (
+        await session.execute(
+            select(func.count())
+            .select_from(Transaction)
+            .where(Transaction.idempotency_key == key)
+        )
+    ).scalar_one()
+    assert written == 1
+
+    account = await accounts.ensure(session, AccountKind.USER, user_id)
+    assert await accounts.balance_of(session, account.id) == ZERO

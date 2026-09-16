@@ -32,6 +32,7 @@ from service.audit import Actor
 # shadow it.
 from unit_test.conftest import (
     CLOSE_REASON,
+    CRITERIA,
     EVIDENCE_NOTE,
     EVIDENCE_URL,
     closed_market,
@@ -126,6 +127,7 @@ async def test_it_records_the_terms_that_were_submitted(
     assert entry["context"]["liquidity_b"] == "250.0000"
     assert entry["context"]["seed_subsidy"] == "500.0000"
     assert entry["context"]["outcomes"] == ["Yes", "No"]
+    assert entry["context"]["resolution_criteria"] == CRITERIA
 
 
 async def test_the_subsidy_is_recorded_exactly(
@@ -160,6 +162,33 @@ async def test_each_submission_appends_rather_than_replacing(
     assert len(entries) == 2
     assert entries[0]["target_label"] == "Second terms here"
     assert entries[1]["target_label"] == "First terms here"
+
+
+async def test_a_changed_resolution_rule_shows_in_the_snapshot(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The rule that decides who wins is a term, and the one a trader would
+    most want to know had moved.
+
+    Re-submitting with only the criteria changed used to produce two entries
+    with identical snapshots: the old rule was overwritten on the market and
+    recorded nowhere, so the log could neither reconstruct what was approved
+    nor reveal that the settlement rule had changed under the same question.
+    Every other term is pinned so the comparison at the end is exact.
+    """
+    actor = _actor()
+    terms = _request(draft_key=uuid.uuid4(), status="submitted")
+    changed = "Resolves YES on any MAS print below 2.0%, revised or not."
+
+    await _save(session, actor, **terms)
+    await _save(session, actor, **{**terms, "resolution_criteria": changed})
+
+    newest, oldest = await _entries(audit_reader, actor)
+    assert oldest["context"]["resolution_criteria"] == CRITERIA
+    assert newest["context"]["resolution_criteria"] == changed
+
+    moved = {k for k in newest["context"] if newest["context"][k] != oldest["context"][k]}
+    assert moved == {"resolution_criteria"}
 
 
 # --- publication [1.3] #3 -------------------------------------------------
@@ -244,6 +273,7 @@ async def test_a_publication_records_the_terms_that_went_live(
     assert entry["context"]["liquidity_b"] == "250.0000"
     assert entry["context"]["seed_subsidy"] == "500.0000"
     assert entry["context"]["outcomes"] == ["Yes", "No"]
+    assert entry["context"]["resolution_criteria"] == CRITERIA
 
 
 async def test_the_two_snapshots_have_the_same_shape(

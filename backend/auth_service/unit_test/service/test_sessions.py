@@ -98,3 +98,43 @@ async def test_a_suspended_user_cannot_refresh(
 
     with pytest.raises(InvalidToken):
         await auth_service.rotate_refresh_token(session, tokens.refresh_token)
+
+
+async def test_two_concurrent_refreshes_of_one_token_leave_one_winner_and_no_session(
+    session: AsyncSession, registered_user: User
+) -> None:
+    """The legitimate client and whoever copied its cookie, in the same instant.
+
+    Two real transactions. Read without a lock both see the token live, both
+    revoke it, both are issued a session, and the replay that should have cut
+    every session for this user goes unnoticed, because each request's write
+    lands after the other's check. `_load_refresh` locks the row, so the second
+    request waits for the first and then re-reads the revocation it wrote: it
+    is the replay, and it is treated exactly as a sequential one is.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_session_factory  # noqa: PLC0415
+
+    tokens = await auth_service.issue_tokens(session, registered_user)
+    await session.commit()
+    factory = get_session_factory()
+
+    # Both connected before either starts, so the outcome is decided by the
+    # lock and not by which session had to open a connection first.
+    barrier = asyncio.Barrier(2)
+
+    async def refresh() -> str:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            try:
+                await auth_service.rotate_refresh_token(own, tokens.refresh_token)
+            except InvalidToken:
+                return "refused"
+            return "issued"
+
+    results = await asyncio.gather(refresh(), refresh())
+
+    assert sorted(results) == ["issued", "refused"]
+    assert await _live_token_count(session) == 0

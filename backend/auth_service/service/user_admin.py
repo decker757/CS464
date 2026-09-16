@@ -165,8 +165,18 @@ async def _administrators_for_update(session: AsyncSession) -> set[uuid.UUID]:
     back a database only a manual UPDATE can rescue. What matters is who can
     still act, not who the column says is privileged.
 
-    Taken only on the demotion path. A promotion cannot empty the set, and
-    there is no reason to serialise those against each other.
+    Taken on every path, not only a demotion, and that is about lock order
+    rather than about the invariant. A promotion cannot empty the set, but it
+    does need the target's row locked before the role is read: two
+    administrators promoting the same trader in one instant both read TRADER,
+    both write ADMIN, and both log a `trader → admin` that only one of them
+    performed. The obvious shape — lock the target first, and take this set
+    only once that read says demotion — deadlocks, because two administrators
+    demoting each other then each hold their own target and each wait for the
+    other's inside this query. So every request takes this set first and its
+    target second, and two requests can only ever wait on each other in one
+    direction. The cost is that role changes queue behind one another, and
+    there are a handful of those a week.
 
     [4.2] #14 has to take this same lock when it suspends, for the same
     reason in the other direction: suspending the last unsuspended
@@ -205,6 +215,10 @@ async def change_role(
     neither is sufficient alone: an administrator may not change their own
     role, which bounds the sequential case, and a demotion locks the
     administrator rows, which bounds the concurrent one.
+
+    Logged once, too. The target's row is locked before its role is read, so
+    two requests for the same change queue rather than interleave, and the
+    second finds the role already held and writes nothing.
     """
     # Before the lookup, not after. This is the invariant that stops the
     # administrator set from emptying — see CannotChangeOwnRole — and it should
@@ -212,31 +226,35 @@ async def change_role(
     if target_id == actor.id:
         raise CannotChangeOwnRole
 
-    target = await session.get(User, target_id)
+    # The set first and the target second, always in that order — see
+    # `_administrators_for_update` for why the order is what keeps two of
+    # these from deadlocking. `populate_existing` so the role read below comes
+    # from the locked row and never from an instance this session loaded
+    # before it held the lock; the lock is what stops the answer changing
+    # between the question and the decision.
+    remaining = await _administrators_for_update(session)
+    target = await session.get(
+        User, target_id, with_for_update=True, populate_existing=True
+    )
     if target is None:
         raise UserNotFound
 
     if target.role is UserRole.ADMIN and role is not UserRole.ADMIN:
-        # A demotion. Lock first, then re-read: the lock is what makes the
-        # re-read worth anything, because it is what stops the answer changing
-        # between the question and the decision.
-        remaining = await _administrators_for_update(session)
-        await session.refresh(target)
-
-        # Discard rather than check membership. The target may legitimately be
-        # absent from the locked set — a suspended administrator is excluded
-        # from it by design — and that is not the same fact as their having
-        # been demoted by somebody else a moment ago. Conflating the two makes
-        # demoting a suspended administrator silently do nothing, which is the
-        # one account most likely to need it.
+        # A demotion. Discard rather than check membership. The target may
+        # legitimately be absent from the locked set — a suspended
+        # administrator is excluded from it by design — and that is not the
+        # same fact as their having been demoted by somebody else a moment
+        # ago. Conflating the two makes demoting a suspended administrator
+        # silently do nothing, which is the one account most likely to need it.
         remaining.discard(target.id)
 
-        if target.role is UserRole.ADMIN and not remaining:
+        if not remaining:
             raise LastAdministrator
 
-    # Read after the guard, so the idempotent case below sees the refreshed
-    # value and a demotion that somebody else already applied is a no-op here
-    # rather than a second entry claiming a change that did not happen.
+    # Read after the guard, from the locked row, so the idempotent case below
+    # sees what is actually there and a change that somebody else already
+    # applied — a demotion or a promotion — is a no-op here rather than a
+    # second entry claiming a change that did not happen.
     previous = target.role
     if previous is role:
         return target

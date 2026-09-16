@@ -34,7 +34,7 @@ from unit_test.conftest import draft_request as _request
 
 # Read back as audit_svc: market_svc holds INSERT on this table and no SELECT.
 _PUBLISHED_ENTRIES = text(
-    "SELECT id FROM audit.admin_actions "
+    "SELECT id, target_label FROM audit.admin_actions "
     "WHERE actor_id = :actor AND action_type = 'market.published'"
 )
 
@@ -354,3 +354,74 @@ async def test_two_concurrent_publishes_produce_one_winner(
         )).mappings()
     ]
     assert len(entries) == 1, "the log must record one publication, not two"
+
+
+async def test_a_resubmission_racing_a_publish_cannot_change_what_went_live(
+    clean_database, audit_reader: AsyncSession
+) -> None:
+    """An administrator publishes while their own resubmission is in flight.
+
+    `publish` holds the row, but a lock only queues other lockers, and the save
+    path used to read without one. The resubmission saw SUBMITTED, passed the
+    frozen check, waited on its own INSERTs for the publication to commit, and
+    then landed anyway: new terms under a market traders were already pricing,
+    and SUBMITTED written back over OPEN, while the publication entry in the
+    log swore to the old terms.
+
+    Either order is legitimate, so the assertions are about the market rather
+    than about who won. If the publish wins, the resubmission is refused and
+    the original terms are live; if the resubmission wins, the publish takes
+    the row after it and the new terms are the ones that go live. What can
+    never happen is a third thing: the market is OPEN, and the question
+    traders see is the one the single publication entry recorded.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_session_factory  # noqa: PLC0415
+
+    factory = get_session_factory()
+    actor = _actor()
+
+    async with factory() as setup:
+        market = await _submitted(setup, actor, question="The question as first submitted?")
+        market_id, key = market.id, market.draft_key
+
+    # Both connected before either starts, so the outcome is decided by the
+    # lock and not by which session had to open a connection first.
+    barrier = asyncio.Barrier(2)
+
+    async def resubmit() -> str:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            try:
+                await market_service.save(
+                    own,
+                    actor,
+                    _request(draft_key=key, status="submitted", question="The question as edited?"),
+                )
+            except MarketAlreadyOpen:
+                return "refused"
+            return "resubmitted"
+
+    async def publish() -> str:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            await market_service.publish(own, actor, market_id)
+            return "published"
+
+    results = await asyncio.gather(resubmit(), publish())
+    assert "published" in results
+
+    async with factory() as check:
+        stored = (
+            await check.execute(select(Market).where(Market.id == market_id))
+        ).scalar_one()
+
+    published = list(
+        (await audit_reader.execute(_PUBLISHED_ENTRIES, {"actor": actor.id})).mappings()
+    )
+    assert len(published) == 1, "the log must record one publication, not two"
+    assert stored.status is MarketStatus.OPEN
+    assert stored.question == published[0]["target_label"]

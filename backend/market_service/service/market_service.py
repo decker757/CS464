@@ -760,6 +760,13 @@ def _terms_snapshot(market: Market) -> dict[str, object]:
         "outcomes": [outcome.label for outcome in market.outcomes],
         "close_time": _iso_or_none(market.close_time),
         "resolution_time": _iso_or_none(market.resolution_time),
+        # The rule that decides who wins, not only where to look it up. Every
+        # field `problems_blocking_submission` insists on is a term, and this
+        # is the one whose change between submission and going live would
+        # matter most to a trader — and the one that was, for a while, the
+        # only such field this snapshot left out. `description` is prose and
+        # not a rule, and stays out.
+        "resolution_criteria": market.resolution_criteria,
         "resolution_sources": [source.url for source in market.resolution_sources],
     }
 
@@ -834,8 +841,32 @@ async def _load(
 async def _find_by_draft_key(
     session: AsyncSession, creator_id: uuid.UUID, draft_key: uuid.UUID
 ) -> Market | None:
-    stmt = select(Market).where(
-        Market.creator_id == creator_id, Market.draft_key == draft_key
+    """The caller's market for this form, locked for the rest of the save.
+
+    Locked, because `_refuse_if_frozen` decides from the status this returns
+    whether the save may write at all, and `publish` holds this same row while
+    it changes that status. Read unlocked, a resubmission racing a publish sees
+    SUBMITTED, passes the check, blocks on its own INSERTs until the
+    publication commits, and then lands anyway: it overwrites the terms traders
+    are already pricing against, and writes SUBMITTED back over OPEN. The lock
+    in `publish` cannot prevent that on its own, because a lock only serialises
+    against other lockers. Under READ COMMITTED the loser now blocks here
+    instead and re-reads the row the winner committed, so it sees OPEN and is
+    refused the same way a second publish is.
+
+    Every autosave pays for this, and that is fine. It is one row, held for
+    one short transaction, and it is the lock `publish`, `close_early` and
+    `propose_outcome` already take. Two autosaves for one form now queue
+    rather than interleave, which is what last-write-wins meant anyway.
+
+    A row that does not exist locks nothing, so the insert race handled in
+    `save` is unchanged: two first saves both find nothing, the unique
+    constraint catches the loser, and its retry finds the winner's row.
+    """
+    stmt = (
+        select(Market)
+        .where(Market.creator_id == creator_id, Market.draft_key == draft_key)
+        .with_for_update()
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
