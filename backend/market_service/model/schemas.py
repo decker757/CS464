@@ -256,6 +256,15 @@ class MarketOut(_UtcTimestamps):
     # that. The two are written in the same transaction and cannot disagree.
     published_at: datetime | None
 
+    # [F-4] #44. When trading was recorded as having stopped.
+    #
+    # Unlike `published_at`, this one CAN lag the thing it describes, and a
+    # client must not read it as "trading stops here". `close_time` is when
+    # trading stopped; this is when the background sweeper wrote it down, a
+    # few seconds later. Render `close_time` to a trader and keep this for an
+    # administrator asking when a market was actually processed.
+    closed_at: datetime | None
+
     # --- derived, read-only -------------------------------------------------
     # [1.2] #2's second and third acceptance criteria. Both are the q = 0 case
     # of LMSR, which is arithmetic rather than the engine; see

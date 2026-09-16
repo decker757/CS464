@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -38,24 +39,44 @@ class MarketStatus(StrEnum):
     trader.
 
     OPEN is the one traders see, and reaching it is the whole of [1.3] #3. It
-    is also the one value outside this service's own walls: the trader browse
-    query in [BE][X] #62 is `status == MarketStatus.OPEN`, and that predicate
-    is the entire contract between the two tickets. #62 is built in this
-    service, so it imports the member below rather than retyping the string,
-    and `ix_market_markets_status` already indexes the column it filters on.
+    is also the one value outside this service's own walls, and [BE][X] #62 is
+    built in this service so it imports the member below rather than retyping
+    the string.
 
-    CLOSED, PENDING_RESOLUTION and RESOLVED arrive with [F-4] #44 and epic 3.
-    Members are added here as those land, which is why this is stored as a
-    VARCHAR rather than a native Postgres enum: a new member is a Python change
-    and never an ALTER TYPE against a live database. SQLAlchemy writes no CHECK
-    constraint for it either (`create_constraint` has defaulted to False since
-    1.4), so the value set is enforced here and at the API edge, where a bad
-    value is a 422 rather than an IntegrityError surfacing as a 500.
+    What it is not, since [F-4] #44, is the browse query on its own. A market
+    that is OPEN past its `close_time` is not tradeable and must not be listed
+    as though it were; `service/closing.py::open_for_trading` is the predicate
+    #62 filters on, and it is this member AND a close time still in the
+    future.
+
+    CLOSED arrives with [F-4] #44: trading has stopped, because the clock
+    passed `close_time`. [2.3] #7 will reach the same status early and by hand.
+    It is what [3.1] #9 gates on — an outcome may only be proposed for a market
+    nobody can still trade — and one of the buckets [2.1] #5 counts.
+
+    PENDING_RESOLUTION and RESOLVED arrive with epic 3. Members are added here
+    as those land, which is why this is stored as a VARCHAR rather than a
+    native Postgres enum: a new member is a Python change and never an ALTER
+    TYPE against a live database. SQLAlchemy writes no CHECK constraint for it
+    either (`create_constraint` has defaulted to False since 1.4), so the value
+    set is enforced here and at the API edge, where a bad value is a 422 rather
+    than an IntegrityError surfacing as a 500.
     """
 
     DRAFT = "draft"
     SUBMITTED = "submitted"
     OPEN = "open"
+
+    # [F-4] #44. Terminal for trading, and this service never moves a market
+    # back out of it.
+    #
+    # Read what this member is NOT. It is not the authority on whether a trade
+    # may execute. A market stops accepting trades the instant `close_time`
+    # passes, which is strictly earlier than anything gets around to writing
+    # this column, and the gap is however long the sweeper takes to notice.
+    # `service/closing.py` holds the predicate that is exact, and the reason
+    # the status is a materialisation of it rather than the source.
+    CLOSED = "closed"
 
 
 _STATUS_COLUMN = Enum(
@@ -159,6 +180,22 @@ class Market(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # When trading actually stopped. [F-4] #44.
+    #
+    # Not the same thing as `close_time`, and keeping both is the point.
+    # `close_time` is the promise the administrator made to traders and is the
+    # instant trading really ended; this is when the sweeper got around to
+    # recording it, which is a few seconds later and occasionally much later if
+    # the service was down. A gap between the two is a normal observation about
+    # a background job, not a market that stayed open — nothing could trade in
+    # it either way.
+    #
+    # It is also where [2.3] #7's early close will land, at a time that has
+    # nothing to do with `close_time` at all.
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     outcomes: Mapped[list[MarketOutcome]] = relationship(
         back_populates="market",
         cascade="all, delete-orphan",
@@ -177,6 +214,30 @@ class Market(Base):
         # Serves the only list query this service runs: the caller's own
         # markets, newest activity first.
         Index("ix_markets_creator_updated", "creator_id", "updated_at"),
+        # [F-4] #44. The close sweeper's entire working set.
+        #
+        # Two properties, and it is the second that earns the index. Partial,
+        # so it holds only the markets still open rather than every market ever
+        # created — 72 kB against 20,000 settled markets, and it does not grow
+        # as they pile up. And keyed on `close_time`, so the sweep's
+        # `ORDER BY close_time LIMIT n` is an ordered index scan that stops at
+        # n rather than a read of every open market followed by a sort.
+        #
+        # Measured on 20,000 settled and 2,200 open markets, 200 of them due:
+        # 5 index buffers and 0.05 ms with this index, 36 buffers and 0.17 ms
+        # without, and the gap widens with the number of open markets, which is
+        # the number that actually grows. On an idle tick nothing is due and
+        # either index answers in about 4 buffers.
+        #
+        # `ix_market_markets_status` does not replace it. That one is keyed on
+        # status alone, so it can find the open markets and then has to sort
+        # them, and it carries an entry for every market this platform ever
+        # runs.
+        #
+        # The predicate is written out rather than built from MarketStatus.OPEN
+        # because sql/migrations/0004 has to state the same thing in SQL and
+        # the two must match literally. Change one and change the other.
+        Index("ix_markets_due_close", "close_time", postgresql_where=text("status = 'open'")),
     )
 
 

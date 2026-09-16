@@ -46,6 +46,36 @@ class Settings(BaseSettings):
     # shares arithmetic with the seed subsidy, which is credits.
     default_liquidity_b: Decimal = Field(default=Decimal("100"), gt=0)
 
+    # --- Automatic close [F-4] #44 ----------------------------------------
+    # How often the background sweeper looks for markets whose closing time has
+    # passed, and how many it moves to CLOSED in one transaction.
+    #
+    # Read `service/closing.py` before tuning either of these, because the
+    # obvious intuition about them is wrong. This interval is NOT how long a
+    # closed market can still be traded — that window is zero, because the
+    # trade path derives the answer from `close_time` and never from the status
+    # column. It is only how stale a status count on an admin dashboard may be.
+    # Which is why ten seconds is a comfortable default rather than a nervous
+    # one, and why lowering it buys very little.
+    #
+    # The batch is a ceiling, not a target. It bounds how many rows one
+    # transaction locks, so a backlog — the service was down over a weekend and
+    # a hundred markets came due — is worked through in bounded chunks instead
+    # of one long transaction holding locks against live traffic. The sweeper
+    # drains back-to-back batches rather than sleeping between them, so the
+    # ceiling costs no wall-clock time.
+    close_sweep_seconds: float = Field(default=10.0, gt=0)
+    close_sweep_batch: int = Field(default=100, gt=0)
+
+    # Lets an operator stop this replica from sweeping without a code change:
+    # to run a single designated sweeper, or to hold the background writer
+    # still while investigating something.
+    #
+    # Turning it off does not make a closed market tradeable again. It stops
+    # the status column being maintained, so dashboards and status filters go
+    # stale while trades stay correctly refused.
+    close_sweep_enabled: bool = True
+
     # --- CORS -------------------------------------------------------------
     # NoDecode is load-bearing: without it pydantic-settings JSON-parses a
     # complex field straight from the environment before any validator runs, so

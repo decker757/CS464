@@ -4,7 +4,8 @@ Base URL `http://localhost:8001` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
-Covers [1.1] #1, [1.2] #2, [1.3] #3 and the backend half of [FE][1.1] #45.
+Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44 and the backend half of
+[FE][1.1] #45.
 
 A successful submission or publication also appends an entry to the shared
 audit log, in the same database transaction, so the two can never disagree. An
@@ -32,17 +33,45 @@ separate endpoint rather than a third status on the save:
 Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is [BE][X] #62.
 
-## The three statuses
+## The four statuses
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
 | `draft` | the three-second autosave | no |
 | `submitted` | the submit button | no |
 | `open` | `POST /markets/{id}/publish` | yes |
+| `closed` | the clock, at `close_time` | yes, but not tradeable |
 
-The path is `draft → submitted → open` and nothing skips a step. `open` is
-terminal for now: there is no unpublish, and every later save on an open market
-is a `409`.
+The path is `draft → submitted → open → closed` and nothing skips a step. No
+status is ever reversed: there is no unpublish and no reopen, and every save on
+an `open` or `closed` market is a `409`.
+
+`closed` is the only one no request produces. [2.3] #7 will let an
+administrator reach it early and by hand; [3.1] #9 takes a market out of it by
+proposing an outcome.
+
+### `close_time` is when trading stops — not `status` — [F-4] #44
+
+**Read this before writing anything that decides whether a market can be
+traded.** A market stops accepting trades the instant `close_time` passes. The
+`closed` status is written a few seconds later by a background sweep, so there
+is a short window in which a market whose closing time has passed still reads
+`"status": "open"`.
+
+That window is not a window in which the market is tradeable. Trading is gated
+on `close_time`, which is exact and needs no job to have run, so a trade in
+that window is refused whatever the status says. What the window affects is
+display and counting.
+
+For a client, the rule is:
+
+```js
+const tradeable = market.status === "open" && new Date(market.close_time) > new Date();
+```
+
+Never `market.status === "open"` on its own. A countdown that hits zero should
+switch the UI to closed immediately rather than waiting for the status to catch
+up on the next fetch — the backend already agrees with the countdown.
 
 ## Authentication
 
@@ -169,6 +198,7 @@ is the ledger's job ([F-1] #41) and this service holds no balances.
     "updated_at": "2026-09-13T14:06:38.907222Z",
     "submitted_at": null,
     "published_at": null,
+    "closed_at": null,
 
     // derived, read-only — see below
     "max_platform_loss": 69.31471805599453
@@ -261,6 +291,7 @@ rather than issuing a second `GET`.
 | 404 | `market_not_found` | no such market, or it is not yours | nothing; it is not there |
 | 409 | `market_not_submitted` | it is still a draft | press submit first |
 | 409 | `market_already_open` | it is already live | reload; hide the button |
+| 409 | `market_closed` | it has passed its closing time | reload; it is finished |
 | 422 | `draft_incomplete` | the terms no longer pass | fix the fields in `details` |
 
 **Every submission rule runs again, against the clock now.** That is not
@@ -283,12 +314,18 @@ Once a market is `open` its terms are frozen. `POST /markets` on it returns
 which is what stops the autosave, still running behind the publish button, from
 quietly reverting a live market. There is no unpublish.
 
+Once it is `closed` the same save returns `409 market_closed`, and so does a
+publish. That is the same form, still open behind the publish button, still
+ticking when the market's closing time arrived.
+
 ### Trader visibility
 
 Publishing sets the status; it does not build the trader-facing list. The
-public browse and detail API is **[BE][X] #62**, and it filters on
-`status == "open"`. Until it lands, a published market is visible through the
-admin routes on this page and nowhere else.
+public browse and detail API is **[BE][X] #62**, and it filters on `status ==
+"open"` **and** a `close_time` still in the future — both halves, for the reason
+given under "`close_time` is when trading stops" above. Until it lands, a
+published market is visible through the admin routes on this page and nowhere
+else.
 
 ## GET /markets
 
@@ -347,6 +384,7 @@ additive, so a client that ignores it still reads `code` and `message`:
 | 409 | `market_not_editable` | an autosave arrived for an already-submitted market |
 | 409 | `market_not_submitted` | publish asked for on a market that is still a draft |
 | 409 | `market_already_open` | a publish or a save arrived for an already-published market |
+| 409 | `market_closed` | a publish or a save arrived for a market past its closing time |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
 
@@ -365,7 +403,9 @@ Branch on the presence of `error`.
 4. On submit, POST the same `draft_key` with `status: "submitted"`.
 5. A `409 market_not_editable` means the market is already submitted — stop the
    autosave timer. A `409 market_already_open` means it is published: stop the
-   timer and hide the edit controls, because nothing will be accepted again.
+   timer and hide the edit controls, because nothing will be accepted again. A
+   `409 market_closed` means its closing time passed while the form was open;
+   treat it the same way.
 6. Send timestamps as ISO 8601 **with an offset**:
    `new Date(value).toISOString()` produces one.
 7. `status: "submitted"` is not published. Show the publish control only on a

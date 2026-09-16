@@ -86,6 +86,7 @@ from core.database import (  # noqa: E402
     get_session_factory,
 )
 from core.roles import UserRole  # noqa: E402
+from service.audit import Actor  # noqa: E402
 
 _UNREACHABLE = (
     "Cannot reach the test database.\n"
@@ -137,6 +138,22 @@ def mint_token(
 
 def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint_token(user_id, role)}"}
+
+
+def actor(username: str = "ernest_t", role: str = "admin") -> Actor:
+    """A distinct administrator, for driving the service layer without HTTP.
+
+    A fresh id every call, which is what keeps the audit assertions
+    independent: `audit.admin_actions` is append-only, no role holds DELETE or
+    TRUNCATE, and `clean_database` rebuilds only this service's own schema — so
+    rows from every earlier test in this database are still there and always
+    will be. Filtering on an id nothing else has used is how a test sees only
+    its own entries, and it is a more honest assertion than a truncated table.
+
+    A plain function rather than a fixture because several tests need more than
+    one, and because it is called from helpers that take no fixtures.
+    """
+    return Actor(id=uuid.uuid4(), username=username, role=role)
 
 
 @pytest.fixture

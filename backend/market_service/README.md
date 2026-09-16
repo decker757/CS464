@@ -53,7 +53,7 @@ replaces this with real role management.
 
 ```bash
 docker compose up -d db          # from the repo root
-.venv/bin/pytest                 # 239 tests
+.venv/bin/pytest                 # 271 tests
 .venv/bin/pytest unit_test/core unit_test/model unit_test/service/test_validation.py
 ```
 
@@ -63,10 +63,10 @@ repository.
 
 | Layer | Tests | Needs Postgres |
 | --- | --- | --- |
-| `core/` | 47 | no |
+| `core/` | 56 | no |
 | `model/` | 43 | no |
 | `service/validation.py` | 39 | no |
-| `service/` drafting, publishing, audit, boundary | 69 | yes |
+| `service/` drafting, publishing, closing, audit, boundary | 92 | yes |
 | `controller/` | 41 | yes |
 
 Database access is opt-in: only the `session` and `client` fixtures pull it in,
@@ -119,11 +119,14 @@ controller/                 the HTTP boundary. No business rules live here.
 service/                    business rules. Raises domain errors, knows no HTTP.
     market_service.py       the upsert, publication, creator-scoped reads
     validation.py           pure: when may a market leave DRAFT?
+    closing.py              when a market stops trading, and the sweep [F-4]
+    sweeper.py              the background timer that runs the sweep
     audit.py                one append, on the caller's own transaction
 
 core/                       this service's own plumbing
     config.py               settings, read from the environment once
     database.py             engine, session factory, session dependency
+    clock.py                one function: normalise a datetime to UTC
     security.py             the only file that touches jwt. Verify only.
     roles.py                the reader's copy of the role vocabulary
     errors.py               domain exception classes, no framework imports
@@ -138,7 +141,7 @@ unit_test/                  mirrors the layers above
 Imports only ever point down, as in the auth service: `controller` may use
 `service`, `service` may use `core` and `model`, nothing below reaches back up.
 
-## Three things worth knowing before changing this
+## Four things worth knowing before changing this
 
 **A draft is allowed to be nonsense.** Every column but the identifiers is
 nullable, blank outcomes persist, and no business rule runs on an autosave. The
@@ -163,6 +166,25 @@ in `_save_once`, that tick reverts a live market to a draft under the traders
 pricing against it. `publish` also re-runs every submission rule against the
 clock now, because a market that sat submitted past its own close time would
 otherwise go live already closed. ADR 0008.
+
+**The clock closes a market; the sweeper only writes it down.** [F-4] #44. A
+market stops accepting trades the instant `close_time` passes, and
+`service/closing.py::is_open_for_trading` is the authority on that — it is a
+fact about two values and needs no job to have run. The `CLOSED` status is a
+materialisation of it, written a few seconds later by the background sweep so
+that [2.1] #5 can count markets per status and [3.1] #9 can gate on a value.
+
+Get that order the wrong way round and every second between the closing time
+and the next sweep is a second in which a market that has closed still accepts
+trades. No interval makes that window zero; deriving the answer does. So a
+trade path, a browse query and a status filter all ask `closing.py` and never
+`status` alone — `open_for_trading()` is the same rule as a WHERE clause. The
+sweeper falling behind, or being switched off with `CLOSE_SWEEP_ENABLED`, makes
+a dashboard count stale and cannot let a trade through.
+
+This is ADR 0009's shape one service over: the ledger derives a balance from
+`SUM(amount)` rather than storing one, so the number is right by construction
+instead of by vigilance. `close_time` is the sum here.
 
 ## Database boundary
 

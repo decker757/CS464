@@ -131,6 +131,29 @@ class MarketNotSubmitted(MarketError):
     )
 
 
+class MarketClosed(MarketError):
+    """A write arrived for a market that has stopped trading. [F-4] #44.
+
+    Distinct from MarketAlreadyOpen for the same reason MarketNotEditable is:
+    the remedy differs. An open market is frozen but still live, and the admin
+    should reload to see it. A closed one is finished — there is nothing to
+    publish, nothing to edit, and the next thing that happens to it is [3.1]
+    #9 proposing an outcome.
+
+    Reachable in ordinary use despite looking like an edge case. A form left
+    open behind the publish button keeps autosaving every three seconds, and
+    [2.3] #7 will let an administrator close a market out from under exactly
+    that form.
+    """
+
+    status_code = 409
+    code = "market_closed"
+    message = (
+        "This market has closed and is no longer trading. Its terms are final "
+        "and it cannot be reopened."
+    )
+
+
 class MarketAlreadyOpen(MarketError):
     """A write arrived for a market that traders can already see. [1.3] #3.
 
