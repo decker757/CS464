@@ -295,6 +295,40 @@ async def list_for_creator(session: AsyncSession, creator_id: uuid.UUID) -> list
     return list((await session.execute(stmt)).scalars())
 
 
+async def _record(
+    session: AsyncSession,
+    actor: Actor,
+    market: Market,
+    action: AdminAction,
+    now: datetime,
+) -> None:
+    """Append one audit entry about a market, with its terms attached.
+
+    Both entries below carry the identical shape deliberately, which is why
+    there is one function rather than two. Submission and publication are
+    compared against each other more than either is read alone — the question
+    the log is actually asked is whether anything changed between an
+    administrator agreeing to some terms and those terms going live — and two
+    builders are two chances for the answer to be "they are described
+    differently".
+
+    No `reason` is recorded, because the form does not ask for one and an empty
+    string would be worse than a null. The stories that do demand a reason —
+    [2.3] #7 closing a market early, [4.2] #14 suspending an account — pass one
+    through the same argument.
+    """
+    await audit.record(
+        session,
+        actor=actor,
+        action=action,
+        target_type="market",
+        target_id=market.id,
+        target_label=market.question,
+        context=_terms_snapshot(market),
+        now=now,
+    )
+
+
 async def _record_submission(
     session: AsyncSession, actor: Actor, market: Market, now: datetime
 ) -> None:
@@ -305,22 +339,8 @@ async def _record_submission(
     decision under thousands of keystroke entries. Submission is the moment the
     administrator committed to a set of terms, and it is the moment worth being
     able to point at later.
-
-    No `reason` is recorded, because the form does not ask for one and an empty
-    string would be worse than a null. The stories that do demand a reason —
-    [2.3] #7 closing a market early, [4.2] #14 suspending an account — pass one
-    through the same argument.
     """
-    await audit.record(
-        session,
-        actor=actor,
-        action=AdminAction.MARKET_SUBMITTED,
-        target_type="market",
-        target_id=market.id,
-        target_label=market.question,
-        context=_terms_snapshot(market),
-        now=now,
-    )
+    await _record(session, actor, market, AdminAction.MARKET_SUBMITTED, now)
 
 
 async def _record_publication(
@@ -341,16 +361,7 @@ async def _record_publication(
     to replay the whole history of a market to find out which set traders
     actually saw.
     """
-    await audit.record(
-        session,
-        actor=actor,
-        action=AdminAction.MARKET_PUBLISHED,
-        target_type="market",
-        target_id=market.id,
-        target_label=market.question,
-        context=_terms_snapshot(market),
-        now=now,
-    )
+    await _record(session, actor, market, AdminAction.MARKET_PUBLISHED, now)
 
 
 def _terms_snapshot(market: Market) -> dict[str, object]:

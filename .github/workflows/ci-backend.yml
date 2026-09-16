@@ -173,7 +173,14 @@ jobs:
         run: pytest
 
       # Catches an import error or a bad settings default before deploy.
+      #
+      # PYTHONPATH, because this is the one step that does not go through
+      # pytest: `pythonpath = . ..` in pytest.ini puts backend/ on the path for
+      # the suite, and a bare `python -c` gets only the working directory. The
+      # container sets the same variable to /app for the same reason. [F-6] #76
       - name: Verify the app boots
+        env:
+          PYTHONPATH: ..
         run: python -c "from main import create_app; create_app()"
 
   notify:

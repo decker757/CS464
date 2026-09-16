@@ -17,6 +17,7 @@ see why the code looks the way it does without reconstructing the argument.
 | [0009](0009-the-ledger-write-path.md) | Double-entry with derived balances, and a lazily minted grant | Accepted |
 | [0010](0010-realtime-price-broadcast.md) | A relay that owns nothing, and a bus that is not the database | Accepted |
 | [0011](0011-market-auto-close.md) | The clock closes a market, and a sweep only writes it down | Accepted |
+| [0012](0012-the-shared-package.md) | A shared package, and the build contexts that had to move first | Accepted |
 
 Supersede rather than edit. If a decision changes, add a new record and mark
 the old one superseded, so the reasoning trail survives.

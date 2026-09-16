@@ -19,42 +19,11 @@ from core.errors import DraftIncomplete, MarketNotEditable, MarketNotFound
 from model.entities import Market, MarketStatus
 from model.schemas import MarketDraftRequest
 from service import market_service
-from service.audit import Actor
 
-
-def _actor(**overrides: object) -> Actor:
-    """A distinct administrator.
-
-    Every test gets a fresh id, which is what keeps the audit assertions
-    independent: `audit.admin_actions` is append-only, so `clean_database`
-    cannot truncate it and rows from earlier tests are still there. Filtering
-    on an id nothing else has used is how a test sees only its own entries.
-    """
-    base: dict[str, object] = {
-        "id": uuid.uuid4(),
-        "username": "ernest_t",
-        "role": "admin",
-    }
-    base.update(overrides)
-    return Actor(**base)  # type: ignore[arg-type]
-
-
-def _request(**overrides: object) -> MarketDraftRequest:
-    base: dict[str, object] = {
-        "draft_key": uuid.uuid4(),
-        "status": "draft",
-        "question": "Will Singapore core inflation be below 2% in December 2026?",
-        "outcomes": [{"label": "Yes"}, {"label": "No"}],
-        "close_time": datetime.now(UTC) + timedelta(days=30),
-        "resolution_time": datetime.now(UTC) + timedelta(days=45),
-        "resolution_criteria": "Resolves YES on the first published MAS print below 2.0%.",
-        "resolution_sources": [{"url": "https://www.mas.gov.sg/statistics"}],
-        # No liquidity_b: omitting it is the common case, and it exercises the
-        # configured default on every test that submits.
-        "seed_subsidy": Decimal("250"),
-    }
-    base.update(overrides)
-    return MarketDraftRequest(**base)  # type: ignore[arg-type]
+# The suite's one actor factory and one market builder. Aliased because every
+# helper below already takes an `actor` argument, which would shadow the name.
+from unit_test.conftest import actor as _actor
+from unit_test.conftest import draft_request as _request
 
 
 async def _count(session: AsyncSession) -> int:

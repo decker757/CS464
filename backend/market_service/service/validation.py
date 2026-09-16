@@ -19,6 +19,7 @@ break every rule below.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from pydantic import HttpUrl, TypeAdapter, ValidationError
 
@@ -119,24 +120,48 @@ def _outcome_problems(market: Market) -> list[ValidationProblem]:
     return problems
 
 
+def _future_problems(
+    field: str, moment: datetime | None, now: datetime, *, missing: str, past: str
+) -> list[ValidationProblem]:
+    """Required, and after `now`. The shape both timestamps share.
+
+    Takes an already-UTC value rather than converting one. The caller has to
+    normalise both timestamps anyway for the ordering check below, and a second
+    `as_utc` here would be a second place that decides what a naive value
+    means — which is the naive-versus-aware split that has already caused bugs
+    in this repository.
+
+    The two messages stay arguments rather than being generated from `field`,
+    because "Close time must be in the future" and "Resolution time must be in
+    the future" are what the admin reads next to the offending input, and a
+    message assembled from a column name reads like one.
+    """
+    if moment is None:
+        return [ValidationProblem(field, missing)]
+    if moment <= now:
+        return [ValidationProblem(field, past)]
+    return []
+
+
 def _timing_problems(market: Market, now: datetime) -> list[ValidationProblem]:
     problems: list[ValidationProblem] = []
     close = as_utc(market.close_time) if market.close_time else None
     resolve = as_utc(market.resolution_time) if market.resolution_time else None
 
-    if close is None:
-        problems.append(ValidationProblem("close_time", "A close time is required."))
-    elif close <= now:
-        problems.append(ValidationProblem("close_time", "Close time must be in the future."))
-
-    if resolve is None:
-        problems.append(
-            ValidationProblem("resolution_time", "A resolution time is required.")
-        )
-    elif resolve <= now:
-        problems.append(
-            ValidationProblem("resolution_time", "Resolution time must be in the future.")
-        )
+    problems += _future_problems(
+        "close_time",
+        close,
+        now,
+        missing="A close time is required.",
+        past="Close time must be in the future.",
+    )
+    problems += _future_problems(
+        "resolution_time",
+        resolve,
+        now,
+        missing="A resolution time is required.",
+        past="Resolution time must be in the future.",
+    )
 
     # Reported separately from the two checks above rather than inferred from
     # them. All three can be wrong at once, and each names a different field
@@ -205,6 +230,22 @@ def _resolution_problems(market: Market) -> list[ValidationProblem]:
     return problems
 
 
+def _positive_problems(
+    field: str, value: Decimal | None, *, missing: str, nonpositive: str
+) -> list[ValidationProblem]:
+    """Required, and greater than zero. The shape both pricing columns share.
+
+    Like `_future_problems`, the messages are arguments: each one explains what
+    that particular number does to the market, which is the part an admin
+    needs and the part a generated string cannot supply.
+    """
+    if value is None:
+        return [ValidationProblem(field, missing)]
+    if value <= 0:
+        return [ValidationProblem(field, nonpositive)]
+    return []
+
+
 def _liquidity_problems(market: Market) -> list[ValidationProblem]:
     """[1.2] #2. A market cannot go live without knowing how it is priced.
 
@@ -220,39 +261,17 @@ def _liquidity_problems(market: Market) -> list[ValidationProblem]:
     are here because this function is the single definition of "ready" that
     [1.3] #3 and [1.4] #4 also call, and it takes an entity, not a request.
     """
-    problems: list[ValidationProblem] = []
-
-    if market.liquidity_b is None:
-        problems.append(
-            ValidationProblem(
-                "liquidity_b",
-                "A liquidity parameter is required. It decides how far each "
-                "trade moves the price.",
-            )
-        )
-    elif market.liquidity_b <= 0:
-        problems.append(
-            ValidationProblem(
-                "liquidity_b",
-                "The liquidity parameter must be greater than zero. At zero "
-                "the market has no liquidity and cannot be priced.",
-            )
-        )
-
-    if market.seed_subsidy is None:
-        problems.append(
-            ValidationProblem(
-                "seed_subsidy",
-                "A seed subsidy is required. It is the credits the platform "
-                "puts up to cover the market maker's losses.",
-            )
-        )
-    elif market.seed_subsidy <= 0:
-        problems.append(
-            ValidationProblem(
-                "seed_subsidy",
-                "The seed subsidy must be greater than zero.",
-            )
-        )
-
-    return problems
+    return _positive_problems(
+        "liquidity_b",
+        market.liquidity_b,
+        missing="A liquidity parameter is required. It decides how far each "
+        "trade moves the price.",
+        nonpositive="The liquidity parameter must be greater than zero. At zero "
+        "the market has no liquidity and cannot be priced.",
+    ) + _positive_problems(
+        "seed_subsidy",
+        market.seed_subsidy,
+        missing="A seed subsidy is required. It is the credits the platform "
+        "puts up to cover the market maker's losses.",
+        nonpositive="The seed subsidy must be greater than zero.",
+    )

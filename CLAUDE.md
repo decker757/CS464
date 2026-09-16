@@ -15,6 +15,7 @@ backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3]
 backend/audit_service/    reading the shared admin action log     [4.3]
 backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
+backend/shared/           the only code services import from each other [F-6]
 sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/         hand-applied ALTERs, until Alembic ([F-5] #75)
 docs/adr/               decisions that were expensive to make
@@ -236,6 +237,30 @@ from `AUDIT_TEST_DATABASE_URL`, which is why that variable is set for its CI
 job too. Nothing anywhere holds UPDATE, DELETE or TRUNCATE, so no suite can
 clean the table: tests scope themselves to a fresh actor id instead.
 
+**`backend/shared/` is importable, and almost nothing belongs in it.** [F-6]
+#76 moved every build context to `backend/` — compose sets `context: ./backend`
+and `dockerfile: <service>/Dockerfile` — so a service's image holds `shared/`
+beside it and `PYTHONPATH=/app` makes the import resolve the way it does in a
+checkout. `pytest.ini` says the same with `pythonpath = . ..`.
+
+It holds token verification, the settings base, the role enum, the cursor
+format and the test env loader. That is the whole list, and ADR 0012 spends
+most of its length on what was left copied and why — `core/database.py` above
+all, because one shared `Base` would enrol every service's tables in every
+other service's metadata and the first conftest `drop_all` would hit a table
+its role cannot touch.
+
+Two rules keep the package from turning back into `core`. **Nothing in
+`shared/` imports a service** — the verifier takes its secret and issuer as
+arguments, the cursor decoder returns None instead of raising a domain error.
+And **every service keeps a `core/` seam** that binds shared code to its own
+settings and errors, so nothing under `service/` or `model/` imports `shared`
+directly and the layering rule below still holds.
+
+The bar for adding anything: every caller needs identical behaviour *and* a
+divergence between two copies would be a bug rather than a design choice.
+Similar is not enough.
+
 **CORS does not apply to a WebSocket, so the socket checks the origin itself.**
 There is no preflight on a handshake and the browser enforces nothing about who
 may open one, so `CORSMiddleware` in the realtime service guards `/health` and
@@ -352,6 +377,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0009** double-entry with derived balances, and a lazily minted grant
 - **0010** a websocket relay that owns nothing, and Redis rather than the database
 - **0011** the clock closes a market, and a sweep only writes it down
+- **0012** a shared package, and the build contexts that had to move first
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

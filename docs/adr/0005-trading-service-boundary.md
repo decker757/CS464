@@ -162,6 +162,14 @@ outside itself. A fourth service physically cannot import the engine from
 therefore not a matter of taste; either the contexts are restructured or the
 formula is copied.
 
+> **Resolved by [ADR 0012](0012-the-shared-package.md), [F-6] #76.** The
+> contexts were restructured. Every service now builds from `backend/` with
+> `dockerfile: <service>/Dockerfile`, and `backend/shared/` holds token
+> verification and the settings base — two of the three things this record
+> named. The LMSR engine is the third and lands with [F-3] #43. The narrowness
+> this section insists on is preserved: `shared/` is not `core`, and ADR 0012
+> records what was deliberately left copied.
+
 **The composite is the websocket producer.** [F-2] #42 broadcasts a new price on
 trade commit. The composite is the only place that knows both that a trade
 committed and what the resulting price is, so the producer side of #42 belongs

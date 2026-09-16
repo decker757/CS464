@@ -31,27 +31,12 @@ from service.audit import Actor
 # name because every helper below takes an `actor` argument, which would
 # shadow it.
 from unit_test.conftest import actor as _actor
+from unit_test.conftest import market_terms as _request
 
 _ENTRIES = text(
     "SELECT * FROM audit.admin_actions WHERE actor_id = :actor "
     "ORDER BY occurred_at DESC, id DESC"
 )
-
-
-def _request(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
-        "draft_key": uuid.uuid4(),
-        "status": "draft",
-        "question": "Will Singapore core inflation be below 2% in December 2026?",
-        "outcomes": [{"label": "Yes"}, {"label": "No"}],
-        "close_time": datetime.now(UTC) + timedelta(days=30),
-        "resolution_time": datetime.now(UTC) + timedelta(days=45),
-        "resolution_criteria": "Resolves YES on the first published MAS print below 2.0%.",
-        "resolution_sources": [{"url": "https://www.mas.gov.sg/statistics"}],
-        "seed_subsidy": Decimal("250"),
-    }
-    base.update(overrides)
-    return base
 
 
 async def _entries(audit_reader: AsyncSession, actor: Actor) -> list:

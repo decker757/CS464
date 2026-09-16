@@ -238,9 +238,14 @@ await redis_client.publish("market.price", event.model_dump_json())
 ```
 
 `backend/realtime_service/service/bus.py::publish` is that call, and the model
-beside it is the contract. Copy them rather than importing: each service builds
-from its own directory with `COPY . .`, so a build context cannot reach across
-(ADR 0005).
+beside it is the contract. Copy them rather than importing.
+
+That used to be forced — a build context could not reach across service
+directories — and since [F-6] #76 it is not: `backend/shared/` is importable
+from every service. It stays a copy because four lines of `redis.publish` are
+below the bar ADR 0012 sets for that package. The `PriceEvent` model is the
+part worth revisiting if the two ever disagree, since that one really is a
+contract.
 
 Rules that are not negotiable:
 

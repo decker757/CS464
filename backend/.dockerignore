@@ -1,0 +1,33 @@
+# The build context is this directory now, not a single service's, so every
+# pattern has to be written to match at any depth. [F-6] #76.
+#
+# **`**/` is load-bearing on every line.** A bare `.env` matches only
+# `backend/.env` — Docker anchors an unprefixed pattern at the context root.
+# While each service built from its own directory that was the same thing; once
+# the context moved up, `backend/market_service/.env` stopped being excluded
+# and went straight into the image. It is gitignored precisely because it holds
+# a real DATABASE_URL and JWT_SECRET, so a pattern that silently narrowed put
+# the signing key in a published layer. Anything added below gets `**/` unless
+# there is a stated reason it should match the root alone.
+**/.env
+**/.env.*
+
+# Each service keeps a local virtualenv here for running its suite. Without
+# this an image build ships a second copy of every dependency it just
+# pip-installed.
+**/.venv/
+
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+
+# Tests are not part of a runtime image.
+**/unit_test/
+
+# `shared/testing.py` is test plumbing too — it is the one module of the shared
+# package no service imports at runtime, so it has no business in a production
+# layer. Named explicitly rather than by a pattern, because a glob over the
+# shared package would be a trap the next person adding a module walks into.
+shared/testing.py
+
+**/*.db

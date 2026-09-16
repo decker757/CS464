@@ -13,7 +13,9 @@ every message-based version of this has to work to prevent — is an admin actio
 that took effect with no trace of who did it.
 
 A copy of `market_service/service/audit.py`, for the reason its sibling
-`model/audit.py` gives. Keep the two in step.
+`model/audit.py` now gives: since [F-6] #76 the build contexts no longer
+prevent sharing it, and the two are kept separate deliberately rather than by
+necessity. Keep them in step.
 
 docs/adr/0006-audit-log-write-path.md records the alternatives and why this one
 won here, including the condition that would end it: it holds only while every

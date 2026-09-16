@@ -11,25 +11,7 @@ import uuid
 
 from httpx import AsyncClient
 
-from unit_test.conftest import future
-
-
-def _payload(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
-        "draft_key": str(uuid.uuid4()),
-        "status": "draft",
-        "question": "Will Singapore core inflation be below 2% in December 2026?",
-        "outcomes": [{"label": "Yes"}, {"label": "No"}],
-        "close_time": future(days=30),
-        "resolution_time": future(days=45),
-        "resolution_criteria": "Resolves YES on the first published MAS print below 2.0%.",
-        "resolution_sources": [{"url": "https://www.mas.gov.sg/statistics"}],
-        # [1.2] #2. No liquidity_b: leaving it out is the common case from the
-        # form and lets the configured default apply.
-        "seed_subsidy": 250,
-    }
-    base.update(overrides)
-    return base
+from unit_test.conftest import market_json as _payload
 
 
 # --- the guard ------------------------------------------------------------

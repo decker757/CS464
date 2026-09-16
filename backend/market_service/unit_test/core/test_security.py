@@ -6,6 +6,7 @@ rather than only through a route.
 
 from __future__ import annotations
 
+import pathlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -28,6 +29,25 @@ def test_there_is_no_way_to_mint_a_token_from_this_service() -> None:
     exported = dir(security)
 
     assert not [name for name in exported if "create" in name or "encode" in name]
+
+    # `core.security` is a five-line wrapper since [F-6] #76, so the check above
+    # now inspects almost nothing: the verifier itself lives in
+    # `backend/shared/security.py`, and a `create_access_token` added there
+    # would reach this service without changing anything `dir()` can see. Scan
+    # both trees for the encode call itself.
+    service_root = pathlib.Path(__file__).resolve().parents[2]
+    shared_root = service_root.parent / "shared"
+
+    encoders = [
+        path
+        for root in (service_root, shared_root)
+        for path in root.rglob("*.py")
+        if ".venv" not in path.parts
+        and "unit_test" not in path.parts
+        and "jwt.encode" in path.read_text()
+    ]
+
+    assert encoders == []
 
 
 @pytest.mark.parametrize("role", list(UserRole))

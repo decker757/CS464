@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -19,6 +18,8 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 from core.config import get_settings
 from core.roles import UserRole
+from shared import security as _shared
+from shared.security import TokenClaims
 
 # Argon2id with the argon2-cffi defaults, which track the OWASP recommendation.
 _hasher = PasswordHasher()
@@ -61,14 +62,6 @@ def needs_rehash(stored_hash: str) -> bool:
 # --------------------------------------------------------------------------
 # Access tokens (stateless JWT)
 # --------------------------------------------------------------------------
-@dataclass(frozen=True)
-class TokenClaims:
-    user_id: uuid.UUID
-    username: str
-    role: UserRole
-    expires_at: datetime
-
-
 def create_access_token(user_id: uuid.UUID, username: str, role: UserRole) -> str:
     """Mint an access token.
 
@@ -94,38 +87,25 @@ def create_access_token(user_id: uuid.UUID, username: str, role: UserRole) -> st
 
 
 def decode_access_token(token: str) -> TokenClaims | None:
-    """Return the claims, or None for any malformed, expired or foreign token."""
-    settings = get_settings()
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-            issuer=settings.jwt_issuer,
-            options={"require": ["exp", "iat", "sub", "iss"]},
-        )
-        return TokenClaims(
-            user_id=uuid.UUID(payload["sub"]),
-            username=payload["username"],
-            role=_read_role(payload.get("role")),
-            expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
-        )
-    except (jwt.InvalidTokenError, KeyError, ValueError):
-        return None
+    """Return the claims, or None for any malformed, expired or foreign token.
 
+    Verified through `shared/security.py`, the same function every other
+    service reads a token with. [F-6] #76.
 
-def _read_role(raw: object) -> UserRole:
-    """Fail closed: anything unrecognised is the least privileged role.
-
-    Covers a token minted before the claim existed and a token carrying a role
-    this build has never heard of, such as one issued by a newer deploy during
-    a rollout. Neither is grounds for rejecting an otherwise valid token, but
-    neither is grounds for granting authority either.
+    This service is the one that signs, so it is the one where a verifier that
+    had drifted from the shared rule would be least visible: it would keep
+    accepting its own tokens perfectly while the rest of the system disagreed
+    about them. Minting stays here — ADR 0003 refused to share `core` so that
+    an encode path could not leak into a service that must not have one, and
+    the sharing goes one way only.
     """
-    try:
-        return UserRole(raw)
-    except ValueError:
-        return UserRole.TRADER
+    settings = get_settings()
+    return _shared.decode_access_token(
+        token,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        issuer=settings.jwt_issuer,
+    )
 
 
 # --------------------------------------------------------------------------

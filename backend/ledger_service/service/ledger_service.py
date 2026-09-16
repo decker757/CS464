@@ -18,7 +18,7 @@ from sqlalchemy import Select, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.paging import decode_cursor, encode_cursor
-from model.entities import Account, Entry
+from model.entities import Entry
 from service import accounts, grants
 
 
@@ -55,7 +55,8 @@ async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBala
     therefore not something this service has to remember to do; it is the only
     thing it can do.
     """
-    account = await _granted_account(session, user_id)
+    # Mints the starting grant if this is the user's first read. [B-1] #32.
+    account = await grants.ensure_granted(session, user_id)
     amount = await accounts.balance_of(session, account.id)
     return UserBalance(account_id=account.id, amount=amount)
 
@@ -79,7 +80,8 @@ async def history_for_user(
     then walk down subtracting each amount — but it belongs to the story that
     renders it, next to the user search it appears beside.
     """
-    account = await _granted_account(session, user_id)
+    # Mints the starting grant if this is the user's first read. [B-1] #32.
+    account = await grants.ensure_granted(session, user_id)
 
     stmt = _ordered_query(account.id)
 
@@ -100,11 +102,6 @@ async def history_for_user(
     page = rows[:limit]
     last = page[-1]
     return EntryPage(entries=page, next_cursor=encode_cursor(last.created_at, last.id))
-
-
-async def _granted_account(session: AsyncSession, user_id: uuid.UUID) -> Account:
-    """The user's account, with their starting credits in it. [B-1] #32."""
-    return await grants.ensure_granted(session, user_id)
 
 
 def _ordered_query(account_id: uuid.UUID) -> Select[tuple[Entry]]:
