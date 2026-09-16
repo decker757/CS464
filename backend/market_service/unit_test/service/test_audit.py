@@ -27,14 +27,15 @@ from model.audit import AdminAction
 from service import market_service
 from service.audit import Actor
 
+# The suite's one actor factory. Aliased rather than imported under its own
+# name because every helper below takes an `actor` argument, which would
+# shadow it.
+from unit_test.conftest import actor as _actor
+
 _ENTRIES = text(
     "SELECT * FROM audit.admin_actions WHERE actor_id = :actor "
     "ORDER BY occurred_at DESC, id DESC"
 )
-
-
-def _actor(username: str = "ernest_t", role: str = "admin") -> Actor:
-    return Actor(id=uuid.uuid4(), username=username, role=role)
 
 
 def _request(**overrides: object) -> dict[str, object]:

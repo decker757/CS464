@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 
 from pydantic import HttpUrl, TypeAdapter, ValidationError
 
+from core.clock import as_utc
 from core.errors import ValidationProblem
 from model.entities import Market
 
@@ -39,17 +40,6 @@ MIN_CRITERIA_LENGTH = 10
 # Reuses pydantic's parser rather than a hand-rolled regex, and it already
 # restricts the scheme to http and https.
 _URL = TypeAdapter(HttpUrl)
-
-
-def _as_utc(value: datetime) -> datetime:
-    """Normalise before comparing.
-
-    Postgres hands back aware datetimes and the request schema rejects naive
-    ones, so this should never fire. It is here because comparing a naive
-    datetime to an aware one raises TypeError, and a 500 on the submit button
-    is a much worse failure than an assumption written down.
-    """
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _is_reachable_url(raw: str) -> bool:
@@ -131,8 +121,8 @@ def _outcome_problems(market: Market) -> list[ValidationProblem]:
 
 def _timing_problems(market: Market, now: datetime) -> list[ValidationProblem]:
     problems: list[ValidationProblem] = []
-    close = _as_utc(market.close_time) if market.close_time else None
-    resolve = _as_utc(market.resolution_time) if market.resolution_time else None
+    close = as_utc(market.close_time) if market.close_time else None
+    resolve = as_utc(market.resolution_time) if market.resolution_time else None
 
     if close is None:
         problems.append(ValidationProblem("close_time", "A close time is required."))

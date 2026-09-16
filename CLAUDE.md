@@ -11,6 +11,7 @@ in GitHub Project v2 #6.
 ```
 backend/auth_service/     registration, login, logout, sessions   [A-1..A-3]
 backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3]
+                          and closing them at their closing time [F-4]
 backend/audit_service/    reading the shared admin action log     [4.3]
 backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
@@ -108,6 +109,30 @@ which may still be open behind the publish button — reverts a live market to a
 draft on its next three-second tick. Publishing also re-runs every submission
 rule against the clock at publish time, because a market that sat submitted
 past its own close time would otherwise go live already closed. ADR 0008.
+
+**A market closes on the clock, and the status column is not the authority.**
+A market stops accepting trades the instant `close_time` passes.
+`market_service/service/closing.py` states that once — as
+`is_open_for_trading` for an entity and `open_for_trading()` for a WHERE
+clause — and every trade path, browse query and status filter asks it. The
+CLOSED status is written a few seconds later by a background sweep, for the
+readers that want a value to count and gate on ([2.1] #5, [3.1] #9, [3.4] #12).
+
+Write it the other way round — gate trading on `status == OPEN` — and the sweep
+interval becomes a correctness parameter: every second of it is a second of
+trading on a market that has closed, and an outage widens it silently. No
+interval makes that window zero; deriving the answer does. The sweeper falling
+behind, or being switched off with `CLOSE_SWEEP_ENABLED`, makes a dashboard
+count stale and cannot let a trade through. Same shape as the ledger's derived
+balances, and the same reason. ADR 0011.
+
+The sweep is not a scan and the polling cost is not the interesting question:
+`ix_markets_due_close` is partial on `status = 'open'`, so it reads an ordered
+index holding only the open markets and stops. One admin with the create form
+open writes 1,200 autosave transactions an hour; a ten-second sweep is 360
+read-only probes. An automatic close writes no audit entry — the clock is not
+an actor, and the `market.published` entry already recorded the `close_time`
+that was approved.
 
 **An admin is made by hand, and needs a fresh login.** Registration always
 creates a trader. Promotion is `UPDATE auth.users SET role = 'admin' WHERE
@@ -326,6 +351,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0008** publishing as its own endpoint, from SUBMITTED only, and one way
 - **0009** double-entry with derived balances, and a lazily minted grant
 - **0010** a websocket relay that owns nothing, and Redis rather than the database
+- **0011** the clock closes a market, and a sweep only writes it down
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

@@ -18,6 +18,23 @@ def _settings(**overrides: object) -> Settings:
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
 
+def _env(monkeypatch: pytest.MonkeyPatch, **extra: str) -> None:
+    """Set the two required settings in the environment, plus whatever a test
+    is actually about.
+
+    Used by every test that cares about parsing rather than about validation.
+    A constructor kwarg skips the settings source entirely, so it proves the
+    field parses and nothing about the path a deploy takes — which is the gap
+    that let the CORS_ORIGINS decoding bug reach a container.
+    """
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
+    )
+    monkeypatch.setenv("JWT_SECRET", "a" * 32)
+    for key, value in extra.items():
+        monkeypatch.setenv(key, value)
+
+
 @pytest.mark.parametrize("missing", ["DATABASE_URL", "JWT_SECRET"])
 def test_the_required_settings_have_no_default(
     missing: str, monkeypatch: pytest.MonkeyPatch
@@ -32,10 +49,7 @@ def test_the_required_settings_have_no_default(
     pydantic-settings reads os.environ regardless of what the caller passes, and
     conftest has both of these set.
     """
-    monkeypatch.setenv(
-        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
-    )
-    monkeypatch.setenv("JWT_SECRET", "a" * 32)
+    _env(monkeypatch)
     monkeypatch.delenv(missing, raising=False)
 
     with pytest.raises(ValidationError):
@@ -90,11 +104,7 @@ def test_the_liquidity_default_can_be_overridden_from_the_environment(
     field parses and nothing about the path a deploy actually takes. That gap
     is how the CORS_ORIGINS decoding bug reached a container.
     """
-    monkeypatch.setenv(
-        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
-    )
-    monkeypatch.setenv("JWT_SECRET", "a" * 32)
-    monkeypatch.setenv("DEFAULT_LIQUIDITY_B", "250")
+    _env(monkeypatch, DEFAULT_LIQUIDITY_B="250")
 
     assert Settings(_env_file=None).default_liquidity_b == Decimal("250")
 
@@ -106,11 +116,7 @@ def test_the_liquidity_default_is_read_from_the_environment_as_a_decimal(
 
     `"250" * 2` is `"250250"`, and this value is multiplied by a logarithm.
     """
-    monkeypatch.setenv(
-        "DATABASE_URL", "postgresql+asyncpg://market_svc:x@localhost:5432/cs464"
-    )
-    monkeypatch.setenv("JWT_SECRET", "a" * 32)
-    monkeypatch.setenv("DEFAULT_LIQUIDITY_B", "12.5")
+    _env(monkeypatch, DEFAULT_LIQUIDITY_B="12.5")
 
     parsed = Settings(_env_file=None).default_liquidity_b
 
@@ -127,6 +133,78 @@ def test_a_non_positive_liquidity_default_refuses_to_boot(bad: str) -> None:
     """
     with pytest.raises(ValidationError):
         _settings(default_liquidity_b=bad)
+
+
+# --- [F-4] #44 auto-close ---------------------------------------------------
+
+
+def test_the_sweep_settings_have_working_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Optional, unlike the database URL and the signing key, because none of
+    them is a credential and none of them is a correctness knob: a wrong
+    interval makes a dashboard count stale, not a closed market tradeable."""
+    for key in ("CLOSE_SWEEP_SECONDS", "CLOSE_SWEEP_BATCH", "CLOSE_SWEEP_ENABLED"):
+        monkeypatch.delenv(key, raising=False)
+    _env(monkeypatch)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.close_sweep_seconds == 10.0
+    assert settings.close_sweep_batch == 100
+    assert settings.close_sweep_enabled is True
+
+
+def test_the_sweep_interval_is_read_as_a_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An environment variable is always a string, and this one is handed to
+    `asyncio.sleep`. A str would raise inside the background task, where the
+    loop's own error handler would swallow it and retry forever."""
+    _env(monkeypatch, CLOSE_SWEEP_SECONDS="2.5", CLOSE_SWEEP_BATCH="25")
+
+    settings = Settings(_env_file=None)
+
+    assert isinstance(settings.close_sweep_seconds, float)
+    assert settings.close_sweep_seconds == 2.5
+    assert isinstance(settings.close_sweep_batch, int)
+    assert settings.close_sweep_batch == 25
+
+
+@pytest.mark.parametrize("value", ["false", "False", "0"])
+def test_the_sweeper_can_be_switched_off_from_the_environment(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The spellings an operator or a compose file will actually write.
+
+    Worth pinning, because every one of them is a non-empty string and a bool
+    field that did not parse would read all three as True — leaving the
+    sweeper running for someone who believed they had stopped it.
+    """
+    _env(monkeypatch, CLOSE_SWEEP_ENABLED=value)
+
+    assert Settings(_env_file=None).close_sweep_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("key", "bad"),
+    [
+        ("CLOSE_SWEEP_SECONDS", "0"),
+        ("CLOSE_SWEEP_SECONDS", "-1"),
+        ("CLOSE_SWEEP_BATCH", "0"),
+        ("CLOSE_SWEEP_BATCH", "-10"),
+    ],
+)
+def test_a_nonsensical_sweep_setting_refuses_to_boot(
+    key: str, bad: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zero interval is a loop with no sleep in it, and a zero batch is a
+    sweep that closes nothing while reporting success forever. Both fail at
+    startup rather than at three in the morning."""
+    _env(monkeypatch, **{key: bad})
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_no_authentication_policy_knobs_live_here() -> None:

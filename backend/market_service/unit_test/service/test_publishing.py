@@ -27,18 +27,17 @@ from model.schemas import MarketDraftRequest
 from service import market_service
 from service.audit import Actor
 
+# The suite's one actor factory. Aliased rather than imported under its own
+# name because every helper below takes an `actor` argument, which would
+# shadow it.
+from unit_test.conftest import actor as _actor
+
 
 # Read back as audit_svc: market_svc holds INSERT on this table and no SELECT.
 _PUBLISHED_ENTRIES = text(
     "SELECT id FROM audit.admin_actions "
     "WHERE actor_id = :actor AND action_type = 'market.published'"
 )
-
-
-def _actor() -> Actor:
-    """A distinct administrator per test, for the same reason as in
-    test_drafting.py: the audit log cannot be truncated between tests."""
-    return Actor(id=uuid.uuid4(), username="ernest_t", role="admin")
 
 
 def _request(**overrides: object) -> MarketDraftRequest:

@@ -21,6 +21,8 @@ from core.config import get_settings
 from core.errors import (
     DraftIncomplete,
     MarketAlreadyOpen,
+    MarketClosed,
+    MarketError,
     MarketNotEditable,
     MarketNotFound,
     MarketNotSubmitted,
@@ -32,6 +34,32 @@ from model.schemas import PRICING_DECIMAL_PLACES, MarketDraftRequest
 from service import audit
 from service.audit import Actor
 from service.validation import problems_blocking_submission
+
+# The statuses from which a market's terms are final, and what a write to one
+# is told. [1.3] #3 froze OPEN; [F-4] #44 added CLOSED.
+#
+# A table rather than a branch per status, because there are two write paths
+# and a branch per status means a branch in each of them. `core/errors.py`
+# already names where this is going — "[1.4] #4 widens it into a general rule
+# about non-draft markets" — and epic 3's PENDING_RESOLUTION and RESOLVED are
+# then two rows here instead of four more branches.
+_FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
+    MarketStatus.OPEN: MarketAlreadyOpen,
+    MarketStatus.CLOSED: MarketClosed,
+}
+
+
+def _refuse_if_frozen(market: Market) -> None:
+    """Raise if this market's terms can no longer be written to.
+
+    Consults the market and never what the request asked for, because being
+    finished is what decides this. An autosave from a form still open behind
+    the publish button, a resubmission and a second publish are all the same
+    answer, and the error says which kind of finished this market is.
+    """
+    error = _FROZEN_STATUS_ERRORS.get(market.status)
+    if error is not None:
+        raise error
 
 
 async def save(
@@ -93,14 +121,13 @@ async def _save_once(
         market = Market(creator_id=actor.id, draft_key=data.draft_key)
         session.add(market)
     else:
-        if market.status is MarketStatus.OPEN:
-            # [1.3] #3. Published terms are frozen, so no save of any kind gets
-            # through — not an autosave from a form still open behind the
-            # publish button, and not a resubmission either. Checked before the
-            # rule below and without consulting `data.status`, because the
-            # market being live is what decides this, not what the request
-            # wanted to do. Traders are pricing against these terms.
-            raise MarketAlreadyOpen
+        # [1.3] #3, [F-4] #44. Frozen terms take no save of any kind — not an
+        # autosave from a form still open behind the publish button, and not a
+        # resubmission. Traders are pricing against these terms, or have
+        # finished doing so and [3.1] #9 is about to settle on them. Checked
+        # before the rule below, because being finished outranks what the
+        # request wanted to do.
+        _refuse_if_frozen(market)
 
         if market.status is MarketStatus.SUBMITTED and data.status is MarketStatus.DRAFT:
             # An autosave arriving after the submit button was pressed. Letting
@@ -180,6 +207,11 @@ async def publish(
     One way. There is no unpublish, and `_save_once` refuses every later write.
     Exactly once, too: the row is locked for the status check, so two requests
     racing cannot both report having published the same market.
+
+    That re-run is also why [F-4] #44's sweeper can never find a market that
+    was born due. `close_time` has to be strictly in the future at this
+    instant, so a market reaches OPEN with time left on the clock every time,
+    and CLOSED is only ever reached by the clock actually running out.
     """
     now = now or datetime.now(UTC)
 
@@ -198,8 +230,12 @@ async def publish(
     # winner committed, so it sees OPEN and is refused.
     market = await get(session, actor.id, market_id, for_update=True)
 
-    if market.status is MarketStatus.OPEN:
-        raise MarketAlreadyOpen
+    # Before the refusal below, so the message is true. A market that is open
+    # or closed is not "still a draft, press submit first": an open one has
+    # nothing left to do, and there is no sequence of actions that publishes a
+    # closed one, because publishing re-runs the rule that a close time must be
+    # in the future and that market's is in the past by definition.
+    _refuse_if_frozen(market)
     if market.status is not MarketStatus.SUBMITTED:
         raise MarketNotSubmitted
 

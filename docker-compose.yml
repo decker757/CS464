@@ -79,6 +79,18 @@ services:
       # a credential, so a default here is a tuning choice rather than a
       # published secret. An admin overrides it per market.
       DEFAULT_LIQUIDITY_B: ${DEFAULT_LIQUIDITY_B:-100}
+      # [F-4] #44. How often this replica looks for markets whose closing time
+      # has passed, and whether it looks at all.
+      #
+      # Neither is a correctness knob. A market stops accepting trades when its
+      # close_time passes, which the trade path derives rather than reading off
+      # the status column, so this interval is how stale an admin dashboard's
+      # status counts may be and nothing more. Turning the sweep off does not
+      # make a closed market tradeable again. backend/market_service/service/
+      # closing.py has the argument.
+      CLOSE_SWEEP_SECONDS: ${CLOSE_SWEEP_SECONDS:-10}
+      CLOSE_SWEEP_BATCH: ${CLOSE_SWEEP_BATCH:-100}
+      CLOSE_SWEEP_ENABLED: ${CLOSE_SWEEP_ENABLED:-true}
     ports:
       - "${MARKET_PORT:-8001}:8000"
     restart: unless-stopped
