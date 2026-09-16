@@ -4,12 +4,13 @@ Base URL `http://localhost:8001` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
-Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44 and the backend half of
-[FE][1.1] #45.
+Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [3.1] #9 and the backend half
+of [FE][1.1] #45 and [FE][3.1] #52.
 
-A successful submission or publication also appends an entry to the shared
-audit log, in the same database transaction, so the two can never disagree. An
-autosave does not. See [`audit-service.md`](audit-service.md) and
+A successful submission, publication or outcome proposal also appends an entry
+to the shared audit log, in the same database transaction, so the two can never
+disagree. An autosave does not, and neither does an automatic close — the clock
+is not an actor. See [`audit-service.md`](audit-service.md) and
 [ADR 0006](../adr/0006-audit-log-write-path.md).
 
 Why it is a separate service and how it knows who is an admin:
@@ -18,7 +19,11 @@ autosave and submit: [ADR 0004](../adr/0004-draft-autosave-and-submission.md).
 Why the LMSR engine itself is not in this service:
 [ADR 0005](../adr/0005-trading-service-boundary.md). Why publishing is a
 separate endpoint rather than a third status on the save:
-[ADR 0008](../adr/0008-publishing-a-market.md).
+[ADR 0008](../adr/0008-publishing-a-market.md). Why the clock closes a market
+and a sweep only writes it down:
+[ADR 0011](../adr/0011-market-auto-close.md). Why proposing an outcome gates on
+the status column anyway, and why the evidence is two fields:
+[ADR 0013](../adr/0013-proposing-an-outcome.md).
 
 ## Endpoints
 
@@ -26,6 +31,7 @@ separate endpoint rather than a third status on the save:
 | --- | --- | --- |
 | POST | `/markets` | Save a draft, or submit a market |
 | POST | `/markets/{id}/publish` | Publish a submitted market |
+| POST | `/markets/{id}/propose-outcome` | Propose the winner of a closed market |
 | GET | `/markets` | List my own markets |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
@@ -33,7 +39,7 @@ separate endpoint rather than a third status on the save:
 Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is [BE][X] #62.
 
-## The four statuses
+## The five statuses
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
@@ -41,14 +47,18 @@ unauthenticated read here; the public market API for traders is [BE][X] #62.
 | `submitted` | the submit button | no |
 | `open` | `POST /markets/{id}/publish` | yes |
 | `closed` | the clock, at `close_time` | yes, but not tradeable |
+| `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 
-The path is `draft → submitted → open → closed` and nothing skips a step. No
-status is ever reversed: there is no unpublish and no reopen, and every save on
-an `open` or `closed` market is a `409`.
+The path is `draft → submitted → open → closed → pending_resolution` and
+nothing skips a step. Every save on a market past `submitted` is a `409`,
+whatever the request asks for — the terms are final from `open` onwards.
+
+Only one transition is ever reversed, and it is not in this ticket: [3.2] #10's
+rejection sends a market from `pending_resolution` back to `closed`, with a
+reason. There is still no unpublish and no reopen.
 
 `closed` is the only one no request produces. [2.3] #7 will let an
-administrator reach it early and by hand; [3.1] #9 takes a market out of it by
-proposing an outcome.
+administrator reach it early and by hand.
 
 ### `close_time` is when trading stops — not `status` — [F-4] #44
 
@@ -327,6 +337,116 @@ given under "`close_time` is when trading stops" above. Until it lands, a
 published market is visible through the admin routes on this page and nowhere
 else.
 
+## POST /markets/{id}/propose-outcome — [3.1] #9
+
+Moves a market from `closed` to `pending_resolution`, naming the outcome the
+administrator believes won and the evidence for it. Nothing is settled here and
+no credits move: [3.2] #10 asks a second administrator to approve or reject,
+and [3.4] #12 pays out.
+
+### Request
+
+```json
+{
+  "winning_outcome_id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f",
+  "evidence_url": "https://www.mas.gov.sg/statistics/cpi-december-2026",
+  "evidence_note": "MAS published December 2026 core inflation at 1.8% on 23 January, below the 2.0% threshold in the resolution criteria."
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `winning_outcome_id` | required; must be the `id` of one of **this** market's `outcomes` |
+| `evidence_url` | full `http`/`https` address, at most 2048 characters |
+| `evidence_note` | at least 10 characters, at most 5000 |
+
+**At least one of `evidence_url` and `evidence_note` is required.** Either
+alone is fine. Whichever is sent has to be usable — a URL that does not parse
+and a two-character note are both refused, even when the other field would have
+satisfied the requirement on its own, because storing a dead link puts one in
+front of [3.3] #11's disputer.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it.
+`status` is `pending_resolution` and six fields are now set:
+
+```json
+{
+  "status": "pending_resolution",
+  "proposed_outcome_id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f",
+  "proposed_by_id": "1c9e5d3a-77b2-4f0c-9a1d-5e6f7a8b9c0d",
+  "proposed_by_username": "ernest_t",
+  "proposed_at": "2026-09-16T09:14:02.118374Z",
+  "proposal_evidence_url": "https://www.mas.gov.sg/statistics/cpi-december-2026",
+  "proposal_evidence_note": "MAS published December 2026 core inflation at 1.8% …"
+}
+```
+
+They are null together on every market that has not been proposed for, and set
+together on every market that has. `proposed_outcome_id` names a member of the
+same response's `outcomes` array — look the label up there rather than
+expecting it twice.
+
+### Only a closed market
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 404 | `market_not_found` | no such market, or it is not yours | nothing; it is not there |
+| 409 | `market_not_closed` | it is still running | wait; the market has not finished |
+| 409 | `market_pending_resolution` | an outcome is already proposed | reload; show whose proposal is waiting |
+| 422 | `proposal_incomplete` | the winner or the evidence is wrong | fix the fields in `details` |
+
+**A market whose closing time has just passed is a `409`.** For a few seconds
+after `close_time`, `status` still reads `"open"` because the sweep has not run
+yet — see "`close_time` is when trading stops" above. Proposing is refused for
+that window. Nothing can be traded in it either, so nothing is lost; the propose
+control simply appears on the next fetch. This is the one place the backend
+gates on the status column rather than on the clock, and
+[ADR 0013](../adr/0013-proposing-an-outcome.md) explains why that is safe here
+and not on the trade path.
+
+The `422` is this service's own envelope, the same shape a refused submission
+uses, with a different `code`:
+
+```json
+{
+  "error": {
+    "code": "proposal_incomplete",
+    "message": "This outcome cannot be proposed yet.",
+    "details": [
+      { "field": "evidence_url", "message": "Enter a full http or https address a trader can open." },
+      { "field": "evidence", "message": "Give a source URL or a written note, so the decision can be checked by somebody who was not in the room." }
+    ]
+  }
+}
+```
+
+`field` is one of `winning_outcome_id`, `evidence_url`, `evidence_note`, or
+`evidence` — the last of which is the pair rather than an input, and belongs
+beside the two evidence fields rather than on either.
+
+**A refused proposal writes nothing.** The market stays `closed`, every
+`proposed_*` field stays null, and no audit entry is appended.
+
+### One proposal at a time
+
+A second proposal is a `409 market_pending_resolution`, not an overwrite. The
+first proposal is what a second administrator is being asked to agree to, and
+replacing it underneath them is the one thing this status exists to prevent.
+The way back to `closed` is [3.2] #10's rejection, which carries a reason.
+
+While a market is `pending_resolution` its terms are frozen exactly as they are
+when it is `open`: `POST /markets` on it returns `409
+market_pending_resolution`, and so does a publish.
+
+### Who may propose
+
+The market's creator, like every other route on this page. Another
+administrator gets `404`, not `403`, for the reason a 404 is used everywhere
+else here. [3.2] #10 is the ticket that widens this, because its own acceptance
+criteria require a *different* administrator to approve.
+
 ## GET /markets
 
 Every market belonging to the calling administrator, most recently updated
@@ -361,8 +481,9 @@ The same envelope the auth service uses, so one parser covers both:
 { "error": { "code": "not_an_administrator", "message": "This action requires an administrator account." } }
 ```
 
-`draft_incomplete` adds a `details` array. Nothing else does, and it is
-additive, so a client that ignores it still reads `code` and `message`:
+`draft_incomplete` and `proposal_incomplete` add a `details` array. Nothing
+else does, and it is additive, so a client that ignores it still reads `code`
+and `message`:
 
 ```json
 {
@@ -385,13 +506,20 @@ additive, so a client that ignores it still reads `code` and `message`:
 | 409 | `market_not_submitted` | publish asked for on a market that is still a draft |
 | 409 | `market_already_open` | a publish or a save arrived for an already-published market |
 | 409 | `market_closed` | a publish or a save arrived for a market past its closing time |
+| 409 | `market_not_closed` | an outcome was proposed for a market that is still running |
+| 409 | `market_pending_resolution` | a proposal, publish or save arrived for a market already awaiting one |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
+| 422 | `proposal_incomplete` | outcome proposal refused; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
 
-Two `422`s exist and they do not look alike. `draft_incomplete` is ours and
-carries the envelope above. A malformed body — a missing `draft_key`, a naive
-timestamp, a non-UUID — is FastAPI's, and comes back as `{"detail": [...]}`.
-Branch on the presence of `error`.
+Note that `market_closed` and `market_not_closed` are not opposites of each
+other in any useful sense — one is a save or publish that arrived too late, the
+other a proposal that arrived too early. They never appear on the same route.
+
+Two kinds of `422` exist and they do not look alike. `draft_incomplete` and
+`proposal_incomplete` are ours and carry the envelope above. A malformed body —
+a missing `draft_key`, a naive timestamp, a non-UUID — is FastAPI's, and comes
+back as `{"detail": [...]}`. Branch on the presence of `error`.
 
 ## Notes for [FE][1.1] #45
 
@@ -423,3 +551,26 @@ Branch on the presence of `error`.
     normally. Warn in the UI if you like; do not disable the button for it.
 11. Round pricing inputs to four decimal places before sending, and keep them
     under `99999999999999.9999`, or the save comes back `422`.
+
+## Notes for [FE][3.1] #52
+
+1. Show the propose control only on a market whose `status` is `closed`. A
+   market that is `open` with a `close_time` in the past is **not** ready yet,
+   even though it is no longer tradeable — wait for the next fetch. Do not
+   derive `closed` in the browser for this one; it is the only place on this
+   page where the status column is the right thing to read.
+2. Render the outcome choices from the market's own `outcomes` array and send
+   the chosen `id` as `winning_outcome_id`. Never send a label or an index.
+3. Enable the submit button when a winner is picked **and** at least one of the
+   evidence fields is filled in. Do that and you will never see a
+   `422 proposal_incomplete`.
+4. Paint `details` the way you already paint `blocking_submission`: same shape,
+   same keys. `field: "evidence"` has no input of its own — show it under the
+   pair of evidence fields.
+5. A `409 market_pending_resolution` means somebody got there first. Reload and
+   show `proposed_by_username` and `proposed_at` instead of the form.
+6. Repaint from the `200` response; it is the whole market. There is no need
+   for a follow-up `GET`.
+7. Nothing is resolved yet. Label this state "awaiting approval", not
+   "resolved" — [3.2] #10 can still send it back to `closed`, which clears
+   every `proposed_*` field.

@@ -10,8 +10,12 @@ from __future__ import annotations
 import uuid
 
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from service.audit import Actor
+from unit_test.conftest import closed_market
 from unit_test.conftest import market_json as _payload
+from unit_test.conftest import proposal_json as _proposal
 
 
 # --- the guard ------------------------------------------------------------
@@ -106,6 +110,11 @@ async def test_every_market_route_requires_a_token(client: AsyncClient) -> None:
     assert (await client.get(f"/markets/{uuid.uuid4()}")).status_code == 401
     assert (
         await client.post(f"/markets/{uuid.uuid4()}/publish")
+    ).status_code == 401
+    assert (
+        await client.post(
+            f"/markets/{uuid.uuid4()}/propose-outcome", json=_proposal(uuid.uuid4())
+        )
     ).status_code == 401
 
 
@@ -570,3 +579,245 @@ async def test_the_list_is_a_summary_not_the_whole_market(
         "close_time",
         "updated_at",
     }
+
+
+# --- proposing an outcome [3.1] #9 ----------------------------------------
+# No route closes a market — the clock does, and a background sweep writes it
+# down — so this section reaches CLOSED through the service layer and then
+# drives the route. `session` and `client` share one `clean_database`, so they
+# are looking at the same rows.
+async def _closed(session: AsyncSession, admin_id: uuid.UUID) -> tuple[str, str]:
+    """A closed market of `admin_id`'s, and the id of its first outcome.
+
+    The username matches the one `mint_token` signs by default, because the
+    proposer's name is snapshotted from the token and one of the tests below
+    reads it back off the response.
+    """
+    market = await closed_market(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+    return str(market.id), str(market.outcomes[0].id)
+
+
+async def test_proposing_returns_the_pending_market(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """The whole market comes back, not an acknowledgement, so the form can
+    repaint without a second round trip."""
+    market_id, outcome_id = await _closed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "pending_resolution"
+    assert body["proposed_outcome_id"] == outcome_id
+    assert body["proposed_by_id"] == str(admin_id)
+    assert body["proposed_by_username"] == "ernest_t"
+    assert body["proposal_evidence_url"] is not None
+
+
+async def test_proposed_at_carries_an_offset(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """A new timestamp on the wire gets the same guard as every other one."""
+    market_id, outcome_id = await _closed(session, admin_id)
+
+    body = (
+        await client.post(
+            f"/markets/{market_id}/propose-outcome",
+            json=_proposal(outcome_id),
+            headers=admin_headers,
+        )
+    ).json()
+
+    assert body["proposed_at"].endswith("Z") or "+" in body["proposed_at"]
+
+
+async def test_proposing_on_an_open_market_is_409(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    market_id = await _submit(client, admin_headers)
+    await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
+    outcome_id = (
+        await client.get(f"/markets/{market_id}", headers=admin_headers)
+    ).json()["outcomes"][0]["id"]
+
+    response = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_not_closed"
+
+
+async def test_proposing_twice_is_409(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """A different code from the one above, because the remedy differs: wait
+    for it to close, versus look at the proposal that is already there."""
+    market_id, outcome_id = await _closed(session, admin_id)
+    await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id),
+        headers=admin_headers,
+    )
+
+    response = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_pending_resolution"
+
+
+async def test_a_trader_cannot_propose(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    trader_headers: dict[str, str],
+) -> None:
+    market_id, outcome_id = await _closed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_another_administrator_cannot_propose(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """404, not 403. A 403 would confirm the market exists."""
+    market_id, outcome_id = await _closed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "market_not_found"
+
+
+async def test_proposing_on_an_unknown_id_is_404(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        f"/markets/{uuid.uuid4()}/propose-outcome",
+        json=_proposal(uuid.uuid4()),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 404
+
+
+async def test_a_malformed_id_on_propose_is_422_not_500(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        "/markets/banana/propose-outcome",
+        json=_proposal(uuid.uuid4()),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
+
+
+async def test_a_proposal_without_evidence_is_422_and_names_the_field(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """This service's own 422, in the same envelope a refused submission uses,
+    so the form needs no second renderer — only a different `code`."""
+    market_id, outcome_id = await _closed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id, evidence_url=None, evidence_note=None),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "proposal_incomplete"
+    assert [d["field"] for d in error["details"]] == ["evidence"]
+
+
+async def test_a_body_with_no_winner_is_fastapis_422_not_ours(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """Two 422s exist here and they do not look alike.
+
+    A missing `winning_outcome_id` never reaches this service, so it comes back
+    as FastAPI's `{"detail": [...]}`. The frontend branches on the presence of
+    `error`, which is what docs/api/market-service.md tells it to do.
+    """
+    market_id, _ = await _closed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json={"evidence_note": "MAS published 1.8% for December 2026."},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
+    assert "error" not in response.json()
+
+
+async def test_a_refused_proposal_leaves_the_market_closed(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """Atomicity on the real request path, like the blocked publish above.
+
+    Not the service test of the same name. That one calls `propose_outcome`
+    directly and rolls back by hand; nothing rolls back by hand on a real
+    request. This asserts that the `get_session` dependency does it as the
+    error propagates out through FastAPI — if it stopped, the service test
+    would still pass and the route would leave a half-written market.
+    """
+    market_id, outcome_id = await _closed(session, admin_id)
+
+    await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(outcome_id, evidence_url="nope", evidence_note=None),
+        headers=admin_headers,
+    )
+
+    reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
+    assert reread.json()["status"] == "closed"
+    assert reread.json()["proposed_at"] is None
