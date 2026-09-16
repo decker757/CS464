@@ -200,7 +200,14 @@ a user who has not been granted. There is no event, no outbox and no window in
 which a new account's balance is observably wrong. ADR 0009.
 
 Changing `STARTING_CREDITS` does not re-grant anybody: the transaction has been
-written and nothing rewrites an entry.
+written and nothing rewrites an entry. That holds because `ensure_granted` asks
+whether the grant exists before it reads the configured amount. Hand the amount
+to `posting.post` on every read instead — which is how #77 shipped it — and the
+fingerprint over the legs stops matching the stored transaction the moment the
+setting changes, so every already-granted user gets `IdempotencyKeyReused` on
+their own balance and history, permanently. The rule belongs in the caller: a
+reused key naming different money is a bug for a trade and an edit for a grant,
+and only the caller knows which.
 
 **The ledger's write path has no HTTP endpoint, on purpose.**
 `ledger_service/service/posting.py` holds the double entry, the idempotency key

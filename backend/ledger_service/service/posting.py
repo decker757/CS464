@@ -108,7 +108,7 @@ async def post(
     _require_balanced(legs)
     fingerprint = _fingerprint(kind, legs)
 
-    existing = await _by_idempotency_key(session, idempotency_key)
+    existing = await find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
         return _replay(existing, fingerprint)
 
@@ -145,7 +145,7 @@ async def post(
         # the loser wanted, so this is a replay rather than a failure — the
         # same reasoning as the insert race in `market_service.save`, with a
         # savepoint so the caller's earlier work survives.
-        existing = await _by_idempotency_key(session, idempotency_key)
+        existing = await find_by_idempotency_key(session, idempotency_key)
         if existing is None:
             raise
         transaction = _replay(existing, fingerprint)
@@ -154,9 +154,17 @@ async def post(
     return transaction
 
 
-async def _by_idempotency_key(
+async def find_by_idempotency_key(
     session: AsyncSession, idempotency_key: str
 ) -> Transaction | None:
+    """The transaction this key already named, if there is one.
+
+    Public because one caller needs to ask whether a movement has happened
+    without describing the movement it would otherwise make. `post` cannot
+    answer that: it takes the legs first and compares them, so asking it costs
+    a fingerprint over amounts the caller may no longer be able to reproduce.
+    `service/grants.py` is that caller, and its docstring has the case.
+    """
     stmt = select(Transaction).where(Transaction.idempotency_key == idempotency_key)
     return (await session.execute(stmt)).scalar_one_or_none()
 

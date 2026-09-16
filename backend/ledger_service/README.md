@@ -103,6 +103,16 @@ Changing `STARTING_CREDITS` does not re-grant anybody. The grant has been
 written and nothing rewrites an entry, so a new value reaches accounts created
 after it and no others.
 
+That promise is held by `ensure_granted` asking whether the grant exists before
+it reads the configured amount, and it is not free. `posting.post` fingerprints
+the legs it is handed and refuses a key that already names a *different*
+movement — correct for a trade, and wrong for this, where the key is the user id
+and the amount is a setting an administrator may edit. Build the legs first and
+every user granted under the old value gets `IdempotencyKeyReused` on their own
+balance for ever. It shipped that way in #77; `test_grants.py`'s
+`test_a_read_after_the_grant_does_not_touch_the_write_path` is what stops it
+coming back.
+
 **`ledger.accounts` exists to be locked.** It holds no balance and almost no
 data. Its job is to give `posting.post` a row to take `SELECT ... FOR UPDATE`
 on before it reads a balance, which is the whole of "concurrent trades cannot
