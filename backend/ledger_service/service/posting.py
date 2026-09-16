@@ -90,12 +90,23 @@ async def post(
     2. **Refuse legs that do not sum to zero.** Credits move; they are not
        created. A caller whose legs do not balance has a bug, and letting it
        through would make the ledger unable to prove anything about itself.
-    3. **Replay an existing key.** Identical request, identical answer, nothing
-       written. A different request under the same key is refused rather than
-       answered with somebody else's transaction.
-    4. **Lock every account named, ascending by id**, before reading a single
-       balance. This is the step that makes the check meaningful: without it,
-       two concurrent buys both read the same balance and both pass.
+    3. **Lock every account named, ascending by id**, before reading anything
+       that decides what happens next. This is the step that makes both of
+       the checks below meaningful: without it, two concurrent buys both read
+       the same balance and both pass.
+    4. **Replay an existing key**, looked up under that lock. Identical
+       request, identical answer, nothing written. A different request under
+       the same key is refused rather than answered with somebody else's
+       transaction.
+
+       Under the lock and not before it, and the order matters. A retry that
+       races the request it is retrying — a client resending a trade whose
+       response was lost while the original is still in flight — finds no
+       transaction either way until the original commits. Looked up before
+       the lock, the retry then waits at the lock for the original, and judges
+       its overdraft against a balance the original has just reduced: a trade
+       that has in fact succeeded is answered `InsufficientFunds`. Looked up
+       after, it finds the committed transaction and is answered with it.
     5. **Check for overdrafts against the balance derived under that lock.**
     6. **Write the transaction and its entries, and commit.**
 
@@ -108,11 +119,17 @@ async def post(
     _require_balanced(legs)
     fingerprint = _fingerprint(kind, legs)
 
+    await accounts.lock(session, [leg.account.id for leg in legs])
+
     existing = await find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
-        return _replay(existing, fingerprint)
+        # Committed although nothing was written, because the locks above are
+        # held until this transaction ends and a replay should not hold them
+        # for the rest of the caller's request.
+        transaction = _replay(existing, fingerprint)
+        await session.commit()
+        return transaction
 
-    await accounts.lock(session, [leg.account.id for leg in legs])
     await _refuse_overdrafts(session, legs)
 
     transaction = Transaction(
@@ -140,11 +157,12 @@ async def post(
             )
             await session.flush()
     except IntegrityError:
-        # Two callers raced on one key. Both looked it up and found nothing,
-        # and the unique index caught the loser. The winner's row is the answer
-        # the loser wanted, so this is a replay rather than a failure — the
-        # same reasoning as the insert race in `market_service.save`, with a
-        # savepoint so the caller's earlier work survives.
+        # Two callers raced on one key and the lock above did not queue them,
+        # which it does whenever their legs share even one account — so their
+        # legs named none in common, and this is a key reused for different
+        # money. Looked up again so `_replay` can say exactly that, with a
+        # savepoint so the caller's earlier work survives, the same shape as
+        # the insert race in `market_service.save`.
         existing = await find_by_idempotency_key(session, idempotency_key)
         if existing is None:
             raise

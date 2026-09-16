@@ -139,8 +139,23 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
 
 
 async def _load_refresh(session: AsyncSession, raw: str) -> RefreshToken | None:
-    stmt = select(RefreshToken).where(
-        RefreshToken.token_hash == security.hash_refresh_token(raw)
+    """The row for this token, locked, because both callers decide from it.
+
+    Locked, because `rotate_refresh_token` reads `revoked_at`, decides the
+    token is still live, and only then revokes it. Read unlocked, two requests
+    presenting the same token — the legitimate client and whoever copied its
+    cookie — both see it live and both leave with a fresh session, and the
+    replay that was supposed to cut every session for that user is never
+    noticed, because each request's write lands after the other's check. Under
+    READ COMMITTED the second blocks here and re-reads the row the first
+    committed, so it sees the revocation and is treated as the replay it is.
+
+    A token that does not exist locks nothing.
+    """
+    stmt = (
+        select(RefreshToken)
+        .where(RefreshToken.token_hash == security.hash_refresh_token(raw))
+        .with_for_update()
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -149,7 +164,9 @@ async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, T
     """[A-3] #31. Exchange a refresh token for a new pair, single use.
 
     Presenting an already-revoked token means the cookie leaked and is being
-    replayed, so every session for that user is killed.
+    replayed, so every session for that user is killed. Single use holds under
+    concurrency too: `_load_refresh` locks the row, so two requests presenting
+    one token queue, and the second finds it revoked by the first.
     """
     record = await _load_refresh(session, raw)
     if record is None:

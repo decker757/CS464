@@ -125,6 +125,43 @@ async def test_an_absent_reason_is_null_rather_than_empty(
     assert entries[0]["reason"] is None
 
 
+async def test_two_concurrent_promotions_of_one_trader_are_recorded_once(
+    session: AsyncSession, audit_reader: AsyncSession, registered_user: User
+) -> None:
+    """Two administrators promote the same person in the same instant.
+
+    Two real transactions. Read without a lock both see TRADER, both write
+    ADMIN, and both append a `trader → admin`: one transition attributed to two
+    people, in a log whose purpose is to say who did what. `change_role` locks
+    the target before reading the role, so the second request waits for the
+    first, re-reads ADMIN, and is the idempotent case — no write and no entry.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_session_factory  # noqa: PLC0415
+
+    first, second = _actor(username="ernest_t"), _actor(username="ihsan_b")
+    factory = get_session_factory()
+
+    # Both connected before either starts, so the outcome is decided by the
+    # lock and not by which session had to open a connection first.
+    barrier = asyncio.Barrier(2)
+
+    async def promote(actor: Actor) -> None:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            await user_admin.change_role(
+                own, actor=actor, target_id=registered_user.id, role=UserRole.ADMIN
+            )
+
+    await asyncio.gather(promote(first), promote(second))
+
+    entries = await _entries(audit_reader, first) + await _entries(audit_reader, second)
+    assert len(entries) == 1
+    assert entries[0]["context"] == {"from": "trader", "to": "admin"}
+
+
 async def test_it_records_who_the_actor_was_rather_than_who_they_are(
     session: AsyncSession, audit_reader: AsyncSession, registered_user: User
 ) -> None:
