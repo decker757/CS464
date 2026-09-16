@@ -113,6 +113,21 @@ draft on its next three-second tick. Publishing also re-runs every submission
 rule against the clock at publish time, because a market that sat submitted
 past its own close time would otherwise go live already closed. ADR 0008.
 
+**A lock on the transition is half a lock.** `publish` holds the market row
+while it flips the status, and that stops a second publish. It does nothing to
+a resubmission, because a lock only queues *other lockers*: the save path read
+the status without one, passed the frozen check, waited on its own INSERTs for
+the publication to commit, and then wrote SUBMITTED back over OPEN. So the rule
+is on the reader, not the transition — every read whose answer decides a write
+is `with_for_update()`, in every service, and a check that has to hold "under
+the lock" (an idempotency key, a balance, a status) is issued after the lock
+statement. Where a row lock sits beside a multi-row one, the wider lock goes
+first on every path, or two requests deadlock — `change_role` takes the
+administrator set before the target even on a promotion, for that reason
+alone. A new race test is evidence only once it fails with its lock removed,
+and two sessions under `asyncio.gather` are not yet a race until both have
+connected and wait on an `asyncio.Barrier`. ADR 0015.
+
 **A market closes on the clock, and the status column is not the authority.**
 A market stops accepting trades the instant `close_time` passes.
 `market_service/service/closing.py` states that once — as
@@ -408,6 +423,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0012** a shared package, and the build contexts that had to move first
 - **0013** proposing an outcome, from CLOSED only, with evidence, one at a time
 - **0014** closing a market early, by any admin, with the reason in the log
+- **0015** every read that decides a write is locked, and the wider lock goes first
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
