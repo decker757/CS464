@@ -156,8 +156,8 @@ async def test_reading_history_also_grants(
     before a balance sees the grant rather than an empty account."""
     page = await ledger_service.history_for_user(session, user_id, limit=10)
 
-    assert len(page.entries) == 1
-    assert page.entries[0].transaction.kind is TransactionKind.SIGNUP_GRANT
+    assert len(page.rows) == 1
+    assert page.rows[0].entry.transaction.kind is TransactionKind.SIGNUP_GRANT
 
 
 async def test_lowering_starting_credits_leaves_an_existing_balance_readable(
@@ -192,8 +192,8 @@ async def test_lowering_starting_credits_leaves_an_existing_history_readable(
     with starting_credits_of("500"):
         page = await ledger_service.history_for_user(session, user_id, limit=10)
 
-    assert len(page.entries) == 1
-    assert page.entries[0].transaction.kind is TransactionKind.SIGNUP_GRANT
+    assert len(page.rows) == 1
+    assert page.rows[0].entry.transaction.kind is TransactionKind.SIGNUP_GRANT
 
 
 async def test_raising_starting_credits_does_not_top_anybody_up(

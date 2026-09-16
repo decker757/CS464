@@ -81,6 +81,7 @@ published key that would silently sign real sessions.
 | POST | `/auth/refresh` | [A-3] #31 | Single use, rotates the refresh token |
 | POST | `/auth/logout` | [A-3] #31 | Unauthenticated on purpose, always 200 |
 | GET | `/auth/me` | [A-3] #31 | Reference protected route |
+| GET | `/admin/users` | [4.1] #13 | Admin only, not audited, `q` matches a username or an email |
 | PATCH | `/admin/users/{user_id}/role` | [4.4] #16 | Admin only, audited, cannot target self or the last admin |
 | GET | `/health` | | Liveness and readiness probe |
 

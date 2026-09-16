@@ -1,4 +1,4 @@
-"""HTTP wiring for the administrative routes. [4.4] #16
+"""HTTP wiring for the administrative routes. [4.4] #16, [4.1] #13
 
 Business rules are asserted one layer down in unit_test/service. What is
 checked here is only what the controller is responsible for: status codes, the
@@ -12,6 +12,8 @@ import uuid
 from httpx import AsyncClient
 
 from unit_test.conftest import VALID_PASSWORD
+
+USERS = "/admin/users"
 
 
 def _url(user_id: str) -> str:
@@ -214,3 +216,110 @@ async def test_demoting_the_other_administrator_is_allowed(
 
     assert response.status_code == 200
     assert response.json()["user"]["role"] == "trader"
+
+
+# --- the user list --------------------------------------------------------
+async def test_an_administrator_lists_every_account(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """[4.1] #13's first criterion. The page an administrator opens on."""
+    response = await admin_client.get(USERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {user["username"] for user in body["users"]} == {"admin_one", "michelle_l"}
+    assert body["has_more"] is False
+    assert body["next_cursor"] is None
+
+
+async def test_a_query_narrows_the_list(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """Matching is asserted properly in unit_test/service. What is checked here
+    is that `q` reaches the service layer at all."""
+    response = await admin_client.get(USERS, params={"q": "michelle"})
+
+    assert [user["username"] for user in response.json()["users"]] == ["michelle_l"]
+
+
+async def test_the_list_carries_the_id_the_ledger_takes(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """The point of the search: this service turns a name into the `user_id`
+    that `GET /ledger/users/{user_id}/entries` wants. The two halves of the
+    story meet at this field and nowhere else — no credit total appears here,
+    because this service does not know that credits exist."""
+    body = (await admin_client.get(USERS, params={"q": "michelle"})).json()
+
+    assert body["users"][0]["id"] == target_user_id
+    assert "balance" not in body["users"][0]
+
+
+async def test_the_list_reports_suspension(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """Visible here, written by [4.2] #14, and the reason `AdminUserOut` exists
+    rather than another field on `UserOut`."""
+    body = (await admin_client.get(USERS, params={"q": "michelle"})).json()
+
+    assert body["users"][0]["is_suspended"] is False
+
+
+async def test_the_list_never_contains_a_password_or_a_hash(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """An administrator is entitled to see who exists, not to see a credential.
+
+    The one route that returns several rows of user data at once, so the one
+    where a field added to the wrong schema would leak in bulk.
+    """
+    response = await admin_client.get(USERS)
+
+    assert VALID_PASSWORD not in response.text
+    assert "password" not in response.text
+    assert all("password" not in user for user in response.json()["users"])
+
+
+async def test_an_anonymous_caller_cannot_list_users(client: AsyncClient) -> None:
+    response = await client.get(USERS)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_a_trader_cannot_list_users(client: AsyncClient) -> None:
+    """Who else holds an account is not a trader's business."""
+    await client.post(
+        "/auth/register",
+        json={
+            "username": "nosy_trader",
+            "email": "nosy@example.com",
+            "password": VALID_PASSWORD,
+        },
+    )
+
+    response = await client.get(USERS)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_a_cursor_we_did_not_issue_is_a_400(admin_client: AsyncClient) -> None:
+    response = await admin_client.get(USERS, params={"cursor": "nonsense"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "malformed_cursor"
+
+
+async def test_an_oversized_limit_is_clamped_not_refused(
+    admin_client: AsyncClient,
+) -> None:
+    """A caller asking for more than the ceiling wants as much as it can get,
+    and a 422 would be a worse answer than the rows the server will serve."""
+    assert (await admin_client.get(USERS, params={"limit": 100000})).status_code == 200
+
+
+async def test_a_zero_limit_is_refused(admin_client: AsyncClient) -> None:
+    """Clamping the top end is a kindness; a page of nothing is a bug in the
+    caller and saying so is more useful than serving it."""
+    assert (await admin_client.get(USERS, params={"limit": 0})).status_code == 422

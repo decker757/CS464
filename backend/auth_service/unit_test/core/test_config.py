@@ -62,6 +62,31 @@ def test_numeric_settings_come_through_as_integers(monkeypatch: pytest.MonkeyPat
     assert settings.password_min_length == 16
 
 
+def test_the_page_size_ceiling_is_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[4.1] #13's user list. The environment path, not the defaults — a
+    misparsed setting crashes the container at import time."""
+    monkeypatch.setenv("DEFAULT_PAGE_SIZE", "10")
+    monkeypatch.setenv("MAX_PAGE_SIZE", "25")
+
+    settings = Settings()
+
+    assert settings.default_page_size == 10
+    assert settings.max_page_size == 25
+
+
+@pytest.mark.parametrize("field", ["DEFAULT_PAGE_SIZE", "MAX_PAGE_SIZE"])
+def test_a_page_size_of_zero_is_refused(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """A zero ceiling would make every page empty and every cursor useless."""
+    monkeypatch.setenv(field, "0")
+
+    with pytest.raises(ValueError):
+        Settings()
+
+
 def test_settings_carry_nothing_from_another_domain() -> None:
     """Boundary guard: no credit, balance or trading knobs belong in auth."""
     fields = set(Settings.model_fields)

@@ -160,6 +160,44 @@ async def test_the_history_shows_the_grant(
     assert body["next_cursor"] is None
 
 
+async def test_the_running_balance_is_on_the_wire_as_a_string(
+    client: AsyncClient, trader_headers: dict[str, str], starting_credits: Decimal
+) -> None:
+    """[4.1] #13's second criterion, as the frontend receives it. A string for
+    the same reason `amount` and `balance` are: this is money."""
+    body = (await client.get(MY_ENTRIES, headers=trader_headers)).json()
+    entry = body["entries"][0]
+
+    assert isinstance(entry["balance_after"], str)
+    assert Decimal(entry["balance_after"]) == starting_credits
+
+
+async def test_the_newest_running_balance_matches_the_balance_route(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """[4.1] #13's third criterion, across the two endpoints that render it.
+
+    The statement and the balance are one query apart in the service and two
+    requests apart in the browser, and the story is an administrator checking
+    whether the two agree. They do because neither is stored.
+    """
+    history = (await client.get(MY_ENTRIES, headers=trader_headers)).json()
+    balance = (await client.get(ME, headers=trader_headers)).json()
+
+    assert history["entries"][0]["balance_after"] == balance["balance"]
+
+
+async def test_an_admin_sees_the_running_balance_on_somebody_elses_history(
+    client: AsyncClient, admin_headers: dict[str, str], other_user_id: uuid.UUID
+) -> None:
+    """The route the story is actually about. Same body as `/me`, and the only
+    difference between them is who may call it."""
+    response = await client.get(_user_entries(other_user_id), headers=admin_headers)
+
+    assert response.status_code == 200
+    assert "balance_after" in response.json()["entries"][0]
+
+
 async def test_the_history_shows_only_this_users_side(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:

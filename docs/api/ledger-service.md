@@ -94,6 +94,7 @@ credits keeps them and stays readable.
       "id": "0c9d...",
       "created_at": "2026-09-15T04:21:09.412883Z",
       "amount": "1000.0000",
+      "balance_after": "1000.0000",
       "transaction_id": "36fd...",
       "kind": "signup_grant",
       "context": { "user_id": "5f3e..." }
@@ -106,6 +107,19 @@ credits keeps them and stays readable.
 
 Newest first. `amount` is signed: negative took credits out of this account,
 positive put them in — so a client does not have to infer direction from `kind`.
+
+`balance_after` is [4.1] #13's running balance: what the account held once that
+entry had landed. It is derived on every read by summing the entries up to and
+including that one, so there is no stored column for it to disagree with, and
+the newest entry's `balance_after` is the same number `/balance` returns.
+
+It is anchored to the entry rather than counted back from today's balance,
+which is what makes a page's figures independent of when it was fetched. A trade
+arriving while an administrator reads is strictly newer than every row already
+on screen, so nothing they have looked at moves, and page 2 fetched an hour
+after page 1 still adds up against it. A column that stacks
+`balance_after - amount` down the page will therefore always agree with the row
+below it.
 
 **Only this account's side appears.** Every movement writes at least two
 entries sharing one `transaction_id`, and the other side belongs to the platform
@@ -155,11 +169,17 @@ The first call mints the target user's grant if they have never been read
 before, exactly as the `/me` route does — so an admin looking up a brand new
 account sees their starting credits rather than an empty one.
 
-**Two things [4.1] #13 still needs are not here.** Searching users by email or
-username is the auth service's data and belongs on its side of the boundary;
-this service holds no user table. And the running balance beside each entry is
-one aggregate away — the balance as at the newest entry on the page, then walk
-down subtracting each amount — and belongs with the view that renders it.
+Each entry carries its `balance_after`, exactly as on the `/me` routes, which
+is [4.1] #13's second criterion; that the newest one equals what `/balance`
+reports is its third.
+
+**Searching for the user is the auth service's half of this story.**
+`GET /admin/users?q=...` on port 8000 takes a fragment of a username or an
+email and returns accounts with their `id`; that `id` is what the two routes
+above take. This service holds no user table and never will — it knows a user
+id from a signed token and nothing else about who that is (ADR 0003), so a
+history route that accepted a username would be this service asking another one
+a question at every read.
 
 ## Errors
 

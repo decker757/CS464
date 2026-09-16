@@ -12,10 +12,11 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.paging import Position
 from model.entities import PLATFORM_OWNER_ID, Account, AccountKind, Entry
 
 ZERO = Decimal(0)
@@ -109,7 +110,12 @@ async def lock(session: AsyncSession, account_ids: list[uuid.UUID]) -> None:
         )
 
 
-async def balance_of(session: AsyncSession, account_id: uuid.UUID) -> Decimal:
+async def balance_of(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    *,
+    as_at: Position | None = None,
+) -> Decimal:
     """What this account holds, derived. [B-1] #32, [B-2] #33, [4.1] #13.
 
     The sum of its entries and nothing else. There is no cached column to fall
@@ -120,8 +126,29 @@ async def balance_of(session: AsyncSession, account_id: uuid.UUID) -> Decimal:
 
     An account with no entries is zero rather than an error, so a caller does
     not have to know whether a row exists before asking what is in it.
+
+    **`as_at` narrows the sum to one position in the feed**, giving the balance
+    as it stood immediately after that entry. That is [4.1] #13's running
+    balance, and it is why `ledger.entries` has no `balance_after` column: the
+    number is one aggregate away at read time and a stored one would be a
+    second source of truth that a concurrent write could make wrong.
+
+    Anchoring on a position rather than counting back from today's balance is
+    what makes the answer stable. Everything appended while an administrator
+    reads is strictly newer than the anchor, so it cannot move a figure already
+    on the screen, and page 2 fetched an hour after page 1 still lines up with
+    it. Same argument as the keyset cursor, against the same hazard.
     """
     stmt = select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
         Entry.account_id == account_id
     )
+
+    if as_at is not None:
+        # `<=`, not `<`: the balance *after* an entry includes that entry. A
+        # row-wise comparison on the pair the feed orders by, so this reads
+        # `ix_ledger_entries_account_feed` and agrees with the page boundary
+        # exactly — including for the two halves of one movement, which share a
+        # timestamp and are separated only by the id.
+        stmt = stmt.where(tuple_(Entry.created_at, Entry.id) <= tuple_(*as_at))
+
     return (await session.execute(stmt)).scalar_one()
