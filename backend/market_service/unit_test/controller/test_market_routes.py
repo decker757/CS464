@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from service.audit import Actor
 from unit_test.conftest import closed_market
+from unit_test.conftest import close_terms as _close
 from unit_test.conftest import market_json as _payload
 from unit_test.conftest import proposal_json as _proposal
 
@@ -110,6 +111,9 @@ async def test_every_market_route_requires_a_token(client: AsyncClient) -> None:
     assert (await client.get(f"/markets/{uuid.uuid4()}")).status_code == 401
     assert (
         await client.post(f"/markets/{uuid.uuid4()}/publish")
+    ).status_code == 401
+    assert (
+        await client.post(f"/markets/{uuid.uuid4()}/close", json=_close())
     ).status_code == 401
     assert (
         await client.post(
@@ -821,3 +825,231 @@ async def test_a_refused_proposal_leaves_the_market_closed(
     reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
     assert reread.json()["status"] == "closed"
     assert reread.json()["proposed_at"] is None
+
+
+# --- closing a market early [2.3] #7 --------------------------------------
+async def _published(client: AsyncClient, headers: dict[str, str]) -> str:
+    """A market traders can reach, over the real request path."""
+    market_id = await _submit(client, headers)
+    published = await client.post(f"/markets/{market_id}/publish", headers=headers)
+    assert published.status_code == 200
+    return market_id
+
+
+async def test_closing_returns_the_closed_market(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """The whole market comes back, not an acknowledgement, so the modal can
+    repaint without a second round trip."""
+    market_id = await _published(client, admin_headers)
+
+    response = await client.post(
+        f"/markets/{market_id}/close", json=_close(), headers=admin_headers
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "closed"
+    assert body["closed_at"] is not None
+
+
+async def test_the_response_does_not_carry_the_reason_back(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """It is not a field on the market. ADR 0014.
+
+    The reason is in the audit log and only [4.3] #15 may read it, so a
+    frontend must not be written expecting it here — this asserts there is
+    nothing to be tempted by.
+    """
+    market_id = await _published(client, admin_headers)
+
+    body = (
+        await client.post(
+            f"/markets/{market_id}/close", json=_close(), headers=admin_headers
+        )
+    ).json()
+
+    assert "reason" not in body
+    assert "closed_reason" not in body
+
+
+async def test_closed_at_carries_an_offset(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """The same guard every other timestamp on the wire gets."""
+    market_id = await _published(client, admin_headers)
+
+    body = (
+        await client.post(
+            f"/markets/{market_id}/close", json=_close(), headers=admin_headers
+        )
+    ).json()
+
+    assert body["closed_at"].endswith("Z") or "+" in body["closed_at"]
+
+
+async def test_closing_a_draft_is_409(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    created = await client.post("/markets", json=_payload(), headers=admin_headers)
+    market_id = created.json()["market"]["id"]
+
+    response = await client.post(
+        f"/markets/{market_id}/close", json=_close(), headers=admin_headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_not_open"
+
+
+async def test_closing_twice_is_409(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """The second one has nothing to stop, and must not move `closed_at`."""
+    market_id = await _published(client, admin_headers)
+    first = await client.post(
+        f"/markets/{market_id}/close", json=_close(), headers=admin_headers
+    )
+
+    response = await client.post(
+        f"/markets/{market_id}/close", json=_close(), headers=admin_headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_closed"
+
+    reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
+    assert reread.json()["closed_at"] == first.json()["closed_at"]
+
+
+async def test_a_trader_cannot_close_a_market(
+    client: AsyncClient, admin_headers: dict[str, str], trader_headers: dict[str, str]
+) -> None:
+    """Widening this to every administrator did not widen it past one."""
+    market_id = await _published(client, admin_headers)
+
+    response = await client.post(
+        f"/markets/{market_id}/close", json=_close(), headers=trader_headers
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_another_administrator_can_close_it(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+) -> None:
+    """The deliberate difference from every other route on this page. ADR 0014.
+
+    Publishing and proposing are the creator's alone and answer 404 to anybody
+    else. This one does not: a broken market that only its creator can stop is
+    not oversight, and the audit entry names whoever stopped it.
+    """
+    market_id = await _published(client, admin_headers)
+
+    response = await client.post(
+        f"/markets/{market_id}/close", json=_close(), headers=other_admin_headers
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "closed"
+
+
+async def test_another_administrator_still_cannot_read_it(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+) -> None:
+    """The close is the only thing that widened.
+
+    `get_any` sits one call away from `get`, so this is the assertion that the
+    unscoped read did not escape into the route that reloads a market.
+    """
+    market_id = await _published(client, admin_headers)
+    await client.post(
+        f"/markets/{market_id}/close", json=_close(), headers=other_admin_headers
+    )
+
+    reread = await client.get(f"/markets/{market_id}", headers=other_admin_headers)
+    assert reread.status_code == 404
+
+
+async def test_closing_an_unknown_id_is_404(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        f"/markets/{uuid.uuid4()}/close", json=_close(), headers=admin_headers
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "market_not_found"
+
+
+async def test_a_malformed_id_on_close_is_422_not_500(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        "/markets/not-a-uuid/close", json=_close(), headers=admin_headers
+    )
+
+    assert response.status_code == 422
+
+
+async def test_a_close_without_a_usable_reason_is_422_and_names_the_field(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """This service's own envelope, the same shape a refused submission uses,
+    so the modal paints `details` with the renderer it already has."""
+    market_id = await _published(client, admin_headers)
+
+    response = await client.post(
+        f"/markets/{market_id}/close", json=_close(reason="   "), headers=admin_headers
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "close_incomplete"
+    assert [problem["field"] for problem in error["details"]] == ["reason"]
+
+
+async def test_a_body_with_no_reason_at_all_is_fastapis_422_not_ours(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """Two 422s exist here and they do not look alike.
+
+    A missing `reason` key never reaches this service, so it comes back as
+    FastAPI's `{"detail": [...]}`. The frontend branches on the presence of
+    `error`, which is what docs/api/market-service.md tells it to do.
+    """
+    market_id = await _published(client, admin_headers)
+
+    response = await client.post(
+        f"/markets/{market_id}/close", json={}, headers=admin_headers
+    )
+
+    assert response.status_code == 422
+    assert "error" not in response.json()
+
+
+async def test_a_refused_close_leaves_the_market_open(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """Atomicity on the real request path, like the blocked publish above.
+
+    Nothing rolls back by hand on a real request: this asserts the
+    `get_session` dependency does it as the error propagates out through
+    FastAPI, which the service test cannot see.
+    """
+    market_id = await _published(client, admin_headers)
+
+    await client.post(
+        f"/markets/{market_id}/close", json=_close(reason="x"), headers=admin_headers
+    )
+
+    reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
+    assert reread.json()["status"] == "open"
+    assert reread.json()["closed_at"] is None

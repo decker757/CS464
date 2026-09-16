@@ -75,7 +75,11 @@ from core.database import (  # noqa: E402
 )
 from core.roles import UserRole  # noqa: E402
 from model.entities import Market  # noqa: E402
-from model.schemas import MarketDraftRequest, OutcomeProposalRequest  # noqa: E402
+from model.schemas import (  # noqa: E402
+    MarketCloseRequest,
+    MarketDraftRequest,
+    OutcomeProposalRequest,
+)
 from service import closing, market_service  # noqa: E402
 from service.audit import Actor  # noqa: E402
 
@@ -406,6 +410,35 @@ def proposal_json(winning_outcome_id: object, **overrides: object) -> dict[str, 
     parses, and a builder that validated first could not express that.
     """
     return proposal_terms(str(winning_outcome_id), **overrides)
+
+
+# [2.3] #7. The reason one early close carries, named here for the reason the
+# market's terms and the proposal's evidence are: the service suite and the
+# controller suite have to send the same value, or a rule change is two edits
+# and they drift into agreeing by coincidence.
+CLOSE_REASON = (
+    "The resolution source retracted its December print, so this question can "
+    "no longer be settled as written."
+)
+
+
+def close_terms(**overrides: object) -> dict[str, object]:
+    """A close that passes every rule in service/validation.py.
+
+    One builder rather than the `_terms` / `_json` pair the market and the
+    proposal have, because the body is a single string: its wire form and its
+    parsed form differ in type only, so there is nothing for a second builder
+    to express. The controller suite sends this dict as JSON and passes
+    overrides that do not parse, exactly as it does there.
+    """
+    base: dict[str, object] = {"reason": CLOSE_REASON}
+    base.update(overrides)
+    return base
+
+
+def close_request(**overrides: object) -> MarketCloseRequest:
+    """`close_terms` parsed, for driving the service layer without HTTP."""
+    return MarketCloseRequest(**close_terms(**overrides))  # type: ignore[arg-type]
 
 
 @pytest.fixture

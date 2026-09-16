@@ -14,7 +14,12 @@ from decimal import Decimal
 import pytest
 
 from model.entities import Market, MarketOutcome, ResolutionSource
-from service.validation import MIN_OUTCOMES, problems_blocking_submission
+from service.validation import (
+    MIN_CLOSE_REASON_LENGTH,
+    MIN_OUTCOMES,
+    problems_blocking_close,
+    problems_blocking_submission,
+)
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 
@@ -248,3 +253,47 @@ def test_a_subsidy_below_the_worst_case_does_not_block_submission() -> None:
     underfunded = _market(liquidity_b=Decimal("100"), seed_subsidy=Decimal("1"))
 
     assert problems_blocking_submission(underfunded, now=NOW) == []
+
+
+# --- the reason for an early close [2.3] #7 -------------------------------
+# A pure rule over one string: no market, no clock and no database, which is
+# why the boundaries live here rather than in test_closing_early.py. That suite
+# asserts the gate calls this at all.
+def _close(reason: str) -> list:
+    from unit_test.conftest import close_request  # noqa: PLC0415
+
+    return problems_blocking_close(close_request(reason=reason))
+
+
+def test_a_full_reason_has_no_problems() -> None:
+    assert _close("The source retracted its December print.") == []
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "\n\t "])
+def test_a_blank_reason_is_refused(reason: str) -> None:
+    """Whitespace is not an explanation, and `reason` is required precisely
+    because the audit entry is the only place the explanation will exist."""
+    assert [p.field for p in _close(reason)] == ["reason"]
+
+
+def test_a_too_short_reason_is_refused() -> None:
+    """The same argument MIN_EVIDENCE_NOTE_LENGTH makes: "broken" satisfies
+    "a reason was given" and documents nothing."""
+    assert [p.field for p in _close("broken")] == ["reason"]
+
+
+def test_the_floor_is_counted_after_stripping() -> None:
+    """Otherwise ten spaces around one character passes a rule about length."""
+    assert _close("  " + "x" * (MIN_CLOSE_REASON_LENGTH - 1) + "  ") != []
+
+
+def test_the_boundary_is_not_strict() -> None:
+    """Exactly at the floor is enough. A rule stated as "at least ten" that
+    refused ten would say so in a message nobody could act on."""
+    assert _close("x" * MIN_CLOSE_REASON_LENGTH) == []
+
+
+def test_only_one_problem_is_ever_reported() -> None:
+    """There is one field, so a blank reason is blank rather than also short.
+    Two problems on one input would paint the same message twice."""
+    assert len(_close("")) == 1

@@ -50,7 +50,9 @@ class MarketStatus(StrEnum):
     future.
 
     CLOSED arrives with [F-4] #44: trading has stopped, because the clock
-    passed `close_time`. [2.3] #7 will reach the same status early and by hand.
+    passed `close_time`. [2.3] #7 reaches the same status early and by hand,
+    and it is the same state in every respect — one market stopped when it said
+    it would and the other was stopped, and only the audit log knows which.
     It is what [3.1] #9 gates on — an outcome may only be proposed for a market
     nobody can still trade — and one of the buckets [2.1] #5 counts.
 
@@ -67,8 +69,8 @@ class MarketStatus(StrEnum):
     SUBMITTED = "submitted"
     OPEN = "open"
 
-    # [F-4] #44. Terminal for trading, and this service never moves a market
-    # back out of it.
+    # [F-4] #44, and [2.3] #7's early close. Terminal for trading, and this
+    # service never moves a market back out of it.
     #
     # Read what this member is NOT. It is not the authority on whether a trade
     # may execute. A market stops accepting trades the instant `close_time`
@@ -202,8 +204,12 @@ class Market(Base):
     # a background job, not a market that stayed open — nothing could trade in
     # it either way.
     #
-    # It is also where [2.3] #7's early close will land, at a time that has
-    # nothing to do with `close_time` at all.
+    # [2.3] #7's early close writes it too, at a time that has nothing to do
+    # with `close_time` at all, and that is the one case where the two columns
+    # say something a reader can act on: a `closed_at` *before* the
+    # `close_time` is a market an administrator stopped by hand. The reason
+    # they did is in the audit log and deliberately not here — one fact, one
+    # place. ADR 0014.
     closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

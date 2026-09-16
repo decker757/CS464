@@ -22,7 +22,8 @@ does.
 So this module offers the same rule twice, and callers pick by where they are:
 
 - `is_open_for_trading` for an entity already in memory ([T-2] #22, holding a
-  locked row inside the trade's own transaction)
+  locked row inside the trade's own transaction, and [2.3] #7's early close,
+  which holds one for the same reason)
 - `open_for_trading` for a WHERE clause ([BE][X] #62 and [2.1] #5, which must
   not list a market as open three seconds after it stopped being one)
 
@@ -54,6 +55,12 @@ def is_open_for_trading(market: Market, *, now: datetime | None = None) -> bool:
     against the row it has already locked, and rejects the trade when it is
     False. Nothing else in this repository is entitled to answer the question
     by reading `status` alone.
+
+    [2.3] #7's `close_early` is the other caller and asks the same question for
+    a different reason: it may only stop a market that is still running, so
+    that the audit entry it writes — an administrator stopped this — is not
+    claimed over a market the clock had already stopped. It refuses exactly
+    when a trade would, which is the property having one predicate buys.
 
     Two conditions, and both are load-bearing:
 

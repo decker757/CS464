@@ -41,11 +41,11 @@ MAX_QUESTION_LENGTH = 500
 MAX_URL_LENGTH = 2048
 
 # Every free-text field an administrator types into a textarea: `description`,
-# `resolution_criteria` and [3.1] #9's `evidence_note`. All three are unbounded
-# `Text` columns, so this is here to stop a request carrying a megabyte rather
-# than to have an opinion about how much explaining any of them needs — which
-# is why one number covers all three. It was two bare literals until the third
-# use arrived.
+# `resolution_criteria`, [3.1] #9's `evidence_note` and [2.3] #7's close
+# `reason`. All four land in unbounded `Text` columns, so this is here to stop
+# a request carrying a megabyte rather than to have an opinion about how much
+# explaining any of them needs — which is why one number covers all of them. It
+# was two bare literals until the third use arrived.
 MAX_PROSE_LENGTH = 5000
 
 # Mirrors Numeric(18, 4) on the pricing columns in model/entities.py: fourteen
@@ -237,6 +237,39 @@ class OutcomeProposalRequest(BaseModel):
         examples=[
             "MAS published core inflation of 1.8% for December 2026 on 23 Jan, "
             "below the 2.0% threshold in the resolution criteria."
+        ],
+    )
+
+
+class MarketCloseRequest(BaseModel):
+    """The body of POST /markets/{id}/close. [2.3] #7
+
+    One field, and it is required. A market that stopped early with no
+    explanation is the failure this story exists to prevent — traders hold
+    positions in it and an administrator will have to settle it — and the audit
+    entry this produces is the only place that explanation is ever kept.
+
+    Required *here* rather than in `service/validation.py`, which means a body
+    with no `reason` key at all comes back as FastAPI's own 422 rather than
+    this service's envelope. That is the same split `OutcomeProposalRequest`
+    makes for `winning_outcome_id` and for the same reason: there is no autosave
+    behind this modal and no half-typed state for a refusal to lose. What the
+    field *says* is a rule about content rather than shape, so the length floor
+    lives with the other content rules and comes back as `close_incomplete`,
+    keyed by field, in the one envelope the modal already renders.
+    """
+
+    reason: str = Field(
+        max_length=MAX_PROSE_LENGTH,
+        description=(
+            "Why this market is being stopped before its closing time. At "
+            "least 10 characters. Recorded in the audit log against the "
+            "administrator who closed it, and kept nowhere else — it is not a "
+            "field on the market."
+        ),
+        examples=[
+            "The resolution source retracted its December print, so this "
+            "question can no longer be settled as written."
         ],
     )
 

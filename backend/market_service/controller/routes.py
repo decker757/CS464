@@ -14,6 +14,7 @@ from fastapi import APIRouter, Response, status
 
 from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
 from model.schemas import (
+    MarketCloseRequest,
     MarketDraftRequest,
     MarketListResponse,
     MarketOut,
@@ -112,6 +113,55 @@ async def publish_market(
     market_id: uuid.UUID, actor: CurrentActor, session: DbSession
 ) -> MarketOut:
     market = await market_service.publish(session, actor, market_id)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/close",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Close an open market early, with a reason",
+    description=(
+        "[2.3] #7. Stops an `open` market before its `close_time`, moving it "
+        "to `closed`. Trading stops immediately and positions are untouched: "
+        "the market's next move is [3.1] #9's proposed outcome, exactly as if "
+        "it had run to its closing time.\n\n"
+        "`reason` is required and is recorded in the audit log against the "
+        "administrator who closed it ([4.3] #15), in the same transaction, so "
+        "a market cannot stop early without a record of why. It is kept "
+        "nowhere else — it is not a field on the market, and this response "
+        "does not carry it back.\n\n"
+        "**Any administrator may close any market**, unlike every other route "
+        "here. A broken market that only its creator can stop is not "
+        "oversight. The audit entry is what makes that accountable.\n\n"
+        "One way. There is no reopen, `close_time` is not rewritten, and every "
+        "later save on this market is refused with 409.\n\n"
+        "A market whose `close_time` has already passed is a `409 "
+        "market_closed`, whether or not the background sweep has written the "
+        "status yet — it has already stopped, and nothing an administrator "
+        "does now stopped it."
+    ),
+    responses={
+        403: {"description": "Authenticated, but not an administrator."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_not_open` — still a draft or submitted, so nothing "
+                "can be traded in it. `market_closed` — it has already "
+                "stopped. `market_pending_resolution` — it stopped and an "
+                "outcome is already proposed."
+            )
+        },
+        422: {"description": "Close refused; `error.details` names `reason`."},
+    },
+)
+async def close_market_early(
+    market_id: uuid.UUID,
+    payload: MarketCloseRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    market = await market_service.close_early(session, actor, market_id, payload)
     return MarketOut.model_validate(market)
 
 

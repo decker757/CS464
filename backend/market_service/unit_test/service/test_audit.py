@@ -30,8 +30,15 @@ from service.audit import Actor
 # The suite's one actor factory. Aliased rather than imported under its own
 # name because every helper below takes an `actor` argument, which would
 # shadow it.
-from unit_test.conftest import EVIDENCE_NOTE, EVIDENCE_URL, closed_market
+from unit_test.conftest import (
+    CLOSE_REASON,
+    EVIDENCE_NOTE,
+    EVIDENCE_URL,
+    closed_market,
+    published_market,
+)
 from unit_test.conftest import actor as _actor
+from unit_test.conftest import close_request as _close
 from unit_test.conftest import market_terms as _request
 from unit_test.conftest import proposal_request as _proposal
 
@@ -281,6 +288,160 @@ async def test_the_publication_entry_and_the_status_commit_together(
     ]
     assert len(published) == 1
     assert published[0]["target_id"] == market.id
+
+
+# --- closing a market early [2.3] #7 --------------------------------------
+async def _close_early(session: AsyncSession, actor: Actor, closer: Actor | None = None):
+    """A published market, stopped by hand.
+
+    `closer` defaults to the creator. The tests that care about who acted pass
+    a second administrator, because this is the one action in this service that
+    somebody other than the creator can perform.
+    """
+    market = await published_market(session, actor)
+    return await market_service.close_early(
+        session, closer or actor, market.id, _close()
+    )
+
+
+async def test_an_early_close_is_recorded(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """[2.3] #7's third criterion: the actor, and what they acted on."""
+    actor = _actor()
+    before = datetime.now(UTC)
+
+    market = await _close_early(session, actor)
+
+    closed = [
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_CLOSED_EARLY.value
+    ]
+    assert len(closed) == 1
+
+    entry = closed[0]
+    assert entry["actor_id"] == actor.id
+    assert entry["target_type"] == "market"
+    assert entry["target_id"] == market.id
+    assert entry["source_service"] == "market_service"
+    assert entry["occurred_at"] >= before
+
+
+async def test_an_early_close_records_the_reason(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The other half of the third criterion, and the only copy of it anywhere.
+
+    Nothing on `market.markets` holds this text, so if it does not reach the
+    log it is gone — which is why the entry is written inside the transaction
+    that closes the market rather than after it.
+    """
+    actor = _actor()
+
+    await _close_early(session, actor)
+
+    entry = next(
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_CLOSED_EARLY.value
+    )
+    assert entry["reason"] == CLOSE_REASON
+
+
+async def test_an_early_close_records_the_closing_time_it_cut_short(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """What makes the word "early" mean anything.
+
+    `occurred_at` says when the market stopped; only this says what it stopped
+    short of, and `audit_svc` holds no grant on `market.markets` to look it up
+    with.
+    """
+    actor = _actor()
+
+    market = await _close_early(session, actor)
+
+    entry = next(
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_CLOSED_EARLY.value
+    )
+    assert entry["context"]["close_time"] == market.close_time.isoformat()
+    assert entry["occurred_at"] < market.close_time
+
+
+async def test_an_early_close_names_the_administrator_who_closed_it(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The accountability half of ADR 0014.
+
+    Any administrator may stop any market, and this entry is what that is
+    traded for: the log names whoever reached into somebody else's market, not
+    the creator whose market it was.
+    """
+    owner, overseer = _actor(username="ernest_t"), _actor(username="ihsan_b")
+
+    await _close_early(session, owner, closer=overseer)
+
+    entry = next(
+        e for e in await _entries(audit_reader, overseer)
+        if e["action_type"] == AdminAction.MARKET_CLOSED_EARLY.value
+    )
+    assert entry["actor_id"] == overseer.id
+    assert entry["actor_username"] == "ihsan_b"
+    assert await _entries(audit_reader, owner) != []
+
+
+async def test_an_automatic_close_records_nothing(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The distinction this action type exists to draw.
+
+    A market that reaches its own closing time is closed by the clock, and the
+    clock is not an actor. An entry here would name whichever administrator's
+    market it happened to be, for something they did not do.
+    """
+    actor = _actor()
+
+    await closed_market(session, actor)
+
+    assert AdminAction.MARKET_CLOSED_EARLY.value not in {
+        e["action_type"] for e in await _entries(audit_reader, actor)
+    }
+
+
+async def test_a_refused_close_records_nothing(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The entry is written before the commit, so a close that raises takes the
+    entry down with it — and the market stays open with nothing claiming it
+    was ever stopped."""
+    from core.errors import CloseIncomplete  # noqa: PLC0415
+
+    actor = _actor()
+    market = await published_market(session, actor)
+
+    with pytest.raises(CloseIncomplete):
+        await market_service.close_early(session, actor, market.id, _close(reason="x"))
+
+    await session.rollback()
+    assert AdminAction.MARKET_CLOSED_EARLY.value not in {
+        e["action_type"] for e in await _entries(audit_reader, actor)
+    }
+
+
+async def test_an_early_close_leaves_the_earlier_entries_alone(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """Three decisions, three records, newest first."""
+    actor = _actor()
+
+    await _close_early(session, actor)
+
+    entries = await _entries(audit_reader, actor)
+    assert [e["action_type"] for e in entries] == [
+        AdminAction.MARKET_CLOSED_EARLY.value,
+        AdminAction.MARKET_PUBLISHED.value,
+        AdminAction.MARKET_SUBMITTED.value,
+    ]
 
 
 # --- proposing an outcome [3.1] #9 ----------------------------------------
