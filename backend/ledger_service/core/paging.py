@@ -33,8 +33,14 @@ from shared import paging as _shared
 
 encode_cursor = _shared.encode_cursor
 
+#: One row's place in the feed: the pair the ordering, the cursor and the
+#: running balance all agree on. Named because three signatures take it and
+#: `tuple[datetime, uuid.UUID]` says nothing about which of the two comes
+#: first.
+Position = tuple[datetime, uuid.UUID]
 
-def decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+
+def decode_cursor(cursor: str) -> Position:
     """Read a cursor this service issued, or raise MalformedCursor.
 
     Every failure mode collapses to one error deliberately: the difference

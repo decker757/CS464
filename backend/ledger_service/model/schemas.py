@@ -72,6 +72,20 @@ class LedgerEntryOut(BaseModel):
         examples=["1000.0000"],
     )
 
+    balance_after: Decimal = Field(
+        description=(
+            "What the account held once this entry had landed, as an exact "
+            "decimal string. [4.1] #13's running balance.\n\n"
+            "Derived per read by summing every entry up to and including this "
+            "one — there is no stored column for it to disagree with, and the "
+            "newest entry's value is the same number `/balance` returns. "
+            "Anchored to the entry rather than accumulated from today, so a "
+            "movement arriving while you page cannot change a figure already "
+            "on the screen."
+        ),
+        examples=["1000.0000"],
+    )
+
     transaction_id: uuid.UUID
     kind: TransactionKind = Field(
         description=(
@@ -88,7 +102,7 @@ class LedgerEntryOut(BaseModel):
         ),
     )
 
-    @field_serializer("amount")
+    @field_serializer("amount", "balance_after")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
 
@@ -104,19 +118,27 @@ class LedgerEntryOut(BaseModel):
         return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
     @classmethod
-    def of(cls, entry: Entry) -> LedgerEntryOut:
+    def of(cls, entry: Entry, *, balance_after: Decimal) -> LedgerEntryOut:
         """Flatten an entry and the transaction it belongs to into one row.
 
         The nesting is real — two entries share one transaction — but nobody
         reading their own history wants it. They want a statement: a date, an
-        amount, and what it was for. `kind` and `context` are lifted out of the
-        transaction so that a client renders one list rather than walking a
-        tree to find the word "grant".
+        amount, what it was for, and what was left. `kind` and `context` are
+        lifted out of the transaction so that a client renders one list rather
+        than walking a tree to find the word "grant".
+
+        `balance_after` arrives as an argument rather than being read off the
+        entry, because there is nothing on the entry to read: it is derived a
+        page at a time by `service/ledger_service.py`, which is the only layer
+        that knows where in the feed this row sits. A `HistoryRow` parameter
+        would read better and would have this module import `service`, which is
+        the one direction the layering forbids.
         """
         return cls(
             id=entry.id,
             created_at=entry.created_at,
             amount=entry.amount,
+            balance_after=balance_after,
             transaction_id=entry.transaction_id,
             kind=entry.transaction.kind,
             context=entry.transaction.context,

@@ -51,10 +51,14 @@ wrong reason and so would the append-only ones.
 | Method | Path | Who | Purpose |
 | --- | --- | --- | --- |
 | GET | `/ledger/balances/me` | any signed-in user | [B-2] #33 |
-| GET | `/ledger/entries/me` | any signed-in user | own history |
+| GET | `/ledger/entries/me` | any signed-in user | own history, with a running balance |
 | GET | `/ledger/users/{id}/balance` | admin | [4.1] #13 |
 | GET | `/ledger/users/{id}/entries` | admin | [4.1] #13 |
 | GET | `/health` | — | probe |
+
+The `{id}` those two admin routes take comes from `GET /admin/users?q=...` on
+the auth service, which is [4.1] #13's other half: this service holds no user
+table and knows a user only by the id in a signed token.
 
 Full contract in [`docs/api/ledger-service.md`](../../docs/api/ledger-service.md)
 and, authoritatively, at `/docs`.
@@ -82,6 +86,14 @@ truth for money, which is the failure this design exists to avoid. Three
 separate acceptance criteria — [B-1] #32, [B-2] #33, [4.1] #13 — say the
 displayed balance equals the sum of the entries; deriving it is how that
 becomes true by construction rather than by vigilance.
+
+The running balance beside each history entry is the same rule applied to a
+position rather than to now: `SUM(amount)` over everything up to and including
+that entry, one aggregate per page, then subtraction down the rows. A
+`balance_after` column would be that second source of truth, one concurrent
+write away from disagreeing with the entries above it. Anchoring on the
+position rather than counting back from the live balance is also what keeps a
+page stable while somebody trades underneath it.
 
 **The platform account is supposed to be negative.** Its balance is minus the
 credits in circulation, and it is the only account exempt from the overdraft

@@ -4,8 +4,9 @@ Base URL `http://localhost:8000` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8000/docs).
 
-Covers [A-1] #29, [A-2] #30, [A-3] #31 and [4.4] #16, and the frontend halves
-[FE][A-1] #46, [FE][A-2] #47 and [FE][A-3] #48.
+Covers [A-1] #29, [A-2] #30, [A-3] #31, [4.4] #16 and the user-search half of
+[4.1] #13, and the frontend halves [FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48
+and [FE][4.1] #57.
 
 Why we host this ourselves rather than buying it:
 [ADR 0001](../adr/0001-self-host-authentication.md). Why browsers get cookies and
@@ -24,6 +25,7 @@ a balance field anywhere below.
 | POST | `/auth/refresh` | Exchange a refresh token for a new session |
 | POST | `/auth/logout` | Revoke the refresh token and clear both cookies |
 | GET | `/auth/me` | The current user |
+| GET | `/admin/users` | Search user accounts |
 | PATCH | `/admin/users/{user_id}/role` | Move a user between `trader` and `admin` |
 
 ## Authentication
@@ -163,6 +165,80 @@ The `user` object above, on its own. The reference protected route: `401`
 without a valid access token, `403` if the account has been suspended since the
 token was issued.
 
+## GET /admin/users
+
+`200`. Administrator only. [4.1] #13, and the list [4.2] #14 will act on.
+
+| Query | Default | Notes |
+| --- | --- | --- |
+| `q` | — | Part of a username or an email. Omit to list everybody. |
+| `limit` | 50 | Clamped at 200. Asking for more is not an error. |
+| `cursor` | — | The `next_cursor` from the previous page, unmodified. |
+
+```jsonc
+{
+  "users": [
+    {
+      "id": "5f3e...",
+      "username": "michelle_l",
+      "email": "michelle@example.com",
+      "role": "trader",
+      "is_suspended": false,
+      "created_at": "2026-09-15T04:21:09.412883Z"
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false
+}
+```
+
+**One box for both fields.** `q` matches a fragment of the username *or* the
+email, case-insensitively, because somebody chasing an anomaly has part of a
+name from a support message rather than the whole of one. It is matched as
+literal text: `%` and `_` are not wildcards, which matters because a username
+here may contain `_` and most of the team's do.
+
+Newest registration first, and blank or absent `q` lists everybody — so the
+screen opens on the user list rather than an empty state waiting to be typed
+into. A search that matches nobody is an empty `users`, not a `404`.
+
+**`id` is the handle to the rest of the story.** The transaction history lives
+on the ledger service at `:8003`, which holds no user table and knows a user
+only by the id in a signed token:
+
+```js
+const { users } = await fetch(`http://localhost:8000/admin/users?q=${q}`,
+  { credentials: "include" }).then(r => r.json());
+
+const entries = await fetch(
+  `http://localhost:8003/ledger/users/${users[0].id}/entries`,
+  { credentials: "include" }).then(r => r.json());
+```
+
+`docs/api/ledger-service.md` has that side, including the running balance
+beside each entry. **No balance appears here**, on this or any other route:
+this service does not know that credits exist.
+
+`is_suspended` is readable here and written by [4.2] #14. It appears on this
+route only — on register, login and `/auth/me` it could only ever read `false`,
+because a suspended account cannot reach any of the three.
+
+### Paging
+
+Keyset, not offset, the same as the audit feed and the ledger history. An
+account registered between page 1 and page 2 would otherwise push the window
+down, so the last row of page 1 comes back at the top of page 2 and the one
+behind it is never seen — and somebody paging a user list to find the account
+they are investigating is exactly the reader who would not notice.
+
+Send `q` again with the cursor: a cursor carries a position, not a filter.
+A cursor this service did not issue is a `400 malformed_cursor`; echo the value
+back rather than constructing one.
+
+**Searching is not audited**, and neither is opening this page. The log records
+decisions — promotions, suspensions — and an entry per keystroke would bury
+them.
+
 ## PATCH /admin/users/{user_id}/role
 
 `200` on success. Administrator only. [4.4] #16.
@@ -229,6 +305,7 @@ The same envelope the market service uses, so one parser covers both:
 | 401 | `invalid_credentials` | wrong password, or no such account — deliberately the same |
 | 401 | `invalid_token` | no access token, or it is expired, forged or malformed |
 | 403 | `account_suspended` | credentials were right; the account is suspended |
+| 400 | `malformed_cursor` | `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | signed in, but not an admin — same code the market service uses |
 | 403 | `cannot_change_own_role` | an administrator targeting their own row |
 | 404 | `user_not_found` | no user with that id |

@@ -122,6 +122,23 @@ class CannotChangeOwnRole(AuthError):
     message = "An administrator cannot change their own role."
 
 
+class MalformedCursor(AuthError):
+    """[4.1] #13 - the `cursor` parameter did not come from a previous response.
+
+    Its contents are this service's business, so a client should only ever echo
+    back what `next_cursor` gave it. Saying so explicitly beats silently
+    restarting from the newest page, which would loop forever.
+
+    Same code and message as the audit and ledger services', because it is the
+    same cursor format and the frontend should not learn three spellings of one
+    mistake.
+    """
+
+    status_code = 400
+    code = "malformed_cursor"
+    message = "Pass back the `next_cursor` from the previous response, unmodified."
+
+
 class LastAdministrator(AuthError):
     """[4.4] #16 - demoting this user would leave the system with no administrator.
 

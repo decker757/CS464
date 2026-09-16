@@ -103,6 +103,50 @@ class MessageResponse(BaseModel):
     message: str
 
 
+class AdminUserOut(UserOut):
+    """One account as an administrator sees it. [4.1] #13.
+
+    `UserOut` plus the one fact only an administrator has any use for. It is a
+    subclass rather than a field on `UserOut` itself so that `is_suspended`
+    does not appear on register, login and `/auth/me`, where it can only ever
+    read `false` — a suspended account cannot reach any of the three.
+
+    Nothing sensitive is added by being an administrator: there is no password
+    hash, no token and no session here, and there is no schema in this file
+    that has one.
+    """
+
+    is_suspended: bool = Field(
+        description=(
+            "Whether this account is currently barred from logging in. Read "
+            "here, written by [4.2] #14."
+        ),
+    )
+
+
+class UserListResponse(BaseModel):
+    """One page of accounts, newest registration first. [4.1] #13."""
+
+    users: list[AdminUserOut]
+
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pass back as `cursor` for the next page. Null means this page is "
+            "the end of the list. Opaque: echo it unmodified rather than "
+            "constructing one."
+        ),
+    )
+
+    has_more: bool = Field(
+        description=(
+            "Whether another page exists. Equivalent to `next_cursor` being "
+            "non-null, and stated so a client can drive a 'load more' control "
+            "without reasoning about the cursor at all."
+        ),
+    )
+
+
 class RoleChangeRequest(BaseModel):
     """[4.4] #16. Move one user between `trader` and `admin`.
 

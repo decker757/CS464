@@ -18,6 +18,7 @@ def _entry(**overrides: object) -> LedgerEntryOut:
         "id": uuid.uuid4(),
         "created_at": datetime.now(UTC),
         "amount": Decimal("1000.0000"),
+        "balance_after": Decimal("1000.0000"),
         "transaction_id": uuid.uuid4(),
         "kind": TransactionKind.SIGNUP_GRANT,
         "context": None,
@@ -78,10 +79,18 @@ def test_an_entry_flattens_its_transaction() -> None:
             kind = TransactionKind.SIGNUP_GRANT
             context = {"user_id": "abc"}
 
-    out = LedgerEntryOut.of(_Fake())
+    out = LedgerEntryOut.of(_Fake(), balance_after=Decimal("1000.0000"))
 
     assert out.kind is TransactionKind.SIGNUP_GRANT
     assert out.context == {"user_id": "abc"}
+
+
+def test_a_running_balance_serialises_as_a_string() -> None:
+    """Same rule as `amount`, and for the same reason: this is money, and a
+    JSON number is an IEEE double by the time a browser has parsed it."""
+    out = _entry(balance_after=Decimal("750.0000"))
+
+    assert out.model_dump()["balance_after"] == "750.0000"
 
 
 def test_has_more_and_next_cursor_agree() -> None:

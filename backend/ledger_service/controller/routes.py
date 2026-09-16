@@ -52,9 +52,11 @@ _BALANCE_DESCRIPTION = (
 )
 
 _ENTRIES_DESCRIPTION = (
-    "[4.1] #13. The account's entries, newest first. Both sides of a movement "
-    "are separate entries sharing one `transaction_id`, and only the side "
-    "touching this account appears here.\n\n"
+    "[4.1] #13. The account's entries, newest first, each with the balance it "
+    "left behind. Both sides of a movement are separate entries sharing one "
+    "`transaction_id`, and only the side touching this account appears here.\n\n"
+    "`balance_after` is derived per read, not stored, so the newest entry's "
+    "value is the same number the balance route returns.\n\n"
     "Paged by keyset rather than offset, so entries appended while you read do "
     "not shift the pages under you. Send back `next_cursor` unmodified to "
     "continue; a null one means you have reached the end."
@@ -185,7 +187,10 @@ async def _entries(
         session, user_id, limit=_page_size(limit), cursor=cursor
     )
     return LedgerEntryListResponse(
-        entries=[LedgerEntryOut.of(entry) for entry in page.entries],
+        entries=[
+            LedgerEntryOut.of(row.entry, balance_after=row.balance_after)
+            for row in page.rows
+        ],
         next_cursor=page.next_cursor,
         has_more=page.has_more,
     )

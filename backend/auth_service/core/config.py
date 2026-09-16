@@ -43,6 +43,13 @@ class Settings(ServiceSettings):
     # --- Registration policy --------------------------------------------
     password_min_length: int = 12
 
+    # --- Paging -----------------------------------------------------------
+    # [4.1] #13's administrative user list. The user table only grows, so an
+    # unbounded read is a question that gets slower every week it is asked.
+    # Same ceilings, and the same reasoning, as the audit and ledger services'.
+    default_page_size: int = Field(default=50, gt=0)
+    max_page_size: int = Field(default=200, gt=0)
+
 
 @lru_cache
 def get_settings() -> Settings:

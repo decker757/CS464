@@ -36,10 +36,24 @@ class UserBalance:
 
 
 @dataclass(frozen=True)
+class HistoryRow:
+    """One entry, and what the account held once it had landed. [4.1] #13.
+
+    The two together, because a statement line that says "-250" without saying
+    what was left is half an answer to the question an administrator opened the
+    page to ask. `balance_after` is derived per read and stored nowhere; see
+    `accounts.balance_of` for why that is the design rather than a shortcut.
+    """
+
+    entry: Entry
+    balance_after: Decimal
+
+
+@dataclass(frozen=True)
 class EntryPage:
     """One page of a user's history, newest first."""
 
-    entries: list[Entry]
+    rows: list[HistoryRow]
     next_cursor: str | None
 
     @property
@@ -68,17 +82,19 @@ async def history_for_user(
     limit: int,
     cursor: str | None = None,
 ) -> EntryPage:
-    """One page of this user's entries, newest first. [4.1] #13.
+    """One page of this user's entries, newest first, each with the balance it
+    left behind. [4.1] #13.
 
     `limit + 1` rows are fetched and the extra one is dropped, which is what
     makes `has_more` exact without a second COUNT over a table that only grows
     — and a count is the wrong question anyway, because the answer is stale by
     the time it renders. Same approach as the audit feed.
 
-    What is deliberately not here: a running balance. [4.1] #13 asks for one and
-    it is one aggregate away — the balance as at the newest entry on the page,
-    then walk down subtracting each amount — but it belongs to the story that
-    renders it, next to the user search it appears beside.
+    The running balance costs exactly one more aggregate per page, not one per
+    row: sum the account up to the newest entry on the page, then walk down
+    subtracting each amount, because the balance before an entry is the balance
+    after it minus what it moved. Reading it back per row would be `limit`
+    round trips for arithmetic already in hand.
     """
     # Mints the starting grant if this is the user's first read. [B-1] #32.
     account = await grants.ensure_granted(session, user_id)
@@ -94,14 +110,55 @@ async def history_for_user(
             tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id)
         )
 
-    rows = list((await session.execute(stmt.limit(limit + 1))).scalars())
+    entries = list((await session.execute(stmt.limit(limit + 1))).scalars())
 
-    if len(rows) <= limit:
-        return EntryPage(entries=rows, next_cursor=None)
+    # The extra row is the whole of `has_more`: fetched, counted, and dropped
+    # before anything else looks at the page.
+    page = entries[:limit]
+    next_cursor = (
+        encode_cursor(page[-1].created_at, page[-1].id)
+        if len(entries) > limit
+        else None
+    )
 
-    page = rows[:limit]
-    last = page[-1]
-    return EntryPage(entries=page, next_cursor=encode_cursor(last.created_at, last.id))
+    return EntryPage(
+        rows=await _with_running_balance(session, account.id, page),
+        next_cursor=next_cursor,
+    )
+
+
+async def _with_running_balance(
+    session: AsyncSession, account_id: uuid.UUID, entries: list[Entry]
+) -> list[HistoryRow]:
+    """Pair each entry with what the account held once it had landed.
+
+    One query for the whole page, anchored at its newest row, then subtraction.
+    The anchor is what makes a page's figures independent of when it was
+    fetched: entries appended mid-read are strictly newer than it and so are
+    outside every sum on this page. Two administrators paging through one
+    account at different speeds see the same numbers beside the same entries.
+
+    The top row's balance is also, by construction, what
+    `GET /ledger/users/{id}/balance` returns when nothing has moved since —
+    both are `SUM(amount)` over the same rows, which is [4.1] #13's third
+    acceptance criterion holding because there is only one way to ask.
+    """
+    if not entries:
+        return []
+
+    newest = entries[0]
+    running = await accounts.balance_of(
+        session, account_id, as_at=(newest.created_at, newest.id)
+    )
+
+    rows: list[HistoryRow] = []
+    for entry in entries:
+        rows.append(HistoryRow(entry=entry, balance_after=running))
+        # Walking backwards through time, so undo what this entry did to get
+        # the balance the next one down left behind.
+        running -= entry.amount
+
+    return rows
 
 
 def _ordered_query(account_id: uuid.UUID) -> Select[tuple[Entry]]:
