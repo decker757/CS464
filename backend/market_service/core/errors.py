@@ -65,10 +65,11 @@ class ValidationProblem:
 class IncompleteError(MarketError):
     """A 422 that names every field at fault, rather than only the first.
 
-    The shape, not an error anything raises. Two actions refuse this way — a
-    submission or publication whose terms do not pass ([1.1] #1, [1.3] #3), and
-    a proposal whose winner or evidence does not ([3.1] #9) — and both are a
-    form the administrator is looking at, so both want every offending field
+    The shape, not an error anything raises. Three actions refuse this way — a
+    submission or publication whose terms do not pass ([1.1] #1, [1.3] #3), a
+    proposal whose winner or evidence does not ([3.1] #9), and an early close
+    with no usable reason ([2.3] #7) — and every one of them is a form the
+    administrator is looking at, so all of them want every offending field
     marked at once instead of one save at a time.
 
     Sharing a base is what keeps `controller/errors.py` free of a list of which
@@ -117,6 +118,24 @@ class ProposalIncomplete(IncompleteError):
     code = "proposal_incomplete"
 
     DEFAULT_MESSAGE = "This outcome cannot be proposed yet."
+
+
+class CloseIncomplete(IncompleteError):
+    """The reason given for closing a market early is not usable. [2.3] #7
+
+    The third action to refuse by field, and the one that shows the base class
+    paying for itself: `controller/errors.py` attaches `details` to anything
+    that is an `IncompleteError`, so this envelope cost a code and a sentence.
+
+    Its own code rather than a reuse of `draft_incomplete`, for the reason
+    `ProposalIncomplete` gives. `reason` is not a term of the market and exists
+    only on this request, so a form that mapped it onto the create form's
+    inputs would find nothing to mark.
+    """
+
+    code = "close_incomplete"
+
+    DEFAULT_MESSAGE = "This market cannot be closed without a reason."
 
 
 class MarketNotEditable(MarketError):
@@ -171,8 +190,14 @@ class MarketClosed(MarketError):
 
     Reachable in ordinary use despite looking like an edge case. A form left
     open behind the publish button keeps autosaving every three seconds, and
-    [2.3] #7 will let an administrator close a market out from under exactly
-    that form.
+    [2.3] #7 lets an administrator close a market out from under exactly that
+    form.
+
+    Also what an early close is refused with, in both of the ways a market can
+    already have stopped: the sweep wrote CLOSED, or it has not run yet and
+    `close_time` has passed anyway. One error for both is the point — the
+    administrator gets the same answer either side of the sweep, which is what
+    deriving the answer rather than reading the status column buys. ADR 0014.
     """
 
     status_code = 409
@@ -250,4 +275,28 @@ class MarketPendingResolution(MarketError):
     message = (
         "An outcome has already been proposed for this market, and it is "
         "waiting on a second administrator."
+    )
+
+
+class MarketNotOpen(MarketError):
+    """An early close was asked for on a market traders cannot reach. [2.3] #7.
+
+    A draft or a submitted market has never been in front of anybody. Nothing
+    can be traded in it, so there is nothing for an early close to stop, and
+    the administrator is looking at a control that should not have been
+    offered.
+
+    The other half of the same gate is MarketClosed, and they are kept distinct
+    because the remedy is opposite: a market that is not open yet may still be
+    published, and one that has closed never trades again.
+
+    409 rather than 404 or 422: the market is real, the request is well formed,
+    and it is the state that is wrong.
+    """
+
+    status_code = 409
+    code = "market_not_open"
+    message = (
+        "Only a market that is open to traders can be closed. This one has "
+        "not been published, so nothing can be traded in it."
     )

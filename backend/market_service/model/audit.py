@@ -88,6 +88,21 @@ class AdminAction(StrEnum):
     # a market can sit submitted for a week before anybody answers it.
     MARKET_PUBLISHED = "market.published"
 
+    # [2.3] #7. An administrator stopped a market before its closing time, and
+    # said why.
+    #
+    # The only close that ever appears in this log. A market that reaches its
+    # own `close_time` is closed by the clock, and the clock is not an actor —
+    # there is nobody to record, and the `market.published` entry already
+    # carries the `close_time` that was approved. An entry here therefore means
+    # a human intervened, which is precisely the thing worth being able to find.
+    #
+    # The justification rides in the entry's `reason` column rather than in
+    # `context`, because it is the same kind of value [3.2] #10's rejection and
+    # [4.2] #14's suspension will put there, and one column is what lets a
+    # reader ask "what did somebody explain, and how" across all of them.
+    MARKET_CLOSED_EARLY = "market.closed_early"
+
     # [3.1] #9. An administrator named a winning outcome and attached the
     # evidence for it.
     #

@@ -11,8 +11,9 @@ in GitHub Project v2 #6.
 ```
 backend/auth_service/     registration, login, logout, sessions   [A-1..A-3]
 backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3],
-                          closing them at their closing time [F-4] and
-                          proposing an outcome once they have [3.1]
+                          closing them at their closing time [F-4] or early by
+                          hand [2.3], and proposing an outcome once they have
+                          [3.1]
 backend/audit_service/    reading the shared admin action log     [4.3]
 backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
@@ -137,13 +138,23 @@ few seconds late on a market nobody can trade in the meantime. On the trade
 path a stale answer lets a trade through, which is why that one derives. ADR
 0013.
 
+An administrator can also close a market early ([2.3] #7), and that one derives
+again — `POST /markets/{id}/close` refuses a market whose `close_time` has
+already passed, however the status column reads. Same test as everywhere else:
+which way does the error point. Reading the status here would accept a close in
+the window before the sweep and write an audit entry claiming an administrator
+stopped trading that the clock had already stopped. It is the only request that
+writes CLOSED, it does not touch `close_time`, and a `closed_at` earlier than
+`close_time` is how you tell the two kinds of close apart. ADR 0014.
+
 The sweep is not a scan and the polling cost is not the interesting question:
 `ix_markets_due_close` is partial on `status = 'open'`, so it reads an ordered
 index holding only the open markets and stops. One admin with the create form
 open writes 1,200 autosave transactions an hour; a ten-second sweep is 360
 read-only probes. An automatic close writes no audit entry — the clock is not
 an actor, and the `market.published` entry already recorded the `close_time`
-that was approved.
+that was approved — so every `market.closed_early` entry in the log is by
+definition a human one, which is the whole reason it is named that way.
 
 **An admin is made by hand, and needs a fresh login.** Registration always
 creates a trader. Promotion is `UPDATE auth.users SET role = 'admin' WHERE
@@ -396,6 +407,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0011** the clock closes a market, and a sweep only writes it down
 - **0012** a shared package, and the build contexts that had to move first
 - **0013** proposing an outcome, from CLOSED only, with evidence, one at a time
+- **0014** closing a market early, by any admin, with the reason in the log
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

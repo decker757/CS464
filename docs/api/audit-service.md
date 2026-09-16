@@ -146,6 +146,9 @@ would let a stale audit schema abort a working admin action.
 | `action_type` | Written by | Story |
 | --- | --- | --- |
 | `market.submitted` | market_service | [1.1] #1, [1.2] #2 |
+| `market.published` | market_service | [1.3] #3 |
+| `market.closed_early` | market_service | [2.3] #7 |
+| `market.outcome_proposed` | market_service | [3.1] #9 |
 
 Treat an unrecognised value as opaque rather than as an error: a newer service
 may be writing an action type this build has never heard of.
@@ -154,6 +157,10 @@ Note what is **not** logged, and will not be:
 
 - **Draft autosaves.** The create form saves every three seconds. Logging that
   would bury every real decision under thousands of keystroke entries.
+- **Automatic market closes.** A market that reaches its own `close_time` is
+  closed by the clock, and the clock is not an actor — there is nobody to
+  record, and `market.published` already carries the closing time that was
+  approved. Every `market.closed_early` entry is therefore a human one.
 - **Reads of this log.** Every entry here changed something.
 - **Denied or failed actions.** A rolled-back transaction takes its entry with
   it — which is what makes an entry trustworthy. Security logging is a
@@ -171,15 +178,20 @@ from service import audit
 await audit.record(
     session,
     actor=actor,                      # from CurrentActor in the controller
-    action=AdminAction.MARKET_CLOSED,
+    action=AdminAction.MARKET_CLOSED_EARLY,
     target_type="market",
     target_id=market.id,
     target_label=market.question,
-    reason=payload.reason,            # required by [2.3] #7 and [4.2] #14
-    context={"closed_early": True},
+    reason=payload.reason,            # the free text [2.3] #7 and [4.2] #14 demand
+    context={"close_time": market.close_time.isoformat()},
 )
 # no commit here: the caller's transaction commits both, or neither
 ```
+
+That is [2.3] #7 as it actually shipped, near enough to copy. Two details in it
+are the ones worth copying: `reason` is the administrator's justification and
+`context` is everything else a reader needs, because `audit_svc` holds no grant
+on any other service's schema and cannot look a missing fact up.
 
 Three rules:
 

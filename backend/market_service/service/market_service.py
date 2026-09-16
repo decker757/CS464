@@ -1,8 +1,10 @@
-"""Business rules for a market's lifecycle. [1.1] #1, [1.3] #3, [3.1] #9.
+"""Business rules for a market's lifecycle. [1.1] #1, [1.3] #3, [2.3] #7, [3.1] #9.
 
-Drafting and submitting, publishing, and proposing the outcome once trading has
-stopped. The automatic close between the last two is in `service/closing.py`,
-because the clock performs it and no administrator does.
+Drafting and submitting, publishing, stopping a market early, and proposing the
+outcome once trading has stopped. The *automatic* close is in
+`service/closing.py`, because the clock performs it and no administrator does;
+`close_early` here is the one an administrator performs, and it asks that file
+whether the market it is about to stop is still running at all.
 
 HTTP is not mentioned in this file; failures are raised as domain errors. Every
 function takes the caller's id as an argument rather than reading it from
@@ -22,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from core.errors import (
+    CloseIncomplete,
     DraftIncomplete,
     MarketAlreadyOpen,
     MarketClosed,
@@ -29,6 +32,7 @@ from core.errors import (
     MarketNotClosed,
     MarketNotEditable,
     MarketNotFound,
+    MarketNotOpen,
     MarketNotSubmitted,
     MarketPendingResolution,
     ProposalIncomplete,
@@ -38,12 +42,18 @@ from model.audit import AdminAction
 from model.entities import Market, MarketOutcome, MarketStatus, ResolutionSource
 from model.schemas import (
     PRICING_DECIMAL_PLACES,
+    MarketCloseRequest,
     MarketDraftRequest,
     OutcomeProposalRequest,
 )
 from service import audit
 from service.audit import Actor
-from service.validation import problems_blocking_proposal, problems_blocking_submission
+from service.closing import is_open_for_trading
+from service.validation import (
+    problems_blocking_close,
+    problems_blocking_proposal,
+    problems_blocking_submission,
+)
 
 # The statuses from which a market's terms are final, and what a write to one
 # is told. [1.3] #3 froze OPEN; [F-4] #44 added CLOSED; [3.1] #9 added
@@ -60,10 +70,11 @@ from service.validation import problems_blocking_proposal, problems_blocking_sub
 # administrator a different error, and "frozen" is a fact about writes to the
 # *terms* rather than about a market being finished.
 #
-# That second half is why `propose_outcome` below does not consult this table,
-# though it looks like it should. CLOSED is in here — a save to a closed market
-# is refused — and CLOSED is exactly the state a proposal requires. A shared
-# lookup would have to answer two different questions from one row.
+# That second half is why neither `propose_outcome` nor `close_early` below
+# consults this table, though both look as though they should. CLOSED is in
+# here — a save to a closed market is refused — and CLOSED is exactly the state
+# a proposal requires, while OPEN is exactly the state an early close requires.
+# A shared lookup would have to answer three different questions from one row.
 _FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
     MarketStatus.OPEN: MarketAlreadyOpen,
     MarketStatus.CLOSED: MarketClosed,
@@ -82,6 +93,25 @@ def _refuse_if_frozen(market: Market) -> None:
     error = _FROZEN_STATUS_ERRORS.get(market.status)
     if error is not None:
         raise error
+
+
+def _refuse_if_pending_resolution(market: Market) -> None:
+    """Raise if an outcome has already been proposed for this market.
+
+    Checked before every other state gate by both callers that have one, and
+    that ordering is the whole reason this is a function rather than a row in
+    `_FROZEN_STATUS_ERRORS`. A market awaiting a second administrator has
+    stopped trading *and* has a proposal on it, so every other gate in this
+    file would describe it in a way that is true and useless — not closed, or
+    closed. The administrator's remedy is neither to wait nor to stop it. It is
+    to look at the proposal that is waiting, which is what this error names and
+    no other one does.
+
+    Two callers today. [3.2] #10's rejection is the third, and the only action
+    that will want a market in this state rather than refusing it.
+    """
+    if market.status is MarketStatus.PENDING_RESOLUTION:
+        raise MarketPendingResolution
 
 
 async def save(
@@ -279,6 +309,109 @@ async def publish(
     return market
 
 
+async def close_early(
+    session: AsyncSession,
+    actor: Actor,
+    market_id: uuid.UUID,
+    request: MarketCloseRequest,
+    *,
+    now: datetime | None = None,
+) -> Market:
+    """Stop one open market before its closing time, on a stated reason. [2.3] #7.
+
+    The only way a market reaches CLOSED by anybody's decision. Every other
+    close is the clock's, and the clock is not an actor: `close_due_markets`
+    writes no audit entry, because there is nobody to name and the
+    `market.published` entry already recorded the `close_time` that was
+    approved. This one always writes an entry, because there is.
+
+    Two things have to hold, and each fails differently on purpose:
+
+    - the market is open to traders right now — a draft or a submitted one is a
+      409 saying there is nothing to stop, one that has already stopped is a
+      409 saying so, and one awaiting resolution names the proposal instead
+    - the reason is usable, or it is a 422 naming the field
+
+    And one thing deliberately does not: the market need not be the caller's.
+
+    **Any administrator may close any market, and this is the one route in this
+    service that is not scoped to the creator.** ADR 0007 made the tier flat,
+    and a broken market that can only be stopped by an administrator who is
+    asleep is not oversight. The 404-rather-than-403 rule everywhere else in
+    this file protects *drafts*, which is [1.1] #1's requirement; this route
+    only ever touches a market traders can already see, so there is nothing
+    left for that rule to hide. What replaces it is the audit entry, which
+    names who reached into somebody else's market and why. ADR 0014.
+
+    **The gate derives rather than reading the status column**, which looks
+    like the opposite of what `propose_outcome` does below, and is the same
+    decision made twice. Both pick the direction whose failure is a control
+    that appears or disappears a beat late rather than a wrong write. There it
+    means reading the status: gating on the clock could accept a proposal on a
+    market this service has not finished processing. Here it means the clock:
+    for the few seconds between `close_time` passing and the sweep, the status
+    still says `open`, and an early close accepted in that window would append
+    an entry saying an administrator stopped trading that the clock had already
+    stopped. `is_open_for_trading` is the same predicate the trade path uses,
+    so this refuses exactly when a trade would, and `MarketClosed` is the
+    answer either side of the sweep. ADR 0014.
+
+    **`close_time` is not moved, and `closed_at` is what records this.** The
+    closing time is a term the administrator published and traders read; the
+    audit entry says it was cut short, and rewriting the row would make the log
+    disagree with the market it describes. A market whose `closed_at` precedes
+    its `close_time` is exactly a market that was stopped by hand.
+
+    Nothing else is touched. Positions are the ledger's ([F-1] #41, ADR 0005)
+    and this service holds none, so "positions retained" is true here by
+    construction rather than by care: two columns on one row move, and nothing
+    in this repository deletes a holding.
+
+    One way, like `publish`. There is no reopen, `_save_once` refuses every
+    later write, and the market's next move is [3.1] #9's proposal.
+    """
+    now = now or datetime.now(UTC)
+
+    # Locked for the same reason `publish` and `propose_outcome` lock: the
+    # check below and the write after it are one decision, and an administrator
+    # double-clicking the confirm button in the modal sends two requests. Read
+    # unlocked, both would see OPEN and the log would carry two entries closing
+    # one market, with two different reasons.
+    market = await get_any(session, market_id, for_update=True)
+
+    _refuse_if_pending_resolution(market)
+
+    # A market traders never saw. Split out because the remedy is the opposite
+    # of the one below — this market may still be published — and because
+    # `is_open_for_trading` answers False for both and cannot tell them apart.
+    if market.status in (MarketStatus.DRAFT, MarketStatus.SUBMITTED):
+        raise MarketNotOpen
+
+    # OPEN or CLOSED, and the clock decides which of those is true right now.
+    # See the docstring: a market whose close time has passed is closed whether
+    # or not the sweep has got to it, and gets the same error either way.
+    if not is_open_for_trading(market, now=now):
+        raise MarketClosed
+
+    problems = problems_blocking_close(request)
+    if problems:
+        raise CloseIncomplete(problems)
+
+    market.status = MarketStatus.CLOSED
+    market.closed_at = now
+
+    # Flushed before the entry and committed after it, exactly as submission,
+    # publication and proposal are: the action and the record of it are one
+    # write. It matters more here than anywhere else in this file, because the
+    # entry is the *only* copy of the reason — a market that stopped early with
+    # no entry is a market nobody can ever explain. ADR 0006.
+    await session.flush()
+    await _record_early_close(session, actor, market, request.reason.strip(), now)
+    await session.commit()
+
+    return market
+
+
 async def propose_outcome(
     session: AsyncSession,
     actor: Actor,
@@ -334,11 +467,7 @@ async def propose_outcome(
     # would carry two entries proposing different outcomes for one market.
     market = await get(session, actor.id, market_id, for_update=True)
 
-    # Before the status check below, so the message is true: a market awaiting
-    # resolution has not failed to close, it has already had an outcome
-    # proposed, and the remedy is to look at that proposal rather than to wait.
-    if market.status is MarketStatus.PENDING_RESOLUTION:
-        raise MarketPendingResolution
+    _refuse_if_pending_resolution(market)
     if market.status is not MarketStatus.CLOSED:
         raise MarketNotClosed
 
@@ -379,19 +508,33 @@ async def get(
     filter cannot be forgotten the way an `if` can, and an unfiltered read
     followed by a permission check is how a draft leaks.
 
-    `for_update` takes a row lock, and only `publish` asks for one. Reads must
-    not: a lock on every GET would serialise the list page behind whatever
-    happened to be writing. The lock covers the parent row alone — the selectin
-    loaders fetch the children unlocked — which is all that is needed, because
-    the only thing being serialised is a status transition on this row.
+    `for_update` takes a row lock, and only the status transitions ask for one.
+    Reads must not: a lock on every GET would serialise the list page behind
+    whatever happened to be writing. The lock covers the parent row alone — the
+    selectin loaders fetch the children unlocked — which is all that is needed,
+    because the only thing being serialised is a status transition on this row.
     """
-    stmt = select(Market).where(Market.id == market_id, Market.creator_id == creator_id)
-    if for_update:
-        stmt = stmt.with_for_update()
-    market = (await session.execute(stmt)).scalar_one_or_none()
-    if market is None:
-        raise MarketNotFound
-    return market
+    return await _load(session, market_id, creator_id=creator_id, for_update=for_update)
+
+
+async def get_any(
+    session: AsyncSession, market_id: uuid.UUID, *, for_update: bool = False
+) -> Market:
+    """One market, whoever created it. [2.3] #7.
+
+    The only read in this service that is not scoped to the caller, and a
+    second function rather than a `creator_id=None` on `get` above precisely
+    because of that: an unscoped read is a decision, so it should be visible at
+    the call site and greppable from here.
+
+    Safe for its one caller and for a reason that does not generalise.
+    `close_early` refuses anything that is not open to traders, and an open
+    market is one every trader can already see, so there is no draft here to
+    leak. Point a read route at this instead of `get` and [1.1] #1's rule that
+    a draft is invisible to everyone but its creator is gone — silently, and
+    with no test failing that does not already exist. ADR 0014.
+    """
+    return await _load(session, market_id, creator_id=None, for_update=for_update)
 
 
 async def list_for_creator(session: AsyncSession, creator_id: uuid.UUID) -> list[Market]:
@@ -412,6 +555,7 @@ async def _record(
     now: datetime,
     *,
     context: dict[str, object],
+    reason: str | None = None,
 ) -> None:
     """Append one audit entry about a market.
 
@@ -419,16 +563,19 @@ async def _record(
     question as the label — so that every action against a market names it the
     same way and a reader can scan one column.
 
-    What varies is `context`, and only two shapes exist: the terms
-    (`_record_terms`) and the proposal (`_record_proposal`).
+    What varies is `context`, and only three shapes exist: the terms
+    (`_record_terms`), the proposal (`_record_proposal`) and the closing time
+    an early close cut short (`_record_early_close`).
 
-    No `reason` is recorded by any caller here. The form does not ask for one
-    and an empty string would be worse than a null — evidence is not a reason,
-    which is why [3.1] #9's URL and note travel in `context` alongside the
-    outcome they support rather than being split across two columns. The
-    stories that genuinely have a reason — [2.3] #7 closing a market early,
-    [3.2] #10 rejecting a proposal, [4.2] #14 suspending an account — pass one
-    through `audit.record`'s own argument.
+    `reason` is the free-text justification an administrator gave, and only
+    [2.3] #7 has one — [3.2] #10's rejection and [4.2] #14's suspension will be
+    the others. It is deliberately not where evidence goes: a URL and a note
+    supporting a proposed outcome travel together in `context` alongside the
+    outcome they support, because splitting a single body of evidence across
+    two columns would make it unreadable. A reason explains a decision; evidence
+    supports a claim. Defaulted to None so the three actions that have nothing
+    to explain record nothing, rather than an empty string that a reader would
+    have to tell apart from a null.
     """
     await audit.record(
         session,
@@ -437,6 +584,7 @@ async def _record(
         target_type="market",
         target_id=market.id,
         target_label=market.question,
+        reason=reason,
         context=context,
         now=now,
     )
@@ -495,6 +643,40 @@ async def _record_publication(
     actually saw.
     """
     await _record_terms(session, actor, market, AdminAction.MARKET_PUBLISHED, now)
+
+
+async def _record_early_close(
+    session: AsyncSession, actor: Actor, market: Market, reason: str, now: datetime
+) -> None:
+    """Append the audit entry for a market stopped by hand. [2.3] #7.
+
+    The whole of the ticket's third acceptance criterion, and the only place
+    the reason is kept anywhere: nothing on `market.markets` holds it, so this
+    entry is the record in the strong sense — lose it and a market that stopped
+    early has no explanation left in the system.
+
+    The `close_time` rides along in `context` because it is what makes the word
+    "early" mean anything — the entry says when this market stopped, and only
+    that value says what it stopped short of — and because `audit_svc` holds no
+    grant on `market.markets` (ADR 0006), so a fact not carried on the entry is
+    a fact the one role that may read this log cannot recover. The terms do
+    not, for the reason `_record_proposal` gives: a published market is frozen,
+    so the `market.published` entry already carries them and nothing has
+    changed them since.
+    """
+    await _record(
+        session,
+        actor,
+        market,
+        AdminAction.MARKET_CLOSED_EARLY,
+        now,
+        reason=reason,
+        # One key, and no snapshot function for it, unlike the two below. When
+        # this market was going to close is the only fact a reader needs that
+        # is not already on the entry — `occurred_at` is when it actually
+        # closed, to the same value as `market.closed_at`.
+        context={"close_time": _iso_or_none(market.close_time)},
+    )
 
 
 async def _record_proposal(
@@ -576,10 +758,8 @@ def _terms_snapshot(market: Market) -> dict[str, object]:
         "liquidity_b": _decimal_or_none(market.liquidity_b),
         "seed_subsidy": _decimal_or_none(market.seed_subsidy),
         "outcomes": [outcome.label for outcome in market.outcomes],
-        "close_time": market.close_time.isoformat() if market.close_time else None,
-        "resolution_time": (
-            market.resolution_time.isoformat() if market.resolution_time else None
-        ),
+        "close_time": _iso_or_none(market.close_time),
+        "resolution_time": _iso_or_none(market.resolution_time),
         "resolution_sources": [source.url for source in market.resolution_sources],
     }
 
@@ -597,6 +777,18 @@ _PUBLISH_BLOCKED = (
 _PRICING_QUANTUM = Decimal(1).scaleb(-PRICING_DECIMAL_PLACES)
 
 
+def _iso_or_none(value: datetime | None) -> str | None:
+    """A timestamp as ISO 8601, or null, for an audit entry's `context`.
+
+    Extracted for the reason `_decimal_or_none` below was: two entries
+    describing one value should describe it identically. Three copies of this
+    ternary would be three chances for one of them to start truncating, or to
+    emit an empty string where the others emit a null, and a reader comparing
+    two entries would have to work out which.
+    """
+    return value.isoformat() if value is not None else None
+
+
 def _decimal_or_none(value: Decimal | None) -> str | None:
     """Stringify at the column's scale, so two entries for one value match.
 
@@ -610,6 +802,33 @@ def _decimal_or_none(value: Decimal | None) -> str | None:
     places than the column can hold, so this only ever pads.
     """
     return str(value.quantize(_PRICING_QUANTUM)) if value is not None else None
+
+
+async def _load(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    creator_id: uuid.UUID | None,
+    for_update: bool,
+) -> Market:
+    """The query the two reads above share, with the scope as an argument.
+
+    `creator_id` is keyword-only and has no default, so neither caller can end
+    up with the wider scope by leaving it out — which is the failure the split
+    into two public functions exists to prevent, and it would be a shame to
+    reintroduce it here. When it is given it goes into the WHERE clause, which
+    is the whole of `get`'s promise.
+    """
+    stmt = select(Market).where(Market.id == market_id)
+    if creator_id is not None:
+        stmt = stmt.where(Market.creator_id == creator_id)
+    if for_update:
+        stmt = stmt.with_for_update()
+
+    market = (await session.execute(stmt)).scalar_one_or_none()
+    if market is None:
+        raise MarketNotFound
+    return market
 
 
 async def _find_by_draft_key(

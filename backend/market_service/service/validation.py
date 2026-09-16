@@ -33,7 +33,7 @@ from pydantic import HttpUrl, TypeAdapter, ValidationError
 from core.clock import as_utc
 from core.errors import ValidationProblem
 from model.entities import Market
-from model.schemas import OutcomeProposalRequest
+from model.schemas import MarketCloseRequest, OutcomeProposalRequest
 
 # A market with one outcome is not a market. Two is binary, more is
 # categorical, and [1.2] #2's max platform loss of b·ln(n) needs n ≥ 2 to mean
@@ -51,6 +51,16 @@ MIN_CRITERIA_LENGTH = 10
 # the entire point of the story. An administrator with nothing to add can give
 # a URL instead and leave this empty.
 MIN_EVIDENCE_NOTE_LENGTH = 10
+
+# [2.3] #7. And again for the reason an administrator gives for stopping a
+# market early, where there is no URL to fall back on: this text is the whole
+# of the explanation, and "x" is not one.
+#
+# Its own constant rather than a share of the one above, exactly as
+# MIN_QUESTION_LENGTH and MIN_CRITERIA_LENGTH are of each other. They are
+# different rules about different fields that happen to agree on a number
+# today, and folding them together would make raising one raise all of them.
+MIN_CLOSE_REASON_LENGTH = 10
 
 # Reuses pydantic's parser rather than a hand-rolled regex, and it already
 # restricts the scheme to http and https.
@@ -385,3 +395,44 @@ def _evidence_problems(proposal: OutcomeProposalRequest) -> list[ValidationProbl
         )
 
     return problems
+
+
+# --- closing a market early. [2.3] #7 -------------------------------------
+def problems_blocking_close(request: MarketCloseRequest) -> list[ValidationProblem]:
+    """Every reason this market cannot be closed early. Empty means it can.
+
+    Deliberately does not check the market's status, for the reason
+    `problems_blocking_proposal` gives: that is a fact about the market rather
+    than about the request, it has its own 409 with its own remedy, and an
+    administrator whose market has already stopped is not being told to fix a
+    field. `service/market_service.py::close_early` gates on the state before
+    it calls this.
+
+    Takes the request rather than the bare string, so that this reads like the
+    other two rules in this module and a caller cannot pass it the wrong string.
+
+    Only ever one problem, unlike the other two, because there is only one
+    field. The list is the shape the envelope is built from, not a prediction
+    that there will be more.
+    """
+    reason = request.reason.strip()
+
+    if not reason:
+        return [
+            ValidationProblem(
+                "reason",
+                "A reason is required. It is the only record of why this market "
+                "was stopped before its closing time.",
+            )
+        ]
+
+    if len(reason) < MIN_CLOSE_REASON_LENGTH:
+        return [
+            ValidationProblem(
+                "reason",
+                f"The reason must be at least {MIN_CLOSE_REASON_LENGTH} characters, "
+                "so that somebody reading the log later can tell what happened.",
+            )
+        ]
+
+    return []

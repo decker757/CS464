@@ -4,14 +4,14 @@ Base URL `http://localhost:8001` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
-Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [3.1] #9 and the backend half
-of [FE][1.1] #45 and [FE][3.1] #52.
+Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9 and the
+backend half of [FE][1.1] #45, [FE][2.3] #56 and [FE][3.1] #52.
 
-A successful submission, publication or outcome proposal also appends an entry
-to the shared audit log, in the same database transaction, so the two can never
-disagree. An autosave does not, and neither does an automatic close — the clock
-is not an actor. See [`audit-service.md`](audit-service.md) and
-[ADR 0006](../adr/0006-audit-log-write-path.md).
+A successful submission, publication, early close or outcome proposal also
+appends an entry to the shared audit log, in the same database transaction, so
+the two can never disagree. An autosave does not, and neither does an automatic
+close — the clock is not an actor. See [`audit-service.md`](audit-service.md)
+and [ADR 0006](../adr/0006-audit-log-write-path.md).
 
 Why it is a separate service and how it knows who is an admin:
 [ADR 0003](../adr/0003-market-service-boundary.md). Why one endpoint does both
@@ -23,7 +23,9 @@ separate endpoint rather than a third status on the save:
 and a sweep only writes it down:
 [ADR 0011](../adr/0011-market-auto-close.md). Why proposing an outcome gates on
 the status column anyway, and why the evidence is two fields:
-[ADR 0013](../adr/0013-proposing-an-outcome.md).
+[ADR 0013](../adr/0013-proposing-an-outcome.md). Why an early close does the
+opposite and gates on the clock, and why it is the one route any administrator
+may call: [ADR 0014](../adr/0014-closing-a-market-early.md).
 
 ## Endpoints
 
@@ -31,6 +33,7 @@ the status column anyway, and why the evidence is two fields:
 | --- | --- | --- |
 | POST | `/markets` | Save a draft, or submit a market |
 | POST | `/markets/{id}/publish` | Publish a submitted market |
+| POST | `/markets/{id}/close` | Close an open market early, with a reason |
 | POST | `/markets/{id}/propose-outcome` | Propose the winner of a closed market |
 | GET | `/markets` | List my own markets |
 | GET | `/markets/{id}` | Read one of my own markets |
@@ -39,6 +42,11 @@ the status column anyway, and why the evidence is two fields:
 Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is [BE][X] #62.
 
+Every route but one is scoped to the administrator who created the market, and
+answers `404` to any other. The exception is `POST /markets/{id}/close`: any
+administrator may stop any open market, and the audit entry names who did.
+[ADR 0014](../adr/0014-closing-a-market-early.md).
+
 ## The five statuses
 
 | Status | Set by | Traders see it |
@@ -46,7 +54,7 @@ unauthenticated read here; the public market API for traders is [BE][X] #62.
 | `draft` | the three-second autosave | no |
 | `submitted` | the submit button | no |
 | `open` | `POST /markets/{id}/publish` | yes |
-| `closed` | the clock, at `close_time` | yes, but not tradeable |
+| `closed` | the clock at `close_time`, or `POST /markets/{id}/close` | yes, but not tradeable |
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 
 The path is `draft → submitted → open → closed → pending_resolution` and
@@ -57,8 +65,12 @@ Only one transition is ever reversed, and it is not in this ticket: [3.2] #10's
 rejection sends a market from `pending_resolution` back to `closed`, with a
 reason. There is still no unpublish and no reopen.
 
-`closed` is the only one no request produces. [2.3] #7 will let an
-administrator reach it early and by hand.
+`closed` is the only one two different things produce. A market reaches it on
+its own when `close_time` passes, and an administrator can reach it early with
+`POST /markets/{id}/close` ([2.3] #7). The two are the same state in every
+respect — same refusals, same next move — and the only way to tell them apart
+from outside the audit log is that an early close leaves `closed_at` **before**
+`close_time`.
 
 ### `close_time` is when trading stops — not `status` — [F-4] #44
 
@@ -337,6 +349,106 @@ given under "`close_time` is when trading stops" above. Until it lands, a
 published market is visible through the admin routes on this page and nowhere
 else.
 
+## POST /markets/{id}/close — [2.3] #7
+
+Stops an `open` market before its `close_time` and moves it to `closed`.
+Trading stops the moment this commits. Positions are untouched, and the
+market's next move is the same one it would have had if it had run to its
+closing time: [3.1] #9's proposed outcome.
+
+### Request
+
+```json
+{
+  "reason": "The resolution source retracted its December print, so this question can no longer be settled as written."
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `reason` | required; at least 10 characters after trimming, at most 5000 |
+
+The reason is recorded in the audit log against the administrator who closed
+the market, in the same transaction, so a market cannot stop early without a
+record of why. **It is kept nowhere else.** It is not a field on the market and
+it does not come back in the response — only [4.3] #15's log view can show it.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it:
+
+```json
+{
+  "status": "closed",
+  "close_time": "2027-01-05T12:00:00Z",
+  "closed_at": "2026-09-16T09:14:02.118374Z"
+}
+```
+
+`close_time` is **not** rewritten. It is the closing time that was published and
+that traders read, and the `market.published` audit entry recorded it. A
+`closed_at` earlier than `close_time` is exactly what an early close looks like
+from outside; when the clock closes a market instead, `closed_at` lands a few
+seconds *after* `close_time`.
+
+### Only an open market
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_open` | still a draft or submitted | nothing to stop; publish it or leave it |
+| 409 | `market_closed` | it has already stopped | reload; hide the control |
+| 409 | `market_pending_resolution` | stopped, and an outcome is proposed | reload; show whose proposal is waiting |
+| 422 | `close_incomplete` | the reason is missing or too short | fix `reason` and resend |
+
+**A market whose closing time has just passed is a `409 market_closed`, even
+while it still reads `"status": "open"`.** This is the opposite of what
+`propose-outcome` does with the same window, and deliberately: that market has
+already stopped trading, the clock stopped it, and accepting a close here would
+file an audit entry saying an administrator did. Nothing is lost — the market
+is closed either way, one sweep later at the outside.
+[ADR 0014](../adr/0014-closing-a-market-early.md) has the full argument.
+
+The `422` is this service's own envelope, the same shape a refused submission
+uses, with a different `code`:
+
+```json
+{
+  "error": {
+    "code": "close_incomplete",
+    "message": "This market cannot be closed without a reason.",
+    "details": [
+      { "field": "reason", "message": "The reason must be at least 10 characters, so that somebody reading the log later can tell what happened." }
+    ]
+  }
+}
+```
+
+A body with no `reason` key at all never reaches this service and comes back as
+FastAPI's `{"detail": [...]}` instead. Branch on the presence of `error`.
+
+**A refused close writes nothing.** The market stays `open`, `closed_at` stays
+null, and no audit entry is appended — so the modal can reopen with whatever
+the administrator had typed.
+
+### Who may close
+
+**Any administrator, including one who did not create the market.** This is the
+only route on this page that is not scoped to the creator, because a broken
+market that only its author can stop is not oversight. ADR 0007 makes the admin
+tier flat and the audit entry is what keeps that accountable: it names whoever
+reached in, and why.
+
+The read is *not* widened with it. `GET /markets/{id}` still answers `404` to
+another administrator, so until [BE][X] #62's public browse lands, an overseer
+needs the market's id from somewhere other than this service.
+
+### One way
+
+There is no reopen. Every later save on the market is a `409 market_closed`,
+and a second close is the same — `closed_at` keeps saying when trading actually
+stopped.
+
 ## POST /markets/{id}/propose-outcome — [3.1] #9
 
 Moves a market from `closed` to `pending_resolution`, naming the outcome the
@@ -481,9 +593,9 @@ The same envelope the auth service uses, so one parser covers both:
 { "error": { "code": "not_an_administrator", "message": "This action requires an administrator account." } }
 ```
 
-`draft_incomplete` and `proposal_incomplete` add a `details` array. Nothing
-else does, and it is additive, so a client that ignores it still reads `code`
-and `message`:
+`draft_incomplete`, `proposal_incomplete` and `close_incomplete` add a
+`details` array. Nothing else does, and it is additive, so a client that ignores
+it still reads `code` and `message`:
 
 ```json
 {
@@ -505,21 +617,24 @@ and `message`:
 | 409 | `market_not_editable` | an autosave arrived for an already-submitted market |
 | 409 | `market_not_submitted` | publish asked for on a market that is still a draft |
 | 409 | `market_already_open` | a publish or a save arrived for an already-published market |
-| 409 | `market_closed` | a publish or a save arrived for a market past its closing time |
+| 409 | `market_closed` | a publish, save or early close arrived for a market past its closing time |
 | 409 | `market_not_closed` | an outcome was proposed for a market that is still running |
-| 409 | `market_pending_resolution` | a proposal, publish or save arrived for a market already awaiting one |
+| 409 | `market_not_open` | an early close arrived for a market that is not published |
+| 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | `proposal_incomplete` | outcome proposal refused; see `details` |
+| 422 | `close_incomplete` | early close refused; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
 
 Note that `market_closed` and `market_not_closed` are not opposites of each
 other in any useful sense — one is a save or publish that arrived too late, the
 other a proposal that arrived too early. They never appear on the same route.
 
-Two kinds of `422` exist and they do not look alike. `draft_incomplete` and
-`proposal_incomplete` are ours and carry the envelope above. A malformed body —
-a missing `draft_key`, a naive timestamp, a non-UUID — is FastAPI's, and comes
-back as `{"detail": [...]}`. Branch on the presence of `error`.
+Two kinds of `422` exist and they do not look alike. `draft_incomplete`,
+`proposal_incomplete` and `close_incomplete` are ours and carry the envelope
+above. A malformed body — a missing `draft_key`, a missing `reason`, a naive
+timestamp, a non-UUID — is FastAPI's, and comes back as `{"detail": [...]}`.
+Branch on the presence of `error`.
 
 ## Notes for [FE][1.1] #45
 
@@ -532,8 +647,9 @@ back as `{"detail": [...]}`. Branch on the presence of `error`.
 5. A `409 market_not_editable` means the market is already submitted — stop the
    autosave timer. A `409 market_already_open` means it is published: stop the
    timer and hide the edit controls, because nothing will be accepted again. A
-   `409 market_closed` means its closing time passed while the form was open;
-   treat it the same way.
+   `409 market_closed` means the market stopped while the form was open —
+   either its closing time passed or an administrator closed it early ([2.3]
+   #7), possibly a different one; treat both the same way.
 6. Send timestamps as ISO 8601 **with an offset**:
    `new Date(value).toISOString()` produces one.
 7. `status: "submitted"` is not published. Show the publish control only on a
@@ -551,6 +667,33 @@ back as `{"detail": [...]}`. Branch on the presence of `error`.
     normally. Warn in the UI if you like; do not disable the button for it.
 11. Round pricing inputs to four decimal places before sending, and keep them
     under `99999999999999.9999`, or the save comes back `422`.
+
+## Notes for [FE][2.3] #56
+
+1. Show the close control only on a market that is genuinely trading:
+   `status === "open"` **and** `close_time` still in the future. It is the same
+   `tradeable` expression as everywhere else on this page — a market whose
+   countdown has hit zero cannot be closed early, because it has already
+   closed.
+2. The modal has one required input. Enable its confirm button at 10 trimmed
+   characters and you will never see a `422 close_incomplete`.
+3. Paint `details` the way you already paint `blocking_submission`: same shape,
+   same keys. There is only ever one entry, on `field: "reason"`.
+4. Say in the modal that the reason goes into the admin log and cannot be
+   edited afterwards. It is the only record of why the market stopped, and
+   nothing in this API will ever read it back — do not build a view that
+   expects `reason` on a market.
+5. Repaint from the `200` response; it is the whole market. `closed_at` is set,
+   `close_time` is unchanged, and the propose control appears on the next fetch
+   in the ordinary way.
+6. A `409 market_closed` means somebody got there first, or the clock did.
+   Reload and drop the control. A `409 market_not_open` means the market was
+   never published and the control should not have been shown.
+7. This is the one control to show on **another** administrator's market. The
+   creator's own routes still answer `404` to everybody else, so drive it from
+   a list you already have rather than from `GET /markets/{id}`.
+8. There is no undo. Confirm destructively — the market cannot be reopened and
+   traders will see it as closed immediately.
 
 ## Notes for [FE][3.1] #52
 
