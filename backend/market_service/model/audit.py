@@ -87,3 +87,14 @@ class AdminAction(StrEnum):
     # is the question the log will actually be asked once money is moving, and
     # a market can sit submitted for a week before anybody answers it.
     MARKET_PUBLISHED = "market.published"
+
+    # [3.1] #9. An administrator named a winning outcome and attached the
+    # evidence for it.
+    #
+    # The market row carries the same facts and is not a substitute for this
+    # entry, because [3.2] #10's rejection clears those columns and sends the
+    # market back to CLOSED. After that the only record that a proposal was
+    # ever made — and of who made it, and on what evidence — is this one. The
+    # story asks for the decision to be documented, and a column that a later
+    # action overwrites does not document anything.
+    MARKET_OUTCOME_PROPOSED = "market.outcome_proposed"

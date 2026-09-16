@@ -10,8 +10,9 @@ in GitHub Project v2 #6.
 
 ```
 backend/auth_service/     registration, login, logout, sessions   [A-1..A-3]
-backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3]
-                          and closing them at their closing time [F-4]
+backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3],
+                          closing them at their closing time [F-4] and
+                          proposing an outcome once they have [3.1]
 backend/audit_service/    reading the shared admin action log     [4.3]
 backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
@@ -126,6 +127,15 @@ interval makes that window zero; deriving the answer does. The sweeper falling
 behind, or being switched off with `CLOSE_SWEEP_ENABLED`, makes a dashboard
 count stale and cannot let a trade through. Same shape as the ledger's derived
 balances, and the same reason. ADR 0011.
+
+One reader deliberately does the opposite, and it is not an inconsistency.
+Proposing an outcome ([3.1] #9) gates on `status == CLOSED`, so for up to one
+sweep interval a market that has stopped trading still refuses a proposal.
+Check which way the error points before "fixing" it: reading the status is
+*stricter* than deriving, so the worst case is a propose control that appears a
+few seconds late on a market nobody can trade in the meantime. On the trade
+path a stale answer lets a trade through, which is why that one derives. ADR
+0013.
 
 The sweep is not a scan and the polling cost is not the interesting question:
 `ix_markets_due_close` is partial on `status = 'open'`, so it reads an ordered
@@ -378,6 +388,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0010** a websocket relay that owns nothing, and Redis rather than the database
 - **0011** the clock closes a market, and a sweep only writes it down
 - **0012** a shared package, and the build contexts that had to move first
+- **0013** proposing an outcome, from CLOSED only, with evidence, one at a time
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

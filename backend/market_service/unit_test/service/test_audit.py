@@ -30,8 +30,10 @@ from service.audit import Actor
 # The suite's one actor factory. Aliased rather than imported under its own
 # name because every helper below takes an `actor` argument, which would
 # shadow it.
+from unit_test.conftest import EVIDENCE_NOTE, EVIDENCE_URL, closed_market
 from unit_test.conftest import actor as _actor
 from unit_test.conftest import market_terms as _request
+from unit_test.conftest import proposal_request as _proposal
 
 _ENTRIES = text(
     "SELECT * FROM audit.admin_actions WHERE actor_id = :actor "
@@ -279,6 +281,120 @@ async def test_the_publication_entry_and_the_status_commit_together(
     ]
     assert len(published) == 1
     assert published[0]["target_id"] == market.id
+
+
+# --- proposing an outcome [3.1] #9 ----------------------------------------
+async def _propose(session: AsyncSession, actor: Actor, **overrides: object):
+    market = await closed_market(session, actor)
+    return await market_service.propose_outcome(
+        session, actor, market.id, _proposal(market.outcomes[0].id, **overrides)
+    )
+
+
+async def test_a_proposal_is_recorded(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The half of "so the decision is documented" that survives [3.2] #10.
+
+    A rejection clears the columns on the market and sends it back to CLOSED.
+    After that this entry is the only record that the proposal was ever made.
+    """
+    actor = _actor()
+    before = datetime.now(UTC)
+
+    market = await _propose(session, actor)
+
+    proposed = [
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_PROPOSED.value
+    ]
+    assert len(proposed) == 1
+
+    entry = proposed[0]
+    assert entry["actor_id"] == actor.id
+    assert entry["target_type"] == "market"
+    assert entry["target_id"] == market.id
+    assert entry["source_service"] == "market_service"
+    assert entry["occurred_at"] >= before
+
+
+async def test_a_proposal_records_the_outcome_and_the_evidence(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The label as well as the id.
+
+    `audit_svc` may read this log and nothing else, so an entry naming only a
+    UUID would be unreadable to the one role that can read it at all.
+    """
+    actor = _actor()
+
+    market = await _propose(session, actor)
+
+    entry = next(
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_PROPOSED.value
+    )
+    assert entry["context"]["winning_outcome_id"] == str(market.proposed_outcome_id)
+    assert entry["context"]["winning_outcome"] == "Yes"
+    assert entry["context"]["evidence_url"] == EVIDENCE_URL
+    assert entry["context"]["evidence_note"] == EVIDENCE_NOTE
+
+
+async def test_the_evidence_is_context_rather_than_a_reason(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """Evidence is not a reason, and the two must not be conflated.
+
+    `reason` is for the free-text justification [2.3] #7 and [3.2] #10 demand
+    of an administrator. Splitting a URL into `context` and a note into
+    `reason` would put one proposal's support in two columns.
+    """
+    actor = _actor()
+
+    await _propose(session, actor)
+
+    entry = next(
+        e for e in await _entries(audit_reader, actor)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_PROPOSED.value
+    )
+    assert entry["reason"] is None
+
+
+async def test_a_proposal_leaves_the_earlier_entries_alone(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """Three decisions, three records, and an automatic close is not one of
+    them — the clock is not an actor, and the `market.published` entry already
+    recorded the `close_time` that was approved."""
+    actor = _actor()
+
+    await _propose(session, actor)
+
+    entries = await _entries(audit_reader, actor)
+    assert [e["action_type"] for e in entries] == [
+        AdminAction.MARKET_OUTCOME_PROPOSED.value,
+        AdminAction.MARKET_PUBLISHED.value,
+        AdminAction.MARKET_SUBMITTED.value,
+    ]
+
+
+async def test_a_refused_proposal_records_nothing(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The entry is written before the commit, so a proposal that raises takes
+    the entry down with it."""
+    from core.errors import ProposalIncomplete  # noqa: PLC0415
+
+    actor = _actor()
+
+    with pytest.raises(ProposalIncomplete):
+        await _propose(session, actor, evidence_url=None, evidence_note=None)
+
+    await session.rollback()
+    entries = await _entries(audit_reader, actor)
+    assert AdminAction.MARKET_OUTCOME_PROPOSED.value not in {
+        e["action_type"] for e in entries
+    }
 
 
 # --- what does not get recorded -------------------------------------------

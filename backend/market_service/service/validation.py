@@ -1,7 +1,14 @@
-"""When is a market complete enough to submit?
+"""When is a market complete enough to move on?
 
-One pure function over a Market entity, with no session, no HTTP and no clock
-of its own. Written this way for three reasons:
+Two pure functions over a Market entity, with no session, no HTTP and no clock
+of their own. `problems_blocking_submission` asks whether the terms are ready
+to leave DRAFT, and `problems_blocking_proposal` asks whether a proposed
+outcome and its evidence are ready to leave CLOSED ([3.1] #9). They share this
+module because they share a shape and a caller's contract — a list of problems
+addressed to form fields, every one of them, so the administrator fixes them in
+one pass — and because they share the URL check.
+
+The first was written this way for three reasons:
 
 - [1.3] #3 has to answer the same question at publish time ("publish blocked
   unless all required fields are present") and [1.4] #4 again when it decides
@@ -26,6 +33,7 @@ from pydantic import HttpUrl, TypeAdapter, ValidationError
 from core.clock import as_utc
 from core.errors import ValidationProblem
 from model.entities import Market
+from model.schemas import OutcomeProposalRequest
 
 # A market with one outcome is not a market. Two is binary, more is
 # categorical, and [1.2] #2's max platform loss of b·ln(n) needs n ≥ 2 to mean
@@ -38,9 +46,21 @@ MIN_OUTCOMES = 2
 MIN_QUESTION_LENGTH = 10
 MIN_CRITERIA_LENGTH = 10
 
+# [3.1] #9. The same floor, for the same reason: a one-word note satisfies
+# "evidence was given" and documents nothing, and documenting the decision is
+# the entire point of the story. An administrator with nothing to add can give
+# a URL instead and leave this empty.
+MIN_EVIDENCE_NOTE_LENGTH = 10
+
 # Reuses pydantic's parser rather than a hand-rolled regex, and it already
 # restricts the scheme to http and https.
 _URL = TypeAdapter(HttpUrl)
+
+# Said to the administrator about a resolution source and about a proposal's
+# evidence URL alike. One string, because the two are the same complaint about
+# the same kind of value, and two copies would drift into being worded
+# differently for no reason a reader could act on.
+_UNREACHABLE_URL = "Enter a full http or https address a trader can open."
 
 
 def _is_reachable_url(raw: str) -> bool:
@@ -211,8 +231,7 @@ def _resolution_problems(market: Market) -> list[ValidationProblem]:
         elif not _is_reachable_url(url):
             problems.append(
                 ValidationProblem(
-                    f"resolution_sources[{position}].url",
-                    "Enter a full http or https address a trader can open.",
+                    f"resolution_sources[{position}].url", _UNREACHABLE_URL
                 )
             )
         else:
@@ -275,3 +294,94 @@ def _liquidity_problems(market: Market) -> list[ValidationProblem]:
         "puts up to cover the market maker's losses.",
         nonpositive="The seed subsidy must be greater than zero.",
     )
+
+
+# --- proposing an outcome. [3.1] #9 ---------------------------------------
+def problems_blocking_proposal(
+    market: Market, proposal: OutcomeProposalRequest
+) -> list[ValidationProblem]:
+    """Every reason this outcome cannot be proposed for `market`. Empty means it can.
+
+    Deliberately does not check the market's status, which is the other half of
+    the ticket's first acceptance criterion. That is a fact about the market
+    rather than about the proposal, it has its own 409 with its own remedy, and
+    an administrator whose market has not closed yet is not being told to fix a
+    field. `service/market_service.py::propose_outcome` gates on the status
+    before it calls this.
+
+    Nor does it take a clock. Nothing here is time-dependent: the market's own
+    close time is what decided whether a proposal is allowed at all, and it was
+    already checked.
+    """
+    return _winner_problems(market, proposal) + _evidence_problems(proposal)
+
+
+def _winner_problems(
+    market: Market, proposal: OutcomeProposalRequest
+) -> list[ValidationProblem]:
+    """The proposed winner has to be one of this market's own outcomes.
+
+    Checked here rather than left to a foreign key, because a foreign key
+    cannot express it: `market_outcomes.id` is unique across every market, so
+    an FK would accept another market's "Yes" without complaint. See the note
+    on `Market.proposed_outcome_id`.
+
+    Unreachable from a form that renders the market's outcomes as radio
+    buttons, which is the only way [FE][3.1] #52 will call this. It is here for
+    the request that was not built that way — a copied id, a stale tab, a
+    script — because the column it guards is what [3.4] #12 pays out against.
+    """
+    if any(outcome.id == proposal.winning_outcome_id for outcome in market.outcomes):
+        return []
+    return [
+        ValidationProblem(
+            "winning_outcome_id",
+            "Choose one of this market's own outcomes as the winner.",
+        )
+    ]
+
+
+def _evidence_problems(proposal: OutcomeProposalRequest) -> list[ValidationProblem]:
+    """A URL, or a note, or both — and whichever is given has to be usable.
+
+    The same shape as `_resolution_problems` above, for the same reason: a
+    value that was supplied and is unusable gets its own problem naming the
+    field it came from, and the "at least one" rule is reported separately, on
+    the pair. An administrator who typed a broken URL and nothing else sees
+    both, which is what tells them that fixing the URL is enough and they do
+    not also have to write a note.
+    """
+    problems: list[ValidationProblem] = []
+    url = (proposal.evidence_url or "").strip()
+    note = (proposal.evidence_note or "").strip()
+
+    usable = 0
+
+    if url:
+        if _is_reachable_url(url):
+            usable += 1
+        else:
+            problems.append(ValidationProblem("evidence_url", _UNREACHABLE_URL))
+
+    if note:
+        if len(note) >= MIN_EVIDENCE_NOTE_LENGTH:
+            usable += 1
+        else:
+            problems.append(
+                ValidationProblem(
+                    "evidence_note",
+                    f"The note must be at least {MIN_EVIDENCE_NOTE_LENGTH} characters, "
+                    "or leave it empty and give a URL instead.",
+                )
+            )
+
+    if usable == 0:
+        problems.append(
+            ValidationProblem(
+                "evidence",
+                "Give a source URL or a written note, so the decision can be "
+                "checked by somebody who was not in the room.",
+            )
+        )
+
+    return problems

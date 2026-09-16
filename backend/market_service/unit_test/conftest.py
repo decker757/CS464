@@ -74,7 +74,9 @@ from core.database import (  # noqa: E402
     get_session_factory,
 )
 from core.roles import UserRole  # noqa: E402
-from model.schemas import MarketDraftRequest  # noqa: E402
+from model.entities import Market  # noqa: E402
+from model.schemas import MarketDraftRequest, OutcomeProposalRequest  # noqa: E402
+from service import closing, market_service  # noqa: E402
 from service.audit import Actor  # noqa: E402
 
 _UNREACHABLE = (
@@ -313,6 +315,97 @@ def market_json(**overrides: object) -> dict[str, object]:
     base.update(overrides)
     return base
 
+
+async def published_market(session, actor: Actor, **overrides: object) -> Market:
+    """A market that has been submitted and published, so traders can see it.
+
+    The lifecycle as far as OPEN, in one call, for the suites whose subject
+    starts somewhere past it. Anything testing the transitions themselves
+    should drive `save` and `publish` directly — that is what
+    unit_test/service/test_publishing.py is.
+    """
+    market, _, _ = await market_service.save(
+        session, actor, draft_request(status="submitted", **overrides)
+    )
+    await market_service.publish(session, actor, market.id)
+    return market
+
+
+async def closed_market(session, actor: Actor, **overrides: object) -> Market:
+    """The same market, after its closing time passed and the sweep ran.
+
+    Closed the way a real market closes rather than by assigning to `status`:
+    `close_time` is moved into the past and `close_due_markets` notices. ADR
+    0011 is the whole reason that distinction is worth three extra lines — the
+    clock is what closes a market, and a fixture that wrote the status itself
+    would be asserting against a state no market in production arrives in.
+
+    `publish` refuses to create a market that is already due — it re-runs the
+    rule that a close time must be in the future — so the column is moved
+    afterwards, which is the honest way to ask this question.
+
+    Expires the session on the way out, because the sweep is a bulk UPDATE with
+    `synchronize_session=False` and nothing in the identity map knows about it.
+    Read anything you need off the returned market rather than off a reference
+    taken before the call.
+    """
+    market = await published_market(session, actor, **overrides)
+    market_id = market.id
+
+    market.close_time = datetime.now(UTC) - timedelta(seconds=1)
+    await session.commit()
+
+    swept = await closing.close_due_markets(session, limit=10)
+    assert market_id in swept
+
+    session.expire_all()
+    return await market_service.get(session, actor.id, market_id)
+
+
+# [3.1] #9. The evidence one proposal carries, named here for the same reason
+# the market's terms are: the service suite and the controller suite have to
+# send the same values, or a rule change is two edits and they drift.
+EVIDENCE_URL = "https://www.mas.gov.sg/statistics/cpi-december-2026"
+EVIDENCE_NOTE = (
+    "MAS published December 2026 core inflation at 1.8% on 23 January, below "
+    "the 2.0% threshold named in the resolution criteria."
+)
+
+
+def proposal_terms(
+    winning_outcome_id: uuid.UUID | str, **overrides: object
+) -> dict[str, object]:
+    """A proposal that passes every rule in service/validation.py.
+
+    Both kinds of evidence by default, because that is what the form will
+    usually send and because a test that wants only one says so by overriding
+    the other to None — which reads as the case it is testing rather than as an
+    accident of the fixture.
+    """
+    base: dict[str, object] = {
+        "winning_outcome_id": winning_outcome_id,
+        "evidence_url": EVIDENCE_URL,
+        "evidence_note": EVIDENCE_NOTE,
+    }
+    base.update(overrides)
+    return base
+
+
+def proposal_request(
+    winning_outcome_id: uuid.UUID, **overrides: object
+) -> OutcomeProposalRequest:
+    """`proposal_terms` parsed, for driving the service layer without HTTP."""
+    return OutcomeProposalRequest(**proposal_terms(winning_outcome_id, **overrides))  # type: ignore[arg-type]
+
+
+def proposal_json(winning_outcome_id: object, **overrides: object) -> dict[str, object]:
+    """The same proposal as a JSON body, for driving the route.
+
+    Not built by dumping `proposal_request`, for the reason `market_json` gives:
+    the controller suite's job includes what happens to a body that never
+    parses, and a builder that validated first could not express that.
+    """
+    return proposal_terms(str(winning_outcome_id), **overrides)
 
 
 @pytest.fixture

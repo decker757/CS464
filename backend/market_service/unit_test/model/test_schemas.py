@@ -20,11 +20,14 @@ from pydantic import ValidationError
 
 from model.entities import MarketStatus
 from model.schemas import (
+    MAX_PROSE_LENGTH,
     MAX_OUTCOMES,
     MAX_PRICING_VALUE,
     MAX_QUESTION_LENGTH,
+    MAX_URL_LENGTH,
     MarketDraftRequest,
     MarketOut,
+    OutcomeProposalRequest,
 )
 
 
@@ -158,6 +161,14 @@ class _FakeMarket:
         self.submitted_at = None
         self.published_at = None
         self.closed_at = None
+        # [3.1] #9. Null together, which is every market that has not had an
+        # outcome proposed for it — the state this stand-in is in.
+        self.proposed_outcome_id = None
+        self.proposed_by_id = None
+        self.proposed_by_username = None
+        self.proposed_at = None
+        self.proposal_evidence_url = None
+        self.proposal_evidence_note = None
 
 
 def test_naive_timestamps_are_stamped_as_utc_on_the_way_out() -> None:
@@ -337,3 +348,48 @@ def test_one_named_outcome_beside_a_blank_is_still_too_few() -> None:
 
     assert out.max_platform_loss is None
     assert all(o.initial_price is None for o in out.outcomes)
+
+
+# --- [3.1] #9 the proposal request ----------------------------------------
+# The line this file defends, from the other side. `MarketDraftRequest` above
+# accepts an almost-empty body because an autosave writes it; this one has no
+# autosave behind it, so a missing winner is a 422 here rather than a rule
+# somewhere else. What is still NOT here is completeness — "a URL or a note" is
+# service/validation.py's, so that one refusal carries one envelope.
+def test_a_proposal_needs_a_winner() -> None:
+    with pytest.raises(ValidationError):
+        OutcomeProposalRequest(evidence_note="MAS published 1.8% for December.")
+
+
+def test_a_winner_that_is_not_a_uuid_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        OutcomeProposalRequest(winning_outcome_id="the first one")
+
+
+def test_a_proposal_with_no_evidence_still_parses() -> None:
+    """Shape, not completeness. Refusing it here would return FastAPI's 422
+    envelope for one of the propose form's rules and this service's for the
+    rest, leaving Michelle to render two error shapes for one button."""
+    parsed = OutcomeProposalRequest(winning_outcome_id=uuid.uuid4())
+
+    assert parsed.evidence_url is None
+    assert parsed.evidence_note is None
+
+
+def test_an_over_long_note_is_refused() -> None:
+    """A ceiling, not an opinion about how much explaining a proposal needs."""
+    with pytest.raises(ValidationError):
+        OutcomeProposalRequest(
+            winning_outcome_id=uuid.uuid4(),
+            evidence_note="x" * (MAX_PROSE_LENGTH + 1),
+        )
+
+
+def test_an_over_long_url_is_refused() -> None:
+    """Mirrors the column, which is varchar(2048) — the practical ceiling
+    browsers and proxies agree on."""
+    with pytest.raises(ValidationError):
+        OutcomeProposalRequest(
+            winning_outcome_id=uuid.uuid4(),
+            evidence_url="https://mas.gov.sg/" + "x" * MAX_URL_LENGTH,
+        )

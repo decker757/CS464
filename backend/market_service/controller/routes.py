@@ -19,6 +19,7 @@ from model.schemas import (
     MarketOut,
     MarketSaveResponse,
     MarketSummaryOut,
+    OutcomeProposalRequest,
     ValidationProblemOut,
 )
 from service import market_service
@@ -111,6 +112,56 @@ async def publish_market(
     market_id: uuid.UUID, actor: CurrentActor, session: DbSession
 ) -> MarketOut:
     market = await market_service.publish(session, actor, market_id)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/propose-outcome",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Propose the winning outcome of a closed market",
+    description=(
+        "[3.1] #9. Moves a market from `closed` to `pending_resolution`, "
+        "naming the outcome the administrator believes won and the evidence "
+        "for it.\n\n"
+        "Only a `closed` market can be proposed for. A market still accepting "
+        "trades is a `409 market_not_closed` — proposing an outcome for one "
+        "would announce the answer to a question people are still betting "
+        "on.\n\n"
+        "A market whose closing time has just passed may still read "
+        "`\"status\": \"open\"` for a few seconds, because the status column "
+        "is written by a background sweep. It is a `409` until the sweep "
+        "catches up. Nothing can be traded in that window either.\n\n"
+        "`winning_outcome_id` must be one of this market's own `outcomes`, and "
+        "at least one of `evidence_url` and `evidence_note` is required. A "
+        "failure is a `422 proposal_incomplete` carrying the same `details` "
+        "array shape as a refused submission.\n\n"
+        "Nothing is settled here and no credits move. [3.2] #10 asks a second "
+        "administrator to approve or reject; [3.4] #12 pays out.\n\n"
+        "Appends a `market.outcome_proposed` entry to the audit log ([4.3] "
+        "#15) in the same transaction. That entry outlives the columns on the "
+        "market, which a rejection clears."
+    ),
+    responses={
+        403: {"description": "Authenticated, but not an administrator."},
+        404: {"description": "No such market, or it belongs to another administrator."},
+        409: {
+            "description": (
+                "`market_not_closed` — it is still running, so wait. "
+                "`market_pending_resolution` — an outcome has already been "
+                "proposed and is waiting on a second administrator."
+            )
+        },
+        422: {"description": "Proposal refused; `error.details` lists every problem."},
+    },
+)
+async def propose_market_outcome(
+    market_id: uuid.UUID,
+    payload: OutcomeProposalRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    market = await market_service.propose_outcome(session, actor, market_id, payload)
     return MarketOut.model_validate(market)
 
 

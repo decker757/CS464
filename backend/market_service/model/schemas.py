@@ -40,6 +40,14 @@ MAX_LABEL_LENGTH = 120
 MAX_QUESTION_LENGTH = 500
 MAX_URL_LENGTH = 2048
 
+# Every free-text field an administrator types into a textarea: `description`,
+# `resolution_criteria` and [3.1] #9's `evidence_note`. All three are unbounded
+# `Text` columns, so this is here to stop a request carrying a megabyte rather
+# than to have an opinion about how much explaining any of them needs — which
+# is why one number covers all three. It was two bare literals until the third
+# use arrived.
+MAX_PROSE_LENGTH = 5000
+
 # Mirrors Numeric(18, 4) on the pricing columns in model/entities.py: fourteen
 # digits before the point and four after. Both halves are load-bearing, and
 # neither is a domain opinion about a sensible liquidity — they are what the
@@ -116,7 +124,7 @@ class MarketDraftRequest(BaseModel):
         max_length=MAX_QUESTION_LENGTH,
         examples=["Will Singapore's core inflation be below 2% for December 2026?"],
     )
-    description: str | None = Field(default=None, max_length=5000)
+    description: str | None = Field(default=None, max_length=MAX_PROSE_LENGTH)
 
     outcomes: list[OutcomeIn] = Field(
         default_factory=list,
@@ -137,7 +145,7 @@ class MarketDraftRequest(BaseModel):
 
     resolution_criteria: str | None = Field(
         default=None,
-        max_length=5000,
+        max_length=MAX_PROSE_LENGTH,
         description="The rule that turns the sources below into a winning outcome.",
         examples=[
             "Resolves YES if the MAS core inflation print for Dec 2026, as first "
@@ -177,6 +185,59 @@ class MarketDraftRequest(BaseModel):
             "Compare against `max_platform_loss` in the response."
         ),
         examples=[100],
+    )
+
+
+class OutcomeProposalRequest(BaseModel):
+    """The body of POST /markets/{id}/propose-outcome. [3.1] #9
+
+    Note how little this has in common with `MarketDraftRequest` above, and why
+    none of that file's reasoning carries over. There is no autosave behind
+    this request and no half-typed state to protect: an administrator fills in
+    a short form and presses a button once. So `winning_outcome_id` is simply
+    required, and a body without it is a 422 from FastAPI before this service
+    sees it — there is no draft of a proposal for that to lose.
+
+    What is deliberately NOT here is the rest of the rules. "At least one of a
+    URL or a note", and "the URL must be one a trader can open", are checked in
+    `service/validation.py` and come back as `proposal_incomplete` with a
+    `details` array keyed by field. They could have been a `model_validator` and
+    an `HttpUrl`, which would be fewer lines — but FastAPI's own 422 has a
+    different envelope from this service's, so the propose form would have to
+    render two error shapes for one submit button. One shape is worth the
+    detour.
+    """
+
+    winning_outcome_id: uuid.UUID = Field(
+        description=(
+            "The `id` of the outcome being proposed as the winner, taken from "
+            "this market's own `outcomes` array. An outcome belonging to some "
+            "other market is refused."
+        ),
+    )
+
+    evidence_url: str | None = Field(
+        default=None,
+        max_length=MAX_URL_LENGTH,
+        description=(
+            "Where the outcome can be verified. Required unless "
+            "`evidence_note` is given, and must be a full http or https "
+            "address."
+        ),
+        examples=["https://www.mas.gov.sg/statistics/cpi-december-2026"],
+    )
+    evidence_note: str | None = Field(
+        default=None,
+        max_length=MAX_PROSE_LENGTH,
+        description=(
+            "Why this outcome won, in prose. Required unless `evidence_url` "
+            "is given. Use it when the source is not a link, or when the "
+            "reading of it needs explaining."
+        ),
+        examples=[
+            "MAS published core inflation of 1.8% for December 2026 on 23 Jan, "
+            "below the 2.0% threshold in the resolution criteria."
+        ],
     )
 
 
@@ -264,6 +325,30 @@ class MarketOut(_UtcTimestamps):
     # few seconds later. Render `close_time` to a trader and keep this for an
     # administrator asking when a market was actually processed.
     closed_at: datetime | None
+
+    # --- the proposed outcome. [3.1] #9 -------------------------------------
+    # All null together, or all set together. A non-null `proposed_at` is the
+    # cheapest test for "has an outcome been proposed", and it agrees with
+    # `status == "pending_resolution"` by construction: the six are written in
+    # the one transaction that sets the status.
+    #
+    # `proposed_outcome_id` names a member of this response's own `outcomes`
+    # array, so the frontend renders the winner's label by looking it up there
+    # rather than being sent the label twice. The label on the outcome is the
+    # only copy, which is what stops the two drifting.
+    proposed_outcome_id: uuid.UUID | None
+    proposed_by_id: uuid.UUID | None
+
+    # Snapshotted at proposal time, and the only name for this administrator
+    # that anybody will ever be able to render: this service cannot resolve an
+    # id against `auth.users` (ADR 0003), and only `audit_svc` may read the
+    # log. [3.2] #10 compares `proposed_by_id`, never this, because a username
+    # can be reissued.
+    proposed_by_username: str | None
+    proposed_at: datetime | None
+
+    proposal_evidence_url: str | None
+    proposal_evidence_note: str | None
 
     # --- derived, read-only -------------------------------------------------
     # [1.2] #2's second and third acceptance criteria. Both are the q = 0 case

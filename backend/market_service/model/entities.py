@@ -54,13 +54,13 @@ class MarketStatus(StrEnum):
     It is what [3.1] #9 gates on — an outcome may only be proposed for a market
     nobody can still trade — and one of the buckets [2.1] #5 counts.
 
-    PENDING_RESOLUTION and RESOLVED arrive with epic 3. Members are added here
-    as those land, which is why this is stored as a VARCHAR rather than a
-    native Postgres enum: a new member is a Python change and never an ALTER
-    TYPE against a live database. SQLAlchemy writes no CHECK constraint for it
-    either (`create_constraint` has defaulted to False since 1.4), so the value
-    set is enforced here and at the API edge, where a bad value is a 422 rather
-    than an IntegrityError surfacing as a 500.
+    PENDING_RESOLUTION arrives with [3.1] #9, and RESOLVED with [3.4] #12.
+    Members are added here as those land, which is why this is stored as a
+    VARCHAR rather than a native Postgres enum: a new member is a Python change
+    and never an ALTER TYPE against a live database. SQLAlchemy writes no CHECK
+    constraint for it either (`create_constraint` has defaulted to False since
+    1.4), so the value set is enforced here and at the API edge, where a bad
+    value is a 422 rather than an IntegrityError surfacing as a 500.
     """
 
     DRAFT = "draft"
@@ -77,6 +77,18 @@ class MarketStatus(StrEnum):
     # `service/closing.py` holds the predicate that is exact, and the reason
     # the status is a materialisation of it rather than the source.
     CLOSED = "closed"
+
+    # [3.1] #9. An administrator has named a winning outcome and attached the
+    # evidence for it; a second administrator has not yet agreed. Nothing is
+    # paid out here and nothing is final — [3.2] #10 either approves, which
+    # moves this on, or rejects with a reason, which sends it back to CLOSED.
+    #
+    # This is the one status in the enum that names a decision in flight rather
+    # than a settled fact about the market, which is why the market's terms are
+    # frozen in it exactly as they are in OPEN and CLOSED: the proposal is
+    # about the terms, so a write that changed them would change what the
+    # second administrator is being asked to agree to.
+    PENDING_RESOLUTION = "pending_resolution"
 
 
 _STATUS_COLUMN = Enum(
@@ -195,6 +207,79 @@ class Market(Base):
     closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # --- the proposed outcome. [3.1] #9 -------------------------------------
+    #
+    # All six are null until an administrator proposes, and all six are written
+    # in one transaction with `status = PENDING_RESOLUTION`, so a market that
+    # is pending resolution always has a complete proposal on it and a market
+    # that is not never has a partial one.
+    #
+    # They sit on the market rather than in a proposals table because there is
+    # at most one live proposal per market, by construction: proposing requires
+    # CLOSED, and proposing leaves the market PENDING_RESOLUTION, so a second
+    # proposal is refused rather than queued. [3.2] #10 adds the approver
+    # beside these on the same argument, and a table becomes worth its join
+    # only if [3.3] #11's dispute window ever has to keep the history of a
+    # rejected proposal — which it does not, because a rejection is recorded in
+    # the audit log, which is the thing that keeps history here.
+
+    # Which outcome was named as the winner.
+    #
+    # Deliberately NOT a ForeignKey to market_outcomes.id, and the reason is
+    # worth reading before one is added. The constraint that actually matters
+    # is that the outcome belongs to *this* market, and a plain FK cannot say
+    # that — it would accept another market's outcome id happily. So the check
+    # has to exist in `service/validation.py` regardless, where it is a
+    # field-addressed 422 rather than an IntegrityError surfacing as a 500.
+    # Given that check, the FK would add nothing except a dependency cycle
+    # between these two tables, which `create_all` cannot sort without
+    # `use_alter`. The version that would genuinely earn its place is a
+    # composite FK to (id, market_id) with a matching unique constraint; ADR
+    # 0013 records why that is not worth the second index yet.
+    #
+    # Named `proposed_outcome_id` rather than `winning_outcome_id` on purpose.
+    # Nothing has won anything: a second administrator may reject this, and
+    # [3.2] #10 then clears this column and sends the market back to CLOSED.
+    # The request field is `winning_outcome_id`, because that is what the
+    # administrator is asserting; the column is what the platform has recorded.
+    proposed_outcome_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
+    # Who proposed it. The ticket's fourth acceptance criterion, and the value
+    # [3.2] #10 compares against to disable the approve control for the
+    # proposing administrator.
+    #
+    # Two columns rather than one, for the reason `service/audit.py::Actor`
+    # gives: this service cannot resolve a user id against `auth.users` and
+    # never will be able to (ADR 0003), so a username that is not snapshotted
+    # here is a username nobody can recover later — the audit log has it, and
+    # no service but `audit_svc` may read that. It is also the more truthful
+    # record: who this administrator was when they proposed, which survives a
+    # rename, a demotion and a deleted account.
+    #
+    # The id is the one [3.2] #10 must compare on. A username can be reissued
+    # after a deletion; an id cannot, and "a different administrator" is a
+    # claim that has to hold against the account rather than against the name.
+    proposed_by_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    proposed_by_username: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    proposed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # The evidence. At least one of the two is required, which is a rule in
+    # `service/validation.py` rather than a constraint here, because it is a
+    # rule about a request and belongs where the admin gets told which field to
+    # fix.
+    #
+    # Both are kept, rather than one free-text field that may or may not hold a
+    # URL, because they are read differently: a URL is something the frontend
+    # renders as a link and [3.3] #11's disputer clicks, and a note is prose
+    # for the case where the source is a screenshot, a phone call or a
+    # judgement call about an ambiguous print. Collapsing them would mean
+    # sniffing prose for a link.
+    proposal_evidence_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    proposal_evidence_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     outcomes: Mapped[list[MarketOutcome]] = relationship(
         back_populates="market",
