@@ -80,7 +80,10 @@ grant — a real append-only transaction keyed on the user id — and returns th
 result. Every later call just reads. This is why a new account never shows a
 balance of zero, and why there is no window to poll through after registration.
 
-Retrying, refreshing, or opening two tabs cannot produce a second grant.
+Retrying, refreshing, or opening two tabs cannot produce a second grant, and
+neither can an operator changing `STARTING_CREDITS`: a new value reaches
+accounts granted after it and no others, and an account that already has its
+credits keeps them and stays readable.
 
 ## GET /ledger/entries/me
 

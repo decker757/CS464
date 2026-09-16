@@ -63,20 +63,40 @@ async def ensure_granted(
     an extra SELECT: this function has already resolved it, and a caller that
     had to look it up again would be asking for a row it was just handed.
 
-    Idempotent twice over, which is deliberate: the unique index on
-    `idempotency_key` is what makes it true, and `posting.post` returning the
-    existing transaction rather than raising is what makes it comfortable to
-    call on every single read.
+    Idempotent twice over, which is deliberate: the early return below settles
+    the ordinary case in one SELECT, and the unique index on `idempotency_key`
+    settles the racing one — so this is comfortable to call on every single
+    read, which is the only reason a read is allowed to perform a write at all.
 
     Debits the platform and credits the user, so the grant is a movement
     between two accounts rather than credits appearing from nowhere. That is
     what keeps `SUM(amount)` over the whole ledger at exactly zero, and it is
     the assertion in `unit_test/service/test_concurrency.py` that would catch
     almost any mistake in this file.
-    """
-    amount = get_settings().starting_credits
 
+    **The configured amount is read only when a grant is actually minted**, and
+    the early return below is what makes that true. `post` fingerprints the legs
+    it is handed and refuses a key that already names a *different* movement —
+    right for a trade, where the key is derived from the request and a mismatch
+    is a caller bug, and wrong here, where the key is the user id and the amount
+    is a setting an administrator may edit. Build the legs on every read and
+    lowering `STARTING_CREDITS` gives every already-granted user
+    `IdempotencyKeyReused` on their own balance, for ever, from a change both
+    the README and `core/config.py` promise is safe. Only the caller can tell a
+    mistake from an edit, which is why the rule is here and not in `post`.
+
+    Two concurrent *first* reads still both mint, and the unique index makes the
+    loser a replay; they agree on the amount because they read one process's
+    settings. The residual window is two processes minting for one brand-new
+    user across a restart that changed the value — one 409, resolved by a
+    refresh.
+    """
     user = await accounts.ensure(session, AccountKind.USER, user_id)
+
+    if await posting.find_by_idempotency_key(session, grant_key(user_id)):
+        return user
+
+    amount = get_settings().starting_credits
     platform = await accounts.ensure_platform(session)
 
     await posting.post(
