@@ -35,13 +35,18 @@ from unit_test.conftest import (
     CRITERIA,
     EVIDENCE_NOTE,
     EVIDENCE_URL,
+    REJECTION_REASON,
     closed_market,
+    proposed_before_ids,
+    proposed_market,
     published_market,
 )
 from unit_test.conftest import actor as _actor
+from unit_test.conftest import approval_request as _approval
 from unit_test.conftest import close_request as _close
 from unit_test.conftest import market_terms as _request
 from unit_test.conftest import proposal_request as _proposal
+from unit_test.conftest import rejection_request as _rejection
 
 _ENTRIES = text(
     "SELECT * FROM audit.admin_actions WHERE actor_id = :actor "
@@ -586,6 +591,365 @@ async def test_a_refused_proposal_records_nothing(
     assert AdminAction.MARKET_OUTCOME_PROPOSED.value not in {
         e["action_type"] for e in entries
     }
+
+
+# --- deciding a proposal [3.2] #10 ----------------------------------------
+async def _approve(session: AsyncSession, proposer: Actor, approver: Actor):
+    """A market proposed for by its creator, then approved by `approver`.
+
+    Always two administrators, because the service refuses one: the proposer
+    is necessarily the creator, and may not decide their own proposal.
+    """
+    market = await proposed_market(session, proposer)
+    return await market_service.approve_outcome(
+        session, approver, market.id, _approval(market.proposal_id)
+    )
+
+
+async def _reject(
+    session: AsyncSession, proposer: Actor, rejecter: Actor, **overrides: object
+):
+    market = await proposed_market(session, proposer)
+    return await market_service.reject_outcome(
+        session, rejecter, market.id, _rejection(market.proposal_id, **overrides)
+    )
+
+
+def _snapshot(
+    proposer: Actor,
+    proposal_id: uuid.UUID,
+    winning_outcome_id: uuid.UUID,
+    proposed_at: datetime,
+) -> dict[str, object]:
+    """The context both decision entries carry, for the default proposal."""
+    return {
+        "proposal_id": str(proposal_id),
+        "winning_outcome_id": str(winning_outcome_id),
+        "winning_outcome": "Yes",
+        "evidence_url": EVIDENCE_URL,
+        "evidence_note": EVIDENCE_NOTE,
+        "proposed_by_id": str(proposer.id),
+        "proposed_by_username": proposer.username,
+        "proposed_at": proposed_at.isoformat(),
+    }
+
+
+async def test_an_approval_is_recorded(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The actor, and what they acted on."""
+    proposer, approver = _actor(), _actor(username="ihsan_b")
+    before = datetime.now(UTC)
+
+    market = await _approve(session, proposer, approver)
+
+    approved = [
+        e for e in await _entries(audit_reader, approver)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_APPROVED.value
+    ]
+    assert len(approved) == 1
+
+    entry = approved[0]
+    assert entry["actor_id"] == approver.id
+    assert entry["target_type"] == "market"
+    assert entry["target_id"] == market.id
+    assert entry["target_label"] == market.question
+    assert entry["source_service"] == "market_service"
+    assert entry["occurred_at"] >= before
+
+
+async def test_an_approval_names_the_approver_not_the_proposer(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The second signature is the one this entry exists to record. An entry
+    under the proposer's name would make the log say one person did both
+    halves, which is the thing [3.2] #10 forbids."""
+    proposer, approver = _actor(username="ernest_t"), _actor(username="ihsan_b")
+
+    await _approve(session, proposer, approver)
+
+    entry = next(
+        e for e in await _entries(audit_reader, approver)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_APPROVED.value
+    )
+    assert entry["actor_id"] == approver.id
+    assert entry["actor_username"] == "ihsan_b"
+    assert AdminAction.MARKET_OUTCOME_APPROVED.value not in {
+        e["action_type"] for e in await _entries(audit_reader, proposer)
+    }
+
+
+async def test_an_approval_records_the_proposal_it_agreed_to(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """What was approved, on the entry rather than pointed at from it.
+
+    `audit_svc` holds no grant on `market.markets`, so an approval that named
+    only the market would leave the one role able to read it unable to say
+    which outcome two administrators agreed on, or whose proposal it was.
+    """
+    proposer, approver = _actor(username="ernest_t"), _actor(username="ihsan_b")
+
+    market = await _approve(session, proposer, approver)
+
+    entry = next(
+        e for e in await _entries(audit_reader, approver)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_APPROVED.value
+    )
+    assert entry["context"] == _snapshot(
+        proposer, market.proposal_id, market.proposed_outcome_id, market.proposed_at
+    )
+
+
+async def test_an_approval_has_no_reason(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """Approving carries no reason. `reason IS NOT NULL` stays a filter for every
+    action somebody had to explain, which is what ADR 0014 set it up to be."""
+    proposer, approver = _actor(), _actor(username="ihsan_b")
+
+    await _approve(session, proposer, approver)
+
+    entry = next(
+        e for e in await _entries(audit_reader, approver)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_APPROVED.value
+    )
+    assert entry["reason"] is None
+
+
+async def test_a_rejection_is_recorded(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The actor, and what they acted on — the administrator who rejected,
+    never the one whose proposal it was."""
+    proposer, rejecter = _actor(), _actor(username="ihsan_b")
+    before = datetime.now(UTC)
+
+    market = await _reject(session, proposer, rejecter)
+
+    rejected = [
+        e for e in await _entries(audit_reader, rejecter)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_REJECTED.value
+    ]
+    assert len(rejected) == 1
+
+    entry = rejected[0]
+    assert entry["actor_id"] == rejecter.id
+    assert entry["target_type"] == "market"
+    assert entry["target_id"] == market.id
+    assert entry["target_label"] == market.question
+    assert entry["source_service"] == "market_service"
+    assert entry["occurred_at"] >= before
+
+
+async def test_a_rejection_records_the_reason(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """[3.2] #10's second criterion, in the half that outlives the request.
+
+    Nothing on `market.markets` holds this text, so if it does not reach the
+    log it is gone — the same argument an early close's reason makes.
+    """
+    proposer, rejecter = _actor(), _actor(username="ihsan_b")
+
+    await _reject(session, proposer, rejecter)
+
+    entry = next(
+        e for e in await _entries(audit_reader, rejecter)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_REJECTED.value
+    )
+    assert entry["reason"] == REJECTION_REASON
+
+
+async def test_a_rejection_records_the_proposal_it_cleared(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The reconstruction claim ADR 0013 makes.
+
+    A rejection clears all six proposal columns, so once it commits the market
+    row no longer says what was proposed, by whom, or on what evidence. This
+    entry is the only place that still does, which means the snapshot has to
+    be taken before the columns are cleared rather than after.
+    """
+    proposer, rejecter = _actor(username="ernest_t"), _actor(username="ihsan_b")
+    market = await proposed_market(session, proposer)
+    market_id, proposal_id = market.id, market.proposal_id
+    winner, proposed_at = market.proposed_outcome_id, market.proposed_at
+
+    await market_service.reject_outcome(
+        session, rejecter, market_id, _rejection(proposal_id)
+    )
+
+    session.expire_all()
+    stored = await market_service.get(session, proposer.id, market_id)
+    assert stored.proposed_outcome_id is None
+
+    entry = next(
+        e for e in await _entries(audit_reader, rejecter)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_REJECTED.value
+    )
+    assert entry["context"] == _snapshot(proposer, proposal_id, winner, proposed_at)
+
+
+async def test_the_two_decision_entries_have_the_same_shape(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """One function builds both, so a reader of the log handles one shape.
+
+    The two entries are the two answers to the same question about the same
+    kind of proposal, and a reader comparing them — which proposals were sent
+    back, and what was agreed instead — should not need to know which is which
+    before it can read the context.
+    """
+    proposer, decider = _actor(), _actor(username="ihsan_b")
+
+    await _approve(session, proposer, decider)
+    await _reject(session, proposer, decider)
+
+    entries = await _entries(audit_reader, decider)
+    approved = next(
+        e for e in entries if e["action_type"] == AdminAction.MARKET_OUTCOME_APPROVED.value
+    )
+    rejected = next(
+        e for e in entries if e["action_type"] == AdminAction.MARKET_OUTCOME_REJECTED.value
+    )
+    assert set(approved["context"]) == set(rejected["context"])
+
+
+async def test_a_refused_decision_records_nothing(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The entry is written before the commit, so a decision that raises takes
+    the entry down with it — whether it was refused for who asked or for what
+    they sent."""
+    from core.errors import RejectionIncomplete, SecondAdministratorRequired  # noqa: PLC0415
+
+    proposer, rejecter = _actor(), _actor(username="ihsan_b")
+    pending = await proposed_market(session, proposer)
+    market_id, proposal_id = pending.id, pending.proposal_id
+
+    with pytest.raises(SecondAdministratorRequired):
+        await market_service.approve_outcome(
+            session, proposer, market_id, _approval(proposal_id)
+        )
+    await session.rollback()
+
+    with pytest.raises(RejectionIncomplete):
+        await market_service.reject_outcome(
+            session, rejecter, market_id, _rejection(proposal_id, reason="x")
+        )
+    await session.rollback()
+
+    decisions = {
+        AdminAction.MARKET_OUTCOME_APPROVED.value,
+        AdminAction.MARKET_OUTCOME_REJECTED.value,
+    }
+    for actor in (proposer, rejecter):
+        recorded = {e["action_type"] for e in await _entries(audit_reader, actor)}
+        assert recorded.isdisjoint(decisions)
+
+
+async def test_a_decision_leaves_the_earlier_entries_alone(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """Four decisions by two people, each under the name of whoever made it."""
+    proposer, approver = _actor(), _actor(username="ihsan_b")
+
+    await _approve(session, proposer, approver)
+
+    assert [e["action_type"] for e in await _entries(audit_reader, proposer)] == [
+        AdminAction.MARKET_OUTCOME_PROPOSED.value,
+        AdminAction.MARKET_PUBLISHED.value,
+        AdminAction.MARKET_SUBMITTED.value,
+    ]
+    assert [e["action_type"] for e in await _entries(audit_reader, approver)] == [
+        AdminAction.MARKET_OUTCOME_APPROVED.value,
+    ]
+
+
+async def test_the_log_keeps_both_proposals_after_a_rejection(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """The market row only ever holds the latest proposal. The log holds every
+    one, so a proposal that was rejected and replaced is still there to read —
+    with the outcome it named, which is not the one proposed after it."""
+    proposer, rejecter = _actor(), _actor(username="ihsan_b")
+    market = await proposed_market(session, proposer)
+    market_id, proposal_id, second = market.id, market.proposal_id, market.outcomes[1].id
+
+    await market_service.reject_outcome(
+        session, rejecter, market_id, _rejection(proposal_id)
+    )
+    await market_service.propose_outcome(session, proposer, market_id, _proposal(second))
+
+    entries = await _entries(audit_reader, proposer)
+    assert [e["action_type"] for e in entries] == [
+        AdminAction.MARKET_OUTCOME_PROPOSED.value,
+        AdminAction.MARKET_OUTCOME_PROPOSED.value,
+        AdminAction.MARKET_PUBLISHED.value,
+        AdminAction.MARKET_SUBMITTED.value,
+    ]
+    assert [e["context"]["winning_outcome"] for e in entries[:2]] == ["No", "Yes"]
+    assert [e["action_type"] for e in await _entries(audit_reader, rejecter)] == [
+        AdminAction.MARKET_OUTCOME_REJECTED.value,
+    ]
+
+
+async def test_a_decision_on_a_proposal_from_before_ids_records_a_null(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """JSON null, not the string "None". A reviewer quotes this value back,
+    and "None" would be a 422 on a proposal that should be decidable."""
+    proposer, approver = _actor(), _actor()
+    market = await proposed_before_ids(session, proposer)
+
+    await market_service.approve_outcome(
+        session, approver, market.id, _approval_quoting_null()
+    )
+
+    [entry] = await _entries(audit_reader, approver)
+    assert "proposal_id" in entry["context"]
+    assert entry["context"]["proposal_id"] is None
+
+
+def _approval_quoting_null():
+    from model.schemas import OutcomeApprovalRequest  # noqa: PLC0415
+
+    return OutcomeApprovalRequest(proposal_id=None)
+
+
+async def test_a_decision_names_the_proposal_entry_it_decided(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """With two proposals for one market in the log, "which one was rejected"
+    and "which one was approved" are answered by `proposal_id`, not by guessing
+    from timestamps: each decision quotes the id its proposal entry carries."""
+    proposer, rejecter, approver = _actor(), _actor(), _actor()
+    market = await proposed_market(session, proposer)
+    market_id, first, second_winner = market.id, market.proposal_id, market.outcomes[1].id
+
+    await market_service.reject_outcome(
+        session, rejecter, market_id, _rejection(first)
+    )
+    replacement = await market_service.propose_outcome(
+        session, proposer, market_id, _proposal(second_winner)
+    )
+    second = replacement.proposal_id
+    await market_service.approve_outcome(
+        session, approver, market_id, _approval(second)
+    )
+
+    proposed = [
+        e["context"]["proposal_id"]
+        for e in await _entries(audit_reader, proposer)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_PROPOSED.value
+    ]
+    [rejected] = await _entries(audit_reader, rejecter)
+    [approved] = await _entries(audit_reader, approver)
+
+    assert proposed == [str(second), str(first)]
+    assert rejected["context"]["proposal_id"] == str(first)
+    assert approved["context"]["proposal_id"] == str(second)
 
 
 # --- what does not get recorded -------------------------------------------

@@ -1,7 +1,8 @@
 # Market service
 
-Drafting, submitting and publishing prediction markets. Covers [1.1] #1,
-[1.2] #2, [1.3] #3 and the backend half of [FE][1.1] #45.
+Drafting, submitting and publishing prediction markets, closing them, and
+proposing and deciding their outcomes. Covers [1.1] #1, [1.2] #2, [1.3] #3,
+[F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10 and the backend half of [FE][1.1] #45.
 
 Owns markets, their outcomes and their resolution sources. Knows nothing about
 users beyond the id in a signed access token, and cannot read the `auth` schema

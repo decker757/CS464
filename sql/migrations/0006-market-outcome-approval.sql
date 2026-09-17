@@ -1,0 +1,86 @@
+-- 0006 — market: which proposal is waiting, and who approved it, and when. [3.2] #10
+--
+-- Adds four columns:
+--   proposal_id              which proposal this is, new for every proposal
+--   approved_by_id           who approved it, as an auth.users id
+--   approved_by_username     who they were at the time, snapshotted
+--   approved_at              when
+--
+-- proposal_id belongs with the six proposal columns 0005 added: it is minted
+-- by propose_outcome and cleared by a rejection alongside them. An approval or
+-- a rejection must quote it, and is refused as proposal_superseded when it no
+-- longer matches — which is how a decision made about one proposal is kept
+-- from landing on the proposal that replaced it after a reject-and-repropose.
+-- The row lock cannot catch that; the whole cycle has committed by the time
+-- the stale decision arrives. See docs/adr/0016-deciding-a-proposal.md.
+--
+-- There is deliberately no backfill. A market already pending resolution when
+-- this runs keeps proposal_id NULL, and a second administrator decides it by
+-- sending "proposal_id": null. Generating an id here would strand the proposal
+-- instead: the id would exist only on this row, which GET /markets/{id} shows
+-- to the creator alone, and the proposal's market.outcome_proposed audit entry
+-- — the only place a reviewer can find it — was written without one. Nobody who
+-- is allowed to decide could quote it.
+--
+-- A null cannot match anything but such a proposal. Every proposal made after
+-- this migration is minted an id, and a rejection clears the id and returns
+-- the market to 'closed', so a market is never pending with a NULL id again. A
+-- stale null quoted against a replacement is proposal_superseded like any other
+-- stale id.
+--
+-- All three are null together or set together, and set only on an approved
+-- market: backend/market_service's service/market_service.py::approve_outcome
+-- writes them in the one transaction that sets status = 'approved'. The six
+-- proposal columns 0005 added stay set beside them — an approval agrees with a
+-- proposal rather than replacing it — so an approved row carries both the
+-- proposer's identity and the approver's, which is the ticket's third
+-- acceptance criterion.
+--
+-- The three approval columns: the approver is never the proposer. That rule is enforced in the service by
+-- comparing approved_by_id against proposed_by_id, and it is deliberately not a
+-- CHECK constraint here: the refusal is a 403 the administrator can read, not
+-- an IntegrityError surfacing as a 500, and the service has to hold the row
+-- lock to decide it anyway.
+--
+-- `approved_by_username` is a snapshot for the reason `proposed_by_username`
+-- is one: this service holds no grant on the auth schema and cannot resolve an
+-- id to a name (ADR 0003). varchar(32) matches audit.admin_actions.actor_username
+-- and the auth service's own column.
+--
+-- Note what is NOT here.
+--
+-- [3.2] #10 also adds 'approved' to MarketStatus, and that needs no DDL:
+-- model/entities.py declares the column as a non-native Enum and SQLAlchemy
+-- has defaulted `create_constraint` to False since 1.4, so
+-- market.markets.status is a plain varchar(24) with no CHECK to widen. Verify
+-- rather than assume:
+--
+--   SELECT conname, pg_get_constraintdef(oid)
+--     FROM pg_constraint WHERE conrelid = 'market.markets'::regclass;
+--
+-- There are no rejected_by_* columns. A rejection clears the six proposal
+-- columns and returns the market to 'closed', so there is no proposal left on
+-- the row for a rejecter to be recorded against; the market.outcome_rejected
+-- audit entry carries who rejected it, why, and a copy of what it cleared.
+--
+-- There is no index. [3.3] #11 and [3.4] #12 will read approved markets by
+-- approved_at, and a partial index on status = 'approved' is theirs to add
+-- beside the query it serves. ix_markets_due_close is untouched and stays
+-- correct: its predicate is status = 'open', and a market reaches 'approved'
+-- only from 'pending_resolution'. See docs/adr/0016-deciding-a-proposal.md.
+--
+-- Apply to:  cs464   (the development database)
+-- Not to:    cs464_test — unit_test/conftest.py drops and recreates the schema
+--            from the models on every test, so a suite always matches
+--            model/entities.py. It is only the long-lived database that drifts.
+--
+--   docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
+--     -f /sql/migrations/0006-market-outcome-approval.sql
+
+ALTER TABLE market.markets
+  ADD COLUMN IF NOT EXISTS approved_by_id        uuid,
+  ADD COLUMN IF NOT EXISTS approved_by_username  varchar(32),
+  ADD COLUMN IF NOT EXISTS approved_at           timestamptz;
+
+ALTER TABLE market.markets
+  ADD COLUMN IF NOT EXISTS proposal_id uuid;

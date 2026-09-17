@@ -21,6 +21,7 @@ see why the code looks the way it does without reconstructing the argument.
 | [0013](0013-proposing-an-outcome.md) | Proposing an outcome, from CLOSED only, with evidence, and one at a time | Accepted |
 | [0014](0014-closing-a-market-early.md) | Closing a market early, by any administrator, with the reason in the log | Accepted |
 | [0015](0015-locking-the-read-that-decides-a-write.md) | Every read that decides a write is locked, and the wider lock goes first | Accepted |
+| [0016](0016-deciding-a-proposal.md) | Deciding a proposal, by any administrator but the proposer, with APPROVED as a status | Accepted |
 
 Supersede rather than edit. If a decision changes, add a new record and mark
 the old one superseded, so the reasoning trail survives.

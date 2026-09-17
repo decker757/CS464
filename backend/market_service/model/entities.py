@@ -56,7 +56,8 @@ class MarketStatus(StrEnum):
     It is what [3.1] #9 gates on — an outcome may only be proposed for a market
     nobody can still trade — and one of the buckets [2.1] #5 counts.
 
-    PENDING_RESOLUTION arrives with [3.1] #9, and RESOLVED with [3.4] #12.
+    PENDING_RESOLUTION arrives with [3.1] #9, APPROVED with [3.2] #10, and
+    SETTLED with [3.4] #12.
     Members are added here as those land, which is why this is stored as a
     VARCHAR rather than a native Postgres enum: a new member is a Python change
     and never an ALTER TYPE against a live database. SQLAlchemy writes no CHECK
@@ -83,7 +84,8 @@ class MarketStatus(StrEnum):
     # [3.1] #9. An administrator has named a winning outcome and attached the
     # evidence for it; a second administrator has not yet agreed. Nothing is
     # paid out here and nothing is final — [3.2] #10 either approves, which
-    # moves this on, or rejects with a reason, which sends it back to CLOSED.
+    # moves this to APPROVED, or rejects with a reason, which sends it back to
+    # CLOSED.
     #
     # This is the one status in the enum that names a decision in flight rather
     # than a settled fact about the market, which is why the market's terms are
@@ -91,6 +93,24 @@ class MarketStatus(StrEnum):
     # about the terms, so a write that changed them would change what the
     # second administrator is being asked to agree to.
     PENDING_RESOLUTION = "pending_resolution"
+
+    # [3.2] #10. A second administrator — never the one who proposed — has
+    # agreed with the proposal. The winner is decided; nothing is paid out yet.
+    #
+    # A status of its own rather than PENDING_RESOLUTION with an approver
+    # column filled in, because the market's legal moves change here and every
+    # reader would otherwise have to ask `approved_at IS NULL` to find out which
+    # ones. A second approval, a rejection, a second proposal and an early close
+    # are all refused from this state, and each is told so by name rather than
+    # by an error written for a market still waiting on somebody. It is also the
+    # working set [3.3] #11's window and [3.4] #12's settlement will read —
+    # `status = 'approved'` and an `approved_at` far enough in the past — which
+    # is the same shape `ix_markets_due_close` gives the close sweep, and a
+    # partial index on it is theirs to add when there is a query to serve.
+    #
+    # Not RESOLVED. Nothing is resolved while [3.3] #11 lets a trader dispute
+    # it, and [3.4] #12 names the terminal state SETTLED. ADR 0016.
+    APPROVED = "approved"
 
 
 _STATUS_COLUMN = Enum(
@@ -216,8 +236,8 @@ class Market(Base):
 
     # --- the proposed outcome. [3.1] #9 -------------------------------------
     #
-    # All six are null until an administrator proposes, and all six are written
-    # in one transaction with `status = PENDING_RESOLUTION`, so a market that
+    # All seven are null until an administrator proposes, and all seven are
+    # written in one transaction with `status = PENDING_RESOLUTION`, so a market that
     # is pending resolution always has a complete proposal on it and a market
     # that is not never has a partial one.
     #
@@ -229,6 +249,31 @@ class Market(Base):
     # only if [3.3] #11's dispute window ever has to keep the history of a
     # rejected proposal — which it does not, because a rejection is recorded in
     # the audit log, which is the thing that keeps history here.
+
+    # Which proposal this is. [3.2] #10.
+    #
+    # Minted fresh by every `propose_outcome` and cleared by a rejection, so no
+    # two proposals a market ever carries share one — including two that name
+    # the same winner on the same evidence. An approval or a rejection has to
+    # quote it, and is refused as `proposal_superseded` when it no longer
+    # matches.
+    #
+    # The row lock cannot do this job, and that is why the column exists. A
+    # lock serialises two decisions that overlap; it cannot see a whole cycle
+    # that completed while an administrator was reading. Reviewer A opens
+    # proposal 1, reviewer B rejects it, the creator proposes 2 — and A's
+    # approve, keyed only by the market, would then approve 2, a winner and
+    # evidence A never saw. The market is PENDING_RESOLUTION both times; only
+    # this tells them apart. A timestamp would too, in practice, but an
+    # identifier cannot collide and says what it is for. ADR 0016.
+    #
+    # Null on a proposal made before this column existed, and deliberately not
+    # backfilled: a generated id would live only on this row, which the
+    # reviewer — never the creator — cannot read, so nobody could quote it.
+    # Such a proposal is decided by quoting null, which matches nothing else:
+    # every later proposal is minted an id, and a rejection leaves the market
+    # CLOSED rather than pending with a null. `sql/migrations/0006`.
+    proposal_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
 
     # Which outcome was named as the winner.
     #
@@ -286,6 +331,36 @@ class Market(Base):
     # sniffing prose for a link.
     proposal_evidence_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     proposal_evidence_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- the approval. [3.2] #10 --------------------------------------------
+    #
+    # All three are null unless `status == APPROVED`, and all three are written
+    # in the one transaction that sets it. The seven proposal columns above stay
+    # exactly as they were: an approval agrees with a proposal rather than
+    # replacing it, so `proposed_outcome_id` is still the winner [3.4] #12
+    # settles against, and a reader sees both identities on one row — the
+    # ticket's third acceptance criterion.
+    #
+    # Snapshotted as an id and a username for the reason `proposed_by_*` is.
+    # The id is what the two-person rule is enforced on; the approver is never
+    # the proposer, and `service/market_service.py` compares the ids to make
+    # that true.
+    #
+    # There are no `rejected_by_*` columns, and that is deliberate. A rejection
+    # clears the proposal and returns the market to CLOSED, after which the row
+    # holds no proposal for a rejecter's name to describe. Who rejected it, and
+    # why, is in the `market.outcome_rejected` audit entry, beside a copy of the
+    # proposal it cleared. ADR 0016.
+    #
+    # No deadline column either. [3.3] #11's window is `approved_at` plus a
+    # setting, derived the way the close sweep derives from `close_time`, and
+    # whether that ticket wants to snapshot the end of it is its own additive
+    # decision.
+    approved_by_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    approved_by_username: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     outcomes: Mapped[list[MarketOutcome]] = relationship(
         back_populates="market",

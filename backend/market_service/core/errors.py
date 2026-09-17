@@ -65,12 +65,12 @@ class ValidationProblem:
 class IncompleteError(MarketError):
     """A 422 that names every field at fault, rather than only the first.
 
-    The shape, not an error anything raises. Three actions refuse this way — a
+    The shape, not an error anything raises. Four actions refuse this way — a
     submission or publication whose terms do not pass ([1.1] #1, [1.3] #3), a
     proposal whose winner or evidence does not ([3.1] #9), and an early close
-    with no usable reason ([2.3] #7) — and every one of them is a form the
-    administrator is looking at, so all of them want every offending field
-    marked at once instead of one save at a time.
+    or a rejection with no usable reason ([2.3] #7, [3.2] #10) — and every one
+    of them is a form the administrator is looking at, so all of them want
+    every offending field marked at once instead of one save at a time.
 
     Sharing a base is what keeps `controller/errors.py` free of a list of which
     errors carry `details`. It attaches them for anything that is one of these,
@@ -136,6 +136,22 @@ class CloseIncomplete(IncompleteError):
     code = "close_incomplete"
 
     DEFAULT_MESSAGE = "This market cannot be closed without a reason."
+
+
+class RejectionIncomplete(IncompleteError):
+    """The reason given for rejecting a proposed outcome is not usable. [3.2] #10
+
+    Its own code rather than a reuse of `close_incomplete`, although the field
+    has the same name and today the same floor. The two modals are different
+    forms answering different questions, and a frontend that branched on
+    `close_incomplete` to repaint a rejection would be relying on a coincidence
+    — the same one `MIN_REJECTION_REASON_LENGTH` declines to rely on by being
+    its own constant.
+    """
+
+    code = "rejection_incomplete"
+
+    DEFAULT_MESSAGE = "This proposal cannot be rejected without a reason."
 
 
 class MarketNotEditable(MarketError):
@@ -299,4 +315,106 @@ class MarketNotOpen(MarketError):
     message = (
         "Only a market that is open to traders can be closed. This one has "
         "not been published, so nothing can be traded in it."
+    )
+
+
+class MarketNotPendingResolution(MarketError):
+    """An approval or rejection arrived for a market with no proposal. [3.2] #10.
+
+    Covers every state that is not waiting on a decision and has not already
+    had one: a draft, a submitted market, an open one, and a closed one nobody
+    has proposed for — including one whose proposal has just been rejected,
+    which is what a second rejection racing the first sees. One error for all
+    of them, because the remedy is the same: there is nothing here to decide,
+    so reload and stop offering the control.
+
+    The opposite number of MarketPendingResolution, and kept apart from
+    MarketAlreadyApproved for the reason MarketNotOpen is kept apart from
+    MarketClosed. A market with no proposal may still get one; a market that has
+    been approved is past deciding.
+    """
+
+    status_code = 409
+    code = "market_not_pending_resolution"
+    message = (
+        "There is no outcome proposal waiting on this market, so there is "
+        "nothing to approve or reject."
+    )
+
+
+class MarketAlreadyApproved(MarketError):
+    """A write or a decision arrived for a market whose outcome is approved. [3.2] #10.
+
+    One error for every caller, the way MarketAlreadyOpen is, because every one
+    of them is the same situation. A second approval has nothing to add, a
+    rejection would undo a decision a second administrator has already signed,
+    a new proposal would replace the winner [3.4] #12 is about to pay out on, an
+    early close has nothing left to stop, and a save must not touch the terms
+    the approval agreed to. All of them should reload and drop the control.
+
+    Checked before who is asking, so the proposer looking at a market somebody
+    else has already approved is told it is approved rather than that they may
+    not approve it. The first is the fact; the second is true and no longer
+    matters. ADR 0016.
+    """
+
+    status_code = 409
+    code = "market_already_approved"
+    message = (
+        "A second administrator has already approved this market's outcome. "
+        "The proposal is final and the next step is settlement."
+    )
+
+
+class SecondAdministratorRequired(MarketError):
+    """The administrator who proposed an outcome tried to decide it. [3.2] #10.
+
+    The ticket's first acceptance criterion as a refusal, and the whole of the
+    two-person rule: no single administrator controls a payout. Raised on a
+    rejection as well as an approval, because a proposer rejecting their own
+    proposal is a withdrawal with no second administrator in it — the path
+    ADR 0013 declined to build as an un-propose.
+
+    Decided on the account id, never the username. A username can be reissued
+    after a deletion and changed by a rename; "a different administrator" is a
+    claim about the account.
+
+    403 rather than 409, by the distinction `NotAnAdministrator` draws: the
+    session is fine and this account will never be allowed to decide this
+    proposal, so retrying cannot help. It is not a state conflict — the market
+    is in exactly the right state, for somebody else — and not a 404, because
+    there is no draft here to hide. ADR 0016.
+    """
+
+    status_code = 403
+    code = "second_administrator_required"
+    message = (
+        "The administrator who proposed this outcome cannot approve or reject "
+        "it. A different administrator has to decide."
+    )
+
+
+class ProposalSuperseded(MarketError):
+    """A decision quoted a proposal that is no longer the one waiting. [3.2] #10.
+
+    The market is pending resolution and the caller may decide it, but not the
+    proposal they read. Between opening the review and sending the decision,
+    that proposal was rejected by somebody else and the creator proposed
+    again. Applying the request anyway would approve a winner, or clear
+    evidence, the administrator has never seen — and the row lock cannot catch
+    it, because nothing was overlapping: the whole reject-and-repropose cycle
+    had already committed.
+
+    409, because the remedy is the usual one for a state conflict: reload, read
+    the proposal that is actually waiting, and decide that one. Checked after
+    who is asking, so a proposer holding a stale page is still told they may
+    not decide at all, and before the reason, so a rejecter is not asked to
+    improve a reason about the wrong proposal. ADR 0016.
+    """
+
+    status_code = 409
+    code = "proposal_superseded"
+    message = (
+        "The proposal you reviewed has been replaced by a newer one. Reload the "
+        "market and review the proposal that is waiting now."
     )

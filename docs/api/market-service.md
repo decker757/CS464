@@ -4,14 +4,15 @@ Base URL `http://localhost:8001` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
-Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9 and the
-backend half of [FE][1.1] #45, [FE][2.3] #56 and [FE][3.1] #52.
+Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10
+and the backend half of [FE][1.1] #45, [FE][2.3] #56 and [FE][3.1] #52.
 
-A successful submission, publication, early close or outcome proposal also
-appends an entry to the shared audit log, in the same database transaction, so
-the two can never disagree. An autosave does not, and neither does an automatic
-close — the clock is not an actor. See [`audit-service.md`](audit-service.md)
-and [ADR 0006](../adr/0006-audit-log-write-path.md).
+A successful submission, publication, early close, outcome proposal, approval
+or rejection also appends an entry to the shared audit log, in the same database
+transaction, so the two can never disagree. An autosave does not, and neither
+does an automatic close — the clock is not an actor. See
+[`audit-service.md`](audit-service.md) and
+[ADR 0006](../adr/0006-audit-log-write-path.md).
 
 Why it is a separate service and how it knows who is an admin:
 [ADR 0003](../adr/0003-market-service-boundary.md). Why one endpoint does both
@@ -24,8 +25,10 @@ and a sweep only writes it down:
 [ADR 0011](../adr/0011-market-auto-close.md). Why proposing an outcome gates on
 the status column anyway, and why the evidence is two fields:
 [ADR 0013](../adr/0013-proposing-an-outcome.md). Why an early close does the
-opposite and gates on the clock, and why it is the one route any administrator
-may call: [ADR 0014](../adr/0014-closing-a-market-early.md).
+opposite and gates on the clock, and why any administrator may call it:
+[ADR 0014](../adr/0014-closing-a-market-early.md). Why an approved outcome is a
+status of its own, and why the proposer is refused a `403` on both decisions:
+[ADR 0016](../adr/0016-deciding-a-proposal.md).
 
 ## Endpoints
 
@@ -35,6 +38,8 @@ may call: [ADR 0014](../adr/0014-closing-a-market-early.md).
 | POST | `/markets/{id}/publish` | Publish a submitted market |
 | POST | `/markets/{id}/close` | Close an open market early, with a reason |
 | POST | `/markets/{id}/propose-outcome` | Propose the winner of a closed market |
+| POST | `/markets/{id}/approve-outcome` | Approve another administrator's proposal |
+| POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
 | GET | `/markets` | List my own markets |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
@@ -42,28 +47,34 @@ may call: [ADR 0014](../adr/0014-closing-a-market-early.md).
 Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is [BE][X] #62.
 
-Every route but one is scoped to the administrator who created the market, and
-answers `404` to any other. The exception is `POST /markets/{id}/close`: any
-administrator may stop any open market, and the audit entry names who did.
-[ADR 0014](../adr/0014-closing-a-market-early.md).
+Every route but three is scoped to the administrator who created the market,
+and answers `404` to any other. The exceptions are `POST /markets/{id}/close`,
+which any administrator may call on any open market
+([ADR 0014](../adr/0014-closing-a-market-early.md)), and
+`POST /markets/{id}/approve-outcome` and `/reject-outcome`, which any
+administrator **except the one who proposed** may call
+([ADR 0016](../adr/0016-deciding-a-proposal.md)). In each case the audit entry
+names who acted.
 
-## The five statuses
+## The six statuses
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
 | `draft` | the three-second autosave | no |
 | `submitted` | the submit button | no |
 | `open` | `POST /markets/{id}/publish` | yes |
-| `closed` | the clock at `close_time`, or `POST /markets/{id}/close` | yes, but not tradeable |
+| `closed` | the clock at `close_time`, `POST /markets/{id}/close`, or `POST /markets/{id}/reject-outcome` | yes, but not tradeable |
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
+| `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
 
-The path is `draft → submitted → open → closed → pending_resolution` and
-nothing skips a step. Every save on a market past `submitted` is a `409`,
-whatever the request asks for — the terms are final from `open` onwards.
+The path is `draft → submitted → open → closed → pending_resolution →
+approved` and nothing skips a step. Every save on a market past `submitted` is
+a `409`, whatever the request asks for — the terms are final from `open`
+onwards.
 
-Only one transition is ever reversed, and it is not in this ticket: [3.2] #10's
-rejection sends a market from `pending_resolution` back to `closed`, with a
-reason. There is still no unpublish and no reopen.
+Only one transition is ever reversed: [3.2] #10's rejection sends a market from
+`pending_resolution` back to `closed`, with a reason. There is no unpublish, no
+reopen and no un-approve.
 
 `closed` is the only one two different things produce. A market reaches it on
 its own when `close_time` passes, and an administrator can reach it early with
@@ -399,6 +410,7 @@ seconds *after* `close_time`.
 | 409 | `market_not_open` | still a draft or submitted | nothing to stop; publish it or leave it |
 | 409 | `market_closed` | it has already stopped | reload; hide the control |
 | 409 | `market_pending_resolution` | stopped, and an outcome is proposed | reload; show whose proposal is waiting |
+| 409 | `market_already_approved` | stopped, and its outcome is approved | reload; hide the control |
 | 422 | `close_incomplete` | the reason is missing or too short | fix `reason` and resend |
 
 **A market whose closing time has just passed is a `409 market_closed`, even
@@ -433,9 +445,9 @@ the administrator had typed.
 
 ### Who may close
 
-**Any administrator, including one who did not create the market.** This is the
-only route on this page that is not scoped to the creator, because a broken
-market that only its author can stop is not oversight. ADR 0007 makes the admin
+**Any administrator, including one who did not create the market.** It was the
+first route on this page not scoped to the creator, because a broken market
+that only its author can stop is not oversight. ADR 0007 makes the admin
 tier flat and the audit entry is what keeps that accountable: it names whoever
 reached in, and why.
 
@@ -481,11 +493,12 @@ front of [3.3] #11's disputer.
 ### Response
 
 `200`, and the whole `market` object exactly as `GET /markets/{id}` returns it.
-`status` is `pending_resolution` and six fields are now set:
+`status` is `pending_resolution` and seven fields are now set:
 
 ```json
 {
   "status": "pending_resolution",
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7",
   "proposed_outcome_id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f",
   "proposed_by_id": "1c9e5d3a-77b2-4f0c-9a1d-5e6f7a8b9c0d",
   "proposed_by_username": "ernest_t",
@@ -496,7 +509,9 @@ front of [3.3] #11's disputer.
 ```
 
 They are null together on every market that has not been proposed for, and set
-together on every market that has. `proposed_outcome_id` names a member of the
+together on every market that has. `proposal_id` is new for every proposal —
+a market rejected and proposed for again gets a different one — and is what
+[3.2] #10's approve and reject bodies must send back. `proposed_outcome_id` names a member of the
 same response's `outcomes` array — look the label up there rather than
 expecting it twice.
 
@@ -507,6 +522,7 @@ expecting it twice.
 | 404 | `market_not_found` | no such market, or it is not yours | nothing; it is not there |
 | 409 | `market_not_closed` | it is still running | wait; the market has not finished |
 | 409 | `market_pending_resolution` | an outcome is already proposed | reload; show whose proposal is waiting |
+| 409 | `market_already_approved` | an outcome is already proposed and approved | reload; show who approved it |
 | 422 | `proposal_incomplete` | the winner or the evidence is wrong | fix the fields in `details` |
 
 **A market whose closing time has just passed is a `409`.** For a few seconds
@@ -546,7 +562,8 @@ beside the two evidence fields rather than on either.
 A second proposal is a `409 market_pending_resolution`, not an overwrite. The
 first proposal is what a second administrator is being asked to agree to, and
 replacing it underneath them is the one thing this status exists to prevent.
-The way back to `closed` is [3.2] #10's rejection, which carries a reason.
+The way back to `closed` is [3.2] #10's rejection, which carries a reason —
+see `POST /markets/{id}/reject-outcome` below.
 
 While a market is `pending_resolution` its terms are frozen exactly as they are
 when it is `open`: `POST /markets` on it returns `409
@@ -554,10 +571,203 @@ market_pending_resolution`, and so does a publish.
 
 ### Who may propose
 
-The market's creator, like every other route on this page. Another
-administrator gets `404`, not `403`, for the reason a 404 is used everywhere
-else here. [3.2] #10 is the ticket that widens this, because its own acceptance
-criteria require a *different* administrator to approve.
+The market's creator only. Another administrator gets `404`, not `403`, for the
+reason a 404 is used everywhere else here.
+
+[3.2] #10 did not widen this. It widened the *decision* instead: approving or
+rejecting reads the market whoever created it, and refuses only the proposer.
+Since the proposer is always the creator, every approver is somebody who did
+not create the market.
+
+## POST /markets/{id}/approve-outcome — [3.2] #10
+
+Moves a market from `pending_resolution` to `approved`. A second administrator
+— never the one who proposed — agrees with the proposed winner and its
+evidence. Nothing is paid out and no credits move: [3.3] #11's dispute window
+and [3.4] #12's settlement come next.
+
+### Request
+
+```json
+{
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `proposal_id` | required key; the `proposal_id` of the proposal the administrator reviewed, or `null` for a proposal that has none |
+
+That is the whole body. The approver is agreeing with the proposal already on
+the market, not adding to it; any other field is ignored.
+
+`proposal_id` is a precondition, not information. **Send the id from the data
+the reviewer is looking at**, never one fetched at the moment of the click. If
+that proposal has since been rejected and replaced by a new one, the approval
+is refused as `409 proposal_superseded` instead of approving a proposal the
+reviewer has not read. A body without the key is FastAPI's `422`.
+
+`null` is a value here, not a way to skip the check. A proposal made before
+proposal ids existed reads back `"proposal_id": null`, and its audit entry has
+no `proposal_id`; send `null` to decide it. Sent for any proposal that does
+have an id, `null` is `409 proposal_superseded` like any other id that does not
+match.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it.
+`status` is `approved`, the seven proposal fields are **unchanged**, and three
+more are set:
+
+```json
+{
+  "status": "approved",
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7",
+  "proposed_outcome_id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f",
+  "proposed_by_id": "1c9e5d3a-77b2-4f0c-9a1d-5e6f7a8b9c0d",
+  "proposed_by_username": "ernest_t",
+  "proposed_at": "2026-09-16T09:14:02.118374Z",
+  "proposal_evidence_url": "https://www.mas.gov.sg/statistics/cpi-december-2026",
+  "proposal_evidence_note": "MAS published December 2026 core inflation at 1.8% …",
+  "approved_by_id": "7d2e4f10-3b5a-4c6d-8e9f-0a1b2c3d4e5f",
+  "approved_by_username": "ihsan_b",
+  "approved_at": "2026-09-17T02:40:11.502113Z"
+}
+```
+
+Both identities on one market, which is the story's third acceptance
+criterion. `approved_by_id` never equals `proposed_by_id`. The three
+`approved_*` fields are null together on every market that is not `approved`.
+
+### Only a pending proposal, and not your own
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 403 | `second_administrator_required` | you proposed this outcome | nothing; a different administrator has to decide it |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_pending_resolution` | no proposal is waiting — draft, submitted, open, or closed with none | reload; hide the control |
+| 409 | `market_already_approved` | somebody has already approved it | reload; show who and when |
+| 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
+
+State first, then who is asking, then which proposal. A proposer looking at a
+market somebody else has already approved gets `market_already_approved`, not
+the `403`; a proposer on a stale page still gets the `403`.
+
+**A refused approval writes nothing.** The market stays `pending_resolution`,
+the `approved_*` fields stay null, and no audit entry is appended.
+
+### Who may approve
+
+**Any administrator except the one who proposed.** That includes — necessarily —
+administrators who did not create the market, because only the creator can
+propose. The comparison is on the account id, never the username: a username can
+be changed, and another account can later hold it.
+
+The read is *not* widened with it, as for an early close. `GET /markets/{id}`
+still answers `404` to another administrator. See the notes for the approval
+screen below for how to find a proposal to decide.
+
+### An approval is final here
+
+Every later save, publish, proposal, early close, approval or rejection on the
+market is a `409 market_already_approved`. There is no un-approve; [3.3] #11 is
+where an approved outcome can be disputed.
+
+## POST /markets/{id}/reject-outcome — [3.2] #10
+
+Sends a market from `pending_resolution` back to `closed`, with a reason. Every
+`proposed_*` field is cleared, and the creator may propose again.
+
+### Request
+
+```json
+{
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7",
+  "reason": "The MAS print cited is the headline figure, not core inflation; the core figure for December 2026 has not been published yet."
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `proposal_id` | required key; the `proposal_id` of the proposal the administrator reviewed, or `null` for a proposal that has none, as for approval |
+| `reason` | required; at least 10 characters after trimming, at most 5000 |
+
+A rejection quoting a proposal that has since been replaced is refused as
+`409 proposal_superseded` and clears nothing, so a reason written about one
+proposal can never be recorded against another.
+
+The reason is recorded in the audit log against the administrator who rejected
+the proposal, beside a copy of the proposal it cleared, in the same
+transaction. **It is kept nowhere else.** It is not a field on the market and
+it does not come back in the response — only [4.3] #15's log view can show it.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it:
+
+```json
+{
+  "status": "closed",
+  "closed_at": "2026-09-16T09:14:02.118374Z",
+  "proposal_id": null,
+  "proposed_outcome_id": null,
+  "proposed_by_id": null,
+  "proposed_by_username": null,
+  "proposed_at": null,
+  "proposal_evidence_url": null,
+  "proposal_evidence_note": null,
+  "approved_by_id": null,
+  "approved_by_username": null,
+  "approved_at": null
+}
+```
+
+The market is exactly what it was before the proposal. `closed_at` is **not**
+rewritten: it says when trading stopped, and a rejection does not change that.
+Nothing on the market says a proposal was ever rejected; the audit log does.
+
+### When it is refused
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 403 | `second_administrator_required` | you proposed this outcome | nothing; a different administrator has to decide it |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_pending_resolution` | no proposal is waiting — including one somebody else has just rejected | reload; hide the control |
+| 409 | `market_already_approved` | it has already been approved, so it is too late to reject | reload; show who approved it |
+| 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
+| 422 | `rejection_incomplete` | the reason is missing or too short | fix `reason` and resend |
+
+State first, then who is asking, then which proposal, then the reason. A
+proposer who sends a one-letter reason gets the `403`, not the `422`, and a
+stale page with a one-letter reason gets the `409`.
+
+The `422` is this service's own envelope:
+
+```json
+{
+  "error": {
+    "code": "rejection_incomplete",
+    "message": "This proposal cannot be rejected without a reason.",
+    "details": [
+      { "field": "reason", "message": "The reason must be at least 10 characters, so that somebody reading the log later can tell what happened." }
+    ]
+  }
+}
+```
+
+A body with no `reason` or no `proposal_id` key at all never reaches this service and comes back as
+FastAPI's `{"detail": [...]}` instead. Branch on the presence of `error`.
+
+**A refused rejection writes nothing.** The market stays `pending_resolution`
+with its proposal intact, and no audit entry is appended.
+
+### Who may reject
+
+**Any administrator except the one who proposed**, compared on the account id,
+as for approval. A proposer cannot withdraw their own proposal this way: that
+would be a path back to `closed` with no second administrator in it, which is
+the thing this story exists to prevent. A proposer who has changed their mind
+asks somebody else to reject it.
 
 ## GET /markets
 
@@ -593,8 +803,8 @@ The same envelope the auth service uses, so one parser covers both:
 { "error": { "code": "not_an_administrator", "message": "This action requires an administrator account." } }
 ```
 
-`draft_incomplete`, `proposal_incomplete` and `close_incomplete` add a
-`details` array. Nothing else does, and it is additive, so a client that ignores
+`draft_incomplete`, `proposal_incomplete`, `close_incomplete` and
+`rejection_incomplete` add a `details` array. Nothing else does, and it is additive, so a client that ignores
 it still reads `code` and `message`:
 
 ```json
@@ -613,6 +823,7 @@ it still reads `code` and `message`:
 | --- | --- | --- |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
 | 403 | `not_an_administrator` | valid session, but a trader |
+| 403 | `second_administrator_required` | the proposer tried to approve or reject their own proposal |
 | 404 | `market_not_found` | no such market, or it is not yours |
 | 409 | `market_not_editable` | an autosave arrived for an already-submitted market |
 | 409 | `market_not_submitted` | publish asked for on a market that is still a draft |
@@ -621,9 +832,13 @@ it still reads `code` and `message`:
 | 409 | `market_not_closed` | an outcome was proposed for a market that is still running |
 | 409 | `market_not_open` | an early close arrived for a market that is not published |
 | 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one |
+| 409 | `market_not_pending_resolution` | an approval or rejection arrived for a market with no proposal waiting |
+| 409 | `market_already_approved` | anything but a read arrived for a market whose outcome is approved |
+| 409 | `proposal_superseded` | an approval or rejection quoted a `proposal_id` that is no longer the proposal waiting |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | `proposal_incomplete` | outcome proposal refused; see `details` |
 | 422 | `close_incomplete` | early close refused; see `details` |
+| 422 | `rejection_incomplete` | rejection refused; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
 
 Note that `market_closed` and `market_not_closed` are not opposites of each
@@ -631,8 +846,8 @@ other in any useful sense — one is a save or publish that arrived too late, th
 other a proposal that arrived too early. They never appear on the same route.
 
 Two kinds of `422` exist and they do not look alike. `draft_incomplete`,
-`proposal_incomplete` and `close_incomplete` are ours and carry the envelope
-above. A malformed body — a missing `draft_key`, a missing `reason`, a naive
+`proposal_incomplete`, `close_incomplete` and `rejection_incomplete` are ours
+and carry the envelope above. A malformed body — a missing `draft_key`, a missing `reason`, a naive
 timestamp, a non-UUID — is FastAPI's, and comes back as `{"detail": [...]}`.
 Branch on the presence of `error`.
 
@@ -717,3 +932,56 @@ Branch on the presence of `error`.
 7. Nothing is resolved yet. Label this state "awaiting approval", not
    "resolved" — [3.2] #10 can still send it back to `closed`, which clears
    every `proposed_*` field.
+8. A `409 market_already_approved` means the proposal has been approved since
+   you last fetched. Reload and show `approved_by_username` and `approved_at`.
+
+## Notes for the approval screen — [3.2] #10
+
+There is no `[FE]` sub-issue for this story yet. These are for whoever builds
+the screen.
+
+1. Offer approve and reject only on a market whose `status` is
+   `pending_resolution`.
+2. **Disable both controls when `proposed_by_id` is the signed-in user's `id`**
+   from `GET /auth/me`. That is the story's first acceptance criterion, and the
+   server refuses the request with `403 second_administrator_required` whatever
+   the UI shows. Compare the ids, never `proposed_by_username`. Say why the
+   controls are disabled — "you proposed this; another administrator has to
+   decide it" — rather than hiding them.
+3. Show what is being decided: the winner's label (look `proposed_outcome_id`
+   up in `outcomes`), `proposal_evidence_url` as a link, `proposal_evidence_note`,
+   `proposed_by_username` and `proposed_at`.
+4. **Keep the `proposal_id` of what you rendered in step 3, and send that one**
+   with approve or reject. Do not refetch it when the button is pressed: the
+   check exists for the case where the proposal changed while the reviewer was
+   reading, and a fresh id would pass it against a proposal they have not
+   seen. Send exactly the value you read, **including `null`**: a proposal made
+   before proposal ids existed has none, and `null` is how it is decided.
+   Approve has no other inputs — confirm, then POST `{"proposal_id": ...}`.
+5. The reject modal has one required input. Enable its confirm button at 10
+   trimmed characters and you will never see a `422 rejection_incomplete`. Say
+   in the modal that the reason goes into the admin log, cannot be edited, and
+   that the proposal will be cleared from the market.
+6. Repaint from the `200` response; it is the whole market. After an approval
+   show both identities — `proposed_by_*` and `approved_by_*`. After a
+   rejection the market is `closed` with no proposal, and the creator's propose
+   control comes back.
+7. A `409 market_already_approved` or `409 market_not_pending_resolution` means
+   another administrator decided first. Reload and drop both controls.
+   A `409 proposal_superseded` means the proposal on screen was rejected and a
+   new one made. Reload and show the new proposal, with its new `proposal_id`,
+   for review from the start — do not resend the same decision automatically.
+8. **Finding a proposal to decide.** `GET /markets/{id}` still answers `404`
+   for a market you did not create, and there is no list of other
+   administrators' markets on this service. Until [BE][X] #62 or [2.1] #5
+   provides one, read `GET /audit/actions?action_type=market.outcome_proposed`
+   on the audit service: `target_id` is the market id, `target_label` the
+   question, `actor_id` the proposer, and `context` carries `proposal_id`, the
+   winner's label and the evidence — enough to render step 3, apply step 2 and
+   send step 4. An entry written before proposal ids existed has no
+   `proposal_id` key: send `null` for it. A `market.outcome_approved` or
+   `market.outcome_rejected` whose `context.proposal_id` matches means that
+   proposal has been decided; match on that rather than `target_id`, because one
+   market can be proposed for more than once. For an entry with no
+   `proposal_id`, a later decision on the same `target_id` carrying
+   `"proposal_id": null` is the match.

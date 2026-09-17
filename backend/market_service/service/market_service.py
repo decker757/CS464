@@ -1,10 +1,11 @@
-"""Business rules for a market's lifecycle. [1.1] #1, [1.3] #3, [2.3] #7, [3.1] #9.
+"""Business rules for a market's lifecycle. [1.1] #1, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10.
 
-Drafting and submitting, publishing, stopping a market early, and proposing the
-outcome once trading has stopped. The *automatic* close is in
-`service/closing.py`, because the clock performs it and no administrator does;
-`close_early` here is the one an administrator performs, and it asks that file
-whether the market it is about to stop is still running at all.
+Drafting and submitting, publishing, stopping a market early, proposing the
+outcome once trading has stopped, and a second administrator approving or
+rejecting that proposal. The *automatic* close is in `service/closing.py`,
+because the clock performs it and no administrator does; `close_early` here is
+the one an administrator performs, and it asks that file whether the market it
+is about to stop is still running at all.
 
 HTTP is not mentioned in this file; failures are raised as domain errors. Every
 function takes the caller's id as an argument rather than reading it from
@@ -26,6 +27,7 @@ from core.config import get_settings
 from core.errors import (
     CloseIncomplete,
     DraftIncomplete,
+    MarketAlreadyApproved,
     MarketAlreadyOpen,
     MarketClosed,
     MarketError,
@@ -33,9 +35,13 @@ from core.errors import (
     MarketNotEditable,
     MarketNotFound,
     MarketNotOpen,
+    MarketNotPendingResolution,
     MarketNotSubmitted,
     MarketPendingResolution,
     ProposalIncomplete,
+    ProposalSuperseded,
+    RejectionIncomplete,
+    SecondAdministratorRequired,
     ValidationProblem,
 )
 from model.audit import AdminAction
@@ -44,7 +50,9 @@ from model.schemas import (
     PRICING_DECIMAL_PLACES,
     MarketCloseRequest,
     MarketDraftRequest,
+    OutcomeApprovalRequest,
     OutcomeProposalRequest,
+    OutcomeRejectionRequest,
 )
 from service import audit
 from service.audit import Actor
@@ -52,33 +60,38 @@ from service.closing import is_open_for_trading
 from service.validation import (
     problems_blocking_close,
     problems_blocking_proposal,
+    problems_blocking_rejection,
     problems_blocking_submission,
 )
 
 # The statuses from which a market's terms are final, and what a write to one
 # is told. [1.3] #3 froze OPEN; [F-4] #44 added CLOSED; [3.1] #9 added
 # PENDING_RESOLUTION, which is the table paying for itself — one row rather
-# than a third branch in each of the two write paths.
+# than a third branch in each of the two write paths — and [3.2] #10 added
+# APPROVED the same way.
 #
 # A table rather than a branch per status, because there are two write paths
 # and a branch per status means a branch in each of them. `core/errors.py`
 # already names where this is going — "[1.4] #4 widens it into a general rule
-# about non-draft markets" — and [3.4] #12's RESOLVED is then one more row.
+# about non-draft markets" — and [3.4] #12's SETTLED is then one more row.
 #
 # It now happens to list every status except DRAFT and SUBMITTED, which makes
 # a negative check look equivalent. It is not, twice over: each status owes the
 # administrator a different error, and "frozen" is a fact about writes to the
 # *terms* rather than about a market being finished.
 #
-# That second half is why neither `propose_outcome` nor `close_early` below
-# consults this table, though both look as though they should. CLOSED is in
-# here — a save to a closed market is refused — and CLOSED is exactly the state
-# a proposal requires, while OPEN is exactly the state an early close requires.
-# A shared lookup would have to answer three different questions from one row.
+# That second half is why none of `close_early`, `propose_outcome`,
+# `approve_outcome` or `reject_outcome` below consults this table, though every
+# one of them looks as though it should. CLOSED is in here — a save to a closed
+# market is refused — and CLOSED is exactly the state a proposal requires,
+# while OPEN is exactly the state an early close requires and
+# PENDING_RESOLUTION exactly the state a decision requires. A shared lookup
+# would have to answer four different questions from one row.
 _FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
     MarketStatus.OPEN: MarketAlreadyOpen,
     MarketStatus.CLOSED: MarketClosed,
     MarketStatus.PENDING_RESOLUTION: MarketPendingResolution,
+    MarketStatus.APPROVED: MarketAlreadyApproved,
 }
 
 
@@ -95,23 +108,43 @@ def _refuse_if_frozen(market: Market) -> None:
         raise error
 
 
-def _refuse_if_pending_resolution(market: Market) -> None:
-    """Raise if an outcome has already been proposed for this market.
+# The statuses in which a market's outcome is already named, and what an action
+# that needs one not to be is told. [3.1] #9 added PENDING_RESOLUTION, [3.2] #10
+# added APPROVED, and [3.4] #12's SETTLED is one more row.
+#
+# A table for the reason `_FROZEN_STATUS_ERRORS` is one — two callers, and a
+# branch per status would be a branch in each of them — and a table of its own
+# rather than rows in that one, because of when it is checked.
+_RESOLUTION_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
+    MarketStatus.PENDING_RESOLUTION: MarketPendingResolution,
+    MarketStatus.APPROVED: MarketAlreadyApproved,
+}
 
-    Checked before every other state gate by both callers that have one, and
-    that ordering is the whole reason this is a function rather than a row in
-    `_FROZEN_STATUS_ERRORS`. A market awaiting a second administrator has
-    stopped trading *and* has a proposal on it, so every other gate in this
-    file would describe it in a way that is true and useless — not closed, or
-    closed. The administrator's remedy is neither to wait nor to stop it. It is
-    to look at the proposal that is waiting, which is what this error names and
-    no other one does.
 
-    Two callers today. [3.2] #10's rejection is the third, and the only action
-    that will want a market in this state rather than refusing it.
+def _refuse_if_resolving(market: Market) -> None:
+    """Raise if an outcome has already been proposed for this market, or approved.
+
+    Checked before every other state gate by both callers, `close_early` and
+    `propose_outcome`, and that ordering is the whole reason this is not a row
+    in `_FROZEN_STATUS_ERRORS`. A market in resolution has stopped trading *and*
+    has a winner named on it, so every later gate in those functions would
+    describe it in a way that is true and useless: `propose_outcome` would
+    answer `market_not_closed`, telling the administrator to wait for a market
+    that will never be CLOSED again, and `close_early` would answer
+    `market_closed`, hiding the proposal. The remedy is to look at the outcome
+    already named, which is what these errors say and no other one does.
+
+    Each status keeps its own error because each takes a different remedy: a
+    pending market is waiting on a second administrator, an approved one on
+    nobody.
+
+    [3.2] #10's approval and rejection do not call this. They want a market in
+    PENDING_RESOLUTION rather than refusing it, and `_proposal_to_decide`
+    refuses everything else itself.
     """
-    if market.status is MarketStatus.PENDING_RESOLUTION:
-        raise MarketPendingResolution
+    error = _RESOLUTION_STATUS_ERRORS.get(market.status)
+    if error is not None:
+        raise error
 
 
 async def save(
@@ -329,13 +362,14 @@ async def close_early(
 
     - the market is open to traders right now — a draft or a submitted one is a
       409 saying there is nothing to stop, one that has already stopped is a
-      409 saying so, and one awaiting resolution names the proposal instead
+      409 saying so, one awaiting resolution names the proposal instead, and
+      one whose outcome is approved says that
     - the reason is usable, or it is a 422 naming the field
 
     And one thing deliberately does not: the market need not be the caller's.
 
-    **Any administrator may close any market, and this is the one route in this
-    service that is not scoped to the creator.** ADR 0007 made the tier flat,
+    **Any administrator may close any market, and this was the first route in
+    this service not scoped to the creator.** ADR 0007 made the tier flat,
     and a broken market that can only be stopped by an administrator who is
     asleep is not oversight. The 404-rather-than-403 rule everywhere else in
     this file protects *drafts*, which is [1.1] #1's requirement; this route
@@ -379,7 +413,7 @@ async def close_early(
     # one market, with two different reasons.
     market = await get_any(session, market_id, for_update=True)
 
-    _refuse_if_pending_resolution(market)
+    _refuse_if_resolving(market)
 
     # A market traders never saw. Split out because the remedy is the opposite
     # of the one below — this market may still be published — and because
@@ -434,9 +468,10 @@ async def propose_outcome(
     Four things have to hold, and each fails differently on purpose:
 
     - the market is the caller's own, or it is a 404 like every other read
-    - it is not already awaiting a decision — a 409 saying whose proposal is
-      waiting, because a second proposal would silently replace the thing
-      somebody is being asked to agree to
+    - it is not already awaiting a decision, or already decided — a 409 saying
+      whose proposal is waiting, or that it has been approved, because a second
+      proposal would silently replace the thing somebody is being asked to
+      agree to, or has agreed to
     - it is CLOSED — a 409 asking the administrator to wait, because proposing
       an outcome for a market people can still trade announces the answer to a
       question they are still betting on
@@ -454,9 +489,10 @@ async def propose_outcome(
     administrator with an answer to propose is not standing on the closing bell.
 
     Not one way, and that is the difference from `publish`. [3.2] #10's
-    rejection sends the market back to CLOSED and clears these columns, which
-    is why the audit entry rather than the row is the durable record that a
-    proposal was ever made.
+    `reject_outcome` sends the market back to CLOSED and clears these columns,
+    which is why the audit entry rather than the row is the durable record that
+    a proposal was ever made — and a rejected market is proposed for again
+    through this same function, by the same creator.
     """
     now = now or datetime.now(UTC)
 
@@ -467,7 +503,7 @@ async def propose_outcome(
     # would carry two entries proposing different outcomes for one market.
     market = await get(session, actor.id, market_id, for_update=True)
 
-    _refuse_if_pending_resolution(market)
+    _refuse_if_resolving(market)
     if market.status is not MarketStatus.CLOSED:
         raise MarketNotClosed
 
@@ -476,6 +512,9 @@ async def propose_outcome(
         raise ProposalIncomplete(problems)
 
     market.status = MarketStatus.PENDING_RESOLUTION
+    # New for every proposal, never reused, so a decision can say which one it
+    # read. [3.2] #10 refuses an approval or rejection that quotes any other.
+    market.proposal_id = uuid.uuid4()
     market.proposed_outcome_id = proposal.winning_outcome_id
     market.proposed_by_id = actor.id
     # Snapshotted, like the audit entry's actor and for the same reason: this
@@ -491,6 +530,210 @@ async def propose_outcome(
     await session.flush()
     await _record_proposal(session, actor, market, now)
     await session.commit()
+
+    return market
+
+
+async def approve_outcome(
+    session: AsyncSession,
+    actor: Actor,
+    market_id: uuid.UUID,
+    approval: OutcomeApprovalRequest,
+    *,
+    now: datetime | None = None,
+) -> Market:
+    """A second administrator agrees with a proposed outcome. [3.2] #10.
+
+    The two-person rule the resolution epic is built around: no single
+    administrator controls a payout. The proposer named a winner and gave
+    evidence; this is somebody else reading that evidence and agreeing with
+    it, and until it happens [3.4] #12 has nothing to settle.
+
+    Three things have to hold, checked in this order and failing differently on
+    purpose — `_proposal_to_decide` holds all three, for this and for
+    `reject_outcome`:
+
+    - there is a proposal waiting — an already-approved market is a 409 saying
+      so, and any other state is a 409 saying there is nothing to decide
+    - the caller is not the administrator who proposed it, or it is a 403
+    - it is the proposal the caller read, or it is a 409 `proposal_superseded`
+
+    **The body names a proposal and says nothing about it.** Everything an
+    approval agrees to is already on the row, so the approver supplies no
+    winner, no evidence and no note — a note would be free text only
+    `audit_svc` could ever read, and would blur the log's rule that a non-null
+    `reason` means an administrator had to explain themselves. What the market
+    id cannot say is *which* proposal: one can be rejected and replaced while
+    the approver is still reading it. `approval.proposal_id` says it. ADR 0016.
+
+    **Any administrator but the proposer may approve**, including one who did
+    not create the market — which is every approver there will ever be, because
+    `propose_outcome` is scoped to the creator and the approver must be someone
+    else. So this reads through `get_any`, like `close_early`, and for a
+    different reason: there the tier is flat, here the rule demands somebody
+    other than the author.
+
+    **APPROVED is a status, and only four columns move.** The status and the
+    approver's id, name and time. The proposal stays exactly as it was —
+    `proposed_outcome_id` is still the winner [3.4] #12 settles against — and
+    so do the terms and `closed_at`. The row then carries both identities,
+    which is the ticket's third acceptance criterion.
+
+    One way. There is no un-approve here; [3.3] #11's dispute window is where
+    an approved outcome can still be challenged.
+    """
+    now = now or datetime.now(UTC)
+
+    market = await _proposal_to_decide(
+        session, actor, market_id, approval.proposal_id
+    )
+
+    market.status = MarketStatus.APPROVED
+    market.approved_by_id = actor.id
+    # Snapshotted, like `proposed_by_username` and for the same reason: this
+    # service cannot resolve an id against `auth.users`. ADR 0003.
+    market.approved_by_username = actor.username
+    market.approved_at = now
+
+    # Flushed before the entry and committed after it, like every other
+    # decision in this file: the approval and the record of who gave it are one
+    # write. ADR 0006.
+    await session.flush()
+    await _record_approval(session, actor, market, now)
+    await session.commit()
+
+    return market
+
+
+async def reject_outcome(
+    session: AsyncSession,
+    actor: Actor,
+    market_id: uuid.UUID,
+    rejection: OutcomeRejectionRequest,
+    *,
+    now: datetime | None = None,
+) -> Market:
+    """A second administrator sends a proposed outcome back, with a reason. [3.2] #10.
+
+    The ticket's second acceptance criterion, and the one transition in this
+    service that moves a market backwards: PENDING_RESOLUTION to CLOSED. The
+    market is then exactly what it was before anybody proposed — the creator
+    may propose again, with a different winner or better evidence, through
+    `propose_outcome`.
+
+    The same gates as `approve_outcome`, through the same function and in the
+    same order, and then one more: the reason has to be usable, or it is a 422
+    naming the field. State and identity come first, so a proposer who types
+    "x" is told they may not decide at all rather than to write a longer
+    reason for a decision they may not make.
+
+    **The proposer may not reject their own proposal either.** ADR 0013 built
+    no un-propose, because a self-service withdrawal would be a second path
+    back to CLOSED with no second administrator in it. A proposer rejecting
+    their own proposal is that path by another name.
+
+    **All seven proposal columns are cleared; `closed_at` is not touched.** The
+    row holds no proposal afterwards, so a later one starts from nothing and a
+    reader never sees half of a rejected proposal beside half of a new one.
+    `closed_at` says when trading stopped, and a rejection does not change
+    that. The approver columns are null already, by the invariant on them.
+
+    **Who rejected it, why, and what was rejected live in the audit log.** No
+    `rejected_by_*` columns: once the proposal is gone from the row there is
+    nothing on it for a rejecter's name to describe. The entry carries the
+    reason in `reason` and the whole proposal in `context`, taken before the
+    columns are cleared — `audit_svc` holds no grant on this table, so a fact
+    not copied onto the entry is a fact nobody can recover. ADR 0016.
+    """
+    now = now or datetime.now(UTC)
+
+    market = await _proposal_to_decide(
+        session, actor, market_id, rejection.proposal_id
+    )
+
+    problems = problems_blocking_rejection(rejection)
+    if problems:
+        raise RejectionIncomplete(problems)
+
+    # Before the clear below, and that ordering is the whole of this line. The
+    # columns are about to be nulled, and after that this snapshot is the only
+    # description of the proposal being rejected anywhere in the system.
+    snapshot = _decision_snapshot(market)
+
+    market.status = MarketStatus.CLOSED
+    market.proposal_id = None
+    market.proposed_outcome_id = None
+    market.proposed_by_id = None
+    market.proposed_by_username = None
+    market.proposed_at = None
+    market.proposal_evidence_url = None
+    market.proposal_evidence_note = None
+
+    await session.flush()
+    await _record_rejection(
+        session, actor, market, rejection.reason.strip(), snapshot, now
+    )
+    await session.commit()
+
+    return market
+
+
+async def _proposal_to_decide(
+    session: AsyncSession,
+    actor: Actor,
+    market_id: uuid.UUID,
+    proposal_id: uuid.UUID | None,
+) -> Market:
+    """The market an approval or a rejection is about, locked, or why not. [3.2] #10.
+
+    One function for both decisions so the two cannot drift apart on the part
+    that matters most: which markets may be decided, and by whom. The order is
+    the contract.
+
+    1. **Locked, and unscoped.** `get_any` rather than `get`, because the
+       decider is never the creator (see `approve_outcome`). Locked because
+       the checks below and the caller's write are one decision, and three
+       races end on this row: a double-clicked approve, two administrators
+       rejecting at once, and one approving while another rejects. Under READ
+       COMMITTED the loser blocks here and re-reads the row the winner
+       committed, so it sees APPROVED or CLOSED and is refused below. ADR 0015.
+    2. **State.** An approved market is `market_already_approved` — checked
+       first, so the proposer looking at a market somebody else has approved
+       is told the fact that matters. Anything else that is not
+       PENDING_RESOLUTION has no proposal to decide.
+    3. **Identity.** The caller's id against `proposed_by_id`, never the
+       username, which can be reissued. Not against `creator_id`: the proposer
+       is the creator today, but the rule this ticket enforces is about who
+       proposed. That is the whole of the two-person rule.
+    4. **Which proposal.** The `proposal_id` the caller quotes against the one
+       on the row, or `proposal_superseded`. This is the check the lock cannot
+       make: a lock catches two decisions that overlap, and this catches one
+       that arrives after a whole reject-and-repropose cycle has committed
+       beneath it, which would otherwise approve — or clear, with a reason
+       written about something else — a proposal the caller never read. After
+       identity, so a proposer on a stale page is still told they may not
+       decide at all. A null matches only a proposal made before proposal ids
+       existed, which is pending with a null; one made since has an id, so a
+       stale null is refused like any other stale id.
+
+    A draft's existence is disclosed to another administrator here as a 409
+    rather than hidden behind a 404, exactly as `close_early` discloses it. It
+    is the same trade ADR 0014 made, and it is narrow: the 409 says a market
+    with that id exists and is not awaiting a decision, and says nothing about
+    what it contains.
+    """
+    market = await get_any(session, market_id, for_update=True)
+
+    if market.status is MarketStatus.APPROVED:
+        raise MarketAlreadyApproved
+    if market.status is not MarketStatus.PENDING_RESOLUTION:
+        raise MarketNotPendingResolution
+
+    if market.proposed_by_id == actor.id:
+        raise SecondAdministratorRequired
+
+    if market.proposal_id != proposal_id:
+        raise ProposalSuperseded
 
     return market
 
@@ -527,12 +770,16 @@ async def get_any(
     because of that: an unscoped read is a decision, so it should be visible at
     the call site and greppable from here.
 
-    Safe for its one caller and for a reason that does not generalise.
-    `close_early` refuses anything that is not open to traders, and an open
-    market is one every trader can already see, so there is no draft here to
-    leak. Point a read route at this instead of `get` and [1.1] #1's rule that
-    a draft is invisible to everyone but its creator is gone — silently, and
-    with no test failing that does not already exist. ADR 0014.
+    Safe for its three callers and for a reason that does not generalise.
+    `close_early` acts only on a market that is open to traders, and
+    `approve_outcome` and `reject_outcome` only on one with a proposal waiting —
+    markets every trader has already seen — and every one of them refuses
+    anything else before it reads or writes a single term. What leaks is that
+    a market with that id exists, as a 409 rather than a 404, and nothing about
+    its contents: the trade ADR 0014 made, and ADR 0016 made again. Point a
+    read route at this instead of `get` and [1.1] #1's rule that a draft is
+    invisible to everyone but its creator is gone — silently, and with no test
+    failing that does not already exist.
     """
     return await _load(session, market_id, creator_id=None, for_update=for_update)
 
@@ -563,19 +810,21 @@ async def _record(
     question as the label — so that every action against a market names it the
     same way and a reader can scan one column.
 
-    What varies is `context`, and only three shapes exist: the terms
-    (`_record_terms`), the proposal (`_record_proposal`) and the closing time
-    an early close cut short (`_record_early_close`).
+    What varies is `context`, and only four shapes exist: the terms
+    (`_record_terms`), the proposal (`_record_proposal`), the closing time an
+    early close cut short (`_record_early_close`), and the proposal a second
+    administrator decided (`_record_approval`, `_record_rejection`).
 
-    `reason` is the free-text justification an administrator gave, and only
-    [2.3] #7 has one — [3.2] #10's rejection and [4.2] #14's suspension will be
-    the others. It is deliberately not where evidence goes: a URL and a note
-    supporting a proposed outcome travel together in `context` alongside the
-    outcome they support, because splitting a single body of evidence across
-    two columns would make it unreadable. A reason explains a decision; evidence
-    supports a claim. Defaulted to None so the three actions that have nothing
-    to explain record nothing, rather than an empty string that a reader would
-    have to tell apart from a null.
+    `reason` is the free-text justification an administrator gave, and two
+    actions here have one — [2.3] #7's early close and [3.2] #10's rejection;
+    [4.2] #14's suspension will be the next, in the auth service. It is
+    deliberately not where evidence goes: a URL and a note supporting a
+    proposed outcome travel together in `context` alongside the outcome they
+    support, because splitting a single body of evidence across two columns
+    would make it unreadable. A reason explains a decision; evidence supports a
+    claim. Defaulted to None so the four actions that have nothing to explain
+    record nothing, rather than an empty string that a reader would have to
+    tell apart from a null.
     """
     await audit.record(
         session,
@@ -708,8 +957,68 @@ async def _record_proposal(
     )
 
 
+async def _record_approval(
+    session: AsyncSession, actor: Actor, market: Market, now: datetime
+) -> None:
+    """Append the audit entry for a proposal a second administrator agreed to. [3.2] #10.
+
+    Under the approver. The proposer's own `market.outcome_proposed` entry
+    already names them, so the log shows the two-person rule as two entries by
+    two actors about one market — which is how a reader checks it was kept
+    without trusting the column that says so.
+
+    Carries who proposed and when, as well as what, because this entry should
+    answer "what exactly was agreed, and with whom" on its own. The proposal
+    columns are still on the market today, but `audit_svc` cannot read them,
+    and the entry must not depend on them staying there.
+    """
+    await _record(
+        session,
+        actor,
+        market,
+        AdminAction.MARKET_OUTCOME_APPROVED,
+        now,
+        context=_decision_snapshot(market),
+    )
+
+
+async def _record_rejection(
+    session: AsyncSession,
+    actor: Actor,
+    market: Market,
+    reason: str,
+    snapshot: dict[str, object],
+    now: datetime,
+) -> None:
+    """Append the audit entry for a proposal sent back. [3.2] #10.
+
+    Takes the snapshot as an argument rather than building it, unlike every
+    other recorder in this file, and that is not an inconsistency. By the time
+    this runs `reject_outcome` has cleared the proposal from the market, so a
+    snapshot built here would describe nothing; the caller took it while there
+    was still something to describe.
+
+    With this entry and the proposer's, the rejected proposal is reconstructable
+    from the log alone — what was proposed, by whom, when, on what evidence, who
+    rejected it and why — which is what lets the market row forget it.
+    """
+    await _record(
+        session,
+        actor,
+        market,
+        AdminAction.MARKET_OUTCOME_REJECTED,
+        now,
+        reason=reason,
+        context=snapshot,
+    )
+
+
 def _proposal_snapshot(market: Market) -> dict[str, object]:
     """Which outcome was proposed, and what was offered in support of it.
+
+    Led by `proposal_id`, so that an approval or a rejection entry — both of
+    which carry this snapshot — names exactly which proposal entry it decided,
+    even for a market proposed for twice.
 
     The label as well as the id, because the id is a join key for a table no
     reader of this log holds a grant on: `audit_svc` may read the log and
@@ -729,10 +1038,33 @@ def _proposal_snapshot(market: Market) -> dict[str, object]:
         (o for o in market.outcomes if o.id == market.proposed_outcome_id), None
     )
     return {
+        # Null, not the string "None", for a proposal made before ids existed:
+        # a reviewer quotes this value back, and "None" is not a UUID.
+        "proposal_id": (
+            str(market.proposal_id) if market.proposal_id is not None else None
+        ),
         "winning_outcome_id": str(market.proposed_outcome_id),
         "winning_outcome": winner.label if winner is not None else None,
         "evidence_url": market.proposal_evidence_url,
         "evidence_note": market.proposal_evidence_note,
+    }
+
+
+def _decision_snapshot(market: Market) -> dict[str, object]:
+    """The proposal a second administrator decided, and whose it was. [3.2] #10.
+
+    `_proposal_snapshot` plus the three facts a proposal entry does not need to
+    repeat — its own actor and `occurred_at` already say who and when — and a
+    decision entry does, because its actor is somebody else. One builder for
+    both the approval and the rejection, so the two entries have identical
+    keys and "what was decided about this proposal" reads the same way
+    whichever way it went.
+    """
+    return {
+        **_proposal_snapshot(market),
+        "proposed_by_id": str(market.proposed_by_id),
+        "proposed_by_username": market.proposed_by_username,
+        "proposed_at": _iso_or_none(market.proposed_at),
     }
 
 
@@ -855,9 +1187,10 @@ async def _find_by_draft_key(
     refused the same way a second publish is.
 
     Every autosave pays for this, and that is fine. It is one row, held for
-    one short transaction, and it is the lock `publish`, `close_early` and
-    `propose_outcome` already take. Two autosaves for one form now queue
-    rather than interleave, which is what last-write-wins meant anyway.
+    one short transaction, and it is the lock `publish`, `close_early`,
+    `propose_outcome`, `approve_outcome` and `reject_outcome` already take. Two
+    autosaves for one form now queue rather than interleave, which is what
+    last-write-wins meant anyway.
 
     A row that does not exist locks nothing, so the insert race handled in
     `save` is unchanged: two first saves both find nothing, the unique

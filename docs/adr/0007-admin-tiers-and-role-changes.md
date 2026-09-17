@@ -125,6 +125,17 @@ The answer is to run the demonstration with two administrators rather than to
 weaken the rule — which the role-change endpoint above is what makes cheap,
 and which [3.2] #10 requires anyway.
 
+> **Corrected 2026-09-17, by [ADR 0016](0016-deciding-a-proposal.md), [3.2] #10.**
+> The paragraph above is not what shipped. [3.1] #9 did not enforce
+> `proposer_id != creator_id`; it did the opposite and made the proposer *be*
+> the creator, because `propose_outcome` reads through the creator-scoped
+> `get` (ADR 0013, "Proposing stays with the creator"). The first line of the
+> table below is therefore not enforced anywhere. The second is, by [3.2] #10,
+> on the account id and on rejection as well as approval — and it is
+> sufficient on its own for the property this section is after: no single
+> administrator can both name a winner and make it final. The creator, as
+> proposer, is simply the first of the two people.
+
 So the full separation of duties this project enforces is three identity
 comparisons on columns that already exist, and no role vocabulary at all:
 

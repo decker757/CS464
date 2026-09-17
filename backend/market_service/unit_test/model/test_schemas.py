@@ -27,7 +27,9 @@ from model.schemas import (
     MAX_URL_LENGTH,
     MarketDraftRequest,
     MarketOut,
+    OutcomeApprovalRequest,
     OutcomeProposalRequest,
+    OutcomeRejectionRequest,
 )
 
 
@@ -114,7 +116,10 @@ def test_both_statuses_are_accepted_on_the_way_in(status: str) -> None:
     assert MarketDraftRequest(**_payload(status=status)).status == status
 
 
-@pytest.mark.parametrize("status", ["open", "closed", "resolved", "published"])
+@pytest.mark.parametrize(
+    "status",
+    ["open", "closed", "pending_resolution", "approved", "resolved", "published"],
+)
 def test_a_status_this_ticket_does_not_own_is_refused(status: str) -> None:
     """OPEN arrives with [1.3] #3 and the rest with epic 3. Accepting one now
     would let a market skip the publish step entirely."""
@@ -163,12 +168,18 @@ class _FakeMarket:
         self.closed_at = None
         # [3.1] #9. Null together, which is every market that has not had an
         # outcome proposed for it — the state this stand-in is in.
+        self.proposal_id = None
         self.proposed_outcome_id = None
         self.proposed_by_id = None
         self.proposed_by_username = None
         self.proposed_at = None
         self.proposal_evidence_url = None
         self.proposal_evidence_note = None
+        # [3.2] #10. Null together unless a second administrator has approved
+        # the proposal, which this stand-in has not got.
+        self.approved_by_id = None
+        self.approved_by_username = None
+        self.approved_at = None
 
 
 def test_naive_timestamps_are_stamped_as_utc_on_the_way_out() -> None:
@@ -393,3 +404,79 @@ def test_an_over_long_url_is_refused() -> None:
             winning_outcome_id=uuid.uuid4(),
             evidence_url="https://mas.gov.sg/" + "x" * MAX_URL_LENGTH,
         )
+
+
+# --- [3.2] #10 the rejection request --------------------------------------
+# The early close's shape again: the key is required, because a rejection with
+# no reason at all is a malformed request rather than a half-typed one, but a
+# blank reason still parses, so the one refusal a rejecter can fix by typing
+# comes back in this service's envelope from service/validation.py.
+def test_a_rejection_needs_a_reason() -> None:
+    with pytest.raises(ValidationError):
+        OutcomeRejectionRequest(proposal_id=uuid.uuid4())  # type: ignore[call-arg]
+
+
+def test_a_blank_rejection_reason_still_parses() -> None:
+    """Shape, not completeness."""
+    assert OutcomeRejectionRequest(proposal_id=uuid.uuid4(), reason="").reason == ""
+
+
+def test_an_over_long_rejection_reason_is_refused() -> None:
+    """A ceiling, not an opinion about how much explaining a rejection needs."""
+    with pytest.raises(ValidationError):
+        OutcomeRejectionRequest(
+            proposal_id=uuid.uuid4(), reason="x" * (MAX_PROSE_LENGTH + 1)
+        )
+
+
+# [3.2] #10. Both decisions name the proposal they were made about, and neither
+# may leave it out: an optional precondition is one a client forgets, and the
+# request it lets through is the stale one it exists to refuse. ADR 0016.
+def test_a_rejection_needs_a_proposal_id() -> None:
+    with pytest.raises(ValidationError):
+        OutcomeRejectionRequest(reason="A reason long enough to pass.")  # type: ignore[call-arg]
+
+
+def test_a_null_proposal_id_is_a_value_not_an_absence() -> None:
+    """Required and nullable. The key must be sent; null is what a reviewer
+    quotes for a proposal made before proposal ids existed, which has none."""
+    assert OutcomeApprovalRequest(proposal_id=None).proposal_id is None
+    assert (
+        OutcomeRejectionRequest(proposal_id=None, reason="A reason long enough.")
+        .proposal_id
+        is None
+    )
+
+
+def test_an_approval_needs_a_proposal_id() -> None:
+    with pytest.raises(ValidationError):
+        OutcomeApprovalRequest()  # type: ignore[call-arg]
+
+
+def test_a_proposal_id_that_is_not_a_uuid_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        OutcomeApprovalRequest(proposal_id="the latest one")  # type: ignore[arg-type]
+
+
+def test_an_approval_carries_nothing_but_which_proposal() -> None:
+    """No winner, no evidence and no note: an approver agrees with what is on
+    the row, and a field that could change it is a field that could approve
+    something other than what was reviewed."""
+    assert set(OutcomeApprovalRequest.model_fields) == {"proposal_id"}
+
+
+def test_the_proposal_id_is_null_on_the_way_out_until_a_proposal() -> None:
+    payload = json.loads(MarketOut.model_validate(_FakeMarket()).model_dump_json())
+
+    assert "proposal_id" in payload
+    assert payload["proposal_id"] is None
+
+
+def test_the_approval_fields_are_null_on_the_way_out() -> None:
+    """Present on every market and null until an approval, so the frontend
+    reads one shape whatever state the market is in."""
+    payload = json.loads(MarketOut.model_validate(_FakeMarket()).model_dump_json())
+
+    assert payload["approved_by_id"] is None
+    assert payload["approved_by_username"] is None
+    assert payload["approved_at"] is None

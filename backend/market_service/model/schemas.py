@@ -41,11 +41,12 @@ MAX_QUESTION_LENGTH = 500
 MAX_URL_LENGTH = 2048
 
 # Every free-text field an administrator types into a textarea: `description`,
-# `resolution_criteria`, [3.1] #9's `evidence_note` and [2.3] #7's close
-# `reason`. All four land in unbounded `Text` columns, so this is here to stop
-# a request carrying a megabyte rather than to have an opinion about how much
-# explaining any of them needs — which is why one number covers all of them. It
-# was two bare literals until the third use arrived.
+# `resolution_criteria`, [3.1] #9's `evidence_note`, [2.3] #7's close `reason`
+# and [3.2] #10's rejection `reason`. All five land in unbounded `Text`
+# columns, so this is here to stop a request carrying a megabyte rather than to
+# have an opinion about how much explaining any of them needs — which is why
+# one number covers all of them. It was two bare literals until the third use
+# arrived.
 MAX_PROSE_LENGTH = 5000
 
 # Mirrors Numeric(18, 4) on the pricing columns in model/entities.py: fourteen
@@ -274,6 +275,86 @@ class MarketCloseRequest(BaseModel):
     )
 
 
+# The field both decisions carry, declared once so the two cannot describe it
+# differently. It is a precondition rather than information: the decider is not
+# telling the service anything new, they are saying which proposal they read.
+#
+# Required, and nullable. The key must always be sent; its value is null only
+# for a proposal made before [3.2] #10 gave proposals ids, which reads back
+# with `proposal_id: null` and whose audit entry has no `proposal_id` at all.
+# That is safe because such a proposal is the only thing a null can match:
+# every proposal made since is minted an id, and a rejection returns the market
+# to CLOSED, so a market cannot be pending with a null id again. A stale null
+# quoted against a replacement is refused like any other stale id.
+_PROPOSAL_ID_FIELD_DESCRIPTION = (
+    "The `proposal_id` of the proposal the administrator reviewed, exactly as "
+    "it was read — from `GET /markets/{id}`, or from the "
+    "`market.outcome_proposed` audit entry's `context`. Send `null` only for "
+    "a proposal that has none, which is one made before proposal ids existed. "
+    "If the market has since had that proposal rejected and a new one made, "
+    "the decision is refused as `409 proposal_superseded` rather than applied "
+    "to a proposal nobody here has read."
+)
+
+
+class OutcomeApprovalRequest(BaseModel):
+    """The body of POST /markets/{id}/approve-outcome. [3.2] #10
+
+    Only which proposal is being approved, and nothing about it. The approver
+    agrees with a winner and evidence already on the row, so there is nothing
+    for them to supply — but there has to be a way to say *which* winner and
+    evidence, because the market id alone does not. A proposal can be rejected
+    and replaced while the approver is still reading it, and an approval keyed
+    by the market would then land on the replacement. ADR 0016.
+
+    Required rather than optional, because an optional precondition is one a
+    client can forget, and the request it lets through is exactly the stale
+    one this exists to refuse. Nullable, for the proposals that predate ids —
+    see `_PROPOSAL_ID_FIELD_DESCRIPTION` for why a null cannot match anything
+    else. A key that is absent is still FastAPI's 422.
+    """
+
+    proposal_id: uuid.UUID | None = Field(description=_PROPOSAL_ID_FIELD_DESCRIPTION)
+
+
+class OutcomeRejectionRequest(BaseModel):
+    """The body of POST /markets/{id}/reject-outcome. [3.2] #10
+
+    `proposal_id` is the same precondition `OutcomeApprovalRequest` carries, for
+    the same reason: a rejection written about one proposal must not clear its
+    replacement.
+
+    `reason` is split exactly as `MarketCloseRequest` splits it: the key's
+    presence is shape and is checked here, so a body without it is FastAPI's
+    own 422; what it says is content, so a blank or one-word reason parses and
+    is refused by `service/validation.py` as `rejection_incomplete`, keyed by
+    field, in the envelope the modal already renders.
+
+    An approval carries no reason, and the asymmetry is the point. An approver
+    agrees with evidence that is already on the row. A rejecter is overruling
+    it, and the proposal it cleared is gone from the market the moment this
+    commits — so the reason, in the audit log beside a copy of that proposal,
+    is the only explanation anybody will ever have of why it was sent back.
+    ADR 0016.
+    """
+
+    proposal_id: uuid.UUID | None = Field(description=_PROPOSAL_ID_FIELD_DESCRIPTION)
+
+    reason: str = Field(
+        max_length=MAX_PROSE_LENGTH,
+        description=(
+            "Why this proposed outcome is being sent back. At least 10 "
+            "characters. Recorded in the audit log against the administrator "
+            "who rejected it, and kept nowhere else — it is not a field on the "
+            "market, and the proposal it rejects is cleared from the market."
+        ),
+        examples=[
+            "The MAS print cited is the headline figure, not core inflation; the "
+            "core figure for December 2026 has not been published yet."
+        ],
+    )
+
+
 class OutcomeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -361,14 +442,24 @@ class MarketOut(_UtcTimestamps):
 
     # --- the proposed outcome. [3.1] #9 -------------------------------------
     # All null together, or all set together. A non-null `proposed_at` is the
-    # cheapest test for "has an outcome been proposed", and it agrees with
-    # `status == "pending_resolution"` by construction: the six are written in
-    # the one transaction that sets the status.
+    # cheapest test for "is there an outcome on this market", and it agrees
+    # with `status` being `pending_resolution` or `approved` by construction:
+    # the seven are written in the one transaction that sets the first, kept by
+    # the approval that sets the second, and nulled by [3.2] #10's rejection in
+    # the one transaction that sends the market back to `closed`.
+    #
+    # `proposal_id` is new for every proposal, and is what the approve and
+    # reject bodies must send back. Read it from the same response the reviewer
+    # is looking at, never from a later fetch, or the check it exists for
+    # passes against a proposal the reviewer has not seen. The one exception to
+    # "all set together": a proposal made before [3.2] #10 is pending with this
+    # null, and is decided by sending the null back.
     #
     # `proposed_outcome_id` names a member of this response's own `outcomes`
     # array, so the frontend renders the winner's label by looking it up there
     # rather than being sent the label twice. The label on the outcome is the
     # only copy, which is what stops the two drifting.
+    proposal_id: uuid.UUID | None
     proposed_outcome_id: uuid.UUID | None
     proposed_by_id: uuid.UUID | None
 
@@ -382,6 +473,20 @@ class MarketOut(_UtcTimestamps):
 
     proposal_evidence_url: str | None
     proposal_evidence_note: str | None
+
+    # --- the approval. [3.2] #10 --------------------------------------------
+    # All null unless `status == "approved"`, and set together in the one
+    # transaction that sets it. The seven proposal fields above stay filled in
+    # beside them, so an approved market answers "who proposed this" and "who
+    # agreed" in one response — the ticket's third acceptance criterion.
+    #
+    # `approved_by_id` never equals `proposed_by_id`; the service refuses the
+    # approval that would make it so. A rejection does not appear here at all:
+    # it sends the market back to `closed` and nulls every `proposed_*` field,
+    # and who rejected it is in the audit log.
+    approved_by_id: uuid.UUID | None
+    approved_by_username: str | None
+    approved_at: datetime | None
 
     # --- derived, read-only -------------------------------------------------
     # [1.2] #2's second and third acceptance criteria. Both are the q = 0 case

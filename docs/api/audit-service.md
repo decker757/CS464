@@ -149,9 +149,31 @@ would let a stale audit schema abort a working admin action.
 | `market.published` | market_service | [1.3] #3 |
 | `market.closed_early` | market_service | [2.3] #7 |
 | `market.outcome_proposed` | market_service | [3.1] #9 |
+| `market.outcome_approved` | market_service | [3.2] #10 |
+| `market.outcome_rejected` | market_service | [3.2] #10 |
 
 Treat an unrecognised value as opaque rather than as an error: a newer service
 may be writing an action type this build has never heard of.
+
+The two [3.2] #10 entries are written under the administrator who **decided**,
+never the proposer, and carry the same eight `context` keys: `proposal_id`,
+`winning_outcome_id`, `winning_outcome`, `evidence_url`, `evidence_note`,
+`proposed_by_id`, `proposed_by_username` and `proposed_at`.
+`market.outcome_proposed` carries `proposal_id` too, so with one market proposed
+for more than once, `context.proposal_id` says exactly which proposal each
+decision was about.
+`market.outcome_rejected` also has the rejecting administrator's `reason`;
+`market.outcome_approved` has none. A rejection clears the proposal from the
+market, so its entry — beside the proposer's own `market.outcome_proposed` — is
+the only place the rejected proposal still exists.
+
+Until the market service has a read for other administrators' markets,
+`?action_type=market.outcome_proposed` is also how an approver finds a proposal
+waiting on them: `target_id` is the market, `actor_id` the proposer, and
+`context.proposal_id` is the id the approve or reject request has to quote. A
+`market.outcome_proposed` entry written before [3.2] #10 has no `proposal_id`
+key; that proposal has none, and the request quotes `null`. A decision on it
+records `"proposal_id": null`. See [`market-service.md`](market-service.md).
 
 Note what is **not** logged, and will not be:
 
@@ -182,7 +204,7 @@ await audit.record(
     target_type="market",
     target_id=market.id,
     target_label=market.question,
-    reason=payload.reason,            # the free text [2.3] #7 and [4.2] #14 demand
+    reason=payload.reason,            # the free text [2.3] #7, [3.2] #10 and [4.2] #14 demand
     context={"close_time": market.close_time.isoformat()},
 )
 # no commit here: the caller's transaction commits both, or neither
