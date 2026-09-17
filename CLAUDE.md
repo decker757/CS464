@@ -12,8 +12,9 @@ in GitHub Project v2 #6.
 backend/auth_service/     registration, login, logout, sessions   [A-1..A-3]
 backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3],
                           closing them at their closing time [F-4] or early by
-                          hand [2.3], and proposing an outcome once they have
-                          [3.1]
+                          hand [2.3], proposing an outcome once they have
+                          [3.1], and a second admin approving or rejecting it
+                          [3.2]
 backend/audit_service/    reading the shared admin action log     [4.3]
 backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
@@ -159,8 +160,8 @@ already passed, however the status column reads. Same test as everywhere else:
 which way does the error point. Reading the status here would accept a close in
 the window before the sweep and write an audit entry claiming an administrator
 stopped trading that the clock had already stopped. It is the only request that
-writes CLOSED, it does not touch `close_time`, and a `closed_at` earlier than
-`close_time` is how you tell the two kinds of close apart. ADR 0014.
+stops trading by hand, it does not touch `close_time`, and a `closed_at` earlier
+than `close_time` is how you tell the two kinds of close apart. ADR 0014.
 
 The sweep is not a scan and the polling cost is not the interesting question:
 `ix_markets_due_close` is partial on `status = 'open'`, so it reads an ordered
@@ -170,6 +171,40 @@ read-only probes. An automatic close writes no audit entry — the clock is not
 an actor, and the `market.published` entry already recorded the `close_time`
 that was approved — so every `market.closed_early` entry in the log is by
 definition a human one, which is the whole reason it is named that way.
+
+A proposal is decided by a second administrator ([3.2] #10), and like the early
+close that request is not scoped to the creator: `approve-outcome` and
+`reject-outcome` read through `get_any`, because the proposer is always the
+creator and the decider must be somebody else. The proposer is refused on
+**both** with `403 second_administrator_required` — rejecting your own proposal
+is the un-propose ADR 0013 declined — and the rule is
+`actor.id == proposed_by_id`, never the username and never `creator_id`. State
+is checked before identity and identity before the reason, in the one
+`_proposal_to_decide` both share. APPROVED is a status rather than
+PENDING_RESOLUTION with `approved_at` set, so every later write is
+`market_already_approved` and [3.3] #11 and [3.4] #12 get a
+`status = 'approved'` working set shaped like the close sweep's. A rejection
+sends the market back to CLOSED, nulls all seven proposal columns and leaves
+`closed_at` alone. There are no `rejected_by_*` columns: the
+`market.outcome_rejected` entry, carrying the reason and the proposal
+snapshotted *before* the clear, is the record — take that snapshot after the
+clear and the log loses the only copy.
+
+**A decision names the proposal, because the lock cannot.** Approve and reject
+both require the `proposal_id` the reviewer read, and `_proposal_to_decide`
+refuses any other as `409 proposal_superseded` after the identity check. The
+key is required and the value nullable: a proposal pending before
+`sql/migrations/0006` has no id and is decided by quoting null. Do not
+"fix" that with a backfill — a generated id lives only on a row the reviewer
+cannot read, so it would strand exactly the proposals it was meant to rescue. The
+row lock only serialises decisions that overlap. A reject-and-repropose that
+has *finished* while a reviewer is still reading leaves a market that is
+PENDING_RESOLUTION, by the same proposer, locked just as happily — so a
+decision keyed by the market id alone approves a winner nobody on that screen
+saw, or clears it with a reason written about another. Whenever a request
+decides about a thing that can be replaced under the same parent row, make it
+quote that thing's identity, and test it with the whole replacement cycle
+committed between the read and the write. ADR 0016.
 
 **An admin is made by hand, and needs a fresh login.** Registration always
 creates a trader. Promotion is `UPDATE auth.users SET role = 'admin' WHERE
@@ -424,6 +459,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0013** proposing an outcome, from CLOSED only, with evidence, one at a time
 - **0014** closing a market early, by any admin, with the reason in the log
 - **0015** every read that decides a write is locked, and the wider lock goes first
+- **0016** deciding a proposal, by any admin but the proposer, with APPROVED as a status
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

@@ -1,12 +1,17 @@
 """When is a market complete enough to move on?
 
-Two pure functions over a Market entity, with no session, no HTTP and no clock
-of their own. `problems_blocking_submission` asks whether the terms are ready
-to leave DRAFT, and `problems_blocking_proposal` asks whether a proposed
-outcome and its evidence are ready to leave CLOSED ([3.1] #9). They share this
-module because they share a shape and a caller's contract — a list of problems
-addressed to form fields, every one of them, so the administrator fixes them in
-one pass — and because they share the URL check.
+Pure functions with no session, no HTTP and no clock of their own.
+`problems_blocking_submission` asks whether the terms are ready to leave DRAFT,
+and `problems_blocking_proposal` asks whether a proposed outcome and its
+evidence are ready to leave CLOSED ([3.1] #9). They share this module because
+they share a shape and a caller's contract — a list of problems addressed to
+form fields, every one of them, so the administrator fixes them in one pass —
+and because they share the URL check.
+
+Two smaller rules follow them, about the free-text reason an administrator
+gives for stopping a market early ([2.3] #7) and for rejecting a proposal
+([3.2] #10). They take the request rather than the market, and share one
+private check, because a reason is a reason wherever it is typed.
 
 The first was written this way for three reasons:
 
@@ -33,7 +38,11 @@ from pydantic import HttpUrl, TypeAdapter, ValidationError
 from core.clock import as_utc
 from core.errors import ValidationProblem
 from model.entities import Market
-from model.schemas import MarketCloseRequest, OutcomeProposalRequest
+from model.schemas import (
+    MarketCloseRequest,
+    OutcomeProposalRequest,
+    OutcomeRejectionRequest,
+)
 
 # A market with one outcome is not a market. Two is binary, more is
 # categorical, and [1.2] #2's max platform loss of b·ln(n) needs n ≥ 2 to mean
@@ -61,6 +70,16 @@ MIN_EVIDENCE_NOTE_LENGTH = 10
 # different rules about different fields that happen to agree on a number
 # today, and folding them together would make raising one raise all of them.
 MIN_CLOSE_REASON_LENGTH = 10
+
+# [3.2] #10. And once more for the reason a second administrator gives for
+# sending a proposed outcome back. The rejection clears the proposal from the
+# market, so this text and the audit entry's copy of what it cleared are the
+# whole of the record, and the proposer is owed more than "no".
+#
+# Its own constant for the reason the one above gives, though the field has the
+# same name: a close and a rejection are different decisions, and a reason to
+# raise the floor on one is not a reason to raise it on the other.
+MIN_REJECTION_REASON_LENGTH = 10
 
 # Reuses pydantic's parser rather than a hand-rolled regex, and it already
 # restricts the scheme to http and https.
@@ -415,22 +434,62 @@ def problems_blocking_close(request: MarketCloseRequest) -> list[ValidationProbl
     field. The list is the shape the envelope is built from, not a prediction
     that there will be more.
     """
-    reason = request.reason.strip()
+    return _reason_problems(
+        request.reason,
+        minimum=MIN_CLOSE_REASON_LENGTH,
+        record_of="why this market was stopped before its closing time",
+    )
+
+
+# --- rejecting a proposed outcome. [3.2] #10 ------------------------------
+def problems_blocking_rejection(
+    request: OutcomeRejectionRequest,
+) -> list[ValidationProblem]:
+    """Every reason this proposal cannot be rejected. Empty means it can.
+
+    The same rule as `problems_blocking_close`, about a different decision, and
+    it leaves the same things out for the same reasons. It does not check the
+    market's status, and it does not check who is asking: whether there is a
+    proposal to reject, and whether this administrator may reject it, are facts
+    about the market and the caller with their own 409 and 403.
+    `service/market_service.py::reject_outcome` settles both before it calls
+    this, so a proposer sending "x" is told they may not decide rather than
+    that their reason is too short.
+    """
+    return _reason_problems(
+        request.reason,
+        minimum=MIN_REJECTION_REASON_LENGTH,
+        record_of="why this proposal was sent back",
+    )
+
+
+def _reason_problems(
+    raw: str, *, minimum: int, record_of: str
+) -> list[ValidationProblem]:
+    """The one check behind both reason rules above.
+
+    Shared because the two rules are the same check today — trimmed, not blank,
+    at least a floor — and a second copy would be a second place for "blank"
+    to start meaning something different. The floor is an argument rather than
+    a constant here, so the two rules still move independently. Addressed to
+    `reason` because that is the field on both requests; a third caller whose
+    field is named otherwise is a sign this has stopped being the same rule.
+    """
+    reason = raw.strip()
 
     if not reason:
         return [
             ValidationProblem(
                 "reason",
-                "A reason is required. It is the only record of why this market "
-                "was stopped before its closing time.",
+                f"A reason is required. It is the only record of {record_of}.",
             )
         ]
 
-    if len(reason) < MIN_CLOSE_REASON_LENGTH:
+    if len(reason) < minimum:
         return [
             ValidationProblem(
                 "reason",
-                f"The reason must be at least {MIN_CLOSE_REASON_LENGTH} characters, "
+                f"The reason must be at least {minimum} characters, "
                 "so that somebody reading the log later can tell what happened.",
             )
         ]

@@ -98,8 +98,8 @@ class AdminAction(StrEnum):
     # a human intervened, which is precisely the thing worth being able to find.
     #
     # The justification rides in the entry's `reason` column rather than in
-    # `context`, because it is the same kind of value [3.2] #10's rejection and
-    # [4.2] #14's suspension will put there, and one column is what lets a
+    # `context`, because it is the same kind of value [3.2] #10's rejection
+    # puts there and [4.2] #14's suspension will, and one column is what lets a
     # reader ask "what did somebody explain, and how" across all of them.
     MARKET_CLOSED_EARLY = "market.closed_early"
 
@@ -113,3 +113,26 @@ class AdminAction(StrEnum):
     # story asks for the decision to be documented, and a column that a later
     # action overwrites does not document anything.
     MARKET_OUTCOME_PROPOSED = "market.outcome_proposed"
+
+    # [3.2] #10. A second administrator agreed with a proposal.
+    #
+    # Written under the approver, never the proposer — the proposer's own
+    # `market.outcome_proposed` entry already names them, and the two entries
+    # side by side are the two-person rule as a reader of the log sees it. No
+    # `reason`: an approver is agreeing with evidence already given, and a null
+    # here keeps `reason IS NOT NULL` meaning "somebody had to explain
+    # themselves". `context` repeats the proposal it agreed to — its
+    # `proposal_id`, who proposed it and when — so the entry stands on its own
+    # for `audit_svc`, which cannot read the market, and names exactly which of
+    # a market's proposal entries it approved.
+    MARKET_OUTCOME_APPROVED = "market.outcome_approved"
+
+    # [3.2] #10. A second administrator sent a proposal back, and said why.
+    #
+    # The reason goes in `reason`, like an early close's. `context` is the same
+    # eight keys the approval carries, led by the `proposal_id` it decided, taken before the rejection cleared them
+    # from the market — which makes this entry, with the proposer's own, the
+    # only place the rejected proposal still exists. Same shape as the approval
+    # on purpose, so "what was decided about this proposal" is one question
+    # whichever way it went.
+    MARKET_OUTCOME_REJECTED = "market.outcome_rejected"

@@ -17,7 +17,9 @@ from model.entities import Market, MarketOutcome, ResolutionSource
 from service.validation import (
     MIN_CLOSE_REASON_LENGTH,
     MIN_OUTCOMES,
+    MIN_REJECTION_REASON_LENGTH,
     problems_blocking_close,
+    problems_blocking_rejection,
     problems_blocking_submission,
 )
 
@@ -297,3 +299,45 @@ def test_only_one_problem_is_ever_reported() -> None:
     """There is one field, so a blank reason is blank rather than also short.
     Two problems on one input would paint the same message twice."""
     assert len(_close("")) == 1
+
+
+# --- the reason for a rejection [3.2] #10 ---------------------------------
+# The same pure rule over one string, with its own floor. It agrees with the
+# early close's on a number today and is a different rule: neither should move
+# because the other did. test_approving.py asserts the gate calls this at all.
+def _rejection(reason: str) -> list:
+    from unit_test.conftest import rejection_request  # noqa: PLC0415
+
+    return problems_blocking_rejection(rejection_request(reason=reason))
+
+
+def test_a_full_rejection_reason_has_no_problems() -> None:
+    assert _rejection("The print cited is the headline figure, not core.") == []
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "\n\t "])
+def test_a_blank_rejection_reason_is_refused(reason: str) -> None:
+    """The audit entry is the only place the explanation will exist, and the
+    proposal it explains is cleared from the market in the same transaction."""
+    assert [p.field for p in _rejection(reason)] == ["reason"]
+
+
+def test_a_too_short_rejection_reason_is_refused() -> None:
+    """"wrong" satisfies "a reason was given" and tells the proposer nothing
+    about what to propose instead."""
+    assert [p.field for p in _rejection("wrong")] == ["reason"]
+
+
+def test_the_rejection_floor_is_counted_after_stripping() -> None:
+    """Otherwise ten spaces around one character passes a rule about length."""
+    assert _rejection("  " + "x" * (MIN_REJECTION_REASON_LENGTH - 1) + "  ") != []
+
+
+def test_the_rejection_boundary_is_not_strict() -> None:
+    """Exactly at the floor is enough."""
+    assert _rejection("x" * MIN_REJECTION_REASON_LENGTH) == []
+
+
+def test_only_one_rejection_problem_is_ever_reported() -> None:
+    """One field, so a blank reason is blank rather than also short."""
+    assert len(_rejection("")) == 1

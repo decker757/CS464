@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from service.audit import Actor
-from unit_test.conftest import closed_market
+from unit_test.conftest import closed_market, proposed_before_ids, proposed_market
+from unit_test.conftest import approval_terms as _approval
 from unit_test.conftest import close_terms as _close
 from unit_test.conftest import market_json as _payload
 from unit_test.conftest import proposal_json as _proposal
+from unit_test.conftest import rejection_terms as _rejection
 
 
 # --- the guard ------------------------------------------------------------
@@ -118,6 +121,16 @@ async def test_every_market_route_requires_a_token(client: AsyncClient) -> None:
     assert (
         await client.post(
             f"/markets/{uuid.uuid4()}/propose-outcome", json=_proposal(uuid.uuid4())
+        )
+    ).status_code == 401
+    assert (
+        await client.post(
+            f"/markets/{uuid.uuid4()}/approve-outcome", json=_approval()
+        )
+    ).status_code == 401
+    assert (
+        await client.post(
+            f"/markets/{uuid.uuid4()}/reject-outcome", json=_rejection()
         )
     ).status_code == 401
 
@@ -1053,3 +1066,613 @@ async def test_a_refused_close_leaves_the_market_open(
     reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
     assert reread.json()["status"] == "open"
     assert reread.json()["closed_at"] is None
+
+
+# --- deciding a proposal [3.2] #10 ----------------------------------------
+# Reached through the service layer, for the reason the proposing section above
+# gives, one step further on. `admin_headers` is the creator and therefore the
+# proposer; `other_admin_headers` is the second administrator this ticket
+# exists to require. `mint_token` signs both with the username "ernest_t" — the
+# ids differ, and the ids are what the rule compares.
+async def _proposed(
+    session: AsyncSession, admin_id: uuid.UUID
+) -> tuple[str, str, str, str]:
+    """A market of `admin_id`'s awaiting a decision: its id, the id of the
+    proposed outcome, the draft key the create form would still hold, and the
+    `proposal_id` a reviewer's decision has to quote."""
+    market = await proposed_market(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+    return (
+        str(market.id),
+        str(market.proposed_outcome_id),
+        str(market.draft_key),
+        str(market.proposal_id),
+    )
+
+
+async def test_approving_returns_the_approved_market(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """The whole market comes back, not an acknowledgement, with both
+    signatures on it, so the screen can repaint without a second round trip."""
+    market_id, outcome_id, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=other_admin_headers
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "approved"
+    assert body["approved_by_id"] == str(other_admin_id)
+    assert body["approved_by_username"] == "ernest_t"
+    assert body["approved_at"] is not None
+    assert body["proposed_by_id"] == str(admin_id)
+    assert body["proposed_outcome_id"] == outcome_id
+
+
+async def test_approved_at_carries_an_offset(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """A new timestamp on the wire gets the same guard as every other one."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    body = (
+        await client.post(
+            f"/markets/{market_id}/approve-outcome",
+            json=_approval(proposal_id),
+            headers=other_admin_headers
+        )
+    ).json()
+
+    assert body["approved_at"].endswith("Z") or "+" in body["approved_at"]
+
+
+async def test_an_approval_body_cannot_change_the_winner(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """The approver says which proposal and supplies nothing of their own, so a
+    body that also names a different winner has that part ignored. The outcome
+    approved is the outcome proposed."""
+    market_id, outcome_id, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json={
+            **_approval(proposal_id),
+            "winning_outcome_id": str(uuid.uuid4()),
+            "reason": "Some other answer.",
+        },
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["proposed_outcome_id"] == outcome_id
+
+
+async def test_the_proposer_cannot_approve(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """403, not 409 and not 404. The session is fine and the market is in the
+    right state; this account will never be allowed to decide this proposal,
+    and retrying cannot help. The frontend branches on the code."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=admin_headers
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "second_administrator_required"
+
+
+async def test_the_proposer_cannot_reject(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/reject-outcome", json=_rejection(proposal_id), headers=admin_headers
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "second_administrator_required"
+
+
+async def test_a_trader_cannot_approve(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    trader_headers: dict[str, str],
+) -> None:
+    """A different 403 from the proposer's, and the frontend must not confuse
+    them: this one says the account is not an administrator at all."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=trader_headers
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_a_trader_cannot_reject(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    trader_headers: dict[str, str],
+) -> None:
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/reject-outcome", json=_rejection(proposal_id), headers=trader_headers
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_approving_a_market_with_no_proposal_is_409(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    market_id, _ = await _closed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_not_pending_resolution"
+
+
+async def test_approving_twice_is_409(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+) -> None:
+    """A different code from the one above, because the remedy differs: there
+    is nothing to decide yet, versus it has already been decided. The second
+    one must not move `approved_at` either."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+    first = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=other_admin_headers
+    )
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=other_admin_headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_already_approved"
+
+    reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
+    assert reread.json()["approved_at"] == first.json()["approved_at"]
+
+
+async def test_rejecting_returns_the_closed_market(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """Back to CLOSED with the proposal gone, so the propose control comes back
+    for the creator on the same repaint."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/reject-outcome",
+        json=_rejection(proposal_id),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "closed"
+    assert body["closed_at"] is not None
+    for field in (
+        "proposed_outcome_id",
+        "proposed_by_id",
+        "proposed_by_username",
+        "proposed_at",
+        "proposal_evidence_url",
+        "proposal_evidence_note",
+        "approved_by_id",
+        "approved_by_username",
+        "approved_at",
+    ):
+        assert body[field] is None, field
+
+
+async def test_the_rejection_response_does_not_carry_the_reason_back(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """It is not a field on the market, as an early close's reason is not.
+
+    The reason is in the audit log and only [4.3] #15 may read it, so a
+    frontend must not be written expecting it here.
+    """
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    body = (
+        await client.post(
+            f"/markets/{market_id}/reject-outcome",
+            json=_rejection(proposal_id),
+            headers=other_admin_headers,
+        )
+    ).json()
+
+    assert "reason" not in body
+    assert "rejection_reason" not in body
+
+
+async def test_rejecting_an_approved_market_is_409(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+    await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=other_admin_headers
+    )
+
+    response = await client.post(
+        f"/markets/{market_id}/reject-outcome",
+        json=_rejection(proposal_id),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_already_approved"
+
+
+async def test_rejecting_with_an_unusable_reason_is_422_and_names_the_field(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """This service's own envelope, the same shape a refused close uses, so
+    the modal paints `details` with the renderer it already has."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/reject-outcome",
+        json=_rejection(proposal_id, reason="   "),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "rejection_incomplete"
+    assert [problem["field"] for problem in error["details"]] == ["reason"]
+
+
+async def test_a_rejection_with_no_reason_at_all_is_fastapis_422_not_ours(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """Two 422s exist here too, and they do not look alike.
+
+    A missing `reason` key never reaches this service, so it comes back as
+    FastAPI's `{"detail": [...]}`. The frontend branches on the presence of
+    `error`, which is what docs/api/market-service.md tells it to do.
+    """
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/reject-outcome", json={}, headers=other_admin_headers
+    )
+
+    assert response.status_code == 422
+    assert "error" not in response.json()
+
+
+async def test_a_refused_rejection_leaves_the_market_pending(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+) -> None:
+    """Atomicity on the real request path, like the refused close above.
+
+    Nothing rolls back by hand on a real request: this asserts the
+    `get_session` dependency does it as the error propagates, which the service
+    test cannot see. A rejection that cleared the proposal and then refused
+    would lose it with no log entry to recover it from.
+    """
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    await client.post(
+        f"/markets/{market_id}/reject-outcome",
+        json=_rejection(proposal_id, reason="x"),
+        headers=other_admin_headers,
+    )
+
+    reread = await client.get(f"/markets/{market_id}", headers=admin_headers)
+    assert reread.json()["status"] == "pending_resolution"
+    assert reread.json()["proposed_at"] is not None
+
+
+async def test_approving_an_unknown_id_is_404(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        f"/markets/{uuid.uuid4()}/approve-outcome", json=_approval(), headers=admin_headers
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "market_not_found"
+
+
+async def test_rejecting_an_unknown_id_is_404(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        f"/markets/{uuid.uuid4()}/reject-outcome", json=_rejection(), headers=admin_headers
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "market_not_found"
+
+
+async def test_a_malformed_id_on_approve_is_422_not_500(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        "/markets/banana/approve-outcome", json=_approval(), headers=admin_headers
+    )
+
+    assert response.status_code == 422
+
+
+async def test_a_malformed_id_on_reject_is_422_not_500(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        "/markets/banana/reject-outcome", json=_rejection(), headers=admin_headers
+    )
+
+    assert response.status_code == 422
+
+
+async def test_another_administrator_still_cannot_read_an_approved_market(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """The decision is the only thing that widened.
+
+    The approver reached this market by id, and approving it did not make it
+    theirs to read: `get_any` sits one call away from `get`, and this is the
+    assertion that it did not escape into the route that reloads a market.
+    """
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+    approved = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=other_admin_headers
+    )
+    assert approved.status_code == 200
+
+    reread = await client.get(f"/markets/{market_id}", headers=other_admin_headers)
+    assert reread.status_code == 404
+
+
+async def test_the_creator_can_read_both_identities_back(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+) -> None:
+    """[3.2] #10's third criterion, on the wire and after a reload rather than
+    only in the response to the approval itself."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+    await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=other_admin_headers
+    )
+
+    body = (await client.get(f"/markets/{market_id}", headers=admin_headers)).json()
+
+    assert body["proposed_by_id"] == str(admin_id)
+    assert body["approved_by_id"] == str(other_admin_id)
+
+
+async def test_an_autosave_after_approval_is_409(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+) -> None:
+    """The create form may still be open behind everything that has happened
+    since. Michelle stops the timer on this, the same as on every other code
+    that says a market's terms are frozen."""
+    market_id, _, draft_key, proposal_id = await _proposed(session, admin_id)
+    await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json=_approval(proposal_id),
+        headers=other_admin_headers
+    )
+
+    response = await client.post(
+        "/markets", json=_payload(draft_key=draft_key), headers=admin_headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_already_approved"
+
+
+async def test_a_decision_response_carries_the_proposal_id_to_quote(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """The review screen reads `proposal_id` from the same response it shows the
+    reviewer, and sends it back with approve or reject."""
+    market_id, _, _, proposal_id = await _proposed(session, admin_id)
+
+    body = (await client.get(f"/markets/{market_id}", headers=admin_headers)).json()
+
+    assert body["proposal_id"] == proposal_id
+
+
+@pytest.mark.parametrize("decision", ["approve-outcome", "reject-outcome"])
+async def test_a_decision_on_a_replaced_proposal_is_409_proposal_superseded(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    other_admin_headers: dict[str, str],
+    decision: str,
+) -> None:
+    """The stale review page, end to end. The first proposal is rejected and
+    the creator proposes the other outcome; a decision still quoting the first
+    is refused, and the second proposal is still waiting, untouched."""
+    market_id, _, _, stale = await _proposed(session, admin_id)
+
+    rejected = await client.post(
+        f"/markets/{market_id}/reject-outcome",
+        json=_rejection(stale),
+        headers=other_admin_headers,
+    )
+    assert rejected.status_code == 200
+    other_outcome = rejected.json()["outcomes"][1]["id"]
+    reproposed = await client.post(
+        f"/markets/{market_id}/propose-outcome",
+        json=_proposal(other_outcome),
+        headers=admin_headers,
+    )
+    assert reproposed.status_code == 200
+    current = reproposed.json()["proposal_id"]
+
+    body = _approval(stale) if decision == "approve-outcome" else _rejection(stale)
+    response = await client.post(
+        f"/markets/{market_id}/{decision}", json=body, headers=other_admin_headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "proposal_superseded"
+    reread = (await client.get(f"/markets/{market_id}", headers=admin_headers)).json()
+    assert reread["status"] == "pending_resolution"
+    assert reread["proposal_id"] == current
+    assert reread["proposed_outcome_id"] == other_outcome
+    assert reread["approved_by_id"] is None
+
+
+async def test_a_proposal_from_before_ids_is_approved_with_a_null_proposal_id(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """`null` on the wire is accepted as a value, and it decides the one kind
+    of proposal whose `proposal_id` reads back null."""
+    market = await proposed_before_ids(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+
+    response = await client.post(
+        f"/markets/{market.id}/approve-outcome",
+        json={"proposal_id": None},
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+    assert response.json()["proposal_id"] is None
+
+
+async def test_a_null_proposal_id_on_a_current_proposal_is_409(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    market_id, _, _, _ = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome",
+        json={"proposal_id": None},
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "proposal_superseded"
+
+
+async def test_an_approval_with_no_proposal_id_is_fastapis_422_not_ours(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """Shape, not content: the key is required, so leaving it out never reaches
+    the service, and nothing is approved."""
+    market_id, _, _, _ = await _proposed(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/approve-outcome", headers=other_admin_headers
+    )
+
+    assert response.status_code == 422
+    assert "error" not in response.json()
+
+
+async def test_the_openapi_lists_both_decision_routes(client: AsyncClient) -> None:
+    """/docs is the contract Michelle codes against."""
+    paths = (await client.get("/openapi.json")).json()["paths"]
+
+    assert "post" in paths["/markets/{market_id}/approve-outcome"]
+    assert "post" in paths["/markets/{market_id}/reject-outcome"]

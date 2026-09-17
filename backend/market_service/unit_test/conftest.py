@@ -63,7 +63,7 @@ from decimal import Decimal  # noqa: E402
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from sqlalchemy import NullPool  # noqa: E402
+from sqlalchemy import NullPool, update  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -78,7 +78,9 @@ from model.entities import Market  # noqa: E402
 from model.schemas import (  # noqa: E402
     MarketCloseRequest,
     MarketDraftRequest,
+    OutcomeApprovalRequest,
     OutcomeProposalRequest,
+    OutcomeRejectionRequest,
 )
 from service import closing, market_service  # noqa: E402
 from service.audit import Actor  # noqa: E402
@@ -439,6 +441,94 @@ def close_terms(**overrides: object) -> dict[str, object]:
 def close_request(**overrides: object) -> MarketCloseRequest:
     """`close_terms` parsed, for driving the service layer without HTTP."""
     return MarketCloseRequest(**close_terms(**overrides))  # type: ignore[arg-type]
+
+
+# [3.2] #10. The reason one rejection carries, named here for the reason the
+# early close's is: the service suite and the controller suite have to send the
+# same value, or a rule change is two edits and they drift.
+REJECTION_REASON = (
+    "The MAS print cited is the headline figure, not core inflation; the core "
+    "figure for December 2026 has not been published yet."
+)
+
+
+def approval_terms(proposal_id: uuid.UUID | None = None) -> dict[str, object]:
+    """An approval body quoting `proposal_id`, as the wire carries it.
+
+    With no argument it quotes a proposal nobody made. That is only for a test
+    whose market has no proposal to quote, or one refused before the proposal
+    is compared; a test that expects the decision to succeed has to pass the
+    market's own `proposal_id`, and fails as `proposal_superseded` if it
+    forgets — loudly, which is why a default is safe here.
+    """
+    return {"proposal_id": str(proposal_id or uuid.uuid4())}
+
+
+def approval_request(proposal_id: uuid.UUID | None = None) -> OutcomeApprovalRequest:
+    """`approval_terms` parsed, for driving the service layer without HTTP."""
+    return OutcomeApprovalRequest(**approval_terms(proposal_id))  # type: ignore[arg-type]
+
+
+def rejection_terms(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> dict[str, object]:
+    """A rejection that passes every rule in service/validation.py.
+
+    `proposal_id` defaults the way `approval_terms`'s does, and for the same
+    tests. One builder rather than a `_terms` / `_json` pair, for the reason
+    `close_terms` gives: every value is a string on the wire, and pydantic
+    parses the id back.
+    """
+    base: dict[str, object] = {
+        "proposal_id": str(proposal_id or uuid.uuid4()),
+        "reason": REJECTION_REASON,
+    }
+    base.update(overrides)
+    return base
+
+
+def rejection_request(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> OutcomeRejectionRequest:
+    """`rejection_terms` parsed, for driving the service layer without HTTP."""
+    return OutcomeRejectionRequest(**rejection_terms(proposal_id, **overrides))  # type: ignore[arg-type]
+
+
+async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
+    """The same closed market, with an outcome proposed for it by `actor`.
+
+    Proposed the way a real proposal is made rather than by writing the six
+    columns: `closed_market`, then `propose_outcome` naming the first outcome
+    with the default evidence. `actor` is the creator and therefore also the
+    proposer, because [3.1] #9 lets nobody else propose — so whoever a test
+    asks to approve or reject has to be a second administrator, which is the
+    rule [3.2] #10 exists to enforce.
+
+    Overrides are the market's terms, handed to `closed_market`; the proposal
+    itself is always the default one. Returns the market as `propose_outcome`
+    returned it, in PENDING_RESOLUTION.
+    """
+    market = await closed_market(session, actor, **overrides)
+    return await market_service.propose_outcome(
+        session, actor, market.id, proposal_request(market.outcomes[0].id)
+    )
+
+
+async def proposed_before_ids(session, actor: Actor) -> Market:
+    """A pending proposal as one made before [3.2] #10 left it: no `proposal_id`.
+
+    `sql/migrations/0006` adds the column without a backfill, so a proposal
+    already waiting when it runs keeps a null id and is decided by quoting
+    null. Every proposal made since is minted an id, so the only way to build
+    one of these now is to make a proposal and take its id away.
+    """
+    market_id = (await proposed_market(session, actor)).id
+    await session.execute(
+        update(Market).where(Market.id == market_id).values(proposal_id=None)
+    )
+    await session.commit()
+    session.expire_all()
+    return await market_service.get(session, actor.id, market_id)
 
 
 @pytest.fixture
