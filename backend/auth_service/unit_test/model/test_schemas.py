@@ -47,9 +47,35 @@ def test_invalid_usernames_are_refused(username: str) -> None:
         RegisterRequest(**_payload(username=username))
 
 
-@pytest.mark.parametrize("username", ["ernest_t", "ernest-t", "Ernest123", "a_b-c"])
+@pytest.mark.parametrize(
+    "username", ["ernest_t", "ernest-t", "Ernest123", "a_b-c", "abc", "x" * 32]
+)
 def test_valid_usernames_are_accepted(username: str) -> None:
     assert RegisterRequest(**_payload(username=username)).username == username
+
+
+@pytest.mark.parametrize("username", [" ab", "ab ", "  ab  "])
+def test_username_length_is_counted_after_the_trim(username: str) -> None:
+    """`" ab"` is three characters as sent and two as stored. #89
+
+    The limit is on the name that gets stored, so a space must not be what
+    carries a two-character name past it.
+    """
+    with pytest.raises(ValidationError):
+        RegisterRequest(**_payload(username=username))
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [(" ernest_t ", "ernest_t"), (" " + "x" * 32, "x" * 32)],
+)
+def test_surrounding_spaces_are_trimmed_not_refused(raw: str, stored: str) -> None:
+    """Autofill adds a trailing space nobody can see, so it is trimmed. #89
+
+    The second case is 33 characters as sent and a legal 32 once trimmed,
+    which the length rule refused while it ran before the trim.
+    """
+    assert RegisterRequest(**_payload(username=raw)).username == stored
 
 
 def test_a_short_password_is_refused() -> None:

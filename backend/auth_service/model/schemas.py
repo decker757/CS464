@@ -23,10 +23,21 @@ class RegisterRequest(BaseModel):
     email: EmailStr = Field(examples=["ernest@example.com"])
     password: str = Field(max_length=128, examples=["correct-horse-battery"])
 
+    @field_validator("username", mode="before")
+    @classmethod
+    def _trim_username(cls, v: object) -> object:
+        """Trim before `Field` counts the length, not after. #89
+
+        An after-validator only runs once `min_length` and `max_length` have
+        already passed, so `" ab"` was accepted as three characters and stored
+        as two. Not `str_strip_whitespace` on the model: that would trim the
+        password too.
+        """
+        return v.strip() if isinstance(v, str) else v
+
     @field_validator("username")
     @classmethod
     def _valid_username(cls, v: str) -> str:
-        v = v.strip()
         if not _USERNAME_RE.match(v):
             raise ValueError("Username may contain only letters, numbers, hyphens and underscores.")
         return v

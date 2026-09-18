@@ -75,7 +75,7 @@ window.
 
 | Field | Rule |
 | --- | --- |
-| `username` | 3–32 characters, letters, numbers, hyphens and underscores only |
+| `username` | 3–32 characters, letters, numbers, hyphens and underscores only; spaces at either end are trimmed first, and the length is counted after |
 | `email` | a valid address; trimmed and lowercased before it is stored |
 | `password` | at least 12 characters (`PASSWORD_MIN_LENGTH`), at most 128 |
 
