@@ -28,7 +28,7 @@ function renderRegisterPage() {
 const fillForm = async (user: ReturnType<typeof userEvent.setup>, overrides: Partial<Record<'username' | 'email' | 'password', string>> = {}) => {
   await user.type(screen.getByLabelText('Username'), overrides.username ?? 'alice')
   await user.type(screen.getByLabelText('Email'), overrides.email ?? 'alice@smu.edu.sg')
-  await user.type(screen.getByLabelText('Password'), overrides.password ?? 'supersecret123')
+  await user.type(screen.getByLabelText('Password'), overrides.password ?? 'test-fixture-pw-ok')
 }
 
 describe('RegisterPage — validation (unit)', () => {
@@ -70,7 +70,7 @@ describe('RegisterPage — integration', () => {
     await user.click(screen.getByRole('button', { name: /create account/i }))
 
     await waitFor(() => expect(mockLogin).toHaveBeenCalledWith(expect.objectContaining({ username: 'alice' })))
-    expect(capturedBody).toEqual({ username: 'alice', email: 'alice@smu.edu.sg', password: 'supersecret123' })
+    expect(capturedBody).toEqual({ username: 'alice', email: 'alice@smu.edu.sg', password: 'test-fixture-pw-ok' })
     expect(mockNavigate).toHaveBeenCalledWith('/markets', { replace: true })
   })
 

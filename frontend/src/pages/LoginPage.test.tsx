@@ -51,11 +51,11 @@ describe('LoginPage — integration', () => {
 
     renderLoginPage()
     await user.type(screen.getByLabelText('Username or Email'), 'alice')
-    await user.type(screen.getByLabelText('Password'), 'supersecret123')
+    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
     await user.click(screen.getByRole('button', { name: /log in/i }))
 
     await waitFor(() => expect(mockLogin).toHaveBeenCalledWith(expect.objectContaining({ username: 'alice' })))
-    expect(capturedBody).toEqual({ identifier: 'alice', password: 'supersecret123' })
+    expect(capturedBody).toEqual({ identifier: 'alice', password: 'test-fixture-pw-ok' })
     expect(mockNavigate).toHaveBeenCalledWith('/markets', { replace: true })
   })
 
@@ -69,7 +69,7 @@ describe('LoginPage — integration', () => {
 
     renderLoginPage()
     await user.type(screen.getByLabelText('Username or Email'), 'alice')
-    await user.type(screen.getByLabelText('Password'), 'wrongpassword123')
+    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-bad')
     await user.click(screen.getByRole('button', { name: /log in/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Incorrect username or password.')

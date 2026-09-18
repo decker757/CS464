@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { validateRegister } from './validate'
 
 describe('validateRegister', () => {
-  const valid = { username: 'alice', email: 'alice@smu.edu.sg', password: 'supersecret123' }
+  const valid = { username: 'alice', email: 'alice@smu.edu.sg', password: 'test-fixture-pw-ok' }
 
   it('returns no errors for a valid form', () => {
     expect(validateRegister(valid)).toEqual({})
