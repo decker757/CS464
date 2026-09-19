@@ -60,6 +60,10 @@ jobs:
         if: steps.check.outputs.exists == 'true'
         run: npm run lint --if-present
 
+      - name: Type check
+        if: steps.check.outputs.exists == 'true'
+        run: npx tsc --noEmit
+
       # No --if-present here on purpose: if there is no test script (or a test fails),
       # this step exits non-zero and the whole job fails. That is what enforces "tests must pass".
       - name: Test
