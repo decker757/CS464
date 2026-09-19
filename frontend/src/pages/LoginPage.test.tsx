@@ -99,7 +99,7 @@ describe('LoginPage — integration', () => {
 
     renderLoginPage()
     await user.type(screen.getByLabelText('Username or Email'), 'alice')
-    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-bad')
+    await user.type(screen.getByLabelText('Password'), '<WRONG_PASSWORD>')
     await user.click(screen.getByRole('button', { name: /log in/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Incorrect username or password.')
