@@ -31,7 +31,10 @@ api.interceptors.response.use(
     const original = error.config as RetryConfig | undefined
     const code = error.response?.data?.error?.code
 
-    if (code === 'invalid_token' && original && !original._retry) {
+    // Never retry the refresh request itself — that would loop forever
+    const isRefreshRequest = original?.url?.endsWith('/auth/refresh')
+
+    if (code === 'invalid_token' && original && !original._retry && !isRefreshRequest) {
       if (isRefreshing) {
         return new Promise<void>((resolve, reject) => {
           queue.push({ resolve, reject })
@@ -42,12 +45,14 @@ api.interceptors.response.use(
       isRefreshing = true
 
       try {
-        await api.post('/auth/refresh')
+        // navigator.locks serialises refresh across tabs so two tabs never
+        // send the same one-time refresh token simultaneously
+        await navigator.locks.request('auth-refresh', () => api.post('/auth/refresh'))
         processQueue(null)
         return api(original)
       } catch (refreshError) {
         processQueue(refreshError)
-        window.location.href = '/login'
+        // No redirect here — ProtectedRoute sends unauthenticated users to /login
         return Promise.reject(refreshError)
       } finally {
         isRefreshing = false

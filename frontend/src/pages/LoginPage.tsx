@@ -2,7 +2,7 @@ import axios from 'axios'
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import api from '../api/axios'
-import { ApiError } from '../api/errors'
+import { ApiError, FastApiError } from '../api/errors'
 import { EyeIcon, Spinner, TrendIcon } from '../components/auth/AuthIcons'
 import BrandPanel from '../components/auth/BrandPanel'
 import Field from '../components/auth/Field'
@@ -43,9 +43,18 @@ export default function LoginPage() {
       login(res.data.user)
       navigate(from, { replace: true })
     } catch (err: unknown) {
-      if (!axios.isAxiosError<ApiError>(err)) { setServerError('Something went wrong. Please try again.'); return }
-      const data = err.response?.data
-      if (data?.error?.code === 'invalid_credentials') {
+      if (!axios.isAxiosError(err)) { setServerError('Something went wrong. Please try again.'); return }
+      const data = err.response?.data as (ApiError & FastApiError) | undefined
+      if (data?.detail?.length) {
+        // FastAPI 422: pydantic rejected a field
+        const first = data.detail[0]
+        const field = first.loc[first.loc.length - 1] as string
+        if (field === 'identifier' || field === 'password') {
+          setErrors({ [field]: first.msg })
+        } else {
+          setServerError(first.msg || 'Something went wrong. Please try again.')
+        }
+      } else if (data?.error?.code === 'invalid_credentials') {
         setServerError('Incorrect username or password.')
       } else if (data?.error?.message) {
         setServerError(data.error.message)
