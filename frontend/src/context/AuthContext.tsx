@@ -6,6 +6,7 @@ export interface User {
   username: string
   email: string
   role: 'trader' | 'admin'
+  created_at: string
 }
 
 interface AuthContextType {

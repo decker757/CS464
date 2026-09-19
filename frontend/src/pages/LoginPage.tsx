@@ -1,6 +1,8 @@
+import axios from 'axios'
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import api from '../api/axios'
+import { ApiError } from '../api/errors'
 import { EyeIcon, Spinner, TrendIcon } from '../components/auth/AuthIcons'
 import BrandPanel from '../components/auth/BrandPanel'
 import Field from '../components/auth/Field'
@@ -9,11 +11,6 @@ import { User, useAuth } from '../context/AuthContext'
 import { GOLD, NAV } from '../theme/colors'
 
 interface LoginErrors { identifier?: string; password?: string }
-interface ApiError { error: { code: string; message: string } }
-
-function isAxiosError(err: unknown): err is { response?: { data: unknown } } {
-  return typeof err === 'object' && err !== null && 'response' in err
-}
 
 export default function LoginPage() {
   const { login } = useAuth()
@@ -46,12 +43,9 @@ export default function LoginPage() {
       login(res.data.user)
       navigate(from, { replace: true })
     } catch (err: unknown) {
-      if (!isAxiosError(err)) { setServerError('Something went wrong. Please try again.'); return }
-      const data = err.response?.data as ApiError | undefined
-      const code = data?.error?.code
-      if (code === 'account_suspended') {
-        setServerError(data!.error.message)
-      } else if (code === 'invalid_credentials') {
+      if (!axios.isAxiosError<ApiError>(err)) { setServerError('Something went wrong. Please try again.'); return }
+      const data = err.response?.data
+      if (data?.error?.code === 'invalid_credentials') {
         setServerError('Incorrect username or password.')
       } else if (data?.error?.message) {
         setServerError(data.error.message)
@@ -93,12 +87,12 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <Field id="identifier" label="Username or Email" error={errors.identifier}>
-              <input id="identifier" name="identifier" type="text" autoComplete="username" value={form.identifier} onChange={handleChange} placeholder="e.g. michelletan or you@example.com" style={inputBase(!!errors.identifier)} {...focusHandlers(errors, 'identifier')} />
+              <input id="identifier" name="identifier" type="text" autoComplete="username" value={form.identifier} onChange={handleChange} placeholder="e.g. michelletan or you@example.com" style={inputBase(!!errors.identifier)} {...focusHandlers(!!errors.identifier)} />
             </Field>
 
             <Field id="password" label="Password" error={errors.password}>
               <div style={{ position: 'relative' }}>
-                <input id="password" name="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={form.password} onChange={handleChange} placeholder="Your password" style={{ ...inputBase(!!errors.password), paddingRight: 44 }} {...focusHandlers(errors, 'password')} />
+                <input id="password" name="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={form.password} onChange={handleChange} placeholder="Your password" style={{ ...inputBase(!!errors.password), paddingRight: 44 }} {...focusHandlers(!!errors.password)} />
                 <button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword((v) => !v)} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', display: 'flex', alignItems: 'center', padding: 4, borderRadius: 4, transition: 'color 0.15s' }} onMouseEnter={(e) => (e.currentTarget.style.color = NAV)} onMouseLeave={(e) => (e.currentTarget.style.color = '#9ca3af')}>
                   <EyeIcon open={showPassword} />
                 </button>

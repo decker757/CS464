@@ -1,4 +1,5 @@
 import axios, { InternalAxiosRequestConfig } from 'axios'
+import { ApiError } from './errors'
 
 interface RetryConfig extends InternalAxiosRequestConfig {
   _retry?: boolean
@@ -25,10 +26,10 @@ const processQueue = (error: unknown) => {
 api.interceptors.response.use(
   (res) => res,
   async (error: unknown) => {
-    if (!axios.isAxiosError(error)) return Promise.reject(error)
+    if (!axios.isAxiosError<ApiError>(error)) return Promise.reject(error)
 
     const original = error.config as RetryConfig | undefined
-    const code = error.response?.data?.code
+    const code = error.response?.data?.error?.code
 
     if (code === 'invalid_token' && original && !original._retry) {
       if (isRefreshing) {

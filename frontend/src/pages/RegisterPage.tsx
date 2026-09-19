@@ -1,12 +1,13 @@
+import axios from 'axios'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/axios'
+import { ApiError } from '../api/errors'
 import { EyeIcon, Spinner, TrendIcon } from '../components/auth/AuthIcons'
 import BrandPanel from '../components/auth/BrandPanel'
 import Field from '../components/auth/Field'
 import { focusHandlers, inputBase } from '../components/auth/inputStyles'
-import { useAuth } from '../context/AuthContext'
-import { User } from '../context/AuthContext'
+import { User, useAuth } from '../context/AuthContext'
 import { GOLD, NAV } from '../theme/colors'
 import { RegisterErrors, validateRegister } from '../utils/validate'
 
@@ -40,8 +41,8 @@ export default function RegisterPage() {
       login(res.data.user)
       navigate('/markets', { replace: true })
     } catch (err: unknown) {
-      if (!isAxiosError(err)) { setServerError('Something went wrong. Please try again.'); return }
-      const data = err.response?.data as ApiError | undefined
+      if (!axios.isAxiosError<ApiError>(err)) { setServerError('Something went wrong. Please try again.'); return }
+      const data = err.response?.data
       if (data?.error?.code === 'duplicate_user') {
         const fieldErrors = Object.fromEntries(
           (data.error.details ?? []).map((d) => [d.field, d.message])
@@ -92,16 +93,16 @@ export default function RegisterPage() {
 
           <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <Field id="username" label="Username" error={errors.username}>
-              <input id="username" name="username" type="text" autoComplete="username" value={form.username} onChange={handleChange} placeholder="e.g. michelletan" style={inputBase(!!errors.username)} {...focusHandlers(errors, 'username')} />
+              <input id="username" name="username" type="text" autoComplete="username" value={form.username} onChange={handleChange} placeholder="e.g. michelletan" style={inputBase(!!errors.username)} {...focusHandlers(!!errors.username)} />
             </Field>
 
             <Field id="email" label="Email" error={errors.email}>
-              <input id="email" name="email" type="email" autoComplete="email" value={form.email} onChange={handleChange} placeholder="you@example.com" style={inputBase(!!errors.email)} {...focusHandlers(errors, 'email')} />
+              <input id="email" name="email" type="email" autoComplete="email" value={form.email} onChange={handleChange} placeholder="you@example.com" style={inputBase(!!errors.email)} {...focusHandlers(!!errors.email)} />
             </Field>
 
             <Field id="password" label="Password" error={errors.password} hint="Must be at least 12 characters.">
               <div style={{ position: 'relative' }}>
-                <input id="password" name="password" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={handleChange} placeholder="Enter at least 12 characters" style={{ ...inputBase(!!errors.password), paddingRight: 44 }} {...focusHandlers(errors, 'password')} />
+                <input id="password" name="password" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={handleChange} placeholder="Enter at least 12 characters" style={{ ...inputBase(!!errors.password), paddingRight: 44 }} {...focusHandlers(!!errors.password)} />
                 <button
                   type="button"
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
@@ -138,10 +139,3 @@ export default function RegisterPage() {
   )
 }
 
-interface ApiError {
-  error: { code: string; message: string; details?: { field: string; message: string }[] }
-}
-
-function isAxiosError(err: unknown): err is { response?: { data: unknown } } {
-  return typeof err === 'object' && err !== null && 'response' in err
-}

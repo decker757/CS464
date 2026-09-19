@@ -15,13 +15,13 @@ export const inputBase = (hasError: boolean): CSSProperties => ({
   transition: 'border-color 0.15s, box-shadow 0.15s',
 })
 
-export const focusHandlers = (errors: Record<string, string | undefined>, field: string) => ({
+export const focusHandlers = (hasError: boolean) => ({
   onFocus: (e: React.FocusEvent<HTMLInputElement>) => {
     e.target.style.borderColor = NAV
     e.target.style.boxShadow = '0 0 0 3px rgba(21,30,85,0.08)'
   },
   onBlur: (e: React.FocusEvent<HTMLInputElement>) => {
-    e.target.style.borderColor = errors[field] ? '#dc2626' : '#e2e0da'
+    e.target.style.borderColor = hasError ? '#dc2626' : '#e2e0da'
     e.target.style.boxShadow = 'none'
   },
 })
