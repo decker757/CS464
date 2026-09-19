@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { Route, Routes, MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
 import { server } from '../test/server'
@@ -25,64 +25,96 @@ function renderRegisterPage() {
   )
 }
 
-const fillForm = async (user: ReturnType<typeof userEvent.setup>, overrides: Partial<Record<'username' | 'email' | 'password', string>> = {}) => {
+const fillForm = async (
+  user: ReturnType<typeof userEvent.setup>,
+  overrides: Partial<Record<'username' | 'email' | 'password', string>> = {},
+) => {
   await user.type(screen.getByLabelText('Username'), overrides.username ?? 'alice')
   await user.type(screen.getByLabelText('Email'), overrides.email ?? 'alice@smu.edu.sg')
   await user.type(screen.getByLabelText('Password'), overrides.password ?? 'test-fixture-pw-ok')
 }
 
-describe('RegisterPage — validation (unit)', () => {
-  it('shows a password error and does not call the API when password is too short', async () => {
+describe('RegisterPage — client-side validation', () => {
+  it('blocks submission and shows error when password is too short', async () => {
     const user = userEvent.setup()
     renderRegisterPage()
 
     await fillForm(user, { password: 'short' })
     await user.click(screen.getByRole('button', { name: /create account/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/12 characters/)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Password must be at least 12 characters.')
     expect(mockLogin).not.toHaveBeenCalled()
   })
 
-  it('shows a username error when username contains spaces', async () => {
+  it('blocks submission and shows error when username contains spaces', async () => {
     const user = userEvent.setup()
     renderRegisterPage()
 
     await fillForm(user, { username: 'alice tan' })
     await user.click(screen.getByRole('button', { name: /create account/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/letters, numbers/)
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Username may only contain letters, numbers, hyphens and underscores.'
+    )
+    expect(mockLogin).not.toHaveBeenCalled()
+  })
+
+  it('blocks submission and shows error when email has no domain dot', async () => {
+    const user = userEvent.setup()
+    renderRegisterPage()
+
+    await fillForm(user, { email: 'a@b' })
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a valid email address.')
+    expect(mockLogin).not.toHaveBeenCalled()
   })
 })
 
 describe('RegisterPage — integration', () => {
-  it('happy path: submits correct payload and navigates to /markets', async () => {
+  it('happy path: sends correct payload, calls login, navigates to /markets', async () => {
     const user = userEvent.setup()
     let capturedBody: unknown
     server.use(
       http.post('http://localhost:8000/auth/register', async ({ request }) => {
         capturedBody = await request.json()
-        return HttpResponse.json({ user: { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader' } }, { status: 201 })
-      })
+        return HttpResponse.json(
+          { user: { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' } },
+          { status: 201 },
+        )
+      }),
     )
 
     renderRegisterPage()
     await fillForm(user)
     await user.click(screen.getByRole('button', { name: /create account/i }))
 
-    await waitFor(() => expect(mockLogin).toHaveBeenCalledWith(expect.objectContaining({ username: 'alice' })))
-    expect(capturedBody).toEqual({ username: 'alice', email: 'alice@smu.edu.sg', password: 'test-fixture-pw-ok' })
+    await waitFor(() =>
+      expect(mockLogin).toHaveBeenCalledWith(expect.objectContaining({ username: 'alice' })),
+    )
+    expect(capturedBody).toEqual({
+      username: 'alice',
+      email: 'alice@smu.edu.sg',
+      password: 'test-fixture-pw-ok',
+    })
     expect(mockNavigate).toHaveBeenCalledWith('/markets', { replace: true })
   })
 
-  it('shows per-field error when API returns duplicate_user', async () => {
+  it('maps per-field errors when API returns duplicate_user', async () => {
     const user = userEvent.setup()
     server.use(
       http.post('http://localhost:8000/auth/register', () =>
         HttpResponse.json(
-          { error: { code: 'duplicate_user', message: 'Already registered', details: [{ field: 'username', message: 'Username already taken' }] } },
-          { status: 409 }
-        )
-      )
+          {
+            error: {
+              code: 'duplicate_user',
+              message: 'Already registered',
+              details: [{ field: 'username', message: 'Username already taken' }],
+            },
+          },
+          { status: 409 },
+        ),
+      ),
     )
 
     renderRegisterPage()
@@ -92,20 +124,42 @@ describe('RegisterPage — integration', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Username already taken')
   })
 
-  it('shows loading state while the request is in flight', async () => {
+  it('shows generic error when the server is unreachable', async () => {
     const user = userEvent.setup()
-    let resolve!: () => void
     server.use(
-      http.post('http://localhost:8000/auth/register', () =>
-        new Promise<Response>((res) => { resolve = () => res(HttpResponse.json({ user: { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader' } }, { status: 201 }) as unknown as Response) })
-      )
+      http.post('http://localhost:8000/auth/register', () => HttpResponse.error()),
     )
 
     renderRegisterPage()
     await fillForm(user)
     await user.click(screen.getByRole('button', { name: /create account/i }))
 
-    expect(await screen.findByText(/creating account/i)).toBeInTheDocument()
-    resolve()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Please try again.')
+  })
+
+  it('disables the button and shows spinner while the request is in flight', async () => {
+    const user = userEvent.setup()
+    let resolveRequest!: () => void
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        new Promise<Response>((res) => {
+          resolveRequest = () =>
+            res(
+              HttpResponse.json(
+                { user: { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' } },
+                { status: 201 },
+              ) as unknown as Response,
+            )
+        }),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    const button = await screen.findByRole('button', { name: /creating account/i })
+    expect(button).toBeDisabled()
+    resolveRequest()
   })
 })
