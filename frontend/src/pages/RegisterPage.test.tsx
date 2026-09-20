@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter } from 'react-router-dom'
@@ -147,7 +147,17 @@ describe('RegisterPage — integration', () => {
     await fillForm(user, { email: 'me@test.local' })
     await user.click(screen.getByRole('button', { name: /create account/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
+    // Scoped to the Email field rather than to any alert on the page. The
+    // form has two places an error can surface — `Field`'s per-field <p
+    // role="alert"> and the form-level <div role="alert"> above the inputs —
+    // and a regression that sent a field error to the form-level one would
+    // leave exactly one matching alert on screen, so an unscoped query would
+    // still pass while "under Email" had stopped being true.
+    await screen.findByRole('alert')
+    const emailField = screen.getByLabelText('Email').closest('div')
+
+    expect(emailField).not.toBeNull()
+    expect(within(emailField as HTMLElement).getByRole('alert')).toHaveTextContent(
       'value is not a valid email address',
     )
   })
