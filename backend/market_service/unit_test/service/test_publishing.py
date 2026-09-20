@@ -425,3 +425,78 @@ async def test_a_resubmission_racing_a_publish_cannot_change_what_went_live(
     assert len(published) == 1, "the log must record one publication, not two"
     assert stored.status is MarketStatus.OPEN
     assert stored.question == published[0]["target_label"]
+
+
+async def test_publish_reads_the_clock_after_it_has_the_lock(
+    session: AsyncSession,
+) -> None:
+    """A publish that queued for the row lock validates against the clock it
+    finds on the way out, not the one it arrived with. #97.
+
+    The re-validation above is the ticket's first acceptance criterion: a
+    market that sat submitted past its own close time must not go live. That
+    argument assumes the clock read and the validation are the same instant.
+    They were not — `now` was sampled at the top of the call, before a lock
+    wait that is unbounded by construction, because anything else holding this
+    row queues this request behind it.
+
+    So the failure needs no clock skew and no slow database, only contention:
+    the close time passes while the publish is blocked, the lock is released,
+    and the check runs against a timestamp from before the wait. It answers
+    "still in the future" about a market that has already closed, and the
+    market goes live already closed — with a publication entry recording a
+    `close_time` in the past.
+
+    The lock here is held by a raw `SELECT ... FOR UPDATE` rather than by a
+    second service call, because what is being tested is the wait itself. Any
+    holder would do; this one is the shortest way to hold the row for a known
+    length of time.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_session_factory  # noqa: PLC0415
+
+    factory = get_session_factory()
+    actor = _actor()
+
+    # Closes very soon, and the holder below outlasts it. Generous margins on
+    # purpose: this asserts an ordering, and a tight one would fail on a busy
+    # CI runner for reasons that have nothing to do with the ordering.
+    async with factory() as setup:
+        market = await _submitted(
+            setup, actor, close_time=datetime.now(UTC) + timedelta(seconds=1.5)
+        )
+        market_id = market.id
+
+    barrier = asyncio.Barrier(2)
+
+    async def hold_the_row() -> None:
+        async with factory() as own:
+            await own.execute(select(Market).where(Market.id == market_id).with_for_update())
+            # Locked before the barrier releases, so the publish below is
+            # certain to queue rather than to win a coin toss.
+            await barrier.wait()
+            await asyncio.sleep(3)
+            await own.rollback()
+
+    async def publish_it() -> str:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            try:
+                await market_service.publish(own, actor, market_id)
+            except DraftIncomplete:
+                return "refused"
+            return "published"
+
+    _, outcome = await asyncio.gather(hold_the_row(), publish_it())
+
+    assert outcome == "refused", "a market whose close time passed while the publish waited"
+
+    async with factory() as check:
+        stored = (
+            await check.execute(select(Market).where(Market.id == market_id))
+        ).scalar_one()
+
+    assert stored.status is MarketStatus.SUBMITTED
+    assert stored.published_at is None

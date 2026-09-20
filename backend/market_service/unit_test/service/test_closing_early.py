@@ -416,3 +416,68 @@ async def test_an_outcome_can_be_proposed_for_a_market_closed_early(
     )
 
     assert proposed.status is MarketStatus.PENDING_RESOLUTION
+
+
+async def test_closing_early_reads_the_clock_after_it_has_the_lock(
+    session: AsyncSession,
+) -> None:
+    """An early close that queued for the row lock is refused if the clock ran
+    out while it waited. #97.
+
+    The same defect as `publish`'s, and it lands somewhere worse. The gate
+    here derives from the clock precisely so that an administrator cannot stop
+    trading that the clock has already stopped — ADR 0014's reason for
+    deriving rather than reading the status column. Sampling `now` before an
+    unbounded lock wait reintroduces the entry that rule exists to prevent, by
+    a different route: not a stale status column, but a stale clock.
+
+    What would be written is the part that matters. `closed_at` would be set
+    from the pre-wait timestamp and the audit entry would name an
+    administrator as the one who stopped a market the clock closed on its own,
+    which is the one thing `market.closed_early` is supposed to mean.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_session_factory  # noqa: PLC0415
+
+    factory = get_session_factory()
+    actor = _actor()
+
+    async with factory() as setup:
+        market = await _open_market(
+            setup, actor, close_time=datetime.now(UTC) + timedelta(seconds=1.5)
+        )
+        market_id = market.id
+
+    barrier = asyncio.Barrier(2)
+
+    async def hold_the_row() -> None:
+        async with factory() as own:
+            await own.execute(select(Market).where(Market.id == market_id).with_for_update())
+            await barrier.wait()
+            await asyncio.sleep(3)
+            await own.rollback()
+
+    async def close_it() -> str:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            try:
+                await market_service.close_early(own, actor, market_id, _close())
+            except MarketClosed:
+                return "refused"
+            return "closed"
+
+    _, outcome = await asyncio.gather(hold_the_row(), close_it())
+
+    assert outcome == "refused", "the clock closed this market while the request waited"
+
+    async with factory() as check:
+        stored = (
+            await check.execute(select(Market).where(Market.id == market_id))
+        ).scalar_one()
+
+    # Still OPEN in the column — the sweeper writes CLOSED, and no
+    # `closed_at` means no administrator is on record as having done it.
+    assert stored.status is MarketStatus.OPEN
+    assert stored.closed_at is None

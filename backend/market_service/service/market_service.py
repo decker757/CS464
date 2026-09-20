@@ -298,8 +298,6 @@ async def publish(
     instant, so a market reaches OPEN with time left on the clock every time,
     and CLOSED is only ever reached by the clock actually running out.
     """
-    now = now or datetime.now(UTC)
-
     # Reuses the read rule rather than restating it, so "not yours" is a 404
     # here for exactly the reason it is a 404 there: a 403 would confirm the
     # market exists. Publication stays with the creator even though ADR 0007
@@ -323,6 +321,18 @@ async def publish(
     _refuse_if_frozen(market)
     if market.status is not MarketStatus.SUBMITTED:
         raise MarketNotSubmitted
+
+    # Sampled *after* the lock, never on the way in. The wait above is
+    # unbounded — a second publisher, a resubmission, anything else holding
+    # this row — and a clock read before it decides using a time from before
+    # the wait. The whole point of the re-validation below is that a market
+    # which sat submitted past its own close time must not go live, and a
+    # stale `now` is how it goes live anyway: the close time passes while this
+    # request queues, and the check still sees the future. ADR 0015's rule
+    # names the status, the balance and the idempotency key; the clock is the
+    # same kind of thing, because it is a value a check depends on that can
+    # change while the lock is being waited for.
+    now = now or datetime.now(UTC)
 
     problems = problems_blocking_submission(market, now=now)
     if problems:
@@ -404,8 +414,6 @@ async def close_early(
     One way, like `publish`. There is no reopen, `_save_once` refuses every
     later write, and the market's next move is [3.1] #9's proposal.
     """
-    now = now or datetime.now(UTC)
-
     # Locked for the same reason `publish` and `propose_outcome` lock: the
     # check below and the write after it are one decision, and an administrator
     # double-clicking the confirm button in the modal sends two requests. Read
@@ -420,6 +428,13 @@ async def close_early(
     # `is_open_for_trading` answers False for both and cannot tell them apart.
     if market.status in (MarketStatus.DRAFT, MarketStatus.SUBMITTED):
         raise MarketNotOpen
+
+    # After the lock, for the reason `publish` gives at length. Here the cost
+    # of a stale read is an audit entry claiming an administrator stopped
+    # trading that the clock had already stopped — the exact entry ADR 0014
+    # refuses to write, arrived at by waiting rather than by reading the
+    # status column.
+    now = now or datetime.now(UTC)
 
     # OPEN or CLOSED, and the clock decides which of those is true right now.
     # See the docstring: a market whose close time has passed is closed whether
