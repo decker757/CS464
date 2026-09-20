@@ -23,6 +23,8 @@ sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/         hand-applied ALTERs, until Alembic ([F-5] #75)
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
+DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
+                        cited by number from code comments (D-001, D-016, ...)
 scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 ```

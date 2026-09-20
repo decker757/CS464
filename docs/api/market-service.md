@@ -886,9 +886,18 @@ argument for why the split is by audience rather than by rule.
 
 ### GET /public/markets
 
-The default view, with no query parameters: open markets ordered by soonest
-closing time — [X-1] #34's first criterion. `status` and `q` narrow it and
-compose with each other.
+The default view, with no query parameters: **every published market**, the
+ones still trading first and then by soonest closing time within each group.
+
+It is not an open-only list, and that is deliberate. [X-1] #34 asks for two
+things from this view — "open markets ordered by soonest closing time", which
+is about ordering and emphasis, and "open markets are clearly distinguishable
+from closed, pending-resolution, and settled markets", which requires those
+three to be *in* the response. There is nothing to distinguish an open market
+from otherwise. `status=open` is the narrower query a trader gets by choosing
+the first group explicitly.
+
+`status` and `q` narrow this and compose with each other.
 
 | Query parameter | Rule |
 | --- | --- |
