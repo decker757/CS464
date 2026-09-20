@@ -14,6 +14,8 @@ the first exception.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Query
 
@@ -28,6 +30,24 @@ from service import browsing
 
 router = APIRouter(prefix="/public/markets", tags=["public markets"])
 
+# The `status` filter's accepted values, which are not all of `MarketStatus`.
+#
+# Typing the parameter as the enum itself puts all six members into the
+# generated OpenAPI schema, so `/docs` advertises `draft` and `submitted` as
+# choices and FastAPI accepts them. `service/browsing.py::_visible` then
+# correctly refuses to show either, and the request comes back `200 []` — a
+# filter that a frontend renders as a tab and that is permanently, silently
+# empty. The route's own `responses={422: ...}` block and
+# `docs/api/market-service.md` both promise a 422 there instead.
+#
+# Spelled as a `Literal` of the four public values rather than a second enum,
+# so the generated schema carries exactly the list the contract states, and
+# an unpublished market is refused at the request boundary rather than
+# filtered out behind it. `_visible()` stays as it is: this narrows what may
+# be *asked for*, and that one is what a trader may *see*. They are different
+# rules and the visibility one must not depend on this.
+PublicStatusFilter = Literal["open", "closed", "pending_resolution", "approved"]
+
 
 @router.get(
     "",
@@ -35,14 +55,21 @@ router = APIRouter(prefix="/public/markets", tags=["public markets"])
     summary="Browse published markets",
     description=(
         "[X-1] #34, [X-2] #35. With no query parameters, the default view: "
-        "open markets ordered by soonest closing time. `status` narrows to "
-        "one of `open`, `closed`, `pending_resolution` or `approved` — "
-        "`draft` and `submitted` are never visible here, whatever is asked "
-        "for. `q` searches the question, case-insensitively, and composes "
-        "with `status`.\n\n"
+        "**every published market**, the ones still trading first and then "
+        "by soonest closing time within each group. It is not an open-only "
+        "list — [X-1] #34 asks that open markets be clearly distinguishable "
+        "from closed, pending-resolution and settled ones, and there is "
+        "nothing to distinguish them from if those are missing.\n\n"
+        "`status` narrows to one of `open`, `closed`, `pending_resolution` "
+        "or `approved`; `status=open` is the narrower query a trader gets by "
+        "choosing the first group explicitly. `draft` and `submitted` are "
+        "never visible here and are not accepted values. `q` searches the "
+        "question, case-insensitively, and composes with `status`.\n\n"
         "A market past its `close_time` is reported `closed` even before the "
-        "background sweep writes it down (ADR 0011), so `status=open` and "
-        "the default view never include one, and `status=closed` does."
+        "background sweep writes it down (ADR 0011), so `status=open` never "
+        "includes one and `status=closed` does. In the default view it is "
+        "present, labelled `closed`, and sorted behind whatever is still "
+        "trading."
     ),
     responses={422: {"description": "`status` is not one of the values above."}},
 )
@@ -54,14 +81,26 @@ async def browse_markets(
         alias="q",
         description="Case-insensitive containment search over the question.",
     ),
-    status: MarketStatus | None = Query(
+    status: PublicStatusFilter | None = Query(
         default=None,
-        description="Restrict to one status. Omit for the default open view.",
+        description=(
+            "Restrict to one status. Omit for the default view, which is "
+            "every published market with the ones still trading first."
+        ),
     ),
 ) -> PublicMarketListResponse:
-    markets = await browsing.browse(session, query=q, status=status)
+    # One clock for the whole request, read here because this is the only
+    # place that sees both the query and the serialisation. D-025.
+    now = datetime.now(UTC)
+
+    markets = await browsing.browse(
+        session, query=q, status=MarketStatus(status) if status else None, now=now
+    )
     return PublicMarketListResponse(
-        markets=[PublicMarketSummaryOut.model_validate(m) for m in markets]
+        markets=[
+            PublicMarketSummaryOut.model_validate(m, context={"now": now})
+            for m in markets
+        ]
     )
 
 
@@ -83,5 +122,7 @@ async def browse_markets(
 async def get_public_market(
     market_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> PublicMarketOut:
+    now = datetime.now(UTC)
+
     market = await browsing.get_published(session, market_id)
-    return PublicMarketOut.model_validate(market)
+    return PublicMarketOut.model_validate(market, context={"now": now})

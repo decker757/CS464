@@ -23,6 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from core.closing import is_open_for_trading
 from core.database import Base
 
 
@@ -111,6 +112,50 @@ class MarketStatus(StrEnum):
     # Not RESOLVED. Nothing is resolved while [3.3] #11 lets a trader dispute
     # it, and [3.4] #12 names the terminal state SETTLED. ADR 0016.
     APPROVED = "approved"
+
+
+def displayed_status(
+    status: MarketStatus,
+    close_time: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> MarketStatus:
+    """The status a trader is shown, as opposed to the one stored. D-022, D-024.
+
+    ADR 0011's amendment splits this by audience: an administrator reads the
+    column, because the gap between `close_time` and `closed_at` is how they
+    tell whether the sweeper is running, and a trader reads this, because
+    [X-1] #34's "open markets are clearly distinguishable from closed" cannot
+    hold if the payload says `open` for a market that stopped four seconds
+    ago.
+
+    **Here rather than in `core/closing.py`, and the reason is a hard one
+    rather than a preference.** This returns a `MarketStatus`, and `core/`
+    may not import `model/entities` — nothing below `service` or `model`
+    reaches sideways or up, which is exactly why `core.closing` takes a
+    `bool` instead of a status. So the predicate could move down and this
+    could not follow it. Here it sits beside the enum it returns, and both
+    callers may reach it: `model/schemas.py` derives the trader-facing
+    projections with it, and `service/browsing.py` counts with it. Before
+    D-024 they held one copy each.
+
+    Takes the two values rather than a `Market`, so a Pydantic model holding
+    a projection of a market can call it without reconstructing an entity.
+
+    Only ever turns OPEN into CLOSED. PENDING_RESOLUTION and APPROVED pass
+    through exactly as they are, and a market closed early ([2.3] #7) is not
+    reopened by a `close_time` that ADR 0014 deliberately left in the future.
+
+    `now` is the request's own clock, threaded down from the controller so
+    that the filter and the display cannot read two different instants
+    (D-025). Left to default, it reads the clock itself, which keeps this
+    callable from a test and from anything that holds no request.
+    """
+    if status is not MarketStatus.OPEN:
+        return status
+    if is_open_for_trading(True, close_time, now=now):
+        return status
+    return MarketStatus.CLOSED
 
 
 _STATUS_COLUMN = Enum(

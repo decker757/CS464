@@ -22,14 +22,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationInfo,
     computed_field,
     field_validator,
     model_validator,
 )
 
-from core.closing import is_open_for_trading as _is_open_for_trading
 from core.opening_prices import max_platform_loss, uniform_initial_price
-from model.entities import MarketStatus
+from model.entities import MarketStatus, displayed_status
 
 # Shape ceilings, not domain rules, so they live here rather than in config:
 # they do not vary between a laptop and production. The floor of two outcomes
@@ -597,26 +597,22 @@ class MarketListResponse(BaseModel):
 # once a market has traded, with nothing on the response to say so.
 
 
-def _derive_public_status(
-    status: MarketStatus, close_time: datetime | None
-) -> MarketStatus:
-    """ADR 0011 / D-022: a trader is shown CLOSED before the sweep writes it.
+def _now_from(info: ValidationInfo) -> datetime | None:
+    """The request's clock, if the caller passed one. D-025.
 
-    Calls `core.closing.is_open_for_trading` rather than restating its two
-    conditions (D-023): `model/` may not import `service/closing.py` under
-    this repository's layering rule, but the check itself now lives in
-    `core/`, which both this module and `service/closing.py` are allowed to
-    import — one definition instead of two. This is a read of an object
-    already in hand, for display — never the gate a trade is checked against,
-    which stays sole in `service/closing.py::is_open_for_trading`.
+    `model_validate(entity, context={"now": ...})` is the only way to hand a
+    `model_validator` a value, and the controller uses it so that the SQL
+    filter and this derivation read one instant rather than two — Postgres's
+    `func.now()` is `transaction_timestamp()`, frozen when the transaction
+    opened, and a bare `datetime.now(UTC)` here runs at serialisation, which
+    is strictly later. A market whose `close_time` fell in that gap passed
+    the `status=open` filter and then serialised as `closed`.
 
-    Only ever turns OPEN into CLOSED. PENDING_RESOLUTION and APPROVED pass
-    through exactly as they are, and a market CLOSED early ([2.3] #7) is not
-    reopened by a `close_time` that ADR 0014 deliberately left in the future.
+    `None` when nobody passed one, which is every direct `model_validate` in
+    the suite and anything holding no request. `displayed_status` then reads
+    the clock itself, exactly as it did before.
     """
-    if status is not MarketStatus.OPEN:
-        return status
-    return status if _is_open_for_trading(True, close_time) else MarketStatus.CLOSED
+    return (info.context or {}).get("now")
 
 
 class PublicOutcomeOut(BaseModel):
@@ -670,8 +666,10 @@ class PublicMarketOut(_UtcTimestamps):
     proposed_outcome_id: uuid.UUID | None
 
     @model_validator(mode="after")
-    def _derive_status(self) -> PublicMarketOut:
-        self.status = _derive_public_status(self.status, self.close_time)
+    def _derive_status(self, info: ValidationInfo) -> PublicMarketOut:
+        self.status = displayed_status(
+            self.status, self.close_time, now=_now_from(info)
+        )
         return self
 
 
@@ -689,8 +687,10 @@ class PublicMarketSummaryOut(_UtcTimestamps):
     close_time: datetime | None
 
     @model_validator(mode="after")
-    def _derive_status(self) -> PublicMarketSummaryOut:
-        self.status = _derive_public_status(self.status, self.close_time)
+    def _derive_status(self, info: ValidationInfo) -> PublicMarketSummaryOut:
+        self.status = displayed_status(
+            self.status, self.close_time, now=_now_from(info)
+        )
         return self
 
 
