@@ -103,6 +103,54 @@ class IdempotencyKeyReused(LedgerError):
     )
 
 
+class MarketTermsUnavailable(LedgerError):
+    """market_service could not be reached, or answered as if it were down.
+
+    D-028. Covers a refused connection, a timeout, a 5xx, and a 200 whose body
+    is not a market — the market service is treated as down rather than the
+    ledger crashing on a parse error it cannot recover from. Also raised for a
+    published market whose `liquidity_b` or `seed_subsidy` arrived null, which
+    `service/validation.py` on the other side should never produce: refusing
+    beats writing a book with a `b` that can never be priced.
+
+    503 because the request was fine and the dependency was not, and because a
+    trade that failed this way is worth retrying in a moment.
+    """
+
+    status_code = 503
+    code = "market_terms_unavailable"
+    message = "Could not read this market's terms right now. Try again shortly."
+
+
+class MarketNotFound(LedgerError):
+    """market_service's public detail endpoint answered 404.
+
+    Deliberately not distinguished from a draft or a submitted market:
+    `browsing.get_published` on the other side makes those three
+    indistinguishable on purpose, so this side inherits the same ambiguity.
+    All three are permanent, which is what separates this from
+    `MarketTermsUnavailable` — retrying never helps.
+    """
+
+    status_code = 404
+    code = "market_not_found"
+    message = "No such market."
+
+
+class MarketNotPublished(LedgerError):
+    """The market exists but has no `published_at`, so it gets no book.
+
+    Not the status: a CLOSED, PENDING_RESOLUTION or APPROVED market is
+    published and does get a book. `published_at is not None` is the
+    condition, read off the response rather than inferred from a status code
+    that market_service could change independently of this rule.
+    """
+
+    status_code = 409
+    code = "market_not_published"
+    message = "This market has not been published yet."
+
+
 class UnbalancedTransaction(LedgerError):
     """The legs do not sum to zero, so this is not a movement of credits.
 

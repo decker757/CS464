@@ -20,12 +20,14 @@ from decimal import Decimal
 from enum import StrEnum
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DDL,
     DateTime,
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
@@ -70,6 +72,12 @@ class AccountKind(StrEnum):
     # starting grant a movement rather than an invention. See service/grants.py.
     PLATFORM = "platform"
 
+    # One per market, owner_id equal to the market id (D-026). Funded by the
+    # seed subsidy at book creation and exempt from the overdraft check like
+    # PLATFORM, because LMSR pays out up to b*ln(n) more than it collects. See
+    # service/books.py.
+    MARKET_POOL = "market_pool"
+
 
 class TransactionKind(StrEnum):
     """Why credits moved.
@@ -81,6 +89,11 @@ class TransactionKind(StrEnum):
     """
 
     SIGNUP_GRANT = "signup_grant"
+
+    # PLATFORM -> MARKET_POOL, posted once at book creation (D-009). A kind of
+    # its own rather than SIGNUP_GRANT, so a market's subsidy does not render on
+    # somebody's statement as a welcome bonus.
+    MARKET_SEED = "market_seed"
 
 
 _ACCOUNT_KIND_COLUMN = Enum(
@@ -290,6 +303,121 @@ class Entry(Base):
             "account_id",
             text("created_at DESC"),
             text("id DESC"),
+        ),
+    )
+
+
+class MarketBook(Base):
+    """A market's LMSR state, as this service knows it. [F-7] #96, D-008.
+
+    Created lazily, on the first request that needs it: `service/books.py`
+    reads the terms from market_service's public detail endpoint and copies
+    them here, once. ADR 0005 calls this duplication without coupling — [1.4]
+    #4 forbids editing a published market's terms, so a copy of data that
+    cannot change cannot drift from its source.
+
+    `state_version` is D-011's quote reference: one counter, incremented under
+    this row's lock by whichever trade last moved `q` on one of this market's
+    `MarketOutcome` rows. Nothing in this ticket increments it — that is [T-2]
+    #22 — so it opens at zero and stays there.
+    """
+
+    __tablename__ = "market_books"
+
+    # Not a ForeignKey. This names a row in `market.markets`, and ledger_svc
+    # holds no grant on that schema — the same trade `Account.owner_id`
+    # already makes for a user id. ADR 0003. The primary key is also what
+    # D-010's race depends on: two concurrent first-touches both insert, and
+    # this is what turns the loser into an `IntegrityError` it can recover
+    # from rather than a second book nobody notices.
+    market_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+
+    # A snapshot, not a live read. See the class docstring.
+    liquidity_b: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+    seed_subsidy: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+
+    # A ForeignKey, unlike market_id above — D-033. ADR 0003's rule is about a
+    # join across a *service* boundary this schema has no grant for;
+    # `ledger.accounts` is this service's own table, and the row it names is
+    # created in the same transaction as this one. An FK here catches a real
+    # mistake — a book pointing at an account that does not exist — that the
+    # service-boundary argument was never about.
+    pool_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id"), nullable=False
+    )
+
+    # D-011. Starts at zero (a never-traded market) and only ever increases,
+    # one per trade, under this row's lock — never negative by any code path
+    # this service has, which is exactly why it is worth a CHECK: if one ever
+    # appears, something wrote to this column that should not have.
+    state_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+
+    # D-027: equal to `opened_at` at creation, and equal only then. For a
+    # market nobody has traded, the book's creation *is* its last state
+    # change, so any other value here would invent a moment that did not
+    # happen.
+    state_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "state_version >= 0", name="ck_market_books_state_version_nonneg"
+        ),
+    )
+
+
+class MarketOutcome(Base):
+    """One outcome's state within a market's book. [F-7] #96.
+
+    `outcome_id` and `position` are copied from market_service's response at
+    book creation, exactly once — the same snapshot argument as `MarketBook`.
+    No label: that is display prose market_service owns, edited on a draft and
+    read by nobody on this side, so copying it here would be a second source
+    of truth for a string.
+    """
+
+    __tablename__ = "market_outcomes"
+
+    # Neither column here is a ForeignKey, for the same reason as
+    # `MarketBook.market_id` — both are generated by market_service, across a
+    # schema boundary this service holds no grant on. Composite primary key
+    # rather than a surrogate id plus a separate unique constraint: nothing
+    # ever references one of these rows by an id of its own, and the pair is
+    # the ticket's "unique on (market_id, outcome_id)" by construction.
+    market_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    outcome_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+
+    # Server-assigned by market_service from the order it sent, and what
+    # orders the `q` vector handed to the pricing engine. Duplicated within one
+    # market it would make YES and NO swap between two reads with nothing
+    # written in between, which is what the second unique constraint below
+    # refuses.
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Shares outstanding for this outcome. Zero for every outcome at book
+    # creation, which is what makes the opening price uniform: C(q) at q = 0
+    # gives every outcome 1/n. Whether share quantities share money's scale of
+    # 4 is unresolved (DECISIONS.md, Open) — this ticket only ever writes zero
+    # into this column, so it borrows the money scale without deciding that
+    # question.
+    q: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE),
+        nullable=False,
+        default=Decimal(0),
+        server_default=text("0"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "market_id", "position", name="uq_market_outcomes_market_position"
         ),
     )
 

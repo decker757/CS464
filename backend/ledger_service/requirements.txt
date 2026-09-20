@@ -12,3 +12,7 @@ asyncpg==0.31.0
 
 # Token verification only. This service never signs.
 PyJWT==2.14.0
+
+# [F-7] #96, D-008. The ledger's first outbound HTTP call: service/market_terms.py
+# reads a published market's terms from market_service.
+httpx==0.28.1

@@ -74,21 +74,33 @@ async def _constraints(session: AsyncSession, table: str) -> dict[str, str]:
     return {name: definition for name, definition in rows}
 
 
-def _book(market_id: uuid.UUID, pool_account_id: uuid.UUID, **overrides):
+async def _book(session: AsyncSession, market_id: uuid.UUID, **overrides):
+    """A `MarketBook`, backed by a real `MARKET_POOL` account for `market_id`.
+
+    `pool_account_id` is a foreign key into `ledger.accounts` (D-033), so a
+    fabricated id here would fail on a constraint unrelated to whatever the
+    calling test is actually asserting. The account is added and flushed
+    first so its id exists to hand to the book.
+    """
     from datetime import UTC, datetime  # noqa: PLC0415
+
+    entities = _entities()
+    pool = entities.Account(kind=entities.AccountKind.MARKET_POOL, owner_id=market_id)
+    session.add(pool)
+    await session.flush()
 
     now = datetime.now(UTC)
     fields = {
         "market_id": market_id,
         "liquidity_b": Decimal("100.0000"),
         "seed_subsidy": Decimal("250.0000"),
-        "pool_account_id": pool_account_id,
+        "pool_account_id": pool.id,
         "state_version": 0,
         "state_changed_at": now,
         "opened_at": now,
     }
     fields.update(overrides)
-    return _entities().MarketBook(**fields)
+    return entities.MarketBook(**fields)
 
 
 # --- ledger.market_books --------------------------------------------------
@@ -114,14 +126,20 @@ async def test_the_market_id_is_not_a_foreign_key(session: AsyncSession) -> None
     is why: a join across a service boundary should fail loudly rather than
     quietly work.
 
-    If this ever passes with a foreign key present, somebody has added a
-    cross-schema grant and two services have been welded together.
+    Scoped to `market_id` specifically (D-033) rather than to the table as a
+    whole: `pool_account_id` is a foreign key into `ledger.accounts`, this
+    service's own table, in the same transaction that creates the account it
+    names. ADR 0003's rule is about a cross-*schema* join; it was never about
+    this table having no foreign key at all.
+
+    If this ever passes with a `market_id` foreign key present, somebody has
+    added a cross-schema grant and two services have been welded together.
     """
     constraints = await _constraints(session, "market_books")
 
-    assert not any(d.startswith("FOREIGN KEY") for d in constraints.values()), (
-        "market_id must not reference market.markets"
-    )
+    assert not any(
+        d.startswith("FOREIGN KEY (market_id)") for d in constraints.values()
+    ), "market_id must not reference market.markets"
 
 
 async def test_state_version_refuses_a_negative_value(session: AsyncSession) -> None:
@@ -133,9 +151,9 @@ async def test_state_version_refuses_a_negative_value(session: AsyncSession) -> 
     something has written to this column that should not have, and the realtime
     contract's ordering guarantee is broken for that market.
     """
-    market_id, pool = uuid.uuid4(), uuid.uuid4()
+    market_id = uuid.uuid4()
 
-    session.add(_book(market_id, pool, state_version=-1))
+    session.add(await _book(session, market_id, state_version=-1))
 
     with pytest.raises((IntegrityError, DBAPIError)):
         await session.flush()
@@ -151,16 +169,21 @@ async def test_state_version_defaults_to_zero(session: AsyncSession) -> None:
     server default is for, and what a hand-written INSERT during an incident
     would rely on.
     """
-    market_id, pool = uuid.uuid4(), uuid.uuid4()
+    market_id = uuid.uuid4()
     from datetime import UTC, datetime  # noqa: PLC0415
+
+    entities = _entities()
+    pool = entities.Account(kind=entities.AccountKind.MARKET_POOL, owner_id=market_id)
+    session.add(pool)
+    await session.flush()
 
     now = datetime.now(UTC)
     session.add(
-        _entities().MarketBook(
+        entities.MarketBook(
             market_id=market_id,
             liquidity_b=Decimal("100.0000"),
             seed_subsidy=Decimal("250.0000"),
-            pool_account_id=pool,
+            pool_account_id=pool.id,
             state_changed_at=now,
             opened_at=now,
         )
@@ -170,7 +193,7 @@ async def test_state_version_defaults_to_zero(session: AsyncSession) -> None:
 
     stored = (
         await session.execute(
-            select(_entities().MarketBook).where(_entities().MarketBook.market_id == market_id)
+            select(entities.MarketBook).where(entities.MarketBook.market_id == market_id)
         )
     ).scalar_one()
 
@@ -192,9 +215,9 @@ async def test_the_pricing_columns_hold_eighteen_significant_digits(
     short column cannot reproduce.
     """
     exact = Decimal("12345678901234.5678")
-    market_id, pool = uuid.uuid4(), uuid.uuid4()
+    market_id = uuid.uuid4()
 
-    session.add(_book(market_id, pool, liquidity_b=exact, seed_subsidy=exact))
+    session.add(await _book(session, market_id, liquidity_b=exact, seed_subsidy=exact))
     await session.flush()
     session.expire_all()
 

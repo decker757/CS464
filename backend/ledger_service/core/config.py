@@ -45,6 +45,18 @@ class Settings(ServiceSettings):
     # other amount in this service, and those are Numeric columns.
     starting_credits: Decimal = Field(default=Decimal("1000"), gt=0)
 
+    # --- The market terms pull [F-7] #96, D-008, D-029 ---------------------
+    # Where `service/market_terms.py` reads a published market's terms from,
+    # on the first request that touches its book. `market` is the hostname
+    # compose gives that service on the shared network.
+    #
+    # Has a default, unlike `database_url` above, because it is not a
+    # credential and because ci-backend.yml's "Verify the app boots" step
+    # calls `create_app()` with only four environment variables set — this is
+    # not one of them, so a required field here would fail that step rather
+    # than the deploy it exists to catch.
+    market_service_url: str = Field(default="http://market:8000")
+
     # --- Paging -----------------------------------------------------------
     # A ledger only grows, so an unbounded history read is a question that gets
     # slower every week it is asked. Same ceilings, and the same reasoning, as
