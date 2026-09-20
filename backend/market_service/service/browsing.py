@@ -85,10 +85,15 @@ async def browse(
 ) -> list[Market]:
     """Every market a trader may see, filtered and searched. [X-1] #34, [X-2] #35.
 
-    No `status` at all is [X-1] #34's default view: open markets, ordered by
-    soonest closing time. That is deliberately the same query `status=open`
-    runs — one predicate for the case where nobody has chosen anything and the
-    case where a trader chose it explicitly, so the two cannot drift apart.
+    No `status` at all is [X-1] #34's default view, and that ticket asks for
+    two separate things from it, not one: "open markets ordered by soonest
+    closing time" is about ordering and emphasis, and "open markets are
+    clearly distinguishable from closed, pending-resolution, and settled
+    markets" requires the other three to be *in* the response — there is
+    nothing to distinguish from otherwise. So the default is every published
+    market, open ones first (derived via `open_for_trading()`, D-022) and then
+    by soonest close within each group. `status=open` is the narrower query
+    a trader gets by choosing the first group explicitly.
 
     `query` is a case-insensitive containment search over the question, and
     composes with `status` by being one more `WHERE` clause: both narrow the
@@ -101,12 +106,13 @@ async def browse(
     """
     stmt = select(Market).where(_visible())
 
-    stmt = stmt.where(_status_matches(status) if status is not None else open_for_trading())
+    if status is not None:
+        stmt = stmt.where(_status_matches(status))
 
     if query:
         stmt = stmt.where(Market.question.ilike(f"%{query}%"))
 
-    stmt = stmt.order_by(Market.close_time.asc())
+    stmt = stmt.order_by(open_for_trading().desc(), Market.close_time.asc())
 
     return list((await session.execute(stmt)).scalars())
 
