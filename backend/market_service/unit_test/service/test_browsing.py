@@ -113,11 +113,12 @@ async def _stopped_but_unswept(session: AsyncSession, creator: Actor) -> Market:
     has stopped trading and does not say so.
     """
     market = await published_market(session, creator)
+    market_id = market.id
     market.close_time = datetime.now(UTC) - timedelta(seconds=1)
     await session.commit()
     session.expire_all()
 
-    market = await market_service.get(session, creator.id, market.id)
+    market = await market_service.get(session, creator.id, market_id)
     assert market.status is MarketStatus.OPEN, "the sweep must not have run yet"
     return market
 
@@ -450,14 +451,21 @@ async def test_the_default_view_excludes_a_market_past_its_close_time(
     the query that runs when nobody has chosen anything — which is the query a
     trader actually hits, and the one most likely to have been written as
     `status == OPEN` before the filter argument was added.
+
+    The default view derives rather than reading the column: a market past its
+    close_time is still in it — it is a published market and a trader should
+    be able to find it — but reads as closed rather than open, and sorts
+    behind whatever is still trading.
     """
     stopped = await _stopped_but_unswept(session, actor())
     still_open = await _open_market(session)
 
     listed = await _browsing().browse(session)
+    ids = _ids(listed)
 
-    assert _ids(listed) == [still_open.id]
-    assert stopped.id not in _ids(listed)
+    assert stopped.id in ids
+    assert not _closing_says_open(stopped)
+    assert ids.index(still_open.id) < ids.index(stopped.id)
 
 
 async def test_the_detail_of_an_unswept_market_is_not_open_for_trading(
