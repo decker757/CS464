@@ -124,6 +124,34 @@ describe('RegisterPage — integration', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Username already taken')
   })
 
+  it('shows the server message under Email when pydantic rejects the address (422)', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          {
+            detail: [
+              {
+                type: 'value_error',
+                loc: ['body', 'email'],
+                msg: 'value is not a valid email address: The part after the @-sign is a special-use or reserved name that cannot be used with email.',
+              },
+            ],
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user, { email: 'me@test.local' })
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'value is not a valid email address',
+    )
+  })
+
   it('shows generic error when the server is unreachable', async () => {
     const user = userEvent.setup()
     server.use(
