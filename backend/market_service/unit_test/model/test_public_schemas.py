@@ -32,7 +32,7 @@ from typing import Any
 
 import pytest
 
-from model.entities import MarketStatus
+from model.entities import MarketCard, MarketStatus, displayed_status
 
 
 def _schemas() -> Any:
@@ -111,17 +111,58 @@ class _FakePublishedMarket:
         self.published_at = now - timedelta(days=1)
         self.closed_at = None
 
-        self.proposal_id = None
-        self.proposed_outcome_id = None
-        self.proposed_by_id = None
-        self.proposed_by_username = None
-        self.proposed_at = None
-        self.proposal_evidence_url = None
-        self.proposal_evidence_note = None
+        # A market carrying a proposal, when the status says it has one.
+        # PENDING_RESOLUTION and APPROVED are the two states in which these
+        # columns are populated on a real row ([3.1] #9, [3.2] #10), and the
+        # difference between them is the whole of the gating rule below: one
+        # administrator has named a winner, and in only one of the two has a
+        # second administrator agreed.
+        proposed = status in (MarketStatus.PENDING_RESOLUTION, MarketStatus.APPROVED)
+        approved = status is MarketStatus.APPROVED
 
-        self.approved_by_id = None
-        self.approved_by_username = None
-        self.approved_at = None
+        self.proposal_id = uuid.uuid4() if proposed else None
+        self.proposed_outcome_id = self.outcomes[0].id if proposed else None
+        self.proposed_by_id = uuid.uuid4() if proposed else None
+        self.proposed_by_username = "ernest_t" if proposed else None
+        self.proposed_at = now - timedelta(hours=2) if proposed else None
+        self.proposal_evidence_url = (
+            "https://www.mas.gov.sg/statistics" if proposed else None
+        )
+        self.proposal_evidence_note = "First print was 1.8%." if proposed else None
+
+        self.approved_by_id = uuid.uuid4() if approved else None
+        self.approved_by_username = "ihsan_b" if approved else None
+        self.approved_at = now - timedelta(hours=1) if approved else None
+
+        # What `service/browsing.py::get_published` stamps onto the entity
+        # before the detail projection reads it (D-027). Set from the real
+        # `displayed_status`, not from a value spelled out here, so these
+        # tests still exercise the derivation itself rather than agreeing
+        # with a copy of it. That the *service* stamps it is a service-layer
+        # fact and is asserted in `test_browsing.py`.
+        #
+        # An ordinary attribute, exactly as the service sets it — never the
+        # mapped `status`, which on a real entity would mark the instance
+        # dirty and let a later commit write the derived value to the column.
+        self.trader_facing_status = displayed_status(self.status, self.close_time)
+
+
+def _card(**kwargs: object) -> MarketCard:
+    """What `browse` now returns, built the way the service builds it.
+
+    `PublicMarketSummaryOut` is validated from one of these rather than from
+    an entity, because that is what the route hands it since D-027 — the
+    derivation moved into `service/browsing.py` and the card carries its
+    result as a plain `status`. Validating from an entity here would read the
+    raw column and silently assert the opposite of the rule.
+    """
+    entity = _FakePublishedMarket(**kwargs)
+    return MarketCard(
+        id=entity.id,
+        status=displayed_status(entity.status, entity.close_time),
+        question=entity.question,
+        close_time=entity.close_time,
+    )
 
 
 def _detail_json(**kwargs: object) -> dict[str, Any]:
@@ -334,7 +375,7 @@ def test_a_market_card_carries_the_question_status_and_closing_time() -> None:
     endpoint in `docs/api/realtime-service.md`, which lands with [F-3] #43 and
     [T-2] #22. A card renders them from there.
     """
-    model = _schemas().PublicMarketSummaryOut.model_validate(_FakePublishedMarket())
+    model = _schemas().PublicMarketSummaryOut.model_validate(_card())
     payload = json.loads(model.model_dump_json())
 
     assert payload["question"]
@@ -349,10 +390,12 @@ def test_the_summary_derives_its_status_the_same_way_the_detail_does() -> None:
     saying closed is the bug ADR 0011 describes, reproduced inside one service
     by stating the derivation twice.
     """
-    entity = _FakePublishedMarket(closes_in=timedelta(seconds=-1))
+    stopped = dict(closes_in=timedelta(seconds=-1))
 
-    summary = _schemas().PublicMarketSummaryOut.model_validate(entity)
-    detail = _schemas().PublicMarketOut.model_validate(entity)
+    summary = _schemas().PublicMarketSummaryOut.model_validate(_card(**stopped))
+    detail = _schemas().PublicMarketOut.model_validate(
+        _FakePublishedMarket(**stopped)
+    )
 
     assert summary.status == detail.status == MarketStatus.CLOSED
 
@@ -371,3 +414,53 @@ def test_timestamps_carry_an_offset() -> None:
     assert model.close_time is not None and model.close_time.tzinfo is not None
     assert model.resolution_time is not None
     assert model.resolution_time.tzinfo is not None
+
+
+# --- a proposed winner is not a decided one -------------------------------
+def test_a_pending_proposal_is_not_shown_to_a_trader() -> None:
+    """[X-3] #36 asks that *settled* markets display the winning outcome.
+
+    PENDING_RESOLUTION is not settled. It is one administrator's proposal
+    with a second administrator yet to rule on it, and ADR 0016 exists
+    precisely because that second opinion can go the other way: the reviewer
+    rejects, all seven proposal columns are nulled, and the proposer may
+    re-propose a different outcome.
+
+    Shipping `proposed_outcome_id` ungated means every trader who loaded the
+    page in between saw a winner the platform then reversed — with no
+    correction, no notification, and before [3.3] #11's dispute window
+    exists to contest it. The field says "winning outcome" to anyone
+    rendering it; the status is the only thing that says it is provisional,
+    and a client is not obliged to check.
+    """
+    payload = _detail_json(status=MarketStatus.PENDING_RESOLUTION)
+
+    assert payload["status"] == MarketStatus.PENDING_RESOLUTION.value
+    assert payload["proposed_outcome_id"] is None
+
+
+def test_an_approved_outcome_is_shown() -> None:
+    """The other half: once a second administrator has agreed, it is public.
+
+    APPROVED is as far as a market gets today and is the state [X-3] #36's
+    criterion is about. Gating must not be so eager that it hides a decided
+    winner — that would fail the criterion from the other direction.
+    """
+    payload = _detail_json(status=MarketStatus.APPROVED)
+
+    assert payload["status"] == MarketStatus.APPROVED.value
+    assert payload["proposed_outcome_id"] is not None
+
+
+@pytest.mark.parametrize(
+    "status", [MarketStatus.OPEN, MarketStatus.CLOSED, MarketStatus.PENDING_RESOLUTION]
+)
+def test_no_status_before_approval_exposes_a_winner(status: MarketStatus) -> None:
+    """The rule as a property rather than as one case.
+
+    A market that is still trading should never carry one either — nothing
+    stops a proposal's columns surviving on a row whose status moved back,
+    and a rejection sends a market to CLOSED with the columns nulled but
+    leaves the shape available to a future bug.
+    """
+    assert _detail_json(status=status)["proposed_outcome_id"] is None
