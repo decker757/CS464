@@ -136,3 +136,20 @@ describe('LoginPage — integration', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Please try again.')
   })
 })
+
+describe('LoginPage — already authenticated', () => {
+  const trader = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader' as const, created_at: '2026-01-01' }
+
+  beforeEach(() => mockNavigate.mockClear())
+
+  it('redirects to /markets when already logged in', () => {
+    render(
+      <AuthContext.Provider value={{ user: trader, login: mockLogin, logout: vi.fn() }}>
+        <MemoryRouter>
+          <LoginPage />
+        </MemoryRouter>
+      </AuthContext.Provider>,
+    )
+    expect(mockNavigate).toHaveBeenCalledWith('/markets', { replace: true })
+  })
+})

@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
 import { server } from '../test/server'
 import RegisterPage from './RegisterPage'
@@ -199,5 +199,22 @@ describe('RegisterPage — integration', () => {
     const button = await screen.findByRole('button', { name: /creating account/i })
     expect(button).toBeDisabled()
     resolveRequest()
+  })
+})
+
+describe('RegisterPage — already authenticated', () => {
+  const trader = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader' as const, created_at: '2026-01-01' }
+
+  beforeEach(() => mockNavigate.mockClear())
+
+  it('redirects to /markets when already logged in', () => {
+    render(
+      <AuthContext.Provider value={{ user: trader, login: mockLogin, logout: vi.fn() }}>
+        <MemoryRouter>
+          <RegisterPage />
+        </MemoryRouter>
+      </AuthContext.Provider>,
+    )
+    expect(mockNavigate).toHaveBeenCalledWith('/markets', { replace: true })
   })
 })
