@@ -14,16 +14,17 @@ export const handlers = [
   // Real server sends { error: { code: 'invalid_token' } } for unauthenticated requests
   http.get(`${BASE}/auth/me`, () =>
     HttpResponse.json(
-      { error: { code: 'invalid_token', message: 'Token expired' } },
+      { error: { code: 'invalid_token', message: 'Not authenticated.' } },
       { status: 401 },
     )
   ),
 
-  // Default: refresh also fails (no session). Code differs from invalid_token so
-  // the interceptor doesn't loop trying to refresh the refresh.
+  // Default: refresh also fails (no session). Uses the same invalid_token code
+  // as the real server — the loop is blocked by the isRefreshRequest check in
+  // axios.ts, not by using a different error code.
   http.post(`${BASE}/auth/refresh`, () =>
     HttpResponse.json(
-      { error: { code: 'session_expired', message: 'Session expired' } },
+      { error: { code: 'invalid_token', message: 'Not authenticated.' } },
       { status: 401 },
     )
   ),
