@@ -578,3 +578,122 @@ class MarketSummaryOut(_UtcTimestamps):
 
 class MarketListResponse(BaseModel):
     markets: list[MarketSummaryOut]
+
+
+# --- the trader-facing projection. [BE][X] #62 -----------------------------
+# `PublicMarketOut` and `PublicMarketSummaryOut` beside `MarketOut` and
+# `MarketSummaryOut`, not a change to either. D-021: the create form needs
+# `liquidity_b` as a JSON number to compare against `max_platform_loss`, and
+# the ledger that reads this endpoint needs it exact — one schema cannot be
+# both, so this is a second pair rather than a flag on the first.
+#
+# Two things `MarketOut` carries are deliberately absent here. `creator_id`
+# and `draft_key` are neither a trader's business nor harmless (D-019):
+# `creator_id` invites exactly the "whose market is it" argument ADR 0016
+# keeps out of who may decide an outcome, and `draft_key` would let a client
+# address a market by the autosave's own idempotency key. And each outcome's
+# `initial_price` is gone too — it is the q=0 opening price, simply wrong
+# once a market has traded, with nothing on the response to say so.
+
+
+def _derive_public_status(
+    status: MarketStatus, close_time: datetime | None
+) -> MarketStatus:
+    """ADR 0011 / D-022: a trader is shown CLOSED before the sweep writes it.
+
+    Restates the two conditions `service.closing.is_open_for_trading` checks
+    rather than importing that function: `model/` sits below `service/` in
+    this repository's import direction and may not reach up for it. This is a
+    read of an object already in hand, for display — never the gate a trade
+    is checked against, which stays sole in `service/closing.py`.
+
+    Only ever turns OPEN into CLOSED. PENDING_RESOLUTION and APPROVED pass
+    through exactly as they are, and a market CLOSED early ([2.3] #7) is not
+    reopened by a `close_time` that ADR 0014 deliberately left in the future.
+    """
+    if (
+        status is MarketStatus.OPEN
+        and close_time is not None
+        and close_time <= datetime.now(UTC)
+    ):
+        return MarketStatus.CLOSED
+    return status
+
+
+class PublicOutcomeOut(BaseModel):
+    """An outcome as a trader sees it. No `initial_price` — see D-019 above."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    position: int
+    label: str
+
+
+class PublicMarketOut(_UtcTimestamps):
+    """The trader-facing detail read. [X-3] #36.
+
+    `liquidity_b` and `seed_subsidy` are left typed as `Decimal`, which
+    Pydantic serialises as a JSON string by default — the opposite of
+    `MarketOut`'s explicit `float`, and the point of D-016: this is the
+    endpoint the ledger reads to snapshot `b` before it can price a market
+    (ADR 0005's publish-time handoff), and a JSON number would put an IEEE
+    double under every price the platform ever quotes.
+
+    No prices. `q` lives with the ledger (ADR 0005), and the authoritative
+    read is the snapshot endpoint in `docs/api/realtime-service.md`, landing
+    with [F-3] #43 and [T-2] #22.
+    """
+
+    id: uuid.UUID
+    status: MarketStatus
+
+    question: str | None
+    description: str | None
+    outcomes: list[PublicOutcomeOut]
+
+    close_time: datetime | None
+    resolution_time: datetime | None
+
+    resolution_criteria: str | None
+    resolution_sources: list[ResolutionSourceOut]
+
+    liquidity_b: Decimal | None
+    seed_subsidy: Decimal | None
+
+    published_at: datetime | None
+
+    # [X-3] #36: "Settled markets display the winning outcome." APPROVED is as
+    # far as a market gets today; SETTLED arrives with [3.4] #12. The label is
+    # read from `outcomes` above rather than repeated here, which is what
+    # stops the two copies drifting — the same rule `MarketOut` follows for
+    # the administrator's view. Null on every market nobody has proposed for.
+    proposed_outcome_id: uuid.UUID | None
+
+    @model_validator(mode="after")
+    def _derive_status(self) -> PublicMarketOut:
+        self.status = _derive_public_status(self.status, self.close_time)
+        return self
+
+
+class PublicMarketSummaryOut(_UtcTimestamps):
+    """The trader-facing list projection. [X-1] #34. Deliberately narrow.
+
+    Prices are not here either, for the same reason they are not on the
+    detail read: a card renders them from the snapshot endpoint once [F-3]
+    #43 and [T-2] #22 land.
+    """
+
+    id: uuid.UUID
+    status: MarketStatus
+    question: str | None
+    close_time: datetime | None
+
+    @model_validator(mode="after")
+    def _derive_status(self) -> PublicMarketSummaryOut:
+        self.status = _derive_public_status(self.status, self.close_time)
+        return self
+
+
+class PublicMarketListResponse(BaseModel):
+    markets: list[PublicMarketSummaryOut]
