@@ -30,10 +30,16 @@ from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, and_, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import noload
 
 from core.errors import MarketNotFound
-from model.entities import Market, MarketStatus, displayed_status
+from model.entities import (
+    PUBLIC_STATUSES,
+    TRADER_FACING_STATUS,
+    Market,
+    MarketCard,
+    MarketStatus,
+    displayed_status,
+)
 from service.closing import open_for_trading
 
 
@@ -48,6 +54,14 @@ def _visible() -> ColumnElement[bool]:
     module applies, including a status filter that explicitly asks for
     `draft` — asking does not widen what a trader may see.
 
+    **One definition, shared with the query parameter.** `PUBLIC_STATUSES`
+    lives in `model/entities.py` beside the enum, and
+    `controller/public_routes.py` builds the `status` filter's accepted values
+    from the same source. They were two hand-written lists until Ernest
+    pointed out the failure when SETTLED lands: added here and not there is a
+    `422` on a visible status, added there and not here is a `200 []` dead
+    tab.
+
     **An allowlist, not a denylist, and the difference is a future bug.**
     `notin_([DRAFT, SUBMITTED])` says the same thing about the six members
     that exist today and the opposite thing about the seventh. Adding a
@@ -59,14 +73,7 @@ def _visible() -> ColumnElement[bool]:
     would go red. Under this, a new member is invisible until somebody adds
     it here on purpose, which is the failure that gets noticed.
     """
-    return Market.status.in_(
-        [
-            MarketStatus.OPEN,
-            MarketStatus.CLOSED,
-            MarketStatus.PENDING_RESOLUTION,
-            MarketStatus.APPROVED,
-        ]
-    )
+    return Market.status.in_(PUBLIC_STATUSES)
 
 
 # The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
@@ -139,7 +146,7 @@ async def browse(
     query: str | None = None,
     status: MarketStatus | None = None,
     now: datetime | None = None,
-) -> list[Market]:
+) -> list[MarketCard]:
     """Every market a trader may see, filtered and searched. [X-1] #34, [X-2] #35.
 
     No `status` at all is [X-1] #34's default view, and that ticket asks for
@@ -173,32 +180,33 @@ async def browse(
     a test and from anything holding no request.
     """
     now = now or datetime.now(UTC)
-    # `noload` on both children, because `PublicMarketSummaryOut` reads four
-    # scalar columns and neither collection is one of them. `Market` declares
-    # `outcomes` and `resolution_sources` as `lazy="selectin"`, which is right
-    # for the detail read below and for the admin projection, and which here
-    # costs two extra round trips per browse pulling every outcome and every
-    # resolution source of every market listed — for rows that are then
-    # dropped on the floor by the projection.
+    # A column select, not entities, and every consequence of that is
+    # deliberate. `PublicMarketSummaryOut` renders four scalars, so the
+    # `lazy="selectin"` loaders on `outcomes` and `resolution_sources` were
+    # two extra round trips per browse fetching rows the projection drops.
     #
-    # `noload` rather than a column select, so this still returns `Market`
-    # entities: the caller, `count_by_status` and every test in the suite
-    # treat a browse result as a market, and a list of row tuples would be a
-    # wider change than the one being made. The cost is that `.outcomes` on a
-    # market from this function reads `[]` rather than raising — acceptable
-    # because the one caller is the list projection, and worth knowing if a
-    # second caller ever wants the children back.
-    stmt = (
-        select(Market)
-        .where(_visible())
-        .options(noload(Market.outcomes), noload(Market.resolution_sources))
-    )
+    # `noload()` was the first fix and was worse than the problem. It does not
+    # skip a collection, it marks it *loaded and empty*, so every market this
+    # query touched sat in the session's identity map claiming to have no
+    # outcomes — and a later `get_published` in the same session was handed
+    # that instance back, serialising `"outcomes": []` for a market that has
+    # two. Selecting columns puts nothing in the identity map at all, so the
+    # failure is unreachable rather than avoided. D-027.
+    stmt = select(
+        Market.id, Market.status, Market.question, Market.close_time
+    ).where(_visible())
 
     if status is not None:
         stmt = stmt.where(_status_matches(status, now))
 
-    if query:
-        stmt = stmt.where(_question_contains(query))
+    # Stripped, and blank-after-stripping is no filter at all. `?q=` is
+    # already falsy and returns the unfiltered list; `?q=%20%20%20` is
+    # truthy and would build `ILIKE '%   %'`, which matches every question
+    # containing three consecutive spaces and nothing a trader meant. The
+    # two spellings of "I typed nothing" should not mean different things.
+    search = (query or "").strip()
+    if search:
+        stmt = stmt.where(_question_contains(search))
 
     # `Market.id` last, as the tiebreaker that makes this order total.
     # "Closes end of quarter" is a thing several markets say at once, and
@@ -211,10 +219,26 @@ async def browse(
         open_for_trading(now).desc(), Market.close_time.asc(), Market.id.asc()
     )
 
-    return list((await session.execute(stmt)).scalars())
+    # The derivation happens here, in `service/`, where CLAUDE.md puts
+    # business rules — and before the projection rather than inside it. A
+    # `model_validator` could not be handed the request's clock reliably:
+    # FastAPI re-validates the returned object against `response_model` with
+    # no validation context, so the value computed here was recomputed
+    # against `datetime.now(UTC)` on its way to the wire. D-025, D-027.
+    return [
+        MarketCard(
+            id=row.id,
+            status=displayed_status(row.status, row.close_time, now=now),
+            question=row.question,
+            close_time=row.close_time,
+        )
+        for row in (await session.execute(stmt)).all()
+    ]
 
 
-async def get_published(session: AsyncSession, market_id: uuid.UUID) -> Market:
+async def get_published(
+    session: AsyncSession, market_id: uuid.UUID, *, now: datetime | None = None
+) -> Market:
     """One published market, whoever created it. [X-3] #36.
 
     Unscoped on purpose — a published market belongs to every trader, and
@@ -227,11 +251,30 @@ async def get_published(session: AsyncSession, market_id: uuid.UUID) -> Market:
     outside, which is most of what [1.1] #1's visibility rule is protecting.
     Point this at `market_service.get_any` instead and that rule is gone with
     no existing test failing.
+
+    Returns the entity, unlike `browse` above, because the detail projection
+    genuinely renders `outcomes` and `resolution_sources` — so there is
+    nothing to gain by selecting columns and a great deal to restate.
+
+    **The derived status is stamped onto an attribute SQLAlchemy does not
+    map**, and the comment on `TRADER_FACING_STATUS` in `model/entities.py`
+    is the one to read before changing this. Briefly: assigning to the mapped
+    `status` marks the instance dirty, so a later `commit()` on this session
+    would write the derived CLOSED into the column and turn this derivation
+    into a writer — the job ADR 0011 gives to the sweep and to nothing else.
+    An unmapped attribute cannot be flushed, so the trap is closed by
+    construction rather than by nobody committing.
     """
     stmt = select(Market).where(Market.id == market_id, _visible())
     market = (await session.execute(stmt)).scalar_one_or_none()
     if market is None:
         raise MarketNotFound
+
+    setattr(
+        market,
+        TRADER_FACING_STATUS,
+        displayed_status(market.status, market.close_time, now=now),
+    )
     return market
 
 
@@ -262,9 +305,22 @@ async def count_by_status(
     """
     now = now or datetime.now(UTC)
 
-    stmt = select(Market).where(_visible())
-    counts: dict[MarketStatus, int] = {}
-    for market in (await session.execute(stmt)).scalars():
-        derived = displayed_status(market.status, market.close_time, now=now)
+    # Two columns, not whole entities. `Market` declares `outcomes` and
+    # `resolution_sources` as `lazy="selectin"`, so selecting entities here
+    # fired two extra queries pulling every outcome and every resolution
+    # source of every published market — to increment integers that read
+    # neither. A column select also keeps these rows out of the session's
+    # identity map entirely, so counting cannot affect what a later read in
+    # the same session sees.
+    stmt = select(Market.status, Market.close_time).where(_visible())
+
+    # Seeded, so every visible bucket is present at zero. Built up from an
+    # empty dict, `counts[MarketStatus.APPROVED]` is a `KeyError` on a
+    # platform where nothing has been approved yet — which is every platform
+    # on day one, and [2.1] #5 is the caller that would hit it.
+    counts: dict[MarketStatus, int] = dict.fromkeys(PUBLIC_STATUSES, 0)
+
+    for status, close_time in (await session.execute(stmt)).all():
+        derived = displayed_status(status, close_time, now=now)
         counts[derived] = counts.get(derived, 0) + 1
     return counts
