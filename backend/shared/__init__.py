@@ -2,7 +2,16 @@
 
 ADR 0005 named what belongs here and, just as importantly, what does not:
 "Extract when #41 lands, and narrowly: token verification, the settings base,
-and the LMSR engine. Not `core`." This package is that list and nothing else.
+and the LMSR engine. Not `core`." This package is the first two of those three
+and nothing else.
+
+**The LMSR engine is not here, and that is deliberate.** [F-3] #43 put it in
+`ledger_service/core/lmsr.py`. ADR 0010 settled that the ledger owns the trade
+write path, because the trading composite owns no role and no schema — and a
+service with no cross-schema grant cannot read `q`, so it cannot evaluate the
+cost function. It calls the ledger instead. That leaves one caller, which does
+not clear the bar below. Amendment on ADR 0012; the argument is repeated in the
+engine's own docstring.
 
 **The bar for adding a module here.** Two services having similar code is not
 enough — ADR 0003 refused to share `core` at two occurrences precisely because

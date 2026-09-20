@@ -14,7 +14,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Market creation | [1.1] #1 | draft and submit shipped; UI is #45 |
 | Credit balance | [B-1] #32, [B-2] #33 | backend shipped with the ledger; UI is unbuilt |
 | Ledger | [F-1] #41 | shipped; the write path has no endpoint until [T-2] #22 |
-| LMSR pricing | [F-3] #43 | not started |
+| LMSR pricing | [F-3] #43 | engine shipped in `ledger_service/core/`; no caller until [T-1] #21 |
 | Trading | epic, 8 issues | not started |
 | Realtime | [F-2] #42 | socket, pub/sub and auth shipped; the snapshot lands with #43 and #22 |
 

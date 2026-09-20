@@ -52,6 +52,23 @@ with `pythonpath = . ..`.
 The LMSR engine is the third thing ADR 0005 named. It does not exist yet and
 lands with [F-3] #43, into this package.
 
+> **Amended by [F-3] #43.** It landed in `ledger_service/core/lmsr.py`
+> instead, and this paragraph is the claim that reverses. What changed is not
+> the bar but the caller count: ADR 0010 settled *after* this record that the
+> ledger owns the write path, because the trading composite owns no role and no
+> schema. A service holding no cross-schema grant cannot read `q`, so it cannot
+> evaluate the cost function — it calls the ledger, which can. That leaves one
+> caller, and the bar in the table above is that *every* caller needs identical
+> behaviour and a divergence between two copies would be a bug. One caller does
+> not clear it, and a shared module with one caller is indirection with nothing
+> on the other end.
+>
+> This is a deferral, not a refusal. Move the engine here on the day a second
+> caller can read `q` — the test for that is a cross-schema grant, not a new
+> service. No issue currently planned adds one. The engine's own module
+> docstring carries the same argument, so the next reader finds it from either
+> direction.
+
 **Each service keeps a `core/` module as the seam.** `core/security.py` binds
 this service's settings to the shared verifier; `core/config.py` subclasses
 `ServiceSettings`; `core/roles.py` re-exports; `core/paging.py` turns a None

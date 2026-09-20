@@ -166,7 +166,9 @@ formula is copied.
 > contexts were restructured. Every service now builds from `backend/` with
 > `dockerfile: <service>/Dockerfile`, and `backend/shared/` holds token
 > verification and the settings base — two of the three things this record
-> named. The LMSR engine is the third and lands with [F-3] #43. The narrowness
+> named. The LMSR engine is the third and did not: [F-3] #43 put it in
+> `ledger_service/core/lmsr.py`, because by then ADR 0010 had left it with a
+> single caller — see the amendment on ADR 0012. The narrowness
 > this section insists on is preserved: `shared/` is not `core`, and ADR 0012
 > records what was deliberately left copied.
 
