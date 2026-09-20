@@ -126,9 +126,10 @@ already agrees with it.
 > **Amended by [BE][X] #62.** A trader never sees that window, and this
 > paragraph is the claim that narrows. The decision above is untouched: the
 > clock still closes a market, the sweep still only writes it down, and
-> `service/closing.py` is still the one place either rule is stated. What
-> changed is that this record had exactly one kind of reader when it was
-> written, and now has two.
+> `service/closing.py` is still the one place either rule is queried from —
+> `is_open_for_trading()` for an entity, `open_for_trading()` for a `WHERE`
+> clause. What changed is that this record had exactly one kind of reader
+> when it was written, and now has two.
 >
 > Every route in the service was admin-only at the time, and an administrator
 > genuinely wants the column. The gap between `close_time` and `closed_at` is
@@ -145,11 +146,21 @@ already agrees with it.
 >
 > So the split is by audience, not by rule. `MarketOut` keeps reporting the
 > raw column, for the administrator. `PublicMarketOut` and
-> `PublicMarketSummaryOut` derive it from `closing.is_open_for_trading`, for
-> the trader, and the public browse filters and counts derive it too, so the
-> list and the detail cannot disagree. The derivation only ever makes a market
-> *less* tradeable: an early close ([2.3] #7) leaves `close_time` in the
-> future on purpose, and a market already CLOSED is never reopened by it.
+> `PublicMarketSummaryOut` derive it from the same predicate, for the trader,
+> and the public browse filters and counts derive it too, so the list and the
+> detail cannot disagree. The derivation only ever makes a market *less*
+> tradeable: an early close ([2.3] #7) leaves `close_time` in the future on
+> purpose, and a market already CLOSED is never reopened by it.
+>
+> **The predicate itself now lives in `core/closing.py` (D-023), not in
+> `service/closing.py`.** `model/schemas.py` needed the same two-condition
+> check to derive `status`, and cannot import `service/closing.py` — nothing
+> below `service` reaches up under this repository's layering. Restating the
+> two conditions in `model/` was the first cut of #62 and was exactly the
+> "three places to get it wrong" named two paragraphs up; the fix was to move
+> the shared piece one layer down rather than write a second copy of it.
+> `service/closing.py::is_open_for_trading` and `open_for_trading()` are
+> unchanged as the entity and SQL-clause wrappers every other caller imports.
 >
 > **This reverses on the day an administrator reads the public projection**,
 > because at that point one payload is serving both audiences again and the
