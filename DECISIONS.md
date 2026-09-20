@@ -629,6 +629,133 @@ one caller deliberately does not follow it.
 
 ---
 
+### D-026 — The market pool account is keyed `owner_id = market_id`
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** A market's `MARKET_POOL` account is resolved with
+`accounts.ensure(session, AccountKind.MARKET_POOL, market_id)`. The market id
+goes in `owner_id`, so `uq_accounts_kind_owner` means "one pool per market".
+
+**Why.** The type already fits: `Account.owner_id` is
+`mapped_column(Uuid, nullable=False)` and `market.markets.id` is a `Uuid`. No
+column changes, and no foreign key — the same trade `owner_id` already makes for
+a `USER` account naming a row in `auth.users` it has no grant to read.
+
+**The race depends on it, which is the real argument.** D-010 has two concurrent
+first-touches both inserting a book and the PK on `market_id` turning the loser
+into an `IntegrityError` it recovers from. That covers the *book*. The pool
+account is a separate row written before it, and if `owner_id` were anything but
+the market id — a fresh `uuid4`, a sentinel — the unique constraint would not
+fire on it. Both callers would create a pool account, only one book would
+survive, and the loser would hold an orphan account with no book pointing at it
+and no way to find it again. Keyed this way, `accounts.ensure` handles it one
+level down exactly as it already does for two tabs loading a balance at once,
+and the recovery path is one that ships with tests.
+
+**Rejected.** A sentinel `owner_id` with the market named only by
+`market_books.pool_account_id`. It puts the uniqueness in a column the insert
+race does not check, which is the one place it has to be.
+
+**Notes.** `PLATFORM_OWNER_ID` is the all-zero UUID for the opposite reason —
+there is exactly one house account and no natural owner to name it by. A pool
+account has a natural owner and should use it.
+
+---
+
+### D-027 — `state_changed_at` equals `opened_at` at book creation
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** Both columns are written with the same timestamp when the book is
+created. Tests assert equality, not merely that both are non-null.
+
+**Why.** For a market nobody has traded, the book's creation *is* its last state
+change. `state_version` is 0 and `q` is 0 for every outcome, and that state
+began when the row was written. Any other value would be inventing a moment that
+did not happen.
+
+**Notes.** This also settles the `occurred_at` question that sat in Open. The
+realtime contract defines `occurred_at` only as "the time of the event", and a
+snapshot of a never-traded market has no event to name — so it reports
+`state_changed_at`, which this entry now gives a defined value. That bullet is
+removed from Open.
+
+---
+
+### D-028 — Upstream failures map to 503, 404 and 401, and the timeout is explicit
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** The terms pull maps what it gets back:
+
+| upstream | ledger raises | status |
+| --- | --- | --- |
+| connect error, timeout, 5xx | `MarketTermsUnavailable` | 503 |
+| 404 | `MarketNotFound` | 404 |
+| 401 | `NotAuthenticated` | 401 |
+
+and the client passes an explicit `httpx.Timeout`, never the library default.
+
+**Why.** These are three different things and collapsing them loses the only
+information the caller can act on. A 503 says the market service is down and the
+trade is worth retrying. A 404 says this market does not exist, or is a draft, or
+is submitted — `browsing.get_published` deliberately makes those three
+indistinguishable — and retrying will never help. A 401 says the token the
+ledger forwarded has expired, which is the caller's session problem and is fixed
+by logging in again, not by the ledger claiming its dependency is unavailable.
+
+**The timeout has to be explicit because httpx's default is five seconds of
+connect and no ceiling on read.** This call sits in the trade path. A market
+service that accepts the connection and then stops responding would hold a
+ledger request, its database session and its row locks open for as long as the
+socket stays alive — so a hung dependency becomes a ledger that cannot write
+rather than a trade that fails fast.
+
+**Rejected.** Mapping everything non-2xx to 503, which tells a trader to retry a
+market that does not exist. Letting `httpx.HTTPError` escape, which surfaces as
+a 500 on a condition that is neither a bug nor the caller's fault.
+
+**Notes.** `NotAuthenticated` already exists in `core/errors.py` at 401 and is
+reused rather than duplicated. `MarketNotFound` is new to this service; the
+market service has its own with the same name and meaning, and they are
+deliberately not shared — ADR 0012's bar is not met by two error classes that
+happen to agree today.
+
+---
+
+### D-029 — The terms client lives in `service/`, not `core/`
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `ledger_service/service/market_terms.py`. Its errors live in
+`core/errors.py` like every other domain error.
+
+**Why.** The only outbound network adapter this repository already has is
+`realtime_service/service/bus.py`, which holds the Redis client and sits in
+`service/`. That is the precedent and it points away from `core/`.
+
+`core/` is where a suite runs without infrastructure. CLAUDE.md's own run
+instructions say so out loud — `.venv/bin/pytest unit_test/core unit_test/model
+# no database needed` — and putting a socket there makes that line false for the
+first time. CLAUDE.md's layering rule permits it (`service` may use `core`, and
+`core` may not reach up), so this is not something the import graph would have
+caught; it is a rule about what each layer is *for*.
+
+**Rejected.** `core/market_terms.py`, proposed on the strength of
+`core/security.py` being a settings-bound adapter. That comparison does not
+hold: `core/security.py` verifies a signature in process and opens no socket.
+
+**Notes.** The client takes an injectable `transport`, so the suite drives it
+with `httpx.MockTransport` and exercises the real URL, the real headers and the
+real decimal-string parsing without a market service running. A cross-service
+`ASGITransport` is not an option and never will be —
+`unit_test/test_import_boundary.py` fails any `import market_service` from this
+suite, because that import works under pytest and is an `ImportError` in the
+container.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
@@ -638,11 +765,21 @@ Move these into the log above when they're settled.
   commit boundary is unresolved. Either `post()` gains a variant that stops short
   of commit, or the trade accepts the ledger write as its own boundary and builds
   compensation around it.
-- **`occurred_at` for a market that has never traded.** The realtime contract
-  defines it only as the time of the event. `state_changed_at` set at handoff is a
-  proposal, not something the contract says.
 - **Whether share quantities share money's scale of 4.** Nothing in the repo takes
   a position on fractional shares.
+- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
+  `core/opening_prices.py::max_platform_loss` computes the worst case and
+  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
+  compares them — `_liquidity_problems` checks both are present and positive and
+  says in its own docstring that the comparison is "deliberately NOT checked",
+  on the grounds that an administrator may knowingly seed a market for less.
+  That was a defensible call while the number was only displayed. Once [F-7] #96
+  funds a pool from it, an undersubsidised market is one whose pool goes
+  negative under ordinary trading, and `_refuse_overdrafts` exempts every
+  non-USER account, so nothing anywhere will say so. Whether that stays an
+  informed choice, becomes a submission rule, or becomes a warning the ledger
+  records at book creation is undecided. It is market_service's rule to make
+  either way, not the ledger's.
 - **Service-to-service auth for ledger writes.** Deferred by ADR 0009 to #22.
   Currently avoided by making #62 public, but #22 is a write and will have to
   answer it.
