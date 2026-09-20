@@ -27,6 +27,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.closing import is_open_for_trading as _is_open_for_trading
 from core.opening_prices import max_platform_loss, uniform_initial_price
 from model.entities import MarketStatus
 
@@ -601,23 +602,21 @@ def _derive_public_status(
 ) -> MarketStatus:
     """ADR 0011 / D-022: a trader is shown CLOSED before the sweep writes it.
 
-    Restates the two conditions `service.closing.is_open_for_trading` checks
-    rather than importing that function: `model/` sits below `service/` in
-    this repository's import direction and may not reach up for it. This is a
-    read of an object already in hand, for display — never the gate a trade
-    is checked against, which stays sole in `service/closing.py`.
+    Calls `core.closing.is_open_for_trading` rather than restating its two
+    conditions (D-023): `model/` may not import `service/closing.py` under
+    this repository's layering rule, but the check itself now lives in
+    `core/`, which both this module and `service/closing.py` are allowed to
+    import — one definition instead of two. This is a read of an object
+    already in hand, for display — never the gate a trade is checked against,
+    which stays sole in `service/closing.py::is_open_for_trading`.
 
     Only ever turns OPEN into CLOSED. PENDING_RESOLUTION and APPROVED pass
     through exactly as they are, and a market CLOSED early ([2.3] #7) is not
     reopened by a `close_time` that ADR 0014 deliberately left in the future.
     """
-    if (
-        status is MarketStatus.OPEN
-        and close_time is not None
-        and close_time <= datetime.now(UTC)
-    ):
-        return MarketStatus.CLOSED
-    return status
+    if status is not MarketStatus.OPEN:
+        return status
+    return status if _is_open_for_trading(True, close_time) else MarketStatus.CLOSED
 
 
 class PublicOutcomeOut(BaseModel):
