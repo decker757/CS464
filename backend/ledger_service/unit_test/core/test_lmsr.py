@@ -60,8 +60,23 @@ B = Decimal("100")
 _SEED = 20260920
 
 
-def _rng() -> random.Random:
-    return random.Random(_SEED)
+def _rng(stream: int = 0) -> random.Random:
+    """A fresh generator, seeded so that the caller draws the same vectors every
+    run and a different set from its siblings.
+
+    `stream` is what keeps the cases of a parametrized test apart. Without it
+    every case builds `Random(_SEED)` and draws the identical markets, so
+    `test_cost_increases_in_every_outcome[0|1|2]` checks three different
+    outcome indices against one set of 50 `q` vectors rather than three — the
+    test still passes, and it is covering a third of what its name claims.
+
+    The module-level generator this replaced got that part right by accident:
+    one ordered stream hands each case a disjoint slice. It got reproducibility
+    wrong, which is the more important of the two and the reason it went. This
+    keeps both — pass the parameter as the stream and each case is independent
+    and repeatable on its own under `-k` or `--lf`.
+    """
+    return random.Random(_SEED + stream)
 
 
 _TOL = Decimal("1e-9")
@@ -132,7 +147,7 @@ def test_cost_increases_in_every_outcome(index: int) -> None:
     """Monotonicity. Selling a share of any outcome moves the market maker's
     liability up, never down — if it can go down for some `q`, there is a
     sequence of trades that takes money out of the platform for free."""
-    rng = _rng()
+    rng = _rng(index)
     for _ in range(50):
         q = _random_q(rng, 3)
         more = list(q)
@@ -204,7 +219,7 @@ def test_price_is_the_marginal_cost_of_the_next_share(index: int) -> None:
     function actually being charged — the failure where a trader is quoted one
     number and charged another."""
     h = Decimal("0.01")
-    rng = _rng()
+    rng = _rng(index)
     for _ in range(20):
         q = _random_q(rng, 3)
         up, down = list(q), list(q)
