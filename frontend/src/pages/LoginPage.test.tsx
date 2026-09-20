@@ -1,9 +1,10 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
+import { useState } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
-import { AuthContext } from '../context/AuthContext'
+import { AuthContext, type User } from '../context/AuthContext'
 import { server } from '../test/server'
 import LoginPage from './LoginPage'
 
@@ -15,16 +16,43 @@ vi.mock('react-router-dom', async (importOriginal) => {
   return { ...actual, useNavigate: () => mockNavigate }
 })
 
+/** A provider whose `login` actually signs somebody in.
+ *
+ * A fixed `user: null` is simpler and makes this file blind to half of what
+ * LoginPage does. The page redirects a signed-in visitor away in an effect
+ * keyed on `user`, so a context where `user` never changes never runs that
+ * effect — and the redirect assertions below would pass whatever the effect
+ * navigated to. `mockLogin` is still called, so the payload assertions are
+ * unaffected.
+ */
+function StatefulAuth({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null)
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        login: (u: User) => {
+          mockLogin(u)
+          setUser(u)
+        },
+        logout: vi.fn(),
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  )
+}
+
 function renderLoginPage(fromPath?: string) {
   const initialEntry = fromPath
     ? { pathname: '/login', state: { from: { pathname: fromPath } } }
     : '/login'
   return render(
-    <AuthContext.Provider value={{ user: null, login: mockLogin, logout: vi.fn() }}>
+    <StatefulAuth>
       <MemoryRouter initialEntries={[initialEntry]}>
         <LoginPage />
       </MemoryRouter>
-    </AuthContext.Provider>,
+    </StatefulAuth>,
   )
 }
 
@@ -63,7 +91,7 @@ describe('LoginPage — integration', () => {
       expect(mockLogin).toHaveBeenCalledWith(expect.objectContaining({ username: 'alice' })),
     )
     expect(capturedBody).toEqual({ identifier: 'alice', password: 'test-fixture-pw-ok' })
-    expect(mockNavigate).toHaveBeenCalledWith('/markets', { replace: true })
+    expect(mockNavigate).toHaveBeenLastCalledWith('/markets', { replace: true })
   })
 
   it('redirects to the page that triggered the login', async () => {
@@ -81,8 +109,12 @@ describe('LoginPage — integration', () => {
     await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
     await user.click(screen.getByRole('button', { name: /log in/i }))
 
+    // `LastCalledWith`, deliberately. `handleSubmit` navigates to `from`, and
+    // the signed-in effect navigates again on the `user` change that login
+    // causes — so a plain `toHaveBeenCalledWith` is satisfied by whichever
+    // call loses, and says nothing about where the browser actually ends up.
     await waitFor(() =>
-      expect(mockNavigate).toHaveBeenCalledWith('/portfolio', { replace: true }),
+      expect(mockNavigate).toHaveBeenLastCalledWith('/portfolio', { replace: true }),
     )
   })
 

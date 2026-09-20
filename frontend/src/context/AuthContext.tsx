@@ -43,8 +43,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = (userData: User) => setUser(userData)
   const logout = async () => {
-    await api.post('/auth/logout')
-    setUser(null)
+    // `finally`, because logging out is the one action a user has to be able
+    // to trust. The server's own contract says this endpoint is
+    // unauthenticated and always succeeds (docs/api/auth-service.md), so a
+    // rejection here is a network fault rather than a refusal — and leaving
+    // the session up because the network blinked is the wrong way to fail.
+    // The error still propagates; the caller decides what to show.
+    try {
+      await api.post('/auth/logout')
+    } finally {
+      setUser(null)
+    }
   }
 
   return (
