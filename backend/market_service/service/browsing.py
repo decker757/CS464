@@ -26,13 +26,15 @@ and the authoritative read is the snapshot endpoint in
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, and_, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from core.errors import MarketNotFound
-from model.entities import Market, MarketStatus
-from service.closing import is_open_for_trading, open_for_trading
+from model.entities import Market, MarketStatus, displayed_status
+from service.closing import open_for_trading
 
 
 def _visible() -> ColumnElement[bool]:
@@ -45,21 +47,75 @@ def _visible() -> ColumnElement[bool]:
     below may be the hole in that. This is the one filter every query in this
     module applies, including a status filter that explicitly asks for
     `draft` — asking does not widen what a trader may see.
+
+    **An allowlist, not a denylist, and the difference is a future bug.**
+    `notin_([DRAFT, SUBMITTED])` says the same thing about the six members
+    that exist today and the opposite thing about the seventh. Adding a
+    `MarketStatus` member is a Python change and nothing else — the column is
+    a non-native `Enum`, so there is no migration to review and no CHECK
+    constraint to fail — and SETTLED is already named as arriving with [3.4]
+    #12. Under a denylist it would become trader-visible the moment it was
+    declared, before any code decided it should be, and nothing anywhere
+    would go red. Under this, a new member is invisible until somebody adds
+    it here on purpose, which is the failure that gets noticed.
     """
-    return Market.status.notin_([MarketStatus.DRAFT, MarketStatus.SUBMITTED])
+    return Market.status.in_(
+        [
+            MarketStatus.OPEN,
+            MarketStatus.CLOSED,
+            MarketStatus.PENDING_RESOLUTION,
+            MarketStatus.APPROVED,
+        ]
+    )
 
 
-def _stopped_but_unswept() -> ColumnElement[bool]:
+# The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
+# doubling below is Python's, not SQL's.
+_LIKE_ESCAPE = "\\"
+
+# Postgres's two LIKE metacharacters. `%` is any run of characters and `_` is
+# exactly one.
+_LIKE_WILDCARDS = ("%", "_")
+
+
+def _question_contains(query: str) -> ColumnElement[bool]:
+    """A containment search that treats the trader's input as text, not pattern.
+
+    The wildcards wrapping `query` are ours and mean "anything either side".
+    The ones *inside* it came from somebody typing, and have to match
+    themselves. Without this they are the same character, so the pattern
+    language leaks to the caller:
+
+    - `2%` builds `%2%%`, which collapses to `%2%` and matches every question
+      containing a 2
+    - `_` builds `%_%`, which matches every question with at least one
+      character in it — that is, all of them
+    - `100%` finds markets that have nothing to do with a hundred per cent
+
+    All three are silent. There is no error and no empty result to notice;
+    the trader gets a plausible-looking list that is simply the wrong one.
+
+    The backslash is escaped first, before it is used to escape anything else.
+    Doing it last would escape the escapes this function had just added and
+    turn `%` back into a wildcard.
+    """
+    escaped = query.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+    for wildcard in _LIKE_WILDCARDS:
+        escaped = escaped.replace(wildcard, _LIKE_ESCAPE + wildcard)
+    return Market.question.ilike(f"%{escaped}%", escape=_LIKE_ESCAPE)
+
+
+def _stopped_but_unswept(now: datetime) -> ColumnElement[bool]:
     """OPEN in the column, but past its close time. The gap ADR 0011 is about.
 
     Built from `open_for_trading()` rather than restated, so the browse query
     and the trade path cannot come to different conclusions about the same
     market.
     """
-    return and_(Market.status == MarketStatus.OPEN, not_(open_for_trading()))
+    return and_(Market.status == MarketStatus.OPEN, not_(open_for_trading(now)))
 
 
-def _status_matches(status: MarketStatus) -> ColumnElement[bool]:
+def _status_matches(status: MarketStatus, now: datetime) -> ColumnElement[bool]:
     """What "status = X" means to a trader, for one value of X.
 
     OPEN reuses `open_for_trading()` outright — a market past its close time
@@ -71,9 +127,9 @@ def _status_matches(status: MarketStatus) -> ColumnElement[bool]:
     derived meaning and matches the column as stored.
     """
     if status is MarketStatus.OPEN:
-        return open_for_trading()
+        return open_for_trading(now)
     if status is MarketStatus.CLOSED:
-        return or_(Market.status == MarketStatus.CLOSED, _stopped_but_unswept())
+        return or_(Market.status == MarketStatus.CLOSED, _stopped_but_unswept(now))
     return Market.status == status
 
 
@@ -82,6 +138,7 @@ async def browse(
     *,
     query: str | None = None,
     status: MarketStatus | None = None,
+    now: datetime | None = None,
 ) -> list[Market]:
     """Every market a trader may see, filtered and searched. [X-1] #34, [X-2] #35.
 
@@ -103,16 +160,56 @@ async def browse(
     appropriate empty state is shown" is the caller's job once this returns
     `[]`, and a 404 here would give it nothing to distinguish from a market
     that does not exist.
+
+    **`now` is the request's clock and the controller passes it** (D-025), so
+    that the filter here and the derivation in `model/schemas.py` read one
+    instant. They used to read two: `func.now()` is `transaction_timestamp()`
+    and is frozen when the transaction opens, while the schema's derivation
+    ran at serialisation, strictly later. A market whose `close_time` fell in
+    the gap passed `status=open` here and then serialised as `closed` — an
+    open tab with a market labelled closed in it, with zero clock skew.
+
+    Defaulted rather than required, so the service layer stays callable from
+    a test and from anything holding no request.
     """
-    stmt = select(Market).where(_visible())
+    now = now or datetime.now(UTC)
+    # `noload` on both children, because `PublicMarketSummaryOut` reads four
+    # scalar columns and neither collection is one of them. `Market` declares
+    # `outcomes` and `resolution_sources` as `lazy="selectin"`, which is right
+    # for the detail read below and for the admin projection, and which here
+    # costs two extra round trips per browse pulling every outcome and every
+    # resolution source of every market listed — for rows that are then
+    # dropped on the floor by the projection.
+    #
+    # `noload` rather than a column select, so this still returns `Market`
+    # entities: the caller, `count_by_status` and every test in the suite
+    # treat a browse result as a market, and a list of row tuples would be a
+    # wider change than the one being made. The cost is that `.outcomes` on a
+    # market from this function reads `[]` rather than raising — acceptable
+    # because the one caller is the list projection, and worth knowing if a
+    # second caller ever wants the children back.
+    stmt = (
+        select(Market)
+        .where(_visible())
+        .options(noload(Market.outcomes), noload(Market.resolution_sources))
+    )
 
     if status is not None:
-        stmt = stmt.where(_status_matches(status))
+        stmt = stmt.where(_status_matches(status, now))
 
     if query:
-        stmt = stmt.where(Market.question.ilike(f"%{query}%"))
+        stmt = stmt.where(_question_contains(query))
 
-    stmt = stmt.order_by(open_for_trading().desc(), Market.close_time.asc())
+    # `Market.id` last, as the tiebreaker that makes this order total.
+    # "Closes end of quarter" is a thing several markets say at once, and
+    # without it two markets sharing a `close_time` come back in whatever
+    # order the plan happens to produce — so the list reshuffles between two
+    # refreshes that returned the same rows. It is also what keyset paging
+    # needs to exist later: a cursor cannot name a position in an order that
+    # does not uniquely determine one.
+    stmt = stmt.order_by(
+        open_for_trading(now).desc(), Market.close_time.asc(), Market.id.asc()
+    )
 
     return list((await session.execute(stmt)).scalars())
 
@@ -138,20 +235,9 @@ async def get_published(session: AsyncSession, market_id: uuid.UUID) -> Market:
     return market
 
 
-def _derived_status(market: Market) -> MarketStatus:
-    """One market's status, the way a trader is shown it. ADR 0011.
-
-    Calls `is_open_for_trading` rather than restating its two conditions, so
-    this count and the trade path cannot disagree about the same market. Only
-    ever turns a stored OPEN into a counted CLOSED; every other status is
-    counted as it stands.
-    """
-    if market.status is MarketStatus.OPEN and not is_open_for_trading(market):
-        return MarketStatus.CLOSED
-    return market.status
-
-
-async def count_by_status(session: AsyncSession) -> dict[MarketStatus, int]:
+async def count_by_status(
+    session: AsyncSession, *, now: datetime | None = None
+) -> dict[MarketStatus, int]:
     """Markets per status, over what a trader can see. [2.1] #5, built once here.
 
     Grouped in Python rather than in a SQL `CASE`, on a table sized for a
@@ -164,14 +250,21 @@ async def count_by_status(session: AsyncSession) -> dict[MarketStatus, int]:
     the same database disagreeing, and a trader who sees "2 open" above a
     list of one open market has found a bug with no visible cause.
 
+    `displayed_status` is the shared wrapper in `model/entities.py` (D-024).
+    This function held its own copy of those three lines until then, and
+    `model/schemas.py` held the other — one rule, two spellings, and only one
+    of them with tests pointed at it.
+
     Excludes DRAFT and SUBMITTED, the same visibility rule `browse` and
     `get_published` apply: a count is an aggregate over what a trader can see,
     not over the table, and counting drafts would tell a trader how many
     markets three administrators have half-written.
     """
+    now = now or datetime.now(UTC)
+
     stmt = select(Market).where(_visible())
     counts: dict[MarketStatus, int] = {}
     for market in (await session.execute(stmt)).scalars():
-        derived = _derived_status(market)
+        derived = displayed_status(market.status, market.close_time, now=now)
         counts[derived] = counts.get(derived, 0) + 1
     return counts

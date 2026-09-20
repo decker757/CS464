@@ -101,6 +101,24 @@ def open_for_trading(now: datetime | None = None) -> ColumnElement[bool]:
     Note that this is deliberately NOT `Market.status == MarketStatus.OPEN`,
     which is what `model/entities.py` still describes as the browse predicate.
     That was true before this ticket and is now half of it.
+
+    **One caller deliberately does not take the transaction's clock**, and the
+    argument for it above is not wrong — it just does not reach that caller.
+    `service/browsing.py` passes a Python `datetime` read once at the
+    controller, because the trader-facing projection derives the displayed
+    status in Python at serialisation time and the two have to agree with
+    each other more than either has to agree with Postgres. Leaving `now` to
+    default to `func.now()` there put `transaction_timestamp()` in the filter
+    and a strictly later instant in the display, so a market whose
+    `close_time` fell between them appeared in the open tab labelled closed.
+    D-025 has the full argument, the alternative that was rejected, and the
+    trigger that reverses it: a path that *decides or writes* off this same
+    projection needs the transaction's clock, and this function is still how
+    it gets one.
+
+    This is also the fifth expression of ADR 0011's rule and the one copy
+    nobody can remove: it returns a `ColumnElement`, so it can never call
+    `core/closing.py`, which returns a `bool`. D-024 names the other four.
     """
     return and_(
         Market.status == MarketStatus.OPEN,
