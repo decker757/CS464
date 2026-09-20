@@ -70,16 +70,21 @@ def cost_to_trade(q: Sequence[Decimal], b: Decimal, delta: Sequence[Decimal]) ->
     _require_outcomes(q)
     if len(delta) != len(q):
         raise ValueError("delta must name every outcome in q")
-    after = [q_i + d_i for q_i, d_i in zip(q, delta)]
-    return cost(after, b) - cost(q, b)
+    with localcontext() as ctx:
+        ctx.prec = _PRECISION
+        after = [q_i + d_i for q_i, d_i in zip(q, delta)]
+        return cost(after, b) - cost(q, b)
 
 
 def prices(q: Sequence[Decimal], b: Decimal) -> list[Decimal]:
     """The gradient of `cost`: one marginal price per outcome, summing to 1.
 
     Computed directly as a softmax over `q_i/b` rather than as a numerical
-    derivative of `cost` — the same shifted exponentials `cost` uses, so the
-    two never disagree about which is which.
+    derivative of `cost`. Deliberately independent of `_log_sum_exp` — no
+    shared helper, no call into `cost` — because the central-difference test
+    that checks price against cost's gradient only proves anything as long as
+    the two are separate implementations. Folding this into `_log_sum_exp` to
+    remove the apparent duplication would make that test tautological.
     """
     _require_outcomes(q)
     _require_positive_b(b)
@@ -89,9 +94,4 @@ def prices(q: Sequence[Decimal], b: Decimal) -> list[Decimal]:
         top = max(scaled)
         weights = [(x - top).exp() for x in scaled]
         total = sum(weights)
-        raw = [w / total for w in weights]
-
-    # Never above 1, never below 0, whatever a rounding step above did: a
-    # price outside the unit interval is a share priced to cost more than it
-    # can ever pay out, or to pay out on nothing.
-    return [min(Decimal(1), max(Decimal(0), p)) for p in raw]
+        return [w / total for w in weights]
