@@ -276,6 +276,52 @@ async def test_search_and_a_status_filter_can_be_used_together(
     assert _ids(listed) == [wanted.id]
 
 
+async def test_the_question_search_treats_like_wildcards_as_text(
+    session: AsyncSession,
+) -> None:
+    """[X-2] #35, and the bug that hides underneath it.
+
+    `ILIKE` has two metacharacters, and a containment search built by
+    interpolation hands both of them to whoever is typing. Every case below
+    returns a plausible-looking list rather than an error, which is exactly
+    why the two search tests above pass without noticing.
+
+    A trader searching `2%` is looking for a market about a percentage, and
+    the tests here are built so the wrong answer is a *bigger* result set than
+    the right one — a search that silently ignored its argument would fail
+    these as loudly as one that leaked the pattern language.
+    """
+    percent = await _open_market(
+        session, question="Will core inflation be below 2% in December 2026?"
+    )
+    # Contains a 2, does not contain "2%". This is the row the unescaped
+    # pattern `%2%%` wrongly picks up, because it collapses to `%2%`.
+    await _open_market(
+        session, question="Will the MRT Cross Island Line open before June 2027?"
+    )
+    underscored = await _open_market(
+        session, question="Will the CPI_SG series be published before March 2027?"
+    )
+    backslashed = await _open_market(
+        session, question="Will the C:\\Temp retention policy be published in 2027?"
+    )
+
+    # `%` is any run of characters. Unescaped this matches every question with
+    # a 2 in it, which is all four.
+    assert _ids(await _browsing().browse(session, query="2%")) == [percent.id]
+
+    # `_` is exactly one character. Unescaped this matches every question that
+    # is not empty, which is again all four.
+    assert _ids(await _browsing().browse(session, query="_")) == [underscored.id]
+
+    # The escape character itself. Left as-is it becomes a dangling escape in
+    # the pattern — `\T` is not a valid sequence — so this one does not return
+    # the wrong rows, it raises.
+    assert _ids(await _browsing().browse(session, query="C:\\Temp")) == [
+        backslashed.id
+    ]
+
+
 # --- [X-3] #36: one market's detail ---------------------------------------
 async def test_the_detail_read_is_not_scoped_to_the_creator(
     session: AsyncSession,
@@ -442,7 +488,7 @@ async def test_a_market_past_its_close_time_reads_as_closed_before_the_sweep(
     assert _ids(listed) == [stopped.id]
 
 
-async def test_the_default_view_excludes_a_market_past_its_close_time(
+async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_open_ones(
     session: AsyncSession,
 ) -> None:
     """ADR 0011 again, against the view with no filter on it at all.

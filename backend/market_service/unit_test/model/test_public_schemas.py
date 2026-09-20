@@ -250,6 +250,45 @@ def test_a_market_past_its_close_time_serialises_as_closed() -> None:
     assert payload["status"] == MarketStatus.CLOSED.value
 
 
+def test_the_administrators_projections_still_report_the_raw_status_column() -> None:
+    """The other half of ADR 0011's amendment, and nothing else guards it.
+
+    Same market as the test above — column `open`, `close_time` a second in
+    the past — through the two admin projections instead of the public ones.
+    Both must still say `open`, because for an administrator that gap *is*
+    the information: `close_time` passed and `closed_at` is still null means
+    the sweeper has not run, and [2.1] #5's counts are read against the
+    column.
+
+    The amendment splits by audience, which only works if both audiences are
+    pinned. The public half has three tests above and this had none, so a
+    refactor calling `entities.displayed_status` from `_UtcTimestamps` — the
+    base both pairs share, and the obvious place to put it — would take the
+    administrator's only symptom of a stalled sweep away with the whole suite
+    still green.
+
+    The reversal trigger stated in the amendment is a shared reader. If this
+    test ever has to change, that is the day it arrived, and the answer is a
+    derived field *beside* the column rather than a substitution — not an
+    edit to this assertion.
+    """
+    from model.schemas import MarketOut, MarketSummaryOut  # noqa: PLC0415
+
+    stopped = _FakePublishedMarket(closes_in=timedelta(seconds=-1))
+
+    detail = json.loads(MarketOut.model_validate(stopped).model_dump_json())
+    summary = json.loads(MarketSummaryOut.model_validate(stopped).model_dump_json())
+
+    assert detail["status"] == MarketStatus.OPEN.value
+    assert summary["status"] == MarketStatus.OPEN.value
+
+    # And the public pair derives on the very same object, so this test fails
+    # if the two ever collapse into one answer — in either direction.
+    assert _detail_json(closes_in=timedelta(seconds=-1))["status"] == (
+        MarketStatus.CLOSED.value
+    )
+
+
 def test_an_early_closed_market_is_not_reopened_by_the_derivation() -> None:
     """[2.3] #7 leaves `close_time` in the future on purpose, and the
     derivation must not undo that.
