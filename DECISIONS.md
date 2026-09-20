@@ -483,6 +483,40 @@ reopened by it — pinned by
 
 ---
 
+### D-023 — The ADR 0011 predicate lives in `core/closing.py`, not restated
+
+**Date:** 2026-09-20 · **Ticket:** #62 · **Status:** active
+
+**Decision.** The two-condition check ADR 0011 is about — status is OPEN, and
+`close_time` has not passed — moved to `core/closing.py::is_open_for_trading`,
+taking a `bool` and a `close_time` rather than a `Market`. `service/closing.py`
+and `model/schemas.py` both import it. `service/closing.py` keeps
+`is_open_for_trading()` (the entity-shaped wrapper) and `open_for_trading()`
+(the SQL `WHERE`-clause form) as its own public surface; only the predicate
+itself moved, not the query concern.
+
+**Why.** #62 added a second caller: `model/schemas.py` derives the status a
+trader is shown by the same rule (D-022), and restating the two conditions
+there — which the first cut of this ticket did — is exactly the "three places
+to get it wrong" ADR 0011 names by hand. `model/` cannot import
+`service/closing.py` under this repository's layering rule, so the shared
+piece had to move down to `core/`, which both are allowed to import.
+
+**Rejected.** Leaving the restatement in `model/schemas.py`. Passed review
+once already and Ihsan asked for the move on sight of the diff: two copies of
+one rule is the failure mode ADR 0011 exists to prevent, not a matter of
+where the second copy is convenient to write.
+
+**Notes.** `core/closing.py` takes `status_is_open: bool` rather than
+`MarketStatus`, because `core/` may not import `model/entities` either —
+nothing below `service`/`model` reaches sideways or up. Each caller compares
+its own status value to OPEN in one line before calling in. `core/closing.py`
+keeps `as_utc`'s naive-datetime tolerance; `model/schemas.py` never needs it,
+since Pydantic has already normalised `close_time` to aware by the time it
+calls in, but the shared function does not assume that of every caller.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
