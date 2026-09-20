@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import { ApiError, FastApiError } from '../api/errors'
@@ -13,10 +13,14 @@ import { GOLD, NAV } from '../theme/colors'
 interface LoginErrors { identifier?: string; password?: string }
 
 export default function LoginPage() {
-  const { login } = useAuth()
+  const { user, login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/markets'
+
+  useEffect(() => {
+    if (user) navigate('/markets', { replace: true })
+  }, [user, navigate])
 
   const [form, setForm] = useState({ identifier: '', password: '' })
   const [errors, setErrors] = useState<LoginErrors>({})
