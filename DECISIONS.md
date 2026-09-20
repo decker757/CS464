@@ -756,15 +756,140 @@ container.
 
 ---
 
+### D-030 — The book's writes share `posting.post`'s commit, and nothing may follow it
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `books.ensure_open` performs every write before the funding
+call through `session.begin_nested()` — a SAVEPOINT inside the still-open
+outer transaction — and never commits itself. The pool account, the book and
+its outcomes land this way. `posting.post` is called last, and its own
+`session.commit()` is the only commit anywhere in the path: it commits the
+pool account, the book, the outcomes and the funding entries together, or
+none of them if anything before it raised.
+
+**Why.** The ticket's constraint was that the book insert, the outcomes and
+the funding transaction have to land together or not at all, and
+`posting.py` was off limits. Ordering every write to precede `post()`, inside
+the transaction `post()` already commits, satisfies that without touching it
+— the same shape `service/grants.py` already uses one layer down for the
+starting grant.
+
+**Notes.** This settles the general question for one shape of caller and
+leaves another open. A caller whose last write *is* the call into `post()`
+can always share its commit boundary this way — `books.ensure_open` and
+`grants.ensure_granted` are both that shape. **A caller sharing post's commit
+boundary must have nothing left to write after it returns**, because nothing
+after it is inside the transaction that just ended — `post()`'s replay path
+in particular ends the transaction even when it wrote nothing (ADR 0015).
+[T-2] #22 is not necessarily this shape: its `state_version` bump and
+position update have to happen *before* the call into `post()`, in the same
+transaction, never after, or they are not covered by the same commit at all.
+See the Open section, rewritten below, for what #22 still has to decide.
+
+---
+
+### D-031 — `parse_float=Decimal` reads exactly; it cannot detect loss that already happened upstream
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `service/market_terms.py::fetch` parses the response body with
+`json.loads(response.content, parse_float=Decimal)`. A bare JSON number in
+`liquidity_b` or `seed_subsidy` — defence in depth against D-016 not holding
+on the other side — is read into a `Decimal` from its numeral text directly,
+with no `float` ever constructed, and no exception raised for arriving that
+way.
+
+**Why.** `test_market_terms.py::test_a_json_number_in_the_response_is_still_read_exactly`
+requires exactly this: the value must come through exact, not be refused.
+`parse_float=Decimal` is what makes "never call float() on a money value"
+hold regardless of which JSON shape the field arrived in, because the
+callable receives the numeral's text and nothing in between ever holds a
+`float`.
+
+**Notes.** What this cannot do is notice that the number was already wrong
+before it reached this parser. If `market_service` itself routed a `Decimal`
+through `float()` somewhere before serialising `liquidity_b` or
+`seed_subsidy`, this client receives whatever text resulted and reads it
+exactly — exact, but not correct. This side has no way to check that and is
+not designed to; it trusts the wire contract, and D-016's and D-021's guard
+tests on `market_service`'s side — the ones pinning `PublicMarketOut` to a
+decimal string and `MarketOut` to a JSON number, deliberately — are what
+prevent that value from ever being wrong on the way out in the first place.
+
+---
+
+### D-032 — `MarketOutcome`'s primary key is the pair, not a surrogate id
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `market_outcomes` has no `id` column. `(market_id, outcome_id)`
+is the composite primary key, and `(market_id, position)` is a separate
+`UniqueConstraint`.
+
+**Why.** Nothing anywhere references one of these rows by its own identity —
+every caller reaches them by `market_id`, or by `(market_id, outcome_id)`.
+The ticket's "unique on (market_id, outcome_id)" is satisfied by the primary
+key itself rather than by a second index beside a surrogate one.
+
+**Rejected.** A `uuid4` surrogate id plus the same two constraints as
+ordinary `UniqueConstraint`s. Legal, and no test distinguishes it —
+`test_the_outcome_table_carries_no_label` checks its columns with `<=`, not
+`==` — but it would be a column with no reader anywhere in this ticket or the
+two that follow it.
+
+---
+
+### D-033 — `pool_account_id` is a foreign key; `market_id` still is not
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `market_books.pool_account_id` references `ledger.accounts.id`.
+`market_books.market_id` remains bare, as D-008 through D-010 already have it.
+`unit_test/service/test_book_schema.py::test_the_market_id_is_not_a_foreign_key`
+is narrowed to assert no `market_id` foreign key specifically, rather than no
+foreign key on the table at all.
+
+**Why.** ADR 0003's rule is about a join across a *service* boundary — a
+grant this service does not hold. `market_id` names a row in
+`market.markets`, a schema `ledger_svc` cannot read, so a foreign key there
+would either fail to create or, with a hypothetical cross-schema grant, weld
+two services together on purpose. `ledger.accounts` is this service's own
+table in its own schema, and the account `pool_account_id` names is created
+in the same transaction as the row that names it. A foreign key there costs
+nothing and catches a real mistake — a book pointing at an account that does
+not exist — that the service-boundary argument was never about.
+
+**Rejected.** The original reading of the acceptance criteria as "no foreign
+key on this table at all", which conflated the service-boundary rule with
+the table itself.
+
+**Notes.** Checked against the first-touch race rather than assumed safe:
+`accounts.ensure` fully resolves the pool account — creating it or finding
+the winner's — before `books.ensure_open` ever builds a `MarketBook`, so by
+the time the foreign key is checked, `pool.id` names a row already visible in
+the current transaction either way. No test in `test_book_concurrency.py`
+regressed when the constraint was added.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
 
-- **`posting.post()` commits internally.** It takes a session but calls
-  `session.commit()` before returning. Whether #22's trade writes can share that
-  commit boundary is unresolved. Either `post()` gains a variant that stops short
-  of commit, or the trade accepts the ledger write as its own boundary and builds
-  compensation around it.
+- **`posting.post()` commits internally — settled for a caller with nothing to
+  write afterward, still open for one that does.** [F-7] #96 (D-030) answered
+  this for `books.ensure_open`: order every write through
+  `session.begin_nested()` and call `post()` last, so its own commit lands
+  everything together. That works whenever the call into `post()` is the
+  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
+  `state_version` bump and its position update on `MarketOutcome` would have to
+  precede the call into `post()`, in the same transaction, under D-030's rule,
+  never after it. Whether that ordering is workable for the trade path, or
+  whether #22 needs to check its write against a quote taken *after* the trade
+  executes — in which case `post()` gains a variant that stops short of commit,
+  or the trade accepts the ledger write as its own boundary and builds
+  compensation around it — is still #22's to decide.
 - **Whether share quantities share money's scale of 4.** Nothing in the repo takes
   a position on fractional shares.
 - **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
