@@ -515,6 +515,118 @@ keeps `as_utc`'s naive-datetime tolerance; `model/schemas.py` never needs it,
 since Pydantic has already normalised `close_time` to aware by the time it
 calls in, but the shared function does not assume that of every caller.
 
+*Corrected 2026-09-20, after Ernest's review of #62.* This entry read as
+though moving the predicate resolved the duplication. It did not, and it
+could not have. What moved was the two-condition **predicate**, and that part
+is true: every call site reaches one definition —
+`service/closing.py::is_open_for_trading` wraps it for an entity,
+`model/schemas.py` called it directly, and `service/browsing.py` reached it
+through the service wrapper.
+
+What did **not** move is the **substitution** built on top of it — "if the
+stored status is OPEN and the predicate says no, report CLOSED" — which
+`model/schemas.py` and `service/browsing.py` then held one copy of each.
+That was never eligible for `core/`, for the reason stated one paragraph up:
+the substitution returns a `MarketStatus`, and `core/` may not import
+`model/entities`. The predicate could move down and the thing built on it
+could not follow. Two copies of three lines is smaller than two copies of the
+rule, but it is the same failure and this entry should not have read as
+though it had been closed out. D-024 is where the substitution went
+and why.
+
+---
+
+### D-024 — The displayed-status substitution lives in `model/entities.py`
+
+**Date:** 2026-09-20 · **Ticket:** #62, Ernest's review · **Status:** active
+
+**Decision.** `entities.displayed_status(status, close_time, *, now)` is the one
+definition of "if the stored status is OPEN and the clock says otherwise, report
+CLOSED". `model/schemas.py` derives both public projections with it and
+`service/browsing.py::count_by_status` counts with it. `core/closing.py` keeps
+the two-condition predicate and stays entity-free.
+
+**Why.** D-023 moved the predicate and left this built on top of it in two
+copies, one per caller. They were three lines each, in two shapes — one taking
+a status and a close time, one taking a `Market` — and only the schema copy had
+tests pointed at it. One rule, two spellings, and the browse copy free to drift
+without anything going red.
+
+`model/entities.py` rather than `core/closing.py` because this returns a
+`MarketStatus` and `core/` may not import `model/entities`. That is not a
+preference: it is the same layering rule that made `core.closing` take a `bool`
+in the first place, so the predicate could move down and this could not follow
+it. Beside the enum it returns, both callers may reach it —
+`service` → `model` and `model` → `model` are both allowed.
+
+**Rejected.** `core/closing.py`, which cannot name a `MarketStatus`.
+`model/schemas.py` with `service/browsing.py` importing from it — legal under
+the layering, but it makes a service import a display rule out of a response
+schema, and the rule is about a status rather than about a payload. Deleting
+`count_by_status` and deferring it to [2.1] #5, which would have removed the
+second copy for free but reverses D-020.
+
+**Notes.** ADR 0011's rule is now expressed in five places and four of them
+reach one definition: `core/closing.py` (the predicate), the entity wrapper and
+this substitution above it, plus the two callers that use it.
+
+**The fifth can never be removed.** `service/closing.py::open_for_trading` is
+the `WHERE`-clause form, and it returns a `ColumnElement`, not a `bool` — so it
+cannot call `core/closing.py` and no refactor will make it able to. Somebody
+will eventually notice it restates the two conditions and try to collapse it
+into the others; it is written in SQL because it has to run in the database, and
+that is the whole reason it exists. A pointer sits on the function saying so.
+
+---
+
+### D-025 — One clock per request, read at the controller, Python's not the transaction's
+
+**Date:** 2026-09-20 · **Ticket:** #62, Ernest's review · **Status:** active
+
+**Decision.** The public read reads `datetime.now(UTC)` once in
+`controller/public_routes.py` and threads it through filtering (`browse`),
+counting (`count_by_status`) and derivation (`displayed_status`, reached through
+Pydantic's validation context). The service layer keeps defaulting it, so it
+stays callable without a controller.
+
+**Why.** The filter and the display were reading two different instants, and not
+because of clock skew — with zero skew, always. `open_for_trading()` binds
+`func.now()`, which is `transaction_timestamp()`, frozen when the transaction
+opened. The schema's derivation ran at `model_dump_json()`, after the query
+returned, and is therefore strictly later. A market whose `close_time` landed in
+that gap passed the `status=open` filter and then serialised as `closed`: it
+appeared in the open tab, labelled closed. `count_by_status` split the same way.
+
+Pydantic's `model_validate(entity, context={"now": ...})` is the only way to
+hand a `model_validator` a value, so that is the seam. `context` is `None` when
+nobody passes one, and the derivation then reads the clock itself — which is
+every direct `model_validate` in the suite.
+
+**This departs from the argument in `service/closing.py`**, which tells [T-2]
+#22 to pass Postgres's clock rather than the container's, because two replicas
+drifting a few seconds apart would disagree about whether a market was due.
+That argument is sound and it does not reach here. It is about paths that
+**decide and write** — the sweep, and a trade holding a row lock. A browse is a
+display read: two traders on two replicas seeing a market flip a few
+milliseconds apart decides nothing and writes nothing. What a display read needs
+is that its own two halves agree, which is what this buys.
+
+**Rejected.** `SELECT transaction_timestamp()` before the query, threading
+Postgres's clock into the Python derivation instead. It gives replica agreement
+as well as internal agreement, and it costs an extra round trip on the hottest
+read in the service to buy a property no reader can observe. Also rejected:
+deriving the status in SQL as a returned column, which fixes the class of bug
+outright but writes ADR 0011's rule into a sixth place and stops `browse`
+returning `Market` entities.
+
+**Notes.** The reversal trigger: **if a path that decides or writes ever reads
+this same projection, it needs the transaction's clock.** At that point the
+`now` handed in stops being a display convenience and becomes the value an
+action is judged against, and `open_for_trading()` is still how it is obtained.
+`service/closing.py::open_for_trading` carries a pointer back to this entry, so
+somebody reading the argument for the transaction clock finds out in place that
+one caller deliberately does not follow it.
+
 ---
 
 ## Open — decided by nobody yet
@@ -534,3 +646,21 @@ Move these into the log above when they're settled.
 - **Service-to-service auth for ledger writes.** Deferred by ADR 0009 to #22.
   Currently avoided by making #62 public, but #22 is a write and will have to
   answer it.
+- **A NULL `close_time` on an OPEN market means two different things.** SQL and
+  Python disagree, and neither is documented as the intended answer.
+  `core/closing.py` returns False for a null, so the Python derivation labels
+  such a market `closed`. The SQL form compares `Market.close_time > now`, which
+  is NULL rather than false, so three-valued logic drops the row from
+  `status=open` **and** from `status=closed` — invisible to every filter,
+  present in the default view.
+
+  Worse than it first looks, and this is the part Ernest's review did not have:
+  the default view orders by `open_for_trading().desc()`, that expression is
+  also NULL for such a market, and Postgres sorts NULLs **first** under `DESC`.
+  So a NULL-`close_time` OPEN market sorts to the very **top** of the trader's
+  default view while being labelled `closed`.
+
+  Unreachable through the API today — `problems_blocking_submission` requires a
+  close time and `publish` re-runs every submission rule — so this is about what
+  should happen if it ever becomes reachable, not a live bug. Both call sites
+  document the state as unreachable and they should at least fail the same way.
