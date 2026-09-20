@@ -28,9 +28,14 @@ scripts/                sprint digest to Telegram
 ```
 
 One more service is coming: the stateless trading composite (the [T-*] epic).
-The LMSR pricing engine ([F-3] #43) is a module rather than a service, and
-lives wherever `q` lives; ADR 0005 says why — which means it lives with the
-ledger.
+The LMSR pricing engine ([F-3] #43) is a module rather than a service — ADR
+0005 says why — and it lives in `ledger_service/core/lmsr.py`. Do not move it
+to `backend/shared/` on the strength of ADR 0005's extraction list or ADR
+0012's paragraph about it: both predate ADR 0010, which left the ledger owning
+the trade write path and so left the engine with exactly one caller, since the
+composite holds no cross-schema grant and cannot read `q`. ADR 0012 carries the
+amendment. It moves to `shared/` when a second caller can read `q`, and nothing
+planned adds one.
 
 The websocket server ([F-2] #42) has landed, but only the transport half: the
 socket, the pub/sub relay, the auth and the staleness rules. The authoritative
