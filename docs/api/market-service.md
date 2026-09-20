@@ -4,8 +4,9 @@ Base URL `http://localhost:8001` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
-Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10
-and the backend half of [FE][1.1] #45, [FE][2.3] #56 and [FE][3.1] #52.
+Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
+[BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
+[FE][3.1] #52.
 
 A successful submission, publication, early close, outcome proposal, approval
 or rejection also appends an entry to the shared audit log, in the same database
@@ -45,7 +46,8 @@ status of its own, and why the proposer is refused a `403` on both decisions:
 | GET | `/health` | Liveness and readiness probe |
 
 Every `/markets` route requires an **administrator** token. There is no
-unauthenticated read here; the public market API for traders is [BE][X] #62.
+unauthenticated read here; the public market API for traders is
+[`/public/markets`](#public-market-api--bex-62), below.
 
 Every route but three is scoped to the administrator who created the market,
 and answers `404` to any other. The exceptions are `POST /markets/{id}/close`,
@@ -380,11 +382,10 @@ ticking when the market's closing time arrived.
 ### Trader visibility
 
 Publishing sets the status; it does not build the trader-facing list. The
-public browse and detail API is **[BE][X] #62**, and it filters on `status ==
-"open"` **and** a `close_time` still in the future — both halves, for the reason
-given under "`close_time` is when trading stops" above. Until it lands, a
-published market is visible through the admin routes on this page and nowhere
-else.
+public browse and detail API is
+[`/public/markets`](#public-market-api--bex-62), below, and it derives
+`status` the same way its default view derives what "open" means — for the
+reason given under "`close_time` is when trading stops" above.
 
 ## POST /markets/{id}/close — [2.3] #7
 
@@ -478,8 +479,9 @@ tier flat and the audit entry is what keeps that accountable: it names whoever
 reached in, and why.
 
 The read is *not* widened with it. `GET /markets/{id}` still answers `404` to
-another administrator, so until [BE][X] #62's public browse lands, an overseer
-needs the market's id from somewhere other than this service.
+another administrator, so an overseer needs the market's id from somewhere
+other than this service — `GET /public/markets`, below, once the market is
+published, or the audit log before that.
 
 ### One way
 
@@ -821,6 +823,151 @@ The same `market` object POST returns, for reloading a draft after a page
 refresh. Returns `404` for another administrator's market — not `403`, because
 a 403 would confirm that market exists.
 
+## Public market API — [BE][X] #62
+
+The trader-facing read, for [X-1] #34's browse page, [X-2] #35's search and
+filter, and [X-3] #36's market detail page. A separate router at
+`/public/markets`, not a widened guard on `/markets` above — see
+[ADR 0003](../adr/0003-market-service-boundary.md) and D-018 for why one more
+route exists rather than one fewer check.
+
+**Any authenticated account may call these — trader or administrator.** Not
+admin-gated, and not anonymous: every read in this backend authenticates a
+person from a signed access token, and a trader's browse page is not the
+first exception. Retrying will not help a `401`; log in again.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/public/markets` | Browse and search published markets |
+| GET | `/public/markets/{id}` | Read one published market |
+
+### Two schemas, not `MarketOut` and `MarketSummaryOut` reused
+
+`PublicMarketOut` and `PublicMarketSummaryOut` are their own shapes, beside
+the ones the routes above return. Three differences, all deliberate:
+
+- **`liquidity_b` and `seed_subsidy` are decimal strings, not JSON numbers**
+  (D-016). `MarketOut` sends them as floats on purpose, for the admin create
+  form's arithmetic against `max_platform_loss` — `"250" + 10` is `"25010"`
+  in a browser. This endpoint is also where the ledger reads `b` to price a
+  market for the first time (ADR 0005's publish-time handoff), and a JSON
+  number there puts an IEEE double under every price the platform ever
+  quotes. Parse both with a decimal library, never `parseFloat`.
+- **No `creator_id`, no `draft_key`, no `initial_price`** (D-019). Neither of
+  the first two is a trader's business, and `initial_price` is the `q = 0`
+  opening price — simply wrong once a market has traded, with nothing on the
+  response to say so. [X-1] #34 and [X-3] #36's YES/NO prices are not here at
+  all; `q` lives with the ledger (ADR 0005), and the authoritative read is the
+  snapshot endpoint in `docs/api/realtime-service.md`, landing with [F-3] #43
+  and [T-2] #22.
+- **`status` is derived, not the stored column** — see below.
+
+### `status` is derived here, unlike everywhere above
+
+Read "`close_time` is when trading stops" near the top of this page before
+relying on this. A market past its `close_time` is reported `"closed"` here
+even for the few seconds before the background sweep writes CLOSED into the
+column — the opposite of `MarketOut` and `MarketSummaryOut`, which report the
+raw column so an administrator can see whether the sweeper is running.
+
+```js
+// Do NOT do this against a /public/markets response — it is already derived.
+const tradeable = market.status === "open" && new Date(market.close_time) > new Date();
+
+// Just this:
+const tradeable = market.status === "open";
+```
+
+The derivation only ever makes a market *less* tradeable. An early close
+([2.3] #7) leaves `close_time` in the future on purpose and is never reopened
+by it, and `pending_resolution` and `approved` pass through unchanged.
+[ADR 0011](../adr/0011-market-auto-close.md)'s amendment has the full
+argument for why the split is by audience rather than by rule.
+
+### GET /public/markets
+
+The default view, with no query parameters: open markets ordered by soonest
+closing time — [X-1] #34's first criterion. `status` and `q` narrow it and
+compose with each other.
+
+| Query parameter | Rule |
+| --- | --- |
+| `status` | one of `open`, `closed`, `pending_resolution`, `approved`; anything else is a `422` |
+| `q` | case-insensitive containment search over the question |
+
+`draft` and `submitted` are never returned, whether asked for by `status` or
+not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
+
+#### Response
+
+`200`, always — an empty result is `{"markets": []}`, never a `404`. [X-1]
+#34's "an appropriate empty state" is the frontend's job once this returns
+nothing to render.
+
+```json
+{
+  "markets": [
+    {
+      "id": "410465f3-2852-4833-964b-f42e23b8227c",
+      "status": "open",
+      "question": "Will Singapore core inflation be below 2% for December 2026?",
+      "close_time": "2027-01-05T12:00:00Z"
+    }
+  ]
+}
+```
+
+### GET /public/markets/{id}
+
+Unscoped — a published market belongs to every trader, not to whoever created
+it. Refuses a draft or a submitted market with the same `404` an unknown id
+gets, so a trader cannot tell "this market never existed" from "this market
+exists but is still a draft", which is most of what [1.1] #1's visibility
+rule is protecting.
+
+#### Response
+
+`200`:
+
+```json
+{
+  "id": "410465f3-2852-4833-964b-f42e23b8227c",
+  "status": "open",
+  "question": "Will Singapore core inflation be below 2% for December 2026?",
+  "description": "Measured on the first published print.",
+  "outcomes": [
+    { "id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f", "position": 0, "label": "Yes" },
+    { "id": "9c5d1e32-3a8b-4b2f-9b1e-2e3f4c5d6a7b", "position": 1, "label": "No" }
+  ],
+  "close_time": "2027-01-05T12:00:00Z",
+  "resolution_time": "2027-01-20T12:00:00Z",
+  "resolution_criteria": "Resolves YES if the MAS core inflation print for December 2026, as first published, is strictly below 2.0%. Later revisions do not change it.",
+  "resolution_sources": [
+    { "id": "c1d2e3f4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "position": 0, "url": "https://www.mas.gov.sg/statistics", "label": "MAS statistics" }
+  ],
+  "liquidity_b": "100.0000",
+  "seed_subsidy": "250.0000",
+  "published_at": "2026-09-13T14:12:03.118374Z",
+  "proposed_outcome_id": null
+}
+```
+
+`proposed_outcome_id` is [X-3] #36's "settled markets display the winning
+outcome". Null on every market nobody has proposed for; once set, it names a
+member of this same response's `outcomes` array — look the label up there,
+the same rule `MarketOut` follows for the administrator's view, so the two
+copies cannot drift. It is set as soon as a proposal exists (`status:
+"pending_resolution"`) and stays set once approved, because a proposal can
+still be rejected and replaced — do not treat its presence alone as "settled".
+
+#### When it is refused
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 404 | `market_not_found` | no such market, or it is a draft or a submitted market |
+| 422 | — | FastAPI's own validation error: a malformed id, or an unrecognised `status` |
+
 ## Errors
 
 The same envelope the auth service uses, so one parser covers both:
@@ -999,8 +1146,10 @@ the screen.
    for review from the start — do not resend the same decision automatically.
 8. **Finding a proposal to decide.** `GET /markets/{id}` still answers `404`
    for a market you did not create, and there is no list of other
-   administrators' markets on this service. Until [BE][X] #62 or [2.1] #5
-   provides one, read `GET /audit/actions?action_type=market.outcome_proposed`
+   administrators' markets on this service. `GET /public/markets?status=pending_resolution`,
+   below, finds the market id — but its `PublicMarketOut` carries no
+   evidence or proposer identity (D-019), so step 3 still needs
+   `GET /audit/actions?action_type=market.outcome_proposed`
    on the audit service: `target_id` is the market id, `target_label` the
    question, `actor_id` the proposer, and `context` carries `proposal_id`, the
    winner's label and the evidence — enough to render step 3, apply step 2 and
