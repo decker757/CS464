@@ -106,6 +106,32 @@ Never `market.status === "open"` on its own. A countdown that hits zero should
 switch the UI to closed immediately rather than waiting for the status to catch
 up on the next fetch — the backend already agrees with the countdown.
 
+**This applies to the admin routes on this page, and not to the public market
+read.** The two projections answer the question differently and both are
+deliberate:
+
+| Response | `status` | Who reads it |
+| --- | --- | --- |
+| `MarketOut`, `MarketSummaryOut` | the raw column | administrators |
+| `PublicMarketOut`, `PublicMarketSummaryOut` ([BE][X] #62) | **derived** | traders |
+
+An administrator wants the column. The gap between `close_time` and `closed_at`
+is how you tell whether the sweeper is running, and [2.1] #5's counts are read
+against it — so these routes hand back what is stored and the snippet above is
+how you use it.
+
+A trader has no interest in the sweeper. The public read applies the same rule
+server-side, so a market past its `close_time` comes back as `"closed"` even
+before the sweep writes it, and its browse filters and counts agree. **Do not
+apply the snippet above to a public response**: it is already derived, and
+deriving twice is harmless only until somebody changes one of them. The
+derivation only ever makes a market less tradeable — an early close ([2.3] #7)
+leaves `close_time` in the future on purpose, and a market already `closed` is
+never reopened by it.
+
+Amendment on [ADR 0011](../adr/0011-market-auto-close.md), which has the
+argument and the condition under which this would go back to one shape.
+
 ## Authentication
 
 Identical to the auth service, because it is the same token.

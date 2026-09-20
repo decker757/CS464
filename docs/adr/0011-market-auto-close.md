@@ -123,6 +123,44 @@ market is tradeable when the status is `open` **and** `close_time` is in the
 future. A countdown hitting zero should flip the UI immediately; the backend
 already agrees with it.
 
+> **Amended by [BE][X] #62.** A trader never sees that window, and this
+> paragraph is the claim that narrows. The decision above is untouched: the
+> clock still closes a market, the sweep still only writes it down, and
+> `service/closing.py` is still the one place either rule is stated. What
+> changed is that this record had exactly one kind of reader when it was
+> written, and now has two.
+>
+> Every route in the service was admin-only at the time, and an administrator
+> genuinely wants the column. The gap between `close_time` and `closed_at` is
+> operational information for them — it says whether the sweeper is running,
+> and [2.1] #5's counts are read against it. Handing them a derived value
+> would hide the one symptom that an outage of the sweep produces.
+>
+> #62 adds a public reader with no such interest. A trader wants to know
+> whether they can trade, and [X-1] #34's "open markets are clearly
+> distinguishable from closed" cannot hold if the payload says `open` for a
+> market that stopped four seconds ago — the distinction would exist only in
+> whichever clients remembered to recompute it, which is the "three places to
+> get it wrong" this record's own decision section rejects.
+>
+> So the split is by audience, not by rule. `MarketOut` keeps reporting the
+> raw column, for the administrator. `PublicMarketOut` and
+> `PublicMarketSummaryOut` derive it from `closing.is_open_for_trading`, for
+> the trader, and the public browse filters and counts derive it too, so the
+> list and the detail cannot disagree. The derivation only ever makes a market
+> *less* tradeable: an early close ([2.3] #7) leaves `close_time` in the
+> future on purpose, and a market already CLOSED is never reopened by it.
+>
+> **This reverses on the day an administrator reads the public projection**,
+> because at that point one payload is serving both audiences again and the
+> answer has to be a field rather than a substitution — a derived `status`
+> beside the column, or a `tradeable` boolean, named so that neither reader
+> has to guess which they are holding. The trigger is a shared reader, not a
+> new endpoint: another trader-facing route that derives is this rule, not an
+> exception to it. Nothing planned adds one. `docs/api/market-service.md`
+> carries the same statement, so the next reader finds it from either
+> direction.
+
 **`closed_at` and `close_time` are different columns and mean different
 things.** `close_time` is when trading stopped. `closed_at` is when the sweep
 wrote that down. A gap is normal, and after an outage it can be large.
