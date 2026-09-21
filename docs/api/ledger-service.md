@@ -4,7 +4,8 @@ Base URL `http://localhost:8003` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8003/docs).
 
-Covers [F-1] #41, and the backend half of [B-1] #32, [B-2] #33 and [4.1] #13.
+Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13, and
+[T-1] #21's cost preview.
 
 Why balances are derived rather than stored, why a read can write, and why
 there is no write endpoint yet:
@@ -19,6 +20,7 @@ rather than with markets: [ADR 0005](../adr/0005-trading-service-boundary.md).
 | GET | `/ledger/entries/me` | My ledger history |
 | GET | `/ledger/users/{user_id}/balance` | Any user's balance (admin) |
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
+| GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/health` | Liveness and readiness probe |
 
 **Every route reads.** There is no POST, PUT, PATCH or DELETE, and there never
@@ -26,6 +28,12 @@ will be one that edits or removes an entry — the ledger is append-only, enforc
 by a database trigger rather than by the absence of a route. The endpoint that
 *writes* a movement arrives with [T-2] #22, together with the decision about how
 a trading service authenticates to it.
+
+The balance route and the preview route are each an exception to "reads don't
+write," and for the same reason one layer apart: a balance mints a user's
+starting grant on first read (below), and a preview opens and funds a market's
+book on a market's first touch (D-008, D-037). Both are once-per-subject,
+idempotent, and invisible to every caller after the first.
 
 ## Authentication
 
@@ -181,6 +189,109 @@ id from a signed token and nothing else about who that is (ADR 0003), so a
 history route that accepted a username would be this service asking another one
 a question at every read.
 
+## GET /ledger/markets/{market_id}/preview
+
+[T-1] #21. What a trade would cost right now, and how it would move every
+outcome's price — computed from `ledger_service/core/lmsr.py`, never
+estimated. Fires on every keystroke of a quantity field, so it is deliberately
+cheap once a market is warm; see the note below about the one request that
+is not.
+
+Query parameters, all required:
+
+| Parameter | Type | Notes |
+| --- | --- | --- |
+| `outcome_id` | UUID | Must name one of this market's outcomes. |
+| `side` | `"buy"` \| `"sell"` | Exactly these two strings. |
+| `quantity` | decimal string | `> 0`, at most four decimal places. |
+
+Any valid access token, any role — a preview mints nothing and reveals
+nothing beyond the public market read, so there is no admin gate.
+
+```jsonc
+{
+  "market_id": "9d1c...",
+  "state_version": 42,
+  "side": "buy",
+  "outcome_id": "4f2a...",
+  "quantity": "10.0000",
+  "total": "-13.3742",
+  "average_price": "1.3374",
+  "prices": [
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.6234" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.3766" }
+  ],
+  "post_trade_prices": [
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.6842" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.3158" }
+  ]
+}
+```
+
+**The sign convention.** `total` answers "what happens to your balance", the
+opposite sign from the engine's own "what does the market maker absorb":
+**negative on a buy** (credits leave you), **positive on a sell** (credits
+arrive). `average_price` is always positive — the direction already lives on
+`total` — and is `abs(total) / quantity`, `ROUND_HALF_UP` at scale 4. It is a
+display figure derived from the authoritative total, never the other way
+round: [T-2] #22 charges `total`, never `quantity * average_price`.
+
+**The rounding direction, and why it is not symmetric.** `total` is quantized
+by the same function [T-2] #22 uses to build its ledger legs, so the number
+this route quotes is the number that gets charged — that is the whole point
+of keeping preview and trade on one code path (D-014). A buy rounds to the
+next whole tick **up**; a sell rounds to the tick **down**. Either way the
+residue — always under one tick — goes to the market's pool, never to you,
+because LMSR already expects the pool to be the side that can lose money.
+`prices` and `post_trade_prices` carry no such bias: nobody is charged a
+price, so both are `ROUND_HALF_UP`, same as everywhere else in this backend.
+
+**`state_version`** is the quote reference (D-011) — a JSON number, not a
+string, because it is a count and not money — and the only one. [T-2] #22
+compares it, under its own lock, against the version current when a trade is
+confirmed, so a quote taken against a market that has since moved is caught
+there rather than silently honoured here.
+
+**`prices` and `post_trade_prices` carry every outcome**, in the order
+`PriceEvent` uses (`docs/api/realtime-service.md`), not only the one traded —
+a trade moves the whole softmax, and rendering one outcome would show a
+market whose prices no longer sum to one. A client rendering a snapshot, a
+price frame and this preview runs one function over all three shapes.
+
+**The first request on a market writes, and can take a moment.** A market
+nobody has previewed or traded in yet has no book on this service. This route
+opens one: it fetches the market's terms from `market_service`, funds the
+pool from the platform account, and only then prices the trade — once per
+market, ever (D-008, D-037). That request can take up to the market-terms
+timeout, because it makes a real call to another service; every request after
+it, for that market, is a single indexed read. Debouncing this route is the
+frontend's job either way, since it is meant to fire on every keystroke.
+
+**Does not check whether the market is still open.** The book this route
+reads carries no status, and `close_time` is not snapshotted into it — an
+early close (ADR 0014) leaves it in the future on purpose, so there would be
+nothing honest to check even if it were. A preview on a closed market still
+returns a number. Gate the preview control on the market read's derived
+status (`docs/api/market-service.md`) instead; [T-2] #22 is what refuses the
+trade itself.
+
+**A sell has no holdings check.** It is priced arithmetically against shares
+outstanding only — see the 409 below — never against what the caller holds.
+The per-user holdings check belongs to [T-3] #23 and only means anything
+taken under the trade's own lock; a preview that checked it here would be
+quoting a refusal that could already be stale by the time anyone acted on it.
+
+Errors specific to this route, reusing [F-7] #96's codes rather than
+inventing new ones:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 404 | `market_not_found` | No such market. Not distinguished from a draft or a submitted one. |
+| 409 | `market_not_published` | The market exists but has not been published, so it has no terms to open a book from. |
+| 409 | `insufficient_shares_outstanding` | A sell larger than this outcome's shares outstanding — the no-shorting rule. |
+| 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
+| 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
+
 ## Errors
 
 The same envelope as the other three services:
@@ -195,6 +306,12 @@ The same envelope as the other three services:
 | 401 | `invalid_token` | Missing, malformed or expired access token |
 | 403 | `not_an_administrator` | Valid token, wrong role |
 | 422 | — | FastAPI's own validation, e.g. `limit=0` |
+
+The preview route above adds five more of its own — `market_not_found` (404),
+`market_not_published` (409), `insufficient_shares_outstanding` (409),
+`unknown_outcome` (422) and `market_terms_unavailable` (503) — documented
+there rather than repeated here, since none of them can be returned anywhere
+else on this service.
 
 Three more exist in `core/errors.py` and no route can return them yet:
 `insufficient_funds` (409), `idempotency_key_reused` (409) and

@@ -1210,6 +1210,42 @@ narrows this rule rather than contradicting it.
 
 ---
 
+### D-039 — `quantize_cost` takes an unsigned magnitude; the caller applies the sign
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `core/pricing.py::quantize_cost` takes the trade's *unsigned*
+magnitude and a `Side`, and raises `ValueError` on a negative magnitude rather
+than interpreting one. The caller applies the sign afterward — negative on a
+buy, positive on a sell — `service/preview.py` today, [T-2] #22's trade path
+next.
+
+**Why.** The acceptance criterion is "buy cost rounds ceiling, sell proceeds
+round floor — the residue accrues to the pool, never to the trader", and
+`ROUND_CEILING`/`ROUND_FLOOR` only mean that on a non-negative input.
+`cost_to_trade` returns a *signed* answer — positive for a buy, negative for a
+sell (D-002) — so handing a sell's signed output straight to `ROUND_FLOOR`
+pulls a negative number further from zero, which is a *larger* magnitude: the
+trader is paid the residue instead of the pool. Refusing a negative input
+turns that mistake into an immediate `ValueError` at the call site instead of a
+silent one-tick overpayment nothing downstream would notice, because no
+balance check watches the fourth decimal place.
+
+**Rejected.** A single function taking the engine's signed answer directly and
+choosing the rounding mode from its sign. It reads as simpler and is exactly
+the bug above: correct for a buy (positive in, rounds up) and wrong for a sell
+(negative in, `ROUND_FLOOR` moves it further from zero).
+
+**Notes.** Verified against `posting._quantize`, at the implementer's request:
+`Decimal("12.34565")` — a magnitude with a 5 in the fifth decimal place —
+quantizes to `12.3457` on a buy and `12.3456` on a sell. Both values, and the
+buy's negated total, pass through `posting._quantize`'s `ROUND_HALF_UP` at
+scale 4 unchanged. A total already quantized by `quantize_cost` is therefore
+safe for [T-2] #22 to hand to `posting.post`, which quantizes again on the way
+in — the second pass is a no-op rather than a second opinion.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
