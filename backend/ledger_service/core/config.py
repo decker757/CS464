@@ -45,7 +45,7 @@ class Settings(ServiceSettings):
     # other amount in this service, and those are Numeric columns.
     starting_credits: Decimal = Field(default=Decimal("1000"), gt=0)
 
-    # --- The market terms pull [F-7] #96, D-008, D-029 ---------------------
+    # --- The market terms pull [F-7] #96, D-008, D-031 ---------------------
     # Where `service/market_terms.py` reads a published market's terms from,
     # on the first request that touches its book. `market` is the hostname
     # compose gives that service on the shared network.

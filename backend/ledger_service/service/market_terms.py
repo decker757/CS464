@@ -1,4 +1,4 @@
-"""The terms pull: the ledger's first outbound HTTP call. [F-7] #96, D-008, D-029.
+"""The terms pull: the ledger's first outbound HTTP call. [F-7] #96, D-008, D-031.
 
 `fetch` reads `GET /public/markets/{id}` on market_service, forwarding the
 caller's own bearer token (D-018's Notes: this is a read the ledger makes on a
@@ -24,11 +24,18 @@ import httpx
 from core.config import get_settings
 from core.errors import MarketNotFound, MarketTermsUnavailable, NotAuthenticated
 
-# D-028. httpx's own default is five seconds to connect and no ceiling on
-# read. This call sits inside a request that may already hold a database
+# D-030. This call sits inside a request that may already hold a database
 # session and, on the trade path, row locks — a market service that accepts
 # the connection and then stops answering must not be allowed to hold any of
 # that open for as long as the socket survives.
+#
+# These are httpx's own defaults, stated rather than inherited. The record
+# used to claim httpx left `read` unbounded; it does not —
+# `DEFAULT_TIMEOUT_CONFIG` is `Timeout(timeout=5.0)`, all four phases. So this
+# line changes no behaviour today and no test can catch its deletion. It is
+# here so the number has somewhere to live, and D-030 carries the open
+# question of whether five seconds is the right budget for a call made while
+# holding row locks.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
 
 
@@ -59,13 +66,20 @@ async def fetch(
     access_token: str,
     transport: httpx.BaseTransport | None = None,
 ) -> MarketTerms:
-    """The market's terms, or the mapped error D-028 assigns to what went wrong.
+    """The market's terms, or the mapped error D-030 assigns to what went wrong.
 
     | upstream | raised | status |
     | --- | --- | --- |
-    | connect error, timeout, 5xx, malformed body | `MarketTermsUnavailable` | 503 |
+    | connect error, timeout, 5xx | `MarketTermsUnavailable` | 503 |
+    | a 200 that is not this market | `MarketTermsUnavailable` | 503 |
     | 404 | `MarketNotFound` | 404 |
     | 401 | `NotAuthenticated` | 401 |
+
+    "Not this market" is every way a 200 can fail to be usable: bytes that are
+    not JSON, JSON that is not an object, a field of the wrong type, a null
+    `liquidity_b` or `seed_subsidy`, and a body whose `id` is some other
+    market's. `_parse` below holds all of it, and says why it is one `try`
+    rather than several.
 
     A published market's `liquidity_b` and `seed_subsidy` are refused as
     unavailable too if either is null on the wire — structurally possible
@@ -105,30 +119,100 @@ async def fetch(
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise MarketTermsUnavailable from exc
 
-    liquidity_b = _to_decimal(body.get("liquidity_b"))
-    seed_subsidy = _to_decimal(body.get("seed_subsidy"))
-    if liquidity_b is None or seed_subsidy is None:
-        raise MarketTermsUnavailable
+    return _parse(market_id, body)
 
-    published_raw = body.get("published_at")
-    published_at = datetime.fromisoformat(published_raw) if published_raw else None
 
-    outcomes = [
-        OutcomeTerms(outcome_id=uuid.UUID(str(o["id"])), position=int(o["position"]))
-        for o in body.get("outcomes", [])
-    ]
+def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
+    """A decoded body to `MarketTerms`, or `MarketTermsUnavailable`.
 
-    return MarketTerms(
-        market_id=uuid.UUID(str(body["id"])),
-        liquidity_b=liquidity_b,
-        seed_subsidy=seed_subsidy,
-        published_at=published_at,
-        outcomes=outcomes,
-    )
+    **Every step in here is inside one `try`, and that is the whole reason it
+    is a function.** The table above promises that a malformed body is a 503,
+    and valid JSON is not a valid market: `json.loads` succeeding says only
+    that the bytes parsed. Before this, a body that decoded and then failed to
+    make sense raised whatever the first bad field happened to raise —
+    `InvalidOperation` on a `liquidity_b` of `"abc"`, `KeyError` on a missing
+    `id`, `ValueError` on an outcome id that is not a UUID, `AttributeError`
+    on a JSON array — none of them a `LedgerError`, so none of them mapped,
+    and all of them a 500 on the trade path where the contract says 503.
+
+    Nothing writes before `fetch` returns, so the old behaviour corrupted
+    nothing. It reported the wrong thing about a dependency that was, in every
+    one of those cases, not the market service.
+
+    Listing the exception types rather than catching `Exception`: these are
+    the failures of *parsing a value*, and a `MemoryError` or a
+    `KeyboardInterrupt` arriving mid-parse is not the market service being
+    malformed.
+    """
+    try:
+        if not isinstance(body, dict):
+            # A JSON array or scalar. `.get` would be an `AttributeError`.
+            raise TypeError("body is not an object")
+
+        liquidity_b = _to_decimal(body.get("liquidity_b"))
+        seed_subsidy = _to_decimal(body.get("seed_subsidy"))
+        if liquidity_b is None or seed_subsidy is None:
+            raise MarketTermsUnavailable
+
+        published_raw = body.get("published_at")
+        published_at = (
+            datetime.fromisoformat(published_raw) if published_raw else None
+        )
+
+        outcomes = [
+            OutcomeTerms(
+                outcome_id=uuid.UUID(str(o["id"])), position=int(o["position"])
+            )
+            for o in body.get("outcomes", [])
+        ]
+
+        # The response's own id, checked against the one asked for. It was
+        # parsed and then never read before, which made it a field that could
+        # only fail — and it is worth reading: a proxy or a cache answering
+        # `/public/markets/{a}` with market `b`'s body would otherwise open
+        # a's book carrying b's `liquidity_b`, permanently, because the
+        # snapshot is immutable by design. Unreachable through a correct
+        # market service, like everything else in this function.
+        returned_id = uuid.UUID(str(body["id"]))
+        if returned_id != market_id:
+            raise MarketTermsUnavailable
+
+        return MarketTerms(
+            market_id=returned_id,
+            liquidity_b=liquidity_b,
+            seed_subsidy=seed_subsidy,
+            published_at=published_at,
+            outcomes=outcomes,
+        )
+    except (
+        ArithmeticError,  # InvalidOperation, from Decimal
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise MarketTermsUnavailable from exc
 
 
 def _to_decimal(value: object) -> Decimal | None:
-    """A JSON string or number to `Decimal`, exactly. Never via `float`."""
+    """A JSON string or number to `Decimal`, exactly. Never via `float`.
+
+    **`bool` is refused explicitly, and it is the only case here that failed
+    silently rather than loudly.** `bool` is a subclass of `int`, so
+    `Decimal(True)` is `Decimal(1)` — no exception, no warning. A
+    `liquidity_b` of JSON `true` opened a book at `b = 1` instead of whatever
+    the market was configured with, and since ADR 0005 makes that snapshot
+    immutable, every price that market ever quoted would have been wrong with
+    nothing anywhere to notice. Every other malformed value raised something.
+
+    `float` is absent from the accepted types on purpose rather than by
+    omission: `parse_float=Decimal` above means a JSON number reaches here as
+    a `Decimal` already, so a `float` arriving would mean that setting had
+    been dropped — which is precisely the loss D-033 says cannot be detected
+    after the fact. Refusing is the only honest answer to it.
+    """
     if value is None:
         return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
+        raise TypeError(f"{type(value).__name__} is not a decimal value")
     return Decimal(value)

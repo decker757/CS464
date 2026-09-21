@@ -86,13 +86,26 @@ class _Upstream:
     `self.calls += 1` cannot interleave.
     """
 
-    def __init__(self, market_id: uuid.UUID, outcomes: list[uuid.UUID]) -> None:
+    def __init__(
+        self,
+        market_id: uuid.UUID,
+        outcomes: list[uuid.UUID],
+        subsidies: list[Decimal] | None = None,
+    ) -> None:
         self.calls = 0
         self.market_id = market_id
         self.outcomes = outcomes
+        # One subsidy per call, last value repeating. A market service cannot
+        # actually do this — [1.4] #4 forbids editing a published market's
+        # terms — which is the point: it is the only way to tell a caller that
+        # funds from the committed book apart from one that funds from its own
+        # copy of the terms, because in every reachable world the two numbers
+        # are equal.
+        self.subsidies = subsidies or [_SUBSIDY]
 
     def transport(self) -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
+            subsidy = self.subsidies[min(self.calls, len(self.subsidies) - 1)]
             self.calls += 1
             return httpx.Response(
                 200,
@@ -102,7 +115,7 @@ class _Upstream:
                     "close_time": "2027-01-05T12:00:00Z",
                     "resolution_time": "2027-01-20T12:00:00Z",
                     "liquidity_b": str(_B),
-                    "seed_subsidy": str(_SUBSIDY),
+                    "seed_subsidy": str(subsidy),
                     "published_at": "2026-09-01T09:00:00Z",
                     "outcomes": [
                         {"id": str(o), "position": i, "label": f"Outcome {i}"}
@@ -123,9 +136,22 @@ async def _race(
 ) -> list[object]:
     """`writers` first-touches, each in its own transaction, released together.
 
-    Returns what each one produced — a book's `pool_account_id`, or the
-    exception it raised — so a caller can assert that they all agreed rather
-    than only that one of them worked.
+    Returns the `MarketBook` each one ended up holding, or the exception it
+    raised, so a caller can assert that they all agreed rather than only that
+    one of them worked.
+
+    **The book itself, not its `pool_account_id`.** Returning the account id
+    was enough to prove the callers agreed about the pool, and it is exactly
+    what cannot prove the loser re-read: `accounts.ensure` resolves every
+    racing caller onto one account *before* the book insert is attempted, so
+    the winner's committed book and the loser's rolled-back one carry the same
+    `pool_account_id` either way. `opened_at` is the field that differs —
+    each caller stamps its own — which is what
+    `test_the_loser_gets_the_winner_s_book_rather_than_its_own` compares now.
+
+    Safe to read after the session closes because the factory sets
+    `expire_on_commit=False`, so the attributes loaded inside the block stay
+    loaded on the detached instance.
     """
     barrier = asyncio.Barrier(writers)
     factory = get_session_factory()
@@ -145,7 +171,7 @@ async def _race(
                 )
             except Exception as exc:  # noqa: BLE001 - the assertion is the caller's
                 return exc
-            return book.pool_account_id
+            return book
 
     return list(await asyncio.gather(*(attempt() for _ in range(writers))))
 
@@ -172,7 +198,9 @@ async def test_two_concurrent_first_touches_produce_one_book(
     results = await _race(market_id, upstream, writers=2)
 
     assert all(not isinstance(r, Exception) for r in results), results
-    assert len(set(results)) == 1, "both callers must end up on one pool account"
+    assert len({r.pool_account_id for r in results}) == 1, (
+        "both callers must end up on one pool account"
+    )
 
     books_written = (
         await session.execute(
@@ -189,11 +217,20 @@ async def test_the_loser_gets_the_winner_s_book_rather_than_its_own(
 ) -> None:
     """Re-reads, rather than returning the object it had built in memory.
 
-    The distinction is invisible in this test's return value and enormous
-    afterwards: the loser's own `MarketBook` instance was never committed, so a
-    caller that carried on using it would hold a `pool_account_id` naming an
-    account that does not exist, and the first trade against it would fail a
-    foreign key inside the trade's own transaction.
+    The loser's own `MarketBook` was never committed. A caller carrying on
+    with it holds a row that does not exist: its `opened_at` and
+    `state_changed_at` are its own, not the ones the market actually opened
+    at, and [T-2] #22 bumping `state_version` on it would write against an
+    instance the session has already discarded.
+
+    **Compared on `opened_at`, and `pool_account_id` cannot do this job.**
+    That was the original assertion and it passes whether or not the loser
+    re-reads: `accounts.ensure` puts every racing caller on one pool account
+    before the book insert is even attempted, so both objects carry the same
+    id. Deleting `book = existing` from `service/books.py` left the whole
+    suite green. `opened_at` is stamped per caller from its own
+    `datetime.now(UTC)`, so it is the field that tells the committed row from
+    a discarded one.
 
     Six writers rather than two, because the recovery path has to survive
     losing repeatedly, not just once.
@@ -211,13 +248,66 @@ async def test_the_loser_gets_the_winner_s_book_rather_than_its_own(
         )
     ).scalar_one()
 
-    assert set(results) == {stored.pool_account_id}
+    assert {r.opened_at for r in results} == {stored.opened_at}, (
+        "every caller must end up holding the committed book, not its own"
+    )
+    assert {r.pool_account_id for r in results} == {stored.pool_account_id}
+
+
+async def test_the_loser_funds_from_the_committed_book_not_its_own_terms(
+    session: AsyncSession,
+) -> None:
+    """`Leg(amount=book.seed_subsidy)`, never `terms.seed_subsidy`.
+
+    Both callers fetch before either inserts, so each holds its own copy of
+    the terms. The winner's copy is the one that gets committed into the book.
+    A loser that funded from *its* copy would hand `posting.post` a different
+    pair of legs under the same `market-open:<id>` key — which `post`
+    correctly refuses as `IdempotencyKeyReused`, so the second trader's first
+    touch of that market fails with an error about a key they have never seen.
+
+    In every reachable world the two numbers are identical, and that is why
+    this needs an upstream that answers differently per call: with one value
+    the distinction is invisible, and deleting `book.` from those two legs
+    left the whole suite green.
+
+    Two writers and two subsidies, so whichever one loses the insert race is
+    holding the number that is not in the book.
+    """
+    market_id = uuid.uuid4()
+    upstream = _Upstream(
+        market_id,
+        [uuid.uuid4(), uuid.uuid4()],
+        subsidies=[_SUBSIDY, Decimal("999.0000")],
+    )
+
+    results = await _race(market_id, upstream, writers=2)
+
+    assert all(not isinstance(r, Exception) for r in results), results
+
+    stored = (
+        await session.execute(
+            select(_entities().MarketBook).where(_entities().MarketBook.market_id == market_id)
+        )
+    ).scalar_one()
+
+    funded = (
+        await session.execute(
+            select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
+                Entry.account_id == stored.pool_account_id
+            )
+        )
+    ).scalar_one()
+
+    assert funded == stored.seed_subsidy, (
+        "the pool holds a different amount from the one the book records"
+    )
 
 
 async def test_the_race_creates_exactly_one_market_pool_account(
     session: AsyncSession,
 ) -> None:
-    """D-026, and the reason `owner_id` has to be the market id.
+    """D-028, and the reason `owner_id` has to be the market id.
 
     This is the assertion that fails if the pool account is keyed on anything
     else. With a sentinel or a fresh `uuid4`, `uq_accounts_kind_owner` never

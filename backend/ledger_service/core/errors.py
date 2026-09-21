@@ -106,7 +106,7 @@ class IdempotencyKeyReused(LedgerError):
 class MarketTermsUnavailable(LedgerError):
     """market_service could not be reached, or answered as if it were down.
 
-    D-028. Covers a refused connection, a timeout, a 5xx, and a 200 whose body
+    D-030. Covers a refused connection, a timeout, a 5xx, and a 200 whose body
     is not a market — the market service is treated as down rather than the
     ledger crashing on a parse error it cannot recover from. Also raised for a
     published market whose `liquidity_b` or `seed_subsidy` arrived null, which

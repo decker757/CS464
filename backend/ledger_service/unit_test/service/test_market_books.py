@@ -238,14 +238,14 @@ async def test_the_book_opens_at_state_version_zero(session: AsyncSession) -> No
 async def test_state_changed_at_equals_opened_at_on_a_never_traded_market(
     session: AsyncSession,
 ) -> None:
-    """D-027, and equality rather than merely non-null.
+    """D-029, and equality rather than merely non-null.
 
     For a market nobody has traded, the book's creation *is* its last state
     change — `state_version` is 0 and every `q` is 0, and that state began when
     this row was written. Any other value invents a moment that did not happen.
 
     This is also what the realtime snapshot reports as `occurred_at` for such a
-    market, which is the open question D-027 closed: the contract defines
+    market, which is the open question D-029 closed: the contract defines
     `occurred_at` only as "the time of the event", and a market with no events
     has none to name.
     """
@@ -280,7 +280,7 @@ async def test_the_subsidy_is_posted_from_the_platform_to_the_pool(
 async def test_the_pool_account_is_keyed_on_the_market_id(
     session: AsyncSession,
 ) -> None:
-    """D-026, and the thing the insert race depends on.
+    """D-028, and the thing the insert race depends on.
 
     `Account.owner_id` is `mapped_column(Uuid, nullable=False)` and a market id
     is a `Uuid`, so the market goes straight in it and

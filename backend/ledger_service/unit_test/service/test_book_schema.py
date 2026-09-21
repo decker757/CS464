@@ -77,7 +77,7 @@ async def _constraints(session: AsyncSession, table: str) -> dict[str, str]:
 async def _book(session: AsyncSession, market_id: uuid.UUID, **overrides):
     """A `MarketBook`, backed by a real `MARKET_POOL` account for `market_id`.
 
-    `pool_account_id` is a foreign key into `ledger.accounts` (D-033), so a
+    `pool_account_id` is a foreign key into `ledger.accounts` (D-035), so a
     fabricated id here would fail on a constraint unrelated to whatever the
     calling test is actually asserting. The account is added and flushed
     first so its id exists to hand to the book.
@@ -103,6 +103,19 @@ async def _book(session: AsyncSession, market_id: uuid.UUID, **overrides):
     return entities.MarketBook(**fields)
 
 
+async def _open_book(session: AsyncSession, market_id: uuid.UUID) -> None:
+    """Persist a book for `market_id`, so outcome rows may reference it.
+
+    `market_outcomes.market_id` is a foreign key into `market_books` (D-035),
+    so an outcome row written for a market with no book now fails on that
+    constraint rather than on whichever one the calling test is about. The
+    tests below are about the uniqueness constraints and the `q` default, so
+    they need the book to exist and do not otherwise care about it.
+    """
+    session.add(await _book(session, market_id))
+    await session.flush()
+
+
 # --- ledger.market_books --------------------------------------------------
 async def test_the_market_id_is_the_primary_key(session: AsyncSession) -> None:
     """One book per market, enforced by the database.
@@ -126,7 +139,7 @@ async def test_the_market_id_is_not_a_foreign_key(session: AsyncSession) -> None
     is why: a join across a service boundary should fail loudly rather than
     quietly work.
 
-    Scoped to `market_id` specifically (D-033) rather than to the table as a
+    Scoped to `market_id` specifically (D-035) rather than to the table as a
     whole: `pool_account_id` is a foreign key into `ledger.accounts`, this
     service's own table, in the same transaction that creates the account it
     names. ADR 0003's rule is about a cross-*schema* join; it was never about
@@ -244,6 +257,7 @@ async def test_an_outcome_cannot_be_registered_twice_for_one_market(
     entirely well formed.
     """
     market_id, outcome_id = uuid.uuid4(), uuid.uuid4()
+    await _open_book(session, market_id)
 
     session.add(_entities().MarketOutcome(market_id=market_id, outcome_id=outcome_id, position=0))
     await session.flush()
@@ -268,6 +282,7 @@ async def test_two_outcomes_cannot_share_a_position_in_one_market(
     between two reads with nothing written in between.
     """
     market_id = uuid.uuid4()
+    await _open_book(session, market_id)
 
     session.add(_entities().MarketOutcome(market_id=market_id, outcome_id=uuid.uuid4(), position=0))
     await session.flush()
@@ -293,6 +308,8 @@ async def test_the_same_outcome_id_may_appear_in_two_different_markets(
     """
     outcome_id = uuid.uuid4()
     first, second = uuid.uuid4(), uuid.uuid4()
+    await _open_book(session, first)
+    await _open_book(session, second)
 
     session.add(_entities().MarketOutcome(market_id=first, outcome_id=outcome_id, position=0))
     session.add(_entities().MarketOutcome(market_id=second, outcome_id=outcome_id, position=0))
@@ -315,6 +332,7 @@ async def test_q_defaults_to_zero(session: AsyncSession) -> None:
     without naming it cannot open a market that already has shares in it.
     """
     market_id, outcome_id = uuid.uuid4(), uuid.uuid4()
+    await _open_book(session, market_id)
 
     session.add(_entities().MarketOutcome(market_id=market_id, outcome_id=outcome_id, position=0))
     await session.flush()
@@ -327,6 +345,54 @@ async def test_q_defaults_to_zero(session: AsyncSession) -> None:
     ).scalar_one()
 
     assert stored.q == ZERO
+
+
+async def test_an_outcome_cannot_exist_without_its_book(session: AsyncSession) -> None:
+    """D-035's rule applied to the second table that follows from it.
+
+    `market_id` here names a row in `ledger.market_books` — this service's own
+    table, in its own schema, written in the same transaction by
+    `books.ensure_open`. That is the case D-035 says is worth a constraint, as
+    opposed to `outcome_id`, which names a row in `market.outcomes` that
+    `ledger_svc` holds no grant on and which therefore stays bare.
+
+    The mistake it catches is an outcome row orphaned from its book: a market
+    with a `q` vector and nothing to price it against. Nothing in this ticket
+    can produce one — the book and its outcomes are inserted inside a single
+    savepoint — but [T-2] #22 writes to this table on every trade, and this is
+    the constraint that makes an orphan fail loudly there instead of being
+    discovered by a price that cannot be computed.
+    """
+    session.add(
+        _entities().MarketOutcome(
+            market_id=uuid.uuid4(), outcome_id=uuid.uuid4(), position=0
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        await session.flush()
+
+    await session.rollback()
+
+
+async def test_the_outcome_id_is_still_not_a_foreign_key(session: AsyncSession) -> None:
+    """The other half, and the line D-035 draws.
+
+    Adding one foreign key to this table is exactly the moment somebody adds
+    the symmetrical-looking one beside it. `outcome_id` names a row in
+    `market.outcomes`; a foreign key there would need a grant across a service
+    boundary, which ADR 0003 refuses — and asserting its absence is what stops
+    the reasoning being re-derived from the shape of the table.
+    """
+    definitions = (await _constraints(session, "market_outcomes")).values()
+    foreign_keys = [d for d in definitions if d.startswith("FOREIGN KEY")]
+
+    assert any("(market_id)" in d for d in foreign_keys), (
+        f"market_id should reference market_books: {foreign_keys}"
+    )
+    assert not any("(outcome_id)" in d for d in foreign_keys), (
+        f"outcome_id must not be a foreign key: {foreign_keys}"
+    )
 
 
 async def test_the_outcome_table_carries_no_label(session: AsyncSession) -> None:

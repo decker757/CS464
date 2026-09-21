@@ -629,7 +629,7 @@ one caller deliberately does not follow it.
 
 ---
 
-### D-026 — The market pool account is keyed `owner_id = market_id`
+### D-028 — The market pool account is keyed `owner_id = market_id`
 
 **Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
 
@@ -663,7 +663,7 @@ account has a natural owner and should use it.
 
 ---
 
-### D-027 — `state_changed_at` equals `opened_at` at book creation
+### D-029 — `state_changed_at` equals `opened_at` at book creation
 
 **Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
 
@@ -683,7 +683,7 @@ removed from Open.
 
 ---
 
-### D-028 — Upstream failures map to 503, 404 and 401, and the timeout is explicit
+### D-030 — Upstream failures map to 503, 404 and 401, and the timeout is explicit
 
 **Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
 
@@ -705,12 +705,30 @@ indistinguishable — and retrying will never help. A 401 says the token the
 ledger forwarded has expired, which is the caller's session problem and is fixed
 by logging in again, not by the ledger claiming its dependency is unavailable.
 
-**The timeout has to be explicit because httpx's default is five seconds of
-connect and no ceiling on read.** This call sits in the trade path. A market
-service that accepts the connection and then stops responding would hold a
-ledger request, its database session and its row locks open for as long as the
-socket stays alive — so a hung dependency becomes a ledger that cannot write
-rather than a trade that fails fast.
+**The timeout is stated rather than inherited.** This call sits in the trade
+path. A market service that accepts the connection and then stops responding
+holds a ledger request, its database session and its row locks open for as
+long as the socket stays alive — so a hung dependency becomes a ledger that
+cannot write rather than a trade that fails fast.
+
+*Corrected 2026-09-21, review of #96.* This previously said the timeout "has
+to be explicit because httpx's default is five seconds of connect and no
+ceiling on read". That is wrong: httpx's `DEFAULT_TIMEOUT_CONFIG` is
+`Timeout(timeout=5.0)`, which bounds **all four** phases at five seconds,
+read included. `_TIMEOUT` in `service/market_terms.py` sets exactly those
+values, so it is byte-for-byte the default and changes nothing at runtime —
+which is why deleting the `timeout=` argument entirely leaves
+`test_the_request_carries_an_explicit_timeout` green. There is no behaviour
+there for a test to catch.
+
+The line is kept as a statement of intent: five seconds is a number this
+service chose, not one it inherited, and the next person to touch it has
+somewhere to change it. **The open question is whether five seconds is the
+right budget**, which this record does not answer. A read timeout inside a
+transaction holding row locks is a different trade-off from a read timeout on
+a browse page, and the argument above is the argument for a shorter one.
+Deciding it needs a number for how long a first touch may reasonably take,
+and nobody has measured that yet — noted under Open.
 
 **Rejected.** Mapping everything non-2xx to 503, which tells a trader to retry a
 market that does not exist. Letting `httpx.HTTPError` escape, which surfaces as
@@ -724,7 +742,7 @@ happen to agree today.
 
 ---
 
-### D-029 — The terms client lives in `service/`, not `core/`
+### D-031 — The terms client lives in `service/`, not `core/`
 
 **Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
 
@@ -756,7 +774,7 @@ container.
 
 ---
 
-### D-030 — The book's writes share `posting.post`'s commit, and nothing may follow it
+### D-032 — The book's writes share `posting.post`'s commit, and nothing may follow it
 
 **Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
 
@@ -789,7 +807,7 @@ See the Open section, rewritten below, for what #22 still has to decide.
 
 ---
 
-### D-031 — `parse_float=Decimal` reads exactly; it cannot detect loss that already happened upstream
+### D-033 — `parse_float=Decimal` reads exactly; it cannot detect loss that already happened upstream
 
 **Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
 
@@ -819,7 +837,7 @@ prevent that value from ever being wrong on the way out in the first place.
 
 ---
 
-### D-032 — `MarketOutcome`'s primary key is the pair, not a surrogate id
+### D-034 — `MarketOutcome`'s primary key is the pair, not a surrogate id
 
 **Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
 
@@ -840,7 +858,7 @@ two that follow it.
 
 ---
 
-### D-033 — `pool_account_id` is a foreign key; `market_id` still is not
+### D-035 — `pool_account_id` is a foreign key; `market_id` still is not
 
 **Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
 
@@ -864,12 +882,34 @@ not exist — that the service-boundary argument was never about.
 key on this table at all", which conflated the service-boundary rule with
 the table itself.
 
+**`market_outcomes.market_id` is a foreign key too**, into
+`market_books.market_id`, and `market_outcomes.outcome_id` is not. *Added
+2026-09-21, review of #96.* The first cut left both bare and explained it as
+"both are generated by market_service, across a schema boundary this service
+holds no grant on" — which is the rule this decision had just replaced. Where
+a value came from is not the question; which table it references is.
+`market_id` on that table references `ledger.market_books`, this service's
+own table, written in the same savepoint by `books.ensure_open`. `outcome_id`
+references `market.outcomes`, which `ledger_svc` cannot read, so it stays
+bare for the reason ADR 0003 gives.
+
+The mistake it catches is an outcome row orphaned from its book: a market
+carrying a `q` vector with nothing to price it against. Unreachable in this
+ticket, since the book and its outcomes are inserted inside one savepoint —
+but [T-2] #22 writes to this table on every trade, and a constraint is how
+that fails loudly rather than being found later by a price that cannot be
+computed. `test_an_outcome_cannot_exist_without_its_book` and
+`test_the_outcome_id_is_still_not_a_foreign_key` hold both halves.
+
 **Notes.** Checked against the first-touch race rather than assumed safe:
 `accounts.ensure` fully resolves the pool account — creating it or finding
 the winner's — before `books.ensure_open` ever builds a `MarketBook`, so by
 the time the foreign key is checked, `pool.id` names a row already visible in
 the current transaction either way. No test in `test_book_concurrency.py`
-regressed when the constraint was added.
+regressed when either constraint was added. Four tests in
+`test_book_schema.py` did have to open a book before writing outcome rows,
+which is the constraint doing its job on fixtures that had been writing
+orphans.
 
 ---
 
@@ -878,13 +918,13 @@ regressed when the constraint was added.
 Move these into the log above when they're settled.
 
 - **`posting.post()` commits internally — settled for a caller with nothing to
-  write afterward, still open for one that does.** [F-7] #96 (D-030) answered
+  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
   this for `books.ensure_open`: order every write through
   `session.begin_nested()` and call `post()` last, so its own commit lands
   everything together. That works whenever the call into `post()` is the
   caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
   `state_version` bump and its position update on `MarketOutcome` would have to
-  precede the call into `post()`, in the same transaction, under D-030's rule,
+  precede the call into `post()`, in the same transaction, under D-032's rule,
   never after it. Whether that ordering is workable for the trade path, or
   whether #22 needs to check its write against a quote taken *after* the trade
   executes — in which case `post()` gains a variant that stops short of commit,

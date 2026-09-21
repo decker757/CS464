@@ -279,7 +279,7 @@ async def test_it_asks_the_public_detail_endpoint_for_that_market() -> None:
 
 
 async def test_the_request_carries_an_explicit_timeout() -> None:
-    """D-028. httpx's default is five seconds to connect and no read ceiling.
+    """D-030. Every phase bounded, at the values this service chose.
 
     This call happens inside a request that holds a database session and, on
     the trade path, row locks. A market service that accepts the connection and
@@ -289,6 +289,16 @@ async def test_the_request_carries_an_explicit_timeout() -> None:
 
     Asserted on the request's own extensions rather than on the client, because
     that is where the value that will actually be enforced ends up.
+
+    **This test cannot fail if `timeout=_TIMEOUT` is deleted, and that is a
+    fact about the values rather than a weakness here.** `_TIMEOUT` is five
+    seconds on all four phases, which is exactly `DEFAULT_TIMEOUT_CONFIG`, so
+    there is no observable difference between stating it and inheriting it.
+    The earlier version of this test asserted only that `connect` and `read`
+    were non-null, which was true of the default too. Pinning the values at
+    least makes a *change* to the budget visible — and if the budget is ever
+    chosen deliberately rather than matched to httpx's, this test starts being
+    able to catch the deletion as well.
     """
     seen: list[httpx.Request] = []
 
@@ -298,12 +308,12 @@ async def test_the_request_carries_an_explicit_timeout() -> None:
 
     timeout = seen[0].extensions.get("timeout")
     assert timeout is not None, "no timeout was attached to the request"
-    assert all(
-        timeout.get(phase) is not None for phase in ("connect", "read")
-    ), f"connect and read must both be bounded, got {timeout}"
+    assert timeout == {"connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0}, (
+        f"the request carried a budget nobody recorded a reason for: {timeout}"
+    )
 
 
-# --- D-028: what each kind of failure becomes -----------------------------
+# --- D-030: what each kind of failure becomes -----------------------------
 async def test_a_connection_error_is_unavailable_not_a_crash() -> None:
     """The market service is down, or the name does not resolve.
 
@@ -352,7 +362,7 @@ async def test_an_upstream_server_error_is_unavailable(status_code: int) -> None
 
 
 async def test_an_upstream_404_is_not_unavailable() -> None:
-    """D-028, and the distinction that matters most in this file.
+    """D-030, and the distinction that matters most in this file.
 
     A 404 from `/public/markets/{id}` means one of three things and
     deliberately does not say which: no such market, a draft, or a submitted
@@ -406,6 +416,95 @@ async def test_a_malformed_body_is_unavailable_rather_than_a_crash() -> None:
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
             _MARKET_ID, access_token=_token(), transport=httpx.MockTransport(handler)
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        ("liquidity_b is not a numeral", _terms_body(liquidity_b="abc")),
+        ("seed_subsidy is not a numeral", _terms_body(seed_subsidy="")),
+        ("id is missing", {k: v for k, v in _terms_body().items() if k != "id"}),
+        ("id is not a uuid", _terms_body(id="nope")),
+        ("published_at is not a timestamp", _terms_body(published_at="garbage")),
+        (
+            "an outcome id is not a uuid",
+            _terms_body(outcomes=[{"id": "nope", "position": 0}]),
+        ),
+        ("an outcome has no id", _terms_body(outcomes=[{"position": 0}])),
+        ("a position is not a number", _terms_body(outcomes=[{"id": str(_YES), "position": "first"}])),
+        ("outcomes is not a list of objects", _terms_body(outcomes=["yes", "no"])),
+        ("the body is a JSON array", []),
+        ("the body is a JSON string", "not a market"),
+    ],
+)
+async def test_valid_json_that_is_not_a_market_is_unavailable(
+    label: str, body: object
+) -> None:
+    """`json.loads` succeeding says the bytes parsed, not that this is a market.
+
+    The test above covers bytes that are not JSON at all — a proxy's HTML.
+    This covers the other half, which is every way a body can decode and then
+    fail to make sense, and before D-030 was enforced properly each of these
+    raised whatever the first bad field happened to raise: `InvalidOperation`,
+    `KeyError`, `ValueError`, `TypeError`, `AttributeError`. None is a
+    `LedgerError`, so none mapped, and each was a 500 on the trade path where
+    the documented contract is 503.
+
+    Nothing writes before `fetch` returns, so none of them corrupted anything.
+    What they did was report the wrong thing about a dependency that was, in
+    every one of these cases, not the market service.
+
+    Parametrized over the *kinds* of malformation rather than a representative
+    one, because each took a different route out of the function and a single
+    case would have pinned a single route.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID, access_token=_token(), transport=_responds(body=body)
+        )
+
+
+async def test_a_true_liquidity_b_is_refused_rather_than_read_as_one() -> None:
+    """The one malformation that did not raise, which is what makes it the worst.
+
+    `bool` is a subclass of `int`, so `Decimal(True)` is `Decimal(1)` — no
+    exception, no warning, no test going red. A `liquidity_b` of JSON `true`
+    opened a book at `b = 1` rather than at whatever the administrator
+    configured, and ADR 0005 makes that snapshot immutable: every price that
+    market ever quoted would have been computed from the wrong denominator,
+    permanently, with nothing anywhere to notice.
+
+    Asserted separately from the parametrize above because the others were
+    loud and this one was silent, and the fix for it is a type check rather
+    than a `try`.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(liquidity_b=True)),
+        )
+
+
+async def test_a_body_for_a_different_market_is_refused() -> None:
+    """`MarketTerms.market_id` was parsed and never read. Now it is the check.
+
+    A cache or a proxy answering `/public/markets/{a}` with market `b`'s body
+    is the shape this defends: the terms would be copied into `a`'s book under
+    `a`'s id, carrying `b`'s `liquidity_b` and `b`'s outcome ids. Immutable
+    once written, so there is no later read that corrects it — the book simply
+    prices the wrong market forever.
+
+    Unreachable through a correct market service, like everything else in
+    `_parse`. It costs one comparison and it gives the field a reason to be
+    parsed at all.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(id=str(uuid.uuid4()))),
         )
 
 

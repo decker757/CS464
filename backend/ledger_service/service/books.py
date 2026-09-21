@@ -81,7 +81,7 @@ async def ensure_open(
     if terms.published_at is None:
         raise MarketNotPublished
 
-    # D-026: keyed on the market id, so the insert race below and this one
+    # D-028: keyed on the market id, so the insert race below and this one
     # fail the same way for the same reason. `accounts.ensure` recovers from
     # its own race internally; by the time it returns here, every racing
     # caller holds the one pool account that exists for this market.
@@ -94,7 +94,7 @@ async def ensure_open(
         seed_subsidy=terms.seed_subsidy,
         pool_account_id=pool.id,
         state_version=0,
-        # D-027: equal to opened_at. For a market nobody has traded, creating
+        # D-029: equal to opened_at. For a market nobody has traded, creating
         # this row is the last state change there has been.
         state_changed_at=now,
         opened_at=now,
