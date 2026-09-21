@@ -28,6 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from core.pricing import Side
 from model.entities import Entry, TransactionKind
 
 
@@ -143,6 +144,91 @@ class LedgerEntryOut(BaseModel):
             kind=entry.transaction.kind,
             context=entry.transaction.context,
         )
+
+
+class OutcomePriceOut(BaseModel):
+    """One outcome's price. [T-1] #21.
+
+    Field for field what `realtime_service`'s `OutcomePrice` puts on the
+    socket — `outcome_id`, `position`, `price` — so a client renders a
+    snapshot, a price frame and this preview with one function rather than
+    three.
+    """
+
+    outcome_id: uuid.UUID
+    position: int = Field(
+        ge=0,
+        description=(
+            "The outcome's order within the market, so a categorical market "
+            "renders the same way twice without a second lookup."
+        ),
+    )
+    price: Decimal = Field(
+        description="The marginal price of one share, as an exact decimal string.",
+        examples=["0.6234"],
+    )
+
+    @field_serializer("price")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class PreviewOut(BaseModel):
+    """What one trade would cost, and how it would move the market. [T-1] #21.
+
+    `state_version` is the quote reference (D-011) and the only one — nothing
+    else here is a second answer to "has this market moved". [T-2] #22
+    compares it, under its own lock, against the version current when a trade
+    is confirmed.
+    """
+
+    market_id: uuid.UUID
+    state_version: int = Field(
+        description=(
+            "The book's own counter, the same one `PriceEvent` and the "
+            "snapshot report. Not a JSON string: it is a count, not money."
+        )
+    )
+
+    side: Side
+    outcome_id: uuid.UUID
+
+    quantity: Decimal = Field(
+        description="Echoed back exactly as sent, at scale 4.",
+        examples=["10.0000"],
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed: negative on a buy, because credits leave the trader; "
+            "positive on a sell, because they arrive. Quantized by the same "
+            "function [T-2] #22 uses to build its legs, buy rounding the "
+            "ceiling and sell the floor, so this is the number that would be "
+            "charged."
+        ),
+        examples=["-133.7042"],
+    )
+    average_price: Decimal = Field(
+        description=(
+            "abs(total) / quantity, from the quantized total, ROUND_HALF_UP "
+            "at scale 4. Display only — [T-2] #22 charges `total`, never "
+            "quantity * average_price."
+        ),
+        examples=["10.0278"],
+    )
+
+    prices: list[OutcomePriceOut] = Field(
+        description="The market's current price, every outcome, ordered by position."
+    )
+    post_trade_prices: list[OutcomePriceOut] = Field(
+        description=(
+            "The price of every outcome this trade would leave behind, "
+            "computed from `core/lmsr.py` and not estimated."
+        )
+    )
+
+    @field_serializer("quantity", "total", "average_price")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
 
 
 class LedgerEntryListResponse(BaseModel):

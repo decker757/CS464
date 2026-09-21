@@ -51,6 +51,29 @@ async def get_claims(request: Request) -> TokenClaims:
 CurrentUser = Annotated[TokenClaims, Depends(get_claims)]
 
 
+async def get_access_token(request: Request, _claims: CurrentUser) -> str:
+    """The raw bearer token, for forwarding upstream. [T-1] #21, D-037.
+
+    `CurrentUser` decodes this same token into claims; this reads it a second
+    time as the string it arrived as, because a decoded claim cannot be
+    re-signed into the credential `service/market_terms.py` forwards to
+    market_service on a market's first touch. A token minted here instead
+    would be this service asserting an identity it was not given.
+
+    Depends on `CurrentUser` so the token has already been verified by the
+    time this returns it — an unverified token must never be forwarded to
+    another service. The `None` case below is therefore unreachable: it is
+    the same header or cookie `CurrentUser` just required to exist.
+    """
+    token = transport.extract_access_token(request)
+    if token is None:
+        raise NotAuthenticated
+    return token
+
+
+AccessToken = Annotated[str, Depends(get_access_token)]
+
+
 async def require_admin(claims: CurrentUser) -> TokenClaims:
     """Guard the routes that read somebody else's money. [4.1] #13.
 
