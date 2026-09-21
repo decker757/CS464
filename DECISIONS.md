@@ -790,6 +790,290 @@ the autosave's `_apply`. This PR would have introduced the pattern.
 
 ---
 
+### D-028 — The market pool account is keyed `owner_id = market_id`
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** A market's `MARKET_POOL` account is resolved with
+`accounts.ensure(session, AccountKind.MARKET_POOL, market_id)`. The market id
+goes in `owner_id`, so `uq_accounts_kind_owner` means "one pool per market".
+
+**Why.** The type already fits: `Account.owner_id` is
+`mapped_column(Uuid, nullable=False)` and `market.markets.id` is a `Uuid`. No
+column changes, and no foreign key — the same trade `owner_id` already makes for
+a `USER` account naming a row in `auth.users` it has no grant to read.
+
+**The race depends on it, which is the real argument.** D-010 has two concurrent
+first-touches both inserting a book and the PK on `market_id` turning the loser
+into an `IntegrityError` it recovers from. That covers the *book*. The pool
+account is a separate row written before it, and if `owner_id` were anything but
+the market id — a fresh `uuid4`, a sentinel — the unique constraint would not
+fire on it. Both callers would create a pool account, only one book would
+survive, and the loser would hold an orphan account with no book pointing at it
+and no way to find it again. Keyed this way, `accounts.ensure` handles it one
+level down exactly as it already does for two tabs loading a balance at once,
+and the recovery path is one that ships with tests.
+
+**Rejected.** A sentinel `owner_id` with the market named only by
+`market_books.pool_account_id`. It puts the uniqueness in a column the insert
+race does not check, which is the one place it has to be.
+
+**Notes.** `PLATFORM_OWNER_ID` is the all-zero UUID for the opposite reason —
+there is exactly one house account and no natural owner to name it by. A pool
+account has a natural owner and should use it.
+
+---
+
+### D-029 — `state_changed_at` equals `opened_at` at book creation
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** Both columns are written with the same timestamp when the book is
+created. Tests assert equality, not merely that both are non-null.
+
+**Why.** For a market nobody has traded, the book's creation *is* its last state
+change. `state_version` is 0 and `q` is 0 for every outcome, and that state
+began when the row was written. Any other value would be inventing a moment that
+did not happen.
+
+**Notes.** This also settles the `occurred_at` question that sat in Open. The
+realtime contract defines `occurred_at` only as "the time of the event", and a
+snapshot of a never-traded market has no event to name — so it reports
+`state_changed_at`, which this entry now gives a defined value. That bullet is
+removed from Open.
+
+---
+
+### D-030 — Upstream failures map to 503, 404 and 401, and the timeout is explicit
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** The terms pull maps what it gets back:
+
+| upstream | ledger raises | status |
+| --- | --- | --- |
+| connect error, timeout, 5xx | `MarketTermsUnavailable` | 503 |
+| 404 | `MarketNotFound` | 404 |
+| 401 | `NotAuthenticated` | 401 |
+
+and the client passes an explicit `httpx.Timeout`, never the library default.
+
+**Why.** These are three different things and collapsing them loses the only
+information the caller can act on. A 503 says the market service is down and the
+trade is worth retrying. A 404 says this market does not exist, or is a draft, or
+is submitted — `browsing.get_published` deliberately makes those three
+indistinguishable — and retrying will never help. A 401 says the token the
+ledger forwarded has expired, which is the caller's session problem and is fixed
+by logging in again, not by the ledger claiming its dependency is unavailable.
+
+**The timeout is stated rather than inherited.** This call sits in the trade
+path. A market service that accepts the connection and then stops responding
+holds a ledger request, its database session and its row locks open for as
+long as the socket stays alive — so a hung dependency becomes a ledger that
+cannot write rather than a trade that fails fast.
+
+*Corrected 2026-09-21, review of #96.* This previously said the timeout "has
+to be explicit because httpx's default is five seconds of connect and no
+ceiling on read". That is wrong: httpx's `DEFAULT_TIMEOUT_CONFIG` is
+`Timeout(timeout=5.0)`, which bounds **all four** phases at five seconds,
+read included. `_TIMEOUT` in `service/market_terms.py` sets exactly those
+values, so it is byte-for-byte the default and changes nothing at runtime —
+which is why deleting the `timeout=` argument entirely leaves
+`test_the_request_carries_an_explicit_timeout` green. There is no behaviour
+there for a test to catch.
+
+The line is kept as a statement of intent: five seconds is a number this
+service chose, not one it inherited, and the next person to touch it has
+somewhere to change it. **The open question is whether five seconds is the
+right budget**, which this record does not answer. A read timeout inside a
+transaction holding row locks is a different trade-off from a read timeout on
+a browse page, and the argument above is the argument for a shorter one.
+Deciding it needs a number for how long a first touch may reasonably take,
+and nobody has measured that yet — noted under Open.
+
+**Rejected.** Mapping everything non-2xx to 503, which tells a trader to retry a
+market that does not exist. Letting `httpx.HTTPError` escape, which surfaces as
+a 500 on a condition that is neither a bug nor the caller's fault.
+
+**Notes.** `NotAuthenticated` already exists in `core/errors.py` at 401 and is
+reused rather than duplicated. `MarketNotFound` is new to this service; the
+market service has its own with the same name and meaning, and they are
+deliberately not shared — ADR 0012's bar is not met by two error classes that
+happen to agree today.
+
+---
+
+### D-031 — The terms client lives in `service/`, not `core/`
+
+**Date:** 2026-09-20 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `ledger_service/service/market_terms.py`. Its errors live in
+`core/errors.py` like every other domain error.
+
+**Why.** The only outbound network adapter this repository already has is
+`realtime_service/service/bus.py`, which holds the Redis client and sits in
+`service/`. That is the precedent and it points away from `core/`.
+
+`core/` is where a suite runs without infrastructure. CLAUDE.md's own run
+instructions say so out loud — `.venv/bin/pytest unit_test/core unit_test/model
+# no database needed` — and putting a socket there makes that line false for the
+first time. CLAUDE.md's layering rule permits it (`service` may use `core`, and
+`core` may not reach up), so this is not something the import graph would have
+caught; it is a rule about what each layer is *for*.
+
+**Rejected.** `core/market_terms.py`, proposed on the strength of
+`core/security.py` being a settings-bound adapter. That comparison does not
+hold: `core/security.py` verifies a signature in process and opens no socket.
+
+**Notes.** The client takes an injectable `transport`, so the suite drives it
+with `httpx.MockTransport` and exercises the real URL, the real headers and the
+real decimal-string parsing without a market service running. A cross-service
+`ASGITransport` is not an option and never will be —
+`unit_test/test_import_boundary.py` fails any `import market_service` from this
+suite, because that import works under pytest and is an `ImportError` in the
+container.
+
+---
+
+### D-032 — The book's writes share `posting.post`'s commit, and nothing may follow it
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `books.ensure_open` performs every write before the funding
+call through `session.begin_nested()` — a SAVEPOINT inside the still-open
+outer transaction — and never commits itself. The pool account, the book and
+its outcomes land this way. `posting.post` is called last, and its own
+`session.commit()` is the only commit anywhere in the path: it commits the
+pool account, the book, the outcomes and the funding entries together, or
+none of them if anything before it raised.
+
+**Why.** The ticket's constraint was that the book insert, the outcomes and
+the funding transaction have to land together or not at all, and
+`posting.py` was off limits. Ordering every write to precede `post()`, inside
+the transaction `post()` already commits, satisfies that without touching it
+— the same shape `service/grants.py` already uses one layer down for the
+starting grant.
+
+**Notes.** This settles the general question for one shape of caller and
+leaves another open. A caller whose last write *is* the call into `post()`
+can always share its commit boundary this way — `books.ensure_open` and
+`grants.ensure_granted` are both that shape. **A caller sharing post's commit
+boundary must have nothing left to write after it returns**, because nothing
+after it is inside the transaction that just ended — `post()`'s replay path
+in particular ends the transaction even when it wrote nothing (ADR 0015).
+[T-2] #22 is not necessarily this shape: its `state_version` bump and
+position update have to happen *before* the call into `post()`, in the same
+transaction, never after, or they are not covered by the same commit at all.
+See the Open section, rewritten below, for what #22 still has to decide.
+
+---
+
+### D-033 — `parse_float=Decimal` reads exactly; it cannot detect loss that already happened upstream
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `service/market_terms.py::fetch` parses the response body with
+`json.loads(response.content, parse_float=Decimal)`. A bare JSON number in
+`liquidity_b` or `seed_subsidy` — defence in depth against D-016 not holding
+on the other side — is read into a `Decimal` from its numeral text directly,
+with no `float` ever constructed, and no exception raised for arriving that
+way.
+
+**Why.** `test_market_terms.py::test_a_json_number_in_the_response_is_still_read_exactly`
+requires exactly this: the value must come through exact, not be refused.
+`parse_float=Decimal` is what makes "never call float() on a money value"
+hold regardless of which JSON shape the field arrived in, because the
+callable receives the numeral's text and nothing in between ever holds a
+`float`.
+
+**Notes.** What this cannot do is notice that the number was already wrong
+before it reached this parser. If `market_service` itself routed a `Decimal`
+through `float()` somewhere before serialising `liquidity_b` or
+`seed_subsidy`, this client receives whatever text resulted and reads it
+exactly — exact, but not correct. This side has no way to check that and is
+not designed to; it trusts the wire contract, and D-016's and D-021's guard
+tests on `market_service`'s side — the ones pinning `PublicMarketOut` to a
+decimal string and `MarketOut` to a JSON number, deliberately — are what
+prevent that value from ever being wrong on the way out in the first place.
+
+---
+
+### D-034 — `MarketOutcome`'s primary key is the pair, not a surrogate id
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `market_outcomes` has no `id` column. `(market_id, outcome_id)`
+is the composite primary key, and `(market_id, position)` is a separate
+`UniqueConstraint`.
+
+**Why.** Nothing anywhere references one of these rows by its own identity —
+every caller reaches them by `market_id`, or by `(market_id, outcome_id)`.
+The ticket's "unique on (market_id, outcome_id)" is satisfied by the primary
+key itself rather than by a second index beside a surrogate one.
+
+**Rejected.** A `uuid4` surrogate id plus the same two constraints as
+ordinary `UniqueConstraint`s. Legal, and no test distinguishes it —
+`test_the_outcome_table_carries_no_label` checks its columns with `<=`, not
+`==` — but it would be a column with no reader anywhere in this ticket or the
+two that follow it.
+
+---
+
+### D-035 — `pool_account_id` is a foreign key; `market_id` still is not
+
+**Date:** 2026-09-21 · **Ticket:** #96 · **Status:** active
+
+**Decision.** `market_books.pool_account_id` references `ledger.accounts.id`.
+`market_books.market_id` remains bare, as D-008 through D-010 already have it.
+`unit_test/service/test_book_schema.py::test_the_market_id_is_not_a_foreign_key`
+is narrowed to assert no `market_id` foreign key specifically, rather than no
+foreign key on the table at all.
+
+**Why.** ADR 0003's rule is about a join across a *service* boundary — a
+grant this service does not hold. `market_id` names a row in
+`market.markets`, a schema `ledger_svc` cannot read, so a foreign key there
+would either fail to create or, with a hypothetical cross-schema grant, weld
+two services together on purpose. `ledger.accounts` is this service's own
+table in its own schema, and the account `pool_account_id` names is created
+in the same transaction as the row that names it. A foreign key there costs
+nothing and catches a real mistake — a book pointing at an account that does
+not exist — that the service-boundary argument was never about.
+
+**Rejected.** The original reading of the acceptance criteria as "no foreign
+key on this table at all", which conflated the service-boundary rule with
+the table itself.
+
+**`market_outcomes.market_id` is a foreign key too**, into
+`market_books.market_id`, and `market_outcomes.outcome_id` is not. *Added
+2026-09-21, review of #96.* The first cut left both bare and explained it as
+"both are generated by market_service, across a schema boundary this service
+holds no grant on" — which is the rule this decision had just replaced. Where
+a value came from is not the question; which table it references is.
+`market_id` on that table references `ledger.market_books`, this service's
+own table, written in the same savepoint by `books.ensure_open`. `outcome_id`
+references `market.outcomes`, which `ledger_svc` cannot read, so it stays
+bare for the reason ADR 0003 gives.
+
+The mistake it catches is an outcome row orphaned from its book: a market
+carrying a `q` vector with nothing to price it against. Unreachable in this
+ticket, since the book and its outcomes are inserted inside one savepoint —
+but [T-2] #22 writes to this table on every trade, and a constraint is how
+that fails loudly rather than being found later by a price that cannot be
+computed. `test_an_outcome_cannot_exist_without_its_book` and
+`test_the_outcome_id_is_still_not_a_foreign_key` hold both halves.
+
+**Notes.** Checked against the first-touch race rather than assumed safe:
+`accounts.ensure` fully resolves the pool account — creating it or finding
+the winner's — before `books.ensure_open` ever builds a `MarketBook`, so by
+the time the foreign key is checked, `pool.id` names a row already visible in
+the current transaction either way. No test in `test_book_concurrency.py`
+regressed when either constraint was added. Four tests in
+`test_book_schema.py` did have to open a book before writing outcome rows,
+which is the constraint doing its job on fixtures that had been writing
+orphans.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
@@ -825,3 +1109,41 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
+- **`posting.post()` commits internally — settled for a caller with nothing to
+  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
+  this for `books.ensure_open`: order every write through
+  `session.begin_nested()` and call `post()` last, so its own commit lands
+  everything together. That works whenever the call into `post()` is the
+  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
+  `state_version` bump and its position update on `MarketOutcome` would have to
+  precede the call into `post()`, in the same transaction, under D-032's rule,
+  never after it. Whether that ordering is workable for the trade path, or
+  whether #22 needs to check its write against a quote taken *after* the trade
+  executes — in which case `post()` gains a variant that stops short of commit,
+  or the trade accepts the ledger write as its own boundary and builds
+  compensation around it — is still #22's to decide.
+- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
+  `core/opening_prices.py::max_platform_loss` computes the worst case and
+  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
+  compares them — `_liquidity_problems` checks both are present and positive and
+  says in its own docstring that the comparison is "deliberately NOT checked",
+  on the grounds that an administrator may knowingly seed a market for less.
+  That was a defensible call while the number was only displayed. Once [F-7] #96
+  funds a pool from it, an undersubsidised market is one whose pool goes
+  negative under ordinary trading, and `_refuse_overdrafts` exempts every
+  non-USER account, so nothing anywhere will say so. Whether that stays an
+  informed choice, becomes a submission rule, or becomes a warning the ledger
+  records at book creation is undecided. It is market_service's rule to make
+  either way, not the ledger's.
+- **How long the terms pull may block, given it runs inside a transaction
+  holding row locks.** `service/market_terms.py::_TIMEOUT` is five seconds on
+  every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
+  is currently inherited in substance even though it is written out in the
+  source, and no test can tell the line's deletion from its presence (D-030,
+  corrected). The argument in D-030 is an argument for a *shorter* read
+  timeout than a browse page would use: this call is made on the trade path
+  with a database session and, once [T-2] #22 lands, row locks held. Against
+  that, a first touch is the one request that does real work upstream, and too
+  short a ceiling turns a slow-but-healthy market service into spurious 503s
+  on a trader's first trade in a market. Deciding it needs a measurement of
+  what a first touch actually costs, which nobody has taken.
