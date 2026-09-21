@@ -246,6 +246,16 @@ because LMSR already expects the pool to be the side that can lose money.
 `prices` and `post_trade_prices` carry no such bias: nobody is charged a
 price, so both are `ROUND_HALF_UP`, same as everywhere else in this backend.
 
+**Where that bites: a sell can come back as `0.0000`.** In a badly skewed
+market an outcome is genuinely worth almost nothing, and a real quantity of it
+prices below one tick. Rounding down then leaves `total` at zero — you would
+give up the shares and be paid nothing — while the same shares cost a full tick
+to buy. So the residue is "under one tick" of the cost, which is 100% of it
+when the cost is itself under a tick. Nobody has decided whether that should be
+refused instead; it is in DECISIONS.md's Open section, and a client that lets
+somebody confirm a `total` of `0.0000` on a sell is relying on an open
+question.
+
 **`state_version`** is the quote reference (D-011) — a JSON number, not a
 string, because it is a count and not money — and the only one. [T-2] #22
 compares it, under its own lock, against the version current when a trade is
@@ -290,6 +300,7 @@ inventing new ones:
 | 409 | `market_not_published` | The market exists but has not been published, so it has no terms to open a book from. |
 | 409 | `insufficient_shares_outstanding` | A sell larger than this outcome's shares outstanding — the no-shorting rule. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
+| 422 | `quantity_too_large` | The cost prices above `99999999999999.9999`, the largest amount the ledger can store (D-040). Not reachable with any plausible quantity. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
 ## Errors
@@ -309,7 +320,8 @@ The same envelope as the other three services:
 
 The preview route above adds five more of its own — `market_not_found` (404),
 `market_not_published` (409), `insufficient_shares_outstanding` (409),
-`unknown_outcome` (422) and `market_terms_unavailable` (503) — documented
+`unknown_outcome` (422), `quantity_too_large` (422) and
+`market_terms_unavailable` (503) — documented
 there rather than repeated here, since none of them can be returned anywhere
 else on this service.
 

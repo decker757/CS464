@@ -244,3 +244,42 @@ def test_side_carries_the_two_wire_values() -> None:
     assert buy.value == "buy"
     assert sell.value == "sell"
     assert buy is not sell
+
+
+# --- the column this exists to fit ----------------------------------------
+def test_the_scale_and_precision_match_the_column() -> None:
+    """`core/pricing.py` restates `Numeric(18, 4)`; this is why it may.
+
+    The constants are duplicated rather than imported, because
+    `model/entities.py` imports `core.database` and a `core` module importing
+    `model` would point the dependency back up a layer and close a cycle. The
+    duplication is only safe while something fails when the two disagree, and
+    this is that something — so widening the column moves `core/pricing.py`
+    with it rather than leaving `MAX_MAGNITUDE` quietly describing the old one.
+
+    `model.entities` is imported inside the test, the same convention the rest
+    of this file uses, so the module under test stays reachable without it.
+    """
+    from model.entities import AMOUNT_PRECISION, AMOUNT_SCALE  # noqa: PLC0415
+
+    pricing = _pricing()
+
+    assert pricing._SCALE == AMOUNT_SCALE
+    assert pricing._PRECISION == AMOUNT_PRECISION
+
+
+def test_max_magnitude_is_the_largest_value_the_column_holds() -> None:
+    """14 integer digits and 4 fractional ones, and nothing above it.
+
+    Spelled out as a literal here rather than recomputed from the constants,
+    because a test that repeats the implementation's arithmetic passes on a
+    wrong formula as happily as on a right one.
+    """
+    pricing = _pricing()
+
+    assert pricing.MAX_MAGNITUDE == Decimal("99999999999999.9999")
+
+    # One tick more needs a 15th integer digit, which the column cannot store.
+    over = pricing.MAX_MAGNITUDE + Decimal("0.0001")
+    digits = len(over.as_tuple().digits)
+    assert digits > 18

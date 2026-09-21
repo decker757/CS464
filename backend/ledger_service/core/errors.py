@@ -172,6 +172,27 @@ class InsufficientSharesOutstanding(LedgerError):
     message = "This sell is larger than the shares outstanding for this outcome."
 
 
+class QuantityTooLarge(LedgerError):
+    """The priced cost is above what `Numeric(18, 4)` can store. [T-1] #21, D-040.
+
+    422, for the reason D-038 refuses a fifth decimal place: this is a
+    property of the quantity asked for, not of the book's state, and the
+    correction belongs where the typing happened. `InsufficientSharesOutstanding`
+    is 409 because the same request succeeds against a book with more shares
+    outstanding; this one succeeds against no book at all.
+
+    Refused rather than returned, because "the previewed number is the charged
+    number" is this route's whole contract and a `total` of 15 integer digits
+    is a number [T-2] #22 cannot write. Returning it quotes a trade whose
+    confirm step is a `NumericValueOutOfRange` — a 500 arriving after the
+    trader committed to a quote this service answered 200 to.
+    """
+
+    status_code = 422
+    code = "quantity_too_large"
+    message = "This quantity prices above the largest cost the ledger can store."
+
+
 class UnknownOutcome(LedgerError):
     """`outcome_id` does not name one of this market's outcomes. [T-1] #21.
 

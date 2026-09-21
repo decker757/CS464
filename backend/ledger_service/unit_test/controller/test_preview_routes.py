@@ -66,10 +66,11 @@ _FIELDS = {
     "post_trade_prices",
 }
 
-# The money and price fields. `quantity` is in here with the rest: it is a
-# Decimal at scale 4, `total` was computed from it, and it is the one field a
-# client could otherwise round-trip through an IEEE double and hand back to a
-# confirm step as a different number.
+# The money and price fields. `quantity` is in here with the rest not because
+# it is normalised — D-038 echoes it at whatever scale it arrived, and
+# `test_a_quantity_is_echoed_at_the_scale_it_arrived` pins that — but because
+# it is the one field a client could otherwise round-trip through an IEEE
+# double and hand back to a confirm step as a different number.
 _DECIMAL_STRINGS = {"quantity", "total", "average_price"}
 
 
@@ -769,3 +770,55 @@ async def test_a_cookie_session_forwards_its_own_token_too(
     await client.get(_path(terms.market_id), params=_params(terms.outcomes[0]))
 
     assert terms.tokens == [token]
+
+
+async def test_a_quantity_is_echoed_at_the_scale_it_arrived(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """D-038's echo rule, at three different scales.
+
+    Every other test in this file sends the default `"10.0000"`, whose scale
+    already matches the answer a normalising implementation would give — so
+    none of them can tell "echoed as sent" from "quantized to 4". This one
+    sends `"10"` and `"1.5"`, where the two answers differ.
+
+    It is `str(Decimal)` doing the work: `Decimal("10")` keeps its exponent, so
+    the trailing zeros a client sent come back and the ones it did not send do
+    not appear. That is what lets a client match a debounced response to the
+    keystroke that asked for it by string equality.
+    """
+    market = _Market()
+    await _warm(session, market)
+
+    for sent in ("10", "1.5", "10.0000", "0.5000"):
+        body = (
+            await client.get(
+                _path(market.market_id),
+                params=_params(market.outcomes[0], quantity=sent),
+                headers=trader_headers,
+            )
+        ).json()
+        assert body["quantity"] == sent
+
+
+async def test_a_quantity_that_prices_above_the_column_is_422(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """D-040. 422 and a code of its own, not a 500 from the confirm step.
+
+    422 rather than 409 for the reason D-038 gives: this is the quantity
+    asked for, not the state of the book. `insufficient_shares_outstanding`
+    is 409 because the same request succeeds against a book holding more
+    shares; this request succeeds against no book at all.
+    """
+    market = _Market()
+    await _warm(session, market)
+
+    response = await client.get(
+        _path(market.market_id),
+        params=_params(market.outcomes[0], quantity="1000000000000000.0000"),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "quantity_too_large"

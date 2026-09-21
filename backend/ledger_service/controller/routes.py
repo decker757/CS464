@@ -218,8 +218,9 @@ async def user_entries(
         },
         422: {
             "description": (
-                "A malformed query string, or an `outcome_id` that is not "
-                "this market's."
+                "A malformed query string, an `outcome_id` that is not this "
+                "market's, or a quantity whose cost prices above what the "
+                "ledger can store."
             )
         },
         503: {"description": "market_service could not be reached right now."},

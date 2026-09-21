@@ -1210,3 +1210,88 @@ async def test_the_ledger_still_sums_to_zero_after_a_run_of_previews(
         await session.execute(select(func.coalesce(func.sum(Entry.amount), ZERO)))
     ).scalar_one()
     assert total == ZERO
+
+
+# =========================================================================
+# The two edges of the quantization, both reachable
+# =========================================================================
+# A saturated outcome, from `core/lmsr.py::cost_to_trade`'s own docstring:
+# 100 shares against `q = [1560, *]` at `b = 100` is worth about 0.0000288.
+_SATURATED = [Decimal("1560.0000"), Decimal("100.0000")]
+_HUNDRED = Decimal("100.0000")
+
+
+async def test_a_sub_tick_sell_is_quoted_at_zero(session: AsyncSession) -> None:
+    """Pinned, not endorsed: a real sell can be worth nothing on the wire.
+
+    `quantize_cost` floors a sell's magnitude (D-039), so proceeds under one
+    tick become `0.0000` — the trader gives up real shares and is quoted
+    nothing for them. `cost_to_trade`'s docstring names this case and leaves
+    the choice between refusing it, charging a minimum tick and quoting zero
+    to "where there is a request to refuse". This route is that place and has
+    not chosen; DECISIONS.md's Open section carries the question.
+
+    Here so that whichever way it is settled, it moves *this test* rather than
+    a number nobody is watching. The asymmetry is the whole point: the same
+    100 shares cost a tick to buy and pay nothing to sell, so a round trip in
+    a saturated outcome is a guaranteed loss of one tick.
+
+    This pins the consequence, not the rounding mode — `ROUND_FLOOR` itself is
+    held by `test_a_sell_s_residue_goes_to_the_pool` in
+    `unit_test/core/test_pricing.py`, which does fail under `ROUND_HALF_UP`.
+    At this fixture's magnitude both modes give zero, so a green here says
+    nothing about which one is in use, only that a sell can be worth nothing.
+    """
+    upstream = _Upstream()
+    await _warm(session, upstream, _SATURATED)
+
+    raw = abs(_raw_cost(_SATURATED, 1, "sell", _HUNDRED))
+    assert ZERO < raw < _QUANTUM, (
+        "this fixture is meant to price a real trade at under one tick; "
+        f"got {raw}, so the assertions below prove nothing"
+    )
+
+    sell = await _quote(session, upstream, outcome=1, side="sell", quantity=_HUNDRED)
+    buy = await _quote(session, upstream, outcome=1, side="buy", quantity=_HUNDRED)
+
+    assert sell.total == ZERO
+    assert sell.average_price == ZERO
+    assert buy.total == -_QUANTUM
+
+
+async def test_a_quantity_that_prices_above_the_column_is_refused(
+    session: AsyncSession,
+) -> None:
+    """D-040. A cost `Numeric(18, 4)` cannot hold is refused, not returned.
+
+    `total` is quoted as the number [T-2] #22 will charge, and #22 writes it
+    into `Numeric(18, 4)` — 14 integer digits. A quantity of 1e15 prices at 15
+    of them, so returning it quotes a trade whose confirm step is a
+    `NumericValueOutOfRange`: a 500 arriving *after* the trader committed to a
+    quote this service answered 200 to.
+    """
+    upstream = _Upstream()
+    await _warm(session, upstream)
+
+    with pytest.raises(_errors().QuantityTooLarge):
+        await _quote(
+            session, upstream, quantity=Decimal("1000000000000000.0000")
+        )
+
+
+async def test_an_ordinary_large_quantity_is_still_quoted(
+    session: AsyncSession,
+) -> None:
+    """The ceiling is the column's, not a guess at what a trade should be.
+
+    Without this, D-040's refusal could tighten to any round number and no
+    test would notice. A cost of ~1e13 is absurd as a trade and entirely
+    storable, so it must come back priced.
+    """
+    upstream = _Upstream()
+    await _warm(session, upstream)
+
+    result = await _quote(session, upstream, quantity=Decimal("10000000000000.0000"))
+
+    assert abs(result.total) <= _pricing().MAX_MAGNITUDE
+    assert result.total < ZERO

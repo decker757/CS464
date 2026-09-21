@@ -1246,9 +1246,69 @@ in — the second pass is a no-op rather than a second opinion.
 
 ---
 
+### D-040 — A cost above `Numeric(18, 4)` is refused, not quoted
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `service/preview.py` raises `QuantityTooLarge` (422,
+`quantity_too_large`) when the quantized magnitude exceeds
+`core/pricing.py::MAX_MAGNITUDE` — `99999999999999.9999`, the largest value
+`Numeric(18, 4)` holds.
+
+**Why.** This route's contract is that the previewed number is the charged
+number, and [T-2] #22 charges by writing `total` into `Numeric(18, 4)`. A
+`quantity` of 1e15 prices at fifteen integer digits, which the column cannot
+store, so returning it quotes a trade whose confirm step is a
+`NumericValueOutOfRange` — a 500 arriving after the trader committed to a quote
+this service answered `200` to. That is the same argument D-038 makes about a
+fifth decimal place, applied to magnitude instead of scale: refusing beats
+quoting a trade nothing can charge.
+
+**Why on the cost and not on the quantity.** An `le=` beside D-038's
+`decimal_places=4` would be the obvious place, and it cannot work. The bound is
+on the *cost*, and cost scales with `b`, which this service reads from the
+market rather than choosing — `market_service` puts no ceiling on it either. No
+constant ceiling on `quantity` is both safe for a small `b` and usable with a
+large one, so the check has to be on the priced figure. It is made *after*
+`quantize_cost`, because the quantized figure is the one that would be stored.
+
+**422 rather than 409.** `InsufficientSharesOutstanding` is 409 on the grounds
+that nothing about the request is malformed and the same request succeeds
+against a book with more shares outstanding. This one succeeds against no book
+at all: it is a property of the quantity asked for, which puts it with D-038's
+refusal and puts the correction where the typing happened.
+
+**Notes.** `core/pricing.py` restates `AMOUNT_PRECISION` and `AMOUNT_SCALE`
+rather than importing them, because `model/entities.py` imports `core.database`
+and a `core` module importing `model` closes a dependency cycle. Same trade
+`market_terms._MIN_OUTCOMES` makes against `market_service`, and the same
+mitigation: `test_the_scale_and_precision_match_the_column` fails if the two
+disagree, so widening the column cannot leave `MAX_MAGNITUDE` describing the
+old one.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
+
+- **A sell whose proceeds fall below one tick is quoted at zero, and nobody has
+  chosen that.** `quantize_cost` floors a sell's magnitude (D-039), so a real
+  trade worth under `0.0001` comes back as `total = 0.0000`: the trader gives
+  up shares and is quoted nothing. Reachable, not theoretical —
+  `core/lmsr.py::cost_to_trade`'s own example, 100 shares against
+  `q = [1560, 100]` at `b = 100`, is worth 0.0000288, and the same 100 shares
+  cost a full tick to *buy*, so a round trip in a saturated outcome is a
+  guaranteed one-tick loss. `cost_to_trade` deliberately left the choice
+  between refusing the trade, charging a minimum tick and quoting zero to
+  "where there is a request to refuse", naming [T-2] #22 before [T-1] #21
+  existed. #21 is such a place and took only the rounding half of it, so #22
+  would inherit the zero by default — which is the one outcome that docstring
+  was written to prevent.
+  `test_a_sub_tick_sell_is_quoted_at_zero` pins today's behaviour so that
+  settling this moves a test rather than a number. Note that the *buy* side
+  needs no decision: `ROUND_CEILING` already charges a tick for a sub-tick
+  buy, which is the house's favour and consistent with D-039.
 
 - **`posting.post()` commits internally — settled for a caller with nothing to
   write afterward, still open for one that does.** [F-7] #96 (D-032) answered

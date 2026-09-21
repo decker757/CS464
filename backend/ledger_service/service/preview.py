@@ -23,7 +23,9 @@ is a single indexed read that writes nothing (D-036).
    holding, which is [T-3] #23's under its own lock (D-012).
 6. `core/lmsr.py::cost_to_trade` prices the trade. `core/pricing.py`
    quantizes the unsigned magnitude by side, and the sign is applied here:
-   negative on a buy, positive on a sell.
+   negative on a buy, positive on a sell. A magnitude above what
+   `Numeric(18, 4)` can store is `QuantityTooLarge` (422) rather than a quote
+   [T-2] #22 could not charge (D-040).
 7. `average_price` is `abs(total) / quantity`, from the *quantized* total,
    `ROUND_HALF_UP` at scale 4 — display, not money.
 8. `prices` and `post_trade_prices` are every outcome, `ROUND_HALF_UP` at
@@ -47,14 +49,17 @@ from sqlalchemy import select
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.errors import InsufficientSharesOutstanding, UnknownOutcome
+from core.errors import (
+    InsufficientSharesOutstanding,
+    QuantityTooLarge,
+    UnknownOutcome,
+)
 from core.lmsr import cost_to_trade, prices as lmsr_prices
-from core.pricing import Side, quantize_cost
+from core.pricing import MAX_MAGNITUDE, QUANTUM, Side, quantize_cost
 from model.entities import MarketBook, MarketOutcome
 from service import books
 
 ZERO = Decimal(0)
-_QUANTUM = Decimal("0.0001")
 
 
 @dataclass(frozen=True)
@@ -124,8 +129,18 @@ async def quote(
     delta[index] = quantity if side is Side.BUY else -quantity
 
     magnitude = quantize_cost(abs(cost_to_trade(q, b, delta)), side=side)
+
+    # D-040. Checked here rather than as an `le=` on the query parameter,
+    # because the bound is on the *cost* and the cost depends on `b`, which
+    # this service reads from the market rather than choosing: no constant
+    # ceiling on `quantity` is both safe for a small `b` and usable with a
+    # large one. Checked after quantizing, because the quantized figure is the
+    # one that would be stored.
+    if magnitude > MAX_MAGNITUDE:
+        raise QuantityTooLarge
+
     total = -magnitude if side is Side.BUY else magnitude
-    average_price = (abs(total) / quantity).quantize(_QUANTUM, rounding=ROUND_HALF_UP)
+    average_price = (abs(total) / quantity).quantize(QUANTUM, rounding=ROUND_HALF_UP)
 
     after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
 
@@ -172,7 +187,7 @@ def _quantized_prices(rows: Sequence[Row], raw: list[Decimal]) -> list[OutcomeQu
         OutcomeQuote(
             outcome_id=row.outcome_id,
             position=row.position,
-            price=price.quantize(_QUANTUM, rounding=ROUND_HALF_UP),
+            price=price.quantize(QUANTUM, rounding=ROUND_HALF_UP),
         )
         for row, price in zip(rows, raw)
     ]

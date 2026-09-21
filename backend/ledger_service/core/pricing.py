@@ -24,10 +24,23 @@ from __future__ import annotations
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import StrEnum
 
-# `Numeric(18, 4)`'s scale, spelled from the column rather than as a literal so
-# widening it moves this with it.
+# `Numeric(18, 4)`'s shape, restated rather than imported from
+# `model/entities.py::AMOUNT_SCALE`. `model` imports `core.database`, so a
+# `core` module importing `model` points the dependency back up a layer and
+# closes a cycle. Same trade `market_terms._MIN_OUTCOMES` makes, and the same
+# mitigation: `test_the_scale_and_precision_match_the_column` fails if the two
+# ever disagree, so the duplication cannot drift silently.
 _SCALE = 4
-_QUANTUM = Decimal(1).scaleb(-_SCALE)
+_PRECISION = 18
+# One tick, public because `service/preview.py` quantizes prices and
+# `average_price` to the same scale and had it written out as a literal.
+QUANTUM = Decimal(1).scaleb(-_SCALE)
+
+# The largest magnitude `Numeric(18, 4)` can hold: 14 integer digits and 4
+# fractional ones, so `99999999999999.9999`. A cost above this is a cost the
+# ledger cannot store, which makes it a cost nothing can charge — see
+# `service/preview.py`, which is the layer with a request to refuse (D-040).
+MAX_MAGNITUDE = Decimal(10) ** (_PRECISION - _SCALE) - QUANTUM
 
 
 class Side(StrEnum):
@@ -58,4 +71,4 @@ def quantize_cost(magnitude: Decimal, *, side: Side) -> Decimal:
         raise ValueError(f"magnitude must not be negative, got {magnitude}")
 
     rounding = ROUND_CEILING if side is Side.BUY else ROUND_FLOOR
-    return magnitude.quantize(_QUANTUM, rounding=rounding)
+    return magnitude.quantize(QUANTUM, rounding=rounding)

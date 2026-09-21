@@ -194,7 +194,13 @@ class PreviewOut(BaseModel):
     outcome_id: uuid.UUID
 
     quantity: Decimal = Field(
-        description="Echoed back exactly as sent, at scale 4.",
+        description=(
+            "Echoed back exactly as it arrived, trailing zeros and all "
+            "(D-038) — `10` comes back as `10`, `10.0000` as `10.0000`. It is "
+            "not normalised to scale 4: this field is how a client matches a "
+            "quote to the keystroke that asked for it, so it has to be the "
+            "string it sent."
+        ),
         examples=["10.0000"],
     )
     total: Decimal = Field(
