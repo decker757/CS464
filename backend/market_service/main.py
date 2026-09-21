@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from controller.errors import register_error_handlers
+from controller.public_routes import router as public_market_router
 from controller.routes import router as market_router
 from core.config import get_settings
 from core.database import create_all, dispose_engine, get_session_factory
@@ -99,6 +100,7 @@ def create_app() -> FastAPI:
 
     register_error_handlers(app)
     app.include_router(market_router)
+    app.include_router(public_market_router)
 
     @app.get("/health", tags=["ops"], summary="Liveness and readiness probe")
     async def health() -> dict[str, str]:

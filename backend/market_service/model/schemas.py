@@ -28,7 +28,7 @@ from pydantic import (
 )
 
 from core.opening_prices import max_platform_loss, uniform_initial_price
-from model.entities import MarketStatus
+from model.entities import DECIDED_STATUSES, TRADER_FACING_STATUS, MarketStatus
 
 # Shape ceilings, not domain rules, so they live here rather than in config:
 # they do not vary between a laptop and production. The floor of two outcomes
@@ -578,3 +578,145 @@ class MarketSummaryOut(_UtcTimestamps):
 
 class MarketListResponse(BaseModel):
     markets: list[MarketSummaryOut]
+
+
+# --- the trader-facing projection. [BE][X] #62 -----------------------------
+# `PublicMarketOut` and `PublicMarketSummaryOut` beside `MarketOut` and
+# `MarketSummaryOut`, not a change to either. D-021: the create form needs
+# `liquidity_b` as a JSON number to compare against `max_platform_loss`, and
+# the ledger that reads this endpoint needs it exact — one schema cannot be
+# both, so this is a second pair rather than a flag on the first.
+#
+# Two things `MarketOut` carries are deliberately absent here. `creator_id`
+# and `draft_key` are neither a trader's business nor harmless (D-019):
+# `creator_id` invites exactly the "whose market is it" argument ADR 0016
+# keeps out of who may decide an outcome, and `draft_key` would let a client
+# address a market by the autosave's own idempotency key. And each outcome's
+# `initial_price` is gone too — it is the q=0 opening price, simply wrong
+# once a market has traded, with nothing on the response to say so.
+
+
+# The derivation used to live here, as a `model_validator`, and it could not
+# be made correct. `model_validate(entity, context={"now": ...})` is the only
+# way to hand a validator a value, and FastAPI re-validates whatever a route
+# returns against its `response_model` — a second pass that carries no
+# context. A `mode="after"` validator then recomputed against
+# `datetime.now(UTC)` and mutated the already-correct instance in place, so
+# the request's clock was discarded on the way to the wire. Wrapping a
+# validated summary in `PublicMarketListResponse` was enough to trigger it,
+# with no framework involved.
+#
+# `service/browsing.py` derives it instead, before either projection is
+# built: `browse` returns a `MarketCard` carrying the derived value as its
+# `status`, and `get_published` stamps `trader_facing_status` onto the entity.
+# These schemas now carry plain fields, which makes re-validation harmless
+# rather than merely survivable. D-025, D-027.
+
+
+class PublicOutcomeOut(BaseModel):
+    """An outcome as a trader sees it. No `initial_price` — see D-019 above."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    position: int
+    label: str
+
+
+class PublicMarketOut(_UtcTimestamps):
+    """The trader-facing detail read. [X-3] #36.
+
+    `liquidity_b` and `seed_subsidy` are left typed as `Decimal`, which
+    Pydantic serialises as a JSON string by default — the opposite of
+    `MarketOut`'s explicit `float`, and the point of D-016: this is the
+    endpoint the ledger reads to snapshot `b` before it can price a market
+    (ADR 0005's publish-time handoff), and a JSON number would put an IEEE
+    double under every price the platform ever quotes.
+
+    No prices. `q` lives with the ledger (ADR 0005), and the authoritative
+    read is the snapshot endpoint in `docs/api/realtime-service.md`, landing
+    with [F-3] #43 and [T-2] #22.
+    """
+
+    id: uuid.UUID
+
+    # Read from the attribute `service/browsing.py::get_published` stamps,
+    # never from the mapped column beside it. An alias rather than a second
+    # field, so there is exactly one status on this schema and no way to ask
+    # for the administrator's one by accident. D-022, D-027.
+    status: MarketStatus = Field(validation_alias=TRADER_FACING_STATUS)
+
+    question: str | None
+    description: str | None
+    outcomes: list[PublicOutcomeOut]
+
+    close_time: datetime | None
+    resolution_time: datetime | None
+
+    resolution_criteria: str | None
+    resolution_sources: list[ResolutionSourceOut]
+
+    liquidity_b: Decimal | None
+    seed_subsidy: Decimal | None
+
+    published_at: datetime | None
+
+    # [X-3] #36: "Settled markets display the winning outcome." APPROVED is as
+    # far as a market gets today; SETTLED arrives with [3.4] #12. The label is
+    # read from `outcomes` above rather than repeated here, which is what
+    # stops the two copies drifting — the same rule `MarketOut` follows for
+    # the administrator's view.
+    #
+    # **Null until a second administrator has agreed**, which is the whole of
+    # `_hide_an_undecided_proposal` below. The criterion says *settled*, and
+    # PENDING_RESOLUTION is not settled: it is one administrator's proposal
+    # with a second yet to rule on it, and ADR 0016 exists precisely because
+    # that ruling can go the other way.
+    proposed_outcome_id: uuid.UUID | None
+
+    @model_validator(mode="after")
+    def _hide_an_undecided_proposal(self) -> PublicMarketOut:
+        """A proposed winner is not a decided one. [3.1] #9, [3.2] #10.
+
+        Ungated, this ships one administrator's opinion to every trader as
+        "the winning outcome". ADR 0016 then lets a second administrator
+        reject it — the seven proposal columns are nulled and the proposer may
+        re-propose a different outcome — so everybody who loaded the page in
+        between saw a result the platform reversed, with no correction, no
+        notification, and before [3.3] #11's dispute window exists to contest
+        it.
+
+        Gated on the status rather than on `approved_at`, so this reads the
+        same way every other status rule in the service does, and so SETTLED
+        joins it by being added to `DECIDED_STATUSES` and nothing else.
+
+        `self.status` is the *derived* status since D-027 — the value
+        `service/browsing.py` stamped, not the stored column — and that is
+        safe rather than merely tolerable: the ADR 0011 derivation only ever
+        turns OPEN into CLOSED, so it can neither produce nor consume a
+        proposal status and the two rules cannot interact. If that ever stops
+        being true, this gate has to read the stored column explicitly, which
+        this projection deliberately does not carry.
+        """
+        if self.status not in DECIDED_STATUSES:
+            self.proposed_outcome_id = None
+        return self
+
+
+class PublicMarketSummaryOut(_UtcTimestamps):
+    """The trader-facing list projection. [X-1] #34. Deliberately narrow.
+
+    Prices are not here either, for the same reason they are not on the
+    detail read: a card renders them from the snapshot endpoint once [F-3]
+    #43 and [T-2] #22 land.
+    """
+
+    id: uuid.UUID
+    status: MarketStatus
+    question: str | None
+    close_time: datetime | None
+
+
+
+class PublicMarketListResponse(BaseModel):
+    markets: list[PublicMarketSummaryOut]

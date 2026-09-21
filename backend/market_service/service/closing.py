@@ -40,12 +40,12 @@ is the sum here.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import ColumnElement, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.clock import as_utc
+from core.closing import trading_is_open
 from model.entities import Market, MarketStatus
 
 def is_open_for_trading(market: Market, *, now: datetime | None = None) -> bool:
@@ -78,18 +78,15 @@ def is_open_for_trading(market: Market, *, now: datetime | None = None) -> bool:
     was due. A trade already holds a transaction and a row lock when it asks
     this question, so it can read `func.now()` from that same transaction and
     get the one clock every replica already agrees to trust.
+
+    The two-condition check itself lives in `core/closing.py`, shared with
+    `model/schemas.py`'s derivation of the status a trader is shown (D-023) —
+    this function is the entity-shaped wrapper around it, and stays the one
+    thing the trade path and [2.3] #7 import.
     """
-    if market.status is not MarketStatus.OPEN:
-        return False
-    if market.close_time is None:
-        # Unreachable through the API — a market cannot be published without a
-        # close time, because `problems_blocking_submission` requires one and
-        # `publish` re-runs it. Treated as closed rather than as open forever,
-        # because a market with no closing time is a market with no resolution
-        # date either, and letting people trade into that is the worse of the
-        # two failures.
-        return False
-    return as_utc(market.close_time) > (now or datetime.now(UTC))
+    return trading_is_open(
+        market.status is MarketStatus.OPEN, market.close_time, now=now
+    )
 
 
 def open_for_trading(now: datetime | None = None) -> ColumnElement[bool]:
@@ -104,6 +101,24 @@ def open_for_trading(now: datetime | None = None) -> ColumnElement[bool]:
     Note that this is deliberately NOT `Market.status == MarketStatus.OPEN`,
     which is what `model/entities.py` still describes as the browse predicate.
     That was true before this ticket and is now half of it.
+
+    **One caller deliberately does not take the transaction's clock**, and the
+    argument for it above is not wrong — it just does not reach that caller.
+    `service/browsing.py` passes a Python `datetime` read once at the
+    controller, because the trader-facing projection derives the displayed
+    status in Python at serialisation time and the two have to agree with
+    each other more than either has to agree with Postgres. Leaving `now` to
+    default to `func.now()` there put `transaction_timestamp()` in the filter
+    and a strictly later instant in the display, so a market whose
+    `close_time` fell between them appeared in the open tab labelled closed.
+    D-025 has the full argument, the alternative that was rejected, and the
+    trigger that reverses it: a path that *decides or writes* off this same
+    projection needs the transaction's clock, and this function is still how
+    it gets one.
+
+    This is also the fifth expression of ADR 0011's rule and the one copy
+    nobody can remove: it returns a `ColumnElement`, so it can never call
+    `core/closing.py`, which returns a `bool`. D-024 names the other four.
     """
     return and_(
         Market.status == MarketStatus.OPEN,
