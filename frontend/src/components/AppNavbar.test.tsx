@@ -34,7 +34,7 @@ function renderNavbar(user: User | null | undefined) {
 function renderInApp() {
   server.use(
     http.get('http://localhost:8000/auth/me', () => HttpResponse.json(trader)),
-    http.post('http://localhost:8000/auth/logout', () => new HttpResponse(null, { status: 204 })),
+    http.post('http://localhost:8000/auth/logout', () => HttpResponse.json({ message: 'Logged out.' })),
   )
   render(
     <AuthProvider>
@@ -114,7 +114,7 @@ describe('AppNavbar — logging out', () => {
   it('disables the control while the request is in flight', async () => {
     let release!: () => void
     const pending = new Promise<Response>((resolve) => {
-      release = () => resolve(new HttpResponse(null, { status: 204 }))
+      release = () => resolve(HttpResponse.json({ message: 'Logged out.' }))
     })
     const actor = userEvent.setup()
     renderInApp()

@@ -1,58 +1,29 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { useState } from 'react'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
-import { AuthContext, type User } from '../context/AuthContext'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext } from '../context/AuthContext'
 import { server } from '../test/server'
 import LoginPage from './LoginPage'
 
 const mockLogin = vi.fn()
-const mockNavigate = vi.fn()
 
-vi.mock('react-router-dom', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('react-router-dom')>()
-  return { ...actual, useNavigate: () => mockNavigate }
-})
+// No `useNavigate` mock, because the page no longer navigates: it calls
+// `login` and GuestOnly decides where that lands. Mocking navigation here
+// could not see that guard at all, which is how the deep-link redirect got
+// broken twice with this file green. `GuestOnly.test.tsx` owns the
+// destination, through the real tree.
 
-/** A provider whose `login` actually signs somebody in.
- *
- * A fixed `user: null` is simpler and makes this file blind to half of what
- * LoginPage does. The page redirects a signed-in visitor away in an effect
- * keyed on `user`, so a context where `user` never changes never runs that
- * effect — and the redirect assertions below would pass whatever the effect
- * navigated to. `mockLogin` is still called, so the payload assertions are
- * unaffected.
- */
-function StatefulAuth({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        login: (u: User) => {
-          mockLogin(u)
-          setUser(u)
-        },
-        logout: vi.fn(),
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  )
-}
+beforeEach(() => mockLogin.mockClear())
 
-function renderLoginPage(fromPath?: string) {
-  const initialEntry = fromPath
-    ? { pathname: '/login', state: { from: { pathname: fromPath } } }
-    : '/login'
+function renderLoginPage() {
   return render(
-    <StatefulAuth>
-      <MemoryRouter initialEntries={[initialEntry]}>
+    <AuthContext.Provider value={{ user: null, login: mockLogin, logout: vi.fn() }}>
+      <MemoryRouter initialEntries={['/login']}>
         <LoginPage />
       </MemoryRouter>
-    </StatefulAuth>,
+    </AuthContext.Provider>,
   )
 }
 
@@ -70,7 +41,7 @@ describe('LoginPage — client-side validation', () => {
 })
 
 describe('LoginPage — integration', () => {
-  it('happy path: sends correct payload, calls login, navigates to /markets', async () => {
+  it('happy path: sends correct payload and signs the user in', async () => {
     const user = userEvent.setup()
     let capturedBody: unknown
     server.use(
@@ -91,31 +62,6 @@ describe('LoginPage — integration', () => {
       expect(mockLogin).toHaveBeenCalledWith(expect.objectContaining({ username: 'alice' })),
     )
     expect(capturedBody).toEqual({ identifier: 'alice', password: 'test-fixture-pw-ok' })
-    expect(mockNavigate).toHaveBeenLastCalledWith('/markets', { replace: true })
-  })
-
-  it('redirects to the page that triggered the login', async () => {
-    const user = userEvent.setup()
-    server.use(
-      http.post('http://localhost:8000/auth/login', () =>
-        HttpResponse.json({
-          user: { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' },
-        }),
-      ),
-    )
-
-    renderLoginPage('/portfolio')
-    await user.type(screen.getByLabelText('Username or Email'), 'alice')
-    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
-    await user.click(screen.getByRole('button', { name: /log in/i }))
-
-    // `LastCalledWith`, deliberately. `handleSubmit` navigates to `from`, and
-    // the signed-in effect navigates again on the `user` change that login
-    // causes — so a plain `toHaveBeenCalledWith` is satisfied by whichever
-    // call loses, and says nothing about where the browser actually ends up.
-    await waitFor(() =>
-      expect(mockNavigate).toHaveBeenLastCalledWith('/portfolio', { replace: true }),
-    )
   })
 
   it('shows "Incorrect username or password." for invalid_credentials', async () => {

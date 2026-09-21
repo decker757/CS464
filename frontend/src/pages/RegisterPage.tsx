@@ -1,6 +1,5 @@
 import axios from 'axios'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import { ApiError, FastApiError } from '../api/errors'
 import { EyeIcon, Spinner, TrendIcon } from '../components/auth/AuthIcons'
@@ -8,12 +7,11 @@ import BrandPanel from '../components/auth/BrandPanel'
 import Field from '../components/auth/Field'
 import { focusHandlers, inputBase } from '../components/auth/inputStyles'
 import { User, useAuth } from '../context/AuthContext'
-import { GOLD, NAV } from '../theme/colors'
+import { CREAM, GOLD, NAV } from '../theme/colors'
 import { RegisterErrors, validateRegister } from '../utils/validate'
 
 export default function RegisterPage() {
   const { login } = useAuth()
-  const navigate = useNavigate()
 
   const [form, setForm] = useState({ username: '', email: '', password: '' })
   const [errors, setErrors] = useState<RegisterErrors>({})
@@ -38,8 +36,8 @@ export default function RegisterPage() {
     setLoading(true)
     try {
       const res = await api.post<{ user: User }>('/auth/register', form)
+      // GuestOnly owns the redirect — see the note in LoginPage.
       login(res.data.user)
-      navigate('/markets', { replace: true })
     } catch (err: unknown) {
       if (!axios.isAxiosError(err)) { setServerError('Something went wrong. Please try again.'); return }
       const data = err.response?.data as (ApiError & FastApiError) | undefined
@@ -71,7 +69,7 @@ export default function RegisterPage() {
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <BrandPanel />
 
-      <div style={{ flex: 1, backgroundColor: '#FAF8F3', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'clamp(24px, 4vw, 48px) clamp(20px, 5vw, 48px)' }}>
+      <div style={{ flex: 1, backgroundColor: CREAM, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'clamp(24px, 4vw, 48px) clamp(20px, 5vw, 48px)' }}>
         <a href="/" className="flex md:hidden" style={{ alignItems: 'center', gap: 8, textDecoration: 'none', marginBottom: 28 }}>
           <TrendIcon size={18} color={GOLD} />
           <span style={{ color: NAV, fontSize: 18, fontWeight: 700 }}>PredictSMU</span>

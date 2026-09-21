@@ -39,9 +39,14 @@ function renderProtectedRoute({
 
 describe('ProtectedRoute', () => {
   it('shows a loading screen while user is loading (undefined)', () => {
-    const { container } = renderProtectedRoute({ user: undefined })
-    expect(container).not.toBeEmptyDOMElement()
+    renderProtectedRoute({ user: undefined })
+
+    // Named, not `container` not-empty. A redirect fills the container too, so
+    // that assertion passed with the loading branch replaced by a <Navigate>
+    // and the whole loading screen gone.
+    expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument()
     expect(screen.queryByText('protected content')).not.toBeInTheDocument()
+    expect(screen.queryByText('login page')).not.toBeInTheDocument()
   })
 
   it('redirects to /login when user is null', () => {

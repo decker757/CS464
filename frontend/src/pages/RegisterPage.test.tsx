@@ -8,12 +8,9 @@ import { server } from '../test/server'
 import RegisterPage from './RegisterPage'
 
 const mockLogin = vi.fn()
-const mockNavigate = vi.fn()
 
-vi.mock('react-router-dom', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('react-router-dom')>()
-  return { ...actual, useNavigate: () => mockNavigate }
-})
+// No `useNavigate` mock — the page no longer navigates. GuestOnly redirects on
+// the `user` change `login` causes; see the note in LoginPage.test.tsx.
 
 function renderRegisterPage() {
   return render(
@@ -72,7 +69,7 @@ describe('RegisterPage — client-side validation', () => {
 })
 
 describe('RegisterPage — integration', () => {
-  it('happy path: sends correct payload, calls login, navigates to /markets', async () => {
+  it('happy path: sends correct payload and signs the user in', async () => {
     const user = userEvent.setup()
     let capturedBody: unknown
     server.use(
@@ -97,7 +94,6 @@ describe('RegisterPage — integration', () => {
       email: 'alice@smu.edu.sg',
       password: 'test-fixture-pw-ok',
     })
-    expect(mockNavigate).toHaveBeenCalledWith('/markets', { replace: true })
   })
 
   it('maps per-field errors when API returns duplicate_user', async () => {
