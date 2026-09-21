@@ -966,3 +966,15 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
+- **How long the terms pull may block, given it runs inside a transaction
+  holding row locks.** `service/market_terms.py::_TIMEOUT` is five seconds on
+  every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
+  is currently inherited in substance even though it is written out in the
+  source, and no test can tell the line's deletion from its presence (D-030,
+  corrected). The argument in D-030 is an argument for a *shorter* read
+  timeout than a browse page would use: this call is made on the trade path
+  with a database session and, once [T-2] #22 lands, row locks held. Against
+  that, a first touch is the one request that does real work upstream, and too
+  short a ceiling turns a slow-but-healthy market service into spurious 503s
+  on a trader's first trade in a market. Deciding it needs a measurement of
+  what a first touch actually costs, which nobody has taken.
