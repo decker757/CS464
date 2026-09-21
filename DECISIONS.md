@@ -1074,20 +1074,180 @@ orphans.
 
 ---
 
+### D-036 — D-012's "no locks" is the warm path; the first touch locks twice
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** D-012 stands for the pricing read and is corrected in scope. The
+preview's read of `q`, `b` and `state_version` takes no locks, as D-012 says.
+The path that *opens* a market's book takes two, once per market ever:
+`books.ensure_open` ends in `posting.post`, and `accounts.lock` holds the
+`PLATFORM` row and that market's pool row `FOR UPDATE` while the funding
+transaction commits.
+
+**Why.** D-012 was written before [F-7] #96 existed, when a preview was only a
+read. D-008 then made the preview a market's first toucher, so the sentence "the
+cost preview is an unlocked read" is now false for exactly one request per
+market and true for every one after it. Both halves of that are in #21's
+acceptance criteria, one bullet apart — "takes no locks (D-012)" and "that path
+writes and takes the handoff's locks" — so the criteria already know this and
+D-012's text is what is out of date.
+
+Nothing about D-012's argument changes. The reason not to lock the pricing read
+is that a preview decides no write and the gap to confirm is a human one; that
+is still true, and the staleness check remains #22's under its own lock. What is
+added is that the *book-opening* write is a write like any other and ADR 0015
+applies to it normally.
+
+**Reversal trigger.** This correction lapses the moment the pricing read decides
+a write. If a later ticket has the preview record a quote, bump a counter, or
+reserve anything, then it is no longer a read that feeds no write, ADR 0015
+applies to it directly, and D-012's original scope — an unlocked read, full stop
+— is no longer available to cite. Re-decide it there rather than inheriting this
+entry.
+
+**Notes.** The contention this creates is with the signup grant, not with other
+previews. Both lock the same `PLATFORM` row — `grants.ensure_granted` for the
+starting credits, `books.ensure_open` for the seed subsidy — so a first-ever
+preview queues behind any registration whose first balance read is in flight,
+and behind every other market's first touch. Bounded and rare: one grant per
+user ever, one subsidy per market ever, and
+`test_two_markets_opening_at_once_do_not_deadlock` already covers the ordering,
+because `accounts.lock` sorts ascending by id on every path.
+
+Two previews of a *warm* market share no lock at all and must not serialise.
+That is asserted directly rather than left to inference — a preview that took
+the book row `FOR UPDATE` "for consistency" would pass every single-caller test
+in the suite while turning every keystroke in a busy market into a queue. The
+test for it fails when a lock is *added*, which is the reverse of every other
+race test here and the only honest way to assert an absence.
+
+---
+
+### D-037 — The preview is a market's first toucher, and the cold path is self-extinguishing
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** [T-1] #21's `GET /ledger/markets/{id}/preview` is the caller D-008
+was written for. On a market with no book, this GET calls `market_service` over
+HTTP, writes a pool account, a `market_books` row and one `market_outcomes` row
+per outcome, and posts the seed subsidy from `PLATFORM` — then prices from what
+it just wrote.
+
+**Why.** D-008 settled that market terms arrive by lazy pull on first touch and
+named no toucher, because neither #21 nor #22 existed yet. #21 lands first, so
+the preview inherits it. Refusing a cold market instead, and waiting for #22 to
+be the first writer, would mean a trader who opens a market before anyone has
+traded in it sees an error where a price belongs — on the one read whose whole
+purpose is to be safe to fire on every keystroke.
+
+**Consequences, recorded because each one is surprising on its own.** A `GET` in
+this service writes, and is not the first: reading a balance mints the signup
+grant under ADR 0009, and this is the same shape one layer up. A `GET` in this
+service calls another service over the network, which is new — the ledger's only
+outbound dependency, and it sits in the read path, not only in the trade path. A
+`GET` in this service mints credits, in the sense that `PLATFORM` goes more
+negative by the seed subsidy. And a preview's latency is bimodal: the first
+request on a market can take up to `market_terms._TIMEOUT`, every later one is a
+single indexed read, and the issue's Notes hand the debounce to the frontend on
+that basis.
+
+**Cost.** The ledger now holds a runtime dependency on `market_service` for a
+market's first touch, and whichever trader arrives first pays up to the terms
+timeout for it. Both were accepted knowingly under D-008, which recorded the
+dependency as the price of avoiding a dual write at publish; this entry is where
+that price is actually charged, and to a trader rather than to an administrator.
+
+**The cold path is self-extinguishing, which is what makes all of that
+affordable.** It runs once per market ever. `ensure_open` reads the book before
+anything else, so the second touch makes no HTTP call at all —
+`test_a_second_touch_makes_no_http_call_at_all` is the assertion that keeps it
+that way — and a market service outage after the first touch cannot stop anybody
+pricing a market that already has a book.
+
+**Notes.** The token forwarded upstream is the caller's own, never one minted
+here. A preview is therefore refused 401 by the *market* service on an expired
+token, mapped through D-030, which is the same answer this service would have
+given from its own verification a moment earlier. The route needs the raw token
+as well as the decoded claims for that reason alone, which is why `AccessToken`
+exists beside `CurrentUser` rather than `CurrentUser` growing a field.
+
+A bad `outcome_id` on a cold market opens and funds the book before it is
+refused, because the criteria check the market id before any write and the
+outcome against the book once it exists. That is deliberate: the market is real
+and published, the book is the same one the next honest request would have
+created, and rolling it back would discard a correct once-per-market write over
+a wrong query string and charge the next caller the timeout again.
+
+---
+
+### D-038 — A quantity takes money's scale of 4 at the API boundary
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `quantity` on the preview route is a decimal string, greater than
+zero, with at most four decimal places. A fifth is `422` rather than rounded,
+and the value is echoed back in the response exactly as it arrived.
+
+**Why.** Refusing is the whole point. Rounding `10.00005` to `10.0001` quotes a
+trade for a quantity the trader did not type, and [T-2] #22 charges for the
+trade it was quoted — so the preview would be perfectly accurate about a trade
+nobody asked for, and the discrepancy would surface as a balance that moved by
+the wrong amount with no error anywhere to explain it. A 422 puts the correction
+where the typing happened.
+
+Scale 4 rather than some other number because that is what `Numeric(18, 4)`
+stores and what every money value in this service already uses. A quantity at a
+finer scale than the cost derived from it cannot be represented in the legs #22
+writes.
+
+**Notes.** This decides the wire only. Whether fractional shares exist
+internally at all — whether `MarketOutcome.q` should carry a scale of its own,
+or shares should be whole numbers — stays in the Open section, where it has been
+since [F-7] #96 borrowed the money scale for a column it only ever wrote zero
+into. Nothing here forecloses that: a later decision to make shares integral
+narrows this rule rather than contradicting it.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
 
-- **`posting.post()` commits internally.** It takes a session but calls
-  `session.commit()` before returning. Whether #22's trade writes can share that
-  commit boundary is unresolved. Either `post()` gains a variant that stops short
-  of commit, or the trade accepts the ledger write as its own boundary and builds
-  compensation around it.
-- **`occurred_at` for a market that has never traded.** The realtime contract
-  defines it only as the time of the event. `state_changed_at` set at handoff is a
-  proposal, not something the contract says.
-- **Whether share quantities share money's scale of 4.** Nothing in the repo takes
-  a position on fractional shares.
+- **`posting.post()` commits internally — settled for a caller with nothing to
+  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
+  this for `books.ensure_open`: order every write through
+  `session.begin_nested()` and call `post()` last, so its own commit lands
+  everything together. That works whenever the call into `post()` is the
+  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
+  `state_version` bump and its position update on `MarketOutcome` would have to
+  precede the call into `post()`, in the same transaction, under D-032's rule,
+  never after it. Whether that ordering is workable for the trade path, or
+  whether #22 needs to check its write against a quote taken *after* the trade
+  executes — in which case `post()` gains a variant that stops short of commit,
+  or the trade accepts the ledger write as its own boundary and builds
+  compensation around it — is still #22's to decide.
+- **Whether share quantities share money's scale of 4.** Settled at the API
+  boundary by D-038 and still open inside the service. The preview refuses a
+  quantity finer than scale 4, so nothing can *arrive* below it; what nobody has
+  decided is whether fractional shares should exist at all — whether
+  `MarketOutcome.q` wants a scale of its own, or shares should be whole numbers
+  and `Numeric(18, 4)` there is a borrowed default [F-7] #96 only ever wrote zero
+  into. [T-2] #22 is the first ticket that writes a non-zero `q` and is where the
+  question becomes load-bearing.
+- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
+  `core/opening_prices.py::max_platform_loss` computes the worst case and
+  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
+  compares them — `_liquidity_problems` checks both are present and positive and
+  says in its own docstring that the comparison is "deliberately NOT checked",
+  on the grounds that an administrator may knowingly seed a market for less.
+  That was a defensible call while the number was only displayed. Once [F-7] #96
+  funds a pool from it, an undersubsidised market is one whose pool goes
+  negative under ordinary trading, and `_refuse_overdrafts` exempts every
+  non-USER account, so nothing anywhere will say so. Whether that stays an
+  informed choice, becomes a submission rule, or becomes a warning the ledger
+  records at book creation is undecided. It is market_service's rule to make
+  either way, not the ledger's.
 - **Service-to-service auth for ledger writes.** Deferred by ADR 0009 to #22.
   Currently avoided by making #62 public, but #22 is a write and will have to
   answer it.
