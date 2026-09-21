@@ -259,7 +259,11 @@ def _expected_total(q: Sequence[Decimal], outcome: int, side: str, quantity: Dec
 
     Magnitude out of the engine, quantized by side, then the sign applied by
     the caller — negative on a buy because credits leave the trader. Doing it
-    in any other order is the bug D-001's magnitude rule exists to prevent.
+    in any other order is the bug `quantize_cost`'s unsigned signature exists
+    to prevent, and `unit_test/core/test_pricing.py` holds the argument for it.
+    That convention is not recorded in DECISIONS.md and probably should be: it
+    is a numeric contract at a boundary, and the reason `ROUND_FLOOR` is
+    correct for a sell is not recoverable from the rounding mode alone.
     """
     magnitude = _pricing().quantize_cost(
         abs(_raw_cost(q, outcome, side, quantity)), side=_pricing().Side(side)
@@ -430,7 +434,7 @@ async def test_it_works_for_buy_and_sell_on_every_outcome(
 async def test_the_q_vector_is_ordered_by_position(session: AsyncSession) -> None:
     """`position`, not insertion order and not the outcome id.
 
-    `market_outcomes` has a composite primary key and no surrogate id (D-032),
+    `market_outcomes` has a composite primary key and no surrogate id (D-034),
     so an unordered `SELECT` hands back rows in whatever order Postgres finds
     them — which is stable enough to pass every other test in this file and
     free to change on a vacuum. With `q` asymmetric, reading the vector
@@ -824,7 +828,7 @@ async def test_the_pricing_read_is_one_statement_joining_the_two_tables(
 
 
 async def test_a_warm_preview_takes_no_locks(session: AsyncSession) -> None:
-    """D-012, as corrected by D-034: the *pricing read* is unlocked.
+    """D-012, as corrected by D-036: the *pricing read* is unlocked.
 
     ADR 0015's rule is about reads that decide a write, and it says reads
     feeding no write stay unlocked. A preview decides nothing — the gap to
@@ -919,7 +923,7 @@ async def test_a_preview_changes_nothing_on_a_warm_market(
 async def test_the_first_preview_on_a_cold_market_opens_the_book(
     session: AsyncSession,
 ) -> None:
-    """The ninth criterion, and D-035: the preview is a market's first toucher.
+    """The ninth criterion, and D-037: the preview is a market's first toucher.
 
     D-008 settled that terms arrive by lazy pull and named no caller, because
     neither #21 nor #22 existed. #21 lands first, so a `GET` in the ledger
@@ -1013,7 +1017,7 @@ async def test_the_cold_path_forwards_the_caller_s_own_token(
 async def test_the_cold_path_takes_the_handoff_s_locks(
     session: AsyncSession,
 ) -> None:
-    """D-034, asserted rather than asserted-away.
+    """D-036, asserted rather than asserted-away.
 
     The criteria say the pricing read takes no locks and, one bullet later,
     that the cold path "writes and takes the handoff's locks". Both are true
@@ -1137,7 +1141,7 @@ async def test_an_unknown_outcome_on_a_cold_market_leaves_the_funded_book_behind
 async def test_an_unreachable_market_service_leaves_nothing_behind(
     session: AsyncSession,
 ) -> None:
-    """D-028's 503, and the state afterwards.
+    """D-030's 503, and the state afterwards.
 
     `test_market_terms.py` owns which exception an unreachable upstream maps
     to. What this owns is that a preview which failed that way wrote nothing —

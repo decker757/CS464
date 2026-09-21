@@ -434,7 +434,7 @@ async def test_a_quantity_with_five_decimal_places_is_422(
     trader_headers: dict[str, str],
     quantity: str,
 ) -> None:
-    """Refused rather than rounded, and that is the whole point (D-036).
+    """Refused rather than rounded, and that is the whole point (D-038).
 
     Money is `Numeric(18, 4)` and a quantity is quoted at the same scale.
     Silently rounding `10.00005` to `10.0001` quotes a trade for a quantity the
@@ -633,7 +633,7 @@ async def test_a_sell_larger_than_the_outcome_s_q_is_409(
 async def test_an_unreachable_market_service_is_503(
     client: AsyncClient, trader_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-028's 503, reaching the wire unchanged through the preview.
+    """D-030's 503, reaching the wire unchanged through the preview.
 
     A 503 says the market service is down and the request is worth retrying in
     a moment, which is the only thing a client can act on. Collapsing it into a
@@ -702,7 +702,7 @@ async def test_an_unpublished_market_is_409(
 async def test_an_upstream_401_is_401(
     client: AsyncClient, trader_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-028: a token the ledger forwarded and market_service refused.
+    """D-030: a token the ledger forwarded and market_service refused.
 
     401 rather than 503, because this is the caller's session problem and is
     fixed by logging in again — not by the ledger claiming its dependency is

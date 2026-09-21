@@ -1,4 +1,4 @@
-"""Two traders typing a quantity at the same instant. [T-1] #21, D-012, D-034
+"""Two traders typing a quantity at the same instant. [T-1] #21, D-012, D-036
 
 Nothing here is simulated. Every party gets its own session, its own connection
 and its own database transaction, because the thing under test is what Postgres
@@ -278,11 +278,11 @@ async def test_a_race_of_warm_previews_writes_nothing(
     ).scalar_one() == 0
 
 
-# --- D-010 and D-035: the first touch, reached through the preview --------
+# --- D-010 and D-037: the first touch, reached through the preview --------
 async def test_concurrent_first_previews_open_exactly_one_book(
     session: AsyncSession,
 ) -> None:
-    """D-010's race, arriving through the caller D-035 says owns it.
+    """D-010's race, arriving through the caller D-037 says owns it.
 
     `test_book_concurrency.py` proves `books.ensure_open` survives six
     simultaneous first touches. This proves the preview inherits that rather
@@ -351,7 +351,7 @@ async def test_the_ledger_still_balances_after_a_race_of_first_previews(
     session: AsyncSession,
 ) -> None:
     """Every entry ever written, summed, after the only path in this ticket
-    that moves money — under the contention D-034 records.
+    that moves money — under the contention D-036 records.
 
     Three markets opened simultaneously by preview, all funded from the one
     `PLATFORM` account, which is the shape where a dropped leg or a
@@ -404,7 +404,7 @@ async def test_the_ledger_still_balances_after_a_race_of_first_previews(
 async def test_two_markets_opening_by_preview_at_once_do_not_deadlock(
     session: AsyncSession,
 ) -> None:
-    """ADR 0015's lock-ordering rule, at the point D-034 says the preview reaches it.
+    """ADR 0015's lock-ordering rule, at the point D-036 says the preview reaches it.
 
     Every market's funding touches the *same* `PLATFORM` row, so two markets
     opening simultaneously contend on one account while each also holds its own

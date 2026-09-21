@@ -25,7 +25,7 @@ function exists to not be `ROUND_HALF_UP`.
 
 Pure. No session, no clock, no configuration — so this file lives in
 `unit_test/core/` and runs under `.venv/bin/pytest unit_test/core unit_test/model`
-with no database, the way D-029 insists that line stays true.
+with no database, the way D-031 insists that line stays true.
 """
 
 from __future__ import annotations
