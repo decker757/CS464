@@ -151,6 +151,42 @@ class MarketNotPublished(LedgerError):
     message = "This market has not been published yet."
 
 
+class InsufficientSharesOutstanding(LedgerError):
+    """A sell larger than this outcome's shares outstanding. [T-1] #21.
+
+    The no-shorting rule, enforced against `q_i` rather than against a
+    per-user holding — this service has no positions table, and the holdings
+    check is [T-3] #23's, meaning anything only under the trade's lock
+    (D-012). What this refuses is a sell that would drive `q_i` negative,
+    which `C(q)` has no answer for: the preview would otherwise quote a
+    number for shares that do not exist anywhere.
+
+    409 rather than 422: nothing about the request is malformed, and the same
+    request succeeds against a book with more shares outstanding. It is the
+    state of the book that refuses it, the same distinction `InsufficientFunds`
+    already draws.
+    """
+
+    status_code = 409
+    code = "insufficient_shares_outstanding"
+    message = "This sell is larger than the shares outstanding for this outcome."
+
+
+class UnknownOutcome(LedgerError):
+    """`outcome_id` does not name one of this market's outcomes. [T-1] #21.
+
+    422 rather than 404: the market was found and it is the *parameter* that
+    is wrong. A 404 already means "no such market" for this service
+    (`MarketNotFound`), and a client could not tell the two apart if both
+    outcome and market questions used it — two different bugs with two
+    different fixes.
+    """
+
+    status_code = 422
+    code = "unknown_outcome"
+    message = "This outcome does not belong to this market."
+
+
 class UnbalancedTransaction(LedgerError):
     """The legs do not sum to zero, so this is not a movement of credits.
 
