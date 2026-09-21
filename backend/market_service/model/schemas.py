@@ -690,11 +690,13 @@ class PublicMarketOut(_UtcTimestamps):
         same way every other status rule in the service does, and so SETTLED
         joins it by being added to `DECIDED_STATUSES` and nothing else.
 
-        Deliberately checked against the *stored* status, which is why this
-        runs before `_derive_status` below: the ADR 0011 derivation only ever
-        turns OPEN into CLOSED and cannot reach either of the proposal
-        statuses, so the two rules are independent — but reading a status
-        another validator is about to rewrite is how they would stop being.
+        `self.status` is the *derived* status since D-027 — the value
+        `service/browsing.py` stamped, not the stored column — and that is
+        safe rather than merely tolerable: the ADR 0011 derivation only ever
+        turns OPEN into CLOSED, so it can neither produce nor consume a
+        proposal status and the two rules cannot interact. If that ever stops
+        being true, this gate has to read the stored column explicitly, which
+        this projection deliberately does not carry.
         """
         if self.status not in DECIDED_STATUSES:
             self.proposed_outcome_id = None

@@ -694,11 +694,33 @@ frontend, which is D-022's argument in reverse: a correctness property that
 only holds in whichever clients remember to recompute it is not a property.
 
 **Notes.** `DECIDED_STATUSES` lives in `model/entities.py` beside the enum, so
-SETTLED becomes public by being added to one tuple. The gating validator runs
-*before* the ADR 0011 derivation and reads the stored status deliberately —
-the derivation only ever turns OPEN into CLOSED and can never produce or
-consume a proposal status, so the two are independent, and reading a value
-another validator is about to rewrite is how they would stop being.
+SETTLED becomes public by being added to one tuple. *Updated 2026-09-21
+(D-027).* This previously said the gate runs before the ADR 0011 derivation
+and reads the stored status. There is no longer a derivation validator to run
+before: D-027 moved it into `service/browsing.py`, so the gate reads the
+derived status off a plain field. The rules still cannot interact, because the
+derivation only ever turns OPEN into CLOSED and can neither produce nor consume
+a proposal status.
+
+**Placement.** The gate is a `model_validator` on `PublicMarketOut` rather
+than a step in `service/browsing.py`, and CLAUDE.md puts business rules in
+`service`. Raised in review as a layering deviation; kept here deliberately,
+on two grounds. It decides what a projection carries rather than what the
+platform does — no state moves, nothing is written, and the same market read
+through `MarketOut` is unaffected. And the rule CLAUDE.md is protecting is
+that business rules are testable without HTTP, which holds:
+`unit_test/model/test_public_schemas.py` asserts it with no route, no
+database and no clock.
+
+**This reverses on a second caller of `get_published`.** The entity that
+function returns still carries the raw `proposed_outcome_id`, and today
+exactly one thing reads it — `controller/public_routes.py`, which projects
+through `PublicMarketOut` and therefore through the gate. A second caller
+that used the entity directly, or projected it through anything else, would
+get the ungated value with nothing going red: [3.3] #11's dispute window and
+[T-2] #22's composite are both plausible ones. At that point the gate belongs
+in the service, computing the public winner into a field the projection
+copies, and the model test becomes a serialisation test.
 
 ---
 

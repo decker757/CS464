@@ -77,7 +77,14 @@ PublicStatusFilter = PublicMarketStatus
         "present, labelled `closed`, and sorted behind whatever is still "
         "trading."
     ),
-    responses={422: {"description": "`status` is not one of the values above."}},
+    responses={
+        422: {
+            "description": (
+                "`status` is not one of the values above, or `q` is longer "
+                "than a question may be or contains a NUL character."
+            )
+        }
+    },
 )
 async def browse_markets(
     user: CurrentUser,
@@ -86,6 +93,21 @@ async def browse_markets(
         default=None,
         alias="q",
         max_length=MAX_QUESTION_LENGTH,
+        # No NUL, and this is the only character that needs saying. Postgres
+        # cannot store or compare one — `text` is UTF-8 and 0x00 is not a
+        # legal byte in it — so asyncpg raises `CharacterNotInRepertoireError`
+        # on the bound parameter, which is a `DBAPIError` rather than one of
+        # `core/errors.py`'s. `register_error_handlers` does not know it, so
+        # `?q=%00` is a 500 on a public route that any logged-in user can
+        # reach. `max_length` does not catch it and neither does `.strip()`,
+        # which removes whitespace and NUL is not whitespace.
+        #
+        # Refused here rather than stripped in `service/browsing.py`, because
+        # a search term this service cannot execute is a bad request and the
+        # route's own `responses={422: ...}` block already says so. Silently
+        # dropping the character would answer a question the trader did not
+        # ask.
+        pattern=r"^[^\x00]*$",
         description=(
             "Case-insensitive containment search over the question. "
             "Surrounding whitespace is ignored, and a blank search is the "

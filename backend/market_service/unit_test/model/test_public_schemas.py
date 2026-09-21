@@ -82,6 +82,7 @@ class _FakePublishedMarket:
         status: MarketStatus = MarketStatus.OPEN,
         closes_in: timedelta = timedelta(days=30),
         liquidity_b: Decimal | None = Decimal("100.0000"),
+        proposed: bool | None = None,
     ) -> None:
         now = datetime.now(UTC).replace(tzinfo=None)
 
@@ -117,7 +118,17 @@ class _FakePublishedMarket:
         # difference between them is the whole of the gating rule below: one
         # administrator has named a winner, and in only one of the two has a
         # second administrator agreed.
-        proposed = status in (MarketStatus.PENDING_RESOLUTION, MarketStatus.APPROVED)
+        # `proposed` defaults to whatever the status implies on a real row,
+        # and can be forced. Left to the default, a test asking whether a
+        # winner is hidden at OPEN or CLOSED asserts that a `None` the fixture
+        # wrote is still `None` — it passes with the gate deleted, because
+        # there was never a value for the gate to hide. Forcing it is what
+        # makes those cases test the rule rather than the fixture.
+        if proposed is None:
+            proposed = status in (
+                MarketStatus.PENDING_RESOLUTION,
+                MarketStatus.APPROVED,
+            )
         approved = status is MarketStatus.APPROVED
 
         self.proposal_id = uuid.uuid4() if proposed else None
@@ -462,5 +473,17 @@ def test_no_status_before_approval_exposes_a_winner(status: MarketStatus) -> Non
     stops a proposal's columns surviving on a row whose status moved back,
     and a rejection sends a market to CLOSED with the columns nulled but
     leaves the shape available to a future bug.
+
+    **`proposed=True` on every case, including the two where a real row would
+    not carry a proposal, and that is the whole value of this test.** Left to
+    the fixture's default, OPEN and CLOSED arrive with `proposed_outcome_id`
+    already `None` and the assertion passes against a validator that has been
+    deleted — two of the three cases proving nothing. Forcing the column
+    populated is what makes them assert that the gate hides it, which is the
+    property in the test's name. The PENDING_RESOLUTION case is the reachable
+    one and `test_a_pending_proposal_is_not_shown_to_a_trader` covers it as
+    the realistic scenario.
     """
-    assert _detail_json(status=status)["proposed_outcome_id"] is None
+    payload = _detail_json(status=status, proposed=True)
+
+    assert payload["proposed_outcome_id"] is None

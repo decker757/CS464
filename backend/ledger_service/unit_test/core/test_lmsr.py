@@ -60,23 +60,35 @@ B = Decimal("100")
 _SEED = 20260920
 
 
-def _rng(stream: int = 0) -> random.Random:
-    """A fresh generator, seeded so that the caller draws the same vectors every
-    run and a different set from its siblings.
+def _rng(stream: str) -> random.Random:
+    """A fresh generator, seeded so the caller draws the same vectors every run
+    and a different set from every other caller.
 
-    `stream` is what keeps the cases of a parametrized test apart. Without it
-    every case builds `Random(_SEED)` and draws the identical markets, so
-    `test_cost_increases_in_every_outcome[0|1|2]` checks three different
-    outcome indices against one set of 50 `q` vectors rather than three — the
-    test still passes, and it is covering a third of what its name claims.
+    `stream` names the draw, and two properties follow. The first took two
+    passes to get right.
 
-    The module-level generator this replaced got that part right by accident:
-    one ordered stream hands each case a disjoint slice. It got reproducibility
-    wrong, which is the more important of the two and the reason it went. This
-    keeps both — pass the parameter as the stream and each case is independent
-    and repeatable on its own under `-k` or `--lf`.
+    **Different callers must draw different markets.** The module-level
+    generator this replaced got that by accident — one ordered stream hands
+    each reader a disjoint slice — and lost reproducibility, which is why it
+    went. Seeding on `_SEED + index` restored reproducibility and kept the
+    accident only *within* one parametrize: every bare call and every
+    `index == 0` case rebuilt the same generator and drew the identical 50
+    markets, so six call sites across four theorems were checking all four
+    against one sample. Every test passed, and between them they covered
+    rather less than six times fifty vectors.
+
+    **`stream` is required.** A default is what let five of those six collide
+    without anybody choosing to, and it is invisible at the call site — the
+    collision could only be found by reading every caller at once. A new test
+    now has to name its stream, and naming it after the test is what makes a
+    collision something you can see.
+
+    A string rather than an int, because `random.Random` seeds from one
+    deterministically (SHA-512 over the encoded value, stable across runs and
+    platforms), and because arithmetic on stream ids is how adjacent integers
+    collided here in the first place.
     """
-    return random.Random(_SEED + stream)
+    return random.Random(f"{_SEED}:{stream}")
 
 
 _TOL = Decimal("1e-9")
@@ -147,7 +159,7 @@ def test_cost_increases_in_every_outcome(index: int) -> None:
     """Monotonicity. Selling a share of any outcome moves the market maker's
     liability up, never down — if it can go down for some `q`, there is a
     sequence of trades that takes money out of the platform for free."""
-    rng = _rng(index)
+    rng = _rng(f"cost_increases_in_every_outcome:{index}")
     for _ in range(50):
         q = _random_q(rng, 3)
         more = list(q)
@@ -165,7 +177,7 @@ def test_a_share_of_every_outcome_costs_exactly_one_credit() -> None:
     arithmetic — the `b·ln` cancels — so the tolerance here is float noise
     only.
     """
-    rng = _rng()
+    rng = _rng("a_share_of_every_outcome_costs_exactly_one_credit")
     for _ in range(50):
         q = _random_q(rng, 3)
         k = Decimal(str(round(rng.uniform(0.1, 25.0), 4)))
@@ -194,7 +206,7 @@ def test_prices_sum_to_one(q: list[Decimal]) -> None:
 
 
 def test_prices_sum_to_one_for_arbitrary_positions() -> None:
-    rng = _rng()
+    rng = _rng("prices_sum_to_one_for_arbitrary_positions")
     for _ in range(200):
         q = _random_q(rng, rng.choice([2, 3, 4]))
 
@@ -219,7 +231,7 @@ def test_price_is_the_marginal_cost_of_the_next_share(index: int) -> None:
     function actually being charged — the failure where a trader is quoted one
     number and charged another."""
     h = Decimal("0.01")
-    rng = _rng(index)
+    rng = _rng(f"price_is_the_marginal_cost_of_the_next_share:{index}")
     for _ in range(20):
         q = _random_q(rng, 3)
         up, down = list(q), list(q)
@@ -390,7 +402,7 @@ def test_average_price_lies_between_the_price_before_and_after() -> None:
     Cost is convex, so the average paid must sit between the marginal price
     before the trade and the marginal price after it. An average outside that
     band means slippage is being applied twice or not at all."""
-    rng = _rng()
+    rng = _rng("average_price_lies_between_the_price_before_and_after")
     for _ in range(50):
         q = _random_q(rng, 3)
         size = Decimal(str(round(rng.uniform(1.0, 60.0), 4)))
@@ -414,7 +426,7 @@ def test_buying_then_selling_the_same_shares_never_yields_a_profit() -> None:
     output to four decimal places could round both legs in the trader's favour
     and still satisfy every one of them.
     """
-    rng = _rng()
+    rng = _rng("buying_then_selling_the_same_shares_never_yields_a_profit")
     for _ in range(100):
         q = _random_q(rng, rng.choice([2, 3]))
         delta = [Decimal(0)] * len(q)

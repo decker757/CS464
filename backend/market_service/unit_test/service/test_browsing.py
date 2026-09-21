@@ -502,6 +502,65 @@ async def test_a_market_past_its_close_time_reads_as_closed_before_the_sweep(
     assert _ids(listed) == [stopped.id]
 
 
+async def test_the_injected_clock_reaches_the_sql_filter_not_only_the_derivation(
+    session: AsyncSession,
+) -> None:
+    """D-025's clock has to reach the WHERE clause, not just the card.
+
+    `browse` filters in SQL through `open_for_trading(now)` and labels in
+    Python through `displayed_status(..., now=now)`. Both are handed the
+    controller's one timestamp, and the point of D-025 is that they read the
+    *same* instant — a market falling between two clocks passes the filter and
+    then serialises as closed, which is an open tab with a market labelled
+    closed in it.
+
+    Nothing asserted that until now. The two clock tests in
+    `test_public_market_routes.py` move the clock backwards and read the
+    unfiltered default view, which has no `_status_matches` call in it at all,
+    so `open_for_trading` could have gone on reading `func.now()` with the
+    whole suite green.
+
+    The clock is pushed *forward* past a market that is open right now. If the
+    filter honours it, the market is closed at that instant and belongs under
+    `closed` and not under `open`; if the filter quietly used
+    `transaction_timestamp()` instead, it is still open and both assertions
+    invert. The third assertion is the one that makes this about D-025 rather
+    than about filtering: the label the card carries has to be reached by the
+    same clock that selected it.
+    """
+    market = await _open_market(session, timedelta(hours=1))
+    later = datetime.now(UTC) + timedelta(hours=2)
+
+    as_open = await _browsing().browse(session, status=MarketStatus.OPEN, now=later)
+    as_closed = await _browsing().browse(session, status=MarketStatus.CLOSED, now=later)
+
+    assert market.id not in _ids(as_open), (
+        "the SQL filter ignored the clock it was handed and asked Postgres "
+        "for its own"
+    )
+    assert _ids(as_closed) == [market.id]
+    assert as_closed[0].status is MarketStatus.CLOSED
+
+
+async def test_the_counts_read_the_clock_they_are_handed(
+    session: AsyncSession,
+) -> None:
+    """The same guarantee for [2.1] #5's counts, which derive separately.
+
+    `count_by_status` takes `now` for the same reason `browse` does, and a
+    dashboard that counted against a different instant than the list it sits
+    above is the "2 open" over one open market that ADR 0011's amendment
+    names.
+    """
+    await _open_market(session, timedelta(hours=1))
+    later = datetime.now(UTC) + timedelta(hours=2)
+
+    counts = await _browsing().count_by_status(session, now=later)
+
+    assert counts[MarketStatus.OPEN] == 0
+    assert counts[MarketStatus.CLOSED] == 1
+
+
 async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_open_ones(
     session: AsyncSession,
 ) -> None:
@@ -535,13 +594,32 @@ async def test_the_detail_of_an_unswept_market_is_not_open_for_trading(
     enabled only when the market is open".
 
     A trader who opens the page of a market that stopped four seconds ago must
-    not be offered a buy button, and `closing.is_open_for_trading` is the
-    predicate that says so. The status column would say yes.
+    not be offered a buy button, and the status this read hands the projection
+    is what decides that.
+
+    **Asserted on the stamped attribute, not by asking `closing` again.**
+    `_closing_says_open(detail)` recomputes the answer from `detail.status`
+    and `detail.close_time`, which are the stored column and the stored
+    timestamp — untouched by this read. So that assertion holds whether or
+    not `get_published` derived anything at all, and the test passes with the
+    stamping deleted. What the projection actually serialises is
+    `TRADER_FACING_STATUS`, so that is what has to be read here.
+
+    `_closing_says_open` is kept as the second assertion because the two
+    together are the real claim: the shared predicate and the value on the
+    wire agree. One without the other is either a rule nobody applied or a
+    value nobody checked.
     """
+    from model.entities import TRADER_FACING_STATUS  # noqa: PLC0415
+
     stopped = await _stopped_but_unswept(session, actor())
 
     detail = await _browsing().get_published(session, stopped.id)
 
+    assert getattr(detail, TRADER_FACING_STATUS) is MarketStatus.CLOSED, (
+        "the detail read must hand the projection the derived status; the "
+        "stored column still reads OPEN here"
+    )
     assert not _closing_says_open(detail)
 
 
