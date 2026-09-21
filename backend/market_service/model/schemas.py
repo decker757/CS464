@@ -22,14 +22,13 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationInfo,
     computed_field,
     field_validator,
     model_validator,
 )
 
 from core.opening_prices import max_platform_loss, uniform_initial_price
-from model.entities import MarketStatus, displayed_status
+from model.entities import DECIDED_STATUSES, TRADER_FACING_STATUS, MarketStatus
 
 # Shape ceilings, not domain rules, so they live here rather than in config:
 # they do not vary between a laptop and production. The floor of two outcomes
@@ -597,22 +596,21 @@ class MarketListResponse(BaseModel):
 # once a market has traded, with nothing on the response to say so.
 
 
-def _now_from(info: ValidationInfo) -> datetime | None:
-    """The request's clock, if the caller passed one. D-025.
-
-    `model_validate(entity, context={"now": ...})` is the only way to hand a
-    `model_validator` a value, and the controller uses it so that the SQL
-    filter and this derivation read one instant rather than two — Postgres's
-    `func.now()` is `transaction_timestamp()`, frozen when the transaction
-    opened, and a bare `datetime.now(UTC)` here runs at serialisation, which
-    is strictly later. A market whose `close_time` fell in that gap passed
-    the `status=open` filter and then serialised as `closed`.
-
-    `None` when nobody passed one, which is every direct `model_validate` in
-    the suite and anything holding no request. `displayed_status` then reads
-    the clock itself, exactly as it did before.
-    """
-    return (info.context or {}).get("now")
+# The derivation used to live here, as a `model_validator`, and it could not
+# be made correct. `model_validate(entity, context={"now": ...})` is the only
+# way to hand a validator a value, and FastAPI re-validates whatever a route
+# returns against its `response_model` — a second pass that carries no
+# context. A `mode="after"` validator then recomputed against
+# `datetime.now(UTC)` and mutated the already-correct instance in place, so
+# the request's clock was discarded on the way to the wire. Wrapping a
+# validated summary in `PublicMarketListResponse` was enough to trigger it,
+# with no framework involved.
+#
+# `service/browsing.py` derives it instead, before either projection is
+# built: `browse` returns a `MarketCard` carrying the derived value as its
+# `status`, and `get_published` stamps `trader_facing_status` onto the entity.
+# These schemas now carry plain fields, which makes re-validation harmless
+# rather than merely survivable. D-025, D-027.
 
 
 class PublicOutcomeOut(BaseModel):
@@ -641,7 +639,12 @@ class PublicMarketOut(_UtcTimestamps):
     """
 
     id: uuid.UUID
-    status: MarketStatus
+
+    # Read from the attribute `service/browsing.py::get_published` stamps,
+    # never from the mapped column beside it. An alias rather than a second
+    # field, so there is exactly one status on this schema and no way to ask
+    # for the administrator's one by accident. D-022, D-027.
+    status: MarketStatus = Field(validation_alias=TRADER_FACING_STATUS)
 
     question: str | None
     description: str | None
@@ -662,14 +665,41 @@ class PublicMarketOut(_UtcTimestamps):
     # far as a market gets today; SETTLED arrives with [3.4] #12. The label is
     # read from `outcomes` above rather than repeated here, which is what
     # stops the two copies drifting — the same rule `MarketOut` follows for
-    # the administrator's view. Null on every market nobody has proposed for.
+    # the administrator's view.
+    #
+    # **Null until a second administrator has agreed**, which is the whole of
+    # `_hide_an_undecided_proposal` below. The criterion says *settled*, and
+    # PENDING_RESOLUTION is not settled: it is one administrator's proposal
+    # with a second yet to rule on it, and ADR 0016 exists precisely because
+    # that ruling can go the other way.
     proposed_outcome_id: uuid.UUID | None
 
     @model_validator(mode="after")
-    def _derive_status(self, info: ValidationInfo) -> PublicMarketOut:
-        self.status = displayed_status(
-            self.status, self.close_time, now=_now_from(info)
-        )
+    def _hide_an_undecided_proposal(self) -> PublicMarketOut:
+        """A proposed winner is not a decided one. [3.1] #9, [3.2] #10.
+
+        Ungated, this ships one administrator's opinion to every trader as
+        "the winning outcome". ADR 0016 then lets a second administrator
+        reject it — the seven proposal columns are nulled and the proposer may
+        re-propose a different outcome — so everybody who loaded the page in
+        between saw a result the platform reversed, with no correction, no
+        notification, and before [3.3] #11's dispute window exists to contest
+        it.
+
+        Gated on the status rather than on `approved_at`, so this reads the
+        same way every other status rule in the service does, and so SETTLED
+        joins it by being added to `DECIDED_STATUSES` and nothing else.
+
+        `self.status` is the *derived* status since D-027 — the value
+        `service/browsing.py` stamped, not the stored column — and that is
+        safe rather than merely tolerable: the ADR 0011 derivation only ever
+        turns OPEN into CLOSED, so it can neither produce nor consume a
+        proposal status and the two rules cannot interact. If that ever stops
+        being true, this gate has to read the stored column explicitly, which
+        this projection deliberately does not carry.
+        """
+        if self.status not in DECIDED_STATUSES:
+            self.proposed_outcome_id = None
         return self
 
 
@@ -686,12 +716,6 @@ class PublicMarketSummaryOut(_UtcTimestamps):
     question: str | None
     close_time: datetime | None
 
-    @model_validator(mode="after")
-    def _derive_status(self, info: ValidationInfo) -> PublicMarketSummaryOut:
-        self.status = displayed_status(
-            self.status, self.close_time, now=_now_from(info)
-        )
-        return self
 
 
 class PublicMarketListResponse(BaseModel):

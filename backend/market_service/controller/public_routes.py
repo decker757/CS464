@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Literal
 
 from fastapi import APIRouter, Query
 
 from controller.dependencies import CurrentUser, DbSession
-from model.entities import MarketStatus
+from model.entities import MarketStatus, PublicMarketStatus
 from model.schemas import (
+    MAX_QUESTION_LENGTH,
     PublicMarketListResponse,
     PublicMarketOut,
     PublicMarketSummaryOut,
@@ -40,13 +40,19 @@ router = APIRouter(prefix="/public/markets", tags=["public markets"])
 # empty. The route's own `responses={422: ...}` block and
 # `docs/api/market-service.md` both promise a 422 there instead.
 #
-# Spelled as a `Literal` of the four public values rather than a second enum,
-# so the generated schema carries exactly the list the contract states, and
-# an unpublished market is refused at the request boundary rather than
-# filtered out behind it. `_visible()` stays as it is: this narrows what may
-# be *asked for*, and that one is what a trader may *see*. They are different
-# rules and the visibility one must not depend on this.
-PublicStatusFilter = Literal["open", "closed", "pending_resolution", "approved"]
+# `PublicMarketStatus` rather than a `Literal` spelled out here, because a
+# hand-written list is a second copy of the visible-status set and
+# `service/browsing.py::_visible` is the first. When SETTLED lands ([3.4]
+# #12), adding it to one and not the other gives either a `422` on a status
+# that is visible or a `200 []` dead tab on one that is not — which is the
+# exact failure this parameter exists to prevent, arriving by a different
+# door. Both now read `model/entities.py`, where the set is defined once
+# beside the enum it narrows.
+#
+# FastAPI renders an enum into the generated OpenAPI schema the same way it
+# renders a `Literal`, so `/docs` still advertises exactly the four accepted
+# values and `draft` is still a `422` rather than a silent empty list.
+PublicStatusFilter = PublicMarketStatus
 
 
 @router.get(
@@ -71,7 +77,14 @@ PublicStatusFilter = Literal["open", "closed", "pending_resolution", "approved"]
         "present, labelled `closed`, and sorted behind whatever is still "
         "trading."
     ),
-    responses={422: {"description": "`status` is not one of the values above."}},
+    responses={
+        422: {
+            "description": (
+                "`status` is not one of the values above, or `q` is longer "
+                "than a question may be or contains a NUL character."
+            )
+        }
+    },
 )
 async def browse_markets(
     user: CurrentUser,
@@ -79,7 +92,27 @@ async def browse_markets(
     q: str | None = Query(
         default=None,
         alias="q",
-        description="Case-insensitive containment search over the question.",
+        max_length=MAX_QUESTION_LENGTH,
+        # No NUL, and this is the only character that needs saying. Postgres
+        # cannot store or compare one — `text` is UTF-8 and 0x00 is not a
+        # legal byte in it — so asyncpg raises `CharacterNotInRepertoireError`
+        # on the bound parameter, which is a `DBAPIError` rather than one of
+        # `core/errors.py`'s. `register_error_handlers` does not know it, so
+        # `?q=%00` is a 500 on a public route that any logged-in user can
+        # reach. `max_length` does not catch it and neither does `.strip()`,
+        # which removes whitespace and NUL is not whitespace.
+        #
+        # Refused here rather than stripped in `service/browsing.py`, because
+        # a search term this service cannot execute is a bad request and the
+        # route's own `responses={422: ...}` block already says so. Silently
+        # dropping the character would answer a question the trader did not
+        # ask.
+        pattern=r"^[^\x00]*$",
+        description=(
+            "Case-insensitive containment search over the question. "
+            "Surrounding whitespace is ignored, and a blank search is the "
+            "same as omitting it."
+        ),
     ),
     status: PublicStatusFilter | None = Query(
         default=None,
@@ -89,18 +122,19 @@ async def browse_markets(
         ),
     ),
 ) -> PublicMarketListResponse:
-    # One clock for the whole request, read here because this is the only
-    # place that sees both the query and the serialisation. D-025.
+    # One clock for the whole request. It is handed to the service layer,
+    # which both filters and derives with it, so the two cannot read
+    # different instants. Nothing is passed to the projection: the derived
+    # status arrives already computed on the `MarketCard`, which is what
+    # makes FastAPI's re-validation against `response_model` harmless.
+    # D-025, D-027.
     now = datetime.now(UTC)
 
     markets = await browsing.browse(
         session, query=q, status=MarketStatus(status) if status else None, now=now
     )
     return PublicMarketListResponse(
-        markets=[
-            PublicMarketSummaryOut.model_validate(m, context={"now": now})
-            for m in markets
-        ]
+        markets=[PublicMarketSummaryOut.model_validate(card) for card in markets]
     )
 
 
@@ -124,5 +158,5 @@ async def get_public_market(
 ) -> PublicMarketOut:
     now = datetime.now(UTC)
 
-    market = await browsing.get_published(session, market_id)
-    return PublicMarketOut.model_validate(market, context={"now": now})
+    market = await browsing.get_published(session, market_id, now=now)
+    return PublicMarketOut.model_validate(market)

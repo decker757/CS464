@@ -25,13 +25,23 @@ from datetime import UTC, datetime
 from core.clock import as_utc
 
 
-def is_open_for_trading(
+def trading_is_open(
     status_is_open: bool,
     close_time: datetime | None,
     *,
     now: datetime | None = None,
 ) -> bool:
     """May a trade execute against a market in this state, right now?
+
+    **Named `trading_is_open`, not `is_open_for_trading`, and the difference
+    is deliberate.** `service/closing.py::is_open_for_trading` takes a
+    `Market`; this takes a `bool` and a `close_time`. While both had the same
+    name, a caller holding an entity could write
+    `is_open_for_trading(market, market.close_time)` against whichever one it
+    had imported — and that type-checks loosely, because `bool(market)` is
+    `True` for any entity. The result is a closed market reported open, with
+    nothing raised anywhere. `model/entities.py` imports this one and is
+    exactly where that mistake would have been made.
 
     Two conditions, both load-bearing: the caller's status has to already be
     the open one, which is the administrator's decision that a market should

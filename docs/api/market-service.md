@@ -871,12 +871,24 @@ column — the opposite of `MarketOut` and `MarketSummaryOut`, which report the
 raw column so an administrator can see whether the sweeper is running.
 
 ```js
-// Do NOT do this against a /public/markets response — it is already derived.
+// Still both halves, on a public response as well as an admin one:
 const tradeable = market.status === "open" && new Date(market.close_time) > new Date();
-
-// Just this:
-const tradeable = market.status === "open";
 ```
+
+**What the derivation removes is sweep lag, not response age.** On an admin
+response the clock check is doing two jobs: covering the seconds between
+`close_time` and the sweep, and covering however long the browser has been
+holding the payload. Deriving server-side retires the first job only. A
+response fetched at 11:59:59 for a market closing at 12:00:00 says `"open"`
+and goes on saying it until something refetches, so a page left open keeps
+its trading controls past the close. [X-3] #36 asks that those be enabled
+only while the market is open, and a countdown hitting zero is the event that
+disables them.
+
+So the derivation buys one thing on this endpoint: `status === "open"` is now
+false the instant the market stops, rather than a few seconds later, and you
+never have to reason about the sweeper. It does not make the payload refresh
+itself.
 
 The derivation only ever makes a market *less* tradeable. An early close
 ([2.3] #7) leaves `close_time` in the future on purpose and is never reopened
@@ -962,12 +974,25 @@ rule is protecting.
 ```
 
 `proposed_outcome_id` is [X-3] #36's "settled markets display the winning
-outcome". Null on every market nobody has proposed for; once set, it names a
-member of this same response's `outcomes` array — look the label up there,
-the same rule `MarketOut` follows for the administrator's view, so the two
-copies cannot drift. It is set as soon as a proposal exists (`status:
-"pending_resolution"`) and stays set once approved, because a proposal can
-still be rejected and replaced — do not treat its presence alone as "settled".
+outcome". When it is set it names a member of this same response's `outcomes`
+array — look the label up there, the same rule `MarketOut` follows for the
+administrator's view, so the two copies cannot drift.
+
+**It is null until a second administrator has approved the proposal** (D-026),
+and that is the opposite of `MarketOut`, which reports the column whatever the
+status. A market at `pending_resolution` carries one administrator's proposal
+with a second yet to rule on it, and ADR 0016 exists because that ruling can
+go the other way: the reviewer rejects, all seven proposal columns are nulled,
+and the proposer may re-propose a different outcome. Shipping it earlier would
+show every trader a "winning outcome" the platform then reversed, with no
+correction and before [3.3] #11's dispute window exists to contest it.
+
+So `proposed_outcome_id !== null` on this endpoint means decided, and you may
+render it as the result without checking the status first. To show that a
+market is *awaiting* a decision, read `status === "pending_resolution"` — the
+identity of the proposed outcome is not available to a trader until it is
+approved. An administrator who needs the pending value reads `GET
+/markets/{id}` above, or the audit log.
 
 #### When it is refused
 

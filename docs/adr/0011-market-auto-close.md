@@ -162,15 +162,33 @@ already agrees with it.
 > `service/closing.py::is_open_for_trading` and `open_for_trading()` are
 > unchanged as the entity and SQL-clause wrappers every other caller imports.
 >
-> **This reverses on the day an administrator reads the public projection**,
-> because at that point one payload is serving both audiences again and the
-> answer has to be a field rather than a substitution — a derived `status`
-> beside the column, or a `tradeable` boolean, named so that neither reader
-> has to guess which they are holding. The trigger is a shared reader, not a
-> new endpoint: another trader-facing route that derives is this rule, not an
-> exception to it. Nothing planned adds one. `docs/api/market-service.md`
-> carries the same statement, so the next reader finds it from either
-> direction.
+> **This reverses on the day an administrator needs the raw column *from
+> this projection*.** At that point one payload is serving both audiences and
+> the answer has to be a field rather than a substitution — a derived
+> `status` beside the column, or a `tradeable` boolean, named so that neither
+> reader has to guess which they are holding.
+>
+> *Reworded 2026-09-21, after Ernest's second review of #62.* This previously
+> said the trigger was "the day an administrator reads the public
+> projection", and that was carelessly written rather than wrong in spirit —
+> #62 ships `/public/markets` gated on `CurrentUser` with no role check
+> (D-018) and asserts that an administrator gets a 200, so the trigger as
+> worded fires at merge and the record would contradict the code it
+> describes.
+>
+> An administrator *reading* this projection is fine, and is the expected
+> case: they are reading it as a trader, seeing what a trader sees. Nothing
+> is lost, because `MarketOut` still reports the stored column and that is
+> where an administrator looks for sweep health — the split is by payload,
+> not by who holds the token. What would break the split is an administrator
+> needing the *column* out of *this* payload, because then one response has
+> to carry both answers and a substitution cannot.
+>
+> The trigger is therefore a requirement, not a reader, and not a new
+> endpoint: another trader-facing route that derives is this rule, not an
+> exception to it. Nothing planned adds one.
+> `docs/api/market-service.md` carries the same statement, so the next reader
+> finds it from either direction.
 
 **`closed_at` and `close_time` are different columns and mean different
 things.** `close_time` is when trading stopped. `closed_at` is when the sweep

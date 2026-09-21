@@ -128,7 +128,7 @@ describe('AuthContext', () => {
       // at the moment it was sent. That is stale news, not a logout.
       await finish(
         HttpResponse.json(
-          { error: { code: 'invalid_token', message: 'Token expired' } },
+          { error: { code: 'invalid_token', message: 'Not authenticated.' } },
           { status: 401 },
         ),
       )

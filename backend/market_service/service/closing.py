@@ -45,7 +45,7 @@ from datetime import datetime
 from sqlalchemy import ColumnElement, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.closing import is_open_for_trading as _is_open_for_trading
+from core.closing import trading_is_open
 from model.entities import Market, MarketStatus
 
 def is_open_for_trading(market: Market, *, now: datetime | None = None) -> bool:
@@ -84,7 +84,7 @@ def is_open_for_trading(market: Market, *, now: datetime | None = None) -> bool:
     this function is the entity-shaped wrapper around it, and stays the one
     thing the trade path and [2.3] #7 import.
     """
-    return _is_open_for_trading(
+    return trading_is_open(
         market.status is MarketStatus.OPEN, market.close_time, now=now
     )
 

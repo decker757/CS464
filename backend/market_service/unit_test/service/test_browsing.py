@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MarketNotFound
 from model.entities import Market, MarketStatus
+from core.database import get_session_factory
 from service import market_service
 from service.audit import Actor
 from unit_test.conftest import (
@@ -137,8 +138,10 @@ async def _approved_market(session: AsyncSession, creator: Actor) -> Market:
     )
 
 
-def _ids(markets: list[Market]) -> list[uuid.UUID]:
-    return [market.id for market in markets]
+def _ids(cards: list[object]) -> list[uuid.UUID]:
+    """`browse` returns `MarketCard`s now, not entities (D-027). `.id` is a
+    plain field on both, so this reads the same either way."""
+    return [card.id for card in cards]
 
 
 # --- [X-1] #34: browse ----------------------------------------------------
@@ -172,17 +175,23 @@ async def test_open_closed_and_pending_markets_are_distinguishable(
     trader can reach carries the status that tells them which it is, and the
     four are distinct values rather than one tradeable flag.
     """
-    open_market = await _open_market(session)
-    closed = await closed_market(session, actor())
-    pending = await proposed_market(session, actor())
-    approved = await _approved_market(session, actor())
+    # Ids are read as each market is created, not afterwards. `closed_market`
+    # and the two resolution fixtures expire the session on their way out, and
+    # `browse` no longer refreshes the identity map — it selects columns and
+    # builds `MarketCard`s, so nothing it returns un-expires an instance made
+    # earlier. Reading `open_market.id` after the fact is then lazy IO from a
+    # sync attribute access, which raises MissingGreenlet.
+    open_id = (await _open_market(session)).id
+    closed_id = (await closed_market(session, actor())).id
+    pending_id = (await proposed_market(session, actor())).id
+    approved_id = (await _approved_market(session, actor())).id
 
-    listed = {market.id: market for market in await _browsing().browse(session)}
+    listed = {card.id: card for card in await _browsing().browse(session)}
 
-    assert listed[open_market.id].status is MarketStatus.OPEN
-    assert listed[closed.id].status is MarketStatus.CLOSED
-    assert listed[pending.id].status is MarketStatus.PENDING_RESOLUTION
-    assert listed[approved.id].status is MarketStatus.APPROVED
+    assert listed[open_id].status is MarketStatus.OPEN
+    assert listed[closed_id].status is MarketStatus.CLOSED
+    assert listed[pending_id].status is MarketStatus.PENDING_RESOLUTION
+    assert listed[approved_id].status is MarketStatus.APPROVED
 
 
 async def test_a_view_that_matches_nothing_is_an_empty_list_not_an_error(
@@ -242,14 +251,17 @@ async def test_the_question_search_ignores_case(session: AsyncSession) -> None:
 
 async def test_markets_can_be_filtered_by_status(session: AsyncSession) -> None:
     """[X-2] #35: "Users can filter markets by status"."""
-    open_market = await _open_market(session)
-    closed = await closed_market(session, actor())
+    # Ids held as they are created; `closed_market` expires the session and
+    # `browse` no longer refreshes it. See the note in
+    # `test_open_closed_and_pending_markets_are_distinguishable`.
+    open_id = (await _open_market(session)).id
+    closed_id = (await closed_market(session, actor())).id
 
     assert _ids(await _browsing().browse(session, status=MarketStatus.CLOSED)) == [
-        closed.id
+        closed_id
     ]
     assert _ids(await _browsing().browse(session, status=MarketStatus.OPEN)) == [
-        open_market.id
+        open_id
     ]
 
 
@@ -263,7 +275,9 @@ async def test_search_and_a_status_filter_can_be_used_together(
     filter returns two rows rather than one and this fails.
     """
     question = "Will Singapore core inflation be below 2% in December 2026?"
-    wanted = await closed_market(session, actor(), question=question)
+    # Held as it is created: the second `closed_market` below expires the
+    # session, and `browse` no longer refreshes it.
+    wanted_id = (await closed_market(session, actor(), question=question)).id
     await _open_market(session, question=question)
     await closed_market(
         session, actor(), question="Will the MRT Cross Island Line open in 2027?"
@@ -273,7 +287,7 @@ async def test_search_and_a_status_filter_can_be_used_together(
         session, status=MarketStatus.CLOSED, query="inflation"
     )
 
-    assert _ids(listed) == [wanted.id]
+    assert _ids(listed) == [wanted_id]
 
 
 async def test_the_question_search_treats_like_wildcards_as_text(
@@ -488,6 +502,65 @@ async def test_a_market_past_its_close_time_reads_as_closed_before_the_sweep(
     assert _ids(listed) == [stopped.id]
 
 
+async def test_the_injected_clock_reaches_the_sql_filter_not_only_the_derivation(
+    session: AsyncSession,
+) -> None:
+    """D-025's clock has to reach the WHERE clause, not just the card.
+
+    `browse` filters in SQL through `open_for_trading(now)` and labels in
+    Python through `displayed_status(..., now=now)`. Both are handed the
+    controller's one timestamp, and the point of D-025 is that they read the
+    *same* instant — a market falling between two clocks passes the filter and
+    then serialises as closed, which is an open tab with a market labelled
+    closed in it.
+
+    Nothing asserted that until now. The two clock tests in
+    `test_public_market_routes.py` move the clock backwards and read the
+    unfiltered default view, which has no `_status_matches` call in it at all,
+    so `open_for_trading` could have gone on reading `func.now()` with the
+    whole suite green.
+
+    The clock is pushed *forward* past a market that is open right now. If the
+    filter honours it, the market is closed at that instant and belongs under
+    `closed` and not under `open`; if the filter quietly used
+    `transaction_timestamp()` instead, it is still open and both assertions
+    invert. The third assertion is the one that makes this about D-025 rather
+    than about filtering: the label the card carries has to be reached by the
+    same clock that selected it.
+    """
+    market = await _open_market(session, timedelta(hours=1))
+    later = datetime.now(UTC) + timedelta(hours=2)
+
+    as_open = await _browsing().browse(session, status=MarketStatus.OPEN, now=later)
+    as_closed = await _browsing().browse(session, status=MarketStatus.CLOSED, now=later)
+
+    assert market.id not in _ids(as_open), (
+        "the SQL filter ignored the clock it was handed and asked Postgres "
+        "for its own"
+    )
+    assert _ids(as_closed) == [market.id]
+    assert as_closed[0].status is MarketStatus.CLOSED
+
+
+async def test_the_counts_read_the_clock_they_are_handed(
+    session: AsyncSession,
+) -> None:
+    """The same guarantee for [2.1] #5's counts, which derive separately.
+
+    `count_by_status` takes `now` for the same reason `browse` does, and a
+    dashboard that counted against a different instant than the list it sits
+    above is the "2 open" over one open market that ADR 0011's amendment
+    names.
+    """
+    await _open_market(session, timedelta(hours=1))
+    later = datetime.now(UTC) + timedelta(hours=2)
+
+    counts = await _browsing().count_by_status(session, now=later)
+
+    assert counts[MarketStatus.OPEN] == 0
+    assert counts[MarketStatus.CLOSED] == 1
+
+
 async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_open_ones(
     session: AsyncSession,
 ) -> None:
@@ -521,13 +594,32 @@ async def test_the_detail_of_an_unswept_market_is_not_open_for_trading(
     enabled only when the market is open".
 
     A trader who opens the page of a market that stopped four seconds ago must
-    not be offered a buy button, and `closing.is_open_for_trading` is the
-    predicate that says so. The status column would say yes.
+    not be offered a buy button, and the status this read hands the projection
+    is what decides that.
+
+    **Asserted on the stamped attribute, not by asking `closing` again.**
+    `_closing_says_open(detail)` recomputes the answer from `detail.status`
+    and `detail.close_time`, which are the stored column and the stored
+    timestamp — untouched by this read. So that assertion holds whether or
+    not `get_published` derived anything at all, and the test passes with the
+    stamping deleted. What the projection actually serialises is
+    `TRADER_FACING_STATUS`, so that is what has to be read here.
+
+    `_closing_says_open` is kept as the second assertion because the two
+    together are the real claim: the shared predicate and the value on the
+    wire agree. One without the other is either a rule nobody applied or a
+    value nobody checked.
     """
+    from model.entities import TRADER_FACING_STATUS  # noqa: PLC0415
+
     stopped = await _stopped_but_unswept(session, actor())
 
     detail = await _browsing().get_published(session, stopped.id)
 
+    assert getattr(detail, TRADER_FACING_STATUS) is MarketStatus.CLOSED, (
+        "the detail read must hand the projection the derived status; the "
+        "stored column still reads OPEN here"
+    )
     assert not _closing_says_open(detail)
 
 
@@ -591,3 +683,112 @@ async def test_the_counts_exclude_what_a_trader_cannot_see(
     assert counts.get(MarketStatus.DRAFT, 0) == 0
     assert counts.get(MarketStatus.SUBMITTED, 0) == 0
     assert counts[MarketStatus.OPEN] == 1
+
+
+# --- the list query must not poison the session -------------------------
+async def test_browsing_does_not_empty_the_outcomes_of_a_later_detail_read(
+    clean_database,
+) -> None:
+    """`browse` and `get_published` in one session, in that order.
+
+    The list projection reads four scalar columns and none of the children,
+    so the list query is built not to fetch them. The trap is that `noload`
+    does not *skip* a collection — it marks it loaded and empty. The instance
+    then sits in the session's identity map claiming to have no outcomes, and
+    a later read of the same market in the same session is handed that
+    instance back without the `selectin` loader ever running again.
+
+    The detail projection would serialise `"outcomes": []` and
+    `"resolution_sources": []` for a market that has both, with no error
+    anywhere.
+
+    **A fresh session is the whole test.** Every other test in this file
+    creates its market through the `session` fixture, so the instance is
+    already in the identity map fully loaded and the list query never applies
+    to it — which is why this has been passing all along. Here the market is
+    committed first and read from a session that has never seen it.
+
+    One session per request saves production today. A dashboard handler
+    calling `count_by_status` and `browse` together, or any future composite
+    read, is one function call away from this.
+    """
+    factory = get_session_factory()
+
+    async with factory() as setup:
+        created = await _open_market(setup)
+        market_id = created.id
+        expected_outcomes = len(created.outcomes)
+        expected_sources = len(created.resolution_sources)
+
+    assert expected_outcomes > 0, "the fixture must give this market outcomes"
+
+    async with factory() as fresh:
+        # Held, deliberately. SQLAlchemy's identity map keeps *weak*
+        # references, so dropping this list lets the poisoned instance be
+        # garbage-collected and the detail read below quietly loads a clean
+        # one — a green test asserting nothing. A real handler holds its list
+        # while it builds the response, which is the case being reproduced.
+        listed = await _browsing().browse(fresh)
+        assert listed, "the browse must return the market for this to mean anything"
+
+        detail = await _browsing().get_published(fresh, market_id)
+
+        assert len(detail.outcomes) == expected_outcomes
+        assert len(detail.resolution_sources) == expected_sources
+
+
+# --- where the derivation happens now -------------------------------------
+async def test_the_detail_read_stamps_the_derived_status_without_dirtying_the_row(
+    session: AsyncSession,
+) -> None:
+    """D-027. The derivation moved into `service/`, and it must not become a write.
+
+    Two assertions, and the second is the one that matters.
+
+    `get_published` stamps the trader-facing status onto the entity so the
+    projection can read a plain attribute — the schema no longer derives
+    anything, because a `model_validator` could not be handed the request's
+    clock through FastAPI's re-validation against `response_model`.
+
+    It stamps an attribute SQLAlchemy does not map. Assigning the derived
+    value to `Market.status` would be the obvious simplification and would
+    mark the instance dirty, so any later `commit()` on this session writes
+    the derived CLOSED into the status column — making this read a writer of
+    the one column ADR 0011 reserves for the sweep. `session.dirty` is the
+    only place that shows up before it has already happened.
+    """
+    from model.entities import TRADER_FACING_STATUS  # noqa: PLC0415
+
+    stopped = await _stopped_but_unswept(session, actor())
+    market_id = stopped.id
+    session.expire_all()
+
+    market = await _browsing().get_published(session, market_id)
+
+    assert getattr(market, TRADER_FACING_STATUS) is MarketStatus.CLOSED
+    assert market.status is MarketStatus.OPEN, (
+        "the stored column must be left alone; it is the administrator's "
+        "signal that the sweep has not run"
+    )
+    assert market not in session.dirty, (
+        "stamping the derived status must not mark the row dirty — a later "
+        "commit would write it to the column"
+    )
+
+
+async def test_the_browse_card_carries_the_derived_status_not_the_column(
+    session: AsyncSession,
+) -> None:
+    """The list half of the same move.
+
+    `MarketCard.status` is the derived value and there is no raw one beside
+    it, so nothing rendering a card can read the column by mistake. The
+    market here is OPEN in the database and stopped by the clock.
+    """
+    stopped = await _stopped_but_unswept(session, actor())
+    stopped_id = stopped.id
+
+    listed = {card.id: card for card in await _browsing().browse(session)}
+
+    assert listed[stopped_id].status is MarketStatus.CLOSED
+    assert not hasattr(listed[stopped_id], "raw_status")

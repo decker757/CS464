@@ -59,6 +59,22 @@ async def _published(session: AsyncSession, **overrides: object):
     )
 
 
+async def _stopped_an_hour_ago(session: AsyncSession):
+    """A published market whose close time has passed, sweep not yet run.
+
+    Built the long way round because `publish` re-runs every submission rule
+    against the clock at publish time (ADR 0008), so a market cannot be
+    published already closed. The column is moved afterwards, exactly as
+    `test_browsing.py::_stopped_but_unswept` does it.
+    """
+    market = await _published(session)
+    market_id = market.id
+    market.close_time = datetime.now(UTC) - timedelta(hours=1)
+    await session.commit()
+    session.expire_all()
+    return await market_service.get_any(session, market_id)
+
+
 # --- who may call these ---------------------------------------------------
 async def test_a_trader_may_browse(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
@@ -267,6 +283,59 @@ async def test_a_malformed_id_is_422_not_500(
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize("q", ["\x00", "inflation\x00", "\x00inflation"])
+async def test_a_nul_in_the_search_term_is_422_not_500(
+    client: AsyncClient, trader_headers: dict[str, str], q: str
+) -> None:
+    """Postgres cannot compare a NUL, so the driver raises before any row is read.
+
+    `text` is UTF-8 and 0x00 is not a legal byte in it, so asyncpg answers a
+    bound parameter containing one with `CharacterNotInRepertoireError`. That
+    is a `DBAPIError`, not one of `core/errors.py`'s, so
+    `register_error_handlers` has nothing for it and the request ends as a
+    500 — on a public route any logged-in user can reach, from a query string
+    they can type.
+
+    Neither existing guard catches it. `max_length` is about length, and the
+    `.strip()` in `service/browsing.py` removes whitespace, which NUL is not.
+    So it survives both and reaches the driver, which is why the parameter
+    carries a `pattern` as well.
+
+    Asserted at all three positions because a guard written as a prefix or
+    suffix check would pass one of them and fail the others.
+    """
+    response = await client.get(_LIST, params={"q": q}, headers=trader_headers)
+
+    assert response.status_code == 422, (
+        f"q={q!r} came back {response.status_code}; a NUL reaching asyncpg is "
+        "an unhandled DBAPIError and a 500"
+    )
+
+
+async def test_an_ordinary_search_term_is_not_caught_by_the_nul_guard(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """The other half, and the one that fails if the pattern is over-tightened.
+
+    A guard spelled `^[a-zA-Z0-9 ]*$` would also stop the 500 and would
+    additionally refuse every question mark, per cent sign and accented
+    character a trader might reasonably search for — silently, as a 422 on a
+    search that should have returned rows. The rule is "not a NUL", not "only
+    the characters I thought of".
+    """
+    wanted = await _published(
+        session, question="Will Singapore core inflation be below 2% in December 2026?"
+    )
+
+    payload = (
+        await client.get(
+            _LIST, params={"q": "inflation be below 2%"}, headers=trader_headers
+        )
+    ).json()
+
+    assert [m["id"] for m in payload["markets"]] == [str(wanted.id)]
+
+
 async def test_an_unknown_status_filter_is_422_not_500(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
@@ -388,3 +457,74 @@ async def test_the_response_does_not_carry_internal_fields(
     payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
 
     assert field not in payload
+
+
+# --- the derived status has to survive the response model -----------------
+async def test_the_derived_status_reaches_the_wire_not_just_the_route(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-025 said one clock per request. This asserts it reaches the client.
+
+    The clock is moved back two hours, so a market that closed one hour ago
+    was still trading at the instant this request claims to be reading. The
+    route therefore builds `open`, and `open` is what the client must be
+    handed.
+
+    What went wrong is not the threading — that part was right. FastAPI
+    re-validates the returned object against `response_model`, and that second
+    pass carries no `context`. `_now_from` returns `None`, and because
+    `_derive_status` is `mode="after"` it mutates the already-correct instance
+    in place, recomputing against the real `datetime.now(UTC)` at
+    serialisation time. The value the route computed is overwritten on its way
+    out.
+
+    So the assertion has to be on `response.json()`. Reading the object the
+    route returned would pass against the bug, which is exactly how it
+    survived a round of review and three docstrings saying it was fixed.
+    """
+    import controller.public_routes as routes  # noqa: PLC0415
+
+    market = await _stopped_an_hour_ago(session)
+
+    class _TwoHoursAgo:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return datetime.now(UTC) - timedelta(hours=2)
+
+    monkeypatch.setattr(routes, "datetime", _TwoHoursAgo)
+
+    payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
+
+    assert payload["status"] == MarketStatus.OPEN.value
+
+
+async def test_the_browse_list_derived_status_reaches_the_wire_too(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The list half of the same bug, and it is worse here.
+
+    `PublicMarketListResponse` wraps the already-validated summaries, and
+    wrapping alone re-runs the validator — no route and no framework needed.
+    So the list payload is recomputed twice: once when the response model is
+    built and again when FastAPI re-validates it.
+    """
+    import controller.public_routes as routes  # noqa: PLC0415
+
+    await _stopped_an_hour_ago(session)
+
+    class _TwoHoursAgo:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return datetime.now(UTC) - timedelta(hours=2)
+
+    monkeypatch.setattr(routes, "datetime", _TwoHoursAgo)
+
+    payload = (await client.get(_LIST, headers=trader_headers)).json()
+
+    assert [m["status"] for m in payload["markets"]] == [MarketStatus.OPEN.value]

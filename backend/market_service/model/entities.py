@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -23,7 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from core.closing import is_open_for_trading
+from core.closing import trading_is_open
 from core.database import Base
 
 
@@ -114,6 +115,89 @@ class MarketStatus(StrEnum):
     APPROVED = "approved"
 
 
+# The statuses a trader may see, and the one definition of that set. [1.1] #1.
+#
+# Read by `service/browsing.py::_visible` for the SQL filter and by
+# `controller/public_routes.py` for the `status` query parameter's accepted
+# values. Those were two literal lists until Ernest pointed out what happens
+# when SETTLED lands ([3.4] #12): added to one and not the other, it is either
+# a `422` on a status that is visible, or a `200 []` dead tab on one that is
+# not — the exact failure the query parameter's own comment says it exists to
+# prevent.
+#
+# A `StrEnum` rather than a tuple, because FastAPI renders an enum straight
+# into the OpenAPI schema, so `/docs` and the filter cannot disagree either.
+# DRAFT and SUBMITTED are absent and must stay absent: publication is what
+# puts a market in front of a trader ([1.3] #3).
+class PublicMarketStatus(StrEnum):
+    OPEN = MarketStatus.OPEN.value
+    CLOSED = MarketStatus.CLOSED.value
+    PENDING_RESOLUTION = MarketStatus.PENDING_RESOLUTION.value
+    APPROVED = MarketStatus.APPROVED.value
+
+
+PUBLIC_STATUSES: tuple[MarketStatus, ...] = tuple(
+    MarketStatus(member.value) for member in PublicMarketStatus
+)
+
+# The statuses in which a proposed winner has actually been decided. [3.2] #10.
+#
+# APPROVED only, today. SETTLED joins it with [3.4] #12. PENDING_RESOLUTION is
+# deliberately absent: a proposal is one administrator's opinion until a second
+# agrees, and ADR 0016 exists because that second opinion can reject it.
+DECIDED_STATUSES: tuple[MarketStatus, ...] = (MarketStatus.APPROVED,)
+
+
+# The name `get_published` stamps its derived status onto, and deliberately
+# not `status`.
+#
+# `status` is a mapped column. Assigning to it marks the instance dirty in
+# the session — probed, and it does: `len(session.dirty)` goes from 0 to 1 —
+# so any later `commit()` on that session would write the *derived* CLOSED
+# into the status column. That would make this derivation a writer, and ADR
+# 0011 gives that job to the sweep alone: the whole point of deriving is that
+# the column is a materialisation of the clock, never the other way round.
+#
+# Nothing commits on the public read path today and the session is built with
+# `autoflush=False`, so the bug is latent rather than live. It stops being
+# latent the first time a handler browses and then writes anything at all.
+# Stamping an attribute SQLAlchemy does not map is inert by construction.
+#
+# Do not "simplify" this to `market.status = ...`. D-027.
+TRADER_FACING_STATUS = "trader_facing_status"
+
+
+@dataclass(frozen=True)
+class MarketCard:
+    """One row of the trader-facing browse list. [X-1] #34, D-027.
+
+    What `service/browsing.py::browse` returns, instead of `Market` entities.
+    Three things follow from that and all three are the point:
+
+    - It comes from a column select, so the `lazy="selectin"` loaders for
+      `outcomes` and `resolution_sources` never run for a list that renders
+      neither.
+    - Nothing enters the session's identity map, so a browse cannot change
+      what a later read in the same session sees. `noload()` could, and did.
+    - It is not a persistent instance, so `status` below cannot be written
+      back to the database by any later commit.
+
+    **`status` is the derived value and there is no raw one here.** The browse
+    projection has no legitimate use for the stored column — that is the
+    administrator's view and `MarketOut` serves it — and carrying both would
+    only offer a reader the wrong one. ADR 0011's amendment, D-022.
+
+    Frozen, because it is a snapshot of an answer computed at one instant
+    against one clock. Something that mutates it is reinterpreting that
+    answer without the clock that produced it.
+    """
+
+    id: uuid.UUID
+    status: MarketStatus
+    question: str | None
+    close_time: datetime | None
+
+
 def displayed_status(
     status: MarketStatus,
     close_time: datetime | None,
@@ -151,9 +235,19 @@ def displayed_status(
     (D-025). Left to default, it reads the clock itself, which keeps this
     callable from a test and from anything that holds no request.
     """
+    # Coerced before anything is compared. `MarketStatus.OPEN == "open"` is
+    # True but `"open" is MarketStatus.OPEN` is False, so an identity check
+    # against a plain string silently returns it unchanged and the whole
+    # derivation no-ops. Pydantic happens to coerce on every path that reaches
+    # here today; a JSON round-trip, `use_enum_values`, or a raw driver row
+    # would not, and the symptom would be a closed market reported open with
+    # nothing raised. Coercing is one line and removes the class of bug —
+    # switching to `==` would fix this call and leave the next one exposed.
+    status = MarketStatus(status)
+
     if status is not MarketStatus.OPEN:
         return status
-    if is_open_for_trading(True, close_time, now=now):
+    if trading_is_open(True, close_time, now=now):
         return status
     return MarketStatus.CLOSED
 

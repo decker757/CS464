@@ -471,9 +471,15 @@ would lose the only symptom a stopped sweeper produces.
 
 **Notes.** Written up as an amendment block on
 [ADR 0011](docs/adr/0011-market-auto-close.md), with the reversal trigger stated
-there: it goes back to one shape on the day an administrator reads the public
-projection, because one payload serving both audiences needs a field rather than
-a substitution. The trigger is a shared reader, not a new endpoint.
+there: it goes back to one shape on the day an administrator needs the raw
+column *from this projection*, because one payload serving both audiences needs
+a field rather than a substitution. The trigger is that requirement, not a
+reader and not a new endpoint — an administrator reading the public projection
+is reading it as a trader, and `MarketOut` still carries the column they would
+go to for sweep health. *Reworded 2026-09-21 with the ADR, which previously said
+"the day an administrator reads the public projection" — a trigger #62 fires at
+merge, since these routes take any valid token (D-018) and a test asserts an
+admin gets a 200.*
 `docs/api/market-service.md` carries a table of which projection does which, so
 the rule is visible from the contract as well as from the ADR. The derivation
 only ever makes a market *less* tradeable: an early close ([2.3] #7) leaves
@@ -566,7 +572,16 @@ schema, and the rule is about a status rather than about a payload. Deleting
 `count_by_status` and deferring it to [2.1] #5, which would have removed the
 second copy for free but reverses D-020.
 
-**Notes.** ADR 0011's rule is now expressed in five places and four of them
+**Notes.** *Caller list updated 2026-09-21 (D-027).* `model/schemas.py` no
+longer calls this at all — the derivation moved into `service/browsing.py`,
+which is now the only caller: `browse` for each `MarketCard` and
+`get_published` for the `trader_facing_status` it stamps. The schemas read a
+plain field. That is one caller rather than two, which weakens this entry's
+own argument for the wrapper existing — it stays because the rule is still a
+fact about a `MarketStatus` and both call sites in `browsing.py` would
+otherwise restate it, and because `count_by_status` is a third caller.
+
+ADR 0011's rule is now expressed in five places and four of them
 reach one definition: `core/closing.py` (the predicate), the entity wrapper and
 this substitution above it, plus the two callers that use it.
 
@@ -619,13 +634,159 @@ deriving the status in SQL as a returned column, which fixes the class of bug
 outright but writes ADR 0011's rule into a sixth place and stops `browse`
 returning `Market` entities.
 
-**Notes.** The reversal trigger: **if a path that decides or writes ever reads
+**Notes.** *Corrected 2026-09-21, after Ernest's second review of #62.* The
+reasoning above stands and the conclusion is unchanged — one clock per request,
+Python's rather than the transaction's, for the reasons given. **What was wrong
+is the delivery mechanism.** Threading the clock through
+`model_validate(..., context={"now": ...})` does not reach the wire.
+
+FastAPI re-validates whatever a route returns against its `response_model`, and
+that second pass carries no context. `_now_from(info)` returned `None`, and
+because `_derive_status` was `mode="after"` it mutated the already-correct
+instance *in place*, recomputing against `datetime.now(UTC)` at serialisation.
+`revalidate_instances` is at its default `never` and does not prevent it.
+Wrapping a validated summary in `PublicMarketListResponse` was enough to
+trigger it with no framework involved. So a market selected by the SQL
+`status=open` filter shipped labelled `closed` — the exact failure this entry,
+ADR 0011's amendment and three docstrings claimed was fixed.
+
+D-027 replaces the mechanism: the derivation moved into `service/browsing.py`
+and happens before either projection is built, so there is no validator left to
+re-run and re-validation is harmless by construction. The clock is still read
+once at the controller and still handed to the service layer.
+
+The reversal trigger: **if a path that decides or writes ever reads
 this same projection, it needs the transaction's clock.** At that point the
 `now` handed in stops being a display convenience and becomes the value an
 action is judged against, and `open_for_trading()` is still how it is obtained.
 `service/closing.py::open_for_trading` carries a pointer back to this entry, so
 somebody reading the argument for the transaction clock finds out in place that
 one caller deliberately does not follow it.
+
+---
+
+### D-026 — A proposed winner is not public until a second administrator agrees
+
+**Date:** 2026-09-21 · **Ticket:** #62, Ernest's second review · **Status:** active
+
+**Decision.** `PublicMarketOut.proposed_outcome_id` is null unless the market's
+status is in `DECIDED_STATUSES` — APPROVED today, joined by SETTLED with [3.4]
+#12. `MarketOut` is unchanged and still reports the column whatever the status.
+
+**Why.** It shipped ungated. [X-3] #36 asks that *settled* markets display the
+winning outcome, and PENDING_RESOLUTION is not settled — it is one
+administrator's proposal with a second yet to rule on it. ADR 0016 exists
+because that ruling can go the other way: the reviewer rejects, all seven
+proposal columns are nulled, and the proposer may re-propose a different
+outcome. Every trader who loaded the detail page in between was shown a
+"winning outcome" the platform then reversed, with no correction, no
+notification, and before [3.3] #11's dispute window exists to contest it.
+
+The field's name is what makes it unsafe rather than merely early. Anything
+rendering `proposed_outcome_id` is rendering a result; the status is the only
+thing that says it is provisional, and nothing obliges a client to check it.
+
+**Rejected.** Gating on `approved_at IS NOT NULL`, which is the same answer
+read off a different column and would have to be revisited the moment SETTLED
+lands. A separate `decided_outcome_id` field alongside — more wire, and it
+leaves the unsafe field in place for somebody to read. Leaving it to the
+frontend, which is D-022's argument in reverse: a correctness property that
+only holds in whichever clients remember to recompute it is not a property.
+
+**Notes.** `DECIDED_STATUSES` lives in `model/entities.py` beside the enum, so
+SETTLED becomes public by being added to one tuple. *Updated 2026-09-21
+(D-027).* This previously said the gate runs before the ADR 0011 derivation
+and reads the stored status. There is no longer a derivation validator to run
+before: D-027 moved it into `service/browsing.py`, so the gate reads the
+derived status off a plain field. The rules still cannot interact, because the
+derivation only ever turns OPEN into CLOSED and can neither produce nor consume
+a proposal status.
+
+**Placement.** The gate is a `model_validator` on `PublicMarketOut` rather
+than a step in `service/browsing.py`, and CLAUDE.md puts business rules in
+`service`. Raised in review as a layering deviation; kept here deliberately,
+on two grounds. It decides what a projection carries rather than what the
+platform does — no state moves, nothing is written, and the same market read
+through `MarketOut` is unaffected. And the rule CLAUDE.md is protecting is
+that business rules are testable without HTTP, which holds:
+`unit_test/model/test_public_schemas.py` asserts it with no route, no
+database and no clock.
+
+**This reverses on a second caller of `get_published`.** The entity that
+function returns still carries the raw `proposed_outcome_id`, and today
+exactly one thing reads it — `controller/public_routes.py`, which projects
+through `PublicMarketOut` and therefore through the gate. A second caller
+that used the entity directly, or projected it through anything else, would
+get the ungated value with nothing going red: [3.3] #11's dispute window and
+[T-2] #22's composite are both plausible ones. At that point the gate belongs
+in the service, computing the public winner into a field the projection
+copies, and the model test becomes a serialisation test.
+
+---
+
+### D-027 — The derived status is computed in `service/`, before projection
+
+**Date:** 2026-09-21 · **Ticket:** #62, Ernest's second review · **Status:** active
+
+**Decision.** `browse()` runs a column select and returns a frozen `MarketCard`
+dataclass whose `status` is already derived. `get_published()` returns the
+entity and stamps the derived value onto an **unmapped** attribute,
+`trader_facing_status`. Both `model_validator`s that derived `status` are gone,
+and so is the `context={"now": ...}` plumbing. The schemas carry plain fields.
+
+**Why.** Two separate bugs, one fix.
+
+D-025's context never reached the wire — FastAPI re-validates against
+`response_model` with no context and the `mode="after"` validator recomputed in
+place. And `noload()`, added to stop the list query firing two `selectin`
+loaders it had no use for, does not skip a collection: it marks it **loaded and
+empty**, so every browsed market sat in the identity map claiming no outcomes
+and a later `get_published()` in the same session was handed that instance back.
+Deriving in `service/` before projection removes the first; selecting columns
+removes the second by keeping the identity map empty rather than by keeping it
+correct.
+
+It also puts the rule where CLAUDE.md says business rules go, and leaves the
+projection a dumb carrier — which is what makes re-validation harmless instead
+of merely survivable.
+
+**Rejected — and the deciding argument is the last one.**
+
+- **Stamping the derived status onto the mapped `Market.status`**, which is the
+  obvious form of "stamp it on the entity". Probed: `len(session.dirty)` goes
+  from 0 to 1. The instance is dirty, so any later `commit()` on that session
+  writes the derived `CLOSED` into the status column — making this derivation a
+  *writer* of the one column ADR 0011 reserves for the sweep. Latent today
+  (`autoflush=False`, nothing commits on the read path) and live the first time
+  a handler browses and then writes anything. `get_published` therefore stamps
+  an unmapped attribute, which cannot be flushed at all.
+- **`load_only()`** — probed: does not touch relationships. `selectin` still
+  fired and both children still loaded, so it does not even solve the problem
+  it was suggested for.
+- **`noload()`** — the status quo, and the cause. Probed: later read in the
+  same session returned 0 outcomes for a market with 2.
+- **`raiseload()`** — probed: prevents the eager load and does *not* poison the
+  identity map, so it is a genuine second choice. Rejected because accessing
+  the collection on a browsed instance raises, which is loud but still a
+  failure mode; a column select has nothing to access.
+- **`populate_existing()` on `get_published`** — probed: rescues that one
+  caller. Rejected because it patches the reader rather than the poisoner, so
+  every future caller has to know to add it.
+
+**Notes.** `MarketCard.status` is the derived value and there is deliberately
+no raw one beside it: the browse projection has no legitimate use for the
+stored column — that is `MarketOut`'s job — and offering both only lets a
+reader take the wrong one. Frozen, because it is an answer computed against one
+clock and mutating it reinterprets that answer without it.
+
+`PublicMarketOut.status` reads `trader_facing_status` through a
+`validation_alias`, so there is one status on the schema and no way to ask for
+the administrator's by accident.
+
+Audited while making this change: nothing else in `market_service` stamps a
+derived value onto a mapped attribute. Every ORM assignment in `service/` is in
+a genuine write path — submit, publish, close, propose, approve, reject, and
+the autosave's `_apply`. This PR would have introduced the pattern.
 
 ---
 
@@ -917,34 +1078,16 @@ orphans.
 
 Move these into the log above when they're settled.
 
-- **`posting.post()` commits internally — settled for a caller with nothing to
-  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
-  this for `books.ensure_open`: order every write through
-  `session.begin_nested()` and call `post()` last, so its own commit lands
-  everything together. That works whenever the call into `post()` is the
-  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
-  `state_version` bump and its position update on `MarketOutcome` would have to
-  precede the call into `post()`, in the same transaction, under D-032's rule,
-  never after it. Whether that ordering is workable for the trade path, or
-  whether #22 needs to check its write against a quote taken *after* the trade
-  executes — in which case `post()` gains a variant that stops short of commit,
-  or the trade accepts the ledger write as its own boundary and builds
-  compensation around it — is still #22's to decide.
+- **`posting.post()` commits internally.** It takes a session but calls
+  `session.commit()` before returning. Whether #22's trade writes can share that
+  commit boundary is unresolved. Either `post()` gains a variant that stops short
+  of commit, or the trade accepts the ledger write as its own boundary and builds
+  compensation around it.
+- **`occurred_at` for a market that has never traded.** The realtime contract
+  defines it only as the time of the event. `state_changed_at` set at handoff is a
+  proposal, not something the contract says.
 - **Whether share quantities share money's scale of 4.** Nothing in the repo takes
   a position on fractional shares.
-- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
-  `core/opening_prices.py::max_platform_loss` computes the worst case and
-  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
-  compares them — `_liquidity_problems` checks both are present and positive and
-  says in its own docstring that the comparison is "deliberately NOT checked",
-  on the grounds that an administrator may knowingly seed a market for less.
-  That was a defensible call while the number was only displayed. Once [F-7] #96
-  funds a pool from it, an undersubsidised market is one whose pool goes
-  negative under ordinary trading, and `_refuse_overdrafts` exempts every
-  non-USER account, so nothing anywhere will say so. Whether that stays an
-  informed choice, becomes a submission rule, or becomes a warning the ledger
-  records at book creation is undecided. It is market_service's rule to make
-  either way, not the ledger's.
 - **Service-to-service auth for ledger writes.** Deferred by ADR 0009 to #22.
   Currently avoided by making #62 public, but #22 is a write and will have to
   answer it.
@@ -966,6 +1109,32 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
+- **`posting.post()` commits internally — settled for a caller with nothing to
+  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
+  this for `books.ensure_open`: order every write through
+  `session.begin_nested()` and call `post()` last, so its own commit lands
+  everything together. That works whenever the call into `post()` is the
+  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
+  `state_version` bump and its position update on `MarketOutcome` would have to
+  precede the call into `post()`, in the same transaction, under D-032's rule,
+  never after it. Whether that ordering is workable for the trade path, or
+  whether #22 needs to check its write against a quote taken *after* the trade
+  executes — in which case `post()` gains a variant that stops short of commit,
+  or the trade accepts the ledger write as its own boundary and builds
+  compensation around it — is still #22's to decide.
+- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
+  `core/opening_prices.py::max_platform_loss` computes the worst case and
+  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
+  compares them — `_liquidity_problems` checks both are present and positive and
+  says in its own docstring that the comparison is "deliberately NOT checked",
+  on the grounds that an administrator may knowingly seed a market for less.
+  That was a defensible call while the number was only displayed. Once [F-7] #96
+  funds a pool from it, an undersubsidised market is one whose pool goes
+  negative under ordinary trading, and `_refuse_overdrafts` exempts every
+  non-USER account, so nothing anywhere will say so. Whether that stays an
+  informed choice, becomes a submission rule, or becomes a warning the ledger
+  records at book creation is undecided. It is market_service's rule to make
+  either way, not the ledger's.
 - **How long the terms pull may block, given it runs inside a transaction
   holding row locks.** `service/market_terms.py::_TIMEOUT` is five seconds on
   every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
