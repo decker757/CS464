@@ -1,6 +1,5 @@
 import axios from 'axios'
 import { useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import { ApiError, FastApiError } from '../api/errors'
 import { EyeIcon, Spinner, TrendIcon } from '../components/auth/AuthIcons'
@@ -8,15 +7,12 @@ import BrandPanel from '../components/auth/BrandPanel'
 import Field from '../components/auth/Field'
 import { focusHandlers, inputBase } from '../components/auth/inputStyles'
 import { User, useAuth } from '../context/AuthContext'
-import { GOLD, NAV } from '../theme/colors'
+import { CREAM, GOLD, NAV } from '../theme/colors'
 
 interface LoginErrors { identifier?: string; password?: string }
 
 export default function LoginPage() {
   const { login } = useAuth()
-  const navigate = useNavigate()
-  const location = useLocation()
-  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/markets'
 
   const [form, setForm] = useState({ identifier: '', password: '' })
   const [errors, setErrors] = useState<LoginErrors>({})
@@ -40,8 +36,12 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const res = await api.post<{ user: User }>('/auth/login', form)
+      // No navigate() here. `login` sets `user`, and GuestOnly — which wraps
+      // this route in App.tsx — reads that and redirects to wherever the
+      // visitor was headed. It re-renders before an imperative call from here
+      // could land, so adding one back does not add a fallback; it adds a
+      // second authority that this guard then overwrites.
       login(res.data.user)
-      navigate(from, { replace: true })
     } catch (err: unknown) {
       if (!axios.isAxiosError(err)) { setServerError('Something went wrong. Please try again.'); return }
       const data = err.response?.data as (ApiError & FastApiError) | undefined
@@ -70,7 +70,7 @@ export default function LoginPage() {
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <BrandPanel />
 
-      <div style={{ flex: 1, backgroundColor: '#FAF8F3', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'clamp(24px, 4vw, 48px) clamp(20px, 5vw, 48px)' }}>
+      <div style={{ flex: 1, backgroundColor: CREAM, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'clamp(24px, 4vw, 48px) clamp(20px, 5vw, 48px)' }}>
         <a href="/" className="flex md:hidden" style={{ alignItems: 'center', gap: 8, textDecoration: 'none', marginBottom: 28 }}>
           <TrendIcon size={18} color={GOLD} />
           <span style={{ color: NAV, fontSize: 18, fontWeight: 700 }}>PredictSMU</span>

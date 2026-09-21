@@ -37,7 +37,9 @@ export const handlers = [
     HttpResponse.json({ user: mockUser })
   ),
 
+  // 200 with a body, not 204 — docs/api/auth-service.md says this endpoint is
+  // deliberately unauthenticated and *always* returns 200 { message }.
   http.post(`${BASE}/auth/logout`, () =>
-    new HttpResponse(null, { status: 204 })
+    HttpResponse.json({ message: 'Logged out.' })
   ),
 ]

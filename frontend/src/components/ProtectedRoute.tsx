@@ -1,5 +1,6 @@
 import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import LoadingScreen from './LoadingScreen'
 
 interface ProtectedRouteProps {
   children: React.ReactNode
@@ -10,7 +11,7 @@ export default function ProtectedRoute({ children, requireAdmin = false }: Prote
   const { user } = useAuth()
   const location = useLocation()
 
-  if (user === undefined) return null
+  if (user === undefined) return <LoadingScreen />
 
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />
 
