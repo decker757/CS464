@@ -54,6 +54,11 @@ cannot change cannot drift from its source, so this is duplication without
 coupling — unlike a live read, which would put market_service in the hot path
 of every quote.
 
+> The *terms* still cross once. A market's **state** does not, and cannot:
+> [ADR 0017](0017-the-ledger-and-a-stopped-market.md) puts a live read of
+> whether a market is still trading on the trade path — one hop per trade, not
+> per quote — because a status is not a term and no snapshot of one stays true.
+
 **The LMSR engine is a module, not a service.** `C(q) = b·ln(Σ e^(q_i/b))` is a
 pure function of `b` and `q`. It owns no state, so there is no table for it to
 own, no role for it to be, and nothing for `sql/02-schemas.sql` to enforce
