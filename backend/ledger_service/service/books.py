@@ -59,7 +59,7 @@ async def ensure_open(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> MarketBook:
     """This market's book, opening and funding it first if nobody has yet.
 

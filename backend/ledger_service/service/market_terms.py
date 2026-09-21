@@ -64,7 +64,7 @@ async def fetch(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> MarketTerms:
     """The market's terms, or the mapped error D-030 assigns to what went wrong.
 
@@ -89,6 +89,20 @@ async def fetch(
     """
     settings = get_settings()
 
+    # A client per call, rather than one held for the process. It builds a
+    # connection pool that serves exactly one request and is then closed, so
+    # nothing here is reused: DNS, TCP and TLS are paid every time.
+    #
+    # Affordable because of where this sits. `books.ensure_open` calls it only
+    # when a market has no book — once per market, ever — and every later
+    # touch returns on the fast path without reaching this module at all. The
+    # cost is one handshake per market, against a first touch that is already
+    # doing a round trip to another service and three inserts.
+    #
+    # A module-level client would be faster and would buy two problems: it
+    # needs closing in `main.py`'s lifespan, and it fixes the transport at
+    # construction, which is the seam the whole test suite drives this through.
+    # Revisit if a second caller appears that is not once-per-market.
     async with httpx.AsyncClient(
         base_url=settings.market_service_url,
         transport=transport,
@@ -165,6 +179,7 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
             )
             for o in body.get("outcomes", [])
         ]
+        _refuse_unpriceable(outcomes)
 
         # The response's own id, checked against the one asked for. It was
         # parsed and then never read before, which made it a field that could
@@ -192,6 +207,44 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         ValueError,
     ) as exc:
         raise MarketTermsUnavailable from exc
+
+
+# The fewest outcomes a market can be priced with. Two, the same floor
+# `market_service/service/validation.py::MIN_OUTCOMES` enforces at submission
+# — restated rather than imported, because `unit_test/test_import_boundary.py`
+# fails any `import market_service` from this service and is right to: that
+# import resolves under pytest and is an ImportError in the container.
+_MIN_OUTCOMES = 2
+
+
+def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
+    """Terms that could be stored but never priced. Same defence as null `b`.
+
+    Three ways a well-formed outcome list is still unusable, and none of them
+    is reachable from a correct market service — `publish` re-runs every
+    submission rule, which requires between two and ten named outcomes with
+    server-assigned positions. They are refused for the reason the null-terms
+    check is: the book is written once and is immutable under ADR 0005, so a
+    bad one is not something a later read corrects.
+
+    **Fewer than two outcomes.** `C(q) = b·ln(Σ e^(q_i/b))` over one outcome
+    prices it at 1.0 and over none is a sum with no terms. Either way the
+    market opens, funds its pool, and quotes a price nobody can trade against.
+
+    **A repeated outcome id or position.** Both are unique constraints on
+    `market_outcomes`, so these reach the database and fail there — inside
+    `books.ensure_open`'s savepoint, where the `except IntegrityError` is
+    watching for a *lost first-touch race*. It re-raises correctly, because
+    `_find` finds no committed book, but the request ends as a 500 on a
+    condition that is the upstream being wrong. Caught here it is the 503 the
+    contract promises, and the race handler keeps meaning only what it says.
+    """
+    if len(outcomes) < _MIN_OUTCOMES:
+        raise MarketTermsUnavailable
+    if len({o.outcome_id for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable
+    if len({o.position for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable
 
 
 def _to_decimal(value: object) -> Decimal | None:

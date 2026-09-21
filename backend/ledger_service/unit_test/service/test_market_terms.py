@@ -528,6 +528,70 @@ async def test_a_market_with_null_terms_is_unavailable_rather_than_funded() -> N
         )
 
 
+@pytest.mark.parametrize(
+    ("label", "outcomes"),
+    [
+        ("no outcomes at all", []),
+        ("a single outcome", [{"id": str(_YES), "position": 0}]),
+        (
+            "the same outcome id twice",
+            [{"id": str(_YES), "position": 0}, {"id": str(_YES), "position": 1}],
+        ),
+        (
+            "two outcomes claiming one position",
+            [{"id": str(_YES), "position": 0}, {"id": str(_NO), "position": 0}],
+        ),
+    ],
+)
+async def test_terms_that_could_never_be_priced_are_refused(
+    label: str, outcomes: list[dict[str, object]]
+) -> None:
+    """The same defence as a null `liquidity_b`, for the outcome list.
+
+    A book is written once and is immutable under ADR 0005, so a bad one is
+    not something a later read corrects — which is the argument for refusing
+    rather than storing, and it applies to all four of these.
+
+    One outcome prices at 1.0 and none is a sum with no terms: the market
+    opens, funds its pool from the platform, and quotes a price nobody can
+    trade against. A repeated id or position is a unique constraint on
+    `market_outcomes`, so without this it reaches the database and fails
+    inside `books.ensure_open`'s savepoint — where `except IntegrityError` is
+    watching for a lost first-touch race. It re-raises correctly, because no
+    committed book is found, but the caller gets a 500 describing nothing,
+    and the race handler is left catching two unrelated things.
+
+    Unreachable from a correct market service: `publish` re-runs every
+    submission rule, and those require between two and ten named outcomes with
+    server-assigned positions.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(outcomes=outcomes)),
+        )
+
+
+async def test_a_ten_outcome_market_is_not_refused() -> None:
+    """The ceiling is the market service's, and this is not the place to restate it.
+
+    `MAX_OUTCOMES` is ten on the other side. A floor here is about what can be
+    priced at all; a ceiling would be a second copy of somebody else's rule,
+    and the failure it would cause — a published market the ledger silently
+    refuses to open a book for — is worse than the one it would prevent.
+    """
+    outcomes = [{"id": str(uuid.uuid4()), "position": i} for i in range(10)]
+
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(outcomes=outcomes)),
+    )
+
+    assert len(terms.outcomes) == 10
+
+
 async def test_the_close_time_is_not_what_decides_anything_here() -> None:
     """A market past its close time still has terms, and still gets them.
 

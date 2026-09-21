@@ -224,9 +224,17 @@ async def _refuse_overdrafts(session: AsyncSession, legs: list[Leg]) -> None:
     be overdrawn by this transaction, and a balance query per leg would double
     the work of every trade for an answer nobody uses.
 
-    PLATFORM is exempt, and that is the point of it: its balance is minus the
-    credits in circulation, so the house being negative is the ledger working.
-    Only a USER account holds money somebody could spend twice.
+    **The check is an allowlist on USER, not a denylist of exempt kinds**, and
+    that is why [F-7] #96 added MARKET_POOL without touching this function. A
+    pool is meant to go negative: LMSR pays out up to `b*ln(n)` more than it
+    collects, so a market whose subsidy is exhausted is a market working as
+    designed, and `test_an_unfunded_pool_is_allowed_to_go_negative` pins it.
+    PLATFORM is the same shape — its balance is minus the credits in
+    circulation, so the house being negative is the ledger working.
+
+    Only a USER account holds money somebody could spend twice, which is the
+    rule; the exempt list is whatever is left over from it. Adding a kind here
+    means deciding it holds spendable money, not remembering to exempt it.
     """
     for account, delta in _net_by_account(legs).values():
         if delta >= ZERO or account.kind is not AccountKind.USER:
