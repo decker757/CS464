@@ -1064,6 +1064,44 @@ async def test_a_preview_on_a_closed_market_returns_a_number(
     assert quote.total < ZERO
 
 
+async def test_a_preview_on_a_warm_closed_market_makes_no_http_call(
+    session: AsyncSession,
+) -> None:
+    """[F-8] #109's "unchanged", as the assertion that can actually catch it.
+
+    `test_the_second_preview_makes_no_http_call_at_all` above uses an open
+    market, so it would stay green against a preview that had grown a status
+    check — the check would hit the same warm-path early return and never
+    reach the wire. A *closed* market is the one input that separates them:
+    a preview that asks market_service anything is a preview that has started
+    gating, and ADR 0017 says it must not.
+
+    The asymmetry is the point and not an oversight. A preview decides nothing
+    and writes nothing, which is why it takes no lock (D-012, D-036), and ADR
+    0005 budgets this path explicitly — one hop per quote is a budget, two is
+    a latency problem in an interaction that fires on every keystroke. A
+    preview fires on every keystroke; a trade fires once. So the preview
+    returns a number for a market the trade that follows it will refuse
+    `409 market_closed`, and `docs/api/ledger-service.md` has to say so in one
+    sentence or it reads as a bug.
+
+    The frontend gates the button on the derived status [BE][X] #62 already
+    serves. The ledger gates the money, in `service/market_status.py`, on the
+    trade path only.
+    """
+    upstream = _Upstream(status="closed")
+    await _warm(session, upstream)
+    calls_after_the_first_touch = upstream.calls
+
+    quote = await _quote(session, upstream)
+
+    assert upstream.calls == calls_after_the_first_touch, (
+        "a preview on a warm market must not reach market_service, whatever "
+        "that market's status is"
+    )
+    assert quote.total < ZERO
+
+
 # =========================================================================
 # Refusals
 # =========================================================================

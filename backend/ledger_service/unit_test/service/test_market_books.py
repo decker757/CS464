@@ -544,6 +544,144 @@ async def test_an_unreachable_market_service_leaves_nothing_behind(
     ).scalar_one() == 0
 
 
+# --- [F-8] #109: the terms rules that moved here out of `_parse` ----------
+#
+# These four arrived from `test_market_terms.py` with their assertions intact.
+# ADR 0017 moved the rules they hold: refusing a null `b`, or an outcome list
+# that could be stored but never priced, is the right answer when you are
+# about to write it into a book that ADR 0005 makes immutable, and the wrong
+# answer on a read that decides whether a market is still trading. A
+# market_service that began returning a null `b` would otherwise start
+# refusing trades on books snapshotted weeks earlier, against a value this
+# service read once at first touch and never reads again.
+#
+# The arguments came with them, because they were always arguments about
+# writing.
+async def test_a_market_with_null_terms_is_unavailable_rather_than_funded(
+    session: AsyncSession,
+) -> None:
+    """`liquidity_b` and `seed_subsidy` are `Decimal | None` on the wire.
+
+    Structurally nullable, because `MarketDraftRequest` lets a draft omit both.
+    Unreachable for a published market — `_liquidity_problems` requires each to
+    be present and positive, and `publish` re-runs every submission rule — so
+    this is defending a state the market service says cannot happen.
+
+    Worth defending anyway: the failure it prevents is a book created with a
+    null `b`, which is a market that can never be priced and a pool funded with
+    nothing. Refusing beats writing a row that no later code can use.
+
+    **Refused before the `MarketBook` is constructed**, not by the database.
+    Both columns are `nullable=False`, so a null reaching the insert raises
+    `IntegrityError` inside the first-touch savepoint — where the `except
+    IntegrityError` is watching for a lost race (D-010). It would re-raise
+    correctly, because `_find` finds no committed book, and the caller would
+    get a 500 describing nothing while the race handler quietly catches two
+    unrelated things.
+    """
+    upstream = _Upstream(liquidity_b=None)
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _open(session, upstream)
+
+
+async def test_a_null_seed_subsidy_is_refused_at_the_book_too(
+    session: AsyncSession,
+) -> None:
+    """The money half, which the moved test above does not cover.
+
+    Its own test rather than a case bolted onto the move, so the diff shows
+    plainly what came across unchanged and what [F-8] #109 added. The two
+    fields fail differently once they reach a book: a null `b` is a market
+    that can never be priced, and a null subsidy is a pool funded with
+    nothing — `posting.post` would be handed a leg of `None` and the
+    double-entry invariant has no answer for that.
+    """
+    upstream = _Upstream(seed_subsidy=None)
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _open(session, upstream)
+
+
+@pytest.mark.parametrize(
+    ("label", "outcomes"),
+    [
+        ("no outcomes at all", []),
+        ("a single outcome", [{"id": str(uuid.uuid4()), "position": 0}]),
+        (
+            "the same outcome id twice",
+            (lambda o: [{"id": str(o), "position": 0}, {"id": str(o), "position": 1}])(
+                uuid.uuid4()
+            ),
+        ),
+        (
+            "two outcomes claiming one position",
+            [
+                {"id": str(uuid.uuid4()), "position": 0},
+                {"id": str(uuid.uuid4()), "position": 0},
+            ],
+        ),
+    ],
+)
+async def test_terms_that_could_never_be_priced_are_refused(
+    session: AsyncSession, label: str, outcomes: list[dict[str, object]]
+) -> None:
+    """The same defence as a null `liquidity_b`, for the outcome list.
+
+    A book is written once and is immutable under ADR 0005, so a bad one is
+    not something a later read corrects — which is the argument for refusing
+    rather than storing, and it applies to all four of these.
+
+    One outcome prices at 1.0 and none is a sum with no terms: the market
+    opens, funds its pool from the platform, and quotes a price nobody can
+    trade against. A repeated id or position is a unique constraint on
+    `market_outcomes`, so without this it reaches the database and fails
+    inside `books.ensure_open`'s savepoint — where `except IntegrityError` is
+    watching for a lost first-touch race. It re-raises correctly, because no
+    committed book is found, but the caller gets a 500 describing nothing,
+    and the race handler is left catching two unrelated things.
+
+    Unreachable from a correct market service: `publish` re-runs every
+    submission rule, and those require between two and ten named outcomes with
+    server-assigned positions.
+    """
+    upstream = _Upstream()
+    upstream._body["outcomes"] = outcomes
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _open(session, upstream)
+
+
+async def test_a_ten_outcome_market_is_not_refused(session: AsyncSession) -> None:
+    """The ceiling is the market service's, and this is not the place to restate it.
+
+    `MAX_OUTCOMES` is ten on the other side. A floor here is about what can be
+    priced at all; a ceiling would be a second copy of somebody else's rule,
+    and the failure it would cause — a published market the ledger silently
+    refuses to open a book for — is worse than the one it would prevent.
+
+    Moved with the other three because the rule it argues about moved. Leaving
+    it beside a client that no longer holds either half of the floor-versus-
+    ceiling distinction would have left the reason in one file and the rule in
+    another.
+    """
+    upstream = _Upstream(outcomes=[uuid.uuid4() for _ in range(10)])
+
+    await _open(session, upstream)
+
+    rows = list(
+        (
+            await session.execute(
+                select(_entities().MarketOutcome).where(
+                    _entities().MarketOutcome.market_id == upstream.market_id
+                )
+            )
+        ).scalars()
+    )
+
+    assert len(rows) == 10
+
+
 # --- the invariant --------------------------------------------------------
 async def test_the_ledger_sums_to_zero_after_funding(session: AsyncSession) -> None:
     """The single strongest assertion available about this service.
