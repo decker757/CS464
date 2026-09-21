@@ -86,12 +86,12 @@ describe('AppNavbar — logging out', () => {
 
     await actor.click(screen.getByRole('button', { name: /log out/i }))
 
-    // Asserted as "the session is gone", not as a destination. Which page the
-    // user lands on is an open question: `logout` clears `user` before the
-    // handler's `navigate` runs, so ProtectedRoute's redirect to /login wins
-    // the race and the landing page is never reached. Pinning either answer
-    // here would bake in a decision that has not been made.
-    await waitFor(() => expect(screen.queryByText('alice')).not.toBeInTheDocument())
+    // `logout` clears `user`, which unmounts this navbar (it lives under
+    // ProtectedRoute) in favour of ProtectedRoute's own <Navigate to="/login">.
+    // That is the only redirect authority for this transition — AppNavbar no
+    // longer calls navigate() itself, so there is nothing left to race.
+    await waitFor(() => expect(screen.getByText('login page')).toBeInTheDocument())
+    expect(screen.queryByText('alice')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /log out/i })).not.toBeInTheDocument()
   })
 

@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import { ApiError, FastApiError } from '../api/errors'
@@ -13,20 +13,10 @@ import { GOLD, NAV } from '../theme/colors'
 interface LoginErrors { identifier?: string; password?: string }
 
 export default function LoginPage() {
-  const { user, login } = useAuth()
+  const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/markets'
-
-  // `from`, not a hardcoded '/markets'. This fires on every change to `user`,
-  // which includes the one `handleSubmit` makes on a successful login — so it
-  // runs *after* the navigate below and overwrites it. Hardcoding the
-  // destination here silently deletes the `state={{ from: location }}` chain
-  // that ProtectedRoute sets and line 48 reads, and nothing would notice until
-  // /portfolio or /admin exists to be redirected back to.
-  useEffect(() => {
-    if (user) navigate(from, { replace: true })
-  }, [user, from, navigate])
 
   const [form, setForm] = useState({ identifier: '', password: '' })
   const [errors, setErrors] = useState<LoginErrors>({})

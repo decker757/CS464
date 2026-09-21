@@ -38,9 +38,10 @@ function renderProtectedRoute({
 }
 
 describe('ProtectedRoute', () => {
-  it('renders nothing while user is loading (undefined)', () => {
+  it('shows a loading screen while user is loading (undefined)', () => {
     const { container } = renderProtectedRoute({ user: undefined })
-    expect(container).toBeEmptyDOMElement()
+    expect(container).not.toBeEmptyDOMElement()
+    expect(screen.queryByText('protected content')).not.toBeInTheDocument()
   })
 
   it('redirects to /login when user is null', () => {

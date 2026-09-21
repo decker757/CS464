@@ -1,29 +1,31 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { GOLD, NAV } from '../theme/colors'
 import { TrendIcon } from './auth/AuthIcons'
 
 export default function AppNavbar() {
   const { user, logout } = useAuth()
-  const navigate = useNavigate()
   const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = async () => {
     // Guarded like every other button here that sends a request: an impatient
-    // double click would otherwise fire two POSTs and two navigations that
-    // interleave with the route guard's own redirect.
+    // double click would otherwise fire two POSTs.
     if (loggingOut) return
     setLoggingOut(true)
     try {
       await logout()
+      // No navigate() here. `logout` clears `user` in this same render pass,
+      // which unmounts this navbar (it lives under ProtectedRoute) in favour
+      // of ProtectedRoute's own <Navigate to="/login">. That guard is the
+      // only thing deciding where a signed-out visitor goes; a second,
+      // imperative redirect from here raced it and reliably lost anyway.
     } catch {
       // `logout` clears the local session in a `finally`, so by this point the
       // user is signed out whatever the network did. Swallowed rather than
       // surfaced: there is nothing here for them to retry, and an unhandled
       // rejection is the one outcome that leaves the button looking broken.
     } finally {
-      navigate('/', { replace: true })
+      setLoggingOut(false)
     }
   }
 
