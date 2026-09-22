@@ -1165,6 +1165,12 @@ anything else, so the second touch makes no HTTP call at all —
 that way — and a market service outage after the first touch cannot stop anybody
 pricing a market that already has a book.
 
+**A closed market's first preview funds a pool that will never trade, and that
+is accepted:** settlement returns whatever the pool has left to `PLATFORM`
+([3.4] #12), so a dead pool overstates credits in circulation until its market
+resolves rather than permanently, and nothing in the cold path has to learn a
+status it cannot read.
+
 **Notes.** The token forwarded upstream is the caller's own, never one minted
 here. A preview is therefore refused 401 by the *market* service on an expired
 token, mapped through D-030, which is the same answer this service would have
@@ -1288,27 +1294,79 @@ old one.
 
 ---
 
+### D-041 — A sell whose proceeds quantize to zero is refused, not quoted
+
+**Date:** 2026-09-22 · **Ticket:** #21 · **Status:** active
+
+**Decision.** A sell whose proceeds quantize to `0.0000` is refused:
+`ProceedsBelowTick`, 422, `proceeds_below_tick`. It is not quoted at zero and
+it is not paid a minimum tick. A sub-tick *buy* is unaffected and needs no
+decision — `ROUND_CEILING` already charges the whole tick, which is the pool's
+favour.
+
+The refusal lives in `core/pricing.py::refuse_sub_tick_proceeds`, beside
+`quantize_cost` and taking the same quantized magnitude and `Side`, because
+[T-2] #22's write path has to make the same refusal and a rule about money that
+lives only in `service/preview.py` is a rule #22 inherits by copying it or by
+forgetting to.
+
+**Why.** Three answers were available and `cost_to_trade`'s docstring named all
+three, deliberately leaving the choice to "where there is a request to refuse".
+#21 is such a place, so the choice is made here rather than defaulting into #22.
+
+*Quoting the zero* takes real shares for nothing. That is the surprise this
+whole ticket exists to prevent: the route's contract is that the previewed
+number is the charged number, and a previewed `0.0000` charged honestly is a
+confirm step that transfers shares and moves no credits.
+
+*Paying a minimum tick* pays the trader more than the shares are worth, which
+is the residue running toward the trader — the one outcome D-039's criterion
+rules out. It would also make the rounding rule direction-dependent on
+magnitude, so "the residue accrues to the pool, never to the trader" would stop
+being true as a sentence and start needing a footnote.
+
+*Refusing* leaves both rules intact, and it is the answer D-040 already gives at
+the other edge of the same quantization: a magnitude `Numeric(18, 4)` cannot
+honestly represent is refused rather than quoted, in either direction. The
+asymmetry between the sides is not an inconsistency — a sub-tick buy has an
+honest answer at this scale and a sub-tick sell does not.
+
+**Rejected.** The two options above, and one about the status code.
+
+**409 rather than 422**, and this is the closest call in the entry.
+`InsufficientSharesOutstanding` and `InsufficientFunds` are 409 on the grounds
+that the request is well formed and it is the state that refuses it — and unlike
+`QuantityTooLarge`, this refusal genuinely does depend on the book: the same
+sell clears a tick against a less saturated `q`. 422 won on two counts. It pairs
+with `QuantityTooLarge` as the two edges of one quantization, which is how a
+client should read them. And the correction available to the trader is a larger
+quantity, which puts the fix where the typing happened, the same place D-038 and
+D-040 put it. The two codes stay distinct rather than being folded together,
+because one is fixed by asking for less and the other by asking for more.
+
+**Notes.** This settles the Open entry **"A sell whose proceeds fall below one
+tick is quoted at zero, and nobody has chosen that"**, which is removed from
+Open below. `test_a_sub_tick_sell_is_quoted_at_zero` was the pin holding that
+question open; it is now
+`test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero`, which is the
+change of name the Open entry predicted.
+
+`cost_to_trade`'s docstring paragraph on sub-tick trades still describes only
+the rounding half and points at Open for the rest, so it needs the same
+correction this entry is: the refusal half is no longer open. So does
+`docs/api/ledger-service.md`, which currently warns a client that a sub-tick
+sell comes back as zero.
+
+The buy side is asserted alongside the refusal in all three layers, because an
+implementation that refused a sub-tick *trade* rather than sub-tick *proceeds*
+would satisfy every sentence above and stop quoting half the trades in a
+saturated outcome.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
-
-- **A sell whose proceeds fall below one tick is quoted at zero, and nobody has
-  chosen that.** `quantize_cost` floors a sell's magnitude (D-039), so a real
-  trade worth under `0.0001` comes back as `total = 0.0000`: the trader gives
-  up shares and is quoted nothing. Reachable, not theoretical —
-  `core/lmsr.py::cost_to_trade`'s own example, 100 shares against
-  `q = [1560, 100]` at `b = 100`, is worth 0.0000288, and the same 100 shares
-  cost a full tick to *buy*, so a round trip in a saturated outcome is a
-  guaranteed one-tick loss. `cost_to_trade` deliberately left the choice
-  between refusing the trade, charging a minimum tick and quoting zero to
-  "where there is a request to refuse", naming [T-2] #22 before [T-1] #21
-  existed. #21 is such a place and took only the rounding half of it, so #22
-  would inherit the zero by default — which is the one outcome that docstring
-  was written to prevent.
-  `test_a_sub_tick_sell_is_quoted_at_zero` pins today's behaviour so that
-  settling this moves a test rather than a number. Note that the *buy* side
-  needs no decision: `ROUND_CEILING` already charges a tick for a sub-tick
-  buy, which is the house's favour and consistent with D-039.
 
 - **`posting.post()` commits internally — settled for a caller with nothing to
   write afterward, still open for one that does.** [F-7] #96 (D-032) answered

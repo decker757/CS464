@@ -246,15 +246,14 @@ because LMSR already expects the pool to be the side that can lose money.
 `prices` and `post_trade_prices` carry no such bias: nobody is charged a
 price, so both are `ROUND_HALF_UP`, same as everywhere else in this backend.
 
-**Where that bites: a sell can come back as `0.0000`.** In a badly skewed
-market an outcome is genuinely worth almost nothing, and a real quantity of it
-prices below one tick. Rounding down then leaves `total` at zero — you would
-give up the shares and be paid nothing — while the same shares cost a full tick
-to buy. So the residue is "under one tick" of the cost, which is 100% of it
-when the cost is itself under a tick. Nobody has decided whether that should be
-refused instead; it is in DECISIONS.md's Open section, and a client that lets
-somebody confirm a `total` of `0.0000` on a sell is relying on an open
-question.
+**Where that bites: a sell can be refused rather than quoted.** In a badly
+skewed market an outcome is genuinely worth almost nothing, and a real
+quantity of it prices below one tick. Rounding down would leave `total` at
+zero — you would give up the shares and be paid nothing — while the same
+shares cost a full tick to buy, so D-041 refuses the request instead:
+`proceeds_below_tick` (422), below. A sub-tick buy needs no such refusal —
+`ROUND_CEILING` already charges the whole tick, which is the pool's favour —
+so this only ever fires on a sell.
 
 **`state_version`** is the quote reference (D-011) — a JSON number, not a
 string, because it is a count and not money — and the only one. [T-2] #22
@@ -301,6 +300,7 @@ inventing new ones:
 | 409 | `insufficient_shares_outstanding` | A sell larger than this outcome's shares outstanding — the no-shorting rule. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
 | 422 | `quantity_too_large` | The cost prices above `99999999999999.9999`, the largest amount the ledger can store (D-040). Not reachable with any plausible quantity. |
+| 422 | `proceeds_below_tick` | A sell whose proceeds round down to `0.0000` at the ledger's scale (D-041). The other edge of the same quantization as `quantity_too_large`; a sub-tick buy is unaffected. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
 ## Errors
@@ -318,9 +318,10 @@ The same envelope as the other three services:
 | 403 | `not_an_administrator` | Valid token, wrong role |
 | 422 | — | FastAPI's own validation, e.g. `limit=0` |
 
-The preview route above adds five more of its own — `market_not_found` (404),
+The preview route above adds six more of its own — `market_not_found` (404),
 `market_not_published` (409), `insufficient_shares_outstanding` (409),
-`unknown_outcome` (422), `quantity_too_large` (422) and
+`unknown_outcome` (422), `quantity_too_large` (422),
+`proceeds_below_tick` (422) and
 `market_terms_unavailable` (503) — documented
 there rather than repeated here, since none of them can be returned anywhere
 else on this service.
