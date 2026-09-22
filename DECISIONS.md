@@ -1291,74 +1291,6 @@ and a `core` module importing `model` closes a dependency cycle. Same trade
 mitigation: `test_the_scale_and_precision_match_the_column` fails if the two
 disagree, so widening the column cannot leave `MAX_MAGNITUDE` describing the
 old one.
-### D-040 — The ledger asks market_service whether a market is still trading, and a replay is answered first
-
-**Date:** 2026-09-21 · **Ticket:** #109 · **Status:** graduated to ADR 0017
-
-**Decision.** The trade path reads `GET /public/markets/{id}` and refuses
-`409 market_closed` when the derived status is not `open`. The call is issued
-**before** the `market_books` lock, and **after** an unlocked idempotency
-lookup that replays a committed trade and returns without making the call at
-all. The preview is unchanged and makes no such call.
-
-**Why.** The book carries no status and no `close_time`, so nothing local can
-answer the question, and nothing local can be made to: ADR 0014 leaves
-`close_time` in the future on an early close, so a snapshot of it would accept
-trades against a market an administrator stopped by hand. The public detail
-endpoint's `status` is already ADR 0011's predicate applied, so one field
-answers both kinds of close and the rule is read rather than restated.
-
-Before the lock, because the lock holds `q` and `state_version` still and can
-hold nothing still in another service's database — there is no lock the ledger
-can take that makes a remote answer fresher, and holding the book row across
-the hop would serialise every trade in a market behind a round trip for
-nothing.
-
-Replay first, because a trade that committed, lost its response and was
-retried after the market closed would otherwise be told `409 market_closed` —
-a trader believing a trade failed that had in fact charged them. The unlocked
-lookup is not the pre-lock lookup ADR 0015 rejected inside `posting.post`: a
-hit names a committed, append-only row and is final, a miss is trusted for
-nothing, and the write decision is still made under the lock.
-
-**Rejected.** A push from market_service at the sweep and at the early close —
-a dual write that fails *open*, and the outbox that would fix it is what ADR
-0006 exists to avoid. Snapshotting `close_time` into `market_books` — answers
-half the predicate, and the missing half is the one an administrator controls.
-The snapshot plus a hop for early closes only — the ledger cannot know when to
-make the hop, so the local check can only refuse, never accept. A few seconds
-of caching "open" — ADR 0011's correctness-parameter objection, unchanged.
-ADR 0017 has all of them argued, plus the one-way closed latch, which is
-deferred rather than rejected and is the first move if [5.4] #20 shows the hop
-matters.
-
-**Notes.** **This fires the reversal trigger on "One clock per request, read at
-the controller, Python's not the transaction's", and declines it on purpose.**
-That entry says a path which decides or writes off this projection needs the
-transaction's clock. This is that path. The trigger cannot be honoured as
-written: the ledger's transaction cannot supply the clock for a comparison
-market_service performs, so "the transaction's clock" would mean
-market_service's — still remote, still stale by the round trip, and costing an
-extra round trip on that service's hottest read, which the same entry already
-rejected for the display case. The skew is folded into the accepted window
-rather than eliminated, and the argument is in ADR 0017 rather than here so
-that the next reader of that entry finds a decision rather than a silence.
-
-Two things this adds that are not local to the ticket. market_service becomes a
-runtime and availability dependency of **every trade**, not only of a market's
-first touch — the cost "Market terms reach the ledger by lazy pull on first
-touch" accepted, charged again and larger. And token forwarding becomes
-load-bearing on the hot path, so the warning in "Public market reads require a
-valid token, any role" — that a pull with no caller behind it has no token to
-forward — now describes every trade rather than one read per market. [3.4] #12
-does not add such a caller; [T-7] #27 would.
-
-The refactor this needs: `fetch` gains `status` and must still not gate on it
-(`test_the_close_time_is_not_what_decides_anything_here` is the assertion that
-keeps it honest), and `_parse`'s terms-only refusals — a null `liquidity_b` or
-`seed_subsidy`, and `_refuse_unpriceable` — move into `books.ensure_open`,
-because they are rules about writing a book and would otherwise start refusing
-trades on books snapshotted weeks earlier.
 
 ---
 
@@ -1432,6 +1364,77 @@ saturated outcome.
 
 ---
 
+### D-042 — The ledger asks market_service whether a market is still trading, and a replay is answered first
+
+**Date:** 2026-09-21 · **Ticket:** #109 · **Status:** graduated to ADR 0017
+
+**Decision.** The trade path reads `GET /public/markets/{id}` and refuses
+`409 market_closed` when the derived status is not `open`. The call is issued
+**before** the `market_books` lock, and **after** an unlocked idempotency
+lookup that replays a committed trade and returns without making the call at
+all. The preview is unchanged and makes no such call.
+
+**Why.** The book carries no status and no `close_time`, so nothing local can
+answer the question, and nothing local can be made to: ADR 0014 leaves
+`close_time` in the future on an early close, so a snapshot of it would accept
+trades against a market an administrator stopped by hand. The public detail
+endpoint's `status` is already ADR 0011's predicate applied, so one field
+answers both kinds of close and the rule is read rather than restated.
+
+Before the lock, because the lock holds `q` and `state_version` still and can
+hold nothing still in another service's database — there is no lock the ledger
+can take that makes a remote answer fresher, and holding the book row across
+the hop would serialise every trade in a market behind a round trip for
+nothing.
+
+Replay first, because a trade that committed, lost its response and was
+retried after the market closed would otherwise be told `409 market_closed` —
+a trader believing a trade failed that had in fact charged them. The unlocked
+lookup is not the pre-lock lookup ADR 0015 rejected inside `posting.post`: a
+hit names a committed, append-only row and is final, a miss is trusted for
+nothing, and the write decision is still made under the lock.
+
+**Rejected.** A push from market_service at the sweep and at the early close —
+a dual write that fails *open*, and the outbox that would fix it is what ADR
+0006 exists to avoid. Snapshotting `close_time` into `market_books` — answers
+half the predicate, and the missing half is the one an administrator controls.
+The snapshot plus a hop for early closes only — the ledger cannot know when to
+make the hop, so the local check can only refuse, never accept. A few seconds
+of caching "open" — ADR 0011's correctness-parameter objection, unchanged.
+ADR 0017 has all of them argued, plus the one-way closed latch, which is
+deferred rather than rejected and is the first move if [5.4] #20 shows the hop
+matters.
+
+**Notes.** **This fires the reversal trigger on "One clock per request, read at
+the controller, Python's not the transaction's", and declines it on purpose.**
+That entry says a path which decides or writes off this projection needs the
+transaction's clock. This is that path. The trigger cannot be honoured as
+written: the ledger's transaction cannot supply the clock for a comparison
+market_service performs, so "the transaction's clock" would mean
+market_service's — still remote, still stale by the round trip, and costing an
+extra round trip on that service's hottest read, which the same entry already
+rejected for the display case. The skew is folded into the accepted window
+rather than eliminated, and the argument is in ADR 0017 rather than here so
+that the next reader of that entry finds a decision rather than a silence.
+
+Two things this adds that are not local to the ticket. market_service becomes a
+runtime and availability dependency of **every trade**, not only of a market's
+first touch — the cost "Market terms reach the ledger by lazy pull on first
+touch" accepted, charged again and larger. And token forwarding becomes
+load-bearing on the hot path, so the warning in "Public market reads require a
+valid token, any role" — that a pull with no caller behind it has no token to
+forward — now describes every trade rather than one read per market. [3.4] #12
+does not add such a caller; [T-7] #27 would.
+
+The refactor this needs: `fetch` gains `status` and must still not gate on it
+(`test_the_close_time_is_not_what_decides_anything_here` is the assertion that
+keeps it honest), and `_parse`'s terms-only refusals — a null `liquidity_b` or
+`seed_subsidy`, and `_refuse_unpriceable` — move into `books.ensure_open`,
+because they are rules about writing a book and would otherwise start refusing
+trades on books snapshotted weeks earlier.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
@@ -1491,32 +1494,6 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
-- **`posting.post()` commits internally — settled for a caller with nothing to
-  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
-  this for `books.ensure_open`: order every write through
-  `session.begin_nested()` and call `post()` last, so its own commit lands
-  everything together. That works whenever the call into `post()` is the
-  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
-  `state_version` bump and its position update on `MarketOutcome` would have to
-  precede the call into `post()`, in the same transaction, under D-032's rule,
-  never after it. Whether that ordering is workable for the trade path, or
-  whether #22 needs to check its write against a quote taken *after* the trade
-  executes — in which case `post()` gains a variant that stops short of commit,
-  or the trade accepts the ledger write as its own boundary and builds
-  compensation around it — is still #22's to decide.
-- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
-  `core/opening_prices.py::max_platform_loss` computes the worst case and
-  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
-  compares them — `_liquidity_problems` checks both are present and positive and
-  says in its own docstring that the comparison is "deliberately NOT checked",
-  on the grounds that an administrator may knowingly seed a market for less.
-  That was a defensible call while the number was only displayed. Once [F-7] #96
-  funds a pool from it, an undersubsidised market is one whose pool goes
-  negative under ordinary trading, and `_refuse_overdrafts` exempts every
-  non-USER account, so nothing anywhere will say so. Whether that stays an
-  informed choice, becomes a submission rule, or becomes a warning the ledger
-  records at book creation is undecided. It is market_service's rule to make
-  either way, not the ledger's.
 - **How long the terms pull may block, given it runs inside a transaction
   holding row locks.** `service/market_terms.py::_TIMEOUT` is five seconds on
   every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
