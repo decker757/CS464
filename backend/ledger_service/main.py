@@ -10,6 +10,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import redis.asyncio as redis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -33,7 +34,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # before the first column change against data worth keeping — which for
     # this service means "before anybody has traded".
     await create_all()
+
+    # One Redis client for the process. [F-9] #112. Built here rather than per
+    # publish: a publish runs once per trade, so a client per call would be a
+    # DNS lookup, a TCP handshake and a pool teardown on the hot path, for a
+    # call whose entire purpose is to be cheap enough to fail silently.
+    #
+    # `from_url` does not connect — it builds a pool that dials lazily — so
+    # this does not block startup on Redis being reachable, deliberately: an
+    # unreachable bus costs one lost broadcast per trade, not a ledger that
+    # will not boot.
+    app.state.redis = redis.from_url(get_settings().redis_url)
     yield
+    await app.state.redis.aclose()
     await dispose_engine()
 
 
