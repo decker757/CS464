@@ -114,6 +114,13 @@ frame without its `type`, so that rendering a snapshot and rendering an event
 are the same function on the client. It lands with [F-3] #43 and [T-2] #22, on
 the ledger, per ADR 0005.
 
+> **Amended by [F-9] #112.** It landed there instead — `GET
+> /ledger/markets/{id}/snapshot`, on the ledger as this section says, but split
+> out of [T-2] #22 ahead of it so that the trade is a trade. [F-3] #43 shipped
+> the engine and #22 now calls a producer that already exists. The same ticket
+> made the ledger the publisher this record assigned it, which is why the two
+> halves of the contract landed together rather than with the trade.
+
 ### `state_version` is a counter, and both ends check it
 
 A per-market integer incremented in the same transaction as the trade. Not a

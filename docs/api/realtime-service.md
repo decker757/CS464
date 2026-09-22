@@ -277,8 +277,25 @@ subscriber reconnects on its own with backoff.
 
 | Variable | Required | Notes |
 | --- | --- | --- |
-| `REDIS_URL` | yes | No default. A default is a credential in the repo. |
+| `REDIS_URL` | yes | No default, **in this service**. See below. |
 | `JWT_SECRET` | yes | No default. Must match the auth service's. |
 | `CORS_ORIGINS` | no | Comma-separated. **Also the socket's origin allowlist.** |
 | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | no | Defaults to 50. |
 | `SEND_QUEUE_SIZE` | no | Defaults to 64. Overflow closes with `4409`. |
+
+**`REDIS_URL` is required here and has a default in the ledger, on purpose.**
+Since [F-9] #112 the ledger talks to Redis too, and the two services answer the
+same question differently because the same mistake costs them different
+things. Point this service at the wrong Redis and it starts, reports `ok`, and
+relays nothing — the failure is the whole service and it is silent, which is
+why a default that a forgotten variable could fall back on is refused here.
+Point the ledger at the wrong Redis and it loses a broadcast: the publish is
+fire-and-forget by design, the trade has already committed and is still
+correct, and the client reconciles on its next snapshot. One lost frame is not
+worth a service that will not start, so the producer takes
+`redis://redis:6379/0` as a default and this consumer does not.
+
+That asymmetry holds only while the publish stays fire-and-forget. If anything
+on the ledger's publish path ever acknowledges, retries, or fails a trade on a
+publish error, a wrong Redis there costs money rather than a frame, and the
+argument above becomes this service's for both.
