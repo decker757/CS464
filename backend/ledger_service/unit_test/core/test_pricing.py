@@ -1,10 +1,16 @@
 """Rounding a cost to what the ledger can store. [T-1] #21
 
-`core/pricing.py` holds one function and one enum. `quantize_cost` takes an
+`core/pricing.py` holds two functions and one enum. `quantize_cost` takes an
 **unsigned magnitude** and the side of the trade, and returns that magnitude at
 `Numeric(18, 4)`'s scale of 4. The caller applies the sign: a buy's total is
 negative on the wire because credits leave the trader, and a sell's is
 positive, but neither of those is this function's business.
+
+`refuse_sub_tick_proceeds` judges what `quantize_cost` returned: a sell that
+quantized to nothing is refused rather than quoted, because taking real shares
+for zero credits is the surprise [T-1] #21 exists to prevent (D-041). It sits
+beside the rounding rather than in `service/preview.py` because [T-2] #22 has
+to make the same refusal on the write path.
 
 **Why a magnitude rather than the engine's signed answer.** `cost_to_trade`
 returns positive for a buy and negative for a sell, and the acceptance
@@ -51,6 +57,18 @@ def _pricing():
     from core import pricing  # noqa: PLC0415
 
     return pricing
+
+
+def _errors():
+    """`core/errors.py`: `ProceedsBelowTick`, which does not exist yet either.
+
+    Reached lazily for the same reason as `_pricing`. `core/errors.py` holds no
+    framework imports and no session, so naming a domain error from here does
+    not cost this file its place in the no-database run.
+    """
+    from core import errors  # noqa: PLC0415
+
+    return errors
 
 
 # The tick `Numeric(18, 4)` stores. Spelled from the scale rather than as the
@@ -210,6 +228,134 @@ def test_a_trade_of_nothing_costs_nothing_on_both_sides() -> None:
 
     assert _pricing().quantize_cost(Decimal(0), side=buy) == Decimal(0)
     assert _pricing().quantize_cost(Decimal(0), side=sell) == Decimal(0)
+
+
+# --- the sub-tick sell ----------------------------------------------------
+#
+# `cost_to_trade`'s own docstring example, and the reason this refusal is not
+# theoretical: 100 shares of the second outcome against `q = [1560, 100]` at
+# `b = 100` are worth 0.0000288 — a real trade, in a saturated outcome, under
+# one tick. The magnitudes below come out of the engine rather than being
+# pinned as literals, so a fixture that stopped being sub-tick fails its own
+# guard instead of quietly asserting nothing.
+_SATURATED = [Decimal("1560.0000"), Decimal("100.0000")]
+_SATURATED_B = Decimal("100.0000")
+_SATURATED_QUANTITY = Decimal("100.0000")
+
+
+def _saturated_magnitude(side: str) -> Decimal:
+    """What the engine says 100 shares of the saturated outcome are worth.
+
+    `core/lmsr.py` is pure and imports nothing but the standard library, so
+    calling it from this file keeps `unit_test/core` runnable with no database.
+    Guarded rather than trusted: if this stops being a sub-tick magnitude the
+    tests below prove nothing, and that is a property of the fixture.
+    """
+    from core.lmsr import cost_to_trade  # noqa: PLC0415
+
+    signed = _SATURATED_QUANTITY if side == "buy" else -_SATURATED_QUANTITY
+    raw = abs(cost_to_trade(_SATURATED, _SATURATED_B, [Decimal(0), signed]))
+    assert Decimal(0) < raw < _QUANTUM, (
+        f"this fixture is meant to price a real trade at under one tick on a "
+        f"{side}; got {raw}, so the assertion it feeds proves nothing"
+    )
+    return raw
+
+
+def test_a_sell_whose_proceeds_quantize_to_zero_is_refused() -> None:
+    """D-041. Zero proceeds for real shares is refused, not quoted.
+
+    The floor itself is correct — D-039 requires it and the residue has to go
+    to the pool — but on a sub-tick magnitude the residue *is* the whole trade,
+    so the quantized answer is `0.0000`: a quote that takes shares for nothing.
+    Both alternatives break something already decided. Quoting the zero is the
+    surprise #21 exists to prevent. Paying a minimum tick pays the trader more
+    than the shares are worth, which is the residue running toward the trader,
+    the one outcome the criterion rules out.
+
+    So refusing is the only answer left, and it is the answer D-040 already
+    gives at the other edge: a magnitude the column cannot honestly represent
+    is refused rather than quoted, in either direction.
+    """
+    _, sell = _sides()
+    pricing = _pricing()
+
+    paid = pricing.quantize_cost(_saturated_magnitude("sell"), side=sell)
+    assert paid == Decimal(0), "the floor is what makes this refusal necessary"
+
+    with pytest.raises(_errors().ProceedsBelowTick):
+        pricing.refuse_sub_tick_proceeds(paid, side=sell)
+
+
+def test_a_sub_tick_buy_still_charges_one_tick() -> None:
+    """The buy side needs no refusal and must not get one.
+
+    `ROUND_CEILING` already charges the whole tick on a sub-tick buy, which is
+    the house's favour and consistent with D-039: the trader pays slightly more
+    than the shares are worth, which is the direction the pool is allowed to
+    win in. An implementation that refused a sub-tick *trade* rather than
+    sub-tick *proceeds* would fail here, and it would refuse exactly the buys
+    that are already priced correctly.
+    """
+    buy, _ = _sides()
+    pricing = _pricing()
+
+    charged = pricing.quantize_cost(_saturated_magnitude("buy"), side=buy)
+
+    assert charged == _QUANTUM
+    pricing.refuse_sub_tick_proceeds(charged, side=buy)
+
+
+def test_the_refusal_is_keyed_on_the_side_and_fires_only_on_a_sell() -> None:
+    """A zero magnitude is refused on a sell and returned on a buy.
+
+    Stated on the bare value rather than through the engine, because this is
+    the whole condition: `side is Side.SELL` and a quantized magnitude of zero.
+    A guard that read the magnitude alone would refuse a buy of nothing, which
+    `test_a_trade_of_nothing_costs_nothing_on_both_sides` says costs nothing
+    and raises nothing — the two rules have to coexist.
+    """
+    buy, sell = _sides()
+    pricing = _pricing()
+
+    with pytest.raises(_errors().ProceedsBelowTick):
+        pricing.refuse_sub_tick_proceeds(Decimal("0.0000"), side=sell)
+
+    pricing.refuse_sub_tick_proceeds(Decimal("0.0000"), side=buy)
+
+
+def test_proceeds_of_exactly_one_tick_are_not_refused() -> None:
+    """The boundary, because the obvious off-by-one is a `<=`.
+
+    One tick is the smallest amount the ledger can pay and it is an honest
+    number: the trader is paid something for their shares. A guard written as
+    `magnitude <= QUANTUM` would refuse it and would pass every other test in
+    this section.
+    """
+    _, sell = _sides()
+    pricing = _pricing()
+
+    pricing.refuse_sub_tick_proceeds(_QUANTUM, side=sell)
+
+
+def test_the_refusal_carries_its_own_code_and_status() -> None:
+    """422 `proceeds_below_tick`, decided here rather than at the route.
+
+    The status lives on the error class and `controller/errors.py` maps
+    whatever it is told, so this is where 422 is pinned;
+    `test_preview_routes.py` asserts only that it reaches the wire.
+
+    422 rather than 409: it pairs with `QuantityTooLarge` as the two edges of
+    one quantization, and the trader's correction is a larger quantity, which
+    is typing. D-041 records that 409 was considered and why it lost, because
+    the argument is close — unlike `QuantityTooLarge`, this refusal does depend
+    on the book's `q`.
+    """
+    errors = _errors()
+
+    assert errors.ProceedsBelowTick.status_code == 422
+    assert errors.ProceedsBelowTick.code == "proceeds_below_tick"
+    assert issubclass(errors.ProceedsBelowTick, errors.LedgerError)
 
 
 # --- the refusal ----------------------------------------------------------

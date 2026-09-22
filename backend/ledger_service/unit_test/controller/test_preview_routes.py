@@ -18,6 +18,7 @@ directly is the most honest way to ask that question.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -50,6 +51,12 @@ def _entities():
 _B = Decimal("100.0000")
 _SUBSIDY = Decimal("250.0000")
 _Q = [Decimal("137.5000"), Decimal("42.2500")]
+
+# `core/lmsr.py::cost_to_trade`'s own docstring example: at `b = 100`, 100
+# shares of the second outcome against this `q` are worth 0.0000288, which
+# floors to nothing. The service-layer test guards that the fixture really is
+# sub-tick; here it only has to reach the wire as a status code.
+_SATURATED = [Decimal("1560.0000"), Decimal("100.0000")]
 
 # Every field in the response, and nothing else. Asserted as a set so that an
 # extra one is a failure rather than an unnoticed addition — see
@@ -114,7 +121,9 @@ class _Market:
         return httpx.MockTransport(handler)
 
 
-async def _warm(session: AsyncSession, market: _Market) -> None:
+async def _warm(
+    session: AsyncSession, market: _Market, q: Sequence[Decimal] = tuple(_Q)
+) -> None:
     """Open the book and write `q`, committed, so the route's own session sees it."""
     await _books().ensure_open(
         session,
@@ -123,7 +132,7 @@ async def _warm(session: AsyncSession, market: _Market) -> None:
         transport=market.transport,
     )
     outcome = _entities().MarketOutcome
-    for position, value in enumerate(_Q):
+    for position, value in enumerate(q):
         await session.execute(
             update(outcome)
             .where(
@@ -822,3 +831,56 @@ async def test_a_quantity_that_prices_above_the_column_is_422(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "quantity_too_large"
+
+
+async def test_a_sell_whose_proceeds_quantize_to_zero_is_422(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """D-041 at the wire, on `cost_to_trade`'s own saturated example.
+
+    The other edge of the same quantization, so it carries the same status as
+    `quantity_too_large` with a code of its own: in both cases the number the
+    ledger would store is not what the trade is worth, and the correction is a
+    different quantity. A client needs the two apart — one is fixed by asking
+    for less and the other by asking for more — which is why this is not
+    folded into `quantity_too_large`.
+
+    Distinct from `insufficient_shares_outstanding`, which this request would
+    also be eligible for on a smaller book: here the shares exist, and it is
+    what they are worth that cannot be paid honestly.
+    """
+    market = _Market()
+    await _warm(session, market, _SATURATED)
+
+    response = await client.get(
+        _path(market.market_id),
+        params=_params(market.outcomes[1], side="sell", quantity="100.0000"),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "proceeds_below_tick"
+
+
+async def test_the_same_sub_tick_quantity_is_still_priced_on_a_buy(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """The refusal is about proceeds, not about sub-tick trades.
+
+    Same market, same outcome, same quantity, opposite side: `ROUND_CEILING`
+    charges the whole tick, which is the house's favour, so there is nothing to
+    refuse. Without this, an implementation that refused both sides at the
+    route would pass the test above and quietly stop quoting half the trades
+    in a saturated outcome.
+    """
+    market = _Market()
+    await _warm(session, market, _SATURATED)
+
+    response = await client.get(
+        _path(market.market_id),
+        params=_params(market.outcomes[1], side="buy", quantity="100.0000"),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == "-0.0001"

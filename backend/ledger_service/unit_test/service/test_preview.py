@@ -1221,26 +1221,32 @@ _SATURATED = [Decimal("1560.0000"), Decimal("100.0000")]
 _HUNDRED = Decimal("100.0000")
 
 
-async def test_a_sub_tick_sell_is_quoted_at_zero(session: AsyncSession) -> None:
-    """Pinned, not endorsed: a real sell can be worth nothing on the wire.
+async def test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero(
+    session: AsyncSession,
+) -> None:
+    """D-041. Proceeds that quantize to zero are refused, not quoted.
 
     `quantize_cost` floors a sell's magnitude (D-039), so proceeds under one
-    tick become `0.0000` — the trader gives up real shares and is quoted
-    nothing for them. `cost_to_trade`'s docstring names this case and leaves
-    the choice between refusing it, charging a minimum tick and quoting zero
-    to "where there is a request to refuse". This route is that place and has
-    not chosen; DECISIONS.md's Open section carries the question.
+    tick reach `0.0000`, and quoting that takes real shares for nothing —
+    the surprise this ticket exists to prevent. The alternative, paying a
+    minimum tick, hands the trader more than the shares are worth and breaks
+    "the residue accrues to the pool, never to the trader", so refusing is the
+    only answer that keeps both rules. It mirrors `QuantityTooLarge` (D-040):
+    a quote the column cannot honestly represent is refused, at either edge of
+    the quantization.
 
-    Here so that whichever way it is settled, it moves *this test* rather than
-    a number nobody is watching. The asymmetry is the whole point: the same
-    100 shares cost a tick to buy and pay nothing to sell, so a round trip in
-    a saturated outcome is a guaranteed loss of one tick.
+    The buy assertion is the other half, not a spare. The same 100 shares
+    still cost a full tick, because `ROUND_CEILING` rounds toward the house
+    and that needs no refusal — so this is not a rule about sub-tick trades,
+    it is a rule about sub-tick *proceeds*, and an implementation that
+    refused both sides would fail here.
 
-    This pins the consequence, not the rounding mode — `ROUND_FLOOR` itself is
-    held by `test_a_sell_s_residue_goes_to_the_pool` in
-    `unit_test/core/test_pricing.py`, which does fail under `ROUND_HALF_UP`.
-    At this fixture's magnitude both modes give zero, so a green here says
-    nothing about which one is in use, only that a sell can be worth nothing.
+    The refusal is raised by `core/pricing.py::refuse_sub_tick_proceeds`
+    rather than by this service, because [T-2] #22 has to make the same
+    refusal on the write path: a rule about money that lives only in the
+    preview is a rule #22 inherits by copying it or by forgetting to. This
+    test drives it through `quote`, which is the assertion that the preview
+    actually calls it; `unit_test/core/test_pricing.py` holds the rule itself.
     """
     upstream = _Upstream()
     await _warm(session, upstream, _SATURATED)
@@ -1251,11 +1257,11 @@ async def test_a_sub_tick_sell_is_quoted_at_zero(session: AsyncSession) -> None:
         f"got {raw}, so the assertions below prove nothing"
     )
 
-    sell = await _quote(session, upstream, outcome=1, side="sell", quantity=_HUNDRED)
+    with pytest.raises(_errors().ProceedsBelowTick):
+        await _quote(session, upstream, outcome=1, side="sell", quantity=_HUNDRED)
+
     buy = await _quote(session, upstream, outcome=1, side="buy", quantity=_HUNDRED)
 
-    assert sell.total == ZERO
-    assert sell.average_price == ZERO
     assert buy.total == -_QUANTUM
 
 
