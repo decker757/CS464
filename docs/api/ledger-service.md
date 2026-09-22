@@ -284,6 +284,14 @@ returns a number. Gate the preview control on the market read's derived
 status (`docs/api/market-service.md`) instead; [T-2] #22 is what refuses the
 trade itself.
 
+**The trade path disagrees with this on purpose, and it is not a bug.** [T-2]
+#22's route makes its own call to market_service on every trade that is not a
+replay of one already committed, and refuses `409 market_closed` when that
+market's derived status is not `"open"` (ADR 0017). A preview is arithmetic
+and fires on every keystroke; a trade is a decision and fires once — so the
+same closed market that this route happily prices is the one the trade that
+follows it will refuse.
+
 **A sell has no holdings check.** It is priced arithmetically against shares
 outstanding only — see the 409 below — never against what the caller holds.
 The per-user holdings check belongs to [T-3] #23 and only means anything
@@ -326,9 +334,16 @@ The preview route above adds six more of its own — `market_not_found` (404),
 there rather than repeated here, since none of them can be returned anywhere
 else on this service.
 
-Three more exist in `core/errors.py` and no route can return them yet:
-`insufficient_funds` (409), `idempotency_key_reused` (409) and
-`unbalanced_transaction` (422). They belong to the write path and are documented
-here so that [T-2] #22's endpoint is a route rather than a second opinion about
-what they mean. `insufficient_funds` carries `error.details` with `balance` and
-`required`, because a trading service has to tell somebody how short they were.
+Four more exist in `core/errors.py` and no route can return them yet:
+`insufficient_funds` (409), `idempotency_key_reused` (409),
+`unbalanced_transaction` (422) and `market_closed` (409). They belong to the
+write path and are documented here so that [T-2] #22's endpoint is a route
+rather than a second opinion about what they mean. `insufficient_funds`
+carries `error.details` with `balance` and `required`, because a trading
+service has to tell somebody how short they were.
+
+`market_closed` is ADR 0017's: the trade path will read market_service's
+public detail endpoint once per trade that is not a replay of one already
+committed, and refuse this code when that market's derived status is not
+`"open"` — spelled the same way market_service spells its own version of the
+same refusal, so a frontend error handler built for one serves both.
