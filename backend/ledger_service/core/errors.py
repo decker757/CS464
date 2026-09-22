@@ -106,12 +106,26 @@ class IdempotencyKeyReused(LedgerError):
 class MarketTermsUnavailable(LedgerError):
     """market_service could not be reached, or answered as if it were down.
 
-    D-030. Covers a refused connection, a timeout, a 5xx, and a 200 whose body
+    Wider than its name now suggests: this covers the market's *terms* — its
+    `liquidity_b`, `seed_subsidy` and outcomes, read once at first touch — and,
+    since ADR 0017, the ledger's attempt to learn whether a market is still
+    *open*, read on every trade. Both are the same dependency and the same
+    failure mode, so they share one code: a caller cannot act differently on
+    "the terms could not be read" versus "the status could not be read", and
+    the principle behind this service's error codes is that a caller can act
+    differently on each one it has.
+
+    D-030 covers a refused connection, a timeout, a 5xx, and a 200 whose body
     is not a market — the market service is treated as down rather than the
     ledger crashing on a parse error it cannot recover from. Also raised for a
     published market whose `liquidity_b` or `seed_subsidy` arrived null, which
     `service/validation.py` on the other side should never produce: refusing
-    beats writing a book with a `b` that can never be priced.
+    beats writing a book with a `b` that can never be priced. ADR 0017 adds a
+    404 for a market that already holds a book — that market was published,
+    so a 404 at that point is market_service answering incorrectly rather
+    than a market that is gone — and a `status` field that is missing or not
+    a string, because a sick dependency must never be read as a closed
+    market.
 
     503 because the request was fine and the dependency was not, and because a
     trade that failed this way is worth retrying in a moment.
@@ -120,6 +134,27 @@ class MarketTermsUnavailable(LedgerError):
     status_code = 503
     code = "market_terms_unavailable"
     message = "Could not read this market's terms right now. Try again shortly."
+
+
+class MarketClosed(LedgerError):
+    """This market is not open for trading. [F-8] #109, ADR 0017.
+
+    Read off market_service's public detail endpoint, whose `status` is
+    already ADR 0011's derived predicate — the clock's close and an
+    administrator's early one both arrive through this one field, so this is
+    a comparison against `"open"` rather than a list of the statuses that
+    happened to exist when it was written.
+
+    409 for `InsufficientFunds`'s reason: the request is well formed and it is
+    the state that refuses it — the same trade would have succeeded an hour
+    ago and may never succeed again. Spelled `market_closed` to match
+    market_service's own code, so a frontend error handler built for one
+    serves both.
+    """
+
+    status_code = 409
+    code = "market_closed"
+    message = "This market is not open for trading."
 
 
 class MarketNotFound(LedgerError):
