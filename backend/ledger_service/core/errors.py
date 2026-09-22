@@ -193,6 +193,29 @@ class QuantityTooLarge(LedgerError):
     message = "This quantity prices above the largest cost the ledger can store."
 
 
+class ProceedsBelowTick(LedgerError):
+    """A sell whose proceeds quantize to `0.0000`. [T-1] #21, D-041.
+
+    The other edge of the quantization `QuantityTooLarge` refuses at: a
+    magnitude `Numeric(18, 4)` cannot honestly represent is refused rather
+    than quoted, in either direction. Here that means real shares priced at
+    nothing — quoting the zero takes them for free, and paying a minimum tick
+    would pay the trader more than they are worth, which is the residue
+    running toward the trader rather than the pool (D-039). Refusing is the
+    only answer that keeps both rules.
+
+    422 rather than 409, decided in D-041 as the closer call of the two: it
+    pairs with `QuantityTooLarge` as the two edges of one quantization, and
+    the trader's correction — a larger quantity — is typing, the same place
+    D-038 and D-040 put it, even though this refusal, unlike that one, does
+    depend on the book's `q`.
+    """
+
+    status_code = 422
+    code = "proceeds_below_tick"
+    message = "This sell's proceeds round down to nothing at the ledger's scale."
+
+
 class UnknownOutcome(LedgerError):
     """`outcome_id` does not name one of this market's outcomes. [T-1] #21.
 

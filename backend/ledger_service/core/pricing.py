@@ -16,6 +16,12 @@ magnitude — paying the trader the residue instead of the pool. A negative
 argument means a caller passed the signed answer straight through, so it is
 refused rather than reinterpreted.
 
+`refuse_sub_tick_proceeds` judges what `quantize_cost` returned: a sell that
+quantized to nothing is refused rather than quoted, because taking real
+shares for zero credits is the surprise this ticket exists to prevent
+(D-041). It sits here rather than in `service/preview.py` because [T-2] #22
+has to make the same refusal on the write path.
+
 Pure. No session, no clock, no configuration.
 """
 
@@ -23,6 +29,8 @@ from __future__ import annotations
 
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import StrEnum
+
+from core.errors import ProceedsBelowTick
 
 # `Numeric(18, 4)`'s shape, restated rather than imported from
 # `model/entities.py::AMOUNT_SCALE`. `model` imports `core.database`, so a
@@ -72,3 +80,22 @@ def quantize_cost(magnitude: Decimal, *, side: Side) -> Decimal:
 
     rounding = ROUND_CEILING if side is Side.BUY else ROUND_FLOOR
     return magnitude.quantize(QUANTUM, rounding=rounding)
+
+
+def refuse_sub_tick_proceeds(quantized: Decimal, *, side: Side) -> None:
+    """Refuse a sell whose quantized proceeds are `0.0000`. D-041.
+
+    Takes what `quantize_cost` already returned rather than re-deriving it,
+    so the two never disagree about what counts as sub-tick. A quantized
+    magnitude of zero is only a problem on a sell: a buy of zero shares
+    costs zero honestly (`test_a_trade_of_nothing_costs_nothing_on_both_sides`),
+    and a sub-tick buy never reaches zero because `ROUND_CEILING` charges the
+    whole tick. So the condition is on the side, not the magnitude alone.
+
+    Lives beside `quantize_cost` rather than in `service/preview.py` because
+    [T-2] #22's write path has to make the same refusal, and a rule about
+    money that lived only in the preview would be one #22 inherits by
+    copying it or by forgetting to.
+    """
+    if side is Side.SELL and quantized == 0:
+        raise ProceedsBelowTick

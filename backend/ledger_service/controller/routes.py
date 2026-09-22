@@ -219,8 +219,9 @@ async def user_entries(
         422: {
             "description": (
                 "A malformed query string, an `outcome_id` that is not this "
-                "market's, or a quantity whose cost prices above what the "
-                "ledger can store."
+                "market's, a quantity whose cost prices above what the "
+                "ledger can store, or a sell whose proceeds round down to "
+                "nothing (D-041)."
             )
         },
         503: {"description": "market_service could not be reached right now."},
@@ -231,7 +232,6 @@ async def preview_trade(
     outcome_id: uuid.UUID,
     side: Side,
     quantity: PreviewQuantity,
-    user: CurrentUser,
     access_token: AccessToken,
     session: DbSession,
 ) -> PreviewOut:

@@ -113,12 +113,15 @@ def cost_to_trade(q: Sequence[Decimal], b: Decimal, delta: Sequence[Decimal]) ->
 
     The engine still does not round it off, because rounding here is the
     round-trip profit the boundary contract exists to prevent. What the engine
-    also still does not decide is the sell that floors to zero — charging a
-    minimum tick, rounding toward the house and refusing the trade are choices
-    about money that belong where there is a request to refuse. #21 took the
-    rounding half of that (D-039) and left the refusal open; see DECISIONS.md's
-    Open section. `test_a_sub_tick_trade_is_priced_not_rounded` pins what this
-    function does today so the decision stays deliberate rather than inherited.
+    also does not decide is what happens to a sell that floors to zero:
+    charging a minimum tick, rounding toward the house and refusing the trade
+    were choices about money that belonged where there is a request to
+    refuse. #21 is that place, and now makes both halves of the choice —
+    `core/pricing.py::refuse_sub_tick_proceeds` refuses it (D-041), rather
+    than inheriting a zero-cost trade by default.
+    `test_a_sub_tick_trade_is_priced_not_rounded` still pins what this
+    function itself does: price the trade honestly and leave rounding and
+    refusal to the caller.
     """
     _require_outcomes(q)
     _require_positive_b(b)

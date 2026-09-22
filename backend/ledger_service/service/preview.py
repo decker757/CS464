@@ -25,9 +25,14 @@ is a single indexed read that writes nothing (D-036).
    quantizes the unsigned magnitude by side, and the sign is applied here:
    negative on a buy, positive on a sell. A magnitude above what
    `Numeric(18, 4)` can store is `QuantityTooLarge` (422) rather than a quote
-   [T-2] #22 could not charge (D-040).
+   [T-2] #22 could not charge (D-040). A sell whose quantized proceeds are
+   `0.0000` is `ProceedsBelowTick` (422) rather than a quote that takes real
+   shares for nothing (D-041).
 7. `average_price` is `abs(total) / quantity`, from the *quantized* total,
-   `ROUND_HALF_UP` at scale 4 — display, not money.
+   `ROUND_HALF_UP` at scale 4 — display, not money. Run inside
+   `core/lmsr.py`'s pinned decimal context, the same one every other division
+   in this service's pricing path uses, so an ambient trap or precision never
+   reaches this one division.
 8. `prices` and `post_trade_prices` are every outcome, `ROUND_HALF_UP` at
    scale 4, ordered by position.
 
@@ -54,8 +59,14 @@ from core.errors import (
     QuantityTooLarge,
     UnknownOutcome,
 )
-from core.lmsr import cost_to_trade, prices as lmsr_prices
-from core.pricing import MAX_MAGNITUDE, QUANTUM, Side, quantize_cost
+from core.lmsr import _engine_context, cost_to_trade, prices as lmsr_prices
+from core.pricing import (
+    MAX_MAGNITUDE,
+    QUANTUM,
+    Side,
+    quantize_cost,
+    refuse_sub_tick_proceeds,
+)
 from model.entities import MarketBook, MarketOutcome
 from service import books
 
@@ -139,8 +150,15 @@ async def quote(
     if magnitude > MAX_MAGNITUDE:
         raise QuantityTooLarge
 
+    # D-041. The other edge of the same quantization: a sell whose proceeds
+    # rounded down to nothing is refused rather than quoted.
+    refuse_sub_tick_proceeds(magnitude, side=side)
+
     total = -magnitude if side is Side.BUY else magnitude
-    average_price = (abs(total) / quantity).quantize(QUANTUM, rounding=ROUND_HALF_UP)
+    with _engine_context():
+        average_price = (abs(total) / quantity).quantize(
+            QUANTUM, rounding=ROUND_HALF_UP
+        )
 
     after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
 

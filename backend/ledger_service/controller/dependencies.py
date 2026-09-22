@@ -71,6 +71,8 @@ async def get_access_token(request: Request, _claims: CurrentUser) -> str:
     return token
 
 
+# Depends on `CurrentUser` through `get_access_token`'s own signature, so
+# verification always runs first: no route can receive this token unverified.
 AccessToken = Annotated[str, Depends(get_access_token)]
 
 
