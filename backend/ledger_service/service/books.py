@@ -39,10 +39,18 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.errors import MarketNotPublished
+from core.errors import MarketNotPublished, MarketTermsUnavailable
 from model.entities import AccountKind, MarketBook, MarketOutcome, TransactionKind
 from service import accounts, market_terms, posting
+from service.market_terms import OutcomeTerms
 from service.posting import Leg
+
+# The fewest outcomes a market can be priced with. Two, the same floor
+# `market_service/service/validation.py::MIN_OUTCOMES` enforces at submission
+# — restated rather than imported, because `unit_test/test_import_boundary.py`
+# fails any `import market_service` from this service and is right to: that
+# import resolves under pytest and is an ImportError in the container.
+_MIN_OUTCOMES = 2
 
 # Namespaced like every other idempotency key this system generates, so that
 # `market-open:<market_id>` cannot collide with `signup-grant:<user_id>` even
@@ -80,6 +88,18 @@ async def ensure_open(
     )
     if terms.published_at is None:
         raise MarketNotPublished
+
+    # ADR 0017: refused here, before `MarketBook` is constructed, rather than
+    # by `service/market_terms.py::_parse`. Both columns below are
+    # `nullable=False`, so a null reaching the insert would raise
+    # `IntegrityError` inside the savepoint below, where the `except
+    # IntegrityError` is watching for a lost first-touch race (D-010) — it
+    # would re-raise correctly, because `_find` finds no committed book, but
+    # the caller would get a 500 describing nothing while the race handler
+    # quietly catches two unrelated things.
+    if terms.liquidity_b is None or terms.seed_subsidy is None:
+        raise MarketTermsUnavailable
+    _refuse_unpriceable(terms.outcomes)
 
     # D-028: keyed on the market id, so the insert race below and this one
     # fail the same way for the same reason. `accounts.ensure` recovers from
@@ -145,3 +165,40 @@ async def ensure_open(
 async def _find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
     stmt = select(MarketBook).where(MarketBook.market_id == market_id)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
+    """Terms that could be stored but never priced. Same defence as null `b`.
+
+    Moved here from `service/market_terms.py::_parse` by ADR 0017: these are
+    rules about *writing a book*, not about reading terms, and enforcing them
+    on a read would mean a market_service that began returning an unpriceable
+    outcome list starts refusing trades on books that have priced correctly
+    for weeks, against outcomes this service read once at first touch and
+    never rereads.
+
+    Three ways a well-formed outcome list is still unusable, and none of them
+    is reachable from a correct market service — `publish` re-runs every
+    submission rule, which requires between two and ten named outcomes with
+    server-assigned positions. They are refused for the reason the null-terms
+    check above is: the book is written once and is immutable under ADR 0005,
+    so a bad one is not something a later read corrects.
+
+    **Fewer than two outcomes.** `C(q) = b·ln(Σ e^(q_i/b))` over one outcome
+    prices it at 1.0 and over none is a sum with no terms. Either way the
+    market opens, funds its pool, and quotes a price nobody can trade against.
+
+    **A repeated outcome id or position.** Both are unique constraints on
+    `market_outcomes`, so these reach the database and fail there — inside
+    this function's caller's savepoint, where the `except IntegrityError` is
+    watching for a *lost first-touch race*. It re-raises correctly, because
+    `_find` finds no committed book, but the request ends as a 500 on a
+    condition that is the upstream being wrong. Caught here it is the 503 the
+    contract promises, and the race handler keeps meaning only what it says.
+    """
+    if len(outcomes) < _MIN_OUTCOMES:
+        raise MarketTermsUnavailable
+    if len({o.outcome_id for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable
+    if len({o.position for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable
