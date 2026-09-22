@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,19 @@ from core.errors import NotAnAdministrator, NotAuthenticated
 from core.security import TokenClaims
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+
+async def get_redis(request: Request) -> redis.Redis:
+    """The process-wide Redis client `main.py`'s lifespan built. [F-9] #112.
+
+    Not one per request: `app.state.redis` is the single client opened at
+    startup and closed at shutdown, the same shape `DbSession` gives a
+    connection pool rather than a connection per call.
+    """
+    return request.app.state.redis
+
+
+RedisClient = Annotated[redis.Redis, Depends(get_redis)]
 
 
 async def get_claims(request: Request) -> TokenClaims:

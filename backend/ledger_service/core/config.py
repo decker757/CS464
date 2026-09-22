@@ -57,6 +57,26 @@ class Settings(ServiceSettings):
     # than the deploy it exists to catch.
     market_service_url: str = Field(default="http://market:8000")
 
+    # --- The price broadcast's bus [F-9] #112, ADR 0010 --------------------
+    # `redis` is the hostname compose gives the bus on the shared network, the
+    # same shape `market_service_url` above uses for a service name.
+    #
+    # Has a default, unlike `database_url` and the inherited JWT secret,
+    # because it is not a credential and because `ci-backend.yml`'s "Verify
+    # the app boots" step calls `create_app()` with only four environment
+    # variables set — this is not one of them, so a required field here would
+    # fail that step rather than the deploy it exists to catch.
+    #
+    # Deliberately not required the way `realtime_service.REDIS_URL` is.
+    # `docs/api/realtime-service.md` states the asymmetry: point that service
+    # at the wrong Redis and it starts, reports healthy, and relays nothing —
+    # the failure is the whole service and it is silent. Point this service at
+    # the wrong Redis and it loses one broadcast per trade: the publish is
+    # fire-and-forget (`service/bus.py`), the trade has already committed and
+    # is still correct, and the client reconciles on its next snapshot. One
+    # lost frame is not worth a ledger that will not start.
+    redis_url: str = Field(default="redis://redis:6379/0")
+
     # --- Paging -----------------------------------------------------------
     # A ledger only grows, so an unbounded history read is a question that gets
     # slower every week it is asked. Same ceilings, and the same reasoning, as

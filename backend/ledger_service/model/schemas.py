@@ -237,6 +237,68 @@ class PreviewOut(BaseModel):
         return str(value)
 
 
+class OutcomePrice(BaseModel):
+    """What one outcome of a market currently costs. [F-9] #112.
+
+    Copied from `realtime_service/model/schemas.py`, field for field, per ADR
+    0012 and `docs/api/realtime-service.md`: below that package's bar for
+    `shared/`, and `unit_test/model/test_price_event.py` pins the copy against
+    the original with `ast` so a drift between the two fails loudly instead of
+    silently dropping every event on the consumer's `extra="forbid"`.
+    """
+
+    outcome_id: uuid.UUID
+    position: int = Field(ge=0)
+    price: Decimal = Field(ge=0, le=1)
+
+    @field_serializer("price")
+    def _price_as_string(self, value: Decimal) -> str:
+        """Exact on the wire, for the reason every other amount in this
+        service is a string: a JSON number is an IEEE double by the time a
+        browser has parsed it."""
+        return str(value)
+
+
+class PriceEvent(BaseModel):
+    """A market's price after something moved it. The Redis payload. [F-9] #112.
+
+    The producer's half of the contract `realtime_service/model/schemas.py`
+    defines and validates on the way in with `extra="forbid"`. Copied rather
+    than imported — see `OutcomePrice`'s docstring — and pinned the same way.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    market_id: uuid.UUID
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePrice] = Field(min_length=2)
+    occurred_at: datetime
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class SnapshotOut(BaseModel):
+    """The authoritative price read. [F-9] #112.
+
+    Byte-for-byte the `price` frame `docs/api/realtime-service.md` pins,
+    without its `type` — `market_id`, `state_version`, `prices`,
+    `occurred_at` — so a client renders a snapshot and a price frame with one
+    function.
+    """
+
+    market_id: uuid.UUID
+    state_version: int
+    prices: list[OutcomePriceOut]
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+
 class LedgerEntryListResponse(BaseModel):
     """One page of a user's history, newest first."""
 

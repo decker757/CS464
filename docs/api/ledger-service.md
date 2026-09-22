@@ -21,6 +21,7 @@ rather than with markets: [ADR 0005](../adr/0005-trading-service-boundary.md).
 | GET | `/ledger/users/{user_id}/balance` | Any user's balance (admin) |
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
+| GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
 | GET | `/health` | Liveness and readiness probe |
 
 **Every route reads.** There is no POST, PUT, PATCH or DELETE, and there never
@@ -29,10 +30,11 @@ by a database trigger rather than by the absence of a route. The endpoint that
 *writes* a movement arrives with [T-2] #22, together with the decision about how
 a trading service authenticates to it.
 
-The balance route and the preview route are each an exception to "reads don't
-write," and for the same reason one layer apart: a balance mints a user's
-starting grant on first read (below), and a preview opens and funds a market's
-book on a market's first touch (D-008, D-037). Both are once-per-subject,
+The balance route, the preview route and the snapshot route are each an
+exception to "reads don't write," and for the same reason: a balance mints a
+user's starting grant on first read (below), and the preview and the snapshot
+each open and fund a market's book on that market's first touch (D-008,
+D-037, and [F-9] #112 for the snapshot). All three are once-per-subject,
 idempotent, and invisible to every caller after the first.
 
 ## Authentication
@@ -311,6 +313,71 @@ inventing new ones:
 | 422 | `proceeds_below_tick` | A sell whose proceeds round down to `0.0000` at the ledger's scale (D-041). The other edge of the same quantization as `quantity_too_large`; a sub-tick buy is unaffected. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
+## GET /ledger/markets/{market_id}/snapshot
+
+[F-9] #112. The authoritative price read: what a client renders when it opens
+a market page, and what it re-fetches on every reconnect —
+`docs/api/realtime-service.md`'s "Opening a page" and "Reconnecting"
+sequences both start here. Computed from `ledger_service/core/lmsr.py`,
+never estimated and never off the last event this service happened to
+publish.
+
+Any valid access token, any role — a snapshot mints nothing and reveals
+nothing beyond the public market read, so there is no admin gate, exactly
+like the preview beside it.
+
+```jsonc
+{
+  "market_id": "9d1c...",
+  "state_version": 42,
+  "prices": [
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.6234" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.3766" }
+  ],
+  "occurred_at": "2026-09-15T09:12:44.318000+00:00"
+}
+```
+
+**Byte-for-byte the `price` socket frame without its `type`.** Identical on
+purpose — `docs/api/realtime-service.md` — so a client renders a snapshot and
+a price frame with one function. `prices` carries every outcome, ordered by
+`position`, as a decimal string; `state_version` is a JSON number, the same
+counter the preview and every `PriceEvent` report.
+
+`occurred_at` is the book's `state_changed_at`: the moment the trade that last
+moved `q` committed. On a market nobody has traded that equals `opened_at`
+(D-029) — creating the book was the last state change there has been.
+
+**The first request on a market writes, and can take a moment.** A market
+nobody has previewed, traded or snapshotted yet has no book on this service.
+This route opens one exactly as the preview does: it fetches the market's
+terms from `market_service`, funds the pool from the platform account, and
+only then prices the market — once per market, ever. That request can take
+up to the market-terms timeout. Every request after it, for that market, is a
+single indexed read that writes nothing. Debouncing is not this route's
+concern the way it is the preview's — a client fetches it once per page open
+and once per reconnect, not on every keystroke — but the cold-path cost is
+identical.
+
+**It deliberately does not check whether the market is still open (ADR
+0017).** The preview and this route agree with each other and disagree with
+the trade path, and both agreements are on purpose. A closed market still has
+a price to render — the last one anybody traded at — and a settled one still
+shows a last price. `docs/api/realtime-service.md`'s reconnect sequence makes
+this a `GET` that has to return a number or the client has nothing to resume
+its version check from; refusing would put an error exactly where a price
+belongs. Gate a market's trade controls on the public market read's derived
+status (`docs/api/market-service.md`) instead — this route's job is only to
+answer what the prices are.
+
+Errors, reusing the preview's codes:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 404 | `market_not_found` | No such market. Not distinguished from a draft or a submitted one. |
+| 409 | `market_not_published` | The market exists but has not been published, so it has no terms to open a book from. |
+| 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
+
 ## Errors
 
 The same envelope as the other three services:
@@ -331,8 +398,10 @@ The preview route above adds six more of its own — `market_not_found` (404),
 `unknown_outcome` (422), `quantity_too_large` (422),
 `proceeds_below_tick` (422) and
 `market_terms_unavailable` (503) — documented
-there rather than repeated here, since none of them can be returned anywhere
-else on this service.
+there rather than repeated here. The snapshot route reuses three of the
+same six — `market_not_found`, `market_not_published` and
+`market_terms_unavailable` — for the reason its own section gives: both
+routes share the same cold path.
 
 Four more exist in `core/errors.py` and no route can return them yet:
 `insufficient_funds` (409), `idempotency_key_reused` (409),
