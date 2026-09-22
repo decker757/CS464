@@ -2049,36 +2049,425 @@ like every other price this service publishes. It is still a price per share
 derived from a charged total rather than an outcome's price, which is why it
 was ever a question.
 
+### D-NEW — A caller holding pending writes must establish under its own lock that the idempotency key is absent
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** Any caller that still has unwritten work in the session when it
+calls `posting.post` must have looked the idempotency key up **under a lock
+that serialises every other request carrying that key**, and found nothing,
+before it made any of those writes. `post`'s own lookup does not discharge
+this obligation.
+
+**Why.** `post`'s replay branch calls `session.commit()`. That commit flushes
+the whole session, so a caller with pending writes has them committed
+alongside a transaction that wrote no entries. On the trade path that is the
+duplicate's `q`, `state_version` and position writes committing while the
+money moves once. Measured against the test database: a duplicated buy of 10
+shares leaves `q = 20.0000` and `state_version = 2` against one payment of 50
+credits. The ledger still sums to zero and every invariant
+`test_concurrency.py` asserts still holds, because none of them are about `q`.
+
+"The book's writes share `posting.post`'s commit, and nothing may follow it"
+settled the other half of this — nothing may come *after* `post` — and its
+Notes flagged that [T-2] #22's shape was undecided. This is that decision. The
+two together are the whole contract for sharing `post`'s commit: nothing after
+it, and the key proven absent under your own lock before anything before it.
+
+**Why a lock of the caller's own, rather than `post`'s.** `post` takes account
+locks, which serialise two requests only when their legs share an account. The
+trade path's book-row lock serialises two requests only when they name the same
+market. Neither alone covers one key sent twice against two markets by one
+user: different book rows, so no queue at the book; the shared USER account
+queues them inside `post`, where the loser takes the replay branch and commits
+its writes for the other market. What closes it is the key derivation in "The
+trade's idempotency key is derived by the server; the client's value is one
+component of it" — with the market id inside the stored key, one key names one
+market, and the book lock *is* the lock this entry requires.
+
+**Rejected.** Doing the writes after `post` returns: it puts them outside the
+transaction that commits the entries, which is exactly what [T-2] #22's second
+acceptance criterion forbids. Flushing them first — a flush is not a commit, so
+they still land on `post`'s.
+
+**Notes.** There is no in-process safety net here and there cannot be: by the
+time `post` could notice, it has already committed. The ordering *is* the
+safety, the same way it is for the entry this one extends. "`posting.post`
+refuses to replay into a dirty session" is the alarm, not the net.
+
+---
+
+### D-NEW — `posting.post` refuses to replay into a dirty session
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** `posting.post`'s replay branch raises `PendingWritesOnReplay`
+instead of committing when `session.new or session.dirty or session.deleted` is
+non-empty at that point. Its own commit, ahead of the trade path, and Ernest is
+told before it lands — `posting.py` is his.
+
+**Why.** The entry above is a discipline, and a discipline that fails silently
+and corrupts `q` for ever is worth an assertion. This turns "a caller got the
+ordering wrong" from shares granted twice into a refused request and a
+traceback. It cannot be a *net* — `post` reaches this point with the caller's
+writes already pending and no way to discard only those — so it is an alarm
+that fires before the damage rather than a rollback after it.
+
+**Verified against both existing callers before proposing it.** Both reach the
+replay branch with `(new, dirty, deleted) = (0, 0, 0)`, so neither changes
+behaviour:
+
+- `grants.ensure_granted` — `accounts.ensure` flushes inside its own SAVEPOINT,
+  so the account is persistent rather than pending by the time `post` is
+  called, and the function adds nothing else.
+- `books.ensure_open` on a lost first-touch race (D-010) — the book and its
+  outcomes were added inside `session.begin_nested()`, and the `IntegrityError`
+  rolls that SAVEPOINT back, which expunges them. The pool account it carries
+  forward is the winner's committed row, re-read. A warm second touch returns
+  before `post` is reached at all.
+
+Confirmed by instrumenting `_replay` and driving all three paths, the race one
+barrier-synchronised per ADR 0015.
+
+**Rejected.** Checking at the top of `post` rather than on the replay branch:
+it would forbid the shape "The book's writes share `posting.post`'s commit,
+and nothing may follow it" depends on, which is every caller this service has.
+Not raising at all and documenting the rule instead — the rule was already
+documented, and the trade path is the first caller that can break it.
+
+**Notes.** The check is on SQLAlchemy's unit of work, so it catches pending ORM
+changes and not a write already flushed to the connection. That is the right
+scope for the bug it exists to catch — the trade path's writes are attribute
+assignments on loaded rows and are still in `session.dirty` when `post` runs,
+because `autoflush=False` and `accounts.lock` issues only SELECTs — but it is a
+detection, not a proof. A future caller that flushes before calling `post` sits
+outside it, and the entry above is still the rule that protects that caller.
+
+`PendingWritesOnReplay` is a `LedgerError` at 500 rather than a bare exception,
+so the response keeps the one error envelope `controller/errors.py` exists to
+preserve. 500 and not 409: nothing the client sent is wrong and nothing it can
+do differently helps. It is this service reporting a bug in itself.
+
+---
+
+### D-NEW — The trade's idempotency key is derived by the server; the client's value is one component of it
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** The trade route stores `trade:<user_id>:<market_id>:<client
+key>`. The client's string is never the stored key. The unlocked replay lookup,
+the under-lock re-check and `post` all use the derived form.
+
+**Why.** Two reasons, either sufficient.
+
+`transactions.idempotency_key` is unique across the whole ledger and every
+namespace in it is server-generated. A client that writes an arbitrary key can
+submit a trade keyed `signup-grant:<another user's id>`; that user's first
+balance read then finds the key present, takes `ensure_granted`'s early return,
+and never receives their starting credits — silently, permanently, and in a
+table nothing rewrites. The same trick replays another user's trade body back
+to whoever guesses their key.
+
+And the market id inside the key is what makes the book-row lock the right lock
+for "A caller holding pending writes must establish under its own lock that the
+idempotency key is absent". Without it, one key can name two markets and the
+book lock serialises nothing.
+
+**Rejected.** A `CHECK` or a regex refusing reserved prefixes: it enumerates
+today's namespaces and silently stops covering tomorrow's. Keying on the user
+alone, which leaves the two-market hole open. A separate per-caller key table,
+which is a second source of truth for a uniqueness the column already has.
+
+**Notes.** A client that reuses its own key for a genuinely different trade in
+the same market still gets `IdempotencyKeyReused`, unchanged — the fingerprint
+does that work and this entry does not touch it. The derivation is documented
+on the route, so a client knows its key only has to be unique *to itself*,
+which is a weaker and more honest requirement than global uniqueness.
+
+---
+
+### D-NEW — The trade's staleness check is strict `state_version` equality, and the field is required
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** The trade body carries the `state_version` the preview returned.
+Under the book lock the trade re-reads it and refuses `409 quote_stale` unless
+it is exactly equal. The field is required, and the error carries `quoted` and
+`current` in `error.details`.
+
+**Why.** "The quote reference is `state_version`, not a separate counter"
+already decided the mechanism — "#22 re-reads it under lock and rejects on
+mismatch". #22's criterion says "price moved beyond quoted preview", which is
+looser prose written before that entry existed and does not reopen it. A
+tolerance needs a number, and nobody has one; picking a tick count here would
+be a product decision taken by a backend slice.
+
+Required rather than optional, because an optional staleness field means a
+client that omits it silently opts out of the only staleness protection the
+trade has.
+
+**Rejected.** A tolerance in ticks or in price. Same objection ADR 0017 makes
+to caching a status: the number becomes a correctness parameter nobody can
+derive, and it is wrong in exactly the market that moves fastest.
+
+**Reversal trigger.** If [FE][T-2/T-3] #49 measures a material share of trades
+refused `quote_stale` under ordinary use, the successor is **not** a widened
+comparison but a `max_cost` bound on a buy and a `min_proceeds` bound on a
+sell, checked under the same lock. That is a tolerance denominated in money and
+supplied by the trader, so it needs no number chosen here, and it refuses
+exactly the trades that actually got worse rather than every trade that
+happened to follow another one.
+
+---
+
+### D-NEW — `ledger.positions` stores quantity and cost basis, keyed on the triple
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** `ledger.positions`, primary key `(user_id, market_id,
+outcome_id)`, columns `quantity` and `cost_basis` at `Numeric(18, 4)`, plus
+`created_at` and `updated_at`. `(market_id, outcome_id)` is a composite foreign
+key to `market_outcomes`; `user_id` is bare. `CHECK (quantity >= 0)` and
+`CHECK (cost_basis >= 0)`.
+
+**Why.** ADR 0009 hands the columns to this ticket. `cost_basis` stored and the
+average entry price derived is "`cost_basis` is stored; average entry price is
+derived", unchanged. The composite primary key rather than a surrogate id is
+"`MarketOutcome`'s primary key is the pair, not a surrogate id", same argument:
+nothing references a position by an identity of its own, and [T-4] #24 reaches
+them by the triple.
+
+The foreign key follows "`pool_account_id` is a foreign key; `market_id` still
+is not". `(market_id, outcome_id)` names a row in `ledger.market_outcomes` —
+this service's own table, that exact pair being its primary key — so it gets a
+constraint. `user_id` names a row in `auth.users`, which `ledger_svc` holds no
+grant on, so it stays bare under ADR 0003.
+
+`quantity >= 0` is the no-shorting rule per user, the counterpart to
+`InsufficientSharesOutstanding`'s per-outcome one. [T-3] #23 enforces it under
+the book lock; the CHECK is the backstop, not the check.
+
+**Notes.** This table is **not** append-only and must not grow the trigger
+`ledger.entries` carries. It is a rollup that gets UPDATEd, reconstructible
+from the entries, and the entries remain the record. Worth saying in the
+docstring, because it will sit next to `Entry`.
+
+A new *table* reaches the long-lived `cs464` through `create_all` at startup,
+which issues `CREATE TABLE IF NOT EXISTS` — the trap CLAUDE.md documents is a
+new *column* on a table that already exists. So this needs no file in
+`sql/migrations/`, and neither does `TransactionKind.TRADE_BUY`, which is a
+non-native enum member. Verify rather than trust it, with CLAUDE.md's
+`pg_constraint` query pointed at `ledger.positions`.
+
+What `cost_basis` does on a **partial sell** is left to [T-3] #23. #22 only
+ever adds to a position, so it cannot settle a rule it never exercises.
+
+The scale of 4 on `quantity` is settled by "Shares keep money's scale of 4, in
+`q` and in positions".
+
+---
+
+### D-NEW — The trade response is reconstructed from `Transaction.context`, and carries no prices
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** The trade writes `user_id`, `market_id`, `outcome_id`, `side`,
+`quantity`, `total` and the post-trade `state_version` into
+`Transaction.context`. One function builds the response from a `Transaction`,
+and the fresh path and both replay paths all call it. The response carries no
+prices.
+
+**Why.** A replay has to return the same body as the original, and `context` is
+the only thing about a trade that is durable, written inside `post`'s commit,
+and cannot drift. The column's own docstring names this use — "the market and
+outcome of a trade". Building the body in one function is "The preview endpoint
+lives on the ledger as a read"'s argument at a smaller scale: two builders
+would eventually disagree, and the case where they disagree is the retry.
+
+**Why no prices.** They are not derivable from a stored trade, and storing them
+would be storing a lie with a timestamp. A replay an hour later would hand back
+prices that were true once, and unlike `total` — which really is what the
+trader was charged, for ever — a stale price has no correct reading. Prices are
+the realtime contract's: the client renders the `price` frame, or fetches the
+snapshot, which is the recovery path ADR 0010 already requires it to have.
+
+**Rejected.** `balance_after`, for the same reason and because the frontend
+re-reads the balance anyway. A separate `trades` table to hold the response — a
+second source of truth for something `context` already holds inside the right
+commit.
+
+---
+
+### D-NEW — The trade path is side-generic in shape and buy-only at the route
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** The trade service function takes `side: Side` and prices,
+quantizes, signs its legs and refuses sub-tick proceeds through the helpers
+that already take one. The route accepts `buy` only. [T-3] #23 widens it.
+
+**Why.** `core/pricing.py` was written for both sides on purpose — its module
+docstring says "`service/preview.py` today, [T-2] #22's trade path tomorrow",
+and `refuse_sub_tick_proceeds` lives there rather than in the preview because
+"[T-2] #22's write path has to make the same refusal". Writing a buy-shaped
+path and having #23 generalise it would mean #23 rewriting the money path,
+which is a second opinion about what a trade is.
+
+The route stays buy-only because a sell is unsafe without #23's work: the
+per-user holdings check has to be read under the book lock, and there are no
+positions to check against until #22 has written some. A sell route that
+skipped it is a route for selling shares you do not hold.
+
+**Notes.** #23 is then the holdings read under the lock, the position
+decrement, `cost_basis` on a partial sell, widening the route's `side`, and the
+tests. Say this in #22's pull request, because a reviewer will see `side`
+threaded through a function only ever called with `BUY` and reasonably ask why.
+
+---
+
+### D-NEW — Shares keep money's scale of 4, in `q` and in positions
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** Share quantities carry money's scale of 4 inside the service as
+well as at its boundary. `market_outcomes.q` and `positions.quantity` are
+`Numeric(18, 4)` because that is the right scale, not because it was the
+nearest one to hand. Fractional shares exist, down to `0.0001`.
+
+**Why.** A quantity arrives at scale 4 — "A quantity takes money's scale of 4
+at the API boundary" refuses a fifth decimal place rather than rounding it —
+and the only arithmetic the write path performs on it is addition into `q` and
+into a position. Addition of two values at scale 4 is exact at scale 4. So the
+quantity a trader was quoted for is the quantity that is written, with no
+rounding anywhere between the quote and the row.
+
+Any other scale breaks that. A coarser one — whole shares — has to round a
+quantity the trader typed and the preview already priced, which puts a
+rounding step on the one path this service has spent four entries keeping free
+of them. A finer one buys nothing, because the input cannot be finer than
+scale 4, and it is not free: `core/lmsr.py`'s `_PRECISION = 50` is derived
+from `Numeric(18, 4)` and its comment says "Widen `Numeric`'s scale and this
+number has to be revisited with it."
+
+**Rejected.** Whole shares with an integer `q`. It is the more familiar model
+and it is a product decision, not a storage one — and taking it here would
+mean this entry deciding, from the inside of the ledger, that a trader may not
+buy half a share. If that is wanted, it is decided where quantities are typed
+and this entry reverses.
+
+**Reversal trigger.** A product decision that a trader may buy whole shares
+only. That is testable as a ticket saying so, not as an opinion about
+tidiness, and it reverses this entry rather than qualifying it: the scale
+follows the input, so the day the input is integral the column should be too.
+
+**Notes.** This closes the Open question "Whether share quantities share
+money's scale of 4", which "A quantity takes money's scale of 4 at the API
+boundary" had settled only at the boundary. [F-7] #96 wrote nothing but zero
+into `q` and borrowed the scale explicitly without deciding it; [T-2] #22 is
+the first ticket to write a non-zero one, which is where the borrowing had to
+stop.
+
+---
+
+### D-NEW — A replay hit is compared against the request before it is returned
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** A trade whose derived idempotency key names an existing
+transaction is returned only if the request matches the stored one.
+`outcome_id`, `side` and `quantity` are read out of `Transaction.context` and
+compared with what was sent; a mismatch is `IdempotencyKeyReused` (409,
+`idempotency_key_reused`). `quantity` is compared **numerically**, so `10` and
+`10.0000` are one trade. `state_version` is **not** compared.
+
+The comparison is one helper, called from **both** lookups — the unlocked
+pre-gate replay and the under-lock re-check. Two copies of a rule about
+whether two trades are the same trade is two opinions about it, and the case
+where they disagree is the retry.
+
+**Why.** Without it the rule "a caller that reuses a key for different money
+is told so" — `posting._replay`'s own docstring — does not hold on this route,
+for two independent reasons.
+
+The pre-gate replay returns *before* `posting.post` is ever called, so
+`post`'s fingerprint check never runs on a retry that finds a hit. ADR 0017
+put that lookup first on purpose and was right to; the consequence nobody had
+followed through is that it also short-circuits the only comparison the write
+path had. `idempotency_key_reused` is listed on this route's criteria as
+inherited, and as specified it was unreachable.
+
+And the fingerprint could not do the work even where it runs.
+`posting._fingerprint` hashes the kind and `account_id:amount` per leg. On
+this route both legs' accounts are fixed by `(user_id, market_id)`, which are
+already inside the derived key, so the fingerprint sees nothing but the
+quantized total. It cannot see `outcome_id` **at all**: a retry naming the
+other outcome of a binary market, at a quantity whose cost quantizes to the
+same total, hashes identically and replays clean — the trader is handed a
+position in YES as proof that their NO trade succeeded. Two adjacent
+quantities in a deep book quantize to one total routinely, so the quantity
+case is not exotic either.
+
+`context` is what makes the check affordable, and this is the first ticket
+that has it. The lookup has already loaded the `Transaction`; the three
+fields are on it; the comparison costs no statement. Before [T-2] #22 there
+was nothing durable to compare against, which is why "The trade's idempotency
+key is derived by the server; the client's value is one component of it"
+could say the fingerprint did this work and be right about every caller that
+existed.
+
+**Why `quantity` numerically.** "A quantity takes money's scale of 4 at the
+API boundary" echoes the quantity back exactly as it arrived, trailing zeros
+and all, and `context` stores what was sent. A string comparison would refuse
+a client that retried `10.0000` after sending `10` — the same trade, typed
+twice — with an error telling them to generate a new key. The rule is about
+what the trade *is*, not about how it was spelled.
+
+**Why `state_version` is excluded.** A client that lost its response is
+expected to re-preview before retrying, and the market may have moved in
+between. The version it now quotes is newer and the trade is still the same
+trade: the original's quote was valid at the instant it executed, and that
+instant is over. Comparing it would refuse exactly the retry this whole
+ordering exists to serve. It also cannot be a staleness check in disguise —
+staleness is decided under the book lock against a trade that is about to
+execute, and a replay executes nothing.
+
+**Rejected.** *Returning the stored trade blind.* Honest to "a retry only asks
+what its answer was", and it answers a different question than the one asked,
+with a `201` and somebody else's body. *Leaving it to `post`'s fingerprint.*
+It does not run on the pre-gate path and is blind to `outcome_id` where it
+does. *Widening the fingerprint to cover `context`.* It is `posting.py`'s,
+which is Ernest's, and it would change the meaning of a hash two shipped
+callers already depend on to answer a question only this caller is asking.
+
+**Reversal trigger.** This narrows the day `Transaction.context` stops being
+the trade's durable description — if a later ticket moves any of
+`outcome_id`, `side` or `quantity` out of it, the comparison has to follow the
+data rather than be quietly dropped. It widens the day a second write route
+reaches `post` through a pre-`post` replay lookup of its own: at that point
+the helper is a rule about replays rather than a rule about trades, and it
+belongs beside `find_by_idempotency_key` rather than in the trade path.
+
+**Notes.** This does not touch `posting.post`. A caller that reaches `post`
+with a genuinely different movement under one key still gets
+`IdempotencyKeyReused` from the fingerprint, unchanged; this check fires
+earlier and on dimensions the fingerprint cannot see. Both can raise the same
+error because a client's remedy is identical either way: generate a new key.
+
+Two concurrent requests carrying one client key and different quantities is
+the case worth testing rather than reasoning about — one of them executes and
+the other must be refused, at whichever of the two lookups sees it. That it is
+the *same* helper at both is what makes the answer independent of which one
+wins.
+
 ---
 
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
 
-- **`posting.post()` commits internally — settled for a caller with nothing to
-  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
-  this for `books.ensure_open`: order every write through
-  `session.begin_nested()` and call `post()` last, so its own commit lands
-  everything together. That works whenever the call into `post()` is the
-  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
-  `state_version` bump and its position update on `MarketOutcome` would have to
-  precede the call into `post()`, in the same transaction, under D-032's rule,
-  never after it. Whether that ordering is workable for the trade path, or
-  whether #22 needs to check its write against a quote taken *after* the trade
-  executes — in which case `post()` gains a variant that stops short of commit,
-  or the trade accepts the ledger write as its own boundary and builds
-  compensation around it — is still #22's to decide.
 - **`occurred_at` for a market that has never traded.** The realtime contract
   defines it only as the time of the event. `state_changed_at` set at handoff is a
   proposal, not something the contract says.
-- **Whether share quantities share money's scale of 4.** Settled at the API
-  boundary by D-038 and still open inside the service. The preview refuses a
-  quantity finer than scale 4, so nothing can *arrive* below it; what nobody has
-  decided is whether fractional shares should exist at all — whether
-  `MarketOutcome.q` wants a scale of its own, or shares should be whole numbers
-  and `Numeric(18, 4)` there is a borrowed default [F-7] #96 only ever wrote zero
-  into. [T-2] #22 is the first ticket that writes a non-zero `q` and is where the
-  question becomes load-bearing.
 - **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
   `core/opening_prices.py::max_platform_loss` computes the worst case and
   `MarketOut` reports it beside the subsidy, but `service/validation.py` never
@@ -2092,9 +2481,16 @@ Move these into the log above when they're settled.
   informed choice, becomes a submission rule, or becomes a warning the ledger
   records at book creation is undecided. It is market_service's rule to make
   either way, not the ledger's.
-- **Service-to-service auth for ledger writes.** Deferred by ADR 0009 to #22.
-  Currently avoided by making #62 public, but #22 is a write and will have to
-  answer it.
+- **Service-to-service auth for a caller with no token.** Deferred by ADR 0009
+  to #22 and **answered there only for the trade route**, by the amendment on
+  that record: the route takes no legs, the debited account comes from the
+  token's `sub`, and the idempotency key is derived by the server, so a
+  trader's own token authorises debiting only themselves. What stays open is
+  the caller with nobody behind it — [T-7] #27's auto-execution, and [3.4] #12's
+  settlement *if* it ever becomes a background job rather than an
+  administrator's request. Neither is on the board now, and either makes a real
+  service credential a prerequisite rather than a detail. ADR 0017's reversal
+  note names the same day from the status gate's side.
 - **A NULL `close_time` on an OPEN market means two different things.** SQL and
   Python disagree, and neither is documented as the intended answer.
   `core/closing.py` returns False for a null, so the Python derivation labels

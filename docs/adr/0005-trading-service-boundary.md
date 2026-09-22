@@ -39,6 +39,51 @@ no role in `sql/01-roles.sql` and no schema in `sql/02-schemas.sql`, so it
 costs a Dockerfile, a compose entry and a CI job — not a `docker compose
 down -v` for everybody.
 
+> **Amended by [T-2] #22. It is not built, and nothing on the board still
+> needs it.** There is no `backend/trading_service/`, no role, no schema and
+> no compose entry, and every job this paragraph gave the composite has since
+> been assigned elsewhere by a later record:
+>
+> | This record gave the composite | Where it went, and by what |
+> | --- | --- |
+> | Evaluate the LMSR cost function | the ledger, `core/lmsr.py` — the amendment on [ADR 0012](0012-the-shared-package.md), because a service with no cross-schema grant cannot read `q` |
+> | Read market terms | the ledger, `service/market_terms.py` — "Market terms reach the ledger by lazy pull on first touch" |
+> | Issue one transactional write | the ledger — [ADR 0010](0010-realtime-price-broadcast.md): "the transaction that commits a trade is the ledger's" |
+> | Be the websocket producer | the ledger — [ADR 0010](0010-realtime-price-broadcast.md) amends this record by name |
+> | Serve the cost preview | the ledger — "The preview endpoint lives on the ledger as a read" |
+> | Gate a trade on the market's status | the ledger — [ADR 0017](0017-the-ledger-and-a-stopped-market.md), which rejects "gating in the trading composite instead" explicitly |
+>
+> What is left for a composite to own is a token it forwards unchanged and a
+> hop it adds, and this record's own Consequences already priced that: "one
+> more network hop in the hot path", accepted then because the composite was
+> going to hold the cost function. It no longer does.
+>
+> **The argument that closes it is this record's own.** "The composite must
+> stay stateless, or this decision gets more expensive. The thing most likely
+> to break that is [T-2] #22's idempotency key, which has to be stored
+> somewhere durable. It belongs in the same transaction as the ledger write it
+> guards, not in the composite." #22 is that ticket, the key is a unique column
+> on `ledger.transactions`, and the transaction it guards is the ledger's. The
+> condition this record set for the composite becoming too expensive is the
+> condition that has arrived — and the cheaper answer is not to build it.
+>
+> **Everything else in this record stands**, and that is why this is an
+> amendment rather than a superseding. Positions live with the ledger. `b` and
+> the subsidy cross once at publish as an immutable snapshot. The LMSR engine
+> is a module. market_service keeps definition and lifecycle and never learns
+> `q`. The seam is still slow-changing definition against fast-changing money;
+> what changed is only how many processes sit on the fast side of it, and the
+> answer is one.
+>
+> **This reverses the day something needs the trade path without being able to
+> hold the ledger's transaction.** Two candidates, and neither is a feeling
+> about monoliths: [T-7] #27's auto-execution and cascade, which runs with no
+> caller and no token to forward — see [ADR 0017](0017-the-ledger-and-a-stopped-market.md)'s
+> reversal note and the amendment on [ADR 0009](0009-the-ledger-write-path.md),
+> which is the prerequisite either way — or a second frontend, at which point
+> composition stops being one client's problem. Until one of those lands, a
+> composite is a container that forwards a token.
+
 **Positions live with the ledger.** `q`, the shares outstanding per outcome, is
 `ledger.*` state, written in the same transaction as the debit and credit rows
 it has to balance against. This is what makes [T-2] #22's acceptance criteria
