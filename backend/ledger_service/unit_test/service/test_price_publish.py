@@ -41,7 +41,6 @@ import ast
 import json
 import logging
 import pathlib
-import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -355,45 +354,16 @@ async def test_the_failure_that_is_swallowed_is_the_bus_one_only() -> None:
 
 
 # =========================================================================
-# What this ticket does not do
+# The caller
 # =========================================================================
-def test_nothing_in_this_service_calls_publish() -> None:
-    """The last criterion of "The publish": the primitive lands before its caller.
-
-    Same shape as [F-7] #96's `ensure_open` and [F-8] #109's `ensure_trading`,
-    both of which shipped with no caller. A publish wired into a route here
-    would be a price announced by something that is not a committed trade —
-    and the one rule ADR 0010 will not bend is that the publish follows the
-    commit.
-
-    **[T-2] #22 deletes this test.** It is the ticket that adds the caller, so
-    this assertion is false the moment #22 lands and is meant to be: it holds
-    the "primitive before caller" shape for exactly one ticket. Removing it is
-    part of #22's diff, not a failure to investigate — and it is noted on
-    #22's issue as well as here, so whoever hits the red does not go looking
-    for the bug.
-
-    Read as source text across this service's runtime code — the suite is
-    excluded, because a test calling the primitive is the point, and so is
-    `service/bus.py`, which defines it.
-
-    Matched on an awaited call rather than on the bare name, so a docstring
-    that mentions `publish()` in prose — and several of them will, since this
-    is the shape every record in `docs/adr/` argues about — is not a failure.
-    """
-    service_root = _BACKEND / "ledger_service"
-    call = re.compile(r"await\s+(?:\w+\.)?publish\s*\(")
-
-    offenders: list[str] = []
-    for path in service_root.rglob("*.py"):
-        if ".venv" in path.parts or "unit_test" in path.parts:
-            continue
-        if path.name == "bus.py":
-            continue
-        if call.search(path.read_text(encoding="utf-8")):
-            offenders.append(str(path.relative_to(service_root)))
-
-    assert offenders == [], (
-        "nothing in [F-9] #112 publishes on its own — the only caller is "
-        f"[T-2] #22, which lands after:\n{offenders}"
-    )
+#
+# `test_nothing_in_this_service_calls_publish` stood here and was deleted by
+# [T-2] #22, which is the ticket that adds the caller. It held [F-9] #112's
+# "primitive before caller" shape for exactly one ticket and became false the
+# moment the trade path called `publish`, exactly as its own docstring and
+# #22's issue both said it would.
+#
+# What replaced it is `unit_test/service/test_trade_publish.py`, which asserts
+# the three things the primitive could not assert about itself: that a
+# committed trade publishes once, that the publish happens after the commit,
+# and that a publish which fails does not fail the trade.
