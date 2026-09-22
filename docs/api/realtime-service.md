@@ -31,13 +31,15 @@ Two consequences matter to a client:
 ## Not all of [F-2] #42 has landed
 
 The socket, the bus and the ordering rules below are built and tested. The
-**snapshot endpoint is specified here and implemented elsewhere**, because it
-needs `q`, `b` and the LMSR cost function — none of which exist yet ([F-3] #43),
-and all of which live with the ledger per ADR 0005.
+**snapshot endpoint is specified here and implemented on the ledger**, per
+ADR 0005, because it needs `q`, `b` and the LMSR cost function. Both landed:
+the engine with [F-3] #43, the route itself with [F-9] #112.
 
-Until it lands, a client can connect and receive events, and has nothing to
-seed itself from. Build against the shape below; it is what [T-2] #22 and
-[F-3] #43 are being written to serve.
+What has not landed is the producer's caller: nothing on the ledger publishes
+a `PriceEvent` yet. `service/bus.py::publish` exists and is tested, but
+[T-2] #22 is the trade path that calls it after a commit. Until then, a
+client can connect, snapshot and subscribe, but will see no `price` frame
+arrive on a market that has already been open.
 
 ## Connecting
 
@@ -211,8 +213,10 @@ there is no outbox anywhere in this design. ADR 0010.
 
 ## The snapshot endpoint
 
-**Not implemented yet.** It belongs to whoever owns `q` — the ledger, per
-ADR 0005 — and arrives with [F-3] #43 and [T-2] #22.
+**`GET /ledger/markets/{market_id}/snapshot`, on port 8003.** It belongs to
+whoever owns `q` — the ledger, per ADR 0005 — and landed with [F-9] #112,
+split out of [T-2] #22 so the trade is a trade. Full shape, authentication
+and error codes: `docs/api/ledger-service.md`.
 
 The body is the `price` frame without the `type`:
 
@@ -228,24 +232,33 @@ The body is the `price` frame without the `type`:
 Identical on purpose. A client that renders a snapshot and a client that
 renders an event should be running the same function.
 
-## Publishing an event — for [T-2] #22 and [T-3] #23
+## Publishing an event — landed with [F-9] #112, called by [T-2] #22 and [T-3] #23
 
-Publish JSON matching `PriceEvent` to the Redis channel **`market.price`**,
-**after** the trade's transaction has committed.
+The producer lives on the ledger now: `ledger_service/service/bus.py::publish`
+puts JSON matching its own `PriceEvent` on the Redis channel
+**`market.price`**, **after** the trade's transaction has committed.
 
 ```python
 await redis_client.publish("market.price", event.model_dump_json())
 ```
 
-`backend/realtime_service/service/bus.py::publish` is that call, and the model
-beside it is the contract. Copy them rather than importing.
+`backend/realtime_service/service/bus.py::publish` is the same shape on this
+service's side of the subscription, and the model beside it is the contract
+both copy from each other rather than import.
 
-That used to be forced — a build context could not reach across service
+That copy used to be forced — a build context could not reach across service
 directories — and since [F-6] #76 it is not: `backend/shared/` is importable
 from every service. It stays a copy because four lines of `redis.publish` are
-below the bar ADR 0012 sets for that package. The `PriceEvent` model is the
-part worth revisiting if the two ever disagree, since that one really is a
-contract.
+below the bar ADR 0012 sets for that package, and because `PriceEvent` is a
+contract a shared module would stop being able to version independently on
+each end. `unit_test/model/test_price_event.py` and
+`unit_test/service/test_price_publish.py` on the ledger's side hold both
+copies to their originals by reading this service's source as text.
+
+**Nothing calls `publish` yet.** [F-9] #112 shipped the primitive with no
+caller — the same "primitive before caller" shape [F-7] #96 and [F-8] #109
+already used — so a market's price does not currently change on this socket.
+[T-2] #22 is the trade path that calls it, once, right after its own commit.
 
 Rules that are not negotiable:
 

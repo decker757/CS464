@@ -43,8 +43,9 @@ from model.schemas import (
     LedgerEntryOut,
     OutcomePriceOut,
     PreviewOut,
+    SnapshotOut,
 )
-from service import ledger_service, preview as preview_service
+from service import ledger_service, preview as preview_service, snapshot as snapshot_service
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -259,6 +260,56 @@ async def preview_trade(
             OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
             for p in result.post_trade_prices
         ],
+    )
+
+
+_SNAPSHOT_DESCRIPTION = (
+    "[F-9] #112. The authoritative price read: what a client renders when it "
+    "opens a page, and what it re-fetches on every reconnect "
+    "(`docs/api/realtime-service.md`).\n\n"
+    "Any valid access token, any role (D-018), like the preview beside it.\n\n"
+    "The body is the `price` socket frame without its `type` — "
+    "`market_id`, `state_version`, `prices`, `occurred_at` — byte-for-byte, "
+    "so a client renders a snapshot and a price frame with one function.\n\n"
+    "**The first request on a market writes.** A market nobody has touched "
+    "yet has no book: this route opens and funds one, once per market ever, "
+    "which can take up to the market-terms timeout. Every request after "
+    "that is a single indexed read.\n\n"
+    "**Never checks whether the market is still open (ADR 0017).** A closed "
+    "market still has a price to render — the last one anybody traded at — "
+    "and the reconnect sequence needs this route to return a number rather "
+    "than an error."
+)
+
+
+@router.get(
+    "/markets/{market_id}/snapshot",
+    response_model=SnapshotOut,
+    summary="The market's authoritative current price",
+    description=_SNAPSHOT_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        404: {"description": "No such market."},
+        409: {"description": "The market has not been published yet."},
+        503: {"description": "market_service could not be reached right now."},
+    },
+)
+async def market_snapshot(
+    market_id: uuid.UUID,
+    access_token: AccessToken,
+    session: DbSession,
+) -> SnapshotOut:
+    result = await snapshot_service.snapshot(
+        session, market_id, access_token=access_token
+    )
+    return SnapshotOut(
+        market_id=result.market_id,
+        state_version=result.state_version,
+        prices=[
+            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
+            for p in result.prices
+        ],
+        occurred_at=result.occurred_at,
     )
 
 
