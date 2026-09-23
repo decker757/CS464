@@ -16,11 +16,11 @@ magnitude — paying the trader the residue instead of the pool. A negative
 argument means a caller passed the signed answer straight through, so it is
 refused rather than reinterpreted.
 
-`refuse_sub_tick_proceeds` judges what `quantize_cost` returned: a sell that
-quantized to nothing is refused rather than quoted, because taking real
-shares for zero credits is the surprise this ticket exists to prevent
-(D-041). It sits here rather than in `service/preview.py` because [T-2] #22
-has to make the same refusal on the write path.
+`quantize_cost` refuses a result of `0.0000`: `proceeds_below_tick` on a
+sell, `cost_below_tick` on a buy. Taking real shares for zero credits is the
+surprise this ticket exists to prevent (D-041). The refusal is inside the
+rounding rather than beside it because [T-2] #22's write path has to make the
+same refusal, and a separate function is one a caller can forget to call.
 
 Pure. No session, no clock, no configuration.
 """
@@ -30,7 +30,7 @@ from __future__ import annotations
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import StrEnum
 
-from core.errors import ProceedsBelowTick
+from core.errors import CostBelowTick, ProceedsBelowTick
 
 # `Numeric(18, 4)`'s shape, restated rather than imported from
 # `model/entities.py::AMOUNT_SCALE`. `model` imports `core.database`, so a
@@ -63,7 +63,7 @@ class Side(StrEnum):
     SELL = "sell"
 
 
-def quantize_cost(magnitude: Decimal, *, side: Side) -> Decimal:
+def quantize_cost(magnitude: Decimal, *, side: Side | str) -> Decimal:
     """`magnitude`, rounded to scale 4 so the residue favours the pool.
 
     A buy rounds up — the trader is charged the next whole tick, never less
@@ -72,30 +72,25 @@ def quantize_cost(magnitude: Decimal, *, side: Side) -> Decimal:
     than one tick that belongs to the market's pool, which is the side already
     expected to lose money under LMSR.
 
+    A result of `0.0000` is refused on both sides — `ProceedsBelowTick` on a
+    sell, `CostBelowTick` on a buy — because a magnitude reaching this
+    function is the price of a real quantity. A buy reaches zero only when
+    the engine returned exactly zero, which it does past about 110·b of skew.
+    The caller must refuse a quantity of zero before pricing it, or it is
+    refused here under a code that blames the price.
+
+    `side` is coerced, because `Side` is a `StrEnum` and `"buy" is Side.BUY`
+    is False: an unconverted string would fall into the floor branch.
+
     Raises `ValueError` on a negative `magnitude` rather than inferring what
     the caller meant — see the module docstring.
     """
+    side = Side(side)
     if magnitude < 0:
         raise ValueError(f"magnitude must not be negative, got {magnitude}")
 
     rounding = ROUND_CEILING if side is Side.BUY else ROUND_FLOOR
-    return magnitude.quantize(QUANTUM, rounding=rounding)
-
-
-def refuse_sub_tick_proceeds(quantized: Decimal, *, side: Side) -> None:
-    """Refuse a sell whose quantized proceeds are `0.0000`. D-041.
-
-    Takes what `quantize_cost` already returned rather than re-deriving it,
-    so the two never disagree about what counts as sub-tick. A quantized
-    magnitude of zero is only a problem on a sell: a buy of zero shares
-    costs zero honestly (`test_a_trade_of_nothing_costs_nothing_on_both_sides`),
-    and a sub-tick buy never reaches zero because `ROUND_CEILING` charges the
-    whole tick. So the condition is on the side, not the magnitude alone.
-
-    Lives beside `quantize_cost` rather than in `service/preview.py` because
-    [T-2] #22's write path has to make the same refusal, and a rule about
-    money that lived only in the preview would be one #22 inherits by
-    copying it or by forgetting to.
-    """
-    if side is Side.SELL and quantized == 0:
-        raise ProceedsBelowTick
+    quantized = magnitude.quantize(QUANTUM, rounding=rounding)
+    if quantized == 0:
+        raise CostBelowTick if side is Side.BUY else ProceedsBelowTick
+    return quantized

@@ -117,8 +117,10 @@ def cost_to_trade(q: Sequence[Decimal], b: Decimal, delta: Sequence[Decimal]) ->
     charging a minimum tick, rounding toward the house and refusing the trade
     were choices about money that belonged where there is a request to
     refuse. #21 is that place, and now makes both halves of the choice —
-    `core/pricing.py::refuse_sub_tick_proceeds` refuses it (D-041), rather
-    than inheriting a zero-cost trade by default.
+    `core/pricing.py::quantize_cost` refuses it on either side (D-041),
+    rather than inheriting a zero-cost trade by default. "A wider spread
+    reaches exactly zero" above is the case that made the refusal cover
+    buys: `ROUND_CEILING` of exactly zero is zero.
     `test_a_sub_tick_trade_is_priced_not_rounded` still pins what this
     function itself does: price the trade honestly and leave rounding and
     refusal to the caller.
