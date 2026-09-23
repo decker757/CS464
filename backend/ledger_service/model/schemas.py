@@ -24,7 +24,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
@@ -252,6 +252,97 @@ class PreviewOut(BaseModel):
     def _as_string(self, value: Decimal) -> str:
         return str(value)
 
+
+class TradeIn(BaseModel):
+    """A buy order. [T-2] #22.
+
+    `extra="forbid"`, and that is the whole of ADR 0009's amendment: the
+    route "takes no account, no amount and no leg", which is only true if a
+    body naming one is refused rather than silently dropped — Pydantic's
+    default is `extra="ignore"`. `total` is in that refusal too, because it
+    is the field a client would most plausibly echo back from a preview.
+
+    `side` is `Literal["buy"]` rather than `core.pricing.Side`: a sell is
+    unsafe until [T-3] #23 adds the per-user holdings check under the book
+    lock, so this route refuses one with a 422 rather than accepting it and
+    refusing it one layer down.
+
+    `state_version` is required, not optional with a default — an optional
+    staleness field would let a client silently opt out of the only
+    staleness protection a trade has.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome_id: uuid.UUID
+    side: Literal["buy"] = Field(
+        description="Buy only, until [T-3] #23 widens this route."
+    )
+    quantity: Decimal = Field(
+        gt=0,
+        decimal_places=4,
+        description=(
+            "Shares to buy. At most four decimal places (D-038) — a fifth "
+            "is 422 rather than rounded."
+        ),
+    )
+    state_version: int = Field(
+        description=(
+            "The `state_version` the preview quoted. Compared, under the "
+            "book's own lock, for strict equality against the market's "
+            "current one; a mismatch either direction is `409 quote_stale`."
+        )
+    )
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=175,
+        description=(
+            "One trade, once, however many times this is sent. The stored "
+            "key is derived — `trade:<user_id>:<market_id>:<this value>` — "
+            "so this string only has to be unique to the caller who sent it. "
+            "Bounded so the derived key always fits `transactions."
+            "idempotency_key`'s column width (255): 80 characters of "
+            "derivation prefix, 175 left for this value."
+        ),
+    )
+
+
+class TradeOut(BaseModel):
+    """What one buy did. [T-2] #22.
+
+    Built from `Transaction.context` by `service/trading.py::result_of`, the
+    one function the fresh path and both replay paths all call — so a retry
+    cannot return a different shape from the original, and a retry returns
+    this byte-for-byte.
+
+    Carries no prices. A replayed price was true once and is a lie
+    afterwards, unlike `total`, which is what the trader was charged for
+    ever — prices are the realtime contract's, the `price` frame or the
+    snapshot route beside this one.
+    """
+
+    transaction_id: uuid.UUID
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: Side
+    quantity: Decimal = Field(
+        description="Echoed back exactly as it was stored, D-038's scale."
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed and quantized exactly as `PreviewOut.total` is — "
+            "negative on a buy, because credits leave the trader. This is "
+            "the number that was charged, the same one the preview quoted."
+        )
+    )
+    state_version: int = Field(
+        description="The book's counter after this trade, not before it."
+    )
+
+    @field_serializer("quantity", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
 
 
 # One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared

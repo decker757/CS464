@@ -1,0 +1,428 @@
+"""Buying shares. [T-2] #22
+
+The trade path: one buy, priced from `q` and `b` under the book row's lock,
+written into `ledger.entries`, `ledger.positions`, `market_outcomes.q` and
+`market_books.state_version` in one transaction, and announced after it
+commits.
+
+**The order, fixed by the issue and by ADR 0017, is the whole design here.**
+
+1. The idempotency lookup, unlocked. A hit is compared against the request
+   and returned — no status check, no HTTP call, no lock. "The replay lookup
+   is unlocked, and that is safe because it can only ever short-circuit": a
+   hit names a committed, append-only transaction, and a miss is trusted for
+   nothing except declining to skip the gate below.
+2. The gate, `service/market_status.py::ensure_trading` — one call to
+   market_service's public detail endpoint, forwarding the caller's own
+   token, refusing `409 market_closed` on anything but a derived status of
+   `"open"` (ADR 0017).
+3. `service/books.py::ensure_open`, which is a no-op past a market's first
+   ever touch. On a cold market it fetches terms and funds the pool, and it
+   ends in `posting.post`, so it commits — which is why it runs before the
+   book lock rather than inside the trade's own transaction ("The book's
+   writes share `posting.post`'s commit, and nothing may follow it").
+4. `service/grants.py::ensure_granted`, the same shape one layer down: a
+   trader who has never been read gets their starting credits before the
+   lock, for the same commit-boundary reason.
+5. The book row, `SELECT ... FROM market_books ... FOR UPDATE` — the wider
+   lock, taken before `posting.post` takes the account locks inside it
+   ("Lock order: book row before account rows", ADR 0015).
+6. The idempotency key, looked up again, now under the lock. "A caller
+   holding pending writes must establish under its own lock that the
+   idempotency key is absent": this is that establishment, and it runs
+   before this function writes anything of its own, so a hit here still
+   costs nothing to return.
+7. `q`, `b` and the outcomes, read fresh — cheap, because the book row's lock
+   makes this session's own prior read of `state_version` already correct,
+   but read again anyway so the statement log shows a read after the lock
+   rather than one that predates it.
+8. Staleness: strict equality between the quoted `state_version` and the
+   book's current one, either direction ("The trade's staleness check is
+   strict `state_version` equality, and the field is required").
+9. The outcome, the no-shorting check, the price, `quantize_cost`, D-040's
+   bound and D-041's sub-tick refusal — `core/pricing.py`, the same helpers
+   `service/preview.py` already calls, so the two code paths cannot disagree
+   about what a trade costs.
+10. The writes: `state_version` up by one, `state_changed_at` to this
+    transaction's own moment, the traded outcome's `q`, and the position —
+    all as pending ORM changes, none of them committed yet.
+11. `posting.post`, last, because it is the one statement in this whole path
+    that commits. "The stored key is derived by the server; the client's
+    value is one component of it" is why it is not handed the client's raw
+    string.
+12. The response, built by `result_of` from the transaction `post` returned —
+    the same function every replay path uses too ("The trade response is
+    reconstructed from `Transaction.context`, and carries no prices").
+13. The publish, after the commit and never before it (ADR 0010), and never
+    on a rejection or a replay.
+
+**Side-generic in shape, buy-only at the route.** This function threads
+`side: Side` through the same pricing helpers `service/preview.py` already
+takes a `Side` with, and the route above it accepts `buy` only — "The trade
+path is side-generic in shape and buy-only at the route". A sell needs
+[T-3] #23's per-user holdings check under this same lock, and there is
+nothing to hold that check against until this ticket has written some
+positions.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+
+import httpx
+import redis.asyncio as redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.errors import (
+    IdempotencyKeyReused,
+    InsufficientSharesOutstanding,
+    QuantityTooLarge,
+    QuoteStale,
+    UnknownOutcome,
+)
+from core.lmsr import cost_to_trade, prices as lmsr_prices
+from core.pricing import (
+    MAX_MAGNITUDE,
+    Side,
+    quantize_cost,
+    quantize_display,
+    refuse_sub_tick_proceeds,
+)
+from model.entities import (
+    Account,
+    MarketBook,
+    MarketOutcome,
+    Position,
+    Transaction,
+    TransactionKind,
+)
+from model.schemas import OutcomePrice, PriceEvent
+from service import books, bus, grants, market_status, posting
+from service.posting import Leg
+
+ZERO = Decimal(0)
+
+# Namespaced like every other idempotency key this system generates. The
+# market id sits inside it: "The trade's idempotency key is derived by the
+# server; the client's value is one component of it" is what stops a client
+# claiming `signup-grant:<somebody else's user id>` on a trade of their own,
+# and it is also what makes the book row the right lock for the under-lock
+# re-check below — one key names one market.
+_KEY_PREFIX = "trade"
+
+
+def trade_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
+    return f"{_KEY_PREFIX}:{user_id}:{market_id}:{client_key}"
+
+
+@dataclass(frozen=True)
+class TradeResult:
+    """What one buy did. Exactly the seven fields "The trade response is
+    reconstructed from `Transaction.context`" lists, plus `transaction_id`.
+
+    Deliberately carries no price. `test_the_response_carries_no_prices`
+    asserts this over the attribute names rather than a fixed field list, so
+    a field added here later that happens to have "price" in its name is
+    refused by the test that guards this design, not merely by a reviewer.
+    """
+
+    transaction_id: uuid.UUID
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: str
+    quantity: Decimal
+    total: Decimal
+    state_version: int
+
+
+def result_of(transaction: Transaction) -> TradeResult:
+    """The one function that builds a response from a `Transaction`.
+
+    The fresh path and both replay paths all call this, so a retry cannot
+    return a different shape from the original — the two could disagree only
+    if there were two builders, and there is one.
+    """
+    context = transaction.context or {}
+    return TradeResult(
+        transaction_id=transaction.id,
+        user_id=uuid.UUID(str(context["user_id"])),
+        market_id=uuid.UUID(str(context["market_id"])),
+        outcome_id=uuid.UUID(str(context["outcome_id"])),
+        side=str(context["side"]),
+        quantity=Decimal(str(context["quantity"])),
+        total=Decimal(str(context["total"])),
+        state_version=int(context["state_version"]),
+    )
+
+
+def _matches(
+    transaction: Transaction,
+    *,
+    outcome_id: uuid.UUID,
+    side: Side,
+    quantity: Decimal,
+) -> bool:
+    """"A replay hit is compared against the request before it is returned."
+
+    `outcome_id` and `side` compared as themselves; `quantity` compared
+    numerically, because `context` stores it exactly as it arrived and `10`
+    and `10.0000` are the same trade typed twice. `state_version` is
+    deliberately not part of this: a client that lost its response
+    re-previews before retrying, and the version it now quotes is newer —
+    still the same trade.
+    """
+    context = transaction.context or {}
+    try:
+        stored_outcome = uuid.UUID(str(context["outcome_id"]))
+        stored_quantity = Decimal(str(context["quantity"]))
+    except (KeyError, ValueError, ArithmeticError):
+        return False
+    return (
+        stored_outcome == outcome_id
+        and context.get("side") == side.value
+        and stored_quantity == quantity
+    )
+
+
+async def _replay_if_present(
+    session: AsyncSession,
+    key: str,
+    *,
+    outcome_id: uuid.UUID,
+    side: Side,
+    quantity: Decimal,
+) -> TradeResult | None:
+    """The one helper both lookups call — the unlocked pre-gate one and the
+    under-lock re-check.
+
+    A miss returns `None`. A hit is compared against the request and either
+    returned or refused `IdempotencyKeyReused` — never returned unread, which
+    is the failure "posting.post's fingerprint cannot see `outcome_id` at
+    all" leaves open if this comparison is skipped.
+    """
+    existing = await posting.find_by_idempotency_key(session, key)
+    if existing is None:
+        return None
+    if not _matches(existing, outcome_id=outcome_id, side=side, quantity=quantity):
+        raise IdempotencyKeyReused
+    return result_of(existing)
+
+
+async def _lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
+    """"Lock order: book row before account rows" — the wider lock, first."""
+    stmt = select(MarketBook).where(MarketBook.market_id == market_id).with_for_update()
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def _read_outcomes(
+    session: AsyncSession, market_id: uuid.UUID
+) -> Sequence[MarketOutcome]:
+    """Read after the book lock is taken, so the statement log shows the
+    price and the staleness comparison were made against a read that follows
+    the lock rather than one that predates it (ADR 0015)."""
+    stmt = (
+        select(MarketOutcome)
+        .where(MarketOutcome.market_id == market_id)
+        .order_by(MarketOutcome.position)
+    )
+    return (await session.execute(stmt)).scalars().all()
+
+
+async def _apply_position(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    quantity: Decimal,
+    cost_basis: Decimal,
+    now: datetime,
+) -> None:
+    """The triple-keyed row this trade adds to. "#22 only ever adds to a
+    position", so this is always a credit to `quantity` and to `cost_basis`,
+    never a subtraction — [T-3] #23 is where a sell's effect is decided."""
+    stmt = select(Position).where(
+        Position.user_id == user_id,
+        Position.market_id == market_id,
+        Position.outcome_id == outcome_id,
+    )
+    position = (await session.execute(stmt)).scalar_one_or_none()
+    if position is None:
+        session.add(
+            Position(
+                user_id=user_id,
+                market_id=market_id,
+                outcome_id=outcome_id,
+                quantity=quantity,
+                cost_basis=cost_basis,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    else:
+        position.quantity = position.quantity + quantity
+        position.cost_basis = position.cost_basis + cost_basis
+        position.updated_at = now
+
+
+async def execute(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    side: Side,
+    quantity: Decimal,
+    state_version: int,
+    idempotency_key: str,
+    access_token: str,
+    redis_client: redis.Redis,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> TradeResult:
+    """Buy `quantity` of `outcome_id` in `market_id`, or replay a trade this
+    key already named.
+
+    `access_token` is the caller's own, forwarded unchanged to the gate and
+    to a cold market's first touch — this function mints nothing. `idempotency_key`
+    is the client's own string; the stored key is derived from it, `user_id`
+    and `market_id` (`trade_key`), never stored as sent.
+    """
+    key = trade_key(user_id, market_id, idempotency_key)
+
+    # 1. The unlocked replay lookup, before anything else — no status check,
+    # no HTTP call, no lock (ADR 0017).
+    pre_gate = await _replay_if_present(
+        session, key, outcome_id=outcome_id, side=side, quantity=quantity
+    )
+    if pre_gate is not None:
+        return pre_gate
+
+    # 2. The gate. Refuses `MarketClosed`, `MarketTermsUnavailable` or
+    # `MarketNotFound` before anything below writes a thing.
+    await market_status.ensure_trading(
+        session, market_id, access_token=access_token, transport=transport
+    )
+
+    # 3. The book, opened and funded on a market's first touch only. Commits
+    # internally when it writes, so it must finish before the lock below.
+    await books.ensure_open(
+        session, market_id, access_token=access_token, transport=transport
+    )
+
+    # 4. The trader's starting grant, same shape, same reason.
+    user_account = await grants.ensure_granted(session, user_id)
+
+    # 5. The book row, locked — the wider lock, ahead of the account locks
+    # `posting.post` takes inside it.
+    book = await _lock_book(session, market_id)
+
+    # 6. The re-check. Nothing below this line has written anything yet, so a
+    # hit here still costs nothing to return.
+    under_lock = await _replay_if_present(
+        session, key, outcome_id=outcome_id, side=side, quantity=quantity
+    )
+    if under_lock is not None:
+        return under_lock
+
+    # 7. Read fresh, after the lock.
+    outcomes = await _read_outcomes(session, market_id)
+    q = [outcome.q for outcome in outcomes]
+    b = book.liquidity_b
+    ids = [outcome.outcome_id for outcome in outcomes]
+
+    # 8. Staleness. Strict equality, either direction.
+    if state_version != book.state_version:
+        raise QuoteStale(quoted=state_version, current=book.state_version)
+
+    if outcome_id not in ids:
+        raise UnknownOutcome
+    index = ids.index(outcome_id)
+
+    if side is Side.SELL and quantity > q[index]:
+        raise InsufficientSharesOutstanding
+
+    # 9. The price. The same helpers `service/preview.py` uses, so the two
+    # code paths cannot disagree about what this trade costs.
+    delta = [ZERO] * len(q)
+    delta[index] = quantity if side is Side.BUY else -quantity
+
+    magnitude = quantize_cost(abs(cost_to_trade(q, b, delta)), side=side)
+    if magnitude > MAX_MAGNITUDE:
+        raise QuantityTooLarge
+    refuse_sub_tick_proceeds(magnitude, side=side)
+
+    total = -magnitude if side is Side.BUY else magnitude
+
+    # 10. The writes. Pending, not yet committed — `posting.post` below is
+    # the one statement that commits them.
+    now = datetime.now(UTC)
+    book.state_version += 1
+    book.state_changed_at = now
+    outcomes[index].q = q[index] + delta[index]
+
+    await _apply_position(
+        session,
+        user_id=user_id,
+        market_id=market_id,
+        outcome_id=outcome_id,
+        quantity=quantity,
+        cost_basis=magnitude,
+        now=now,
+    )
+
+    pool_account = await session.get(Account, book.pool_account_id)
+
+    context = {
+        "user_id": str(user_id),
+        "market_id": str(market_id),
+        "outcome_id": str(outcome_id),
+        "side": side.value,
+        "quantity": str(quantity),
+        "total": str(total),
+        "state_version": book.state_version,
+    }
+
+    # 11. `post`. Commits everything pending above, together with the two
+    # legs below, or none of it if this raises.
+    transaction = await posting.post(
+        session,
+        idempotency_key=key,
+        kind=TransactionKind.TRADE_BUY,
+        legs=[
+            Leg(account=user_account, amount=total),
+            Leg(account=pool_account, amount=-total),
+        ],
+        context=context,
+        now=now,
+    )
+
+    # 12. The response, from the transaction `post` actually committed.
+    result = result_of(transaction)
+
+    # 13. The publish. After the commit, never before it, and never on a
+    # rejection or a replay — both of which have already returned by this
+    # point. A publish failure is swallowed inside `bus.publish` and never
+    # reaches here.
+    after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
+    event = PriceEvent(
+        market_id=market_id,
+        state_version=book.state_version,
+        prices=[
+            OutcomePrice(
+                outcome_id=outcome.outcome_id,
+                position=outcome.position,
+                price=quantize_display(price),
+            )
+            for outcome, price in zip(outcomes, lmsr_prices(after_q, b))
+        ],
+        occurred_at=now,
+    )
+    await bus.publish(redis_client, event, transaction_id=transaction.id)
+
+    return result
