@@ -280,6 +280,59 @@ class UnknownOutcome(LedgerError):
     message = "This outcome does not belong to this market."
 
 
+class QuoteStale(LedgerError):
+    """The quoted `state_version` no longer names the book. [T-2] #22.
+
+    "The trade's staleness check is strict `state_version` equality, and the
+    field is required" — re-read under the book row's lock and compared
+    against what the trade quoted. Either direction is refused: older than the
+    book (somebody else traded first) and newer than the book (a version that
+    does not exist yet) are both a quote that no longer describes this market.
+
+    409 for `InsufficientFunds`'s reason: nothing about the request is
+    malformed, and the same request would have succeeded against yesterday's
+    price. Carries `quoted` and `current` so a client can re-preview and
+    retry without guessing which way it was wrong.
+    """
+
+    status_code = 409
+    code = "quote_stale"
+
+    def __init__(self, *, quoted: int, current: int) -> None:
+        self.quoted = quoted
+        self.current = current
+        self.message = (
+            f"This quote named state_version {quoted}; the market is now at "
+            f"{current}. Re-preview and retry."
+        )
+        super().__init__(self.message)
+
+
+class PendingWritesOnReplay(LedgerError):
+    """`posting.post` reached its replay branch with unwritten work already in
+    the session. [T-2] #22.
+
+    "`posting.post` refuses to replay into a dirty session": the replay branch
+    calls `session.commit()`, which flushes the whole session — so a caller
+    holding pending writes would have them committed alongside a transaction
+    that wrote no entries of its own. This is the alarm for a caller that got
+    "A caller holding pending writes must establish under its own lock that
+    the idempotency key is absent" wrong, raised before the commit rather than
+    rolled back after it, because by the time `post` reaches this point there
+    is no way to discard only the caller's writes.
+
+    500 rather than 409: nothing the client sent is wrong and nothing it can
+    do differently helps. This is the service reporting a bug in itself.
+    """
+
+    status_code = 500
+    code = "pending_writes_on_replay"
+    message = (
+        "A caller reached a replay with unwritten work already pending in "
+        "the session. This is a bug in this service, not in the request."
+    )
+
+
 class UnbalancedTransaction(LedgerError):
     """The legs do not sum to zero, so this is not a movement of credits.
 
