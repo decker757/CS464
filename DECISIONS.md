@@ -2461,6 +2461,45 @@ wins.
 
 ---
 
+### D-NEW — `transactions.idempotency_key` widens from `varchar(120)` to `varchar(255)`
+
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+
+**Decision.** `model/entities.py::Transaction.idempotency_key` is
+`String(255)`, not the original `String(120)`. `TradeIn.idempotency_key` is
+bounded `max_length=175` at the API layer, so the derived key can never
+exceed the wider column regardless of what a client sends.
+`sql/migrations/0007-ledger-trade-idempotency-key-width.sql` carries the
+`ALTER COLUMN ... TYPE` for `cs464`.
+
+**Why.** "The trade's idempotency key is derived by the server" fixed the
+format as `trade:<user_id>:<market_id>:<client key>` — 80 characters of
+prefix before the client's own string starts. 120 was sized for this
+service's own two namespaced keys (`signup-grant:<user_id>`,
+`market-open:<market_id>`, 49 and 48 characters) and never budgeted for a
+second namespace wrapped around an arbitrary client string.
+`test_a_client_key_naming_the_grant_namespace_cannot_touch_it` drives exactly
+that: a client key that is itself `signup-grant:<uuid>` (49 characters),
+which is the scenario the derivation exists to make safe. `80 + 49 = 129`
+overflows 120 and the insert fails `StringDataRightTruncationError` before
+the derivation's own guarantee is ever reached.
+
+**Rejected.** Bounding `idempotency_key` more tightly at the API layer
+instead of widening the column — considered, and it does not remove the
+need to widen: the column has to hold `80 + max_length` regardless of where
+the ceiling is enforced, and refusing a legitimately-sized client key with a
+422 because this service's own prefix is long is a cost paid by every
+caller for a column nobody had a reason to keep narrow.
+
+**Notes.** This is a widen on a column already present on `cs464`, so
+`create_all` cannot reach it — the same shape as a new column, but even a
+new migration file's `ADD COLUMN IF NOT EXISTS` idiom does not apply to an
+`ALTER COLUMN ... TYPE`. `unit_test/conftest.py`'s drop-and-recreate picks
+it up automatically, which is why this went unnoticed until a test drove
+the specific 49-character client key.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
