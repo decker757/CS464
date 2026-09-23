@@ -216,6 +216,20 @@ class ProceedsBelowTick(LedgerError):
     message = "This sell's proceeds round down to nothing at the ledger's scale."
 
 
+class CostBelowTick(LedgerError):
+    """A buy the engine prices at exactly zero. [T-1] #21.
+
+    `ProceedsBelowTick`'s other side, raised from the same place. Past about
+    110·b of skew the engine returns exactly zero, and `ROUND_CEILING` of zero
+    is zero, so a real quantity would be quoted for nothing. Its own code
+    because a buyer told "proceeds below tick" has been told something false.
+    """
+
+    status_code = 422
+    code = "cost_below_tick"
+    message = "This buy's cost rounds to nothing at the ledger's scale."
+
+
 class UnknownOutcome(LedgerError):
     """`outcome_id` does not name one of this market's outcomes. [T-1] #21.
 
