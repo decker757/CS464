@@ -23,12 +23,14 @@ is a single indexed read that writes nothing (D-036).
    holding, which is [T-3] #23's under its own lock (D-012).
 6. `core/lmsr.py::cost_to_trade` prices the trade. `core/pricing.py`
    quantizes the unsigned magnitude by side, and the sign is applied here:
-   negative on a buy, positive on a sell. A magnitude above what
-   `Numeric(18, 4)` can store is `QuantityTooLarge` (422) rather than a quote
-   [T-2] #22 could not charge (D-040). A sell whose quantized proceeds are
-   `0.0000` is `ProceedsBelowTick` (422) rather than a quote that takes real
-   shares for nothing (D-041).
-7. `average_price` is `abs(total) / quantity`, from the *quantized* total,
+   negative on a buy, positive on a sell. A resulting `q` or a magnitude
+   above what `Numeric(18, 4)` can store is `QuantityTooLarge` (422) rather
+   than a quote [T-2] #22 could not persist (D-040), and both are checked
+   before anything is quantized. A total that quantizes to `0.0000` is
+   refused by `quantize_cost` itself — `ProceedsBelowTick` on a sell,
+   `CostBelowTick` on a buy — rather than quoted as real shares for nothing
+   (D-041).
+7. `average_price` is the quantized magnitude over `quantity`,
    `ROUND_HALF_UP` at scale 4 — display, not money. Run inside
    `core/lmsr.py`'s pinned decimal context, the same one every other division
    in this service's pricing path uses, so an ambient trap or precision never
@@ -65,7 +67,6 @@ from core.pricing import (
     QUANTUM,
     Side,
     quantize_cost,
-    refuse_sub_tick_proceeds,
 )
 from model.entities import MarketBook, MarketOutcome
 from service import books
@@ -104,7 +105,7 @@ async def quote(
     market_id: uuid.UUID,
     *,
     outcome_id: uuid.UUID,
-    side: Side,
+    side: Side | str,
     quantity: Decimal,
     access_token: str,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -116,6 +117,7 @@ async def quote(
     response itself; that belongs to `service/market_terms.py`, reached
     through the cold path.
     """
+    side = Side(side)
     rows = await _read_book(session, market_id)
     if not rows:
         await books.ensure_open(
@@ -139,28 +141,28 @@ async def quote(
     delta = [ZERO] * len(q)
     delta[index] = quantity if side is Side.BUY else -quantity
 
-    magnitude = quantize_cost(abs(cost_to_trade(q, b, delta)), side=side)
+    with _engine_context():
+        after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
 
-    # D-040. Checked here rather than as an `le=` on the query parameter,
-    # because the bound is on the *cost* and the cost depends on `b`, which
-    # this service reads from the market rather than choosing: no constant
-    # ceiling on `quantity` is both safe for a small `b` and usable with a
-    # large one. Checked after quantizing, because the quantized figure is the
-    # one that would be stored.
-    if magnitude > MAX_MAGNITUDE:
+    # D-040, both halves: [T-2] #22 writes the cost *and* the resulting `q`
+    # into `Numeric(18, 4)`, and a quote for either one it cannot store is a
+    # quote it cannot honour. Checked before quantizing, because quantizing a
+    # value wider than the ambient 28 digits raises `InvalidOperation`.
+    if after_q[index] > MAX_MAGNITUDE:
         raise QuantityTooLarge
 
-    # D-041. The other edge of the same quantization: a sell whose proceeds
-    # rounded down to nothing is refused rather than quoted.
-    refuse_sub_tick_proceeds(magnitude, side=side)
+    # `copy_abs`, never `abs`: `abs` rounds at the ambient precision and can
+    # carry the magnitude across a tick before the directional rounding runs.
+    raw = cost_to_trade(q, b, delta).copy_abs()
+    if raw > MAX_MAGNITUDE:
+        raise QuantityTooLarge
 
+    magnitude = quantize_cost(raw, side=side)
     total = -magnitude if side is Side.BUY else magnitude
     with _engine_context():
-        average_price = (abs(total) / quantity).quantize(
+        average_price = (magnitude / quantity).quantize(
             QUANTUM, rounding=ROUND_HALF_UP
         )
-
-    after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
 
     return Quote(
         market_id=market_id,
