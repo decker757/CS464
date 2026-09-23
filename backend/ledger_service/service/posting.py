@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientFunds,
+    PendingWritesOnReplay,
     UnbalancedTransaction,
 )
 from model.entities import (
@@ -123,6 +124,17 @@ async def post(
 
     existing = await find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
+        # "`posting.post` refuses to replay into a dirty session". This
+        # commit is about to flush the whole session, so a caller holding
+        # pending writes would have them committed alongside a transaction
+        # that wrote no entries of its own — [T-2] #22's trade path is the
+        # first caller that can reach this with `q`, `state_version` and a
+        # position still pending. Raised before the commit, not rolled back
+        # after it: there is no way to discard only the caller's writes once
+        # this point is reached.
+        if session.new or session.dirty or session.deleted:
+            raise PendingWritesOnReplay
+
         # Committed although nothing was written, because the locks above are
         # held until this transaction ends and a replay should not hold them
         # for the rest of the caller's request.
