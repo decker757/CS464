@@ -617,3 +617,72 @@ async def test_the_close_time_is_not_what_decides_anything_here() -> None:
 
     assert terms.liquidity_b == Decimal("100.0000")
     assert terms.published_at is not None
+
+
+@pytest.mark.parametrize(
+    "liquidity_b",
+    # `Infinity` is the one that used to get through the comparison:
+    # `Decimal("Infinity") <= 0` is False. It cannot actually be stored —
+    # `numeric(18, 4)` answers "a field with precision 18, scale 4 cannot
+    # hold an infinite value" — so the old behaviour was a `DataError` on the
+    # insert, which is not an `IntegrityError` and escaped `ensure_open`'s
+    # lost-race handler as an unmapped 500 on a market's first touch.
+    #
+    # `NaN` is the worse one and was safe only by accident: the comparison
+    # itself raises `InvalidOperation`, which `_parse`'s `except
+    # ArithmeticError` happens to catch — and `numeric(18, 4)` stores NaN
+    # quite happily, so it is the only unpriceable `b` that could really end
+    # up in an immutable book. Both are named now so neither depends on an
+    # accident.
+    ["0", "0.0000", "-100.0000", "Infinity", "-Infinity", "NaN"],
+)
+async def test_a_liquidity_b_that_can_never_price_is_refused(liquidity_b: str) -> None:
+    """`b <= 0` is refused as unavailable, the same as a null `b`.
+
+    `C(q) = b·ln(Σ e^(q_i/b))` divides by `b`, so a zero is a `ValueError`
+    out of the engine on every preview, and a negative `b` turns the cost
+    function upside down. The book is immutable under ADR 0005, so a market
+    that got one would fail on every request forever, and with an unmapped
+    500 rather than a `LedgerError`. `_liquidity_problems` requires a
+    positive `b` at submission and `publish` re-runs it, so this is
+    unreachable from a correct market service — defended for the reason the
+    null check is.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(liquidity_b=liquidity_b)),
+        )
+
+
+@pytest.mark.parametrize(
+    "seed_subsidy", ["0", "0.0000", "-250.0000", "Infinity", "NaN"]
+)
+async def test_a_seed_subsidy_that_cannot_fund_a_pool_is_refused(
+    seed_subsidy: str,
+) -> None:
+    """The subsidy had only a null check, and both bad values fail badly.
+
+    A **negative** one funds the pool backwards: `books.ensure_open` posts
+    `Leg(platform, -(-250)) = +250` against `Leg(pool, -250)`, so the pool is
+    debited and the house credited — and nothing downstream objects.
+    `_refuse_overdrafts` skips every account that is not a USER, so the pool
+    simply sits negative, and the first thing to notice is a settlement that
+    will not balance. This guard is the only thing in the path that says no.
+
+    A **zero** one builds two zero legs, and `posting.post` refuses those as
+    `UnbalancedTransaction` — a 422 blaming the caller for terms they never
+    sent, where this contract promises 503.
+
+    `market_service` requires the subsidy greater than zero at submission
+    (`_liquidity_problems`, "The seed subsidy must be greater than zero"), so
+    this is unreachable from a correct upstream — defended for the same
+    reason the `b` guard beside it is.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(seed_subsidy=seed_subsidy)),
+        )

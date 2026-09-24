@@ -1074,20 +1074,559 @@ orphans.
 
 ---
 
+### D-036 — D-012's "no locks" is the warm path; the first touch locks twice
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** D-012 stands for the pricing read and is corrected in scope. The
+preview's read of `q`, `b` and `state_version` takes no locks, as D-012 says.
+The path that *opens* a market's book takes two, once per market ever:
+`books.ensure_open` ends in `posting.post`, and `accounts.lock` holds the
+`PLATFORM` row and that market's pool row `FOR UPDATE` while the funding
+transaction commits.
+
+**Why.** D-012 was written before [F-7] #96 existed, when a preview was only a
+read. D-008 then made the preview a market's first toucher, so the sentence "the
+cost preview is an unlocked read" is now false for exactly one request per
+market and true for every one after it. Both halves of that are in #21's
+acceptance criteria, one bullet apart — "takes no locks (D-012)" and "that path
+writes and takes the handoff's locks" — so the criteria already know this and
+D-012's text is what is out of date.
+
+Nothing about D-012's argument changes. The reason not to lock the pricing read
+is that a preview decides no write and the gap to confirm is a human one; that
+is still true, and the staleness check remains #22's under its own lock. What is
+added is that the *book-opening* write is a write like any other and ADR 0015
+applies to it normally.
+
+**Reversal trigger.** This correction lapses the moment the pricing read decides
+a write. If a later ticket has the preview record a quote, bump a counter, or
+reserve anything, then it is no longer a read that feeds no write, ADR 0015
+applies to it directly, and D-012's original scope — an unlocked read, full stop
+— is no longer available to cite. Re-decide it there rather than inheriting this
+entry.
+
+**Notes.** The contention this creates is with the signup grant, not with other
+previews. Both lock the same `PLATFORM` row — `grants.ensure_granted` for the
+starting credits, `books.ensure_open` for the seed subsidy — so a first-ever
+preview queues behind any registration whose first balance read is in flight,
+and behind every other market's first touch. Bounded and rare: one grant per
+user ever, one subsidy per market ever, and
+`test_two_markets_opening_at_once_do_not_deadlock` already covers the ordering,
+because `accounts.lock` sorts ascending by id on every path.
+
+Two previews of a *warm* market share no lock at all and must not serialise.
+That is asserted directly rather than left to inference — a preview that took
+the book row `FOR UPDATE` "for consistency" would pass every single-caller test
+in the suite while turning every keystroke in a busy market into a queue. The
+test for it fails when a lock is *added*, which is the reverse of every other
+race test here and the only honest way to assert an absence.
+
+---
+
+### D-037 — The preview is a market's first toucher, and the cold path is self-extinguishing
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** [T-1] #21's `GET /ledger/markets/{id}/preview` is the caller D-008
+was written for. On a market with no book, this GET calls `market_service` over
+HTTP, writes a pool account, a `market_books` row and one `market_outcomes` row
+per outcome, and posts the seed subsidy from `PLATFORM` — then prices from what
+it just wrote.
+
+**Why.** D-008 settled that market terms arrive by lazy pull on first touch and
+named no toucher, because neither #21 nor #22 existed yet. #21 lands first, so
+the preview inherits it. Refusing a cold market instead, and waiting for #22 to
+be the first writer, would mean a trader who opens a market before anyone has
+traded in it sees an error where a price belongs — on the one read whose whole
+purpose is to be safe to fire on every keystroke.
+
+**Consequences, recorded because each one is surprising on its own.** A `GET` in
+this service writes, and is not the first: reading a balance mints the signup
+grant under ADR 0009, and this is the same shape one layer up. A `GET` in this
+service calls another service over the network, which is new — the ledger's only
+outbound dependency, and it sits in the read path, not only in the trade path. A
+`GET` in this service mints credits, in the sense that `PLATFORM` goes more
+negative by the seed subsidy. And a preview's latency is bimodal: the first
+request on a market can take up to `market_terms._TIMEOUT`, every later one is a
+single indexed read, and the issue's Notes hand the debounce to the frontend on
+that basis.
+
+**Cost.** The ledger now holds a runtime dependency on `market_service` for a
+market's first touch, and whichever trader arrives first pays up to the terms
+timeout for it. Both were accepted knowingly under D-008, which recorded the
+dependency as the price of avoiding a dual write at publish; this entry is where
+that price is actually charged, and to a trader rather than to an administrator.
+
+**The cold path is self-extinguishing, which is what makes all of that
+affordable.** It runs once per market ever. `ensure_open` reads the book before
+anything else, so the second touch makes no HTTP call at all —
+`test_a_second_touch_makes_no_http_call_at_all` is the assertion that keeps it
+that way — and a market service outage after the first touch cannot stop anybody
+pricing a market that already has a book.
+
+It extinguishes only for an id that resolves. A well-formed id that
+`market_service` answers 404 for writes nothing, so every request for it takes
+the cold path again: an outbound call per request, with no bound on how many a
+trader can make by looping random UUIDs. "The cold path holds no connection
+across the terms pull" stops that from holding a pooled connection per call;
+the outbound calls themselves remain, and negative caching of unresolvable ids
+is deferred to a follow-up rather than settled here.
+
+**A closed market's first preview funds a pool that will never trade, and that
+is accepted:** settlement returns whatever the pool has left to `PLATFORM`
+([3.4] #12), so a dead pool overstates credits in circulation until its market
+resolves rather than permanently, and nothing in the cold path has to learn a
+status it cannot read.
+
+**Notes.** The token forwarded upstream is the caller's own, never one minted
+here. A preview is therefore refused 401 by the *market* service on an expired
+token, mapped through D-030, which is the same answer this service would have
+given from its own verification a moment earlier. The route needs the raw token
+as well as the decoded claims for that reason alone, which is why `AccessToken`
+exists beside `CurrentUser` rather than `CurrentUser` growing a field.
+
+A bad `outcome_id` on a cold market opens and funds the book before it is
+refused, because the criteria check the market id before any write and the
+outcome against the book once it exists. That is deliberate: the market is real
+and published, the book is the same one the next honest request would have
+created, and rolling it back would discard a correct once-per-market write over
+a wrong query string and charge the next caller the timeout again.
+
+---
+
+### D-038 — A quantity takes money's scale of 4 at the API boundary
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `quantity` on the preview route is a decimal string, greater than
+zero, with at most four decimal places. A fifth is `422` rather than rounded,
+and the value is echoed back in the response exactly as it arrived.
+
+**Why.** Refusing is the whole point. Rounding `10.00005` to `10.0001` quotes a
+trade for a quantity the trader did not type, and [T-2] #22 charges for the
+trade it was quoted — so the preview would be perfectly accurate about a trade
+nobody asked for, and the discrepancy would surface as a balance that moved by
+the wrong amount with no error anywhere to explain it. A 422 puts the correction
+where the typing happened.
+
+Scale 4 rather than some other number because that is what `Numeric(18, 4)`
+stores and what every money value in this service already uses. A quantity at a
+finer scale than the cost derived from it cannot be represented in the legs #22
+writes.
+
+**Notes.** This decides the wire only. Whether fractional shares exist
+internally at all — whether `MarketOutcome.q` should carry a scale of its own,
+or shares should be whole numbers — stays in the Open section, where it has been
+since [F-7] #96 borrowed the money scale for a column it only ever wrote zero
+into. Nothing here forecloses that: a later decision to make shares integral
+narrows this rule rather than contradicting it.
+
+---
+
+### D-039 — `quantize_cost` takes an unsigned magnitude; the caller applies the sign
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `core/pricing.py::quantize_cost` takes the trade's *unsigned*
+magnitude and a `Side`, and raises `ValueError` on a negative magnitude rather
+than interpreting one. The caller applies the sign afterward — negative on a
+buy, positive on a sell — `service/preview.py` today, [T-2] #22's trade path
+next.
+
+**Why.** The acceptance criterion is "buy cost rounds ceiling, sell proceeds
+round floor — the residue accrues to the pool, never to the trader", and
+`ROUND_CEILING`/`ROUND_FLOOR` only mean that on a non-negative input.
+`cost_to_trade` returns a *signed* answer — positive for a buy, negative for a
+sell (D-002) — so handing a sell's signed output straight to `ROUND_FLOOR`
+pulls a negative number further from zero, which is a *larger* magnitude: the
+trader is paid the residue instead of the pool. Refusing a negative input
+turns that mistake into an immediate `ValueError` at the call site instead of a
+silent one-tick overpayment nothing downstream would notice, because no
+balance check watches the fourth decimal place.
+
+**Rejected.** A single function taking the engine's signed answer directly and
+choosing the rounding mode from its sign. It reads as simpler and is exactly
+the bug above: correct for a buy (positive in, rounds up) and wrong for a sell
+(negative in, `ROUND_FLOOR` moves it further from zero).
+
+**Notes.** Verified against `posting._quantize`, at the implementer's request:
+`Decimal("12.34565")` — a magnitude with a 5 in the fifth decimal place —
+quantizes to `12.3457` on a buy and `12.3456` on a sell. Both values, and the
+buy's negated total, pass through `posting._quantize`'s `ROUND_HALF_UP` at
+scale 4 unchanged. A total already quantized by `quantize_cost` is therefore
+safe for [T-2] #22 to hand to `posting.post`, which quantizes again on the way
+in — the second pass is a no-op rather than a second opinion.
+
+---
+
+### D-040 — A cost above `Numeric(18, 4)` is refused, not quoted
+
+**Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `service/preview.py` raises `QuantityTooLarge` (422,
+`quantity_too_large`) when either number [T-2] #22 would write exceeds
+`core/pricing.py::MAX_MAGNITUDE` — `99999999999999.9999`, the largest value
+`Numeric(18, 4)` holds. The two numbers are the traded outcome's `q` after the
+trade, which lands in `market_outcomes.q`, and the unquantized magnitude of
+the cost, which lands in the legs. Both are checked before anything is
+quantized. The route also refuses a `quantity` of more than 18 digits in total,
+as plain validation.
+
+**Why.** This route's contract is that the previewed number is the charged
+number, and [T-2] #22 charges by writing `total` into `Numeric(18, 4)`. A
+`quantity` of 1e15 prices at fifteen integer digits, which the column cannot
+store, so returning it quotes a trade whose confirm step is a
+`NumericValueOutOfRange` — a 500 arriving after the trader committed to a quote
+this service answered `200` to. That is the same argument D-038 makes about a
+fifth decimal place, applied to magnitude instead of scale: refusing beats
+quoting a trade nothing can charge.
+
+**Why on the cost and not on the quantity.** An `le=` beside D-038's
+`decimal_places=4` would be the obvious place, and it cannot work. The bound is
+on the *cost*, and cost scales with `b`, which this service reads from the
+market rather than choosing — `market_service` puts no ceiling on it either. No
+constant ceiling on `quantity` is both safe for a small `b` and usable with a
+large one, so the check has to be on the priced figure.
+
+**Why the resulting `q` too.** The cost bound alone let through a buy of
+`0.0001` shares against `q = [99999999999999.9999, 0]`: a cost of one tick,
+and a `q` of `100000000000000.0000` that `market_outcomes.q` cannot store. That
+is the same quote-that-cannot-be-honoured the cost bound exists to refuse,
+arriving through the other column.
+
+**Why before the quantize.** The first version checked the quantized figure,
+on the ground that it is the one that would be stored. It never got that far
+on the quantities that mattered. `quantize` runs in the ambient 28-digit
+context, and a `quantity` of `1E+25` has no fifth decimal place, so it passed
+validation and priced at a magnitude whose scale-4 form needs 30 digits, and
+`quantize` raised `decimal.InvalidOperation`. That is not a `LedgerError`, so
+it reached the client as a 500 and the bound never ran. Checking the raw
+magnitude instead gives the same answer on every storable value, because
+`MAX_MAGNITUDE` sits exactly on a tick. The one exception is a sell between
+`MAX_MAGNITUDE` and the next tick, which would floor to a storable number and
+is refused anyway; it cannot occur, because a sell pays less than its
+quantity and its quantity is at most `q`.
+
+**422 rather than 409.** `InsufficientSharesOutstanding` is 409 on the grounds
+that nothing about the request is malformed and the same request succeeds
+against a book with more shares outstanding. This one succeeds against no book
+at all: it is a property of the quantity asked for, which puts it with D-038's
+refusal and puts the correction where the typing happened.
+
+**Notes.** `core/pricing.py` restates `AMOUNT_PRECISION` and `AMOUNT_SCALE`
+rather than importing them, because `model/entities.py` imports `core.database`
+and a `core` module importing `model` closes a dependency cycle. Same trade
+`market_terms._MIN_OUTCOMES` makes against `market_service`, and the same
+mitigation: `test_the_scale_and_precision_match_the_column` fails if the two
+disagree, so widening the column cannot leave `MAX_MAGNITUDE` describing the
+old one.
+
+The cost bound can no longer be reached through `quote()`. A buy costs less
+than its quantity, because every price is below 1, and the `q` bound already
+holds the quantity under `MAX_MAGNITUDE`. A sell pays less than its quantity,
+which the no-shorting rule holds at or below `q`. It stays as a backstop,
+because that argument rests on the engine's prices staying below 1 and on the
+checks around it keeping their order. The cost bound is the one check that
+states the column's limit directly, so if either of those changes it still
+refuses a cost that cannot be stored.
+
+---
+
+### D-041 — A sell whose proceeds quantize to zero is refused, not quoted
+
+**Date:** 2026-09-22 · **Ticket:** #21 · **Status:** active
+
+**Decision.** A sell whose proceeds quantize to `0.0000` is refused:
+`ProceedsBelowTick`, 422, `proceeds_below_tick`. It is not quoted at zero and
+it is not paid a minimum tick. A buy the engine prices at exactly zero is
+refused the same way, as `CostBelowTick`, 422, `cost_below_tick`. A buy priced
+above zero and below one tick is unaffected: `ROUND_CEILING` charges the whole
+tick, in the pool's favour.
+
+`core/pricing.py::quantize_cost` raises both refusals itself, because [T-2]
+#22's write path has to make the same refusal, and a separate function is one
+#22 can forget to call.
+
+**Why.** Three answers were available and `cost_to_trade`'s docstring named all
+three, deliberately leaving the choice to "where there is a request to refuse".
+#21 is such a place, so the choice is made here rather than defaulting into #22.
+
+*Quoting the zero* takes real shares for nothing. That is the surprise this
+whole ticket exists to prevent: the route's contract is that the previewed
+number is the charged number, and a previewed `0.0000` charged honestly is a
+confirm step that transfers shares and moves no credits.
+
+*Paying a minimum tick* pays the trader more than the shares are worth, which
+is the residue running toward the trader — the one outcome D-039's criterion
+rules out. It would also make the rounding rule direction-dependent on
+magnitude, so "the residue accrues to the pool, never to the trader" would stop
+being true as a sentence and start needing a footnote.
+
+*Refusing* leaves both rules intact, and it is the answer D-040 already gives at
+the other edge of the same quantization: a magnitude `Numeric(18, 4)` cannot
+honestly represent is refused rather than quoted, in either direction. The
+sides differ below one tick and agree at zero. `ROUND_CEILING` of zero is zero,
+and past about 110·b of skew the engine returns exactly zero, so a buy can
+reach `0.0000` without any flooring.
+
+**Rejected.** The two options above, and one about the status code.
+
+**409 rather than 422**, and this is the closest call in the entry.
+`InsufficientSharesOutstanding` and `InsufficientFunds` are 409 on the grounds
+that the request is well formed and it is the state that refuses it — and unlike
+`QuantityTooLarge`, this refusal genuinely does depend on the book: the same
+sell clears a tick against a less saturated `q`. 422 won on two counts. It pairs
+with `QuantityTooLarge` as the two edges of one quantization, which is how a
+client should read them. And the correction available to the trader is a larger
+quantity, which puts the fix where the typing happened, the same place D-038 and
+D-040 put it. The two codes stay distinct rather than being folded together,
+because one is fixed by asking for less and the other by asking for more.
+
+**Notes.** This settles the Open entry **"A sell whose proceeds fall below one
+tick is quoted at zero, and nobody has chosen that"**, which is removed from
+Open below. `test_a_sub_tick_sell_is_quoted_at_zero` was the pin holding that
+question open; it is now
+`test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero`, which is the
+change of name the Open entry predicted.
+
+`cost_to_trade`'s docstring paragraph on sub-tick trades still describes only
+the rounding half and points at Open for the rest, so it needs the same
+correction this entry is: the refusal half is no longer open. So does
+`docs/api/ledger-service.md`, which currently warns a client that a sub-tick
+sell comes back as zero.
+
+The buy side is asserted alongside the refusal in all three layers, because an
+implementation that refused a sub-tick *trade* rather than sub-tick *proceeds*
+would satisfy every sentence above and stop quoting half the trades in a
+saturated outcome.
+
+This entry first refused only sells, on the stated ground that a sub-tick buy
+never reaches zero because `ROUND_CEILING` charges the whole tick. The review
+of PR #108 disproved that: a buy of 100 shares against `q = [12000, 1]` at
+`b = 100` was quoted at `0.0000`, because the engine returned exactly zero.
+
+---
+
+### D-042 — An absolute value on money is `copy_abs()`, never `abs()`
+
+**Date:** 2026-09-23 · **Ticket:** #21 · **Status:** active
+
+**Decision.** Wherever this service takes the absolute value of an amount that
+will be quantized, charged or stored, it calls `Decimal.copy_abs()`, or it
+calls `abs()` inside `core/lmsr.py::_engine_context()`. A bare `abs()` in
+ambient context is not used on money.
+
+**Why.** `Decimal.__abs__` is a context operation: it rounds its result to the
+*ambient* precision, which is 28 digits unless a caller has changed it, not
+the engine's 50. `copy_abs()` is the only absolute value that consults no
+context at all. The difference is not academic. The engine prices a sell of
+100 shares against `q = [7000, 0]` at `b = 100` as
+`-99.99999999999999999999999999993169…`; `abs()` at 28 digits rounds that up
+to `100.0000…`, and `ROUND_FLOOR` then pays the trader `100.0000` where the
+true proceeds floor to `99.9999`. The rounding step runs before the directional
+rounding sees the value, so it can carry a magnitude across a tick boundary in
+either direction — up on a sell pays the trader, down on a buy charges one tick
+short — and undo exactly what "A sell whose proceeds quantize to zero is
+refused, not quoted" and "`quantize_cost` takes an unsigned magnitude; the
+caller applies the sign" exist to guarantee. No balance check watches the
+fourth decimal place, so nothing downstream would notice.
+
+`service/preview.py` shipped `abs()` on the engine's answer and was caught in
+review of PR #108. The same review found the average-price division pinned to
+the engine context while the line that actually cost money was not; the
+average is now the quantized magnitude over the quantity, so no absolute value
+remains on that path.
+
+**The interface [T-2] #22 was written against has changed with this ticket.**
+`core/pricing.py::refuse_sub_tick_proceeds` no longer exists: `quantize_cost`
+raises `ProceedsBelowTick` or `CostBelowTick` itself when its result is
+`0.0000`, and coerces a string `side` to `Side`. Its signature is unchanged,
+but a caller that quantized and then called the refusal has one call too many,
+and the refusal it made no longer exists to call.
+
+**Reversal trigger.** If the service pins one decimal context globally at
+startup — the engine's precision, set once, with nothing able to change it —
+then ambient and engine context are the same thing and a bare `abs()` is
+harmless. Until then, or if any code path can run under a caller's context,
+this stands.
+
+**Notes.** The same hazard applies to every other context operation on money
+outside the engine context: `+x`, `-x`, and any arithmetic. `-magnitude` in
+`service/preview.py` is safe only because the magnitude has already been
+quantized to at most 18 significant digits, well inside 28.
+
+---
+
+### D-043 — The cold path holds no connection across the terms pull
+
+**Date:** 2026-09-24 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `books.ensure_open` rolls back the transaction its own
+book-lookup read began, after that read finds no book and before it calls
+market_service. No database connection is checked out while the terms pull
+is waited on. The rollback lives in `ensure_open` rather than in any one
+caller, so every caller of it is covered; its docstring states the one
+precondition — call it with nothing pending on the session.
+
+**Why.** `get_session` does not wrap a request in `begin()`, so the first
+`execute` autobegins a transaction and nothing ends it until the request
+does. The read that found no book therefore left its pooled connection `idle
+in transaction` across an HTTP call that can take the whole five-second
+terms timeout. `pool_size` is 10, with 10 of overflow: twenty cold previews
+at once, or one slow market service, took every connection, and
+`/ledger/balances/me` and `/ledger/entries/me` hung behind a route documented
+to fire on every keystroke. Rolling back discards nothing, because the read
+found nothing and wrote nothing.
+
+A rollback in the caller alone is not enough, which is why it is not there:
+`ensure_open`'s own lookup autobegins a fresh transaction before the fetch,
+so releasing the preview's read and then calling `ensure_open` still held a
+connection across the call. Only the lookup nearest the fetch can release
+it.
+
+**Evidence.** `test_a_cold_preview_holds_no_connection_while_market_service_is_slow`
+stalls the upstream and checks, at every call to it, that the session has no
+transaction and the pool has nothing checked out, checks Postgres's
+`pg_stat_activity` for a backend idle in transaction while the first call is
+stalled, and asserts exactly one call. It passes with the rollback and fails
+with it removed. Measured once by hand on PR #108: before the fix, 25 stalled
+cold previews checked out 20 connections and an unrelated request timed out
+waiting for one; after it, 25 stalled previews checked out none and the
+unrelated request was served.
+
+**Rejected.** Fetching the terms in the caller, with no transaction open,
+and handing them to `ensure_open` through a new `terms` argument. It works,
+but it covers only the callers that adopt it, where the rollback covers
+every caller at once.
+
+**Scope.** Every caller of `ensure_open`. It does not cover a call to
+market_service made anywhere else: `service/market_status.py`'s gate (#110)
+fetches the terms itself, after reads on the trade path, and the follow-up
+issue carries it.
+
+**Reversal trigger.** A caller that needs `ensure_open` with writes pending
+on its session — the rollback would discard them — or `get_session` moving
+to a transaction per unit of work, where the release belongs to whoever
+opens it.
+
+**Notes.** An objection was raised in the review of this fix and did not
+hold. It was that a rollback inside `ensure_open` would discard the work of a
+caller with writes in flight, naming [T-2] #22's trade path. Checked against
+that path on the `22-buy-shares` branch: everything before its `ensure_open`
+call — the unlocked replay lookup and the market-status gate — is a read, so
+nothing is pending to discard, and the book row lock is taken after
+`ensure_open` returns. The objection is the reversal trigger above, not a
+reason against the decision today.
+
+---
+
+### D-044 — A cost exactly on a tick can round one tick against the trader, or toward them on a sell
+
+**Date:** 2026-09-24 · **Ticket:** #21 · **Status:** active
+
+**Decision.** Accepted and documented, no code change. A trade whose true cost
+lies exactly on a tick, or within the engine's last significant digit of one,
+can be quantized one tick away from its true tick. The *quoted* error — the
+difference between the total after rounding and the true cost — is bounded at
+one tick, 0.0001 credits, **plus the engine's own last-digit residue**, in
+either direction.
+
+Not a flat tick, and the difference is worth stating because this entry names
+its own reversal trigger. At `q = [1315, 1000]`, `b = 3`, a buy of `0.0001`
+has a true cost of `0.0001 - 2.5065e-50`: the correct ceiling is one tick, the
+quote is two, and the error is one tick *and* that residue. The overshoot is
+46 orders of magnitude below the tick it overshoots, so the bound is the right
+shape and the wrong arithmetic — a reason to say "plus the residue", not a
+reason to change the rounding. The bound is otherwise a property of the
+rounding, not of the engine: the engine's own error is relative, not a fixed
+floor.
+
+**Why it happens, and why precision cannot fix it.** `core/lmsr.py` works at
+50 significant digits through `ln` and `exp`, which are transcendental: no
+finite precision guarantees that an answer exactly `d` in real arithmetic
+comes back as exactly `d`. It often comes back off by one unit in the last of
+those 50 digits — a relative error of order `1e-49`, so its absolute size
+scales with the cost — and directional rounding amplifies that dust, however
+small, to a whole tick. Raising `_PRECISION` shrinks the dust relative to the
+cost, it does not remove it.
+
+**Buys, overcharged a tick — toward the pool.** On any two-outcome book
+`q = [a, a + d]`, buying `2d` of outcome 0 costs exactly `d` by LMSR's shift
+invariance and the symmetry of the two outcomes. `q = [1000, 1100]`, `b = 300`,
+buying 200 is true cost `100`; the engine returns
+`100.0000000000000000000000000000000000000000000001`, and `ROUND_CEILING`
+charges `100.0001`. Not every member of the family misses — `[137, 157]` at
+`b = 100` lands exactly — but enough do to be ordinary.
+
+**Sells, paid a tick they did not earn — toward the trader.** Against
+`q = [12000, 0]` at `b = 100`, outcome 0 is priced `1 - 8e-53`, so selling
+`0.0001` has true proceeds a hair under one tick and "A sell whose proceeds
+quantize to zero is refused, not quoted" should refuse it. The shortfall is
+past the 50th digit, the engine returns exactly `-0.000100`, and the sell is
+quoted at one tick. This is the one case where the residue runs toward the
+trader, which D-039 says must not happen; it is bounded at one tick, needs
+roughly `120·b` of skew, and cannot be repeated for profit without moving the
+book back.
+
+**Rejected.** Snapping a result within some epsilon of a tick onto the tick.
+It assumes the true value *is* the tick, and a true cost a hair *above* a tick
+would then be undercharged a whole tick on a buy — trading an error toward the
+pool for one toward the trader, which is the direction the design forbids.
+Exact rational arithmetic is not available for `ln` and `exp`.
+
+**Reversal trigger.** Either characterisation test in
+`unit_test/core/test_pricing.py` —
+`test_a_cost_exactly_on_a_tick_can_be_charged_one_tick_over` and
+`test_a_sell_just_under_a_tick_can_be_paid_the_whole_tick` — going red,
+because the engine's precision or `quantize_cost`'s rounding changed; or any
+case found where the quoted total differs from the true cost by more than one
+tick. Either means the bound stated here no longer holds and this is decided
+again.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
 
-- **`posting.post()` commits internally.** It takes a session but calls
-  `session.commit()` before returning. Whether #22's trade writes can share that
-  commit boundary is unresolved. Either `post()` gains a variant that stops short
-  of commit, or the trade accepts the ledger write as its own boundary and builds
-  compensation around it.
+- **`posting.post()` commits internally — settled for a caller with nothing to
+  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
+  this for `books.ensure_open`: order every write through
+  `session.begin_nested()` and call `post()` last, so its own commit lands
+  everything together. That works whenever the call into `post()` is the
+  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
+  `state_version` bump and its position update on `MarketOutcome` would have to
+  precede the call into `post()`, in the same transaction, under D-032's rule,
+  never after it. Whether that ordering is workable for the trade path, or
+  whether #22 needs to check its write against a quote taken *after* the trade
+  executes — in which case `post()` gains a variant that stops short of commit,
+  or the trade accepts the ledger write as its own boundary and builds
+  compensation around it — is still #22's to decide.
 - **`occurred_at` for a market that has never traded.** The realtime contract
   defines it only as the time of the event. `state_changed_at` set at handoff is a
   proposal, not something the contract says.
-- **Whether share quantities share money's scale of 4.** Nothing in the repo takes
-  a position on fractional shares.
+- **Whether share quantities share money's scale of 4.** Settled at the API
+  boundary by D-038 and still open inside the service. The preview refuses a
+  quantity finer than scale 4, so nothing can *arrive* below it; what nobody has
+  decided is whether fractional shares should exist at all — whether
+  `MarketOutcome.q` wants a scale of its own, or shares should be whole numbers
+  and `Numeric(18, 4)` there is a borrowed default [F-7] #96 only ever wrote zero
+  into. [T-2] #22 is the first ticket that writes a non-zero `q` and is where the
+  question becomes load-bearing.
+- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
+  `core/opening_prices.py::max_platform_loss` computes the worst case and
+  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
+  compares them — `_liquidity_problems` checks both are present and positive and
+  says in its own docstring that the comparison is "deliberately NOT checked",
+  on the grounds that an administrator may knowingly seed a market for less.
+  That was a defensible call while the number was only displayed. Once [F-7] #96
+  funds a pool from it, an undersubsidised market is one whose pool goes
+  negative under ordinary trading, and `_refuse_overdrafts` exempts every
+  non-USER account, so nothing anywhere will say so. Whether that stays an
+  informed choice, becomes a submission rule, or becomes a warning the ledger
+  records at book creation is undecided. It is market_service's rule to make
+  either way, not the ledger's.
 - **Service-to-service auth for ledger writes.** Deferred by ADR 0009 to #22.
   Currently avoided by making #62 public, but #22 is a write and will have to
   answer it.
@@ -1109,34 +1648,13 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
-- **`posting.post()` commits internally — settled for a caller with nothing to
-  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
-  this for `books.ensure_open`: order every write through
-  `session.begin_nested()` and call `post()` last, so its own commit lands
-  everything together. That works whenever the call into `post()` is the
-  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
-  `state_version` bump and its position update on `MarketOutcome` would have to
-  precede the call into `post()`, in the same transaction, under D-032's rule,
-  never after it. Whether that ordering is workable for the trade path, or
-  whether #22 needs to check its write against a quote taken *after* the trade
-  executes — in which case `post()` gains a variant that stops short of commit,
-  or the trade accepts the ledger write as its own boundary and builds
-  compensation around it — is still #22's to decide.
-- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
-  `core/opening_prices.py::max_platform_loss` computes the worst case and
-  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
-  compares them — `_liquidity_problems` checks both are present and positive and
-  says in its own docstring that the comparison is "deliberately NOT checked",
-  on the grounds that an administrator may knowingly seed a market for less.
-  That was a defensible call while the number was only displayed. Once [F-7] #96
-  funds a pool from it, an undersubsidised market is one whose pool goes
-  negative under ordinary trading, and `_refuse_overdrafts` exempts every
-  non-USER account, so nothing anywhere will say so. Whether that stays an
-  informed choice, becomes a submission rule, or becomes a warning the ledger
-  records at book creation is undecided. It is market_service's rule to make
-  either way, not the ledger's.
-- **How long the terms pull may block, given it runs inside a transaction
-  holding row locks.** `service/market_terms.py::_TIMEOUT` is five seconds on
+- **How long the terms pull may block.** Half of this is now settled: it no
+  longer runs holding a pooled connection. `books.ensure_open` rolls back the
+  read that found no book before it calls out, so a slow market_service costs
+  one request its own latency rather than costing every route on this service
+  a connection out of a pool of ten. What is still open is the ceiling itself,
+  and the row locks [T-2] #22 will hold across it.
+  `service/market_terms.py::_TIMEOUT` is five seconds on
   every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
   is currently inherited in substance even though it is written out in the
   source, and no test can tell the line's deletion from its presence (D-030,

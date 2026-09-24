@@ -151,6 +151,100 @@ class MarketNotPublished(LedgerError):
     message = "This market has not been published yet."
 
 
+class InsufficientSharesOutstanding(LedgerError):
+    """A sell larger than this outcome's shares outstanding. [T-1] #21.
+
+    The no-shorting rule, enforced against `q_i` rather than against a
+    per-user holding — this service has no positions table, and the holdings
+    check is [T-3] #23's, meaning anything only under the trade's lock
+    (D-012). What this refuses is a sell that would drive `q_i` negative,
+    which `C(q)` has no answer for: the preview would otherwise quote a
+    number for shares that do not exist anywhere.
+
+    409 rather than 422: nothing about the request is malformed, and the same
+    request succeeds against a book with more shares outstanding. It is the
+    state of the book that refuses it, the same distinction `InsufficientFunds`
+    already draws.
+    """
+
+    status_code = 409
+    code = "insufficient_shares_outstanding"
+    message = "This sell is larger than the shares outstanding for this outcome."
+
+
+class QuantityTooLarge(LedgerError):
+    """The priced cost is above what `Numeric(18, 4)` can store. [T-1] #21, D-040.
+
+    422, for the reason D-038 refuses a fifth decimal place: this is a
+    property of the quantity asked for, not of the book's state, and the
+    correction belongs where the typing happened. `InsufficientSharesOutstanding`
+    is 409 because the same request succeeds against a book with more shares
+    outstanding; this one succeeds against no book at all.
+
+    Refused rather than returned, because "the previewed number is the charged
+    number" is this route's whole contract and a `total` of 15 integer digits
+    is a number [T-2] #22 cannot write. Returning it quotes a trade whose
+    confirm step is a `NumericValueOutOfRange` — a 500 arriving after the
+    trader committed to a quote this service answered 200 to.
+    """
+
+    status_code = 422
+    code = "quantity_too_large"
+    message = "This quantity prices above the largest cost the ledger can store."
+
+
+class ProceedsBelowTick(LedgerError):
+    """A sell whose proceeds quantize to `0.0000`. [T-1] #21, D-041.
+
+    The other edge of the quantization `QuantityTooLarge` refuses at: a
+    magnitude `Numeric(18, 4)` cannot honestly represent is refused rather
+    than quoted, in either direction. Here that means real shares priced at
+    nothing — quoting the zero takes them for free, and paying a minimum tick
+    would pay the trader more than they are worth, which is the residue
+    running toward the trader rather than the pool (D-039). Refusing is the
+    only answer that keeps both rules.
+
+    422 rather than 409, decided in D-041 as the closer call of the two: it
+    pairs with `QuantityTooLarge` as the two edges of one quantization, and
+    the trader's correction — a larger quantity — is typing, the same place
+    D-038 and D-040 put it, even though this refusal, unlike that one, does
+    depend on the book's `q`.
+    """
+
+    status_code = 422
+    code = "proceeds_below_tick"
+    message = "This sell's proceeds round down to nothing at the ledger's scale."
+
+
+class CostBelowTick(LedgerError):
+    """A buy the engine prices at exactly zero. [T-1] #21.
+
+    `ProceedsBelowTick`'s other side, raised from the same place. Past about
+    110·b of skew the engine returns exactly zero, and `ROUND_CEILING` of zero
+    is zero, so a real quantity would be quoted for nothing. Its own code
+    because a buyer told "proceeds below tick" has been told something false.
+    """
+
+    status_code = 422
+    code = "cost_below_tick"
+    message = "This buy's cost rounds to nothing at the ledger's scale."
+
+
+class UnknownOutcome(LedgerError):
+    """`outcome_id` does not name one of this market's outcomes. [T-1] #21.
+
+    422 rather than 404: the market was found and it is the *parameter* that
+    is wrong. A 404 already means "no such market" for this service
+    (`MarketNotFound`), and a client could not tell the two apart if both
+    outcome and market questions used it — two different bugs with two
+    different fixes.
+    """
+
+    status_code = 422
+    code = "unknown_outcome"
+    message = "This outcome does not belong to this market."
+
+
 class UnbalancedTransaction(LedgerError):
     """The legs do not sum to zero, so this is not a movement of credits.
 
@@ -166,3 +260,22 @@ class UnbalancedTransaction(LedgerError):
     status_code = 422
     code = "unbalanced_transaction"
     message = "The debits and credits of a transaction must sum to zero."
+
+
+class MarketBookIncomplete(LedgerError):
+    """A market's book exists and has no outcome rows.
+
+    Nothing in this service can write that state: `service/books.py::ensure_open`
+    inserts the book and its outcomes in one savepoint. It takes a hand-run
+    repair or a half-applied migration. It is named anyway because the price
+    read joins the two tables, so such a book reads as *no* book, the cold
+    path finds it and returns, and the second read comes back empty — which
+    used to be an `IndexError` and a bare, unmapped 500.
+
+    500 because the ledger's own data is wrong: not the caller's to fix, and
+    not worth retrying.
+    """
+
+    status_code = 500
+    code = "market_book_incomplete"
+    message = "This market's book is missing its outcomes. This is a server fault."

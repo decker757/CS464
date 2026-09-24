@@ -24,6 +24,7 @@ The grant is the exception that proves it: reading a balance can write, because
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Query
@@ -33,10 +34,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # The two private helpers below take a plain AsyncSession: FastAPI never looks
 # at them, so an Annotated[..., Depends(...)] there would advertise an
 # injection that does not happen.
-from controller.dependencies import CurrentAdmin, CurrentUser, DbSession
+from controller.dependencies import AccessToken, CurrentAdmin, CurrentUser, DbSession
 from core.config import get_settings
-from model.schemas import BalanceOut, LedgerEntryListResponse, LedgerEntryOut
-from service import ledger_service
+from core.pricing import Side
+from model.schemas import (
+    BalanceOut,
+    LedgerEntryListResponse,
+    LedgerEntryOut,
+    OutcomePriceOut,
+    PreviewOut,
+)
+from service import ledger_service, preview as preview_service
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -89,6 +97,39 @@ PageCursor = Annotated[
     str | None,
     Query(description="The `next_cursor` from the previous page."),
 ]
+
+PreviewQuantity = Annotated[
+    Decimal,
+    Query(
+        gt=0,
+        max_digits=18,
+        decimal_places=4,
+        description=(
+            "Shares to trade. At most four decimal places (D-038) — a fifth "
+            "is 422 rather than rounded, because rounding would quote a "
+            "trade for a quantity the trader never typed. At most 18 digits "
+            "in all, the width of `Numeric(18, 4)`: a quantity wider than "
+            "the column could never be written as a share count."
+        ),
+    ),
+]
+
+_PREVIEW_DESCRIPTION = (
+    "[T-1] #21. What a trade would cost right now, and how it would move "
+    "every outcome's price, computed from `core/lmsr.py` — not estimated.\n\n"
+    "Any valid access token, any role (D-018): a preview mints nothing and "
+    "reveals nothing beyond the public market read.\n\n"
+    "`total` is signed — negative on a buy, positive on a sell — and "
+    "quantized by the same function [T-2] #22 uses to build its legs, so "
+    "this is the number that would be charged. `state_version` is the quote "
+    "reference (D-011); nothing else in the response is a second one.\n\n"
+    "**The first request on a market writes.** A market nobody has touched "
+    "yet has no book: this route opens and funds one, once per market ever "
+    "(D-008, D-037), which can take up to the market-terms timeout. Every "
+    "request after that is a single indexed read.\n\n"
+    "Does not check whether the market is still open — the book carries no "
+    "status. Gate on the market read's derived status instead."
+)
 
 
 @router.get(
@@ -162,6 +203,80 @@ async def user_entries(
     limit: PageLimit = None,
 ) -> LedgerEntryListResponse:
     return await _entries(session, user_id, cursor=cursor, limit=limit)
+
+
+@router.get(
+    "/markets/{market_id}/preview",
+    response_model=PreviewOut,
+    summary="What a trade would cost, before confirming it",
+    description=_PREVIEW_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        404: {
+            "description": (
+                "No such market — including a draft or a submitted one, "
+                "which market_service refuses with the same 404."
+            )
+        },
+        409: {
+            "description": (
+                "This sell is larger than the outcome's shares outstanding."
+            )
+        },
+        422: {
+            "description": (
+                "A malformed query string, an `outcome_id` that is not this "
+                "market's, a quantity whose cost or resulting shares "
+                "outstanding exceed what the ledger can store, or a trade "
+                "whose total rounds to nothing (D-041): `proceeds_below_tick` "
+                "on a sell, `cost_below_tick` on a buy."
+            )
+        },
+        500: {
+            "description": (
+                "`market_book_incomplete`: this service holds a book for the "
+                "market that cannot be priced — no outcome rows, one of "
+                "them, or a `liquidity_b` the engine cannot use. Only a "
+                "hand-run repair or a half-applied migration produces it. A "
+                "server fault; not worth retrying."
+            )
+        },
+        503: {"description": "market_service could not be reached right now."},
+    },
+)
+async def preview_trade(
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    side: Side,
+    quantity: PreviewQuantity,
+    access_token: AccessToken,
+    session: DbSession,
+) -> PreviewOut:
+    result = await preview_service.quote(
+        session,
+        market_id,
+        outcome_id=outcome_id,
+        side=side,
+        quantity=quantity,
+        access_token=access_token,
+    )
+    return PreviewOut(
+        market_id=result.market_id,
+        state_version=result.state_version,
+        side=result.side,
+        outcome_id=result.outcome_id,
+        quantity=result.quantity,
+        total=result.total,
+        average_price=result.average_price,
+        prices=[
+            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
+            for p in result.prices
+        ],
+        post_trade_prices=[
+            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
+            for p in result.post_trade_prices
+        ],
+    )
 
 
 async def _balance(session: AsyncSession, user_id: uuid.UUID) -> BalanceOut:

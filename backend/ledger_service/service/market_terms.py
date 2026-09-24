@@ -84,7 +84,8 @@ async def fetch(
     A published market's `liquidity_b` and `seed_subsidy` are refused as
     unavailable too if either is null on the wire — structurally possible
     (`MarketDraftRequest` lets a draft omit both) and unreachable in practice,
-    since `publish` re-runs every submission rule. Refusing beats writing a
+    since `publish` re-runs every submission rule — and so is a `liquidity_b`
+    of zero or below, which the engine cannot price. Refusing beats writing a
     book with a `b` that can never be priced.
     """
     settings = get_settings()
@@ -167,6 +168,43 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         seed_subsidy = _to_decimal(body.get("seed_subsidy"))
         if liquidity_b is None or seed_subsidy is None:
             raise MarketTermsUnavailable
+        # A `b` of zero divides by zero in the engine and a negative one
+        # inverts the cost function: priced never, on an immutable book.
+        #
+        # `is_finite()` first. `Decimal` takes `"Infinity"` and `"NaN"` from
+        # JSON as readily as `"100"`, and the two get past a bare `<= 0` in
+        # opposite ways.
+        #
+        # `Decimal("Infinity") <= 0` is simply `False`, so it passed. It
+        # cannot actually be stored — `numeric(18, 4)` answers "a field with
+        # precision 18, scale 4 cannot hold an infinite value" — so the old
+        # behaviour was the INSERT failing with a `DataError`, which is not
+        # an `IntegrityError` and so escapes the lost-race handler in
+        # `books.ensure_open` as an unmapped 500 on a market's first touch.
+        # Bounded, but the wrong code for an upstream fault.
+        #
+        # `Decimal("NaN") <= 0` *raises* `InvalidOperation`, which this
+        # function's `except ArithmeticError` turns into the 503 by accident.
+        # That one matters more than infinity does, because `numeric(18, 4)`
+        # stores NaN perfectly happily — so a NaN reaching the write is a
+        # book ADR 0005 makes immutable, and every price of it thereafter.
+        # Both named here so neither depends on an accident.
+        if not liquidity_b.is_finite() or liquidity_b <= 0:
+            raise MarketTermsUnavailable
+        # The subsidy has the same shape and had only a null check.
+        # market_service requires it greater than zero
+        # (`validation.py::_liquidity_problems`, "The seed subsidy must be
+        # greater than zero"), and the two bad values fail differently and
+        # both badly. A *negative* one funds the pool backwards:
+        # `ensure_open` posts `Leg(platform, -(-250)) = +250` against
+        # `Leg(pool, -250)`, so the pool is debited and the house credited,
+        # and `_refuse_overdrafts` exempts only PLATFORM — it surfaces much
+        # later as an `InsufficientFunds` 409 on somebody's ordinary first
+        # preview, about a balance that is not theirs. A *zero* one builds
+        # two zero legs and `posting.post` calls that `UnbalancedTransaction`
+        # — a 422 blaming the caller for terms they never sent.
+        if not seed_subsidy.is_finite() or seed_subsidy <= 0:
+            raise MarketTermsUnavailable
 
         published_raw = body.get("published_at")
         published_at = (
@@ -209,12 +247,15 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         raise MarketTermsUnavailable from exc
 
 
-# The fewest outcomes a market can be priced with. Two, the same floor
+# The fewest outcomes a market can be priced with. Public because
+# `service/preview.py` holds the same floor on the way out: a book that
+# already exists with fewer rows is as unpriceable as terms that arrive
+# with fewer, and only one of those is something this module sees. Two, the same floor
 # `market_service/service/validation.py::MIN_OUTCOMES` enforces at submission
 # — restated rather than imported, because `unit_test/test_import_boundary.py`
 # fails any `import market_service` from this service and is right to: that
 # import resolves under pytest and is an ImportError in the container.
-_MIN_OUTCOMES = 2
+MIN_OUTCOMES = 2
 
 
 def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
@@ -239,7 +280,7 @@ def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
     condition that is the upstream being wrong. Caught here it is the 503 the
     contract promises, and the race handler keeps meaning only what it says.
     """
-    if len(outcomes) < _MIN_OUTCOMES:
+    if len(outcomes) < MIN_OUTCOMES:
         raise MarketTermsUnavailable
     if len({o.outcome_id for o in outcomes}) != len(outcomes):
         raise MarketTermsUnavailable
