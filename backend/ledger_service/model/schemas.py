@@ -274,6 +274,18 @@ class PriceEvent(BaseModel):
     prices: list[OutcomePrice] = Field(min_length=2)
     occurred_at: datetime
 
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        """A naive value is UTC, and leaves with the offset that says so.
+
+        `SnapshotOut` below does the same to its copy of this field. Without
+        it a naive datetime from [T-2] #22 would reach the socket with no
+        offset, and every browser would read it as local time. Naive versus
+        aware has already caused bugs in this repository (CLAUDE.md).
+        """
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
     @field_serializer("occurred_at")
     def _occurred_at_as_string(self, value: datetime) -> str:
         return value.isoformat()

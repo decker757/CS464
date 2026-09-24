@@ -220,3 +220,103 @@ async def test_the_app_still_starts_when_redis_is_unreachable(
 
     async with app.router.lifespan_context(app):
         pass
+
+
+async def test_a_redis_that_never_answers_costs_a_bounded_wait_and_no_exception(
+    clean_database: None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A blackholed bus is a lost broadcast, not a trade that hangs.
+
+    The test above covers a Redis that refuses — `publish` raises, and
+    `service/bus.py` swallows it. This is the other way a bus fails, and the
+    worse one: a host that accepts the connection and then never answers. With
+    no socket timeout, `await client.publish(...)` waits for as long as the
+    socket survives, the `except Exception` in `bus.publish` never gets
+    anything to catch, and [T-2] #22's already-committed trade sits holding
+    its session. Same hazard `service/market_terms.py::_TIMEOUT` exists for.
+
+    Driven through the lifespan's own client, not one built here, because what
+    is under test is the construction `main.py` actually does. The server is a
+    real socket that accepts and reads nothing — a recorder that sleeps would
+    prove that `asyncio.wait_for` works, not that the client times out.
+    """
+    import asyncio  # noqa: PLC0415
+    import logging  # noqa: PLC0415
+    import uuid  # noqa: PLC0415
+    from datetime import UTC, datetime  # noqa: PLC0415
+    from decimal import Decimal  # noqa: PLC0415
+
+    from core.config import get_settings  # noqa: PLC0415
+    from model.schemas import PriceEvent  # noqa: PLC0415
+    from service import bus  # noqa: PLC0415
+
+    held: list[asyncio.StreamWriter] = []
+
+    async def accept_and_say_nothing(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        held.append(writer)
+
+    server = await asyncio.start_server(accept_and_say_nothing, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    monkeypatch.setattr(get_settings(), "redis_url", f"redis://127.0.0.1:{port}/0")
+
+    event = PriceEvent(
+        market_id=uuid.uuid4(),
+        state_version=1,
+        prices=[
+            {"outcome_id": uuid.uuid4(), "position": 0, "price": Decimal("0.5000")},
+            {"outcome_id": uuid.uuid4(), "position": 1, "price": Decimal("0.5000")},
+        ],
+        occurred_at=datetime.now(UTC),
+    )
+    transaction_id = uuid.uuid4()
+    app = _app()
+
+    try:
+        async with app.router.lifespan_context(app):
+            with caplog.at_level(logging.WARNING):
+                # Comfortably above the client's own timeout, so a pass means
+                # the client gave up rather than this line cutting it off.
+                await asyncio.wait_for(
+                    bus.publish(
+                        app.state.redis, event, transaction_id=transaction_id
+                    ),
+                    timeout=15,
+                )
+    finally:
+        for writer in held:
+            writer.close()
+        server.close()
+        await server.wait_closed()
+
+    assert held, "the client never reached the silent server; nothing was tested"
+    assert str(transaction_id) in caplog.text, (
+        "the timed-out publish was not logged with its transaction id"
+    )
+
+
+async def test_a_redis_url_that_does_not_parse_stops_the_ledger_booting(
+    clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of "startup must not depend on the bus being up".
+
+    Unreachable is swallowed; mistyped is not, on purpose. An outage ends and
+    costs broadcasts while it lasts. A `REDIS_URL` of `http://redis:6379` never
+    ends: caught and logged, it would drop every broadcast forever from a
+    service that answers `/health` and looks fine. Failing at boot is how the
+    typo gets found, and this test is what stops a well-meant `try` around
+    `from_url` from turning a config error into a silent one. DECISIONS.md, "A
+    mistyped `REDIS_URL` stops the ledger booting; an unreachable one does
+    not".
+    """
+    from core.config import get_settings  # noqa: PLC0415
+
+    monkeypatch.setattr(get_settings(), "redis_url", "http://redis:6379")
+    app = _app()
+
+    with pytest.raises(ValueError, match="redis://"):
+        async with app.router.lifespan_context(app):
+            pass

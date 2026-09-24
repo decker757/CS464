@@ -107,3 +107,83 @@ def test_realtime_service_no_longer_claims_to_be_the_only_redis_client() -> None
         "realtime_service/requirements.txt still claims to be the only "
         "service that talks to Redis; [F-9] #112 makes the ledger the second"
     )
+
+
+# =========================================================================
+# The deployment's wiring, which is where the bus is actually chosen
+# =========================================================================
+_REPO = _BACKEND.parent
+_COMPOSE = _REPO / "docker-compose.yml"
+_ENV_EXAMPLE = _REPO / ".env.example"
+
+
+def _compose_service(name: str) -> dict:
+    """One service's block from `docker-compose.yml`, parsed.
+
+    PyYAML arrives with `uvicorn[standard]`, which this service already pins;
+    parsing rather than pattern-matching means a reordered or re-indented
+    block cannot pass or fail this by accident.
+    """
+    import yaml  # noqa: PLC0415
+
+    return yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))["services"][name]
+
+
+def test_compose_hands_the_ledger_the_bus_the_realtime_service_listens_on() -> None:
+    """The producer and the consumer, pointed at one Redis by the one file
+    that decides it.
+
+    Without a `REDIS_URL` line of its own, the ledger container ran on
+    `core/config.py`'s compiled-in default, and the only place the address
+    was written down for compose was the consumer's block. Correct today by
+    coincidence — the default happens to be the same string — and silently
+    wrong the day somebody moves the bus and edits the one line they can see:
+    the ledger publishes into a Redis nobody subscribes to, and every publish
+    "succeeds".
+    """
+    ledger = _compose_service("ledger").get("environment", {})
+    realtime = _compose_service("realtime").get("environment", {})
+
+    assert "REDIS_URL" in ledger, (
+        "docker-compose.yml's ledger service sets no REDIS_URL, so the "
+        "producer's bus is whatever the compiled-in default says"
+    )
+    assert ledger["REDIS_URL"] == realtime["REDIS_URL"], (
+        f"the ledger publishes to {ledger['REDIS_URL']!r} and the realtime "
+        f"service subscribes on {realtime['REDIS_URL']!r}"
+    )
+
+
+def test_compose_does_not_hold_the_ledger_back_until_redis_is_up() -> None:
+    """The ledger starts without the bus, and compose must not undo that.
+
+    `depends_on: redis: condition: service_healthy` is the line a tidy-minded
+    edit adds next to a new `REDIS_URL`, and it would make a Redis that never
+    comes up a ledger that never comes up — trading stopped platform-wide to
+    protect a broadcast that `service/bus.py` is written to lose. Same
+    argument as `test_the_app_still_starts_when_redis_is_unreachable`, one
+    layer out.
+    """
+    depends_on = _compose_service("ledger").get("depends_on", {})
+
+    assert "redis" not in depends_on, (
+        "docker-compose.yml makes the ledger wait on Redis; an unreachable bus "
+        "costs broadcasts, not a ledger that will not start"
+    )
+
+
+def test_env_example_no_longer_says_only_one_service_knows_redis() -> None:
+    """`.env.example`'s own copy of the claim
+    `test_realtime_service_no_longer_claims_to_be_the_only_redis_client`
+    removes from `realtime_service/requirements.txt`.
+
+    It is the first file anybody setting up a checkout reads, so the next
+    person debugging a missing price frame reads it before any code and rules
+    the producer out.
+    """
+    text = _ENV_EXAMPLE.read_text(encoding="utf-8")
+
+    assert re.search(r"no\s+other\s+service\s+knows\s+Redis", text) is None, (
+        ".env.example still says no other service knows Redis exists; the "
+        "ledger is the producer since [F-9] #112"
+    )

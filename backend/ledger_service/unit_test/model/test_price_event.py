@@ -34,7 +34,7 @@ import ast
 import json
 import pathlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -266,10 +266,26 @@ def test_occurred_at_reaches_the_wire_with_an_offset() -> None:
     requirement. A naive value here serialises without the offset and a client
     parsing it gets local time, which is a display bug on a field the contract
     says is for display.
-    """
-    serialised = json.loads(_event().model_dump_json())["occurred_at"]
 
-    assert datetime.fromisoformat(serialised).tzinfo is not None, serialised
+    **Fed a naive value, because that is the only input that tests anything.**
+    This used to serialise `_event()`'s aware default, and an aware datetime
+    reaches the wire with its offset whatever the model does, so the test
+    passed against a model with no coercion at all. The value that matters
+    is the one [T-2] #22 is likely to hand over: `state_changed_at` read back
+    from a column, or a `datetime.now()` with no zone. It has to leave as UTC,
+    offset included, the way `SnapshotOut._always_utc` makes the snapshot's
+    copy of the same field leave.
+    """
+    naive = datetime(2026, 9, 15, 9, 12, 44, 318000)
+
+    serialised = json.loads(_event(occurred_at=naive).model_dump_json())["occurred_at"]
+
+    parsed = datetime.fromisoformat(serialised)
+    assert parsed.tzinfo is not None, serialised
+    assert parsed.utcoffset() == timedelta(0), serialised
+    assert parsed.replace(tzinfo=None) == naive, (
+        "a naive value is read as UTC, not converted from local time"
+    )
 
 
 def test_the_json_carries_exactly_the_documented_keys() -> None:

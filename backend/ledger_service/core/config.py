@@ -75,6 +75,17 @@ class Settings(ServiceSettings):
     # fire-and-forget (`service/bus.py`), the trade has already committed and
     # is still correct, and the client reconciles on its next snapshot. One
     # lost frame is not worth a ledger that will not start.
+    #
+    # **That is a promise about an unreachable Redis, not a mistyped URL.** The
+    # value still has to parse: `main.py`'s lifespan hands it to
+    # `redis.asyncio.from_url`, which rejects a URL that is not `redis://`,
+    # `rediss://` or `unix://` on the spot, and the ledger refuses to start.
+    # Deliberately — an outage ends, a typo does not, and a typo swallowed
+    # would drop every broadcast forever from a service that looks healthy.
+    # Not validated here as well: `from_url` is the parser that has to accept
+    # it, and a second rule here could only disagree with it. See "A mistyped
+    # `REDIS_URL` stops the ledger booting; an unreachable one does not" in
+    # DECISIONS.md.
     redis_url: str = Field(default="redis://redis:6379/0")
 
     # --- Paging -----------------------------------------------------------

@@ -128,6 +128,16 @@ services:
       # [B-1] #32. Optional, like DEFAULT_LIQUIDITY_B above and unlike the two
       # required values: a starting grant is a number, not a credential.
       STARTING_CREDITS: ${STARTING_CREDITS:-1000}
+      # [F-9] #112. The bus the ledger publishes prices to, and the same string
+      # the realtime service below subscribes on — move one, move both. Written
+      # out rather than read from .env: `.env`'s REDIS_URL is the host-side
+      # address the test suites use (localhost), which inside this container
+      # is the container itself.
+      #
+      # No `depends_on: redis`, on purpose. An unreachable bus costs a
+      # broadcast, not a trade, and a ledger that waited for Redis to be
+      # healthy would turn a dead bus into a dead ledger.
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "${LEDGER_PORT:-8003}:8000"
     restart: unless-stopped

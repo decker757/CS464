@@ -27,6 +27,11 @@ from model import entities  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
 
+# Seconds, for connect and for every read and write on the price bus. The same
+# budget `service/market_terms.py::_TIMEOUT` gives the other outbound call on
+# the trade path; see the lifespan below for why it is stated at all.
+_REDIS_TIMEOUT_SECONDS = 5.0
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -41,10 +46,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # call whose entire purpose is to be cheap enough to fail silently.
     #
     # `from_url` does not connect — it builds a pool that dials lazily — so
-    # this does not block startup on Redis being reachable, deliberately: an
+    # this does not block startup on Redis being *reachable*, deliberately: an
     # unreachable bus costs one lost broadcast per trade, not a ledger that
     # will not boot.
-    app.state.redis = redis.from_url(get_settings().redis_url)
+    #
+    # It does parse, eagerly, and that is also deliberate. A `REDIS_URL` that
+    # is not a Redis URL — `http://redis:6379`, a typo in the scheme — raises
+    # `ValueError` here and the ledger refuses to start. Unreachable and
+    # mistyped are different failures: the first is an outage that ends, and
+    # swallowing it costs broadcasts while it lasts; the second is a
+    # configuration error that never ends, and swallowing it would kill every
+    # broadcast forever with nothing in the logs of a healthy-looking service
+    # to debug against. Failing at boot is how a typo gets found. Recorded as
+    # "A mistyped `REDIS_URL` stops the ledger booting; an unreachable one
+    # does not" in DECISIONS.md.
+    #
+    # Both socket timeouts are stated, for D-030's reason and at
+    # `service/market_terms.py::_TIMEOUT`'s value: the publish runs after
+    # [T-2] #22's commit, with the request's session still open, and a Redis
+    # that accepts the connection and then never answers must not hold that
+    # open for as long as the socket survives. Without a timeout the publish
+    # does not raise, it waits, so `service/bus.py`'s `except Exception`
+    # never fires and the swallow rule protects nothing.
+    #
+    # Like `_TIMEOUT`, these restate the library's own defaults — redis-py
+    # 8.1.0 sets both to five seconds — so they change no behaviour today.
+    # They are here because older redis-py left both at None, and a pin moved
+    # in either direction should not silently decide how long a committed
+    # trade can hang. `test_a_redis_that_never_answers_costs_a_bounded_wait_
+    # and_no_exception` fails if the effective timeout ever becomes None.
+    app.state.redis = redis.from_url(
+        get_settings().redis_url,
+        socket_timeout=_REDIS_TIMEOUT_SECONDS,
+        socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
+    )
     yield
     await app.state.redis.aclose()
     await dispose_engine()
