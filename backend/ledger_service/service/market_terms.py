@@ -84,7 +84,8 @@ async def fetch(
     A published market's `liquidity_b` and `seed_subsidy` are refused as
     unavailable too if either is null on the wire — structurally possible
     (`MarketDraftRequest` lets a draft omit both) and unreachable in practice,
-    since `publish` re-runs every submission rule. Refusing beats writing a
+    since `publish` re-runs every submission rule — and so is a `liquidity_b`
+    of zero or below, which the engine cannot price. Refusing beats writing a
     book with a `b` that can never be priced.
     """
     settings = get_settings()
@@ -166,6 +167,10 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         liquidity_b = _to_decimal(body.get("liquidity_b"))
         seed_subsidy = _to_decimal(body.get("seed_subsidy"))
         if liquidity_b is None or seed_subsidy is None:
+            raise MarketTermsUnavailable
+        # A `b` of zero divides by zero in the engine and a negative one
+        # inverts the cost function: priced never, on an immutable book.
+        if liquidity_b <= 0:
             raise MarketTermsUnavailable
 
         published_raw = body.get("published_at")

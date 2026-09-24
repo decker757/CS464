@@ -260,3 +260,22 @@ class UnbalancedTransaction(LedgerError):
     status_code = 422
     code = "unbalanced_transaction"
     message = "The debits and credits of a transaction must sum to zero."
+
+
+class MarketBookIncomplete(LedgerError):
+    """A market's book exists and has no outcome rows.
+
+    Nothing in this service can write that state: `service/books.py::ensure_open`
+    inserts the book and its outcomes in one savepoint. It takes a hand-run
+    repair or a half-applied migration. It is named anyway because the price
+    read joins the two tables, so such a book reads as *no* book, the cold
+    path finds it and returns, and the second read comes back empty — which
+    used to be an `IndexError` and a bare, unmapped 500.
+
+    500 because the ledger's own data is wrong: not the caller's to fix, and
+    not worth retrying.
+    """
+
+    status_code = 500
+    code = "market_book_incomplete"
+    message = "This market's book is missing its outcomes. This is a server fault."

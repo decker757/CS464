@@ -14,7 +14,10 @@ is a single indexed read that writes nothing (D-036).
 2. One statement joins `market_books` to `market_outcomes` (D-013), reading
    `q`, `b` and `state_version` together, with no lock (D-012, D-036).
 3. If it returns nothing, `service.books.ensure_open` opens the book — which
-   takes the handoff's own locks internally — and the read runs again.
+   releases this read's transaction before it calls market_service (D-NEW,
+   "The cold path holds no connection across the terms pull") and takes the
+   handoff's own locks internally — and the read runs again. A second empty
+   read is `MarketBookIncomplete` (500), not an `IndexError`.
 4. `outcome_id` is checked against the book once it exists. A bad one is
    `UnknownOutcome` (422), and the book stays: it was real and published, and
    the write is a market's first touch either way (D-037's Notes).
@@ -31,12 +34,12 @@ is a single indexed read that writes nothing (D-036).
    `CostBelowTick` on a buy — rather than quoted as real shares for nothing
    (D-041).
 7. `average_price` is the quantized magnitude over `quantity`,
-   `ROUND_HALF_UP` at scale 4 — display, not money. Run inside
-   `core/lmsr.py`'s pinned decimal context, the same one every other division
-   in this service's pricing path uses, so an ambient trap or precision never
-   reaches this one division.
+   `ROUND_HALF_UP` at scale 4 by `_quantize_price` — display, not money.
+   Run inside `core/lmsr.py`'s pinned decimal context, the same one every
+   other division in this service's pricing path uses, so an ambient trap or
+   precision never reaches this one division.
 8. `prices` and `post_trade_prices` are every outcome, `ROUND_HALF_UP` at
-   scale 4, ordered by position.
+   scale 4 by the same `_quantize_price`, ordered by position.
 
 Nothing here checks whether the market is still open. The book carries no
 status and `close_time` is not snapshotted (ADR 0014 leaves it in the future
@@ -58,6 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
     InsufficientSharesOutstanding,
+    MarketBookIncomplete,
     QuantityTooLarge,
     UnknownOutcome,
 )
@@ -124,6 +128,11 @@ async def quote(
             session, market_id, access_token=access_token, transport=transport
         )
         rows = await _read_book(session, market_id)
+        if not rows:
+            # A book with no outcome rows reads as no book through the inner
+            # join, so `ensure_open` found it and returned. Unreachable
+            # through `ensure_open`, which writes both in one savepoint.
+            raise MarketBookIncomplete
 
     state_version = rows[0].state_version
     b = rows[0].liquidity_b
@@ -151,8 +160,9 @@ async def quote(
     if after_q[index] > MAX_MAGNITUDE:
         raise QuantityTooLarge
 
-    # `copy_abs`, never `abs`: `abs` rounds at the ambient precision and can
-    # carry the magnitude across a tick before the directional rounding runs.
+    # `copy_abs`, never `abs` (D-042): `abs` rounds at the ambient precision
+    # and can carry the magnitude across a tick before the directional
+    # rounding runs.
     raw = cost_to_trade(q, b, delta).copy_abs()
     if raw > MAX_MAGNITUDE:
         raise QuantityTooLarge
@@ -160,9 +170,7 @@ async def quote(
     magnitude = quantize_cost(raw, side=side)
     total = -magnitude if side is Side.BUY else magnitude
     with _engine_context():
-        average_price = (magnitude / quantity).quantize(
-            QUANTUM, rounding=ROUND_HALF_UP
-        )
+        average_price = _quantize_price(magnitude / quantity)
 
     return Quote(
         market_id=market_id,
@@ -201,13 +209,26 @@ async def _read_book(session: AsyncSession, market_id: uuid.UUID) -> Sequence[Ro
     return (await session.execute(stmt)).all()
 
 
+def _quantize_price(value: Decimal) -> Decimal:
+    """A display figure — a price or `average_price` — at scale 4, half up.
+
+    One definition for every figure this module shows and nobody is charged,
+    so there is no side for the residue to favour. `total` never comes
+    through here: it is money, and `core/pricing.py::quantize_cost` owns it.
+
+    Shaped as a drop-in for #110's `core/pricing.py::quantize_price`, which
+    replaces it: same argument, same rule, no context of its own.
+    """
+    return value.quantize(QUANTUM, rounding=ROUND_HALF_UP)
+
+
 def _quantized_prices(rows: Sequence[Row], raw: list[Decimal]) -> list[OutcomeQuote]:
     """`raw` zipped back onto the ids and positions `_read_book` ordered."""
     return [
         OutcomeQuote(
             outcome_id=row.outcome_id,
             position=row.position,
-            price=price.quantize(QUANTUM, rounding=ROUND_HALF_UP),
+            price=_quantize_price(price),
         )
         for row, price in zip(rows, raw)
     ]
