@@ -42,7 +42,15 @@ _PIN = re.compile(r"^redis==(\S+)\s*$", re.MULTILINE)
 # claim. Matched loosely on whitespace so a rewrap does not fail this, and on
 # the claim rather than the whole line so that correcting it by rewriting the
 # comment passes while correcting it by deleting one word does not.
-_STALE_CLAIM = re.compile(r"only\s+service\s+that\s+talks\s+to\s+Redis", re.IGNORECASE)
+# A claim that *one* service uses Redis, in any of the obvious wordings.
+# Narrow on purpose: "the realtime service reads it and the ledger writes
+# it; no other service touches Redis" is true and must not match, so this
+# looks for the singular claim rather than for the word "other".
+_STALE_CLAIM = re.compile(
+    r"only\s+(one\s+)?service\s+(that\s+)?"
+    r"(talks\s+to|uses|knows|touches|needs|connects\s+to)\s+Redis",
+    re.IGNORECASE,
+)
 
 
 def _pinned_redis(path: pathlib.Path) -> str | None:
@@ -180,10 +188,22 @@ def test_env_example_no_longer_says_only_one_service_knows_redis() -> None:
     It is the first file anybody setting up a checkout reads, so the next
     person debugging a missing price frame reads it before any code and rules
     the producer out.
+
+    **Asserted as a positive, and the negative version was a one-shot.** This
+    used to grep for the one sentence a PR had deleted, which any rewording
+    satisfies — and a broader regex is worse, because "the realtime service
+    reads it and the ledger writes it; no other service touches Redis" is
+    true and would match it. What has to hold is that the ledger is named as
+    a client, so that is what is checked.
     """
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
 
-    assert re.search(r"no\s+other\s+service\s+knows\s+Redis", text) is None, (
-        ".env.example still says no other service knows Redis exists; the "
-        "ledger is the producer since [F-9] #112"
+    assert _STALE_CLAIM.search(text) is None, (
+        ".env.example claims a single Redis client; the ledger is a second "
+        "one since [F-9] #112"
+    )
+    assert re.search(r"ledger", text[text.index("REDIS_URL=") - 1500 :], re.I), (
+        ".env.example's Redis block does not mention the ledger; it has been "
+        "the producer since [F-9] #112, and this file is where somebody "
+        "debugging a missing price frame looks first"
     )

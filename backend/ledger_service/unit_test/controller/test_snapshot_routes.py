@@ -38,7 +38,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.roles import UserRole
-from unit_test.conftest import bearer, mint_token
+from unit_test.conftest import bearer, mint_token, strip_outcomes
 
 
 def _books():
@@ -546,9 +546,7 @@ async def test_a_book_with_no_outcome_rows_is_a_500_in_the_envelope(
 
     market = _Market()
     await _warm(session, market)
-    outcome = _entities().MarketOutcome
-    await session.execute(delete(outcome).where(outcome.market_id == market.market_id))
-    await session.commit()
+    await strip_outcomes(session, market.market_id)
 
     response = await client.get(_path(market.market_id), headers=trader_headers)
 

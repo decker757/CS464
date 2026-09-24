@@ -29,10 +29,18 @@ happened to look".
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+
+
+def _main():
+    """`main`, imported inside each user for the reason `_redis` gives."""
+    import main  # noqa: PLC0415
+
+    return main
 
 
 def _redis():
@@ -130,11 +138,19 @@ async def test_the_same_client_serves_every_request(
 ) -> None:
     """Two requests, still one client.
 
-    Driven through real requests rather than by calling the dependency
-    directly, because what is being asserted is that the wiring — lifespan to
-    `app.state` to the injected dependency — hands out the held object rather
-    than building one on the way past.
+    Two requests' worth of traffic, and the dependency resolved on both.
+
+    **The requests alone proved less than this said.** It used to drive
+    `GET /health` twice, and `/health` takes no dependencies — so `get_redis`
+    never ran, and rewriting it to build a fresh client per request would
+    have left this green. Counting `from_url` calls shows one client per
+    *process*; resolving the dependency is what shows that the one held on
+    `app.state` is the one a route would be handed. [T-2] #22 is the first
+    route that will take `RedisClient`, so until then this is the only thing
+    exercising that seam at all.
     """
+    from controller.dependencies import get_redis  # noqa: PLC0415
+
     app = _app()
 
     async with app.router.lifespan_context(app):
@@ -144,9 +160,17 @@ async def test_the_same_client_serves_every_request(
             await client.get("/health", headers=trader_headers)
             await client.get("/health", headers=trader_headers)
 
+        served = [
+            await get_redis(SimpleNamespace(app=app)),
+            await get_redis(SimpleNamespace(app=app)),
+        ]
+
     assert len(factory.clients) == 1, (
         f"{len(factory.clients)} clients after two requests; a client built "
         "per request or per publish is the thing this criterion excludes"
+    )
+    assert served[0] is served[1] is factory.clients[0], (
+        "the dependency did not hand out the client the lifespan holds"
     )
 
 
@@ -241,7 +265,15 @@ async def test_a_redis_that_never_answers_costs_a_bounded_wait_and_no_exception(
     is under test is the construction `main.py` actually does. The server is a
     real socket that accepts and reads nothing — a recorder that sleeps would
     prove that `asyncio.wait_for` works, not that the client times out.
+
+    **The timeout is shortened for the test, and that is not a weakening.**
+    What this holds is that the wait is *bounded* and that nothing propagates,
+    not that the bound is five seconds — `test_the_socket_timeouts_are_set`
+    pins the value. Left at five it spent five real seconds on every run of a
+    suite the README tells people to run constantly, across a five-service CI
+    matrix.
     """
+    monkeypatch.setattr(_main(), "_REDIS_TIMEOUT_SECONDS", 0.25)
     import asyncio  # noqa: PLC0415
     import logging  # noqa: PLC0415
     import uuid  # noqa: PLC0415

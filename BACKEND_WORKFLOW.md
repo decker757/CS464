@@ -17,8 +17,11 @@ at resolution, losers pay 0. `b` is liquidity; house worst-case loss is `b·ln(n
 
 **Me:** Ihsan (`ihsankoolz`) — backend. Pricing engine, trade path, settlement,
 market read APIs, leaderboard, limit orders.
-**Ernest (`decker757`)** — infra, CI, auth, ledger, realtime, market lifecycle.
-Reviews every PR, strictly.
+**Ernest (`decker757`)** — infra, CI, auth, realtime, market lifecycle, and
+the ledger's money primitives (`posting.py`, `accounts.py`, `grants.py`).
+Reviews every PR, strictly. The rest of `ledger_service` is mine — see
+"`ledger_service` is mine" below, which is the longer version of this line
+and the one to believe if the two ever drift.
 **Michelle (`michelletan2024`)** — React frontend.
 
 ## Stack — as it actually is
@@ -73,14 +76,17 @@ test enforcing it.
 
 ## Open questions — stop and ask, don't guess
 
-- Does `q` live in the ledger schema? ADR 0005 says so. Confirm before building on it.
-- `posting.post()` calls `session.commit()` internally. Whether my trade writes can
-  share that commit boundary is unresolved and is a conversation with Ernest.
+- `posting.post()` calls `session.commit()` internally. Settled for a caller with
+  nothing to write afterwards — D-032: order every write through
+  `session.begin_nested()` and call `post()` last. Still open for [T-2] #22,
+  whose `state_version` bump and `q` update may not fit that shape.
 - Service-to-service auth for ledger writes doesn't exist. A trader's bearer token
   cannot authorize a ledger mutation — that's a self-mint hole.
-- Nothing funds the market pool. LMSR pays out up to `b·ln(n)` more than it
-  collects. Needs a house account seeded at publish or settlement won't balance.
-  Not ticketed.
+- Whether an under-subsidised market should be refused. The pool *is* funded —
+  `books.ensure_open` posts `seed_subsidy` from the PLATFORM account on a
+  market's first touch ([F-7] #96, D-009) — but nothing compares that subsidy
+  against `b·ln(n)`, so a market can be opened whose pool goes negative under
+  ordinary trading. market_service's rule to make, not the ledger's.
 
 **`auth_service` and `realtime_service` are Ernest's — don't modify them without
 asking me first.** They have tests riding on current behaviour.

@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_engine
 from core.lmsr import cost_to_trade, prices
 from model.entities import Entry
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, strip_outcomes
 
 
 def _preview():
@@ -1582,9 +1582,7 @@ async def test_a_book_with_no_outcome_rows_is_a_named_error_not_an_index_error(
     """
     upstream = _Upstream()
     await _warm(session, upstream)
-    outcome = _entities().MarketOutcome
-    await session.execute(delete(outcome).where(outcome.market_id == upstream.market_id))
-    await session.commit()
+    await strip_outcomes(session, upstream.market_id)
 
     with pytest.raises(_errors().LedgerError) as raised:
         await _quote(session, upstream)

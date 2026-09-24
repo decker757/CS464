@@ -237,6 +237,30 @@ structurally needs — an object, a matching id, a parseable status — and the
 arguments on the rules that move survive the move unchanged, because they were
 always arguments about writing.
 
+### `settled` is refused by the comparison and not by the path
+
+`status != "open"` needs no list, so a member added to `MarketStatus` on the
+day settlement lands is refused here without anyone remembering to add it.
+That is true of the comparison and it is not the whole path.
+
+Whether a settled market reaches this comparison at all depends on
+market_service's `PublicMarketStatus`, the hand-written allowlist
+`get_published`'s `_visible()` filters on. Add SETTLED to `MarketStatus` and
+not to that allowlist, and the public detail endpoint answers `404` for a
+settled market. This gate then takes its 404 branch, finds a book — a settled
+market has certainly been traded — and raises `MarketTermsUnavailable`
+**503**, not `MarketClosed` **409**.
+
+It still fails closed, so no trade goes through and no money moves. But 503
+means "the dependency is unwell, try again shortly" about a market that will
+never reopen, so a client that retries on 503 retries forever. The remembering
+did not disappear; it moved to the other service, where
+`market_service/model/entities.py`'s comment on `PUBLIC_STATUSES` already
+warns about it for its own reasons.
+
+Whoever lands [3.4] #12 adds SETTLED to `PublicMarketStatus` in the same
+commit as `MarketStatus`, and this entry is the second place that says so.
+
 ## Consequences
 
 **market_service is now a runtime and availability dependency of every trade.**

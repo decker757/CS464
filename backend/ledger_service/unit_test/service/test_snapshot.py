@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_engine
 from core.lmsr import prices as lmsr_prices
 from model.entities import Entry
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, strip_outcomes
 
 
 def _snapshot_service():
@@ -833,9 +833,7 @@ async def _strip_outcomes(session: AsyncSession, upstream: _Upstream) -> None:
     way a hand-run repair or a half-applied migration would leave it."""
     from sqlalchemy import delete  # noqa: PLC0415
 
-    outcome = _entities().MarketOutcome
-    await session.execute(delete(outcome).where(outcome.market_id == upstream.market_id))
-    await session.commit()
+    await strip_outcomes(session, upstream.market_id)
 
 
 async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(

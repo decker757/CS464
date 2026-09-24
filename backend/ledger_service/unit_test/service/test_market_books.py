@@ -84,6 +84,16 @@ def _outcome_ids() -> tuple[uuid.UUID, uuid.UUID]:
     return uuid.uuid4(), uuid.uuid4()
 
 
+def _raw(outcomes: list[object]) -> bool:
+    """True when the caller handed whole outcome dicts rather than ids.
+
+    An empty list counts as raw: it is the "no outcomes at all" case, and
+    the point of accepting it here is that a test asking for a malformed
+    list does not have to reach past this class into `_body` to get one.
+    """
+    return outcomes == [] or isinstance(outcomes[0], dict)
+
+
 class _Upstream:
     """A stand-in market service that counts what it was asked.
 
@@ -98,12 +108,16 @@ class _Upstream:
         liquidity_b: Decimal | str = _B,
         seed_subsidy: Decimal | str = _SUBSIDY,
         published_at: str | None = "2026-09-01T09:00:00Z",
-        outcomes: list[uuid.UUID] | None = None,
+        outcomes: list[uuid.UUID] | list[dict[str, object]] | None = None,
         market_id: uuid.UUID | None = None,
     ) -> None:
         self.calls = 0
         self.market_id = market_id or _market_id()
-        self.outcomes = outcomes or list(_outcome_ids())
+        self.outcomes = (
+            outcomes
+            if outcomes and not _raw(outcomes)
+            else list(_outcome_ids())
+        )
         self._body = {
             "id": str(self.market_id),
             "status": "open",
@@ -112,10 +126,23 @@ class _Upstream:
             "liquidity_b": None if liquidity_b is None else str(liquidity_b),
             "seed_subsidy": None if seed_subsidy is None else str(seed_subsidy),
             "published_at": published_at,
-            "outcomes": [
-                {"id": str(oid), "position": i, "label": f"Outcome {i}"}
-                for i, oid in enumerate(self.outcomes)
-            ],
+            # Raw dicts pass straight through, so a test that needs a
+            # malformed outcome list — a duplicate position, a single
+            # outcome, an empty one — asks for it here rather than reaching
+            # past this class into `_body` afterwards. The sibling
+            # `_Upstream` in `test_market_status.py` builds its body
+            # differently, and a test poking at one would not survive being
+            # moved to the other.
+            # `is not None`, not truthiness: `outcomes=[]` is the "no
+            # outcomes at all" case and has to survive as an empty list.
+            "outcomes": (
+                outcomes
+                if outcomes is not None and _raw(outcomes)
+                else [
+                    {"id": str(oid), "position": i, "label": f"Outcome {i}"}
+                    for i, oid in enumerate(self.outcomes)
+                ]
+            ),
         }
 
     @property
@@ -646,8 +673,7 @@ async def test_terms_that_could_never_be_priced_are_refused(
     submission rule, and those require between two and ten named outcomes with
     server-assigned positions.
     """
-    upstream = _Upstream()
-    upstream._body["outcomes"] = outcomes
+    upstream = _Upstream(outcomes=outcomes)
 
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _open(session, upstream)

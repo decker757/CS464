@@ -249,26 +249,17 @@ class PreviewOut(BaseModel):
         return str(value)
 
 
-class OutcomePrice(BaseModel):
-    """What one outcome of a market currently costs. [F-9] #112.
 
-    Copied from `realtime_service/model/schemas.py`, field for field, per ADR
-    0012 and `docs/api/realtime-service.md`: below that package's bar for
-    `shared/`, and `unit_test/model/test_price_event.py` pins the copy against
-    the original with `ast` so a drift between the two fails loudly instead of
-    silently dropping every event on the consumer's `extra="forbid"`.
-    """
-
-    outcome_id: uuid.UUID
-    position: int = Field(ge=0)
-    price: Decimal = Field(ge=0, le=1)
-
-    @field_serializer("price")
-    def _price_as_string(self, value: Decimal) -> str:
-        """Exact on the wire, for the reason every other amount in this
-        service is a string: a JSON number is an IEEE double by the time a
-        browser has parsed it."""
-        return str(value)
+# One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared
+# separately and field for field the same — same three fields, same bounds,
+# same `str(value)` serializer — with only `OutcomePrice` pinned against
+# `realtime_service` by `test_price_event.py`. Nothing pinned the two local
+# copies against each other, so a bound changed on one would have diverged
+# silently from the other; and `SnapshotOut` used one while `PriceEvent` used
+# the other, which is exactly the pair both docs pages promise are
+# byte-for-byte identical. The alias keeps the name the pin reads and the
+# name the snapshot was written against, over one definition.
+OutcomePrice = OutcomePriceOut
 
 
 class PriceEvent(BaseModel):
