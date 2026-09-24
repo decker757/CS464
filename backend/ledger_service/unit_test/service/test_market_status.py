@@ -222,9 +222,17 @@ async def _book_row(session: AsyncSession, market_id: uuid.UUID):
 
 async def _written(session: AsyncSession, market_id: uuid.UUID) -> list[str]:
     """The tables holding a row this gate could have written, seen from
-    `session`. Empty means nothing. The queries autoflush, so a pending
-    `session.add` counts as well as a flushed one."""
-    written = []
+    `session`. Empty means nothing.
+
+    **A pending `session.add` is looked for explicitly, and this used to be
+    wrong.** The docstring here claimed the queries below autoflush, so a
+    queued object would be caught by them — but `core/database.py` builds the
+    factory with `autoflush=False`, so they do not, and a regression that
+    queued an `Account` and then raised `MarketClosed` would have counted zero
+    rows and passed. `session.new` is the only thing that sees it, since
+    nothing has issued an INSERT for it yet and no other connection can.
+    """
+    written = [type(obj).__tablename__ for obj in session.new]
     if await _book_row(session, market_id) is not None:
         written.append(_entities().MarketBook.__tablename__)
     for table in (Entry, Transaction, Account):

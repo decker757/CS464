@@ -45,12 +45,15 @@ from service import accounts, market_terms, posting
 from service.market_terms import OutcomeTerms
 from service.posting import Leg
 
-# The fewest outcomes a market can be priced with. Two, the same floor
+# The fewest outcomes a market can be priced with. Public because
+# `service/book_prices.py` holds the same floor on the way out: a book
+# that already exists with fewer rows is as unpriceable as terms that
+# arrive with fewer. Two, the same floor
 # `market_service/service/validation.py::MIN_OUTCOMES` enforces at submission
 # — restated rather than imported, because `unit_test/test_import_boundary.py`
 # fails any `import market_service` from this service and is right to: that
 # import resolves under pytest and is an ImportError in the container.
-_MIN_OUTCOMES = 2
+MIN_OUTCOMES = 2
 
 # Namespaced like every other idempotency key this system generates, so that
 # `market-open:<market_id>` cannot collide with `signup-grant:<user_id>` even
@@ -85,7 +88,7 @@ async def ensure_open(
     caller today reaches here from a read that found no book, which is the
     only shape this function was ever given.
     """
-    book = await _find(session, market_id)
+    book = await find(session, market_id)
     if book is not None:
         return book
 
@@ -110,10 +113,22 @@ async def ensure_open(
     # `nullable=False`, so a null reaching the insert would raise
     # `IntegrityError` inside the savepoint below, where the `except
     # IntegrityError` is watching for a lost first-touch race (D-010) — it
-    # would re-raise correctly, because `_find` finds no committed book, but
+    # would re-raise correctly, because `find` finds no committed book, but
     # the caller would get a 500 describing nothing while the race handler
     # quietly catches two unrelated things.
     if terms.liquidity_b is None or terms.seed_subsidy is None:
+        raise MarketTermsUnavailable
+    # Not just null. `C(q) = b·ln(Σ e^(q_i/b))` divides by `b`, and
+    # `core/lmsr.py::_require_positive_b` refuses a non-positive one with a
+    # bare `ValueError` — not a `LedgerError`, so it reaches the client as an
+    # unmapped 500. The book is immutable under ADR 0005 and this value is
+    # read once, so a `b` of `0` written here is every price for that market,
+    # forever, and no later read corrects it. A negative subsidy is the same
+    # argument on the other column: it would fund the pool by taking credits
+    # out of it. market_service refuses both at submission
+    # (`_liquidity_problems`); this is the copy that matters, because it is
+    # the one standing in front of the write.
+    if terms.liquidity_b <= 0 or terms.seed_subsidy < 0:
         raise MarketTermsUnavailable
     _refuse_unpriceable(terms.outcomes)
 
@@ -153,7 +168,7 @@ async def ensure_open(
         # that object was never committed, so its pool_account_id would name
         # an account the caller could go on to use while nothing else agrees
         # it exists.
-        existing = await _find(session, market_id)
+        existing = await find(session, market_id)
         if existing is None:
             raise
         book = existing
@@ -178,7 +193,14 @@ async def ensure_open(
     return book
 
 
-async def _find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
+async def find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
+    """This market's book, or None. Unlocked.
+
+    Public because `service/market_status.py` needs the same lookup to
+    decide which of the two 404s it owes the caller, and a second copy of
+    one `select` is a second place to change when how a book is located
+    changes.
+    """
     stmt = select(MarketBook).where(MarketBook.market_id == market_id)
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -208,11 +230,11 @@ def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
     `market_outcomes`, so these reach the database and fail there — inside
     this function's caller's savepoint, where the `except IntegrityError` is
     watching for a *lost first-touch race*. It re-raises correctly, because
-    `_find` finds no committed book, but the request ends as a 500 on a
+    `find` finds no committed book, but the request ends as a 500 on a
     condition that is the upstream being wrong. Caught here it is the 503 the
     contract promises, and the race handler keeps meaning only what it says.
     """
-    if len(outcomes) < _MIN_OUTCOMES:
+    if len(outcomes) < MIN_OUTCOMES:
         raise MarketTermsUnavailable
     if len({o.outcome_id for o in outcomes}) != len(outcomes):
         raise MarketTermsUnavailable

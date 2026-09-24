@@ -62,10 +62,13 @@ class Settings(ServiceSettings):
     # same shape `market_service_url` above uses for a service name.
     #
     # Has a default, unlike `database_url` and the inherited JWT secret,
-    # because it is not a credential and because `ci-backend.yml`'s "Verify
-    # the app boots" step calls `create_app()` with only four environment
-    # variables set — this is not one of them, so a required field here would
-    # fail that step rather than the deploy it exists to catch.
+    # because it is not a credential — that is the test those two fail and
+    # this one passes. The CI argument [F-9] #112 also made for it is wrong
+    # and is not a reason: `REDIS_URL` *is* set in `ci-backend.yml`'s
+    # job-level `env:` block, for all five matrix legs, so a required field
+    # would pass the boot check and fail only where the variable was
+    # genuinely missing. D-044 carries the correction and the real argument,
+    # which is the asymmetry below.
     #
     # Deliberately not required the way `realtime_service.REDIS_URL` is.
     # `docs/api/realtime-service.md` states the asymmetry: point that service

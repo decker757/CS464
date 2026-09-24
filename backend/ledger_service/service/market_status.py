@@ -23,12 +23,24 @@ from __future__ import annotations
 import uuid
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MarketClosed, MarketNotFound, MarketTermsUnavailable
-from model.entities import MarketBook
-from service import market_terms
+from service import books, market_terms
+
+# The one `status` a trade may proceed against, spelled as market_service
+# puts it on the wire. Restated rather than imported, for the reason
+# `books.MIN_OUTCOMES` is: `unit_test/test_import_boundary.py` fails any
+# `import market_service` from this service, and it is right to — that
+# import resolves under pytest and is an `ImportError` in the container.
+#
+# **Unlike that one, nothing can catch this copy drifting.** `MIN_OUTCOMES`
+# is a number two services agree on and a wrong one fails loudly; this is a
+# string on the money gate, and if market_service ever renamed the value
+# every trade would be refused as `market_closed` with no test red on
+# either side. The mitigation is that the name is here, once, rather than
+# inline at the comparison where it reads like a literal.
+_OPEN = "open"
 
 
 async def ensure_trading(
@@ -47,7 +59,7 @@ async def ensure_trading(
     between them — a market holding a book existed and was published, so a
     404 for it means market_service is answering incorrectly
     (`MarketTermsUnavailable`, 503); a market with no book is the ordinary
-    shape of a first trade (`MarketNotFound`, 404). That read is unlocked —
+    shape of a first trade (`MarketNotFound`, 404). That read is `books.find`, unlocked —
     ADR 0015 governs reads that decide a *write*, and this one decides an
     error code — and it happens on the 404 branch only: a 200 with
     `status == "open"` sends nothing to Postgres at all.
@@ -63,16 +75,11 @@ async def ensure_trading(
             market_id, access_token=access_token, transport=transport
         )
     except MarketNotFound as not_found:
-        book = await _book(session, market_id)
+        book = await books.find(session, market_id)
         if book is not None:
             raise MarketTermsUnavailable from not_found
         raise
 
-    if terms.status != "open":
+    if terms.status != _OPEN:
         raise MarketClosed
 
-
-async def _book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
-    """Unlocked. This decides which 404 to raise, not what to write."""
-    stmt = select(MarketBook).where(MarketBook.market_id == market_id)
-    return (await session.execute(stmt)).scalar_one_or_none()

@@ -75,14 +75,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # in either direction should not silently decide how long a committed
     # trade can hang. `test_a_redis_that_never_answers_costs_a_bounded_wait_
     # and_no_exception` fails if the effective timeout ever becomes None.
-    app.state.redis = redis.from_url(
-        get_settings().redis_url,
-        socket_timeout=_REDIS_TIMEOUT_SECONDS,
-        socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
-    )
-    yield
-    await app.state.redis.aclose()
-    await dispose_engine()
+    # `try` from here, not from the `yield`: the two failures this guards
+    # against are `redis.from_url` raising on a mistyped URL — the documented
+    # boot failure above, which happens *after* `create_all()` has opened the
+    # engine — and `aclose()` raising on shutdown, which would leave every
+    # asyncpg connection open behind it. Either one without this leaks the
+    # engine for the life of the process.
+    try:
+        app.state.redis = redis.from_url(
+            get_settings().redis_url,
+            socket_timeout=_REDIS_TIMEOUT_SECONDS,
+            socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
+        )
+        yield
+    finally:
+        redis_client = getattr(app.state, "redis", None)
+        if redis_client is not None:
+            await redis_client.aclose()
+        await dispose_engine()
 
 
 def create_app() -> FastAPI:

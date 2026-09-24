@@ -316,6 +316,19 @@ class SnapshotOut(BaseModel):
     def _always_utc(cls, v: datetime) -> datetime:
         return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        """`.isoformat()`, the same call `PriceEvent` makes, and for the same
+        reason the docstring above gives.
+
+        Without this pydantic writes its own RFC-3339 form, which spells UTC
+        as a trailing `Z` where `.isoformat()` spells it `+00:00`. Both are
+        valid and they are not the same string, so "byte-for-byte the `price`
+        frame" was false for this one field — and the test that guards it
+        only asserted the offset was present, which is true of both.
+        """
+        return value.isoformat()
+
 
 class LedgerEntryListResponse(BaseModel):
     """One page of a user's history, newest first."""

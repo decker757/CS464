@@ -31,8 +31,8 @@ is a single indexed read that writes nothing (D-036).
    refused by `quantize_cost` itself — `ProceedsBelowTick` on a sell,
    `CostBelowTick` on a buy — rather than quoted as real shares for nothing
    (D-041).
-7. `average_price` is the quantized magnitude over `quantity`,
-   `ROUND_HALF_UP` at scale 4 — display, not money. Run inside
+7. `average_price` is the quantized magnitude over `quantity`, through
+   `core/pricing.py::quantize_price` — display, not money. Run inside
    `core/lmsr.py`'s pinned decimal context, the same one every other division
    in this service's pricing path uses, so an ambient trap or precision never
    reaches this one division.
@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,9 +67,9 @@ from core.errors import (
 from core.lmsr import _engine_context, cost_to_trade, prices as lmsr_prices
 from core.pricing import (
     MAX_MAGNITUDE,
-    QUANTUM,
     Side,
     quantize_cost,
+    quantize_price,
 )
 from service import book_prices
 from service.book_prices import PricedOutcome
@@ -151,10 +151,14 @@ async def quote(
 
     magnitude = quantize_cost(raw, side=side)
     total = -magnitude if side is Side.BUY else magnitude
+    # `quantize_price`, not a third hand-rolled copy of it: an average
+    # price is a price, and `core/pricing.py` owns that rounding rule for
+    # every price this service publishes. The division stays inside the
+    # engine's pinned context so an ambient trap or precision cannot reach
+    # it; the rounding after it is the same half-up at scale 4 the
+    # snapshot and the preview's own `prices` take.
     with _engine_context():
-        average_price = (magnitude / quantity).quantize(
-            QUANTUM, rounding=ROUND_HALF_UP
-        )
+        average_price = quantize_price(magnitude / quantity)
 
     return Quote(
         market_id=market_id,

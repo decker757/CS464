@@ -20,9 +20,12 @@ read comes back empty, `books.ensure_open` opens and funds the book, taking
 the handoff's own locks internally, and the read runs again (D-037). Every
 request after a market's first is the single read and writes nothing.
 
-**A second empty read is `MarketBookIncomplete`**, not an `IndexError`. The
-join reads a book with no outcome rows as no book, so the cold path finds the
-book, returns, and the read comes back empty a second time.
+**A second read that cannot be priced is `MarketBookIncomplete`**, not an
+`IndexError` and not a bare `ValueError` out of the engine. The join reads a
+book with no outcome rows as no book, so the cold path finds the book,
+returns, and the read comes back empty a second time. A book left holding a
+single row is the same fault one step along: it survives an emptiness check
+and dies in `core/lmsr.py`, so the floor here is `books.MIN_OUTCOMES`.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from core.errors import MarketBookIncomplete
 from core.pricing import quantize_price
 from model.entities import MarketBook, MarketOutcome
 from service import books
+from service.books import MIN_OUTCOMES
 
 
 @dataclass(frozen=True)
@@ -79,7 +83,13 @@ async def read_or_open(
         session, market_id, access_token=access_token, transport=transport
     )
     rows = await _read(session, market_id)
-    if not rows:
+    # Fewer than two, not zero. `core/lmsr.py` refuses a `q` naming one
+    # outcome with a bare `ValueError`, which is not a `LedgerError` and
+    # reaches the client as the same unmapped 500 this check exists to stop —
+    # so a book left holding a single outcome row would land exactly where a
+    # book holding none used to. Same floor `books._refuse_unpriceable`
+    # enforces on the way in.
+    if len(rows) < MIN_OUTCOMES:
         raise MarketBookIncomplete
     return rows
 
@@ -93,7 +103,10 @@ def priced(rows: Sequence[Row], raw: list[Decimal]) -> list[PricedOutcome]:
             position=row.position,
             price=quantize_price(price),
         )
-        for row, price in zip(rows, raw)
+        # `strict`: a `raw` shorter than `rows` is a caller passing the
+        # wrong price vector, and silently returning a market missing an
+        # outcome renders prices that no longer sum to one.
+        for row, price in zip(rows, raw, strict=True)
     ]
 
 

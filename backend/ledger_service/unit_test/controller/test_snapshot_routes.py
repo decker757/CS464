@@ -25,6 +25,7 @@ that raises the domain error directly is the most honest way to ask that.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -362,18 +363,47 @@ async def test_state_version_is_a_json_number(
 async def test_occurred_at_reaches_the_wire_with_an_offset(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """Timezone-aware, always UTC, as the contract's field documents.
+    """Timezone-aware, always UTC, and spelled the way the frame spells it.
 
     A naive value serialises without the offset and the client parses it as
     local time. The other three services carry the same guard for the same
     reason, and CLAUDE.md records that this has already caused bugs here.
+
+    **The offset assertion alone was not enough, and this is the review that
+    found it.** `SnapshotOut` had no serializer for this field, so pydantic
+    wrote its own RFC-3339 form — a trailing `Z` — while `PriceEvent` wrote
+    `.isoformat()`'s `+00:00`. Both parse, both are aware, and the two
+    strings differ, so `SnapshotOut`'s "byte-for-byte the `price` frame"
+    was false for the one field nobody was comparing. Asserted against a
+    frame built from the same instant rather than against a literal, so this
+    stays true if the shared spelling ever changes.
     """
     market = _Market()
     await _warm(session, market)
 
     body = (await client.get(_path(market.market_id), headers=trader_headers)).json()
 
-    assert datetime.fromisoformat(body["occurred_at"]).tzinfo is not None, body
+    parsed = datetime.fromisoformat(body["occurred_at"])
+    assert parsed.tzinfo is not None, body
+
+    from model.schemas import OutcomePrice, PriceEvent  # noqa: PLC0415
+
+    frame = PriceEvent(
+        market_id=market.market_id,
+        state_version=body["state_version"],
+        occurred_at=parsed,
+        prices=[
+            OutcomePrice(
+                outcome_id=p["outcome_id"],
+                position=p["position"],
+                price=Decimal(p["price"]),
+            )
+            for p in body["prices"]
+        ],
+    )
+    assert json.loads(frame.model_dump_json())["occurred_at"] == body["occurred_at"], (
+        "the snapshot and the price frame spell the same instant differently"
+    )
 
 
 async def test_the_market_id_is_echoed(

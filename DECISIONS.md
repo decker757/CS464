@@ -1450,7 +1450,7 @@ quantized to at most 18 significant digits, well inside 28.
 
 ---
 
-### D-042 — The ledger asks market_service whether a market is still trading, and a replay is answered first
+### D-043 — The ledger asks market_service whether a market is still trading, and a replay is answered first
 
 **Date:** 2026-09-21 · **Ticket:** #109 · **Status:** graduated to ADR 0017
 
@@ -1521,7 +1521,7 @@ trades on books snapshotted weeks earlier.
 
 ---
 
-### D-043 — `REDIS_URL` has a default in the ledger and none in the realtime service
+### D-044 — `REDIS_URL` has a default in the ledger and none in the realtime service
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1571,7 +1571,7 @@ variable rather than about that service. Amended in this ticket to say
 
 ---
 
-### D-044 — One Redis client for the ledger process, opened on the lifespan
+### D-045 — One Redis client for the ledger process, opened on the lifespan
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1630,7 +1630,7 @@ the seam two test modules drive through.
 
 ---
 
-### D-045 — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
+### D-046 — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1691,7 +1691,7 @@ their own merits now.
 
 ---
 
-### D-046 — A publish failure is swallowed and logged, and `publish` takes the transaction id to log it with
+### D-047 — A publish failure is swallowed and logged, and `publish` takes the transaction id to log it with
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1750,7 +1750,7 @@ not go looking for the bug.
 
 ---
 
-### D-047 — The realtime snapshot is a second first-toucher, and never gates on status
+### D-048 — The realtime snapshot is a second first-toucher, and never gates on status
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1815,7 +1815,7 @@ the rule `docs/adr/` already follows when citing this file.
 
 ---
 
-### D-NEW — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
+### D-049 — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
 
 **Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
 
@@ -1870,7 +1870,7 @@ fine: the deploy is the thing it should fail.
 
 ---
 
-### D-NEW — The price read exists once, and the price quantizer is in `core/pricing.py`
+### D-050 — The price read exists once, and the price quantizer is in `core/pricing.py`
 
 **Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
 

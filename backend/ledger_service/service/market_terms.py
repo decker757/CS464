@@ -142,7 +142,15 @@ async def fetch(
                 f"/public/markets/{market_id}",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-        except httpx.TransportError as exc:
+        # `RequestError`, not `TransportError`. `TransportError` covers the
+        # connect errors, timeouts and protocol errors, and misses
+        # `httpx.DecodingError` — a response whose `Content-Encoding` lies —
+        # which inherits from `RequestError` directly. That one escaped as an
+        # unmapped 500 rather than the 503 this table promises, and since ADR
+        # 0017 the same client runs on the trade path rather than once per
+        # market. Everything under `RequestError` means the same thing here:
+        # the request did not come back usable, and the dependency is why.
+        except httpx.RequestError as exc:
             raise MarketTermsUnavailable from exc
 
     if response.status_code == 404:
