@@ -311,6 +311,7 @@ inventing new ones:
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
 | 422 | `quantity_too_large` | The cost prices above `99999999999999.9999`, the largest amount the ledger can store (D-040). Not reachable with any plausible quantity. |
 | 422 | `proceeds_below_tick` | A sell whose proceeds round down to `0.0000` at the ledger's scale (D-041). The other edge of the same quantization as `quantity_too_large`; a sub-tick buy is unaffected. |
+| 500 | `market_book_incomplete` | This service holds a book for the market with no outcome rows — state only a hand-run repair can produce. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
 ## GET /ledger/markets/{market_id}/snapshot
@@ -376,6 +377,7 @@ Errors, reusing the preview's codes:
 | --- | --- | --- |
 | 404 | `market_not_found` | No such market. Not distinguished from a draft or a submitted one. |
 | 409 | `market_not_published` | The market exists but has not been published, so it has no terms to open a book from. |
+| 500 | `market_book_incomplete` | This service holds a book for the market with no outcome rows — state only a hand-run repair can produce. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
 ## Errors

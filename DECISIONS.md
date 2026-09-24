@@ -1435,7 +1435,7 @@ trades on books snapshotted weeks earlier.
 
 ---
 
-### D-NEW — `REDIS_URL` has a default in the ledger and none in the realtime service
+### D-043 — `REDIS_URL` has a default in the ledger and none in the realtime service
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1485,7 +1485,7 @@ variable rather than about that service. Amended in this ticket to say
 
 ---
 
-### D-NEW — One Redis client for the ledger process, opened on the lifespan
+### D-044 — One Redis client for the ledger process, opened on the lifespan
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1533,9 +1533,18 @@ opposite reasons, and the reasons are symmetrical rather than inconsistent: both
 are decided by how often the call is made. Anyone adding a third should answer
 the same question before copying either.
 
+**Note, 2026-09-23 (review of #110).** The frequency that justified
+`market_terms`'s per-call client stopped holding in the same branch that
+recorded this entry. `market_status.ensure_trading` (ADR 0017) calls `fetch`
+on every trade that is not a replay, so the terms client is now hot too, and
+by this entry's own test it should be held for the process. It is not yet:
+`market_terms.py`'s comment says so and names one lifespan-held
+`httpx.AsyncClient` as the follow-up, which is its own ticket because it moves
+the seam two test modules drive through.
+
 ---
 
-### D-NEW — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
+### D-045 — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1596,7 +1605,7 @@ their own merits now.
 
 ---
 
-### D-NEW — A publish failure is swallowed and logged, and `publish` takes the transaction id to log it with
+### D-046 — A publish failure is swallowed and logged, and `publish` takes the transaction id to log it with
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1655,7 +1664,7 @@ not go looking for the bug.
 
 ---
 
-### D-NEW — The realtime snapshot is a second first-toucher, and never gates on status
+### D-047 — The realtime snapshot is a second first-toucher, and never gates on status
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1717,6 +1726,103 @@ this route performs. #112's criterion is being reworded to match, the way
 **These five entries cite each other by title rather than by number**, because
 they land unnumbered and get their numbers when the PR merges — which is also
 the rule `docs/adr/` already follows when citing this file.
+
+---
+
+### D-NEW — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
+
+**Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
+
+**Decision.** `main.py`'s lifespan passes `REDIS_URL` to
+`redis.asyncio.from_url` uncaught. A value that does not parse as a Redis URL —
+`http://redis:6379`, a mangled scheme — raises `ValueError` there and the
+ledger refuses to start. A value that parses and points at a Redis that is
+down, or that accepts and never answers, starts normally and costs one lost
+broadcast per trade, bounded by a five-second socket timeout.
+
+**Why.** Unreachable and mistyped are different failures, and "`REDIS_URL` has
+a default in the ledger and none in the realtime service" only argued about
+the first. An unreachable bus is an outage: it ends, the broadcasts lost while
+it lasts are reconciled by the next snapshot, and refusing to boot over it
+would stop trading to protect a frame. A mistyped URL is a configuration error:
+it never ends. Caught and logged, it would drop every broadcast from the first
+trade onward, from a ledger whose `/health` says `ok` and whose trades all
+succeed. The one log line would sit at startup, where nobody debugging a price
+display is looking. Failing at boot is the only point where a typo gets found
+by the person who made it.
+
+The five-second timeout is what makes "unreachable costs a broadcast" true for
+the silent case as well as the refused one. Without it a blackholed host makes
+`publish` wait rather than raise, `service/bus.py`'s `except Exception` never
+fires, and [T-2] #22's committed trade hangs holding its session. Same budget,
+and the same reason, as "Upstream failures map to 503, 404 and 401, and the
+timeout is explicit". redis-py 8.1.0 already defaults both timeouts to five
+seconds, so stating them changes nothing today. They are stated because older
+redis-py defaulted both to None, and a pin bump should not quietly decide how
+long a committed trade can wait.
+
+**Rejected.** *Catching the `ValueError` and logging it*, which the comments
+beside `from_url` and on `config.py::redis_url` promised, by lumping both cases
+together as "the ledger will not refuse to boot over Redis". It turns a loud
+error into a silent one that lasts forever. *Validating the URL in
+`core/config.py` as well*: `from_url` is the parser that has to accept it, and
+a second rule could only disagree with that one.
+
+**Reversal trigger.** Revisit if the ledger ever learns `REDIS_URL` from
+something other than its own environment at boot — a config service, a
+runtime reload, a value an operator can change without a restart. A bad value
+would then arrive mid-life, where refusing to boot is not an option, and the
+choice becomes "catch and alert" rather than "fail at boot". The test is
+whether a new value can reach `from_url` without a process restart.
+
+**Notes.** `test_a_redis_url_that_does_not_parse_stops_the_ledger_booting`
+holds the boot failure, and
+`test_a_redis_that_never_answers_costs_a_bounded_wait_and_no_exception` holds
+the timeout. The CI boot check calls `create_app()` and does not run the
+lifespan, so a malformed URL passes CI and fails at `uvicorn` startup. That is
+fine: the deploy is the thing it should fail.
+
+---
+
+### D-NEW — The price read exists once, and the price quantizer is in `core/pricing.py`
+
+**Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
+
+**Decision.** The joined `market_books`/`market_outcomes` read, its cold path
+through `books.ensure_open` and the zip back onto outcome ids live in
+`service/book_prices.py`, which the preview and the snapshot both call.
+Rounding an outcome's price to the wire is `core/pricing.py::quantize_price`,
+`ROUND_HALF_UP` at scale 4. A book that reads empty after the cold path raises
+`MarketBookIncomplete` (500).
+
+**Why.** Both docs pages promise a client that the preview's `prices` and the
+snapshot's `prices` are the same strings for the same state. The snapshot
+shipped with its own copy of the read, the quantizer and the dataclass, so the
+promise held only while two copies stayed in step. With one copy it holds by
+construction. The quantizer goes in `core/` rather than beside the read
+because [T-2] #22 has to round the prices it publishes in a `PriceEvent`, and
+a rounding rule that only a service module held would be one #22 copies or
+forgets. It sits beside `quantize_cost`, which is in `core/` for the same
+reason.
+
+**Rejected.** *Keeping two copies and a test that they agree* — the test would
+only catch drift after somebody had written it. *Moving the read into
+`service/books.py`* — that module is the handoff, and its fast path returns a
+`MarketBook` entity, not priced rows. Merging them would put a pricing read
+inside the write path's module for no caller that needs both.
+*`MarketTermsUnavailable` for an empty book* — 503 blames market_service and
+invites a retry, when the fault is this service's own data.
+
+**Reversal trigger.** Split the read again if the preview and the snapshot
+ever need different snapshots of the book: different columns under different
+isolation, or one of them taking a lock. The test is whether one statement can
+still serve both callers without either reading something it does not use to
+decide its answer.
+
+**Notes.** `preview.py`'s `average_price` still rounds inline with
+`ROUND_HALF_UP`. It is a price per share derived from a charged total, not an
+outcome's price, and #108 rewrites those lines. Folding it into
+`quantize_price` is left until #108 has landed.
 
 ---
 
