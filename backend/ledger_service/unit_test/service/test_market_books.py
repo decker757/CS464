@@ -39,6 +39,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
+from core.database import get_engine
 from service import accounts, posting
 from unit_test.conftest import mint_token
 
@@ -747,3 +748,53 @@ async def test_the_grant_and_the_subsidy_do_not_collide_on_a_key(
         await session.execute(select(func.coalesce(func.sum(Entry.amount), ZERO)))
     ).scalar_one()
     assert total == ZERO
+
+
+# =========================================================================
+# Review fixes on PR #110
+# =========================================================================
+async def test_no_connection_is_held_while_the_terms_are_fetched(
+    session: AsyncSession,
+) -> None:
+    """The cold path must not hold a pooled connection across the HTTP call.
+
+    `ensure_open` finds no book, and that read autobegins a transaction that
+    nothing used to end — so the connection stayed checked out for however
+    long market_service took, bounded only by a five-second timeout. With
+    `pool_size=10` that is roughly twenty concurrent first touches, or one
+    slow upstream, holding every connection this service has; `/balances/me`
+    waits behind them.
+
+    Asserted from inside the transport, which is the only place that runs
+    *during* the call. `in_transaction()` is the session's own answer and
+    `checkedout()` is the pool's, and both are here because they fail for
+    different reasons: a rollback that left the session dirty shows up in the
+    first, and a connection released by the session but still held by the pool
+    shows up in the second.
+
+    **Delete the `await session.rollback()` in `ensure_open` and this goes
+    red**, which is what makes it evidence rather than decoration.
+    """
+    observed: dict[str, object] = {}
+    upstream = _Upstream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["in_transaction"] = session.in_transaction()
+        observed["checked_out"] = get_engine().pool.checkedout()
+        return httpx.Response(200, json=upstream._body)
+
+    await _books().ensure_open(
+        session,
+        upstream.market_id,
+        access_token=_token(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert observed["in_transaction"] is False, (
+        "the session still held a transaction while market_service was being "
+        "called, so its connection was checked out for the whole round trip"
+    )
+    assert observed["checked_out"] == 0, (
+        f"{observed['checked_out']} connection(s) were checked out of the pool "
+        "during the terms fetch"
+    )
