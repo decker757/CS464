@@ -1595,3 +1595,65 @@ async def test_every_display_figure_goes_through_one_half_up_helper(
     assert quote.average_price == marker
     assert {p.price for p in quote.prices} == {marker}
     assert {p.price for p in quote.post_trade_prices} == {marker}
+
+
+async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
+    session: AsyncSession,
+) -> None:
+    """The warm path, which is the one a damaged book actually takes.
+
+    Two things were wrong with guarding only an empty read after the cold
+    path. A book cut down to a *single* outcome row is truthy, so it sailed
+    past an emptiness check and died in `core/lmsr.py::_require_outcomes`
+    with a bare `ValueError` — not a `LedgerError`, so the unmapped 500 this
+    error exists to replace. And a book already damaged is a book that
+    already exists, so every read of it is warm and returns before the cold
+    path is reached: the guarded branch was the one that cannot happen.
+    """
+    upstream = _Upstream()
+    await _warm(session, upstream)
+    outcome = _entities().MarketOutcome
+    await session.execute(
+        delete(outcome).where(
+            outcome.market_id == upstream.market_id, outcome.position == 1
+        )
+    )
+    await session.commit()
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _quote(session, upstream)
+
+    assert raised.value.code == "market_book_incomplete"
+    assert raised.value.status_code == 500
+
+
+# No `Infinity` here: `numeric(18, 4)` refuses to store one, so it cannot
+# be sitting in a book for this path to find. `NaN` it stores happily.
+@pytest.mark.parametrize("bad_b", ["0.0000", "-100.0000", "NaN"])
+async def test_a_book_whose_b_cannot_price_is_a_named_error_not_a_value_error(
+    session: AsyncSession, bad_b: str
+) -> None:
+    """The read side of the `b` rule, and why the ingress guard is not enough.
+
+    `service/market_terms.py` refuses a non-finite or non-positive `b` before
+    a book is written, which protects every book written from that point on
+    and nothing already there — a row from before the guard, or from the
+    hand-run repair `MarketBookIncomplete` exists to name, still prices.
+    `b` then goes straight into `cost_to_trade`, whose `_require_positive_b`
+    raises a bare `ValueError`: unmapped, so a 500 with no envelope, on an
+    immutable book, forever.
+
+    `NaN` is the case that makes this worth having. `numeric(18, 4)` stores
+    it — it refuses `Infinity` outright — so NaN is the only unpriceable `b`
+    that can actually be sitting in a row, and `_require_positive_b` does not
+    catch it: `NaN <= 0` raises rather than returning True.
+    """
+    upstream = _Upstream()
+    await _warm(session, upstream)
+    await _set_b(session, upstream, Decimal(bad_b))
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _quote(session, upstream)
+
+    assert raised.value.code == "market_book_incomplete"
+    assert raised.value.status_code == 500

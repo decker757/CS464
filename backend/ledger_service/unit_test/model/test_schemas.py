@@ -132,7 +132,11 @@ def test_the_preview_examples_are_a_trade_that_could_happen() -> None:
     assert (total.copy_abs() / quantity).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     ) == average
-    assert Decimal(0) < average < Decimal(1)
+    # `<=`, not `<`. The smallest buy there is costs a fraction of a tick
+    # and is charged the whole one (D-039), which divides out to exactly
+    # 1.0000 in an ordinary market — so an average of 1 is a real quote,
+    # not a bad example. D-044 has the skewed case that reads higher.
+    assert Decimal(0) < average <= Decimal(1)
     assert total < 0, "the example is meant to be a buy"
     assert average > price, "a buy averages above the price it started from"
 
@@ -187,7 +191,11 @@ def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
     assert (total.copy_abs() / quantity).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     ) == average
-    assert Decimal(0) < average < Decimal(1)
+    # `<=`, not `<`. The smallest buy there is costs a fraction of a tick
+    # and is charged the whole one (D-039), which divides out to exactly
+    # 1.0000 in an ordinary market — so an average of 1 is a real quote,
+    # not a bad example. D-044 has the skewed case that reads higher.
+    assert Decimal(0) < average <= Decimal(1)
 
     def listed(name: str) -> list[Decimal]:
         block = example.split(f'"{name}"', 1)[1].split("]", 1)[0]
@@ -202,3 +210,27 @@ def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
         f"a buy of position 0 averages between {before[0]} and {after[0]}; "
         f"got {average}"
     )
+
+    # And the figures are a trade the engine actually produces, which the
+    # checks above cannot show. They hold for any internally consistent set:
+    # rewrite `post_trade_prices` to 0.9900 / 0.0100 and every one of them
+    # still passes, though those endpoints imply a cost near 9.13 rather than
+    # the documented 7.32. The example is generated from this book, so the
+    # test regenerates it and compares.
+    from core.lmsr import cost_to_trade, prices  # noqa: PLC0415
+    from core.pricing import Side, quantize_cost  # noqa: PLC0415
+    from service.preview import _quantize_price  # noqa: PLC0415
+
+    q = [Decimal("137.5000"), Decimal("42.2500")]
+    b = Decimal("100")
+    delta = [quantity, Decimal(0)]
+    magnitude = quantize_cost(
+        cost_to_trade(q, b, delta).copy_abs(), side=Side.BUY
+    )
+
+    assert -magnitude == total, f"the documented total is not {-magnitude}"
+    assert _quantize_price(magnitude / quantity) == average
+    assert [_quantize_price(p) for p in prices(q, b)] == before
+    assert [
+        _quantize_price(p) for p in prices([q[0] + quantity, q[1]], b)
+    ] == after

@@ -977,6 +977,14 @@ async def test_the_preview_contract_does_not_offer_market_not_published(
     `books.ensure_open` ever sees `published_at`. A documented 409 is a
     handler the frontend writes for a state that never occurs, beside a 404
     it may then fail to treat as the answer it actually is.
+
+    **Asserted on the error code, not on prose.** This used to grep the whole
+    serialized operation for the bare substring "not published", which covers
+    every summary, parameter description and response description on the
+    route — including the 404's, whose entire subject is drafts and submitted
+    markets. The first person to write "a market that has not been published
+    yet" in any of them would have turned this red with no defect behind it.
+    The code string is the contract; the prose around it is not.
     """
     operation = (await client.get("/openapi.json")).json()["paths"][
         "/ledger/markets/{market_id}/preview"
@@ -984,8 +992,6 @@ async def test_the_preview_contract_does_not_offer_market_not_published(
     documented = json.dumps(operation).lower()
 
     assert "market_not_published" not in documented
-    assert "not been published" not in documented
-    assert "not published" not in documented
 
     doc = (Path(__file__).resolve().parents[4] / "docs/api/ledger-service.md").read_text(
         encoding="utf-8"

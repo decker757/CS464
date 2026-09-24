@@ -74,7 +74,13 @@ def quantize_cost(magnitude: Decimal, *, side: Side | str) -> Decimal:
     scales with the cost — so a cost exactly on a tick can be charged one
     tick over, and a sell's proceeds a hair under a tick can be paid the
     whole tick, the one case the residue runs toward the trader. What is
-    bounded is the quoted error after rounding: one tick either way. D-NEW,
+    bounded is the quoted error after rounding: one tick, plus the engine's
+    own last-digit residue. Not one tick flat — at `q = [1315, 1000]`,
+    `b = 3`, a buy of `0.0001` has a true cost of `0.0001 - 2.5e-50`, so the
+    correct ceiling is one tick and the quote is two, an error of one tick
+    *and* that residue. The overshoot is 46 orders of magnitude below the
+    tick it overshoots, which is why this is a statement about the bound's
+    shape rather than a reason to change the rounding. D-044,
     "A cost exactly on a tick can round one tick against the trader, or
     toward them on a sell", has the cases and why precision cannot remove
     them.

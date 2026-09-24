@@ -619,7 +619,17 @@ async def test_the_close_time_is_not_what_decides_anything_here() -> None:
     assert terms.published_at is not None
 
 
-@pytest.mark.parametrize("liquidity_b", ["0", "0.0000", "-100.0000"])
+@pytest.mark.parametrize(
+    "liquidity_b",
+    # `Infinity` is the one that used to get through: `Decimal("Infinity")
+    # <= 0` is False, so it passed the comparison, Postgres `numeric`
+    # stored it, and because the book is immutable every later price was
+    # `Infinity - Infinity` raising `InvalidOperation` — an unmapped 500 on
+    # that market forever. `NaN` was already safe, but by accident: the
+    # comparison itself raises, and `_parse`'s `except ArithmeticError`
+    # catches it. Both are named now so neither depends on an accident.
+    ["0", "0.0000", "-100.0000", "Infinity", "-Infinity", "NaN"],
+)
 async def test_a_liquidity_b_that_can_never_price_is_refused(liquidity_b: str) -> None:
     """`b <= 0` is refused as unavailable, the same as a null `b`.
 
@@ -637,4 +647,35 @@ async def test_a_liquidity_b_that_can_never_price_is_refused(liquidity_b: str) -
             _MARKET_ID,
             access_token=_token(),
             transport=_responds(body=_terms_body(liquidity_b=liquidity_b)),
+        )
+
+
+@pytest.mark.parametrize(
+    "seed_subsidy", ["0", "0.0000", "-250.0000", "Infinity", "NaN"]
+)
+async def test_a_seed_subsidy_that_cannot_fund_a_pool_is_refused(
+    seed_subsidy: str,
+) -> None:
+    """The subsidy had only a null check, and both bad values fail badly.
+
+    A **negative** one funds the pool backwards: `books.ensure_open` posts
+    `Leg(platform, -(-250)) = +250` against `Leg(pool, -250)`, so the pool is
+    debited and the house credited. `_refuse_overdrafts` exempts only
+    PLATFORM, so it surfaces much later as an `InsufficientFunds` 409 on
+    somebody's ordinary first preview, about a balance that is not theirs.
+
+    A **zero** one builds two zero legs, and `posting.post` refuses those as
+    `UnbalancedTransaction` — a 422 blaming the caller for terms they never
+    sent, where this contract promises 503.
+
+    `market_service` requires the subsidy greater than zero at submission
+    (`_liquidity_problems`, "The seed subsidy must be greater than zero"), so
+    this is unreachable from a correct upstream — defended for the same
+    reason the `b` guard beside it is.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(seed_subsidy=seed_subsidy)),
         )

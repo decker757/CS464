@@ -517,7 +517,7 @@ def test_max_magnitude_is_the_largest_value_the_column_holds() -> None:
     assert digits > 18
 
 
-# --- D-NEW: a cost exactly on a tick, and the engine's last digit -----------
+# --- D-044: a cost exactly on a tick, and the engine's last digit -----------
 #
 # Characterisation, not fixes. Both pin behaviour that is recorded and
 # accepted rather than changed, so each passes before and after its entry

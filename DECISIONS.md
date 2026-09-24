@@ -1458,7 +1458,7 @@ quantized to at most 18 significant digits, well inside 28.
 
 ---
 
-### D-NEW — The cold path holds no connection across the terms pull
+### D-043 — The cold path holds no connection across the terms pull
 
 **Date:** 2026-09-24 · **Ticket:** #21 · **Status:** active
 
@@ -1521,7 +1521,7 @@ reason against the decision today.
 
 ---
 
-### D-NEW — A cost exactly on a tick can round one tick against the trader, or toward them on a sell
+### D-044 — A cost exactly on a tick can round one tick against the trader, or toward them on a sell
 
 **Date:** 2026-09-24 · **Ticket:** #21 · **Status:** active
 

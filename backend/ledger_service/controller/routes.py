@@ -232,6 +232,15 @@ async def user_entries(
                 "on a sell, `cost_below_tick` on a buy."
             )
         },
+        500: {
+            "description": (
+                "`market_book_incomplete`: this service holds a book for the "
+                "market that cannot be priced — no outcome rows, one of "
+                "them, or a `liquidity_b` the engine cannot use. Only a "
+                "hand-run repair or a half-applied migration produces it. A "
+                "server fault; not worth retrying."
+            )
+        },
         503: {"description": "market_service could not be reached right now."},
     },
 )
