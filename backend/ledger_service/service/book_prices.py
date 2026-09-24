@@ -76,19 +76,19 @@ async def read_or_open(
     unchanged. Nothing is minted here.
     """
     rows = await _read(session, market_id)
-    if rows:
-        return rows
+    if not rows:
+        await books.ensure_open(
+            session, market_id, access_token=access_token, transport=transport
+        )
+        rows = await _read(session, market_id)
 
-    await books.ensure_open(
-        session, market_id, access_token=access_token, transport=transport
-    )
-    rows = await _read(session, market_id)
-    # Fewer than two, not zero. `core/lmsr.py` refuses a `q` naming one
-    # outcome with a bare `ValueError`, which is not a `LedgerError` and
-    # reaches the client as the same unmapped 500 this check exists to stop —
-    # so a book left holding a single outcome row would land exactly where a
-    # book holding none used to. Same floor `books._refuse_unpriceable`
-    # enforces on the way in.
+    # Fewer than two, not zero, and on **both** paths. `core/lmsr.py` refuses
+    # a `q` naming one outcome with a bare `ValueError`, which is not a
+    # `LedgerError` and reaches the client as the same unmapped 500 this check
+    # exists to stop. Guarding only the cold path would have missed the case
+    # entirely: a book damaged down to one row already exists, so every read
+    # of it is warm and returns before the cold path is reached. Same floor
+    # `books._refuse_unpriceable` enforces on the way in.
     if len(rows) < MIN_OUTCOMES:
         raise MarketBookIncomplete
     return rows

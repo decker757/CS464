@@ -34,12 +34,13 @@ from service import books, market_terms
 # `import market_service` from this service, and it is right to — that
 # import resolves under pytest and is an `ImportError` in the container.
 #
-# **Unlike that one, nothing can catch this copy drifting.** `MIN_OUTCOMES`
-# is a number two services agree on and a wrong one fails loudly; this is a
-# string on the money gate, and if market_service ever renamed the value
-# every trade would be refused as `market_closed` with no test red on
-# either side. The mitigation is that the name is here, once, rather than
-# inline at the comparison where it reads like a literal.
+# Pinned rather than trusted. A wrong `MIN_OUTCOMES` fails loudly; a wrong
+# value here is silent — every trade refused as `market_closed`, with nothing
+# red on either side. So `test_market_status.py` reads `MarketStatus.OPEN`'s
+# value straight out of market_service's source with `ast`, the way
+# `test_price_publish.py` pins `PRICE_CHANNEL` against `realtime_service`:
+# no import, no running code, and the copy cannot drift without a test
+# noticing.
 _OPEN = "open"
 
 

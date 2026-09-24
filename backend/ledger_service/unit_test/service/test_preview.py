@@ -1485,3 +1485,44 @@ async def test_a_raw_string_sell_still_meets_the_no_shorting_rule(
             access_token=_token(),
             transport=upstream.transport,
         )
+
+
+async def test_a_book_left_with_one_outcome_row_is_a_ledger_error_too(
+    session: AsyncSession,
+) -> None:
+    """The warm path, which is the one a damaged book actually takes.
+
+    `MarketBookIncomplete` first guarded only an empty read, and only after
+    the cold path had run. Both halves were wrong for this case. A book cut
+    down to a single outcome row reads as a *book* — the join returns one row,
+    not none — so `read_or_open` returned it on the warm path and never
+    reached the check, and `core/lmsr.py::_require_outcomes` then refused a
+    `q` of one with a bare `ValueError`: not a `LedgerError`, so an unmapped
+    500, which is exactly what naming this error was meant to stop.
+
+    A book already damaged is a book that already exists, so every read of it
+    is warm. Guarding the cold path alone would have covered the case that
+    cannot happen and missed the one that can.
+    """
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    from core.errors import LedgerError  # noqa: PLC0415
+
+    upstream = _Upstream()
+    await _warm(session, upstream)
+    outcome = _entities().MarketOutcome
+    await session.execute(
+        delete(outcome).where(
+            outcome.market_id == upstream.market_id, outcome.position == 1
+        )
+    )
+    await session.commit()
+
+    with pytest.raises(Exception) as raised:
+        await _quote(session, upstream)
+
+    assert isinstance(raised.value, LedgerError), (
+        f"a book with one outcome row raised an unmapped "
+        f"{type(raised.value).__name__}: {raised.value!r}"
+    )
+    assert raised.value.code == "market_book_incomplete"

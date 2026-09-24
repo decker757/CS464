@@ -89,10 +89,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         yield
     finally:
-        redis_client = getattr(app.state, "redis", None)
-        if redis_client is not None:
-            await redis_client.aclose()
-        await dispose_engine()
+        # Nested, because one `finally` does not protect two cleanups from
+        # each other: `aclose()` raising would have skipped the disposal just
+        # as surely as having no `finally` at all, which is the leak this was
+        # supposed to close. The engine is the one that must always go — a
+        # leaked Redis pool is a socket, a leaked engine is every asyncpg
+        # connection this process opened.
+        try:
+            redis_client = getattr(app.state, "redis", None)
+            if redis_client is not None:
+                await redis_client.aclose()
+        finally:
+            await dispose_engine()
 
 
 def create_app() -> FastAPI:

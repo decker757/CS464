@@ -126,9 +126,26 @@ async def ensure_open(
     # forever, and no later read corrects it. A negative subsidy is the same
     # argument on the other column: it would fund the pool by taking credits
     # out of it. market_service refuses both at submission
-    # (`_liquidity_problems`); this is the copy that matters, because it is
-    # the one standing in front of the write.
-    if terms.liquidity_b <= 0 or terms.seed_subsidy < 0:
+    # (`_liquidity_problems`, "The seed subsidy must be greater than zero");
+    # this is the copy that matters, because it is the one standing in front
+    # of the write.
+    #
+    # `<= 0` on the subsidy, not `< 0`. A zero subsidy is not merely odd: it
+    # builds two legs of zero, and `posting.post` refuses those as
+    # `UnbalancedTransaction` — a 422 blaming the request for terms the
+    # upstream got wrong. Refused here it is the 503 the contract promises.
+    #
+    # `is_finite()` first, and it is not defensive noise. `Decimal` accepts
+    # `"NaN"` and `"Infinity"` from JSON as readily as `"100"`, and the two
+    # fail this comparison in opposite and equally bad ways: `Decimal("NaN")
+    # <= 0` *raises* `InvalidOperation`, an `ArithmeticError` no handler maps,
+    # so the 503 becomes an unmapped 500; and `Decimal("Infinity") <= 0` is
+    # simply False, so it passes the guard and is written into a book that
+    # ADR 0005 makes immutable — every price that market ever quotes, wrong
+    # forever, from a value nothing rereads.
+    if not (terms.liquidity_b.is_finite() and terms.seed_subsidy.is_finite()):
+        raise MarketTermsUnavailable
+    if terms.liquidity_b <= 0 or terms.seed_subsidy <= 0:
         raise MarketTermsUnavailable
     _refuse_unpriceable(terms.outcomes)
 
@@ -235,6 +252,14 @@ def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
     contract promises, and the race handler keeps meaning only what it says.
     """
     if len(outcomes) < MIN_OUTCOMES:
+        raise MarketTermsUnavailable
+    # Non-negative, because `position` is how a client orders the outcomes and
+    # `model/schemas.py` declares it `ge=0` on the way back out. The column is
+    # a plain `Integer` with no CHECK, so a negative one commits happily into
+    # an immutable book and then fails *serialisation* on every later preview
+    # and snapshot — a pydantic `ValidationError`, which is not a
+    # `LedgerError`, so an unmapped 500 for that market permanently.
+    if any(o.position < 0 for o in outcomes):
         raise MarketTermsUnavailable
     if len({o.outcome_id for o in outcomes}) != len(outcomes):
         raise MarketTermsUnavailable

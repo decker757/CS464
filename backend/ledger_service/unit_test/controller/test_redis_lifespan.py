@@ -320,3 +320,47 @@ async def test_a_redis_url_that_does_not_parse_stops_the_ledger_booting(
     with pytest.raises(ValueError, match="redis://"):
         async with app.router.lifespan_context(app):
             pass
+
+
+async def test_the_engine_is_disposed_even_when_closing_redis_fails(
+    clean_database: None, factory: _Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One `finally` does not protect two cleanups from each other.
+
+    The lifespan closes Redis and then disposes the engine. Wrapping both in a
+    single `try/finally` guards the *yield* against the cleanups being skipped
+    and does nothing about the first cleanup skipping the second: an `aclose()`
+    that raises leaves `dispose_engine()` unreached and every asyncpg
+    connection this process opened still open.
+
+    The two are not equally important, which is why the nesting runs this way
+    round. A leaked Redis pool is a socket; a leaked engine is the database.
+
+    **Make the `finally` flat again and this goes red.**
+    """
+    from core import database  # noqa: PLC0415
+
+    disposed: list[bool] = []
+
+    async def _dispose() -> None:
+        disposed.append(True)
+
+    monkeypatch.setattr(database, "dispose_engine", _dispose)
+
+    import main  # noqa: PLC0415
+
+    monkeypatch.setattr(main, "dispose_engine", _dispose)
+
+    async def _boom() -> None:
+        raise RuntimeError("redis went away mid-shutdown")
+
+    app = _app()
+
+    with pytest.raises(RuntimeError):
+        async with app.router.lifespan_context(app):
+            factory.clients[0].aclose = _boom  # type: ignore[method-assign]
+
+    assert disposed, (
+        "the database engine was never disposed, because closing Redis raised "
+        "first and the two cleanups shared one `finally`"
+    )

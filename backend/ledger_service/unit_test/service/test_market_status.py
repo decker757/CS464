@@ -41,6 +41,8 @@ container.
 
 from __future__ import annotations
 
+import ast
+import pathlib
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -178,6 +180,9 @@ class _Upstream:
 
 def _token() -> str:
     return mint_token(uuid.uuid4())
+
+
+_BACKEND = pathlib.Path(__file__).resolve().parents[3]
 
 
 async def _gate(
@@ -865,3 +870,63 @@ async def test_an_upstream_401_stays_not_authenticated(
 
     with pytest.raises(_errors().NotAuthenticated):
         await _gate(session, upstream)
+
+
+# =========================================================================
+# Review fixes on PR #110
+# =========================================================================
+def _enum_member(path: pathlib.Path, enum: str, member: str) -> str:
+    """One enum member's string value, read out of a source file with `ast`.
+
+    The same trick `test_price_publish.py::_module_constant` uses to pin
+    `PRICE_CHANNEL` against `realtime_service`, for a member of a class rather
+    than a module-level name. Parsed rather than matched, because a regex over
+    `market_service/model/entities.py` would hit the forty lines of prose in
+    `MarketStatus`'s docstring that mention these members by name.
+
+    `unit_test/test_import_boundary.py` forbids importing market_service from
+    this suite and is right to — that import resolves under pytest and is an
+    `ImportError` in the container — so reading the source is the only way to
+    ask what the other service actually says.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name != enum:
+            continue
+        for stmt in node.body:
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else []
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id == member:
+                    value = stmt.value
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                        return value.value
+                    raise AssertionError(
+                        f"{enum}.{member} in {path} is not a plain string literal"
+                    )
+
+    raise AssertionError(f"{enum}.{member} not found in {path}")
+
+
+def test_the_open_status_matches_the_one_market_service_puts_on_the_wire() -> None:
+    """The money gate's copy of `"open"`, pinned against its source.
+
+    `ensure_trading` compares a wire string it cannot import. A wrong value
+    here is the quietest failure in this service: every trade on the platform
+    refused as `market_closed`, no exception anywhere, and nothing red on
+    either side — market_service's own tests would still pass, because
+    market_service would still be right.
+
+    The comment beside `_OPEN` used to say nothing could catch this drifting.
+    Something can, and this is it.
+    """
+    theirs = _enum_member(
+        _BACKEND / "market_service" / "model" / "entities.py",
+        "MarketStatus",
+        "OPEN",
+    )
+
+    assert _status()._OPEN == theirs, (
+        f"this service gates trading on {_status()._OPEN!r} and market_service "
+        f"publishes {theirs!r}; every trade would be refused as market_closed"
+    )

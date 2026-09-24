@@ -798,3 +798,46 @@ async def test_no_connection_is_held_while_the_terms_are_fetched(
         f"{observed['checked_out']} connection(s) were checked out of the pool "
         "during the terms fetch"
     )
+
+
+async def test_a_zero_seed_subsidy_is_unavailable_rather_than_unbalanced(
+    session: AsyncSession,
+) -> None:
+    """Zero is refused with the nulls, not left to fail as a bad transaction.
+
+    market_service requires a subsidy greater than zero
+    (`validation.py::_liquidity_problems`, "The seed subsidy must be greater
+    than zero"), so a zero arriving here is the upstream being wrong. Left to
+    run, it builds two legs of `0.0000` and `posting.post` refuses them as
+    `UnbalancedTransaction` — a 422 telling the caller their request was
+    malformed about terms they never sent. `MarketTermsUnavailable` is the
+    503 the contract promises for an upstream that answered badly.
+
+    Nothing commits either way; what this pins is which error, and therefore
+    who the caller thinks is at fault.
+    """
+    upstream = _Upstream(seed_subsidy="0.0000")
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _open(session, upstream)
+
+
+async def test_a_non_positive_liquidity_b_is_refused_before_the_book_is_written(
+    session: AsyncSession,
+) -> None:
+    """`b <= 0`, not just a null `b`. The book is immutable, so this is forever.
+
+    `C(q) = b·ln(Σ e^(q_i/b))` divides by `b`, and `core/lmsr.py` refuses a
+    non-positive one with a bare `ValueError` — not a `LedgerError`, so an
+    unmapped 500. Written once under ADR 0005 and never reread, a `b` of zero
+    would be every price that market ever quotes.
+    """
+    for bad in ("0.0000", "-1.0000"):
+        upstream = _Upstream(liquidity_b=bad)
+
+        with pytest.raises(_errors().MarketTermsUnavailable):
+            await _open(session, upstream)
+
+        assert await _books().find(session, upstream.market_id) is None, (
+            f"a b of {bad} left a book behind"
+        )

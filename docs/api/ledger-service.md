@@ -217,15 +217,15 @@ nothing beyond the public market read, so there is no admin gate.
   "side": "buy",
   "outcome_id": "4f2a...",
   "quantity": "10.0000",
-  "total": "-6.2340",
-  "average_price": "0.6234",
+  "total": "-6.3527",
+  "average_price": "0.6353",
   "prices": [
-    { "outcome_id": "4f2a...", "position": 0, "price": "0.6234" },
-    { "outcome_id": "b7e1...", "position": 1, "price": "0.3766" }
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.6236" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.3764" }
   ],
   "post_trade_prices": [
-    { "outcome_id": "4f2a...", "position": 0, "price": "0.6842" },
-    { "outcome_id": "b7e1...", "position": 1, "price": "0.3158" }
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.6468" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.3532" }
   ]
 }
 ```
@@ -344,8 +344,8 @@ like the preview beside it.
   "market_id": "9d1c...",
   "state_version": 42,
   "prices": [
-    { "outcome_id": "4f2a...", "position": 0, "price": "0.6234" },
-    { "outcome_id": "b7e1...", "position": 1, "price": "0.3766" }
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.6236" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.3764" }
   ],
   "occurred_at": "2026-09-15T09:12:44.318000+00:00"
 }
@@ -406,21 +406,25 @@ The same envelope as the other three services:
 | 403 | `not_an_administrator` | Valid token, wrong role |
 | 422 | — | FastAPI's own validation, e.g. `limit=0` |
 
-The preview route above adds seven more of its own — `market_not_found`
+The preview route above adds eight more of its own — `market_not_found`
 (404), `insufficient_shares_outstanding` (409), `unknown_outcome` (422),
 `quantity_too_large` (422), `proceeds_below_tick` (422), `cost_below_tick`
-(422) and `market_terms_unavailable` (503) — documented there rather than
-repeated here. The snapshot route reuses three of them —
+(422), `market_book_incomplete` (500) and `market_terms_unavailable` (503)
+— documented there rather than repeated here. The snapshot route reuses
+three of them —
 `market_not_found`, `market_book_incomplete` and `market_terms_unavailable`
 — for the reason its own section gives: both routes share the same cold
 path.
 
-`market_not_published` (409) exists in `core/errors.py` and neither route can
-return it: `books.ensure_open` raises it only for terms whose `published_at`
-is null, and the public detail endpoint those terms come from answers `404`
-for every market that has not been published. It is reachable the day the
-ledger reads terms from somewhere that serves unpublished markets, and not
-before.
+`market_not_published` (409) is defined in `core/errors.py` and mapped like
+every other domain error, and no request can currently reach it.
+`books.ensure_open` raises it only for terms whose `published_at` is null, and
+the public detail endpoint those terms come from answers `404` for every
+market that has not been published — so a draft arrives here as
+`market_not_found`, not as this. It is left in place, and out of both routes'
+declared responses, because it becomes reachable the day the ledger reads
+terms from somewhere that serves unpublished markets. Do not write a handler
+for it today.
 
 Four more exist in `core/errors.py` and no route can return them yet:
 `insufficient_funds` (409), `idempotency_key_reused` (409),

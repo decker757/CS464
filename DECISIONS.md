@@ -1729,9 +1729,11 @@ it — the exact failure the copy's pin exists to prevent, introduced
 deliberately. *Re-raising from `publish` and swallowing in [T-2] #22.* Leaves
 the rule in the caller that does not exist yet, so this ticket would ship a
 primitive whose most important property is untestable, and #22 would inherit
-the rule by copying it or by forgetting to. That is the argument
-`core/pricing.py::refuse_sub_tick_proceeds` already won, applied to a rule
-about a broadcast instead of a rule about money. *Catching `BaseException`.*
+the rule by copying it or by forgetting to. That is the argument the sub-tick
+refusal inside `core/pricing.py::quantize_cost` already won — it lived in a
+`refuse_sub_tick_proceeds` of its own when this was written, and #108 folded
+it into the quantizer for exactly this reason — applied to a rule about a
+broadcast instead of a rule about money. *Catching `BaseException`.*
 `CancelledError` is the process going away, not a Redis blip, and swallowing it
 would make a shutdown hang on a producer that will not stop.
 
@@ -1905,10 +1907,13 @@ isolation, or one of them taking a lock. The test is whether one statement can
 still serve both callers without either reading something it does not use to
 decide its answer.
 
-**Notes.** `preview.py`'s `average_price` still rounds inline with
-`ROUND_HALF_UP`. It is a price per share derived from a charged total, not an
-outcome's price, and #108 rewrites those lines. Folding it into
-`quantize_price` is left until #108 has landed.
+**Notes.** `preview.py`'s `average_price` rounded inline with `ROUND_HALF_UP`
+when this was written, and folding it into `quantize_price` was left until
+#108 had landed, because #108 rewrites those lines. #108 has landed and the
+review of #110 did the fold: `average_price` goes through `quantize_price`
+like every other price this service publishes. It is still a price per share
+derived from a charged total rather than an outcome's price, which is why it
+was ever a question.
 
 ---
 

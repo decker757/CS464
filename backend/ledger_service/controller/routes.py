@@ -304,7 +304,6 @@ _SNAPSHOT_DESCRIPTION = (
     responses={
         401: {"description": "Missing, malformed or expired access token."},
         404: {"description": "No such market."},
-        409: {"description": "The market has not been published yet."},
         422: {"description": "`market_id` is not a UUID."},
         500: {
             "description": (

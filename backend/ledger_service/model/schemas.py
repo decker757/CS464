@@ -215,17 +215,19 @@ class PreviewOut(BaseModel):
             "ceiling and sell the floor, so this is the number that would be "
             "charged."
         ),
-        examples=["-6.2340"],
+        examples=["-6.3527"],
     )
     average_price: Decimal = Field(
         description=(
             "abs(total) / quantity, from the quantized total, ROUND_HALF_UP "
-            "at scale 4. Always below 1: LMSR prices are a softmax over the "
-            "outcomes, so every share costs less than one credit. Display "
-            "only — [T-2] #22 charges `total`, never quantity * "
-            "average_price."
+            "at scale 4. At most 1: LMSR prices are a softmax over the "
+            "outcomes, so a share is worth less than one credit — but the "
+            "smallest buy there is, 0.0001 shares, costs a fraction of a "
+            "tick and is charged the whole tick, which lands at exactly "
+            "1.0000. Display only — [T-2] #22 charges `total`, never "
+            "quantity * average_price."
         ),
-        examples=["0.6234"],
+        examples=["0.6353"],
     )
 
     prices: list[OutcomePriceOut] = Field(
@@ -307,8 +309,14 @@ class SnapshotOut(BaseModel):
     """
 
     market_id: uuid.UUID
-    state_version: int
-    prices: list[OutcomePriceOut]
+    # The same constraints `PriceEvent` puts on these two fields. They were
+    # absent here, which made "byte-for-byte the `price` frame" a promise the
+    # models themselves disagreed with: a client validating one shape and
+    # handed the other would accept what the socket refuses. Harmless today
+    # because `book_prices` enforces the floor upstream, and invisible the day
+    # a second caller does not go through it.
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePriceOut] = Field(min_length=2)
     occurred_at: datetime
 
     @field_validator("occurred_at")
