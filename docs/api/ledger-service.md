@@ -215,15 +215,15 @@ nothing beyond the public market read, so there is no admin gate.
   "side": "buy",
   "outcome_id": "4f2a...",
   "quantity": "10.0000",
-  "total": "-6.2340",
-  "average_price": "0.6234",
+  "total": "-7.3152",
+  "average_price": "0.7315",
   "prices": [
-    { "outcome_id": "4f2a...", "position": 0, "price": "0.6234" },
-    { "outcome_id": "b7e1...", "position": 1, "price": "0.3766" }
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.7216" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.2784" }
   ],
   "post_trade_prices": [
-    { "outcome_id": "4f2a...", "position": 0, "price": "0.6842" },
-    { "outcome_id": "b7e1...", "position": 1, "price": "0.3158" }
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.7413" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.2587" }
   ]
 }
 ```
