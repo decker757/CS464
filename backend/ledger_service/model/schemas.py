@@ -152,7 +152,8 @@ class OutcomePriceOut(BaseModel):
     Field for field what `realtime_service`'s `OutcomePrice` puts on the
     socket — `outcome_id`, `position`, `price` — so a client renders a
     snapshot, a price frame and this preview with one function rather than
-    three.
+    three. That includes `price`'s bounds, the one invariant among the three:
+    a price outside [0, 1] is refused on the socket and must not ship here.
     """
 
     outcome_id: uuid.UUID
@@ -167,7 +168,7 @@ class OutcomePriceOut(BaseModel):
         ge=0,
         le=1,
         description="The marginal price of one share, as an exact decimal string.",
-        examples=["0.6234"],
+        examples=["0.7216"],
     )
 
     @field_serializer("price")
@@ -215,19 +216,22 @@ class PreviewOut(BaseModel):
             "ceiling and sell the floor, so this is the number that would be "
             "charged."
         ),
-        examples=["-6.3527"],
+        examples=["-7.3152"],
     )
     average_price: Decimal = Field(
         description=(
             "abs(total) / quantity, from the quantized total, ROUND_HALF_UP "
-            "at scale 4. At most 1: LMSR prices are a softmax over the "
-            "outcomes, so a share is worth less than one credit — but the "
-            "smallest buy there is, 0.0001 shares, costs a fraction of a "
-            "tick and is charged the whole tick, which lands at exactly "
-            "1.0000. Display only — [T-2] #22 charges `total`, never "
-            "quantity * average_price."
+            "at scale 4. At most 1, and 1 is reachable: LMSR prices are a "
+            "softmax over the outcomes, so a share is worth less than one "
+            "credit — but the smallest buy there is, 0.0001 shares, costs a "
+            "fraction of a tick and is charged the whole tick under D-039, "
+            "which divides out to exactly 1.0000. On a heavily skewed book "
+            "the engine's last digit can carry a sub-tick cost over a tick "
+            "boundary (D-044) and this reads higher still. Do not render it "
+            "as a fraction of a credit. Display only — [T-2] #22 charges "
+            "`total`, never quantity * average_price."
         ),
-        examples=["0.6353"],
+        examples=["0.7315"],
     )
 
     prices: list[OutcomePriceOut] = Field(

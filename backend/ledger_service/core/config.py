@@ -67,7 +67,7 @@ class Settings(ServiceSettings):
     # and is not a reason: `REDIS_URL` *is* set in `ci-backend.yml`'s
     # job-level `env:` block, for all five matrix legs, so a required field
     # would pass the boot check and fail only where the variable was
-    # genuinely missing. D-044 carries the correction and the real argument,
+    # genuinely missing. D-046 carries the correction and the real argument,
     # which is the asymmetry below.
     #
     # Deliberately not required the way `realtime_service.REDIS_URL` is.

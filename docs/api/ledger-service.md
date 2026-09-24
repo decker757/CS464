@@ -217,15 +217,15 @@ nothing beyond the public market read, so there is no admin gate.
   "side": "buy",
   "outcome_id": "4f2a...",
   "quantity": "10.0000",
-  "total": "-6.3527",
-  "average_price": "0.6353",
+  "total": "-7.3152",
+  "average_price": "0.7315",
   "prices": [
-    { "outcome_id": "4f2a...", "position": 0, "price": "0.6236" },
-    { "outcome_id": "b7e1...", "position": 1, "price": "0.3764" }
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.7216" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.2784" }
   ],
   "post_trade_prices": [
-    { "outcome_id": "4f2a...", "position": 0, "price": "0.6468" },
-    { "outcome_id": "b7e1...", "position": 1, "price": "0.3532" }
+    { "outcome_id": "4f2a...", "position": 0, "price": "0.7413" },
+    { "outcome_id": "b7e1...", "position": 1, "price": "0.2587" }
   ]
 }
 ```
@@ -238,12 +238,23 @@ arrive). `average_price` is always positive — the direction already lives on
 display figure derived from the authoritative total, never the other way
 round: [T-2] #22 charges `total`, never `quantity * average_price`.
 
+**`average_price` can be exactly `1.0000`, and on a skewed book a little
+more — do not render it as a fraction of a credit.** A share is worth less
+than one credit, so the average of a real trade normally is too. The
+exception is the smallest buy there is: `0.0001` shares cost a fraction of a
+tick, are charged the whole tick (below), and divide out to exactly `1.0000`
+in any market. On a heavily skewed book the engine's last significant digit
+can carry a sub-tick cost across a tick boundary, and it reads higher still
+— `2.0000` at `q = [1315, 1000]`, `b = 3`. The charge is right in both
+cases; it is the per-share figure that is not a price.
+
 **The rounding direction, and why it is not symmetric.** `total` is quantized
 by the same function [T-2] #22 uses to build its ledger legs, so the number
 this route quotes is the number that gets charged — that is the whole point
 of keeping preview and trade on one code path (D-014). A buy rounds to the
 next whole tick **up**; a sell rounds to the tick **down**. Either way the
-residue — always under one tick — goes to the market's pool, never to you,
+residue — one tick at most, plus the engine's own last-digit error
+(D-044) — goes to the market's pool, never to you,
 because LMSR already expects the pool to be the side that can lose money.
 `prices` and `post_trade_prices` carry no such bias: nobody is charged a
 price, so both are `ROUND_HALF_UP`, same as everywhere else in this backend.
@@ -323,7 +334,7 @@ inventing new ones:
 | 422 | `quantity_too_large` | The cost, or this outcome's shares outstanding after the trade, would exceed `99999999999999.9999`, the largest amount the ledger can store (D-040). Not reachable with any plausible quantity. A `quantity` of more than 18 digits in total is refused earlier, as plain validation. |
 | 422 | `proceeds_below_tick` | A sell whose proceeds round down to `0.0000` — any quantity below roughly `0.0001 / price`, in any market (D-041). Ask for more. |
 | 422 | `cost_below_tick` | A buy the engine prices at exactly `0.0000`, only past about `110 × b` of skew (D-041). Ask for more. |
-| 500 | `market_book_incomplete` | This service holds a book for the market with no outcome rows — state only a hand-run repair can produce. A server fault; not worth retrying. |
+| 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. Only a hand-run repair or a half-applied migration produces it. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
 ## GET /ledger/markets/{market_id}/snapshot
@@ -388,7 +399,7 @@ Errors, reusing the preview's codes:
 | Status | `code` | When |
 | --- | --- | --- |
 | 404 | `market_not_found` | No such market — and also a draft or a submitted one, which `market_service`'s public detail endpoint refuses with the same 404. |
-| 500 | `market_book_incomplete` | This service holds a book for the market with no outcome rows — state only a hand-run repair can produce. A server fault; not worth retrying. |
+| 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. Only a hand-run repair or a half-applied migration produces it. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
 ## Errors

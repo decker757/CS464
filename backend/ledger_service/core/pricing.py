@@ -81,11 +81,24 @@ class Side(StrEnum):
 def quantize_cost(magnitude: Decimal, *, side: Side | str) -> Decimal:
     """`magnitude`, rounded to scale 4 so the residue favours the pool.
 
-    A buy rounds up — the trader is charged the next whole tick, never less
-    than the true cost. A sell rounds down — the trader is paid the tick
-    below, never more than the true proceeds. Both leave a residue of less
-    than one tick that belongs to the market's pool, which is the side already
-    expected to lose money under LMSR.
+    A buy rounds up and a sell rounds down, so the residue of rounding
+    `magnitude` belongs to the market's pool, which is the side already
+    expected to lose money under LMSR. That is a guarantee about
+    `magnitude`, not about the true cost: the engine's answer can be off by
+    one unit in its 50th significant digit — a relative error, whose size
+    scales with the cost — so a cost exactly on a tick can be charged one
+    tick over, and a sell's proceeds a hair under a tick can be paid the
+    whole tick, the one case the residue runs toward the trader. What is
+    bounded is the quoted error after rounding: one tick, plus the engine's
+    own last-digit residue. Not one tick flat — at `q = [1315, 1000]`,
+    `b = 3`, a buy of `0.0001` has a true cost of `0.0001 - 2.5e-50`, so the
+    correct ceiling is one tick and the quote is two, an error of one tick
+    *and* that residue. The overshoot is 46 orders of magnitude below the
+    tick it overshoots, which is why this is a statement about the bound's
+    shape rather than a reason to change the rounding. D-044,
+    "A cost exactly on a tick can round one tick against the trader, or
+    toward them on a sell", has the cases and why precision cannot remove
+    them.
 
     A result of `0.0000` is refused on both sides — `ProceedsBelowTick` on a
     sell, `CostBelowTick` on a buy — because a magnitude reaching this

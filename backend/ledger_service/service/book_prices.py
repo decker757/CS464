@@ -91,6 +91,22 @@ async def read_or_open(
     # `books._refuse_unpriceable` enforces on the way in.
     if len(rows) < MIN_OUTCOMES:
         raise MarketBookIncomplete
+
+    # The book's own `b`, before it reaches the engine. `books.ensure_open`
+    # refuses a non-finite or non-positive one at the ingress, which protects
+    # every book written from now on and nothing already there — a row from
+    # before that guard, or from the hand-run repair this error exists to
+    # name, still prices. `core/lmsr.py::_require_positive_b` then raises a
+    # bare `ValueError`, which is not a `LedgerError`, so it reaches the
+    # caller as an unmapped 500 on an immutable book, forever.
+    #
+    # `NaN` is why this is worth having rather than a null check: it is the
+    # only unpriceable `b` `numeric(18, 4)` will store, and it does not even
+    # reach `_require_positive_b` as False — `NaN <= 0` raises.
+    b = rows[0].liquidity_b
+    if not b.is_finite() or b <= 0:
+        raise MarketBookIncomplete
+
     return rows
 
 

@@ -15,7 +15,10 @@ is a single indexed read that writes nothing (D-036).
    `q`, `b` and `state_version` together, with no lock (D-012, D-036). It is
    `service/book_prices.py`'s, shared with the snapshot, as is step 3.
 3. If it returns nothing, `service.books.ensure_open` opens the book — which
-   takes the handoff's own locks internally — and the read runs again.
+   releases this read's transaction before it calls market_service (D-043,
+   "The cold path holds no connection across the terms pull") and takes the
+   handoff's own locks internally — and the read runs again. A second empty
+   read is `MarketBookIncomplete` (500), raised by `book_prices`.
 4. `outcome_id` is checked against the book once it exists. A bad one is
    `UnknownOutcome` (422), and the book stays: it was real and published, and
    the write is a market's first touch either way (D-037's Notes).
@@ -37,7 +40,7 @@ is a single indexed read that writes nothing (D-036).
    in this service's pricing path uses, so an ambient trap or precision never
    reaches this one division.
 8. `prices` and `post_trade_prices` are every outcome, `ROUND_HALF_UP` at
-   scale 4, ordered by position.
+   scale 4 by the same `_quantize_price`, ordered by position.
 
 Nothing here checks whether the market is still open, and since [F-8] #109
 that is a decision rather than an absence. The book carries no status and
@@ -117,6 +120,11 @@ async def quote(
         session, market_id, access_token=access_token, transport=transport
     )
 
+    # `read_or_open` has already refused a book this service cannot price —
+    # fewer rows than `MIN_OUTCOMES`, or a `b` the engine cannot use — so
+    # everything below is arithmetic on a book known to be priceable. That
+    # guard lives there rather than here because the snapshot reads through
+    # the same function and needs the same answer.
     state_version = rows[0].state_version
     b = rows[0].liquidity_b
     ids = [row.outcome_id for row in rows]
@@ -143,8 +151,9 @@ async def quote(
     if after_q[index] > MAX_MAGNITUDE:
         raise QuantityTooLarge
 
-    # `copy_abs`, never `abs`: `abs` rounds at the ambient precision and can
-    # carry the magnitude across a tick before the directional rounding runs.
+    # `copy_abs`, never `abs` (D-042): `abs` rounds at the ambient precision
+    # and can carry the magnitude across a tick before the directional
+    # rounding runs.
     raw = cost_to_trade(q, b, delta).copy_abs()
     if raw > MAX_MAGNITUDE:
         raise QuantityTooLarge

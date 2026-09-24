@@ -88,6 +88,19 @@ async def ensure_open(
     caller today reaches here from a read that found no book, which is the
     only shape this function was ever given.
     """
+    # The precondition above, enforced rather than described. The rollback
+    # below is unconditional on the cold path of a function that takes the
+    # *caller's* session, so a queued write would be discarded silently —
+    # and worse for [T-2] #22, a `with_for_update()` taken before this call
+    # would be released mid-request, which is exactly what ADR 0015 forbids.
+    # Every caller today arrives from a read, so this never fires; it is here
+    # so that the day one does not, it fails loudly at the call site instead
+    # of quietly at the lock.
+    assert not (session.new or session.dirty or session.deleted), (
+        "ensure_open() rolls back on the cold path: call it with nothing "
+        "pending on the session, or hoist the terms fetch out of it"
+    )
+
     book = await find(session, market_id)
     if book is not None:
         return book
@@ -135,14 +148,15 @@ async def ensure_open(
     # `UnbalancedTransaction` — a 422 blaming the request for terms the
     # upstream got wrong. Refused here it is the 503 the contract promises.
     #
-    # `is_finite()` first, and it is not defensive noise. `Decimal` accepts
-    # `"NaN"` and `"Infinity"` from JSON as readily as `"100"`, and the two
-    # fail this comparison in opposite and equally bad ways: `Decimal("NaN")
-    # <= 0` *raises* `InvalidOperation`, an `ArithmeticError` no handler maps,
-    # so the 503 becomes an unmapped 500; and `Decimal("Infinity") <= 0` is
-    # simply False, so it passes the guard and is written into a book that
-    # ADR 0005 makes immutable — every price that market ever quotes, wrong
-    # forever, from a value nothing rereads.
+    # `is_finite()` as well as `> 0`, because `Decimal` takes `"Infinity"`
+    # and `"NaN"` off the wire as readily as `"100"` and they slip a bare
+    # comparison in opposite ways. `Decimal("Infinity") <= 0` is simply
+    # `False`; `numeric(18, 4)` then refuses to store it, so the old
+    # behaviour was a `DataError` on first touch — not an `IntegrityError`,
+    # so it escaped the lost-race handler below as an unmapped 500.
+    # `Decimal("NaN") <= 0` *raises*, and `numeric(18, 4)` stores NaN
+    # perfectly happily, which makes NaN the only unpriceable `b` that can
+    # actually end up in a row — and the book is immutable.
     if not (terms.liquidity_b.is_finite() and terms.seed_subsidy.is_finite()):
         raise MarketTermsUnavailable
     if terms.liquidity_b <= 0 or terms.seed_subsidy <= 0:

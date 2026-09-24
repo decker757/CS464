@@ -1165,6 +1165,14 @@ anything else, so the second touch makes no HTTP call at all —
 that way — and a market service outage after the first touch cannot stop anybody
 pricing a market that already has a book.
 
+It extinguishes only for an id that resolves. A well-formed id that
+`market_service` answers 404 for writes nothing, so every request for it takes
+the cold path again: an outbound call per request, with no bound on how many a
+trader can make by looping random UUIDs. "The cold path holds no connection
+across the terms pull" stops that from holding a pooled connection per call;
+the outbound calls themselves remain, and negative caching of unresolvable ids
+is deferred to a follow-up rather than settled here.
+
 **A closed market's first preview funds a pool that will never trade, and that
 is accepted:** settlement returns whatever the pool has left to `PLATFORM`
 ([3.4] #12), so a dead pool overstates credits in circulation until its market
@@ -1450,7 +1458,124 @@ quantized to at most 18 significant digits, well inside 28.
 
 ---
 
-### D-043 — The ledger asks market_service whether a market is still trading, and a replay is answered first
+### D-043 — The cold path holds no connection across the terms pull
+
+**Date:** 2026-09-24 · **Ticket:** #21 · **Status:** active
+
+**Decision.** `books.ensure_open` rolls back the transaction its own
+book-lookup read began, after that read finds no book and before it calls
+market_service. No database connection is checked out while the terms pull
+is waited on. The rollback lives in `ensure_open` rather than in any one
+caller, so every caller of it is covered; its docstring states the one
+precondition — call it with nothing pending on the session.
+
+**Why.** `get_session` does not wrap a request in `begin()`, so the first
+`execute` autobegins a transaction and nothing ends it until the request
+does. The read that found no book therefore left its pooled connection `idle
+in transaction` across an HTTP call that can take the whole five-second
+terms timeout. `pool_size` is 10, with 10 of overflow: twenty cold previews
+at once, or one slow market service, took every connection, and
+`/ledger/balances/me` and `/ledger/entries/me` hung behind a route documented
+to fire on every keystroke. Rolling back discards nothing, because the read
+found nothing and wrote nothing.
+
+A rollback in the caller alone is not enough, which is why it is not there:
+`ensure_open`'s own lookup autobegins a fresh transaction before the fetch,
+so releasing the preview's read and then calling `ensure_open` still held a
+connection across the call. Only the lookup nearest the fetch can release
+it.
+
+**Evidence.** `test_a_cold_preview_holds_no_connection_while_market_service_is_slow`
+stalls the upstream and checks, at every call to it, that the session has no
+transaction and the pool has nothing checked out, checks Postgres's
+`pg_stat_activity` for a backend idle in transaction while the first call is
+stalled, and asserts exactly one call. It passes with the rollback and fails
+with it removed. Measured once by hand on PR #108: before the fix, 25 stalled
+cold previews checked out 20 connections and an unrelated request timed out
+waiting for one; after it, 25 stalled previews checked out none and the
+unrelated request was served.
+
+**Rejected.** Fetching the terms in the caller, with no transaction open,
+and handing them to `ensure_open` through a new `terms` argument. It works,
+but it covers only the callers that adopt it, where the rollback covers
+every caller at once.
+
+**Scope.** Every caller of `ensure_open`. It does not cover a call to
+market_service made anywhere else: `service/market_status.py`'s gate (#110)
+fetches the terms itself, after reads on the trade path, and the follow-up
+issue carries it.
+
+**Reversal trigger.** A caller that needs `ensure_open` with writes pending
+on its session — the rollback would discard them — or `get_session` moving
+to a transaction per unit of work, where the release belongs to whoever
+opens it.
+
+**Notes.** An objection was raised in the review of this fix and did not
+hold. It was that a rollback inside `ensure_open` would discard the work of a
+caller with writes in flight, naming [T-2] #22's trade path. Checked against
+that path on the `22-buy-shares` branch: everything before its `ensure_open`
+call — the unlocked replay lookup and the market-status gate — is a read, so
+nothing is pending to discard, and the book row lock is taken after
+`ensure_open` returns. The objection is the reversal trigger above, not a
+reason against the decision today.
+
+---
+
+### D-044 — A cost exactly on a tick can round one tick against the trader, or toward them on a sell
+
+**Date:** 2026-09-24 · **Ticket:** #21 · **Status:** active
+
+**Decision.** Accepted and documented, no code change. A trade whose true cost
+lies exactly on a tick, or within the engine's last significant digit of one,
+can be quantized one tick away from its true tick. The *quoted* error — the
+difference between the total after rounding and the true cost — is bounded at
+one tick, 0.0001 credits, in either direction. That bound is a property of the
+rounding, not of the engine: the engine's own error is relative, not a fixed
+floor.
+
+**Why it happens, and why precision cannot fix it.** `core/lmsr.py` works at
+50 significant digits through `ln` and `exp`, which are transcendental: no
+finite precision guarantees that an answer exactly `d` in real arithmetic
+comes back as exactly `d`. It often comes back off by one unit in the last of
+those 50 digits — a relative error of order `1e-49`, so its absolute size
+scales with the cost — and directional rounding amplifies that dust, however
+small, to a whole tick. Raising `_PRECISION` shrinks the dust relative to the
+cost, it does not remove it.
+
+**Buys, overcharged a tick — toward the pool.** On any two-outcome book
+`q = [a, a + d]`, buying `2d` of outcome 0 costs exactly `d` by LMSR's shift
+invariance and the symmetry of the two outcomes. `q = [1000, 1100]`, `b = 300`,
+buying 200 is true cost `100`; the engine returns
+`100.0000000000000000000000000000000000000000000001`, and `ROUND_CEILING`
+charges `100.0001`. Not every member of the family misses — `[137, 157]` at
+`b = 100` lands exactly — but enough do to be ordinary.
+
+**Sells, paid a tick they did not earn — toward the trader.** Against
+`q = [12000, 0]` at `b = 100`, outcome 0 is priced `1 - 8e-53`, so selling
+`0.0001` has true proceeds a hair under one tick and "A sell whose proceeds
+quantize to zero is refused, not quoted" should refuse it. The shortfall is
+past the 50th digit, the engine returns exactly `-0.000100`, and the sell is
+quoted at one tick. This is the one case where the residue runs toward the
+trader, which D-039 says must not happen; it is bounded at one tick, needs
+roughly `120·b` of skew, and cannot be repeated for profit without moving the
+book back.
+
+**Rejected.** Snapping a result within some epsilon of a tick onto the tick.
+It assumes the true value *is* the tick, and a true cost a hair *above* a tick
+would then be undercharged a whole tick on a buy — trading an error toward the
+pool for one toward the trader, which is the direction the design forbids.
+Exact rational arithmetic is not available for `ln` and `exp`.
+
+**Reversal trigger.** Either characterisation test in
+`unit_test/core/test_pricing.py` —
+`test_a_cost_exactly_on_a_tick_can_be_charged_one_tick_over` and
+`test_a_sell_just_under_a_tick_can_be_paid_the_whole_tick` — going red,
+because the engine's precision or `quantize_cost`'s rounding changed; or any
+case found where the quoted total differs from the true cost by more than one
+tick. Either means the bound stated here no longer holds and this is decided
+again.
+
+### D-045 — The ledger asks market_service whether a market is still trading, and a replay is answered first
 
 **Date:** 2026-09-21 · **Ticket:** #109 · **Status:** graduated to ADR 0017
 
@@ -1521,7 +1646,7 @@ trades on books snapshotted weeks earlier.
 
 ---
 
-### D-044 — `REDIS_URL` has a default in the ledger and none in the realtime service
+### D-046 — `REDIS_URL` has a default in the ledger and none in the realtime service
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1571,7 +1696,7 @@ variable rather than about that service. Amended in this ticket to say
 
 ---
 
-### D-045 — One Redis client for the ledger process, opened on the lifespan
+### D-047 — One Redis client for the ledger process, opened on the lifespan
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1630,7 +1755,7 @@ the seam two test modules drive through.
 
 ---
 
-### D-046 — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
+### D-048 — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1691,7 +1816,7 @@ their own merits now.
 
 ---
 
-### D-047 — A publish failure is swallowed and logged, and `publish` takes the transaction id to log it with
+### D-049 — A publish failure is swallowed and logged, and `publish` takes the transaction id to log it with
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1752,7 +1877,7 @@ not go looking for the bug.
 
 ---
 
-### D-048 — The realtime snapshot is a second first-toucher, and never gates on status
+### D-050 — The realtime snapshot is a second first-toucher, and never gates on status
 
 **Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
 
@@ -1817,7 +1942,7 @@ the rule `docs/adr/` already follows when citing this file.
 
 ---
 
-### D-049 — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
+### D-051 — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
 
 **Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
 
@@ -1872,7 +1997,7 @@ fine: the deploy is the thing it should fail.
 
 ---
 
-### D-050 — The price read exists once, and the price quantizer is in `core/pricing.py`
+### D-052 — The price read exists once, and the price quantizer is in `core/pricing.py`
 
 **Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
 

@@ -813,13 +813,28 @@ async def test_a_zero_seed_subsidy_is_unavailable_rather_than_unbalanced(
     malformed about terms they never sent. `MarketTermsUnavailable` is the
     503 the contract promises for an upstream that answered badly.
 
+    A **negative** one is worse than a zero and fails differently: it funds
+    the pool backwards, posting `Leg(platform, +250)` against
+    `Leg(pool, -250)`, and `_refuse_overdrafts` exempts only PLATFORM — so it
+    surfaces much later as an `InsufficientFunds` 409 on somebody's ordinary
+    first preview, about a balance that is not theirs.
+
+    `Infinity` and `NaN` are here because `Decimal` takes both off the wire
+    and they slip a bare `<= 0` in opposite directions: infinity compares
+    `False` and NaN raises.
+
     Nothing commits either way; what this pins is which error, and therefore
     who the caller thinks is at fault.
     """
-    upstream = _Upstream(seed_subsidy="0.0000")
+    for bad in ("0", "0.0000", "-250.0000", "Infinity", "NaN"):
+        upstream = _Upstream(seed_subsidy=bad)
 
-    with pytest.raises(_errors().MarketTermsUnavailable):
-        await _open(session, upstream)
+        with pytest.raises(_errors().MarketTermsUnavailable):
+            await _open(session, upstream)
+
+        assert await _books().find(session, upstream.market_id) is None, (
+            f"a subsidy of {bad} left a book behind"
+        )
 
 
 async def test_a_non_positive_liquidity_b_is_refused_before_the_book_is_written(
@@ -831,8 +846,16 @@ async def test_a_non_positive_liquidity_b_is_refused_before_the_book_is_written(
     non-positive one with a bare `ValueError` — not a `LedgerError`, so an
     unmapped 500. Written once under ADR 0005 and never reread, a `b` of zero
     would be every price that market ever quotes.
+
+    `Infinity` and `NaN` need `is_finite()`, not the comparison:
+    `Decimal("Infinity") <= 0` is simply `False`, and `Decimal("NaN") <= 0`
+    raises rather than answering. `numeric(18, 4)` refuses to store an
+    infinity — so that one used to fail as a `DataError` on the insert, which
+    is not an `IntegrityError` and escaped the lost-race handler as an
+    unmapped 500 — but it stores `NaN` quite happily, which makes NaN the one
+    that could really sit in a book forever.
     """
-    for bad in ("0.0000", "-1.0000"):
+    for bad in ("0.0000", "-1.0000", "Infinity", "-Infinity", "NaN"):
         upstream = _Upstream(liquidity_b=bad)
 
         with pytest.raises(_errors().MarketTermsUnavailable):
