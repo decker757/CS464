@@ -515,3 +515,45 @@ def test_max_magnitude_is_the_largest_value_the_column_holds() -> None:
     over = pricing.MAX_MAGNITUDE + Decimal("0.0001")
     digits = len(over.as_tuple().digits)
     assert digits > 18
+
+
+# --- D-NEW: a cost exactly on a tick, and the engine's last digit -----------
+#
+# Characterisation, not fixes. Both pin behaviour that is recorded and
+# accepted rather than changed, so each passes before and after its entry
+# landed. They exist so that whoever changes the engine's precision or the
+# rounding here sees the decision named rather than a number move silently.
+def test_a_cost_exactly_on_a_tick_can_be_charged_one_tick_over() -> None:
+    """`q = [a, a + d]`, buying `2d` of outcome 0, costs exactly `d`.
+
+    The engine lands one unit of its 50th digit above it, and
+    `ROUND_CEILING` turns that dust into a whole tick. Bounded at one tick,
+    toward the pool.
+    """
+    from core.lmsr import cost_to_trade  # noqa: PLC0415
+
+    raw = cost_to_trade(
+        [Decimal(1000), Decimal(1100)], Decimal(300), [Decimal(200), Decimal(0)]
+    )
+
+    assert raw != Decimal(100), "the engine hit the tick exactly; the entry is moot"
+    assert _pricing().quantize_cost(raw.copy_abs(), side=_pricing().Side.BUY) == Decimal(
+        "100.0001"
+    )
+
+
+def test_a_sell_just_under_a_tick_can_be_paid_the_whole_tick() -> None:
+    """The mirror: true proceeds a hair under `0.0001`, returned as exactly it.
+
+    Selling `0.0001` of an outcome priced `1 - 8e-53` is worth that much
+    less than a tick, which is past the engine's 50 digits, so it answers
+    `-0.000100` and the sell is paid rather than refused.
+    """
+    from core.lmsr import cost_to_trade  # noqa: PLC0415
+
+    raw = cost_to_trade(
+        [Decimal(12000), Decimal(0)], Decimal(100), [Decimal("-0.0001"), Decimal(0)]
+    )
+
+    assert raw == Decimal("-0.0001")
+    assert _pricing().quantize_cost(raw.copy_abs(), side=_pricing().Side.SELL) == _QUANTUM

@@ -17,10 +17,12 @@ directly is the most honest way to ask that question.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 import pytest
@@ -935,3 +937,59 @@ async def test_a_buy_whose_resulting_q_overflows_is_422_quantity_too_large(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "quantity_too_large"
+
+
+# =========================================================================
+# Second review on PR #108
+# =========================================================================
+async def test_a_quantity_echo_preserves_scale_not_the_literal_string(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """What the `quantity` description now promises, and no more.
+
+    `str(Decimal)` keeps the exponent, so the scale a client sent comes back —
+    but not its spelling: `.5` is `0.5` and `10.` is `10`. A client matching a
+    response to a keystroke compares decimal values, not strings.
+    Characterisation: this behaviour did not change, the description did.
+    """
+    market = _Market()
+    await _warm(session, market)
+
+    for sent, echoed in ((".5", "0.5"), ("10.", "10")):
+        body = (
+            await client.get(
+                _path(market.market_id),
+                params=_params(market.outcomes[0], quantity=sent),
+                headers=trader_headers,
+            )
+        ).json()
+        assert body["quantity"] == echoed
+        assert Decimal(body["quantity"]) == Decimal(sent)
+
+
+async def test_the_preview_contract_does_not_offer_market_not_published(
+    client: AsyncClient,
+) -> None:
+    """A 409 for an unpublished market cannot reach a caller of this route.
+
+    `market_service`'s public detail route answers 404 for a draft or a
+    submitted market, so `market_terms.fetch` raises `MarketNotFound` before
+    `books.ensure_open` ever sees `published_at`. A documented 409 is a
+    handler the frontend writes for a state that never occurs, beside a 404
+    it may then fail to treat as the answer it actually is.
+    """
+    operation = (await client.get("/openapi.json")).json()["paths"][
+        "/ledger/markets/{market_id}/preview"
+    ]["get"]
+    documented = json.dumps(operation).lower()
+
+    assert "market_not_published" not in documented
+    assert "not been published" not in documented
+    assert "not published" not in documented
+
+    doc = (Path(__file__).resolve().parents[4] / "docs/api/ledger-service.md").read_text(
+        encoding="utf-8"
+    )
+    section = doc.split("## GET /ledger/markets/{market_id}/preview", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    assert "market_not_published" not in section

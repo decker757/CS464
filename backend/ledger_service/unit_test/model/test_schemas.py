@@ -5,9 +5,14 @@ These generate /docs, which is what Michelle codes the balance display against.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
 
 from model.entities import TransactionKind
 from model.schemas import BalanceOut, LedgerEntryListResponse, LedgerEntryOut
@@ -100,3 +105,100 @@ def test_has_more_and_next_cursor_agree() -> None:
 
     assert page.has_more is True
     assert page.next_cursor == "abc"
+
+
+# --- PreviewOut and OutcomePriceOut: the contract /docs shows ----------------
+def _example(model: type, field: str) -> Decimal:
+    return Decimal(model.model_fields[field].examples[0])
+
+
+def test_the_preview_examples_are_a_trade_that_could_happen() -> None:
+    """`average_price` is `abs(total) / quantity`, under 1, and above the price.
+
+    The examples are what `/docs` shows the frontend. LMSR prices sum to 1
+    and each is in (0, 1), so an average price per share of 1 or more cannot
+    occur, and an example that is not the quotient its own description
+    defines teaches the wrong formula. The total is negative, so it is a
+    buy, and a buy pushes the price up as it fills: its average is strictly
+    above the price it started from, which is `OutcomePriceOut`'s example.
+    """
+    from model.schemas import OutcomePriceOut, PreviewOut  # noqa: PLC0415
+
+    quantity = _example(PreviewOut, "quantity")
+    total = _example(PreviewOut, "total")
+    average = _example(PreviewOut, "average_price")
+    price = _example(OutcomePriceOut, "price")
+
+    assert (total.copy_abs() / quantity).quantize(
+        Decimal("0.0001"), rounding=ROUND_HALF_UP
+    ) == average
+    assert Decimal(0) < average < Decimal(1)
+    assert total < 0, "the example is meant to be a buy"
+    assert average > price, "a buy averages above the price it started from"
+
+
+@pytest.mark.parametrize("price", ["-0.0001", "1.0001"])
+def test_an_outcome_price_outside_zero_to_one_is_refused(price: str) -> None:
+    """The bounds `realtime_service`'s `OutcomePrice` puts on the same field.
+
+    Field-for-field parity is the promise that lets one client renderer
+    serve the snapshot, the price frame and this preview, and `price` is the
+    one field carrying an invariant. A pricing bug producing `1.0001` is
+    refused on the socket; without these it ships here.
+    """
+    from model.schemas import OutcomePriceOut  # noqa: PLC0415
+
+    with pytest.raises(ValidationError):
+        OutcomePriceOut(outcome_id=uuid.uuid4(), position=0, price=Decimal(price))
+
+
+@pytest.mark.parametrize("price", ["0", "0.6234", "1"])
+def test_an_outcome_price_at_or_inside_the_bounds_is_accepted(price: str) -> None:
+    """Both ends inclusive, as on the socket: a saturated outcome rounds to them."""
+    from model.schemas import OutcomePriceOut  # noqa: PLC0415
+
+    assert OutcomePriceOut(
+        outcome_id=uuid.uuid4(), position=0, price=Decimal(price)
+    ).price == Decimal(price)
+
+
+def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
+    """The same arithmetic on `docs/api/ledger-service.md`'s example.
+
+    Two copies of one contract, and the review found both wrong, so both are
+    checked. The frontend reads the markdown as often as it reads `/docs`.
+    That example carries its prices, so it is held to the stronger rule: on
+    a buy, the average price sits strictly between the traded outcome's price
+    before and after, and each price list sums to 1 within rounding.
+    """
+    doc = (Path(__file__).resolve().parents[4] / "docs/api/ledger-service.md").read_text(
+        encoding="utf-8"
+    )
+    section = doc.split("## GET /ledger/markets/{market_id}/preview", 1)[1]
+    example = section.split("```jsonc", 1)[1].split("```", 1)[0]
+
+    def field(name: str) -> Decimal:
+        match = re.search(rf'"{name}":\s*"([^"]+)"', example)
+        assert match, f"{name} missing from the documented example"
+        return Decimal(match.group(1))
+
+    quantity, total, average = field("quantity"), field("total"), field("average_price")
+
+    assert (total.copy_abs() / quantity).quantize(
+        Decimal("0.0001"), rounding=ROUND_HALF_UP
+    ) == average
+    assert Decimal(0) < average < Decimal(1)
+
+    def listed(name: str) -> list[Decimal]:
+        block = example.split(f'"{name}"', 1)[1].split("]", 1)[0]
+        return [Decimal(v) for v in re.findall(r'"price":\s*"([^"]+)"', block)]
+
+    before, after = listed("prices"), listed("post_trade_prices")
+    for side in (before, after):
+        assert abs(sum(side) - Decimal(1)) <= Decimal("0.0001") * len(side)
+
+    assert total < 0, "the example is meant to be a buy of position 0"
+    assert before[0] < average < after[0], (
+        f"a buy of position 0 averages between {before[0]} and {after[0]}; "
+        f"got {average}"
+    )

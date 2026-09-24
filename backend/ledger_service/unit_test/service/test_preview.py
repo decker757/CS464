@@ -31,14 +31,15 @@ a newer version writes the column directly and says so.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 import pytest
-from sqlalchemy import event, func, select, update
+from sqlalchemy import delete, event, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine
@@ -1422,3 +1423,175 @@ async def test_a_raw_string_sell_still_meets_the_no_shorting_rule(
             access_token=_token(),
             transport=upstream.transport,
         )
+
+
+# =========================================================================
+# Second review on PR #108
+# =========================================================================
+class _Stalled:
+    """A market service that records what the caller holds, then stalls.
+
+    Every request runs `probe` the moment it reaches the upstream — the point
+    at which anything held across the call is observable — and the first one
+    then waits for `release`. Probing *every* call rather than the first
+    matters: a path that fetched once with nothing held and then again inside
+    a transaction would pass a check of the first alone.
+    """
+
+    def __init__(
+        self, upstream: _Upstream, probe: Callable[[], dict[str, object]]
+    ) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.seen: list[dict[str, object]] = []
+        self._upstream = upstream
+        self._probe = probe
+
+    @property
+    def transport(self) -> httpx.MockTransport:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self._upstream.calls += 1
+            self.seen.append(self._probe())
+            self.entered.set()
+            await self.release.wait()
+            return httpx.Response(200, json=self._upstream._body)
+
+        return httpx.MockTransport(handler)
+
+
+async def _idle_in_transaction() -> int:
+    """Backends of this role in this database sitting `idle in transaction`.
+
+    Postgres's own view, from a connection of its own: a session that ran a
+    statement and has not ended its transaction is in this state for as long
+    as it waits, which is exactly a pooled connection held across a call to
+    somebody else.
+    """
+    async with get_engine().connect() as conn:
+        return (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() "
+                    "AND usename = current_user "
+                    "AND state = 'idle in transaction' "
+                    "AND pid <> pg_backend_pid()"
+                )
+            )
+        ).scalar_one()
+
+
+async def test_a_cold_preview_holds_no_connection_while_market_service_is_slow(
+    session: AsyncSession,
+) -> None:
+    """The first touch's HTTP call runs with no transaction open.
+
+    The pricing read autobegins a transaction, and `get_session` does not wrap
+    the request in one of its own, so nothing ended it: the cold path used to
+    call market_service with that transaction open and its pooled connection
+    `idle in transaction` for as long as the call took — up to the terms
+    timeout. `pool_size` is 10, so a slow market service or twenty cold
+    previews at once took every connection, and every other route on the
+    service waited behind them.
+
+    Three views of the same fact. At every upstream call, the session says it
+    has no transaction and the pool says nothing is checked out; while the
+    first call is stalled, Postgres says no backend of this role is idle in a
+    transaction. And there is exactly one call, so no second fetch can hide
+    behind a clean first one. **Remove the rollback in `books.ensure_open`
+    and this goes red** — as it did against the code before the fix. A
+    rollback in the preview alone does not turn it green: `ensure_open`'s own
+    lookup begins a fresh transaction before the fetch.
+    """
+    upstream = _Upstream()
+    pool = get_engine().pool
+    stalled = _Stalled(
+        upstream,
+        lambda: {
+            "session in a transaction": session.in_transaction(),
+            "pooled connections checked out": pool.checkedout(),
+        },
+    )
+
+    task = asyncio.create_task(_quote(session, upstream, transport=stalled.transport))
+    try:
+        async with asyncio.timeout(10):
+            await stalled.entered.wait()
+        idle = await _idle_in_transaction()
+    finally:
+        stalled.release.set()
+        quote = await task
+
+    clean = {"session in a transaction": False, "pooled connections checked out": 0}
+    assert stalled.seen == [clean] * len(stalled.seen)
+    assert idle == 0, f"{idle} backend(s) idle in transaction across the call"
+    assert upstream.calls == 1
+    assert quote.total == _expected_total([ZERO, ZERO], 0, "buy", _QUANTITY)
+
+
+async def test_a_book_with_no_outcome_rows_is_a_named_error_not_an_index_error(
+    session: AsyncSession,
+) -> None:
+    """The re-read after the cold path is guarded, not indexed blind.
+
+    Nothing in this service writes a book without its outcomes —
+    `books.ensure_open` inserts both in one savepoint — so this takes a hand
+    edit. It is guarded anyway because the pricing read is an inner join: such
+    a book reads as no book, the cold path finds the row and returns, the
+    re-read is empty, and `rows[0]` was an `IndexError` and an unmapped 500.
+    """
+    upstream = _Upstream()
+    await _warm(session, upstream)
+    outcome = _entities().MarketOutcome
+    await session.execute(delete(outcome).where(outcome.market_id == upstream.market_id))
+    await session.commit()
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _quote(session, upstream)
+
+    assert raised.value.code == "market_book_incomplete"
+    assert raised.value.status_code == 500
+
+
+async def test_the_oracle_agrees_with_the_preview_past_the_ambient_precision(
+    session: AsyncSession,
+) -> None:
+    """`_expected_total` takes `copy_abs()`, the rule the preview follows.
+
+    Every other test in this file prices a trade whose raw cost fits in 28
+    digits, where `abs()` and `copy_abs()` agree — so an oracle using `abs()`
+    passed while contradicting the decision that bans it on money. This is the
+    fixture where they part: the engine's `-99.99999…9317` rounds up to
+    `100` at the ambient precision, and an `abs()` oracle expects the tick the
+    preview correctly refuses to pay.
+    """
+    upstream = _Upstream()
+    q = [Decimal("7000"), ZERO]
+    await _warm(session, upstream, q)
+
+    quote = await _quote(session, upstream, outcome=0, side="sell", quantity=_HUNDRED)
+
+    assert quote.total == _expected_total(q, 0, "sell", _HUNDRED)
+
+
+async def test_every_display_figure_goes_through_one_half_up_helper(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prices, post-trade prices and `average_price` share one rounding rule.
+
+    Structural, and says so: every figure here is `ROUND_HALF_UP` at scale 4
+    either way, so no input separates one helper from two hand-rolled copies.
+    What this pins is that there is one place to change, so the copies cannot
+    drift — and it is the seam #110's `core/pricing.py::quantize_price`
+    replaces.
+    """
+    upstream = _Upstream()
+    await _warm(session, upstream)
+    marker = Decimal("0.5000")
+    monkeypatch.setattr(_preview(), "_quantize_price", lambda value: marker)
+
+    quote = await _quote(session, upstream)
+
+    assert quote.average_price == marker
+    assert {p.price for p in quote.prices} == {marker}
+    assert {p.price for p in quote.post_trade_prices} == {marker}

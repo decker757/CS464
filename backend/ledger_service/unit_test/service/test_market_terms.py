@@ -617,3 +617,24 @@ async def test_the_close_time_is_not_what_decides_anything_here() -> None:
 
     assert terms.liquidity_b == Decimal("100.0000")
     assert terms.published_at is not None
+
+
+@pytest.mark.parametrize("liquidity_b", ["0", "0.0000", "-100.0000"])
+async def test_a_liquidity_b_that_can_never_price_is_refused(liquidity_b: str) -> None:
+    """`b <= 0` is refused as unavailable, the same as a null `b`.
+
+    `C(q) = b·ln(Σ e^(q_i/b))` divides by `b`, so a zero is a `ValueError`
+    out of the engine on every preview, and a negative `b` turns the cost
+    function upside down. The book is immutable under ADR 0005, so a market
+    that got one would fail on every request forever, and with an unmapped
+    500 rather than a `LedgerError`. `_liquidity_problems` requires a
+    positive `b` at submission and `publish` re-runs it, so this is
+    unreachable from a correct market service — defended for the reason the
+    null check is.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(liquidity_b=liquidity_b)),
+        )
