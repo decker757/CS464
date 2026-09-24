@@ -20,39 +20,25 @@ one read [X-4] #37's reconnect depends on. `service/market_status.py` is
 never called here; that hop belongs to the trade path, which fires once per
 trade, not to a read that fires on every page open and every reconnect.
 
-The pricing read itself (D-012, D-036) is one joined statement over
-`market_books` and `market_outcomes` (D-013), the same statement
-`service/preview.py::_read_book` already uses, with no lock — this read
-decides no write. `books.ensure_open` takes the handoff's own locks
-internally on the cold path, same as it does for the preview.
+The read, the cold path and the quantizer are `service/book_prices.py`'s,
+shared with the preview: one joined statement (D-013), no lock (D-012,
+D-036), and `books.ensure_open` taking the handoff's own locks on the cold
+path. Shared rather than copied, because both docs pages promise the two
+endpoints the same price strings for the same state.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.lmsr import prices as lmsr_prices
-from core.pricing import QUANTUM
-from model.entities import MarketBook, MarketOutcome
-from service import books
-
-
-@dataclass(frozen=True)
-class OutcomeSnapshot:
-    """One outcome's price, in `PriceEvent`'s shape."""
-
-    outcome_id: uuid.UUID
-    position: int
-    price: Decimal
+from service import book_prices
+from service.book_prices import PricedOutcome
 
 
 @dataclass(frozen=True)
@@ -61,7 +47,7 @@ class Snapshot:
 
     market_id: uuid.UUID
     state_version: int
-    prices: list[OutcomeSnapshot]
+    prices: list[PricedOutcome]
     occurred_at: datetime
 
 
@@ -79,12 +65,9 @@ async def snapshot(
     own; that belongs to `service/market_terms.py`, reached through the cold
     path.
     """
-    rows = await _read_book(session, market_id)
-    if not rows:
-        await books.ensure_open(
-            session, market_id, access_token=access_token, transport=transport
-        )
-        rows = await _read_book(session, market_id)
+    rows = await book_prices.read_or_open(
+        session, market_id, access_token=access_token, transport=transport
+    )
 
     state_version = rows[0].state_version
     b = rows[0].liquidity_b
@@ -93,43 +76,7 @@ async def snapshot(
     return Snapshot(
         market_id=market_id,
         state_version=state_version,
-        prices=_quantized_prices(rows, lmsr_prices(q, b)),
+        prices=book_prices.priced(rows, lmsr_prices(q, b)),
         occurred_at=rows[0].state_changed_at,
     )
 
-
-async def _read_book(session: AsyncSession, market_id: uuid.UUID) -> Sequence[Row]:
-    """`q`, `b`, `state_version` and `state_changed_at` in one statement,
-    ordered by position. D-013, no lock (D-012, D-036) — this read decides no
-    write."""
-    stmt = (
-        select(
-            MarketBook.state_version,
-            MarketBook.liquidity_b,
-            MarketBook.state_changed_at,
-            MarketOutcome.outcome_id,
-            MarketOutcome.position,
-            MarketOutcome.q,
-        )
-        .join(MarketOutcome, MarketOutcome.market_id == MarketBook.market_id)
-        .where(MarketBook.market_id == market_id)
-        .order_by(MarketOutcome.position)
-    )
-    return (await session.execute(stmt)).all()
-
-
-def _quantized_prices(rows: Sequence[Row], raw: list[Decimal]) -> list[OutcomeSnapshot]:
-    """`raw` zipped back onto the ids and positions `_read_book` ordered.
-
-    `ROUND_HALF_UP`, with no direction to favour: nobody is charged a price
-    here, unlike `core/pricing.py::quantize_cost`'s directional rounding of a
-    cost.
-    """
-    return [
-        OutcomeSnapshot(
-            outcome_id=row.outcome_id,
-            position=row.position,
-            price=price.quantize(QUANTUM, rounding=ROUND_HALF_UP),
-        )
-        for row, price in zip(rows, raw)
-    ]

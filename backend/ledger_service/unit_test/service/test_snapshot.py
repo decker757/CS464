@@ -822,3 +822,78 @@ async def test_a_refused_market_leaves_no_book_behind(session: AsyncSession) -> 
             select(func.count()).select_from(book).where(book.market_id == upstream.market_id)
         )
     ).scalar_one() == 0
+
+
+# =========================================================================
+# One read and one quantizer, shared with the preview — review of #110
+# =========================================================================
+async def _strip_outcomes(session: AsyncSession, upstream: _Upstream) -> None:
+    """A book with no outcome rows, which nothing in this service can write:
+    `books.ensure_open` inserts both in one savepoint. Written directly, the
+    way a hand-run repair or a half-applied migration would leave it."""
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    outcome = _entities().MarketOutcome
+    await session.execute(delete(outcome).where(outcome.market_id == upstream.market_id))
+    await session.commit()
+
+
+async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(
+    session: AsyncSession,
+) -> None:
+    """The read joins the book to its outcomes, so a book with no outcomes
+    reads as no book. The cold path then calls `ensure_open`, which finds the
+    book and returns, the read runs again, comes back empty, and `rows[0]` was
+    an `IndexError`. That is not a `LedgerError`, so no handler maps it, and
+    the client got a bare 500 with no envelope and no code.
+
+    The state is corrupt and there is nothing a client can do about it, so it
+    stays a 500. The fix makes it a named one.
+    """
+    from core.errors import LedgerError  # noqa: PLC0415
+
+    upstream = _Upstream()
+    await _warm(session, upstream)
+    await _strip_outcomes(session, upstream)
+
+    with pytest.raises(Exception) as raised:
+        await _read(session, upstream)
+
+    assert isinstance(raised.value, LedgerError), (
+        f"a book with no outcome rows raised an unmapped "
+        f"{type(raised.value).__name__}: {raised.value!r}"
+    )
+    assert raised.value.status_code == 500
+    assert raised.value.code == "market_book_incomplete"
+
+
+async def test_the_snapshot_and_the_preview_quote_the_same_price_strings(
+    session: AsyncSession,
+) -> None:
+    """The promise both docs pages make, asserted where both are reachable.
+
+    `docs/api/ledger-service.md` and `docs/api/realtime-service.md` both tell
+    a client that the preview's current `prices` and the snapshot's `prices`
+    are the same strings for the same state. Compared as strings, because
+    `0.5` and `0.5000` are equal `Decimal`s and different renders.
+    """
+    from core.pricing import Side  # noqa: PLC0415
+    from service import preview  # noqa: PLC0415
+
+    upstream = _Upstream()
+    await _warm(session, upstream)
+
+    snap = await _read(session, upstream)
+    quote = await preview.quote(
+        session,
+        upstream.market_id,
+        outcome_id=upstream.outcomes[0],
+        side=Side.BUY,
+        quantity=Decimal("1.0000"),
+        access_token=_token(),
+        transport=upstream.transport,
+    )
+
+    assert [(p.outcome_id, p.position, str(p.price)) for p in snap.prices] == [
+        (p.outcome_id, p.position, str(p.price)) for p in quote.prices
+    ]

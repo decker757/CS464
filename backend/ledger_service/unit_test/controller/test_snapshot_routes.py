@@ -155,6 +155,9 @@ class _Terms:
                 raise self._raises
             return market_terms.MarketTerms(
                 market_id=market_id,
+                # Explicit: `MarketTerms.status` has no default, because a
+                # default of "open" is a fail-open on the trade gate.
+                status="open",
                 liquidity_b=_B,
                 seed_subsidy=_SUBSIDY,
                 published_at=(
@@ -497,3 +500,27 @@ async def test_a_closed_market_returns_prices_rather_than_an_error(
 
     assert response.status_code == 200, response.json()
     assert Decimal(response.json()["prices"][0]["price"]) > 0
+
+
+async def test_a_book_with_no_outcome_rows_is_a_500_in_the_envelope(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """Still a 500, now with the envelope and a code a log search can find.
+
+    Before the read was shared this was an `IndexError` out of `rows[0]`,
+    which no handler maps: a bare 500 with no body the frontend could parse.
+    The state takes a hand-run repair to reach, and `test_snapshot.py`
+    explains how. This holds only the HTTP shape.
+    """
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    market = _Market()
+    await _warm(session, market)
+    outcome = _entities().MarketOutcome
+    await session.execute(delete(outcome).where(outcome.market_id == market.market_id))
+    await session.commit()
+
+    response = await client.get(_path(market.market_id), headers=trader_headers)
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "market_book_incomplete"

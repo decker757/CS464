@@ -1339,3 +1339,28 @@ async def test_an_ordinary_large_quantity_is_still_quoted(
 
     assert abs(result.total) <= _pricing().MAX_MAGNITUDE
     assert result.total < ZERO
+
+
+async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(
+    session: AsyncSession,
+) -> None:
+    """Same `rows[0]` as the snapshot's, and the same unmapped 500 before the
+    read was shared. See `test_snapshot.py`'s test of the same name."""
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    from core.errors import LedgerError  # noqa: PLC0415
+
+    upstream = _Upstream()
+    await _warm(session, upstream)
+    outcome = _entities().MarketOutcome
+    await session.execute(delete(outcome).where(outcome.market_id == upstream.market_id))
+    await session.commit()
+
+    with pytest.raises(Exception) as raised:
+        await _quote(session, upstream)
+
+    assert isinstance(raised.value, LedgerError), (
+        f"a book with no outcome rows raised an unmapped "
+        f"{type(raised.value).__name__}: {raised.value!r}"
+    )
+    assert raised.value.code == "market_book_incomplete"

@@ -225,6 +225,12 @@ async def user_entries(
                 "nothing (D-041)."
             )
         },
+        500: {
+            "description": (
+                "`market_book_incomplete`: this service holds a book for the "
+                "market with no outcome rows. A server fault, not retryable."
+            )
+        },
         503: {"description": "market_service could not be reached right now."},
     },
 )
@@ -291,6 +297,13 @@ _SNAPSHOT_DESCRIPTION = (
         401: {"description": "Missing, malformed or expired access token."},
         404: {"description": "No such market."},
         409: {"description": "The market has not been published yet."},
+        422: {"description": "`market_id` is not a UUID."},
+        500: {
+            "description": (
+                "`market_book_incomplete`: this service holds a book for the "
+                "market with no outcome rows. A server fault, not retryable."
+            )
+        },
         503: {"description": "market_service could not be reached right now."},
     },
 )

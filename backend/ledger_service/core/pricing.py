@@ -27,7 +27,7 @@ Pure. No session, no clock, no configuration.
 
 from __future__ import annotations
 
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
 from core.errors import ProceedsBelowTick
@@ -49,6 +49,21 @@ QUANTUM = Decimal(1).scaleb(-_SCALE)
 # ledger cannot store, which makes it a cost nothing can charge — see
 # `service/preview.py`, which is the layer with a request to refuse (D-040).
 MAX_MAGNITUDE = Decimal(10) ** (_PRECISION - _SCALE) - QUANTUM
+
+
+def quantize_price(price: Decimal) -> Decimal:
+    """An outcome's price, at the wire's scale 4, `ROUND_HALF_UP`.
+
+    The one rounding rule for every price this service publishes: the
+    preview's `prices`, the snapshot's, and [T-2] #22's `PriceEvent`. Both
+    docs pages promise a client the same string from each for the same state,
+    and that holds because they all call this, not because copies agree.
+
+    Half-up rather than `quantize_cost`'s directional rounding, because a
+    price is display and nobody is charged it — there is no side for the
+    residue to favour.
+    """
+    return price.quantize(QUANTUM, rounding=ROUND_HALF_UP)
 
 
 class Side(StrEnum):

@@ -12,7 +12,8 @@ is a single indexed read that writes nothing (D-036).
    function is reached, so nothing here touches the database or the network
    on a malformed request.
 2. One statement joins `market_books` to `market_outcomes` (D-013), reading
-   `q`, `b` and `state_version` together, with no lock (D-012, D-036).
+   `q`, `b` and `state_version` together, with no lock (D-012, D-036). It is
+   `service/book_prices.py`'s, shared with the snapshot, as is step 3.
 3. If it returns nothing, `service.books.ensure_open` opens the book — which
    takes the handoff's own locks internally — and the read runs again.
 4. `outcome_id` is checked against the book once it exists. A bad one is
@@ -45,13 +46,10 @@ owns how the ledger eventually learns a market has stopped trading.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
@@ -67,21 +65,10 @@ from core.pricing import (
     quantize_cost,
     refuse_sub_tick_proceeds,
 )
-from model.entities import MarketBook, MarketOutcome
-from service import books
+from service import book_prices
+from service.book_prices import PricedOutcome
 
 ZERO = Decimal(0)
-
-
-@dataclass(frozen=True)
-class OutcomeQuote:
-    """One outcome's price, in `PriceEvent`'s shape (`realtime_service`'s
-    `OutcomePrice`): an id, its position, and a price quantized for the wire.
-    """
-
-    outcome_id: uuid.UUID
-    position: int
-    price: Decimal
 
 
 @dataclass(frozen=True)
@@ -95,8 +82,8 @@ class Quote:
     quantity: Decimal
     total: Decimal
     average_price: Decimal
-    prices: list[OutcomeQuote]
-    post_trade_prices: list[OutcomeQuote]
+    prices: list[PricedOutcome]
+    post_trade_prices: list[PricedOutcome]
 
 
 async def quote(
@@ -116,12 +103,9 @@ async def quote(
     response itself; that belongs to `service/market_terms.py`, reached
     through the cold path.
     """
-    rows = await _read_book(session, market_id)
-    if not rows:
-        await books.ensure_open(
-            session, market_id, access_token=access_token, transport=transport
-        )
-        rows = await _read_book(session, market_id)
+    rows = await book_prices.read_or_open(
+        session, market_id, access_token=access_token, transport=transport
+    )
 
     state_version = rows[0].state_version
     b = rows[0].liquidity_b
@@ -170,42 +154,7 @@ async def quote(
         quantity=quantity,
         total=total,
         average_price=average_price,
-        prices=_quantized_prices(rows, lmsr_prices(q, b)),
-        post_trade_prices=_quantized_prices(rows, lmsr_prices(after_q, b)),
+        prices=book_prices.priced(rows, lmsr_prices(q, b)),
+        post_trade_prices=book_prices.priced(rows, lmsr_prices(after_q, b)),
     )
 
-
-async def _read_book(session: AsyncSession, market_id: uuid.UUID) -> Sequence[Row]:
-    """`q`, `b` and `state_version` in one statement, ordered by position.
-
-    D-013: one snapshot under READ COMMITTED, so a trade committing between
-    two separate reads can never hand back a `state_version` newer than the
-    `q` this priced. No `with_for_update()` — D-012, as corrected by D-036:
-    the pricing read decides no write, so it takes no lock, whatever this
-    function returns.
-    """
-    stmt = (
-        select(
-            MarketBook.state_version,
-            MarketBook.liquidity_b,
-            MarketOutcome.outcome_id,
-            MarketOutcome.position,
-            MarketOutcome.q,
-        )
-        .join(MarketOutcome, MarketOutcome.market_id == MarketBook.market_id)
-        .where(MarketBook.market_id == market_id)
-        .order_by(MarketOutcome.position)
-    )
-    return (await session.execute(stmt)).all()
-
-
-def _quantized_prices(rows: Sequence[Row], raw: list[Decimal]) -> list[OutcomeQuote]:
-    """`raw` zipped back onto the ids and positions `_read_book` ordered."""
-    return [
-        OutcomeQuote(
-            outcome_id=row.outcome_id,
-            position=row.position,
-            price=price.quantize(QUANTUM, rounding=ROUND_HALF_UP),
-        )
-        for row, price in zip(rows, raw)
-    ]
