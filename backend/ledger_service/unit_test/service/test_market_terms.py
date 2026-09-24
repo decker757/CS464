@@ -688,6 +688,30 @@ async def test_a_status_that_is_not_a_string_is_unavailable(
         )
 
 
+def test_market_terms_without_a_status_cannot_be_built() -> None:
+    """The dataclass holds the same line `_parse` does, not a looser one.
+
+    The test above proves `_parse` never lets an unknown status through. That
+    is one construction path, and `MarketTerms` is built by others: every test
+    double that stands in for `fetch`, and whatever cache or second parse path
+    arrives later. A default of `"open"` on the field opened the gate for all
+    of them — a market whose status nobody supplied read as tradeable, with no
+    exception anywhere, on the one check that stands between a trader and a
+    closed market. No test could see it while `_parse` was the only caller,
+    because `_parse` always passes one.
+
+    So a value built without a status is not a value at all.
+    """
+    with pytest.raises(TypeError):
+        _terms().MarketTerms(  # type: ignore[call-arg]
+            market_id=_MARKET_ID,
+            liquidity_b=None,
+            seed_subsidy=None,
+            published_at=None,
+            outcomes=[],
+        )
+
+
 async def test_a_ten_outcome_market_still_parses() -> None:
     """The ceiling is the market service's, and the floor left this file.
 

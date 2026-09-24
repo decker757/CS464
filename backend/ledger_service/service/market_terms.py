@@ -67,17 +67,20 @@ class MarketTerms:
     one, because the refusal is about *writing an immutable book*, not about
     reading terms for a market that may be years past its first touch.
 
-    `status` defaults to `"open"` only so that a fixture built by keyword
-    before this field existed keeps constructing a value; every real value
-    comes from `_parse`, which never lets construction proceed without one.
+    `status` has no default, and must never get one. `_parse` refuses a
+    missing status as a 503, and a default would undo that for every other
+    construction path — a test double standing in for `fetch`, a cache, a
+    second parse — by handing out `"open"` for a status nobody supplied. On
+    the money gate, that is a fail-open no test would see.
+    `test_market_terms_without_a_status_cannot_be_built` holds it.
     """
 
     market_id: uuid.UUID
+    status: str
     liquidity_b: Decimal | None
     seed_subsidy: Decimal | None
     published_at: datetime | None
     outcomes: list[OutcomeTerms]
-    status: str = "open"
 
 
 async def fetch(
@@ -117,16 +120,18 @@ async def fetch(
     # connection pool that serves exactly one request and is then closed, so
     # nothing here is reused: DNS, TCP and TLS are paid every time.
     #
-    # Affordable because of where this sits. `books.ensure_open` calls it only
-    # when a market has no book — once per market, ever — and every later
-    # touch returns on the fast path without reaching this module at all. The
-    # cost is one handshake per market, against a first touch that is already
-    # doing a round trip to another service and three inserts.
+    # **That is no longer cheap, and this is the known cost rather than a
+    # justification.** It was written when `books.ensure_open` was the only
+    # caller — once per market, ever. `market_status.ensure_trading` (ADR
+    # 0017) now calls it on every trade that is not a replay, so every trade
+    # pays a fresh handshake to market_service, on the hottest path there is.
     #
-    # A module-level client would be faster and would buy two problems: it
-    # needs closing in `main.py`'s lifespan, and it fixes the transport at
-    # construction, which is the seam the whole test suite drives this through.
-    # Revisit if a second caller appears that is not once-per-market.
+    # The fix is one `httpx.AsyncClient` for the process, opened and closed on
+    # `main.py`'s lifespan the way the Redis client already is, with the
+    # transport still injectable per call for the suite. That is the named
+    # follow-up and its own ticket, not a change to make in passing here: it
+    # moves the seam every test in this module and in `test_market_status.py`
+    # drives through, and it wants the lifespan pattern done once, properly.
     async with httpx.AsyncClient(
         base_url=settings.market_service_url,
         transport=transport,

@@ -43,6 +43,15 @@ exactly as the cold path does — the rule set down in "Public market reads
 require a valid token, any role" and paid for in "The preview is a market's
 first toucher, and the cold path is self-extinguishing".
 
+One call once the market has a book. The trade that creates the book makes
+two: the gate reads the status and drops the terms it came with, and
+`books.ensure_open` then fetches the same market again for the terms it
+snapshots. That is the price of the gate returning nothing rather than
+`MarketTerms` — handing fresh terms to the trade path is one refactor away from
+pricing off a wire `liquidity_b` — and it is paid once per market, ever.
+`test_a_market_s_first_trade_asks_twice_and_every_later_one_once` pins both
+counts.
+
 **That endpoint's `status` is not the raw column.** ADR 0011's amendment
 derives it for the trader-facing projections, and `displayed_status` "only
 ever turns OPEN into CLOSED" — so one field answers both kinds of close: the

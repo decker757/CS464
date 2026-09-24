@@ -52,7 +52,7 @@ import pytest
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_engine
+from core.database import get_engine, get_session_factory
 from model.entities import Account, AccountKind, Entry, Transaction
 from unit_test.conftest import mint_token
 
@@ -218,6 +218,22 @@ async def _book_row(session: AsyncSession, market_id: uuid.UUID):
     return (
         await session.execute(select(book).where(book.market_id == market_id))
     ).scalar_one_or_none()
+
+
+async def _written(session: AsyncSession, market_id: uuid.UUID) -> list[str]:
+    """The tables holding a row this gate could have written, seen from
+    `session`. Empty means nothing. The queries autoflush, so a pending
+    `session.add` counts as well as a flushed one."""
+    written = []
+    if await _book_row(session, market_id) is not None:
+        written.append(_entities().MarketBook.__tablename__)
+    for table in (Entry, Transaction, Account):
+        count = (
+            await session.execute(select(func.count()).select_from(table))
+        ).scalar_one()
+        if count:
+            written.append(table.__tablename__)
+    return written
 
 
 @contextmanager
@@ -503,19 +519,35 @@ async def test_a_refused_gate_writes_nothing(session: AsyncSession) -> None:
     What this holds is the part that is true of the gate standing alone: a
     refusal leaves the database exactly as untouched as it was, so nothing
     downstream can find a half-opened book and take the fast path through it.
+
+    **Asserted twice, and never after a rollback.** This used to roll the
+    request's session back and then count, which erased the very writes it
+    was looking for: a gate that added a book or an account to the session
+    and *then* raised `MarketClosed` passed green.
+
+    - The request's own session is asked first, before anything discards what
+      it holds. This is the look that matters: it sees a pending or flushed
+      write that the caller's next commit would carry out with it, and it
+      sees committed ones too. A second session alone would not do — READ
+      COMMITTED hides an uncommitted write from every other connection, which
+      is exactly the blindness the rollback had.
+    - A second session is asked after, for what every other request would
+      see: the committed state, independent of whatever the request's own
+      session does next.
     """
     upstream = _Upstream(status="closed")
 
     with pytest.raises(_errors().MarketClosed):
         await _gate(session, upstream)
 
-    await session.rollback()
+    assert await _written(session, upstream.market_id) == [], (
+        "a refused gate left writes in the request's own session"
+    )
 
-    assert await _book_row(session, upstream.market_id) is None
-    for table in (Entry, Transaction, Account):
-        assert (
-            await session.execute(select(func.count()).select_from(table))
-        ).scalar_one() == 0, f"a refused gate wrote to {table.__tablename__}"
+    async with get_session_factory()() as observer:
+        assert await _written(observer, upstream.market_id) == [], (
+            "a refused gate committed writes"
+        )
 
 
 async def test_the_404_branch_read_is_unlocked(session: AsyncSession) -> None:
@@ -575,6 +607,43 @@ async def test_the_gate_asks_the_public_detail_endpoint_once(
     assert upstream.calls == 1
     assert upstream.requests[0].method == "GET"
     assert upstream.requests[0].url.path == f"/public/markets/{upstream.market_id}"
+
+
+async def test_a_market_s_first_trade_asks_twice_and_every_later_one_once(
+    session: AsyncSession,
+) -> None:
+    """The cold path costs two hops, and this is the test that can see it.
+
+    The test above runs the gate alone, so it counts one call and cannot
+    count more. A trade runs the gate and then `books.ensure_open` ([T-2]
+    #22's order, ADR 0017), and on a market with no book both of them ask
+    market_service about the same market: the gate for `status`, the handoff
+    for the terms it snapshots. The gate drops what it read rather than
+    handing it across — `service/market_status.py`'s docstring says why —
+    so the first trade on a market pays twice.
+
+    Pinned rather than fixed, so that ADR 0017's "one call, on every trade
+    that is not a replay" is read with its qualifier: one call once a market
+    has a book, two on the trade that creates it. If this starts reading
+    one, somebody handed `MarketTerms` to the trade path, and that is the
+    change the gate's return type exists to refuse.
+    """
+    upstream = _Upstream(status="open")
+    token = _token()
+
+    async def trade_prelude() -> None:
+        await _gate(session, upstream, access_token=token)
+        await _books().ensure_open(
+            session, upstream.market_id, access_token=token,
+            transport=upstream.transport,
+        )
+
+    await trade_prelude()
+    assert upstream.calls == 2, "the first trade on a market asks twice"
+
+    upstream.calls = 0
+    await trade_prelude()
+    assert upstream.calls == 1, "every later trade asks once"
 
 
 async def test_the_caller_s_own_token_is_forwarded_and_none_is_minted(
