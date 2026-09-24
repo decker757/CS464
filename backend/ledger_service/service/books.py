@@ -39,10 +39,21 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.errors import MarketNotPublished
+from core.errors import MarketNotPublished, MarketTermsUnavailable
 from model.entities import AccountKind, MarketBook, MarketOutcome, TransactionKind
 from service import accounts, market_terms, posting
+from service.market_terms import OutcomeTerms
 from service.posting import Leg
+
+# The fewest outcomes a market can be priced with. Public because
+# `service/book_prices.py` holds the same floor on the way out: a book
+# that already exists with fewer rows is as unpriceable as terms that
+# arrive with fewer. Two, the same floor
+# `market_service/service/validation.py::MIN_OUTCOMES` enforces at submission
+# — restated rather than imported, because `unit_test/test_import_boundary.py`
+# fails any `import market_service` from this service and is right to: that
+# import resolves under pytest and is an ImportError in the container.
+MIN_OUTCOMES = 2
 
 # Namespaced like every other idempotency key this system generates, so that
 # `market-open:<market_id>` cannot collide with `signup-grant:<user_id>` even
@@ -90,7 +101,7 @@ async def ensure_open(
         "pending on the session, or hoist the terms fetch out of it"
     )
 
-    book = await _find(session, market_id)
+    book = await find(session, market_id)
     if book is not None:
         return book
 
@@ -109,6 +120,51 @@ async def ensure_open(
     )
     if terms.published_at is None:
         raise MarketNotPublished
+
+    # ADR 0017: refused here, before `MarketBook` is constructed, rather than
+    # by `service/market_terms.py::_parse`. Both columns below are
+    # `nullable=False`, so a null reaching the insert would raise
+    # `IntegrityError` inside the savepoint below, where the `except
+    # IntegrityError` is watching for a lost first-touch race (D-010) — it
+    # would re-raise correctly, because `find` finds no committed book, but
+    # the caller would get a 500 describing nothing while the race handler
+    # quietly catches two unrelated things.
+    if terms.liquidity_b is None or terms.seed_subsidy is None:
+        raise MarketTermsUnavailable
+    # Not just null. `C(q) = b·ln(Σ e^(q_i/b))` divides by `b`, and
+    # `core/lmsr.py::_require_positive_b` refuses a non-positive one with a
+    # bare `ValueError` — not a `LedgerError`, so it reaches the client as an
+    # unmapped 500. The book is immutable under ADR 0005 and this value is
+    # read once, so a `b` of `0` written here is every price for that market,
+    # forever, and no later read corrects it. A negative subsidy is the same
+    # argument on the other column: it would fund the pool by taking credits
+    # out of it — and nothing downstream catches that: `_refuse_overdrafts`
+    # skips every non-USER account, so a negative pool is not refused, it is
+    # simply wrong until settlement fails to balance.
+    # market_service refuses both at submission
+    # (`_liquidity_problems`, "The seed subsidy must be greater than zero");
+    # this is the copy that matters, because it is the one standing in front
+    # of the write.
+    #
+    # `<= 0` on the subsidy, not `< 0`. A zero subsidy is not merely odd: it
+    # builds two legs of zero, and `posting.post` refuses those as
+    # `UnbalancedTransaction` — a 422 blaming the request for terms the
+    # upstream got wrong. Refused here it is the 503 the contract promises.
+    #
+    # `is_finite()` as well as `> 0`, because `Decimal` takes `"Infinity"`
+    # and `"NaN"` off the wire as readily as `"100"` and they slip a bare
+    # comparison in opposite ways. `Decimal("Infinity") <= 0` is simply
+    # `False`; `numeric(18, 4)` then refuses to store it, so the old
+    # behaviour was a `DataError` on first touch — not an `IntegrityError`,
+    # so it escaped the lost-race handler below as an unmapped 500.
+    # `Decimal("NaN") <= 0` *raises*, and `numeric(18, 4)` stores NaN
+    # perfectly happily, which makes NaN the only unpriceable `b` that can
+    # actually end up in a row — and the book is immutable.
+    if not (terms.liquidity_b.is_finite() and terms.seed_subsidy.is_finite()):
+        raise MarketTermsUnavailable
+    if terms.liquidity_b <= 0 or terms.seed_subsidy <= 0:
+        raise MarketTermsUnavailable
+    _refuse_unpriceable(terms.outcomes)
 
     # D-028: keyed on the market id, so the insert race below and this one
     # fail the same way for the same reason. `accounts.ensure` recovers from
@@ -146,7 +202,7 @@ async def ensure_open(
         # that object was never committed, so its pool_account_id would name
         # an account the caller could go on to use while nothing else agrees
         # it exists.
-        existing = await _find(session, market_id)
+        existing = await find(session, market_id)
         if existing is None:
             raise
         book = existing
@@ -171,6 +227,58 @@ async def ensure_open(
     return book
 
 
-async def _find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
+async def find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
+    """This market's book, or None. Unlocked.
+
+    Public because `service/market_status.py` needs the same lookup to
+    decide which of the two 404s it owes the caller, and a second copy of
+    one `select` is a second place to change when how a book is located
+    changes.
+    """
     stmt = select(MarketBook).where(MarketBook.market_id == market_id)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
+    """Terms that could be stored but never priced. Same defence as null `b`.
+
+    Moved here from `service/market_terms.py::_parse` by ADR 0017: these are
+    rules about *writing a book*, not about reading terms, and enforcing them
+    on a read would mean a market_service that began returning an unpriceable
+    outcome list starts refusing trades on books that have priced correctly
+    for weeks, against outcomes this service read once at first touch and
+    never rereads.
+
+    Three ways a well-formed outcome list is still unusable, and none of them
+    is reachable from a correct market service — `publish` re-runs every
+    submission rule, which requires between two and ten named outcomes with
+    server-assigned positions. They are refused for the reason the null-terms
+    check above is: the book is written once and is immutable under ADR 0005,
+    so a bad one is not something a later read corrects.
+
+    **Fewer than two outcomes.** `C(q) = b·ln(Σ e^(q_i/b))` over one outcome
+    prices it at 1.0 and over none is a sum with no terms. Either way the
+    market opens, funds its pool, and quotes a price nobody can trade against.
+
+    **A repeated outcome id or position.** Both are unique constraints on
+    `market_outcomes`, so these reach the database and fail there — inside
+    this function's caller's savepoint, where the `except IntegrityError` is
+    watching for a *lost first-touch race*. It re-raises correctly, because
+    `find` finds no committed book, but the request ends as a 500 on a
+    condition that is the upstream being wrong. Caught here it is the 503 the
+    contract promises, and the race handler keeps meaning only what it says.
+    """
+    if len(outcomes) < MIN_OUTCOMES:
+        raise MarketTermsUnavailable
+    # Non-negative, because `position` is how a client orders the outcomes and
+    # `model/schemas.py` declares it `ge=0` on the way back out. The column is
+    # a plain `Integer` with no CHECK, so a negative one commits happily into
+    # an immutable book and then fails *serialisation* on every later preview
+    # and snapshot — a pydantic `ValidationError`, which is not a
+    # `LedgerError`, so an unmapped 500 for that market permanently.
+    if any(o.position < 0 for o in outcomes):
+        raise MarketTermsUnavailable
+    if len({o.outcome_id for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable
+    if len({o.position for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable

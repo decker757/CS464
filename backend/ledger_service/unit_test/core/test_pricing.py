@@ -517,6 +517,39 @@ def test_max_magnitude_is_the_largest_value_the_column_holds() -> None:
     assert digits > 18
 
 
+# ==================================================================# An outcome's price, as the wire carries it — review of #110
+# =========================================================================
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (Decimal("0.62345"), Decimal("0.6235")),  # the half tick goes up
+        (Decimal("0.62344999"), Decimal("0.6234")),  # just under it does not
+        (Decimal("0.37655"), Decimal("0.3766")),  # up on both outcomes: no pool to favour
+        (Decimal("1"), Decimal("1.0000")),  # scale 4 even on a whole number
+        (Decimal("0"), Decimal("0.0000")),
+    ],
+)
+def test_a_price_rounds_half_up_at_scale_four(raw: Decimal, expected: Decimal) -> None:
+    """One rounding rule for every price this service puts on a wire.
+
+    The preview's `prices`, the snapshot's `prices` and [T-2] #22's published
+    `PriceEvent.prices` all quantize an outcome's LMSR price, and both docs
+    pages promise a client the same string from each of them for the same
+    state. That was held by two copies of the same one-line function in
+    `service/preview.py` and `service/snapshot.py`, and #22 would have made a
+    third. One function makes it true by construction.
+
+    `ROUND_HALF_UP`, not `quantize_cost`'s directional rounding: a price is
+    display, nobody is charged it, so there is no side for the residue to
+    favour. Asserted on the string too, because a trailing zero is part of
+    what the client renders.
+    """
+    quantized = _pricing().quantize_price(raw)
+
+    assert quantized == expected
+    assert str(quantized) == str(expected)
+
+
 # --- D-044: a cost exactly on a tick, and the engine's last digit -----------
 #
 # Characterisation, not fixes. Both pin behaviour that is recorded and

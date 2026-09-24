@@ -57,6 +57,40 @@ class Settings(ServiceSettings):
     # than the deploy it exists to catch.
     market_service_url: str = Field(default="http://market:8000")
 
+    # --- The price broadcast's bus [F-9] #112, ADR 0010 --------------------
+    # `redis` is the hostname compose gives the bus on the shared network, the
+    # same shape `market_service_url` above uses for a service name.
+    #
+    # Has a default, unlike `database_url` and the inherited JWT secret,
+    # because it is not a credential — that is the test those two fail and
+    # this one passes. The CI argument [F-9] #112 also made for it is wrong
+    # and is not a reason: `REDIS_URL` *is* set in `ci-backend.yml`'s
+    # job-level `env:` block, for all five matrix legs, so a required field
+    # would pass the boot check and fail only where the variable was
+    # genuinely missing. D-046 carries the correction and the real argument,
+    # which is the asymmetry below.
+    #
+    # Deliberately not required the way `realtime_service.REDIS_URL` is.
+    # `docs/api/realtime-service.md` states the asymmetry: point that service
+    # at the wrong Redis and it starts, reports healthy, and relays nothing —
+    # the failure is the whole service and it is silent. Point this service at
+    # the wrong Redis and it loses one broadcast per trade: the publish is
+    # fire-and-forget (`service/bus.py`), the trade has already committed and
+    # is still correct, and the client reconciles on its next snapshot. One
+    # lost frame is not worth a ledger that will not start.
+    #
+    # **That is a promise about an unreachable Redis, not a mistyped URL.** The
+    # value still has to parse: `main.py`'s lifespan hands it to
+    # `redis.asyncio.from_url`, which rejects a URL that is not `redis://`,
+    # `rediss://` or `unix://` on the spot, and the ledger refuses to start.
+    # Deliberately — an outage ends, a typo does not, and a typo swallowed
+    # would drop every broadcast forever from a service that looks healthy.
+    # Not validated here as well: `from_url` is the parser that has to accept
+    # it, and a second rule here could only disagree with it. See "A mistyped
+    # `REDIS_URL` stops the ledger booting; an unreachable one does not" in
+    # DECISIONS.md.
+    redis_url: str = Field(default="redis://redis:6379/0")
+
     # --- Paging -----------------------------------------------------------
     # A ledger only grows, so an unbounded history read is a question that gets
     # slower every week it is asked. Same ceilings, and the same reasoning, as

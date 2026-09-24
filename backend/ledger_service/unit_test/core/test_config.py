@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from core.config import Settings
+from core.config import Settings, get_settings
 
 _REQUIRED = {
     "database_url": "postgresql+asyncpg://ledger_svc:pw@localhost:5432/cs464",
@@ -101,3 +101,75 @@ def test_cors_origins_parse_from_the_environment(
     settings = Settings(**_REQUIRED, _env_file=None)
 
     assert settings.cors_origins == ["http://a.test", "http://b.test"]
+
+
+# =========================================================================
+# REDIS_URL — the producer's bus. [F-9] #112
+# =========================================================================
+def test_redis_url_has_a_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`redis://redis:6379/0`, unlike `database_url` and the inherited secret.
+
+    The environment has to be emptied rather than the argument omitted:
+    pydantic-settings reads os.environ whatever the caller passes, and both CI
+    and the repo-root .env set this one.
+
+    `redis` is the hostname compose gives the bus on the shared network, the
+    same shape `market_service_url` already uses for a service name.
+    """
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    settings = Settings(**_REQUIRED, _env_file=None)
+
+    assert settings.redis_url == "redis://redis:6379/0"
+
+
+def test_the_app_boots_with_no_redis_url_in_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deploy check, on the path that actually breaks.
+
+    The test above passes against a field that is required-with-a-fallback
+    somewhere else in the stack; this one constructs the application the way
+    `ci-backend.yml`'s "Verify the app boots" step does and is the assertion a
+    missing default would fail.
+
+    Note what this is *not* evidence for. The criterion justifies the default
+    by claiming that step runs without `REDIS_URL`; it does not —
+    `ci-backend.yml` sets `REDIS_URL: redis://localhost:6379/0` in the
+    job-level `env:` block for all five matrix legs, so a required field would
+    pass there and fail only in a checkout or a deploy that omitted it. The
+    default is still right, for the reason `realtime_service` refuses one and
+    this service takes one: a wrong Redis there is a relay that reports healthy
+    and broadcasts nothing, and here it is one lost frame on a screen that
+    reconciles on its next snapshot.
+
+    `get_settings` is `lru_cache`d and conftest has already populated it, so
+    the cache is cleared on the way in and again on the way out — otherwise
+    every later test in the process reads a Settings built without this
+    variable.
+    """
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    get_settings.cache_clear()
+
+    try:
+        from main import create_app  # noqa: PLC0415
+
+        app = create_app()
+    finally:
+        get_settings.cache_clear()
+
+    assert app is not None
+
+
+def test_a_configured_redis_url_wins_over_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A default that cannot be overridden is a hardcoded value with a docstring.
+
+    Set through the environment rather than as a keyword, for the reason
+    `test_cors_origins_parse_from_the_environment` records: the init source is
+    not the source a deployment uses.
+    """
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/3")
+
+    assert Settings(**_REQUIRED, _env_file=None).redis_url == "redis://localhost:6379/3"

@@ -16,3 +16,9 @@ PyJWT==2.14.0
 # [F-7] #96, D-008. The ledger's first outbound HTTP call: service/market_terms.py
 # reads a published market's terms from market_service.
 httpx==0.28.1
+
+# [F-9] #112. The price broadcast's bus. Pinned to the exact version
+# realtime_service carries, so one Redis library is in play across the
+# backend, the same rule this file already states for the JWT and Postgres
+# libraries.
+redis==8.1.0

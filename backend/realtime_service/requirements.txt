@@ -6,9 +6,11 @@ uvicorn[standard]==0.52.4
 pydantic==2.13.5
 pydantic-settings==2.15.0
 
-# The bus. This is the only service that talks to Redis, and the only one that
-# needs it: ADR 0010 has the argument against carrying the price events on the
-# database everything else already shares.
+# The bus. This is the only service that subscribes to Redis and relays what
+# it hears; ADR 0010 has the argument against carrying the price events on the
+# database everything else already shares. Since [F-9] #112 the ledger is a
+# second Redis client — it publishes, on the trade path, and does not
+# subscribe.
 redis==8.1.0
 
 # Token verification only. This service never signs.

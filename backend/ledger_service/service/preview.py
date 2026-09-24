@@ -12,12 +12,13 @@ is a single indexed read that writes nothing (D-036).
    function is reached, so nothing here touches the database or the network
    on a malformed request.
 2. One statement joins `market_books` to `market_outcomes` (D-013), reading
-   `q`, `b` and `state_version` together, with no lock (D-012, D-036).
+   `q`, `b` and `state_version` together, with no lock (D-012, D-036). It is
+   `service/book_prices.py`'s, shared with the snapshot, as is step 3.
 3. If it returns nothing, `service.books.ensure_open` opens the book — which
    releases this read's transaction before it calls market_service (D-043,
    "The cold path holds no connection across the terms pull") and takes the
    handoff's own locks internally — and the read runs again. A second empty
-   read is `MarketBookIncomplete` (500), not an `IndexError`.
+   read is `MarketBookIncomplete` (500), raised by `book_prices`.
 4. `outcome_id` is checked against the book once it exists. A bad one is
    `UnknownOutcome` (422), and the book stays: it was real and published, and
    the write is a market's first touch either way (D-037's Notes).
@@ -33,61 +34,50 @@ is a single indexed read that writes nothing (D-036).
    refused by `quantize_cost` itself — `ProceedsBelowTick` on a sell,
    `CostBelowTick` on a buy — rather than quoted as real shares for nothing
    (D-041).
-7. `average_price` is the quantized magnitude over `quantity`,
-   `ROUND_HALF_UP` at scale 4 by `_quantize_price` — display, not money.
-   Run inside `core/lmsr.py`'s pinned decimal context, the same one every
-   other division in this service's pricing path uses, so an ambient trap or
-   precision never reaches this one division.
-8. `prices` and `post_trade_prices` are every outcome, `ROUND_HALF_UP` at
-   scale 4 by the same `_quantize_price`, ordered by position.
+7. `average_price` is the quantized magnitude over `quantity`, through
+   `core/pricing.py::quantize_price` — display, not money. Run inside
+   `core/lmsr.py`'s pinned decimal context, the same one every other division
+   in this service's pricing path uses, so an ambient trap or precision never
+   reaches this one division.
+8. `prices` and `post_trade_prices` are every outcome, through the same
+   `core/pricing.py::quantize_price`, ordered by position.
 
-Nothing here checks whether the market is still open. The book carries no
-status and `close_time` is not snapshotted (ADR 0014 leaves it in the future
-on an early close even), so there is nothing to check against — [T-2] #22
-owns how the ledger eventually learns a market has stopped trading.
+Nothing here checks whether the market is still open, and since [F-8] #109
+that is a decision rather than an absence. The book carries no status and
+`close_time` is not snapshotted (ADR 0014 leaves it in the future on an early
+close even), so the answer can only come from market_service —
+`service/market_status.py::ensure_trading` is the one place that asks, and
+ADR 0017 keeps it off this path on purpose: a preview is arithmetic, it moves
+no money, and putting an HTTP call on a route that fires on every keystroke
+would buy nothing a closed market's refused trade does not already buy.
+[T-2] #22 is the caller that gates.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
     InsufficientSharesOutstanding,
-    MarketBookIncomplete,
     QuantityTooLarge,
     UnknownOutcome,
 )
 from core.lmsr import _engine_context, cost_to_trade, prices as lmsr_prices
 from core.pricing import (
     MAX_MAGNITUDE,
-    QUANTUM,
     Side,
     quantize_cost,
+    quantize_price,
 )
-from model.entities import MarketBook, MarketOutcome
-from service import books
-from service.market_terms import MIN_OUTCOMES as _MIN_OUTCOMES
+from service import book_prices
+from service.book_prices import PricedOutcome
 
 ZERO = Decimal(0)
-
-
-@dataclass(frozen=True)
-class OutcomeQuote:
-    """One outcome's price, in `PriceEvent`'s shape (`realtime_service`'s
-    `OutcomePrice`): an id, its position, and a price quantized for the wire.
-    """
-
-    outcome_id: uuid.UUID
-    position: int
-    price: Decimal
 
 
 @dataclass(frozen=True)
@@ -101,8 +91,8 @@ class Quote:
     quantity: Decimal
     total: Decimal
     average_price: Decimal
-    prices: list[OutcomeQuote]
-    post_trade_prices: list[OutcomeQuote]
+    prices: list[PricedOutcome]
+    post_trade_prices: list[PricedOutcome]
 
 
 async def quote(
@@ -122,46 +112,21 @@ async def quote(
     response itself; that belongs to `service/market_terms.py`, reached
     through the cold path.
     """
+    # Coerced before the `is` comparisons below. `Side` is a `StrEnum`, so
+    # `"sell" is Side.SELL` is False and a raw string would fall through every
+    # one of them as a buy.
     side = Side(side)
-    rows = await _read_book(session, market_id)
-    if not rows:
-        await books.ensure_open(
-            session, market_id, access_token=access_token, transport=transport
-        )
-        rows = await _read_book(session, market_id)
+    rows = await book_prices.read_or_open(
+        session, market_id, access_token=access_token, transport=transport
+    )
 
-    # Fewer than two, and on **both** read paths. Two corrections to the
-    # first version of this guard, which asked `if not rows` after the cold
-    # path only:
-    #
-    # *Fewer than two, not none.* A book left holding one outcome row is
-    # truthy, so it sailed past an emptiness check and died in
-    # `core/lmsr.py::_require_outcomes` with a bare `ValueError` — not a
-    # `LedgerError`, so the same unmapped 500 this error exists to replace.
-    #
-    # *Both paths.* A book damaged down to one row already exists, so every
-    # read of it is warm and returns before the cold path is reached.
-    # Guarding only the cold path covered the case that cannot happen.
-    if len(rows) < _MIN_OUTCOMES:
-        raise MarketBookIncomplete
-
+    # `read_or_open` has already refused a book this service cannot price —
+    # fewer rows than `MIN_OUTCOMES`, or a `b` the engine cannot use — so
+    # everything below is arithmetic on a book known to be priceable. That
+    # guard lives there rather than here because the snapshot reads through
+    # the same function and needs the same answer.
     state_version = rows[0].state_version
     b = rows[0].liquidity_b
-
-    # The book's own `b`, checked before it reaches the engine.
-    # `service/market_terms.py` refuses a non-finite or non-positive one at
-    # the ingress, which protects every book written from now on and nothing
-    # already there — a row from before that guard, or from the hand-run
-    # repair `MarketBookIncomplete` exists to name, still prices. `b` then
-    # goes into `cost_to_trade`, whose `_require_positive_b` raises a bare
-    # `ValueError`: not a `LedgerError`, so an unmapped 500 on an immutable
-    # book, forever.
-    #
-    # `NaN` is the case that makes this worth having rather than a null one:
-    # `numeric(18, 4)` stores NaN, so it is the only unpriceable `b` that can
-    # actually be sitting in a row. Infinity cannot be stored at all.
-    if not b.is_finite() or b <= 0:
-        raise MarketBookIncomplete
     ids = [row.outcome_id for row in rows]
     q = [row.q for row in rows]
 
@@ -195,8 +160,14 @@ async def quote(
 
     magnitude = quantize_cost(raw, side=side)
     total = -magnitude if side is Side.BUY else magnitude
+    # `quantize_price`, not a third hand-rolled copy of it: an average
+    # price is a price, and `core/pricing.py` owns that rounding rule for
+    # every price this service publishes. The division stays inside the
+    # engine's pinned context so an ambient trap or precision cannot reach
+    # it; the rounding after it is the same half-up at scale 4 the
+    # snapshot and the preview's own `prices` take.
     with _engine_context():
-        average_price = _quantize_price(magnitude / quantity)
+        average_price = quantize_price(magnitude / quantity)
 
     return Quote(
         market_id=market_id,
@@ -206,55 +177,7 @@ async def quote(
         quantity=quantity,
         total=total,
         average_price=average_price,
-        prices=_quantized_prices(rows, lmsr_prices(q, b)),
-        post_trade_prices=_quantized_prices(rows, lmsr_prices(after_q, b)),
+        prices=book_prices.priced(rows, lmsr_prices(q, b)),
+        post_trade_prices=book_prices.priced(rows, lmsr_prices(after_q, b)),
     )
 
-
-async def _read_book(session: AsyncSession, market_id: uuid.UUID) -> Sequence[Row]:
-    """`q`, `b` and `state_version` in one statement, ordered by position.
-
-    D-013: one snapshot under READ COMMITTED, so a trade committing between
-    two separate reads can never hand back a `state_version` newer than the
-    `q` this priced. No `with_for_update()` — D-012, as corrected by D-036:
-    the pricing read decides no write, so it takes no lock, whatever this
-    function returns.
-    """
-    stmt = (
-        select(
-            MarketBook.state_version,
-            MarketBook.liquidity_b,
-            MarketOutcome.outcome_id,
-            MarketOutcome.position,
-            MarketOutcome.q,
-        )
-        .join(MarketOutcome, MarketOutcome.market_id == MarketBook.market_id)
-        .where(MarketBook.market_id == market_id)
-        .order_by(MarketOutcome.position)
-    )
-    return (await session.execute(stmt)).all()
-
-
-def _quantize_price(value: Decimal) -> Decimal:
-    """A display figure — a price or `average_price` — at scale 4, half up.
-
-    One definition for every figure this module shows and nobody is charged,
-    so there is no side for the residue to favour. `total` never comes
-    through here: it is money, and `core/pricing.py::quantize_cost` owns it.
-
-    Shaped as a drop-in for #110's `core/pricing.py::quantize_price`, which
-    replaces it: same argument, same rule, no context of its own.
-    """
-    return value.quantize(QUANTUM, rounding=ROUND_HALF_UP)
-
-
-def _quantized_prices(rows: Sequence[Row], raw: list[Decimal]) -> list[OutcomeQuote]:
-    """`raw` zipped back onto the ids and positions `_read_book` ordered."""
-    return [
-        OutcomeQuote(
-            outcome_id=row.outcome_id,
-            position=row.position,
-            price=_quantize_price(price),
-        )
-        for row, price in zip(rows, raw)
-    ]

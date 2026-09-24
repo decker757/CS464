@@ -253,6 +253,90 @@ class PreviewOut(BaseModel):
         return str(value)
 
 
+
+# One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared
+# separately and field for field the same — same three fields, same bounds,
+# same `str(value)` serializer — with only `OutcomePrice` pinned against
+# `realtime_service` by `test_price_event.py`. Nothing pinned the two local
+# copies against each other, so a bound changed on one would have diverged
+# silently from the other; and `SnapshotOut` used one while `PriceEvent` used
+# the other, which is exactly the pair both docs pages promise are
+# byte-for-byte identical. The alias keeps the name the pin reads and the
+# name the snapshot was written against, over one definition.
+OutcomePrice = OutcomePriceOut
+
+
+class PriceEvent(BaseModel):
+    """A market's price after something moved it. The Redis payload. [F-9] #112.
+
+    The producer's half of the contract `realtime_service/model/schemas.py`
+    defines and validates on the way in with `extra="forbid"`. Copied rather
+    than imported — see `OutcomePrice`'s docstring — and pinned the same way.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    market_id: uuid.UUID
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePrice] = Field(min_length=2)
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        """A naive value is UTC, and leaves with the offset that says so.
+
+        `SnapshotOut` below does the same to its copy of this field. Without
+        it a naive datetime from [T-2] #22 would reach the socket with no
+        offset, and every browser would read it as local time. Naive versus
+        aware has already caused bugs in this repository (CLAUDE.md).
+        """
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class SnapshotOut(BaseModel):
+    """The authoritative price read. [F-9] #112.
+
+    Byte-for-byte the `price` frame `docs/api/realtime-service.md` pins,
+    without its `type` — `market_id`, `state_version`, `prices`,
+    `occurred_at` — so a client renders a snapshot and a price frame with one
+    function.
+    """
+
+    market_id: uuid.UUID
+    # The same constraints `PriceEvent` puts on these two fields. They were
+    # absent here, which made "byte-for-byte the `price` frame" a promise the
+    # models themselves disagreed with: a client validating one shape and
+    # handed the other would accept what the socket refuses. Harmless today
+    # because `book_prices` enforces the floor upstream, and invisible the day
+    # a second caller does not go through it.
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePriceOut] = Field(min_length=2)
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        """`.isoformat()`, the same call `PriceEvent` makes, and for the same
+        reason the docstring above gives.
+
+        Without this pydantic writes its own RFC-3339 form, which spells UTC
+        as a trailing `Z` where `.isoformat()` spells it `+00:00`. Both are
+        valid and they are not the same string, so "byte-for-byte the `price`
+        frame" was false for this one field — and the test that guards it
+        only asserted the offset was present, which is true of both.
+        """
+        return value.isoformat()
+
+
 class LedgerEntryListResponse(BaseModel):
     """One page of a user's history, newest first."""
 

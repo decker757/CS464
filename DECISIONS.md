@@ -1584,6 +1584,471 @@ case found where the quoted total differs from the true cost by more than one
 tick. Either means the bound stated here no longer holds and this is decided
 again.
 
+### D-045 — The ledger asks market_service whether a market is still trading, and a replay is answered first
+
+**Date:** 2026-09-21 · **Ticket:** #109 · **Status:** graduated to ADR 0017
+
+**Decision.** The trade path reads `GET /public/markets/{id}` and refuses
+`409 market_closed` when the derived status is not `open`. The call is issued
+**before** the `market_books` lock, and **after** an unlocked idempotency
+lookup that replays a committed trade and returns without making the call at
+all. The preview is unchanged and makes no such call.
+
+**Why.** The book carries no status and no `close_time`, so nothing local can
+answer the question, and nothing local can be made to: ADR 0014 leaves
+`close_time` in the future on an early close, so a snapshot of it would accept
+trades against a market an administrator stopped by hand. The public detail
+endpoint's `status` is already ADR 0011's predicate applied, so one field
+answers both kinds of close and the rule is read rather than restated.
+
+Before the lock, because the lock holds `q` and `state_version` still and can
+hold nothing still in another service's database — there is no lock the ledger
+can take that makes a remote answer fresher, and holding the book row across
+the hop would serialise every trade in a market behind a round trip for
+nothing.
+
+Replay first, because a trade that committed, lost its response and was
+retried after the market closed would otherwise be told `409 market_closed` —
+a trader believing a trade failed that had in fact charged them. The unlocked
+lookup is not the pre-lock lookup ADR 0015 rejected inside `posting.post`: a
+hit names a committed, append-only row and is final, a miss is trusted for
+nothing, and the write decision is still made under the lock.
+
+**Rejected.** A push from market_service at the sweep and at the early close —
+a dual write that fails *open*, and the outbox that would fix it is what ADR
+0006 exists to avoid. Snapshotting `close_time` into `market_books` — answers
+half the predicate, and the missing half is the one an administrator controls.
+The snapshot plus a hop for early closes only — the ledger cannot know when to
+make the hop, so the local check can only refuse, never accept. A few seconds
+of caching "open" — ADR 0011's correctness-parameter objection, unchanged.
+ADR 0017 has all of them argued, plus the one-way closed latch, which is
+deferred rather than rejected and is the first move if [5.4] #20 shows the hop
+matters.
+
+**Notes.** **This fires the reversal trigger on "One clock per request, read at
+the controller, Python's not the transaction's", and declines it on purpose.**
+That entry says a path which decides or writes off this projection needs the
+transaction's clock. This is that path. The trigger cannot be honoured as
+written: the ledger's transaction cannot supply the clock for a comparison
+market_service performs, so "the transaction's clock" would mean
+market_service's — still remote, still stale by the round trip, and costing an
+extra round trip on that service's hottest read, which the same entry already
+rejected for the display case. The skew is folded into the accepted window
+rather than eliminated, and the argument is in ADR 0017 rather than here so
+that the next reader of that entry finds a decision rather than a silence.
+
+Two things this adds that are not local to the ticket. market_service becomes a
+runtime and availability dependency of **every trade**, not only of a market's
+first touch — the cost "Market terms reach the ledger by lazy pull on first
+touch" accepted, charged again and larger. And token forwarding becomes
+load-bearing on the hot path, so the warning in "Public market reads require a
+valid token, any role" — that a pull with no caller behind it has no token to
+forward — now describes every trade rather than one read per market. [3.4] #12
+does not add such a caller; [T-7] #27 would.
+
+The refactor this needs: `fetch` gains `status` and must still not gate on it
+(`test_the_close_time_is_not_what_decides_anything_here` is the assertion that
+keeps it honest), and `_parse`'s terms-only refusals — a null `liquidity_b` or
+`seed_subsidy`, and `_refuse_unpriceable` — move into `books.ensure_open`,
+because they are rules about writing a book and would otherwise start refusing
+trades on books snapshotted weeks earlier.
+
+---
+
+### D-046 — `REDIS_URL` has a default in the ledger and none in the realtime service
+
+**Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
+
+**Decision.** `core/config.py` declares `redis_url` with a default of
+`redis://redis:6379/0`. `realtime_service` continues to require it with no
+default. The two services now disagree about the same variable name on
+purpose, and this entry is the only place that is written down.
+
+**Why.** The same mistake costs them different things. Point the realtime
+service at the wrong Redis and it starts, reports `ok`, and relays nothing —
+the failure is the whole service and it is silent, which is why a default that
+a forgotten variable could fall back on is refused there. Point the ledger at
+the wrong Redis and it loses a broadcast: the publish is fire-and-forget by
+design, the trade has already committed and is still correct, and the client
+reconciles on its next snapshot, which is the recovery path [X-4] #37 requires
+anyway. One lost frame is not worth a service that will not start.
+
+`redis` is the hostname compose gives the bus on the shared network, the same
+shape `market_service_url` already uses for a service name, and it is not a
+credential — which is the test `database_url` and the inherited signing key
+fail and this one passes.
+
+**Rejected.** Requiring it, matching the realtime service. Consistency between
+two config files, bought at the cost of a service that will not start when one
+variable is missing, for a dependency whose absence costs a broadcast.
+
+**The criterion's own justification, which is wrong and is not the reason
+here.** [F-9] #112 argues for the default by claiming `ci-backend.yml`'s
+"Verify the app boots" step calls `create_app()` with four environment
+variables and this is not one of them. It is: `REDIS_URL:
+redis://localhost:6379/0` sits in that workflow's job-level `env:` block and is
+set for all five matrix legs, so a required field would pass that step and fail
+only in a checkout or a deploy that omitted it. The `market_service_url`
+precedent the criterion cites is genuine — that one really is absent from CI —
+and this is not that case. The argument above replaces it.
+
+**Reversal trigger.** This lapses if anything on the ledger's publish path
+stops being fire-and-forget. If a caller acknowledges, retries, or fails a
+trade on a publish error, then a wrong Redis there costs money rather than a
+frame, and the realtime service's argument becomes the ledger's too. Re-decide
+it at that ticket rather than inheriting this entry.
+
+**Notes.** `docs/api/realtime-service.md`'s environment table said "No default.
+A default is a credential in the repo", which now reads as a claim about the
+variable rather than about that service. Amended in this ticket to say
+"required **here**" and to carry the asymmetry and its trigger.
+
+---
+
+### D-047 — One Redis client for the ledger process, opened on the lifespan
+
+**Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
+
+**Decision.** `main.py`'s lifespan opens one client onto `app.state.redis` and
+closes it on shutdown. `controller/dependencies.py` exposes it as
+`RedisClient`, the way `DbSession` is exposed. Not the per-call client
+`service/market_terms.py` builds.
+
+**Why.** "The terms client lives in `service/`, not `core/`" accepted a client
+per call, and its argument is explicitly about frequency: `books.ensure_open`
+reaches it only when a market has no book — once per market, ever — so the cost
+is one handshake against a request that is already doing a round trip to
+another service and three inserts. That argument does not survive being copied
+here. A publish runs once per **trade**, so a client per call is a DNS lookup,
+a TCP handshake and a pool teardown on the hot path, for a call whose entire
+purpose is to be cheap enough that failing it silently is acceptable.
+
+That same paragraph in `market_terms.py` names the two costs of a held client,
+and both are paid here rather than dodged. It needs closing in a lifespan: the
+lifespan does the closing. And it fixes the transport at construction, which is
+the seam the suite drives through: `publish` takes the client as an argument,
+so the seam moves from construction to the call and the tests hand it a
+recorder.
+
+**Rejected.** *A client per publish, matching `market_terms`* — the cost above,
+per trade, to avoid a lifespan hook and one line of dependency wiring. *A
+module-level client in `service/bus.py`*, set and cleared by the lifespan —
+fewer moving parts and no `app.state`, but it puts process lifetime in a
+service module and the suite then reaches into module state to drive it;
+`DbSession` already establishes the shape for "a thing the process holds and a
+route receives". *A `PING` on startup to fail fast* — that makes an unreachable
+Redis a ledger that will not boot, which inverts the whole argument for
+swallowing a publish failure. `realtime_service` made the same call from the
+other side, and its `/health` reports the bus separately for exactly this
+reason.
+
+**Reversal trigger.** This lapses if publishing stops being hot. If the only
+remaining caller runs once per market, or rarer, the frequency argument above
+inverts and `market_terms`'s per-call client is the cheaper shape again — one
+fewer thing held for the life of the process, and the transport fixed where the
+suite wants it. Nothing planned moves it that way; [T-2] #22 moves it the other.
+
+**Notes.** The ledger now holds two outbound clients with opposite lifetimes and
+opposite reasons, and the reasons are symmetrical rather than inconsistent: both
+are decided by how often the call is made. Anyone adding a third should answer
+the same question before copying either.
+
+**Note, 2026-09-23 (review of #110).** The frequency that justified
+`market_terms`'s per-call client stopped holding in the same branch that
+recorded this entry. `market_status.ensure_trading` (ADR 0017) calls `fetch`
+on every trade that is not a replay, so the terms client is now hot too, and
+by this entry's own test it should be held for the process. It is not yet:
+`market_terms.py`'s comment says so and names one lifespan-held
+`httpx.AsyncClient` as the follow-up, #114, which is its own ticket because it moves
+the seam two test modules drive through.
+
+---
+
+### D-048 — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
+
+**Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
+
+**Decision.** `PriceEvent` and its nested `OutcomePrice` are copied into
+`ledger_service/model/schemas.py` rather than moved to `shared/`. The copy is
+held to its original by a test that reads `realtime_service/model/schemas.py`
+and `realtime_service/service/bus.py` as **source text** and parses them with
+`ast` — never importing either.
+
+**Why.** ADR 0012's bar is unchanged and `bus.py::publish` is still four lines
+of `redis.publish`, below it. What changes is that there are now two copies of
+the *model* rather than one model and one consumer, and a drift between them is
+not an error on either side: the producer serialises a field the consumer
+forbids, the consumer drops the whole event, and the symptom three services
+away is prices that quietly stop updating with nothing logged where the fault
+is. That is a worse failure than the one `publish`'s four lines could ever
+have, and it is the reason the model is the part worth guarding.
+
+Neither service may import the other — `test_import_boundary.py` fails any such
+import, and it is right to: the import resolves under pytest and is an
+`ImportError` in the container, which holds `/app/<service>` and `/app/shared`
+and nothing else. So the only thing that can hold the two together is a test
+that reads the other's file. A file read is not an import: the boundary test
+matches `from`/`import` at the start of a line, nothing resolves a module, and
+the container never runs the suite.
+
+`ast` rather than a regex, on both files. A regex over
+`realtime_service/model/schemas.py` matches prose — it is the longest module in
+that service and says so in its own docstring — and over `service/bus.py` it
+matches the four paragraphs that discuss `PRICE_CHANNEL` by name. `ast` sees
+only the annotated fields and the module-level assignment, so a reformat cannot
+break the pin and only a real field or channel change can.
+
+**Rejected.** *Moving `PriceEvent` to `shared/`.* Two callers clears ADR 0012's
+caller-count bar on its face, but the second half of that bar is that a
+divergence would be a bug rather than a design choice — and the whole point of
+`extra="forbid"` on the consumer is that the two ends are allowed to be
+versioned independently, with the consumer refusing what it does not
+understand. A shared model removes the refusal along with the duplication.
+*Pinning only against the documented shape in `docs/api/realtime-service.md`.*
+That catches a client-visible change and misses both models drifting together,
+which is the case no other check in either service would notice. Both pins are
+kept, and they fail differently on purpose.
+
+**Reversal trigger.** Move `PriceEvent` into `shared/` if a third service needs
+it, or if the source-reading pin ever stops running. The test for the second is
+`ci-backend.yml` gaining per-service path filtering: today its filter is at
+workflow level and matches `backend/**`, and the matrix runs all five services
+on every run, so a rename in `realtime_service` starts the ledger job too.
+Narrow that filter and the pin is retired silently and the copies are left
+unguarded — at which point indirection is cheaper than a contract nothing
+checks.
+
+**Notes.** Recorded as an extension on ADR 0012's "What was deliberately left
+copied", which named `bus.py::publish` and not this. The build context is not
+the reason for either copy and has not been since [F-6] #76; both stand on
+their own merits now.
+
+---
+
+### D-049 — A publish failure is swallowed and logged, and `publish` takes the transaction id to log it with
+
+**Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
+
+**Decision.** `service/bus.py::publish` catches its own failure, logs it with
+the committed transaction's id, and returns normally. It therefore takes that
+id as a keyword-only argument: `publish(client, event, *, transaction_id)`.
+`asyncio.CancelledError` is not caught.
+
+**Why.** Nothing acknowledges and nothing subscribes on the producer's behalf,
+so if the publish throws, the trade has still committed and is still correct.
+The caller is [T-2] #22, which has already committed by the time it reaches
+this — the exception has nowhere useful to go, and turning a committed trade
+into a 500 would tell a trader their trade failed when it had charged them.
+ADR 0010 accepts the crash window between the commit and the publish for the
+same reason it refuses an outbox: a briefly stale price on a screen that is
+about to reconcile is not a lost audit entry.
+
+**Swallowed is not silent, and the transaction id is the whole difference.** A
+lost broadcast recovers on its own, so nothing will ever page anybody about it.
+That makes the log the only record it happened, and the transaction id the only
+field in it that leads back to the trade — the market id names a market with
+thousands of trades, and `state_version` means nothing without one.
+
+**The criterion contradicts itself here, and this is the resolution.** [F-9]
+#112 gives the signature as `publish(client, event)` and requires the failure
+to be "logged with the committed transaction's id". Those cannot both hold:
+`PriceEvent` is `extra="forbid"` over four fields and none of them is a
+transaction id, so there is nowhere for the id to arrive from. The id stays and
+the signature gains it. The natural call site already has it to hand —
+`posting.post` returns the transaction it committed.
+
+**Rejected.** *Putting `transaction_id` on `PriceEvent`.* It is not on the wire
+contract, and `extra="forbid"` on the consumer would drop every event carrying
+it — the exact failure the copy's pin exists to prevent, introduced
+deliberately. *Re-raising from `publish` and swallowing in [T-2] #22.* Leaves
+the rule in the caller that does not exist yet, so this ticket would ship a
+primitive whose most important property is untestable, and #22 would inherit
+the rule by copying it or by forgetting to. That is the argument the sub-tick
+refusal inside `core/pricing.py::quantize_cost` already won — it lived in a
+`refuse_sub_tick_proceeds` of its own when this was written, and #108 folded
+it into the quantizer for exactly this reason — applied to a rule about a
+broadcast instead of a rule about money. *Catching `BaseException`.*
+`CancelledError` is the process going away, not a Redis blip, and swallowing it
+would make a shutdown hang on a producer that will not stop.
+
+**Reversal trigger.** This lapses the moment a caller needs to know that a
+publish failed — a retry, an acknowledgement, a metric that gates anything, or
+an outbox. At that point the failure is information rather than noise,
+`publish` must re-raise, and the swallow moves to whichever layer is making the
+decision. That is also the trigger on "`REDIS_URL` has a default in the ledger
+and none in the realtime service", and the two have to move together.
+
+**Notes.** `test_nothing_in_this_service_calls_publish` asserts that nothing in
+this service calls it, which is the "primitive before caller" shape [F-7] #96
+and [F-8] #109 already shipped in. **[T-2] #22 deletes that test**; it is noted
+in the test's own docstring and on #22's issue, so whoever hits the red does
+not go looking for the bug.
+
+---
+
+### D-050 — The realtime snapshot is a second first-toucher, and never gates on status
+
+**Date:** 2026-09-22 · **Ticket:** #112 · **Status:** active
+
+**Decision.** `GET /ledger/markets/{market_id}/snapshot` opens a market's book
+via `books.ensure_open` when there is none, forwarding the caller's own token,
+exactly as the preview does — and it never gates on whether the market is open.
+A closed, pending or approved market is priced and returned.
+
+**Why.** ADR 0017 states the second half outright: "the realtime snapshot
+serves a closed market's prices". A closed market still has a price to render —
+the last one anybody traded at — a settled one still has a last price, and
+`docs/api/realtime-service.md`'s reconnect sequence makes this `GET` step 2 of
+recovering from a dropped socket. It has to return a number or the client has
+nothing to resume its version check from. Gating would put an error exactly
+where a price belongs, on the one read [X-4] #37 depends on. The market page
+gates its trade controls on #62's derived status; ADR 0017's hop belongs to the
+trade path, which fires once per trade, not to a read that fires on every page
+open and every reconnect.
+
+The first half follows "The preview is a market's first toucher, and the cold
+path is self-extinguishing" without changing it. Refusing a cold market here
+would show a client an error where a price belongs, on a market nobody has
+traded — which is the case a fresh market is always in.
+
+**Rejected.** *Refusing a cold market and waiting for a trade to open the
+book.* The snapshot precedes everything else a client does, so this would make
+a never-traded market unrenderable. *Gating on status and returning
+`market_closed`.* That code is 409 and belongs to the trade path alone; on this
+route it would break the reconnect sequence for every market that has closed
+while a client was watching it.
+
+**Reversal trigger.** The no-gate lapses if the snapshot body ever gains a
+field whose value depends on whether the market is open — anything a client
+would act on rather than render. At that point the route is answering a
+question about state rather than about price, and the gate has to be re-decided
+rather than inherited. The first-toucher half lapses if a ticket ever makes the
+handoff eager — a push from market_service at publish — which would leave no
+cold path for either caller to be first on.
+
+**Notes.** **This makes the snapshot a second first-toucher**, which is the one
+consequence "The preview is a market's first toucher" did not anticipate by
+name. Everything in that entry survives unchanged: the cold path still runs
+once per market ever, still forwards the caller's own token, still funds a pool
+that a closed market will never trade against, and is still self-extinguishing.
+What is new is that a client **opening a page** — not typing a quantity — can
+now be the request that pays the terms timeout, and on a market nobody has
+traded it reliably is, because the snapshot precedes the preview in the
+realtime contract's "Opening a page" sequence.
+
+"No lock (D-012)" is the *pricing read* only, and this ticket's criteria cite
+D-012 without D-036's correction. The warm read takes no lock; opening a book
+takes the handoff's locks, once per market — `books.ensure_open` ends in
+`posting.post`, and `accounts.lock` holds the `PLATFORM` row and the market's
+pool row `FOR UPDATE` while the funding transaction commits. Removing those to
+satisfy the sentence would reintroduce the first-touch race on the one write
+this route performs. #112's criterion is being reworded to match, the way
+#21's was.
+
+**These five entries cite each other by title rather than by number**, because
+they land unnumbered and get their numbers when the PR merges — which is also
+the rule `docs/adr/` already follows when citing this file.
+
+---
+
+### D-051 — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
+
+**Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
+
+**Decision.** `main.py`'s lifespan passes `REDIS_URL` to
+`redis.asyncio.from_url` uncaught. A value that does not parse as a Redis URL —
+`http://redis:6379`, a mangled scheme — raises `ValueError` there and the
+ledger refuses to start. A value that parses and points at a Redis that is
+down, or that accepts and never answers, starts normally and costs one lost
+broadcast per trade, bounded by a five-second socket timeout.
+
+**Why.** Unreachable and mistyped are different failures, and "`REDIS_URL` has
+a default in the ledger and none in the realtime service" only argued about
+the first. An unreachable bus is an outage: it ends, the broadcasts lost while
+it lasts are reconciled by the next snapshot, and refusing to boot over it
+would stop trading to protect a frame. A mistyped URL is a configuration error:
+it never ends. Caught and logged, it would drop every broadcast from the first
+trade onward, from a ledger whose `/health` says `ok` and whose trades all
+succeed. The one log line would sit at startup, where nobody debugging a price
+display is looking. Failing at boot is the only point where a typo gets found
+by the person who made it.
+
+The five-second timeout is what makes "unreachable costs a broadcast" true for
+the silent case as well as the refused one. Without it a blackholed host makes
+`publish` wait rather than raise, `service/bus.py`'s `except Exception` never
+fires, and [T-2] #22's committed trade hangs holding its session. Same budget,
+and the same reason, as "Upstream failures map to 503, 404 and 401, and the
+timeout is explicit". redis-py 8.1.0 already defaults both timeouts to five
+seconds, so stating them changes nothing today. They are stated because older
+redis-py defaulted both to None, and a pin bump should not quietly decide how
+long a committed trade can wait.
+
+**Rejected.** *Catching the `ValueError` and logging it*, which the comments
+beside `from_url` and on `config.py::redis_url` promised, by lumping both cases
+together as "the ledger will not refuse to boot over Redis". It turns a loud
+error into a silent one that lasts forever. *Validating the URL in
+`core/config.py` as well*: `from_url` is the parser that has to accept it, and
+a second rule could only disagree with that one.
+
+**Reversal trigger.** Revisit if the ledger ever learns `REDIS_URL` from
+something other than its own environment at boot — a config service, a
+runtime reload, a value an operator can change without a restart. A bad value
+would then arrive mid-life, where refusing to boot is not an option, and the
+choice becomes "catch and alert" rather than "fail at boot". The test is
+whether a new value can reach `from_url` without a process restart.
+
+**Notes.** `test_a_redis_url_that_does_not_parse_stops_the_ledger_booting`
+holds the boot failure, and
+`test_a_redis_that_never_answers_costs_a_bounded_wait_and_no_exception` holds
+the timeout. The CI boot check calls `create_app()` and does not run the
+lifespan, so a malformed URL passes CI and fails at `uvicorn` startup. That is
+fine: the deploy is the thing it should fail.
+
+---
+
+### D-052 — The price read exists once, and the price quantizer is in `core/pricing.py`
+
+**Date:** 2026-09-23 · **Ticket:** #112 (review of #110) · **Status:** active
+
+**Decision.** The joined `market_books`/`market_outcomes` read, its cold path
+through `books.ensure_open` and the zip back onto outcome ids live in
+`service/book_prices.py`, which the preview and the snapshot both call.
+Rounding an outcome's price to the wire is `core/pricing.py::quantize_price`,
+`ROUND_HALF_UP` at scale 4. A book that reads empty after the cold path raises
+`MarketBookIncomplete` (500).
+
+**Why.** Both docs pages promise a client that the preview's `prices` and the
+snapshot's `prices` are the same strings for the same state. The snapshot
+shipped with its own copy of the read, the quantizer and the dataclass, so the
+promise held only while two copies stayed in step. With one copy it holds by
+construction. The quantizer goes in `core/` rather than beside the read
+because [T-2] #22 has to round the prices it publishes in a `PriceEvent`, and
+a rounding rule that only a service module held would be one #22 copies or
+forgets. It sits beside `quantize_cost`, which is in `core/` for the same
+reason.
+
+**Rejected.** *Keeping two copies and a test that they agree* — the test would
+only catch drift after somebody had written it. *Moving the read into
+`service/books.py`* — that module is the handoff, and its fast path returns a
+`MarketBook` entity, not priced rows. Merging them would put a pricing read
+inside the write path's module for no caller that needs both.
+*`MarketTermsUnavailable` for an empty book* — 503 blames market_service and
+invites a retry, when the fault is this service's own data.
+
+**Reversal trigger.** Split the read again if the preview and the snapshot
+ever need different snapshots of the book: different columns under different
+isolation, or one of them taking a lock. The test is whether one statement can
+still serve both callers without either reading something it does not use to
+decide its answer.
+
+**Notes.** `preview.py`'s `average_price` rounded inline with `ROUND_HALF_UP`
+when this was written, and folding it into `quantize_price` was left until
+#108 had landed, because #108 rewrites those lines. #108 has landed and the
+review of #110 did the fold: `average_price` goes through `quantize_price`
+like every other price this service publishes. It is still a price per share
+derived from a charged total rather than an outcome's price, which is why it
+was ever a question.
+
 ---
 
 ## Open — decided by nobody yet
@@ -1653,7 +2118,9 @@ Move these into the log above when they're settled.
   read that found no book before it calls out, so a slow market_service costs
   one request its own latency rather than costing every route on this service
   a connection out of a pool of ten. What is still open is the ceiling itself,
-  and the row locks [T-2] #22 will hold across it.
+  and the row locks [T-2] #22 will hold across it — now on every trade rather
+  than once per market, since `market_status.ensure_trading` (ADR 0017) calls
+  the same client on the hot path. #114 holds the connection-reuse half.
   `service/market_terms.py::_TIMEOUT` is five seconds on
   every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
   is currently inherited in substance even though it is written out in the

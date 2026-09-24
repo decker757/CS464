@@ -224,8 +224,11 @@ def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
     # the documented 7.32. The example is generated from this book, so the
     # test regenerates it and compares.
     from core.lmsr import cost_to_trade, prices  # noqa: PLC0415
-    from core.pricing import Side, quantize_cost  # noqa: PLC0415
-    from service.preview import _quantize_price  # noqa: PLC0415
+    from core.pricing import (  # noqa: PLC0415
+        Side,
+        quantize_cost,
+        quantize_price,
+    )
 
     q = [Decimal("137.5000"), Decimal("42.2500")]
     b = Decimal("100")
@@ -235,8 +238,8 @@ def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
     )
 
     assert -magnitude == total, f"the documented total is not {-magnitude}"
-    assert _quantize_price(magnitude / quantity) == average
-    assert [_quantize_price(p) for p in prices(q, b)] == before
+    assert quantize_price(magnitude / quantity) == average
+    assert [quantize_price(p) for p in prices(q, b)] == before
     assert [
-        _quantize_price(p) for p in prices([q[0] + quantity, q[1]], b)
+        quantize_price(p) for p in prices([q[0] + quantity, q[1]], b)
     ] == after

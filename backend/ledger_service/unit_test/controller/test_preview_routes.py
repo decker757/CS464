@@ -171,6 +171,9 @@ class _Terms:
                 raise self._raises
             return market_terms.MarketTerms(
                 market_id=market_id,
+                # Explicit: `MarketTerms.status` has no default, because a
+                # default of "open" is a fail-open on the trade gate.
+                status="open",
                 liquidity_b=_B,
                 seed_subsidy=_SUBSIDY,
                 published_at=(

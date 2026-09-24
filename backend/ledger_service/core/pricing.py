@@ -27,7 +27,7 @@ Pure. No session, no clock, no configuration.
 
 from __future__ import annotations
 
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
 from core.errors import CostBelowTick, ProceedsBelowTick
@@ -35,13 +35,14 @@ from core.errors import CostBelowTick, ProceedsBelowTick
 # `Numeric(18, 4)`'s shape, restated rather than imported from
 # `model/entities.py::AMOUNT_SCALE`. `model` imports `core.database`, so a
 # `core` module importing `model` points the dependency back up a layer and
-# closes a cycle. Same trade `market_terms._MIN_OUTCOMES` makes, and the same
+# closes a cycle. Same trade `books.MIN_OUTCOMES` makes, and the same
 # mitigation: `test_the_scale_and_precision_match_the_column` fails if the two
 # ever disagree, so the duplication cannot drift silently.
 _SCALE = 4
 _PRECISION = 18
-# One tick, public because `service/preview.py` quantizes prices and
-# `average_price` to the same scale and had it written out as a literal.
+# One tick. Public because `quantize_price` and `quantize_cost` below are
+# both defined in terms of it and callers compare against it; the scale it
+# encodes is the column's, restated above.
 QUANTUM = Decimal(1).scaleb(-_SCALE)
 
 # The largest magnitude `Numeric(18, 4)` can hold: 14 integer digits and 4
@@ -49,6 +50,21 @@ QUANTUM = Decimal(1).scaleb(-_SCALE)
 # ledger cannot store, which makes it a cost nothing can charge — see
 # `service/preview.py`, which is the layer with a request to refuse (D-040).
 MAX_MAGNITUDE = Decimal(10) ** (_PRECISION - _SCALE) - QUANTUM
+
+
+def quantize_price(price: Decimal) -> Decimal:
+    """An outcome's price, at the wire's scale 4, `ROUND_HALF_UP`.
+
+    The one rounding rule for every price this service publishes: the
+    preview's `prices`, the snapshot's, and [T-2] #22's `PriceEvent`. Both
+    docs pages promise a client the same string from each for the same state,
+    and that holds because they all call this, not because copies agree.
+
+    Half-up rather than `quantize_cost`'s directional rounding, because a
+    price is display and nobody is charged it — there is no side for the
+    residue to favour.
+    """
+    return price.quantize(QUANTUM, rounding=ROUND_HALF_UP)
 
 
 class Side(StrEnum):

@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_engine
 from core.lmsr import cost_to_trade, prices
 from model.entities import Entry
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, strip_outcomes
 
 
 def _preview():
@@ -1065,6 +1065,44 @@ async def test_a_preview_on_a_closed_market_returns_a_number(
     assert quote.total < ZERO
 
 
+async def test_a_preview_on_a_warm_closed_market_makes_no_http_call(
+    session: AsyncSession,
+) -> None:
+    """[F-8] #109's "unchanged", as the assertion that can actually catch it.
+
+    `test_the_second_preview_makes_no_http_call_at_all` above uses an open
+    market, so it would stay green against a preview that had grown a status
+    check — the check would hit the same warm-path early return and never
+    reach the wire. A *closed* market is the one input that separates them:
+    a preview that asks market_service anything is a preview that has started
+    gating, and ADR 0017 says it must not.
+
+    The asymmetry is the point and not an oversight. A preview decides nothing
+    and writes nothing, which is why it takes no lock (D-012, D-036), and ADR
+    0005 budgets this path explicitly — one hop per quote is a budget, two is
+    a latency problem in an interaction that fires on every keystroke. A
+    preview fires on every keystroke; a trade fires once. So the preview
+    returns a number for a market the trade that follows it will refuse
+    `409 market_closed`, and `docs/api/ledger-service.md` has to say so in one
+    sentence or it reads as a bug.
+
+    The frontend gates the button on the derived status [BE][X] #62 already
+    serves. The ledger gates the money, in `service/market_status.py`, on the
+    trade path only.
+    """
+    upstream = _Upstream(status="closed")
+    await _warm(session, upstream)
+    calls_after_the_first_touch = upstream.calls
+
+    quote = await _quote(session, upstream)
+
+    assert upstream.calls == calls_after_the_first_touch, (
+        "a preview on a warm market must not reach market_service, whatever "
+        "that market's status is"
+    )
+    assert quote.total < ZERO
+
+
 # =========================================================================
 # Refusals
 # =========================================================================
@@ -1302,6 +1340,8 @@ async def test_an_ordinary_large_quantity_is_still_quoted(
 
     assert abs(result.total) <= _pricing().MAX_MAGNITUDE
     assert result.total < ZERO
+
+
 
 
 # =========================================================================
@@ -1542,9 +1582,7 @@ async def test_a_book_with_no_outcome_rows_is_a_named_error_not_an_index_error(
     """
     upstream = _Upstream()
     await _warm(session, upstream)
-    outcome = _entities().MarketOutcome
-    await session.execute(delete(outcome).where(outcome.market_id == upstream.market_id))
-    await session.commit()
+    await strip_outcomes(session, upstream.market_id)
 
     with pytest.raises(_errors().LedgerError) as raised:
         await _quote(session, upstream)
@@ -1588,7 +1626,10 @@ async def test_every_display_figure_goes_through_one_half_up_helper(
     upstream = _Upstream()
     await _warm(session, upstream)
     marker = Decimal("0.5000")
-    monkeypatch.setattr(_preview(), "_quantize_price", lambda value: marker)
+    monkeypatch.setattr(
+        _preview().book_prices, "quantize_price", lambda value: marker
+    )
+    monkeypatch.setattr(_preview(), "quantize_price", lambda value: marker)
 
     quote = await _quote(session, upstream)
 
@@ -1602,14 +1643,22 @@ async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
 ) -> None:
     """The warm path, which is the one a damaged book actually takes.
 
-    Two things were wrong with guarding only an empty read after the cold
-    path. A book cut down to a *single* outcome row is truthy, so it sailed
-    past an emptiness check and died in `core/lmsr.py::_require_outcomes`
-    with a bare `ValueError` — not a `LedgerError`, so the unmapped 500 this
-    error exists to replace. And a book already damaged is a book that
-    already exists, so every read of it is warm and returns before the cold
-    path is reached: the guarded branch was the one that cannot happen.
+    `MarketBookIncomplete` first guarded only an empty read, and only after
+    the cold path had run. Both halves were wrong for this case. A book cut
+    down to a single outcome row reads as a *book* — the join returns one row,
+    not none — so `read_or_open` returned it on the warm path and never
+    reached the check, and `core/lmsr.py::_require_outcomes` then refused a
+    `q` of one with a bare `ValueError`: not a `LedgerError`, so an unmapped
+    500, which is exactly what naming this error was meant to stop.
+
+    A book already damaged is a book that already exists, so every read of it
+    is warm. Guarding the cold path alone would have covered the case that
+    cannot happen and missed the one that can.
     """
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    from core.errors import LedgerError  # noqa: PLC0415
+
     upstream = _Upstream()
     await _warm(session, upstream)
     outcome = _entities().MarketOutcome
@@ -1620,6 +1669,14 @@ async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
     )
     await session.commit()
 
+    with pytest.raises(Exception) as raised:
+        await _quote(session, upstream)
+
+    assert isinstance(raised.value, LedgerError), (
+        f"a book with one outcome row raised an unmapped "
+        f"{type(raised.value).__name__}: {raised.value!r}"
+    )
+    assert raised.value.code == "market_book_incomplete"
     with pytest.raises(_errors().LedgerError) as raised:
         await _quote(session, upstream)
 
