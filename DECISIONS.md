@@ -1539,7 +1539,7 @@ recorded this entry. `market_status.ensure_trading` (ADR 0017) calls `fetch`
 on every trade that is not a replay, so the terms client is now hot too, and
 by this entry's own test it should be held for the process. It is not yet:
 `market_terms.py`'s comment says so and names one lifespan-held
-`httpx.AsyncClient` as the follow-up, which is its own ticket because it moves
+`httpx.AsyncClient` as the follow-up, #114, which is its own ticket because it moves
 the seam two test modules drive through.
 
 ---

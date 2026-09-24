@@ -129,7 +129,7 @@ async def fetch(
     # The fix is one `httpx.AsyncClient` for the process, opened and closed on
     # `main.py`'s lifespan the way the Redis client already is, with the
     # transport still injectable per call for the suite. That is the named
-    # follow-up and its own ticket, not a change to make in passing here: it
+    # follow-up and its own ticket (#114), not a change to make in passing here: it
     # moves the seam every test in this module and in `test_market_status.py`
     # drives through, and it wants the lifespan pattern done once, properly.
     async with httpx.AsyncClient(
