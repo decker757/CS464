@@ -839,11 +839,13 @@ async def test_a_zero_seed_subsidy_is_unavailable_rather_than_unbalanced(
     malformed about terms they never sent. `MarketTermsUnavailable` is the
     503 the contract promises for an upstream that answered badly.
 
-    A **negative** one is worse than a zero and fails differently: it funds
-    the pool backwards, posting `Leg(platform, +250)` against
-    `Leg(pool, -250)`, and `_refuse_overdrafts` exempts only PLATFORM — so it
-    surfaces much later as an `InsufficientFunds` 409 on somebody's ordinary
-    first preview, about a balance that is not theirs.
+    A **negative** one is worse than a zero, and worse than it first looks:
+    it funds the pool backwards, posting `Leg(platform, +250)` against
+    `Leg(pool, -250)`, and nothing downstream objects. `_refuse_overdrafts`
+    skips every account that is not a USER — `posting.py` says so, and [F-7]
+    #96 added MARKET_POOL without touching it — so the pool simply sits
+    negative, and the first thing to notice is a settlement that will not
+    balance. This guard is the only thing in the path that says no.
 
     `Infinity` and `NaN` are here because `Decimal` takes both off the wire
     and they slip a bare `<= 0` in opposite directions: infinity compares

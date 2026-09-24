@@ -113,12 +113,18 @@ def _example(model: type, field: str) -> Decimal:
 
 
 def test_the_preview_examples_are_a_trade_that_could_happen() -> None:
-    """`average_price` is `abs(total) / quantity`, under 1, and above the price.
+    """`average_price` is `abs(total) / quantity`, at most 1, above the price.
 
-    The examples are what `/docs` shows the frontend. LMSR prices sum to 1
-    and each is in (0, 1), so an average price per share of 1 or more cannot
-    occur, and an example that is not the quotient its own description
-    defines teaches the wrong formula. The total is negative, so it is a
+    The examples are what `/docs` shows the frontend, and an example that is
+    not the quotient its own description defines teaches the wrong formula.
+
+    **`<= 1`, not `< 1`, and the field itself has no floor above zero.** An
+    ordinary trade averages inside (0, 1) because LMSR prices do — but this
+    is derived from a total already rounded to a tick, so the smallest buy
+    is charged a whole tick and divides out to exactly 1.0000, and a large
+    buy in a saturated outcome can cost one tick and divide down to 0.0000.
+    What is asserted here is the range a documented *example* should sit in,
+    which is tighter than the field's. The total is negative, so it is a
     buy, and a buy pushes the price up as it fills: its average is strictly
     above the price it started from, which is `OutcomePriceOut`'s example.
     """

@@ -354,3 +354,405 @@ async def test_a_timeout_is_unavailable() -> None:
             access_token=_token(),
             transport=_raises(httpx.ReadTimeout("slow")),
         )
+
+
+@pytest.mark.parametrize("status_code", [500, 502, 503])
+async def test_an_upstream_server_error_is_unavailable(status_code: int) -> None:
+    """A 5xx is the market service saying it could not answer.
+
+    Parametrised across the three a deployment actually produces: the service
+    itself failing, and the two a proxy in front of it produces while it is
+    restarting.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(status_code, body={"detail": "boom"}),
+        )
+
+
+async def test_an_upstream_404_is_not_unavailable() -> None:
+    """D-030, and the distinction that matters most in this file.
+
+    A 404 from `/public/markets/{id}` means one of three things and
+    deliberately does not say which: no such market, a draft, or a submitted
+    market. `browsing.get_published` makes them indistinguishable on purpose,
+    because telling them apart would leak what administrators are half-writing.
+
+    All three are permanent. Answering 503 would tell a trader to retry a
+    market that is never going to appear, and would hide a real bug — a trade
+    against an id that does not exist — inside a message about the market
+    service being down.
+    """
+    with pytest.raises(_errors().MarketNotFound):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(404, body={"code": "market_not_found"}),
+        )
+
+
+async def test_an_upstream_401_propagates_as_not_authenticated() -> None:
+    """The forwarded token was rejected, which is a fact about the caller.
+
+    D-018's Notes flag exactly this: the ledger now depends on the caller's
+    credentials for a request it issues for itself. A trader's access token
+    lives fifteen minutes, so the honest answer is the one that tells them to
+    log in again — not one that blames a dependency that is working perfectly.
+
+    `NotAuthenticated` already exists in `core/errors.py` at 401 and is reused
+    rather than duplicated, so this arrives at the client as the same shape as
+    any other expired session.
+    """
+    with pytest.raises(_errors().NotAuthenticated):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(401, body={"code": "invalid_token"}),
+        )
+
+
+async def test_a_malformed_body_is_unavailable_rather_than_a_crash() -> None:
+    """A 200 carrying something that is not a market.
+
+    The shape this produces in practice is a proxy or a login page answering
+    200 with HTML. Treated as unavailable, because what it means is that the
+    thing on the other end is not the market service, and it must not surface
+    as a parse error escaping from inside the trade path.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID, access_token=_token(), transport=httpx.MockTransport(handler)
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        ("liquidity_b is not a numeral", _terms_body(liquidity_b="abc")),
+        ("seed_subsidy is not a numeral", _terms_body(seed_subsidy="")),
+        ("id is missing", {k: v for k, v in _terms_body().items() if k != "id"}),
+        ("id is not a uuid", _terms_body(id="nope")),
+        ("published_at is not a timestamp", _terms_body(published_at="garbage")),
+        (
+            "an outcome id is not a uuid",
+            _terms_body(outcomes=[{"id": "nope", "position": 0}]),
+        ),
+        ("an outcome has no id", _terms_body(outcomes=[{"position": 0}])),
+        ("a position is not a number", _terms_body(outcomes=[{"id": str(_YES), "position": "first"}])),
+        ("outcomes is not a list of objects", _terms_body(outcomes=["yes", "no"])),
+        ("the body is a JSON array", []),
+        ("the body is a JSON string", "not a market"),
+    ],
+)
+async def test_valid_json_that_is_not_a_market_is_unavailable(
+    label: str, body: object
+) -> None:
+    """`json.loads` succeeding says the bytes parsed, not that this is a market.
+
+    The test above covers bytes that are not JSON at all — a proxy's HTML.
+    This covers the other half, which is every way a body can decode and then
+    fail to make sense, and before D-030 was enforced properly each of these
+    raised whatever the first bad field happened to raise: `InvalidOperation`,
+    `KeyError`, `ValueError`, `TypeError`, `AttributeError`. None is a
+    `LedgerError`, so none mapped, and each was a 500 on the trade path where
+    the documented contract is 503.
+
+    Nothing writes before `fetch` returns, so none of them corrupted anything.
+    What they did was report the wrong thing about a dependency that was, in
+    every one of these cases, not the market service.
+
+    Parametrized over the *kinds* of malformation rather than a representative
+    one, because each took a different route out of the function and a single
+    case would have pinned a single route.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID, access_token=_token(), transport=_responds(body=body)
+        )
+
+
+async def test_a_true_liquidity_b_is_refused_rather_than_read_as_one() -> None:
+    """The one malformation that did not raise, which is what makes it the worst.
+
+    `bool` is a subclass of `int`, so `Decimal(True)` is `Decimal(1)` — no
+    exception, no warning, no test going red. A `liquidity_b` of JSON `true`
+    opened a book at `b = 1` rather than at whatever the administrator
+    configured, and ADR 0005 makes that snapshot immutable: every price that
+    market ever quoted would have been computed from the wrong denominator,
+    permanently, with nothing anywhere to notice.
+
+    Asserted separately from the parametrize above because the others were
+    loud and this one was silent, and the fix for it is a type check rather
+    than a `try`.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(liquidity_b=True)),
+        )
+
+
+async def test_a_body_for_a_different_market_is_refused() -> None:
+    """`MarketTerms.market_id` was parsed and never read. Now it is the check.
+
+    A cache or a proxy answering `/public/markets/{a}` with market `b`'s body
+    is the shape this defends: the terms would be copied into `a`'s book under
+    `a`'s id, carrying `b`'s `liquidity_b` and `b`'s outcome ids. Immutable
+    once written, so there is no later read that corrects it — the book simply
+    prices the wrong market forever.
+
+    Unreachable through a correct market service, like everything else in
+    `_parse`. It costs one comparison and it gives the field a reason to be
+    parsed at all.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            transport=_responds(body=_terms_body(id=str(uuid.uuid4()))),
+        )
+
+
+# --- [F-8] #109: the client carries the status and decides nothing --------
+async def test_the_status_is_carried_through() -> None:
+    """ADR 0017: `fetch` gains `status`, and it is the field the gate reads.
+
+    Read off `PublicMarketOut`, whose `status` is already ADR 0011's predicate
+    applied — `displayed_status` only ever turns OPEN into CLOSED (D-022,
+    D-027) — so one field answers both the clock's close and an
+    administrator's early one. That is the whole reason the gate reads this
+    projection rather than restating the predicate on this side.
+
+    Carried as the wire string. An enum here would be a second copy of
+    `MarketStatus`, whose members this service cannot import and must not
+    retype: `test_import_boundary.py` fails any `import market_service`,
+    because that import resolves under pytest and is an `ImportError` in the
+    container.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID, access_token=_token(), transport=_responds()
+    )
+
+    assert terms.status == "open"
+
+
+@pytest.mark.parametrize(
+    "status", ["closed", "pending_resolution", "approved", "settled"]
+)
+async def test_fetch_does_not_refuse_a_market_that_is_not_open(
+    status: str,
+) -> None:
+    """One client, one parse path, and no opinion about what it carries.
+
+    ADR 0017 is explicit: "The client carries the status; the trade path
+    decides on it." Three readers need terms for a market nobody may trade —
+    [3.4] #12's settlement reads `q` from a book whose market stopped weeks
+    ago, the realtime snapshot serves a closed market's prices, and
+    `books.ensure_open` gives a CLOSED market a book on purpose. A client that
+    refused a non-open status would break all three, and it would do it
+    silently: the first symptom is a settlement that cannot find the positions
+    it is meant to pay out.
+
+    The gate in `service/market_status.py` is the only thing in this service
+    that may turn this value into a refusal.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(status=status)),
+    )
+
+    assert terms.status == status
+
+
+async def test_a_null_liquidity_b_is_carried_rather_than_refused() -> None:
+    """The refusal that moved, asserted from the side it moved *off*.
+
+    `test_market_books.py::test_a_market_with_null_terms_is_unavailable_rather_than_funded`
+    holds the rule at `books.ensure_open` now. This holds the other half — that
+    `_parse` no longer has an opinion — and the two together are the whole of
+    ADR 0017's argument: refusing a null `b` is the right answer when you are
+    about to write it into an immutable book, and the wrong answer when you are
+    asking whether a market is open, because the `b` that matters was
+    snapshotted at first touch and is never read again.
+
+    `MarketTerms.liquidity_b` widens to `Decimal | None` here, which is what
+    `PublicMarketOut` has declared on the other side all along. Until this
+    ticket the ledger's type was narrower than the endpoint's contract and the
+    refusal was what papered over the gap.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(liquidity_b=None)),
+    )
+
+    assert terms.liquidity_b is None
+    assert terms.seed_subsidy == Decimal("250.0000")
+
+
+async def test_a_null_seed_subsidy_is_carried_rather_than_refused() -> None:
+    """The money half of the same move.
+
+    Separate from the test above because the two fields fail differently once
+    they reach a book: a null `b` is a market that can never be priced, and a
+    null subsidy is a pool funded with nothing. Both are `ensure_open`'s to
+    refuse now, and neither is this function's.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(seed_subsidy=None)),
+    )
+
+    assert terms.seed_subsidy is None
+    assert terms.liquidity_b == Decimal("100.0000")
+
+
+@pytest.mark.parametrize(
+    ("label", "outcomes"),
+    [
+        ("no outcomes at all", []),
+        ("a single outcome", [{"id": str(_YES), "position": 0}]),
+        (
+            "the same outcome id twice",
+            [{"id": str(_YES), "position": 0}, {"id": str(_YES), "position": 1}],
+        ),
+        (
+            "two outcomes claiming one position",
+            [{"id": str(_YES), "position": 0}, {"id": str(_NO), "position": 0}],
+        ),
+    ],
+)
+async def test_an_unpriceable_outcome_list_is_carried_rather_than_refused(
+    label: str, outcomes: list[dict[str, object]]
+) -> None:
+    """`_refuse_unpriceable` moved too, and these are the four cases it held.
+
+    Same four bodies as
+    `test_market_books.py::test_terms_that_could_never_be_priced_are_refused`,
+    asserted from the opposite direction: the client parses them and hands them
+    on, and `books.ensure_open` is what refuses to write a book from them.
+
+    So `MarketTerms.outcomes` may now legitimately be empty or hold one
+    element. What has *not* moved is the shape of an individual outcome — an
+    id that is not a UUID or a position that is not a number is still a 503
+    from here, and `test_valid_json_that_is_not_a_market_is_unavailable` below
+    still owns that.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(outcomes=outcomes)),
+    )
+
+    assert len(terms.outcomes) == len(outcomes)
+
+
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        ("status is absent", {k: v for k, v in _terms_body().items() if k != "status"}),
+        ("status is null", _terms_body(status=None)),
+        ("status is a number", _terms_body(status=3)),
+        ("status is a list", _terms_body(status=["open"])),
+        ("status is an object", _terms_body(status={"value": "open"})),
+    ],
+)
+async def test_a_status_that_is_not_a_string_is_unavailable(
+    label: str, body: object
+) -> None:
+    """"A parseable status" — ADR 0017's third structural rule for `_parse`.
+
+    The field the gate decides on has to arrive as something the gate can
+    compare, and the failure of it not arriving is the loudest kind of quiet:
+    every case here is `!= "open"`, so a gate handed one of them refuses the
+    trade as `409 market_closed` with no exception raised anywhere. A
+    market_service that had broken or been misconfigured would be telling every
+    trader on the platform that every market had closed — permanently, in a
+    system where nothing reopens a market.
+
+    Refused here instead, as the 503 that means the dependency is the problem.
+    Same shape of defence as `_to_decimal` refusing a `bool`: the malformation
+    that does not raise on its own is the one worth a rule.
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID, access_token=_token(), transport=_responds(body=body)
+        )
+
+
+def test_market_terms_without_a_status_cannot_be_built() -> None:
+    """The dataclass holds the same line `_parse` does, not a looser one.
+
+    The test above proves `_parse` never lets an unknown status through. That
+    is one construction path, and `MarketTerms` is built by others: every test
+    double that stands in for `fetch`, and whatever cache or second parse path
+    arrives later. A default of `"open"` on the field opened the gate for all
+    of them — a market whose status nobody supplied read as tradeable, with no
+    exception anywhere, on the one check that stands between a trader and a
+    closed market. No test could see it while `_parse` was the only caller,
+    because `_parse` always passes one.
+
+    So a value built without a status is not a value at all.
+    """
+    with pytest.raises(TypeError):
+        _terms().MarketTerms(  # type: ignore[call-arg]
+            market_id=_MARKET_ID,
+            liquidity_b=None,
+            seed_subsidy=None,
+            published_at=None,
+            outcomes=[],
+        )
+
+
+async def test_a_ten_outcome_market_still_parses() -> None:
+    """The ceiling is the market service's, and the floor left this file.
+
+    `test_a_ten_outcome_market_is_not_refused` moved to `test_market_books.py`
+    with the rule it argues about. What is left here is the narrower claim that
+    a ten-outcome body parses into ten `OutcomeTerms` — no count rule of any
+    kind survives in `_parse`, in either direction.
+    """
+    outcomes = [{"id": str(uuid.uuid4()), "position": i} for i in range(10)]
+
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(outcomes=outcomes)),
+    )
+
+    assert len(terms.outcomes) == 10
+
+
+async def test_the_close_time_is_not_what_decides_anything_here() -> None:
+    """A market past its close time still has terms, and still gets them.
+
+    ADR 0011 stops *trading* at `close_time`; it does not unpublish a market.
+    [3.4] #12's settlement reads `q` from a book belonging to a market that
+    stopped trading weeks earlier, and the realtime snapshot endpoint serves a
+    closed market's prices. A client that refused terms once `close_time` had
+    passed would make both impossible.
+
+    `PublicMarketOut` reports such a market as `closed` (D-022), which is why
+    the status is not the gate either. `published_at` is.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(
+            body=_terms_body(
+                status="closed",
+                close_time=(datetime.now(UTC) - timedelta(days=7)).isoformat(),
+            )
+        ),
+    )
+
+    assert terms.liquidity_b == Decimal("100.0000")
+    assert terms.published_at is not None

@@ -39,8 +39,8 @@ is a single indexed read that writes nothing (D-036).
    `core/lmsr.py`'s pinned decimal context, the same one every other division
    in this service's pricing path uses, so an ambient trap or precision never
    reaches this one division.
-8. `prices` and `post_trade_prices` are every outcome, `ROUND_HALF_UP` at
-   scale 4 by the same `_quantize_price`, ordered by position.
+8. `prices` and `post_trade_prices` are every outcome, through the same
+   `core/pricing.py::quantize_price`, ordered by position.
 
 Nothing here checks whether the market is still open, and since [F-8] #109
 that is a decision rather than an absence. The book carries no status and

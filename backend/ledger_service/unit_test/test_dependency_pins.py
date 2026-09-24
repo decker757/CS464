@@ -202,7 +202,14 @@ def test_env_example_no_longer_says_only_one_service_knows_redis() -> None:
         ".env.example claims a single Redis client; the ledger is a second "
         "one since [F-9] #112"
     )
-    assert re.search(r"ledger", text[text.index("REDIS_URL=") - 1500 :], re.I), (
+    # Sliced backwards from the assignment, clamped at zero. `text[i - 1500:]`
+    # silently becomes a tail-of-file slice the day the Redis block moves
+    # into the first 1500 characters, and then passes or fails on prose
+    # that has nothing to do with it.
+    at = text.index("REDIS_URL=")
+    block = text[max(0, at - 1500) : at]
+
+    assert re.search(r"ledger", block, re.I), (
         ".env.example's Redis block does not mention the ledger; it has been "
         "the producer since [F-9] #112, and this file is where somebody "
         "debugging a missing price frame looks first"

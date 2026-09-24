@@ -138,7 +138,10 @@ async def ensure_open(
     # read once, so a `b` of `0` written here is every price for that market,
     # forever, and no later read corrects it. A negative subsidy is the same
     # argument on the other column: it would fund the pool by taking credits
-    # out of it. market_service refuses both at submission
+    # out of it — and nothing downstream catches that: `_refuse_overdrafts`
+    # skips every non-USER account, so a negative pool is not refused, it is
+    # simply wrong until settlement fails to balance.
+    # market_service refuses both at submission
     # (`_liquidity_problems`, "The seed subsidy must be greater than zero");
     # this is the copy that matters, because it is the one standing in front
     # of the write.

@@ -65,6 +65,22 @@ async def ensure_trading(
     error code — and it happens on the 404 branch only: a 200 with
     `status == "open"` sends nothing to Postgres at all.
 
+    **This holds the caller's session open across an HTTP call, and unlike
+    `books.ensure_open` it cannot roll back first.** `ensure_open`'s cold path
+    ends its read transaction before reaching out, because nothing is pending
+    and nothing is locked. Here neither is guaranteed: ADR 0017 puts the
+    replay lookup *before* this gate, so by the time it runs the session has
+    autobegun, and [T-2] #22 may hold more than a read. A rollback would
+    discard that.
+
+    So the cost is real and is the caller's to bound: one pooled connection
+    held for up to `market_terms._TIMEOUT` (five seconds), on every trade that
+    is not a replay, against a `pool_size` of 10. A market_service that
+    accepts connections and stops answering takes the pool out, and with it
+    every other route on this service. #114's process-wide client does not fix
+    that — it is the database connection, not the HTTP one — so #22 either
+    gates before it opens a transaction, or accepts the bound and says so.
+
     A 200 whose derived `status` is anything but `"open"` is `MarketClosed`
     (409). Every other upstream failure — an unreachable market_service, a
     timeout, a 5xx, an unparseable 200, a `status` that is missing or not a

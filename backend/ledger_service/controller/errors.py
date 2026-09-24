@@ -37,10 +37,19 @@ def register_error_handlers(app: FastAPI) -> None:
         # The unmapped exceptions it replaced at least got a traceback out of
         # Starlette on the way past. Anything below 500 is the caller's to
         # fix and is already described by the response.
-        if exc.status_code >= 500:
+        # 500 only, deliberately not 5xx. `MarketTermsUnavailable` is a 503
+        # and its own docstring says "the request was fine and the dependency
+        # was not ... worth retrying in a moment" — and since ADR 0017 the
+        # gate calls market_service on every non-replay trade, so a
+        # thirty-second restart would write one ERROR with a traceback per
+        # trade, all identical and all expected. That buries the one 5xx that
+        # does mean our own data is wrong.
+        if exc.status_code >= 500 and exc.status_code != 503:
             _log.error(
                 "%s: %s", exc.code, exc.message, exc_info=exc, stack_info=False
             )
+        elif exc.status_code >= 500:
+            _log.warning("%s: %s", exc.code, exc.message)
 
         headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
         return JSONResponse(

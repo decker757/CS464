@@ -44,7 +44,6 @@ from core.errors import MarketBookIncomplete
 from core.pricing import quantize_price
 from model.entities import MarketBook, MarketOutcome
 from service import books
-from service.books import MIN_OUTCOMES
 
 
 @dataclass(frozen=True)
@@ -89,7 +88,7 @@ async def read_or_open(
     # entirely: a book damaged down to one row already exists, so every read
     # of it is warm and returns before the cold path is reached. Same floor
     # `books._refuse_unpriceable` enforces on the way in.
-    if len(rows) < MIN_OUTCOMES:
+    if len(rows) < books.MIN_OUTCOMES:
         raise MarketBookIncomplete
 
     # The book's own `b`, before it reaches the engine. `books.ensure_open`

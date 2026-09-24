@@ -221,14 +221,18 @@ class PreviewOut(BaseModel):
     average_price: Decimal = Field(
         description=(
             "abs(total) / quantity, from the quantized total, ROUND_HALF_UP "
-            "at scale 4. At most 1, and 1 is reachable: LMSR prices are a "
-            "softmax over the outcomes, so a share is worth less than one "
-            "credit — but the smallest buy there is, 0.0001 shares, costs a "
-            "fraction of a tick and is charged the whole tick under D-039, "
-            "which divides out to exactly 1.0000. On a heavily skewed book "
-            "the engine's last digit can carry a sub-tick cost over a tick "
-            "boundary (D-044) and this reads higher still. Do not render it "
-            "as a fraction of a credit. Display only — [T-2] #22 charges "
+            "at scale 4. **Do not render it as a fraction of a credit, and "
+            "do not assume it lies strictly between 0 and 1.** LMSR prices "
+            "are a softmax, so a share is worth under one credit and an "
+            "ordinary trade averages accordingly — but this is derived from "
+            "a total that has already been rounded to a tick, and both ends "
+            "escape. The smallest buy there is, 0.0001 shares, costs a "
+            "fraction of a tick and is charged the whole one (D-039), which "
+            "divides out to exactly 1.0000; on a skewed book the engine's "
+            "last digit can carry a sub-tick cost over a tick boundary "
+            "(D-044) and it reads higher still. At the other end, a large "
+            "buy in a saturated outcome can cost one tick in total and "
+            "divide down to 0.0000. Display only — [T-2] #22 charges "
             "`total`, never quantity * average_price."
         ),
         examples=["0.7315"],

@@ -38,7 +38,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Safe while this service owns the ledger schema alone. Move to Alembic
     # before the first column change against data worth keeping — which for
     # this service means "before anybody has traded".
-    await create_all()
 
     # One Redis client for the process. [F-9] #112. Built here rather than per
     # publish: a publish runs once per trade, so a client per call would be a
@@ -82,6 +81,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # asyncpg connection open behind it. Either one without this leaks the
     # engine for the life of the process.
     try:
+        # Inside the `try`, not above it. `create_all()` opens the engine, so
+        # a failure here — Postgres unreachable, a missing grant — used to
+        # leak the pool it had just built, which is the same hole one
+        # statement earlier than the one the comment below describes.
+        await create_all()
+
         app.state.redis = redis.from_url(
             get_settings().redis_url,
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
