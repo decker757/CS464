@@ -52,9 +52,9 @@ _B = Decimal("100.0000")
 _SUBSIDY = Decimal("250.0000")
 _Q = [Decimal("137.5000"), Decimal("42.2500")]
 
-# `core/lmsr.py::cost_to_trade`'s own docstring example: at `b = 100`, 100
-# shares of the second outcome against this `q` are worth 0.0000288, which
-# floors to nothing. The service-layer test guards that the fixture really is
+# `core/lmsr.py::cost_to_trade`'s own docstring example: at `b = 100`,
+# selling 100 shares of the second outcome against this `q` pays 0.0000288,
+# which floors to nothing; buying 100 costs 0.0000784, which ceils to a tick. The service-layer test guards that the fixture really is
 # sub-tick; here it only has to reach the wire as a status code.
 _SATURATED = [Decimal("1560.0000"), Decimal("100.0000")]
 
@@ -828,7 +828,7 @@ async def test_a_quantity_that_prices_above_the_column_is_422(
 
     response = await client.get(
         _path(market.market_id),
-        params=_params(market.outcomes[0], quantity="1000000000000000.0000"),
+        params=_params(market.outcomes[0], quantity="99999999999999.9999"),
         headers=trader_headers,
     )
 
@@ -887,3 +887,54 @@ async def test_the_same_sub_tick_quantity_is_still_priced_on_a_buy(
 
     assert response.status_code == 200
     assert response.json()["total"] == "-0.0001"
+
+
+# =========================================================================
+# Review fixes on PR #108
+# =========================================================================
+async def test_a_quantity_with_more_digits_than_the_column_is_422_not_500(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """`1E+25` has no fifth decimal place and is still not a quantity."""
+    market = _Market()
+    await _warm(session, market)
+
+    response = await client.get(
+        _path(market.market_id),
+        params=_params(market.outcomes[0], quantity="1E+25"),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+
+
+async def test_a_buy_priced_at_exactly_zero_is_422_cost_below_tick(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    market = _Market()
+    await _warm(session, market, [Decimal("12000"), Decimal("1")])
+
+    response = await client.get(
+        _path(market.market_id),
+        params=_params(market.outcomes[1], side="buy", quantity="100"),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "cost_below_tick"
+
+
+async def test_a_buy_whose_resulting_q_overflows_is_422_quantity_too_large(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    market = _Market()
+    await _warm(session, market, [Decimal("99999999999999.9999"), Decimal("0")])
+
+    response = await client.get(
+        _path(market.market_id),
+        params=_params(market.outcomes[0], side="buy", quantity="0.0001"),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "quantity_too_large"

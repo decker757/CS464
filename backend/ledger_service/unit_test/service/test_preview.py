@@ -266,7 +266,7 @@ def _expected_total(q: Sequence[Decimal], outcome: int, side: str, quantity: Dec
     correct for a sell is not recoverable from the rounding mode alone.
     """
     magnitude = _pricing().quantize_cost(
-        abs(_raw_cost(q, outcome, side, quantity)), side=_pricing().Side(side)
+        _raw_cost(q, outcome, side, quantity).copy_abs(), side=_pricing().Side(side)
     )
     return -magnitude if side == "buy" else magnitude
 
@@ -290,7 +290,7 @@ def _assert_rounding_is_load_bearing(
     to be exact at scale 4. If this fires, change `_QUANTITY` — do not relax
     the assertion it is protecting.
     """
-    raw = abs(_raw_cost(q, outcome, side, quantity))
+    raw = _raw_cost(q, outcome, side, quantity).copy_abs()
     assert raw != raw.quantize(_QUANTUM), (
         "this fixture's raw cost is already exact at scale 4, so the "
         "quantization tests below prove nothing; pick another quantity"
@@ -382,10 +382,10 @@ async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
     quote = await _quote(session, upstream)
 
     magnitude = _pricing().quantize_cost(
-        abs(_raw_cost(_Q, 0, "buy", _QUANTITY)), side=_pricing().Side.BUY
+        _raw_cost(_Q, 0, "buy", _QUANTITY).copy_abs(), side=_pricing().Side.BUY
     )
     assert quote.total == -magnitude
-    assert abs(quote.total) != abs(_raw_cost(_Q, 0, "buy", _QUANTITY))
+    assert abs(quote.total) != _raw_cost(_Q, 0, "buy", _QUANTITY).copy_abs()
 
 
 async def test_the_total_is_negative_on_a_buy_and_positive_on_a_sell(
@@ -1275,12 +1275,12 @@ async def test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero(
 
     The buy assertion is the other half, not a spare. The same 100 shares
     still cost a full tick, because `ROUND_CEILING` rounds toward the house
-    and that needs no refusal — so this is not a rule about sub-tick trades,
-    it is a rule about sub-tick *proceeds*, and an implementation that
-    refused both sides would fail here.
+    and a buy above zero needs no refusal — so this is not a rule about
+    sub-tick trades, it is a rule about totals of *zero*, and an
+    implementation that refused every sub-tick buy would fail here.
 
-    The refusal is raised by `core/pricing.py::refuse_sub_tick_proceeds`
-    rather than by this service, because [T-2] #22 has to make the same
+    The refusal is raised by `core/pricing.py::quantize_cost` rather than by
+    this service, because [T-2] #22 has to make the same
     refusal on the write path: a rule about money that lives only in the
     preview is a rule #22 inherits by copying it or by forgetting to. This
     test drives it through `quote`, which is the assertion that the preview
@@ -1289,7 +1289,7 @@ async def test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero(
     upstream = _Upstream()
     await _warm(session, upstream, _SATURATED)
 
-    raw = abs(_raw_cost(_SATURATED, 1, "sell", _HUNDRED))
+    raw = _raw_cost(_SATURATED, 1, "sell", _HUNDRED).copy_abs()
     assert ZERO < raw < _QUANTUM, (
         "this fixture is meant to price a real trade at under one tick; "
         f"got {raw}, so the assertions below prove nothing"
@@ -1364,3 +1364,124 @@ async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(
         f"{type(raised.value).__name__}: {raised.value!r}"
     )
     assert raised.value.code == "market_book_incomplete"
+
+
+# =========================================================================
+# Review fixes on PR #108
+# =========================================================================
+async def _set_b(session: AsyncSession, upstream: _Upstream, b: Decimal) -> None:
+    """`b` written directly, as `_set_q` writes `q`: `_Upstream` serves one `b`."""
+    book = _entities().MarketBook
+    await session.execute(
+        update(book).where(book.market_id == upstream.market_id).values(liquidity_b=b)
+    )
+    await session.commit()
+
+
+async def test_a_sell_s_magnitude_is_not_rounded_up_by_the_ambient_context(
+    session: AsyncSession,
+) -> None:
+    """`abs()` rounds at the ambient 28 digits; `copy_abs()` does not round.
+
+    The engine answers `-99.99999999999999999999999999993169...` at 50
+    digits. At 28 that rounds up to `100.0000...`, and `ROUND_FLOOR` then
+    pays the trader a tick more than the proceeds.
+    """
+    upstream = _Upstream()
+    q = [Decimal("7000"), Decimal("0")]
+    await _warm(session, upstream, q)
+
+    raw = cost_to_trade(q, _B, [Decimal(-100), ZERO]).copy_abs()
+    assert raw < Decimal(100), f"the engine's own answer must be under 100; got {raw}"
+
+    quote = await _quote(
+        session, upstream, outcome=0, side="sell", quantity=Decimal("100")
+    )
+
+    assert quote.total == Decimal("99.9999")
+
+
+@pytest.mark.parametrize(
+    ("q", "b"),
+    [
+        ([Decimal("12000"), Decimal("1")], Decimal("100")),
+        ([Decimal("1200"), Decimal("1")], Decimal("10")),
+    ],
+)
+async def test_a_buy_priced_at_exactly_zero_is_refused(
+    session: AsyncSession, q: list[Decimal], b: Decimal
+) -> None:
+    """100 real shares for zero credits, refused rather than quoted."""
+    upstream = _Upstream()
+    await _warm(session, upstream, q)
+    await _set_b(session, upstream, b)
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _quote(session, upstream, outcome=1, side="buy", quantity=Decimal("100"))
+
+    assert raised.value.code == "cost_below_tick"
+    assert raised.value.status_code == 422
+
+
+async def test_a_buy_whose_resulting_q_the_column_cannot_hold_is_refused(
+    session: AsyncSession,
+) -> None:
+    """The cost is one tick and fits; the `q` it leaves is 15 integer digits."""
+    upstream = _Upstream()
+    await _warm(session, upstream, [Decimal("99999999999999.9999"), ZERO])
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _quote(session, upstream, outcome=0, quantity=Decimal("0.0001"))
+
+    assert raised.value.code == "quantity_too_large"
+    assert raised.value.status_code == 422
+
+
+async def test_a_quantity_beyond_the_ambient_precision_is_refused_not_raised(
+    session: AsyncSession,
+) -> None:
+    """`1E+25` quantized at 28 digits is `InvalidOperation`, which is a 500."""
+    upstream = _Upstream()
+    await _warm(session, upstream)
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _quote(session, upstream, quantity=Decimal("1E+25"))
+
+    assert raised.value.code == "quantity_too_large"
+
+
+async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> None:
+    """`"buy" is Side.BUY` is False, so an unconverted buy priced as a sell."""
+    upstream = _Upstream()
+    await _warm(session, upstream)
+
+    enum = await _quote(session, upstream, side="buy")
+    raw = await _preview().quote(
+        session,
+        upstream.market_id,
+        outcome_id=upstream.outcomes[0],
+        side="buy",
+        quantity=_QUANTITY,
+        access_token=_token(),
+        transport=upstream.transport,
+    )
+
+    assert raw.total == enum.total
+
+
+async def test_a_raw_string_sell_still_meets_the_no_shorting_rule(
+    session: AsyncSession,
+) -> None:
+    upstream = _Upstream()
+    await _warm(session, upstream)
+
+    with pytest.raises(_errors().InsufficientSharesOutstanding):
+        await _preview().quote(
+            session,
+            upstream.market_id,
+            outcome_id=upstream.outcomes[1],
+            side="sell",
+            quantity=_Q[1] + _QUANTUM,
+            access_token=_token(),
+            transport=upstream.transport,
+        )

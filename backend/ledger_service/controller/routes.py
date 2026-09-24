@@ -103,11 +103,14 @@ PreviewQuantity = Annotated[
     Decimal,
     Query(
         gt=0,
+        max_digits=18,
         decimal_places=4,
         description=(
             "Shares to trade. At most four decimal places (D-038) — a fifth "
             "is 422 rather than rounded, because rounding would quote a "
-            "trade for a quantity the trader never typed."
+            "trade for a quantity the trader never typed. At most 18 digits "
+            "in all, the width of `Numeric(18, 4)`: a quantity wider than "
+            "the column could never be written as a share count."
         ),
     ),
 ]
@@ -210,19 +213,24 @@ async def user_entries(
     description=_PREVIEW_DESCRIPTION,
     responses={
         401: {"description": "Missing, malformed or expired access token."},
-        404: {"description": "No such market."},
+        404: {
+            "description": (
+                "No such market — including a draft or a submitted one, "
+                "which market_service refuses with the same 404."
+            )
+        },
         409: {
             "description": (
-                "The market has not been published yet, or this sell is "
-                "larger than the outcome's shares outstanding."
+                "This sell is larger than the outcome's shares outstanding."
             )
         },
         422: {
             "description": (
                 "A malformed query string, an `outcome_id` that is not this "
-                "market's, a quantity whose cost prices above what the "
-                "ledger can store, or a sell whose proceeds round down to "
-                "nothing (D-041)."
+                "market's, a quantity whose cost or resulting shares "
+                "outstanding exceed what the ledger can store, or a trade "
+                "whose total rounds to nothing (D-041): `proceeds_below_tick` "
+                "on a sell, `cost_below_tick` on a buy."
             )
         },
         500: {

@@ -1257,9 +1257,13 @@ in — the second pass is a no-op rather than a second opinion.
 **Date:** 2026-09-21 · **Ticket:** #21 · **Status:** active
 
 **Decision.** `service/preview.py` raises `QuantityTooLarge` (422,
-`quantity_too_large`) when the quantized magnitude exceeds
+`quantity_too_large`) when either number [T-2] #22 would write exceeds
 `core/pricing.py::MAX_MAGNITUDE` — `99999999999999.9999`, the largest value
-`Numeric(18, 4)` holds.
+`Numeric(18, 4)` holds. The two numbers are the traded outcome's `q` after the
+trade, which lands in `market_outcomes.q`, and the unquantized magnitude of
+the cost, which lands in the legs. Both are checked before anything is
+quantized. The route also refuses a `quantity` of more than 18 digits in total,
+as plain validation.
 
 **Why.** This route's contract is that the previewed number is the charged
 number, and [T-2] #22 charges by writing `total` into `Numeric(18, 4)`. A
@@ -1275,8 +1279,26 @@ quoting a trade nothing can charge.
 on the *cost*, and cost scales with `b`, which this service reads from the
 market rather than choosing — `market_service` puts no ceiling on it either. No
 constant ceiling on `quantity` is both safe for a small `b` and usable with a
-large one, so the check has to be on the priced figure. It is made *after*
-`quantize_cost`, because the quantized figure is the one that would be stored.
+large one, so the check has to be on the priced figure.
+
+**Why the resulting `q` too.** The cost bound alone let through a buy of
+`0.0001` shares against `q = [99999999999999.9999, 0]`: a cost of one tick,
+and a `q` of `100000000000000.0000` that `market_outcomes.q` cannot store. That
+is the same quote-that-cannot-be-honoured the cost bound exists to refuse,
+arriving through the other column.
+
+**Why before the quantize.** The first version checked the quantized figure,
+on the ground that it is the one that would be stored. It never got that far
+on the quantities that mattered. `quantize` runs in the ambient 28-digit
+context, and a `quantity` of `1E+25` has no fifth decimal place, so it passed
+validation and priced at a magnitude whose scale-4 form needs 30 digits, and
+`quantize` raised `decimal.InvalidOperation`. That is not a `LedgerError`, so
+it reached the client as a 500 and the bound never ran. Checking the raw
+magnitude instead gives the same answer on every storable value, because
+`MAX_MAGNITUDE` sits exactly on a tick. The one exception is a sell between
+`MAX_MAGNITUDE` and the next tick, which would floor to a storable number and
+is refused anyway; it cannot occur, because a sell pays less than its
+quantity and its quantity is at most `q`.
 
 **422 rather than 409.** `InsufficientSharesOutstanding` is 409 on the grounds
 that nothing about the request is malformed and the same request succeeds
@@ -1292,6 +1314,15 @@ mitigation: `test_the_scale_and_precision_match_the_column` fails if the two
 disagree, so widening the column cannot leave `MAX_MAGNITUDE` describing the
 old one.
 
+The cost bound can no longer be reached through `quote()`. A buy costs less
+than its quantity, because every price is below 1, and the `q` bound already
+holds the quantity under `MAX_MAGNITUDE`. A sell pays less than its quantity,
+which the no-shorting rule holds at or below `q`. It stays as a backstop,
+because that argument rests on the engine's prices staying below 1 and on the
+checks around it keeping their order. The cost bound is the one check that
+states the column's limit directly, so if either of those changes it still
+refuses a cost that cannot be stored.
+
 ---
 
 ### D-041 — A sell whose proceeds quantize to zero is refused, not quoted
@@ -1300,15 +1331,14 @@ old one.
 
 **Decision.** A sell whose proceeds quantize to `0.0000` is refused:
 `ProceedsBelowTick`, 422, `proceeds_below_tick`. It is not quoted at zero and
-it is not paid a minimum tick. A sub-tick *buy* is unaffected and needs no
-decision — `ROUND_CEILING` already charges the whole tick, which is the pool's
-favour.
+it is not paid a minimum tick. A buy the engine prices at exactly zero is
+refused the same way, as `CostBelowTick`, 422, `cost_below_tick`. A buy priced
+above zero and below one tick is unaffected: `ROUND_CEILING` charges the whole
+tick, in the pool's favour.
 
-The refusal lives in `core/pricing.py::refuse_sub_tick_proceeds`, beside
-`quantize_cost` and taking the same quantized magnitude and `Side`, because
-[T-2] #22's write path has to make the same refusal and a rule about money that
-lives only in `service/preview.py` is a rule #22 inherits by copying it or by
-forgetting to.
+`core/pricing.py::quantize_cost` raises both refusals itself, because [T-2]
+#22's write path has to make the same refusal, and a separate function is one
+#22 can forget to call.
 
 **Why.** Three answers were available and `cost_to_trade`'s docstring named all
 three, deliberately leaving the choice to "where there is a request to refuse".
@@ -1328,8 +1358,9 @@ being true as a sentence and start needing a footnote.
 *Refusing* leaves both rules intact, and it is the answer D-040 already gives at
 the other edge of the same quantization: a magnitude `Numeric(18, 4)` cannot
 honestly represent is refused rather than quoted, in either direction. The
-asymmetry between the sides is not an inconsistency — a sub-tick buy has an
-honest answer at this scale and a sub-tick sell does not.
+sides differ below one tick and agree at zero. `ROUND_CEILING` of zero is zero,
+and past about 110·b of skew the engine returns exactly zero, so a buy can
+reach `0.0000` without any flooring.
 
 **Rejected.** The two options above, and one about the status code.
 
@@ -1361,6 +1392,61 @@ The buy side is asserted alongside the refusal in all three layers, because an
 implementation that refused a sub-tick *trade* rather than sub-tick *proceeds*
 would satisfy every sentence above and stop quoting half the trades in a
 saturated outcome.
+
+This entry first refused only sells, on the stated ground that a sub-tick buy
+never reaches zero because `ROUND_CEILING` charges the whole tick. The review
+of PR #108 disproved that: a buy of 100 shares against `q = [12000, 1]` at
+`b = 100` was quoted at `0.0000`, because the engine returned exactly zero.
+
+---
+
+### D-042 — An absolute value on money is `copy_abs()`, never `abs()`
+
+**Date:** 2026-09-23 · **Ticket:** #21 · **Status:** active
+
+**Decision.** Wherever this service takes the absolute value of an amount that
+will be quantized, charged or stored, it calls `Decimal.copy_abs()`, or it
+calls `abs()` inside `core/lmsr.py::_engine_context()`. A bare `abs()` in
+ambient context is not used on money.
+
+**Why.** `Decimal.__abs__` is a context operation: it rounds its result to the
+*ambient* precision, which is 28 digits unless a caller has changed it, not
+the engine's 50. `copy_abs()` is the only absolute value that consults no
+context at all. The difference is not academic. The engine prices a sell of
+100 shares against `q = [7000, 0]` at `b = 100` as
+`-99.99999999999999999999999999993169…`; `abs()` at 28 digits rounds that up
+to `100.0000…`, and `ROUND_FLOOR` then pays the trader `100.0000` where the
+true proceeds floor to `99.9999`. The rounding step runs before the directional
+rounding sees the value, so it can carry a magnitude across a tick boundary in
+either direction — up on a sell pays the trader, down on a buy charges one tick
+short — and undo exactly what "A sell whose proceeds quantize to zero is
+refused, not quoted" and "`quantize_cost` takes an unsigned magnitude; the
+caller applies the sign" exist to guarantee. No balance check watches the
+fourth decimal place, so nothing downstream would notice.
+
+`service/preview.py` shipped `abs()` on the engine's answer and was caught in
+review of PR #108. The same review found the average-price division pinned to
+the engine context while the line that actually cost money was not; the
+average is now the quantized magnitude over the quantity, so no absolute value
+remains on that path.
+
+**The interface [T-2] #22 was written against has changed with this ticket.**
+`core/pricing.py::refuse_sub_tick_proceeds` no longer exists: `quantize_cost`
+raises `ProceedsBelowTick` or `CostBelowTick` itself when its result is
+`0.0000`, and coerces a string `side` to `Side`. Its signature is unchanged,
+but a caller that quantized and then called the refusal has one call too many,
+and the refusal it made no longer exists to call.
+
+**Reversal trigger.** If the service pins one decimal context globally at
+startup — the engine's precision, set once, with nothing able to change it —
+then ambient and engine context are the same thing and a bare `abs()` is
+harmless. Until then, or if any code path can run under a caller's context,
+this stands.
+
+**Notes.** The same hazard applies to every other context operation on money
+outside the engine context: `+x`, `-x`, and any arithmetic. `-magnitude` in
+`service/preview.py` is safe only because the magnitude has already been
+quantized to at most 18 significant digits, well inside 28.
 
 ---
 
@@ -1843,6 +1929,9 @@ Move these into the log above when they're settled.
   executes — in which case `post()` gains a variant that stops short of commit,
   or the trade accepts the ledger write as its own boundary and builds
   compensation around it — is still #22's to decide.
+- **`occurred_at` for a market that has never traded.** The realtime contract
+  defines it only as the time of the event. `state_changed_at` set at handoff is a
+  proposal, not something the contract says.
 - **Whether share quantities share money's scale of 4.** Settled at the API
   boundary by D-038 and still open inside the service. The preview refuses a
   quantity finer than scale 4, so nothing can *arrive* below it; what nobody has
@@ -1885,8 +1974,15 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
-- **How long the terms pull may block, given it runs inside a transaction
-  holding row locks.** `service/market_terms.py::_TIMEOUT` is five seconds on
+- **How long the terms pull may block.** Half of this is now settled: it no
+  longer runs holding a pooled connection. `books.ensure_open` rolls back the
+  read that found no book before it calls out, so a slow market_service costs
+  one request its own latency rather than costing every route on this service
+  a connection out of a pool of ten. What is still open is the ceiling itself,
+  and the row locks [T-2] #22 will hold across it — now on every trade rather
+  than once per market, since `market_status.ensure_trading` (ADR 0017) calls
+  the same client on the hot path. #114 holds the connection-reuse half.
+  `service/market_terms.py::_TIMEOUT` is five seconds on
   every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
   is currently inherited in substance even though it is written out in the
   source, and no test can tell the line's deletion from its presence (D-030,

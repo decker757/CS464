@@ -164,6 +164,8 @@ class OutcomePriceOut(BaseModel):
         ),
     )
     price: Decimal = Field(
+        ge=0,
+        le=1,
         description="The marginal price of one share, as an exact decimal string.",
         examples=["0.6234"],
     )
@@ -195,11 +197,13 @@ class PreviewOut(BaseModel):
 
     quantity: Decimal = Field(
         description=(
-            "Echoed back exactly as it arrived, trailing zeros and all "
-            "(D-038) — `10` comes back as `10`, `10.0000` as `10.0000`. It is "
-            "not normalised to scale 4: this field is how a client matches a "
-            "quote to the keystroke that asked for it, so it has to be the "
-            "string it sent."
+            "Echoed back at the scale it arrived with, trailing zeros and "
+            "all (D-038) — `10` comes back as `10`, `10.0000` as `10.0000`. "
+            "It is not normalised to scale 4: this field is how a client "
+            "matches a quote to the keystroke that asked for it. Compare it "
+            "as a decimal rather than as a string — the scale survives the "
+            "round trip, the exact characters do not, so `.5` comes back as "
+            "`0.5` and `10.` as `10`."
         ),
         examples=["10.0000"],
     )
@@ -211,15 +215,17 @@ class PreviewOut(BaseModel):
             "ceiling and sell the floor, so this is the number that would be "
             "charged."
         ),
-        examples=["-133.7042"],
+        examples=["-6.2340"],
     )
     average_price: Decimal = Field(
         description=(
             "abs(total) / quantity, from the quantized total, ROUND_HALF_UP "
-            "at scale 4. Display only — [T-2] #22 charges `total`, never "
-            "quantity * average_price."
+            "at scale 4. Always below 1: LMSR prices are a softmax over the "
+            "outcomes, so every share costs less than one credit. Display "
+            "only — [T-2] #22 charges `total`, never quantity * "
+            "average_price."
         ),
-        examples=["10.0278"],
+        examples=["0.6234"],
     )
 
     prices: list[OutcomePriceOut] = Field(

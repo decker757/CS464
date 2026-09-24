@@ -24,12 +24,14 @@ is a single indexed read that writes nothing (D-036).
    holding, which is [T-3] #23's under its own lock (D-012).
 6. `core/lmsr.py::cost_to_trade` prices the trade. `core/pricing.py`
    quantizes the unsigned magnitude by side, and the sign is applied here:
-   negative on a buy, positive on a sell. A magnitude above what
-   `Numeric(18, 4)` can store is `QuantityTooLarge` (422) rather than a quote
-   [T-2] #22 could not charge (D-040). A sell whose quantized proceeds are
-   `0.0000` is `ProceedsBelowTick` (422) rather than a quote that takes real
-   shares for nothing (D-041).
-7. `average_price` is `abs(total) / quantity`, from the *quantized* total,
+   negative on a buy, positive on a sell. A resulting `q` or a magnitude
+   above what `Numeric(18, 4)` can store is `QuantityTooLarge` (422) rather
+   than a quote [T-2] #22 could not persist (D-040), and both are checked
+   before anything is quantized. A total that quantizes to `0.0000` is
+   refused by `quantize_cost` itself — `ProceedsBelowTick` on a sell,
+   `CostBelowTick` on a buy — rather than quoted as real shares for nothing
+   (D-041).
+7. `average_price` is the quantized magnitude over `quantity`,
    `ROUND_HALF_UP` at scale 4 — display, not money. Run inside
    `core/lmsr.py`'s pinned decimal context, the same one every other division
    in this service's pricing path uses, so an ambient trap or precision never
@@ -37,10 +39,15 @@ is a single indexed read that writes nothing (D-036).
 8. `prices` and `post_trade_prices` are every outcome, `ROUND_HALF_UP` at
    scale 4, ordered by position.
 
-Nothing here checks whether the market is still open. The book carries no
-status and `close_time` is not snapshotted (ADR 0014 leaves it in the future
-on an early close even), so there is nothing to check against — [T-2] #22
-owns how the ledger eventually learns a market has stopped trading.
+Nothing here checks whether the market is still open, and since [F-8] #109
+that is a decision rather than an absence. The book carries no status and
+`close_time` is not snapshotted (ADR 0014 leaves it in the future on an early
+close even), so the answer can only come from market_service —
+`service/market_status.py::ensure_trading` is the one place that asks, and
+ADR 0017 keeps it off this path on purpose: a preview is arithmetic, it moves
+no money, and putting an HTTP call on a route that fires on every keystroke
+would buy nothing a closed market's refused trade does not already buy.
+[T-2] #22 is the caller that gates.
 """
 
 from __future__ import annotations
@@ -63,7 +70,6 @@ from core.pricing import (
     QUANTUM,
     Side,
     quantize_cost,
-    refuse_sub_tick_proceeds,
 )
 from service import book_prices
 from service.book_prices import PricedOutcome
@@ -91,7 +97,7 @@ async def quote(
     market_id: uuid.UUID,
     *,
     outcome_id: uuid.UUID,
-    side: Side,
+    side: Side | str,
     quantity: Decimal,
     access_token: str,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -103,6 +109,10 @@ async def quote(
     response itself; that belongs to `service/market_terms.py`, reached
     through the cold path.
     """
+    # Coerced before the `is` comparisons below. `Side` is a `StrEnum`, so
+    # `"sell" is Side.SELL` is False and a raw string would fall through every
+    # one of them as a buy.
+    side = Side(side)
     rows = await book_prices.read_or_open(
         session, market_id, access_token=access_token, transport=transport
     )
@@ -123,28 +133,28 @@ async def quote(
     delta = [ZERO] * len(q)
     delta[index] = quantity if side is Side.BUY else -quantity
 
-    magnitude = quantize_cost(abs(cost_to_trade(q, b, delta)), side=side)
+    with _engine_context():
+        after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
 
-    # D-040. Checked here rather than as an `le=` on the query parameter,
-    # because the bound is on the *cost* and the cost depends on `b`, which
-    # this service reads from the market rather than choosing: no constant
-    # ceiling on `quantity` is both safe for a small `b` and usable with a
-    # large one. Checked after quantizing, because the quantized figure is the
-    # one that would be stored.
-    if magnitude > MAX_MAGNITUDE:
+    # D-040, both halves: [T-2] #22 writes the cost *and* the resulting `q`
+    # into `Numeric(18, 4)`, and a quote for either one it cannot store is a
+    # quote it cannot honour. Checked before quantizing, because quantizing a
+    # value wider than the ambient 28 digits raises `InvalidOperation`.
+    if after_q[index] > MAX_MAGNITUDE:
         raise QuantityTooLarge
 
-    # D-041. The other edge of the same quantization: a sell whose proceeds
-    # rounded down to nothing is refused rather than quoted.
-    refuse_sub_tick_proceeds(magnitude, side=side)
+    # `copy_abs`, never `abs`: `abs` rounds at the ambient precision and can
+    # carry the magnitude across a tick before the directional rounding runs.
+    raw = cost_to_trade(q, b, delta).copy_abs()
+    if raw > MAX_MAGNITUDE:
+        raise QuantityTooLarge
 
+    magnitude = quantize_cost(raw, side=side)
     total = -magnitude if side is Side.BUY else magnitude
     with _engine_context():
-        average_price = (abs(total) / quantity).quantize(
+        average_price = (magnitude / quantity).quantize(
             QUANTUM, rounding=ROUND_HALF_UP
         )
-
-    after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
 
     return Quote(
         market_id=market_id,

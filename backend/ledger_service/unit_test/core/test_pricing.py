@@ -6,11 +6,11 @@
 negative on the wire because credits leave the trader, and a sell's is
 positive, but neither of those is this function's business.
 
-`refuse_sub_tick_proceeds` judges what `quantize_cost` returned: a sell that
-quantized to nothing is refused rather than quoted, because taking real shares
-for zero credits is the surprise [T-1] #21 exists to prevent (D-041). It sits
-beside the rounding rather than in `service/preview.py` because [T-2] #22 has
-to make the same refusal on the write path.
+`quantize_cost` refuses a result of `0.0000`: `proceeds_below_tick` on a
+sell, `cost_below_tick` on a buy, because taking real shares for zero credits
+is the surprise [T-1] #21 exists to prevent (D-041). It is inside the rounding
+rather than in `service/preview.py` because [T-2] #22 has to make the same
+refusal on the write path.
 
 **Why a magnitude rather than the engine's signed answer.** `cost_to_trade`
 returns positive for a buy and negative for a sell, and the acceptance
@@ -95,9 +95,7 @@ _SELL_EXPECTED = Decimal("12.3456")
 # genuinely produces on a saturated outcome (see `cost_to_trade`'s docstring),
 # and a large one where the significant digits are all on the left.
 _MAGNITUDES = [
-    Decimal("0"),
-    Decimal("0.0000288"),
-    Decimal("0.00005"),
+    Decimal("0.00015"),
     Decimal("1.0000"),
     Decimal("12.34561"),
     Decimal("12.34565"),
@@ -217,7 +215,7 @@ def test_a_value_already_at_scale_four_is_unchanged_on_both_sides() -> None:
     assert _pricing().quantize_cost(exact, side=sell) == exact
 
 
-def test_a_trade_of_nothing_costs_nothing_on_both_sides() -> None:
+def test_a_magnitude_of_exactly_zero_is_refused_on_both_sides() -> None:
     """Zero stays zero, including on the side that rounds up.
 
     `cost_to_trade` returns exactly `Decimal(0)` for an empty delta, and a
@@ -226,16 +224,18 @@ def test_a_trade_of_nothing_costs_nothing_on_both_sides() -> None:
     """
     buy, sell = _sides()
 
-    assert _pricing().quantize_cost(Decimal(0), side=buy) == Decimal(0)
-    assert _pricing().quantize_cost(Decimal(0), side=sell) == Decimal(0)
+    with pytest.raises(_errors().CostBelowTick):
+        _pricing().quantize_cost(Decimal(0), side=buy)
+    with pytest.raises(_errors().ProceedsBelowTick):
+        _pricing().quantize_cost(Decimal(0), side=sell)
 
 
 # --- the sub-tick sell ----------------------------------------------------
 #
 # `cost_to_trade`'s own docstring example, and the reason this refusal is not
-# theoretical: 100 shares of the second outcome against `q = [1560, 100]` at
-# `b = 100` are worth 0.0000288 — a real trade, in a saturated outcome, under
-# one tick. The magnitudes below come out of the engine rather than being
+# theoretical: against `q = [1560, 100]` at `b = 100`, selling 100 shares of
+# the second outcome pays 0.0000288 and buying 100 costs 0.0000784 — real
+# trades, in a saturated outcome, both under one tick. The magnitudes below come out of the engine rather than being
 # pinned as literals, so a fixture that stopped being sub-tick fails its own
 # guard instead of quietly asserting nothing.
 _SATURATED = [Decimal("1560.0000"), Decimal("100.0000")]
@@ -280,15 +280,12 @@ def test_a_sell_whose_proceeds_quantize_to_zero_is_refused() -> None:
     _, sell = _sides()
     pricing = _pricing()
 
-    paid = pricing.quantize_cost(_saturated_magnitude("sell"), side=sell)
-    assert paid == Decimal(0), "the floor is what makes this refusal necessary"
-
     with pytest.raises(_errors().ProceedsBelowTick):
-        pricing.refuse_sub_tick_proceeds(paid, side=sell)
+        pricing.quantize_cost(_saturated_magnitude("sell"), side=sell)
 
 
 def test_a_sub_tick_buy_still_charges_one_tick() -> None:
-    """The buy side needs no refusal and must not get one.
+    """The buy side needs no refusal above zero and must not get one.
 
     `ROUND_CEILING` already charges the whole tick on a sub-tick buy, which is
     the house's favour and consistent with D-039: the trader pays slightly more
@@ -303,25 +300,39 @@ def test_a_sub_tick_buy_still_charges_one_tick() -> None:
     charged = pricing.quantize_cost(_saturated_magnitude("buy"), side=buy)
 
     assert charged == _QUANTUM
-    pricing.refuse_sub_tick_proceeds(charged, side=buy)
 
 
-def test_the_refusal_is_keyed_on_the_side_and_fires_only_on_a_sell() -> None:
-    """A zero magnitude is refused on a sell and returned on a buy.
+def test_the_worked_example_s_value_is_charged_a_tick_and_paid_nothing() -> None:
+    """`cost_to_trade`'s docstring value, `0.0000288`, on both sides.
+
+    It left `_MAGNITUDES` when a sub-tick sell began to raise, and the
+    engine-driven tests above reach it on the sell side only — the buy side
+    of `_SATURATED` is a different number. Pinned here so the literal the
+    review verified is still asserted as a buy and as a sell.
+    """
+    buy, sell = _sides()
+    pricing = _pricing()
+    worked = Decimal("0.0000288")
+
+    assert pricing.quantize_cost(worked, side=buy) == Decimal("0.0001")
+    with pytest.raises(_errors().ProceedsBelowTick):
+        pricing.quantize_cost(worked, side=sell)
+
+
+def test_the_refusal_s_code_is_keyed_on_the_side() -> None:
+    """A zero magnitude is refused on both sides, under the side's own code.
 
     Stated on the bare value rather than through the engine, because this is
-    the whole condition: `side is Side.SELL` and a quantized magnitude of zero.
-    A guard that read the magnitude alone would refuse a buy of nothing, which
-    `test_a_trade_of_nothing_costs_nothing_on_both_sides` says costs nothing
-    and raises nothing — the two rules have to coexist.
+    the whole condition: zero is the condition, and the side picks the code.
+    A buyer told "proceeds below tick" has been told something false.
     """
     buy, sell = _sides()
     pricing = _pricing()
 
     with pytest.raises(_errors().ProceedsBelowTick):
-        pricing.refuse_sub_tick_proceeds(Decimal("0.0000"), side=sell)
-
-    pricing.refuse_sub_tick_proceeds(Decimal("0.0000"), side=buy)
+        pricing.quantize_cost(Decimal("0.0000"), side=sell)
+    with pytest.raises(_errors().CostBelowTick):
+        pricing.quantize_cost(Decimal("0.0000"), side=buy)
 
 
 def test_proceeds_of_exactly_one_tick_are_not_refused() -> None:
@@ -335,7 +346,7 @@ def test_proceeds_of_exactly_one_tick_are_not_refused() -> None:
     _, sell = _sides()
     pricing = _pricing()
 
-    pricing.refuse_sub_tick_proceeds(_QUANTUM, side=sell)
+    assert pricing.quantize_cost(_QUANTUM, side=sell) == _QUANTUM
 
 
 def test_the_refusal_carries_its_own_code_and_status() -> None:
@@ -356,6 +367,81 @@ def test_the_refusal_carries_its_own_code_and_status() -> None:
     assert errors.ProceedsBelowTick.status_code == 422
     assert errors.ProceedsBelowTick.code == "proceeds_below_tick"
     assert issubclass(errors.ProceedsBelowTick, errors.LedgerError)
+
+
+# --- a real quantity priced at exactly nothing ----------------------------
+#
+# Past roughly 110·b of skew the engine returns exactly zero, not something
+# tiny: `e^(-120)` is below 50 significant digits beside 1, so the log-sum-exp
+# of the book before and after the trade is the same number. `ROUND_CEILING`
+# of exactly zero is zero, so a buy reaches `0.0000` without any flooring.
+# Both books are the reviewer's reproductions, run through the engine rather
+# than pinned, with a guard that the engine really does return zero.
+@pytest.mark.parametrize(
+    ("q", "b"),
+    [
+        ([Decimal("12000"), Decimal("1")], Decimal("100")),
+        ([Decimal("1200"), Decimal("1")], Decimal("10")),
+    ],
+)
+def test_a_buy_the_engine_prices_at_exactly_zero_is_refused(
+    q: list[Decimal], b: Decimal
+) -> None:
+    """100 real shares for zero credits, refused on the buy side too."""
+    from core.lmsr import cost_to_trade  # noqa: PLC0415
+
+    buy, _ = _sides()
+    raw = cost_to_trade(q, b, [Decimal(0), Decimal(100)])
+    assert raw == 0, f"this book is meant to price a buy at exactly zero; got {raw}"
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        _pricing().quantize_cost(raw.copy_abs(), side=buy)
+
+    assert raised.value.code == "cost_below_tick"
+    assert raised.value.status_code == 422
+
+
+def test_the_sell_on_the_same_book_is_refused_from_the_same_call() -> None:
+    """One site raises both codes, so no caller can quantize and forget."""
+    from core.lmsr import cost_to_trade  # noqa: PLC0415
+
+    _, sell = _sides()
+    raw = cost_to_trade(
+        [Decimal("12000"), Decimal("1")], Decimal("100"), [Decimal(0), Decimal(-100)]
+    )
+    assert Decimal(0) <= raw.copy_abs() < _QUANTUM
+
+    with pytest.raises(_errors().LedgerError) as raised:
+        _pricing().quantize_cost(raw.copy_abs(), side=sell)
+
+    assert raised.value.code == "proceeds_below_tick"
+
+
+def test_the_buy_refusal_carries_its_own_code_and_status() -> None:
+    """422 `cost_below_tick`. A buy told "proceeds below tick" is a lie."""
+    errors = _errors()
+
+    assert errors.CostBelowTick.status_code == 422
+    assert errors.CostBelowTick.code == "cost_below_tick"
+    assert issubclass(errors.CostBelowTick, errors.LedgerError)
+
+
+# --- a raw string for a side ----------------------------------------------
+#
+# `Side` is a `StrEnum`, so `"buy" == Side.BUY` and `"buy" is Side.BUY` is
+# False. FastAPI converts before this is reached; [T-2] #22's caller is the
+# composite, which may not.
+def test_a_raw_string_side_rounds_exactly_as_the_enum_does() -> None:
+    """An unconverted `"buy"` must round up, not fall into the floor branch."""
+    magnitude = Decimal("1.00001")
+
+    assert _pricing().quantize_cost(magnitude, side="buy") == Decimal("1.0001")
+    assert _pricing().quantize_cost(magnitude, side="sell") == Decimal("1.0000")
+
+
+def test_a_raw_string_sell_is_still_refused_below_a_tick() -> None:
+    with pytest.raises(_errors().ProceedsBelowTick):
+        _pricing().quantize_cost(Decimal("0.00005"), side="sell")
 
 
 # --- the refusal ----------------------------------------------------------

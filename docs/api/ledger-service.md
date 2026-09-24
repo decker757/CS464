@@ -205,7 +205,7 @@ Query parameters, all required:
 | --- | --- | --- |
 | `outcome_id` | UUID | Must name one of this market's outcomes. |
 | `side` | `"buy"` \| `"sell"` | Exactly these two strings. |
-| `quantity` | decimal string | `> 0`, at most four decimal places. |
+| `quantity` | decimal string | `> 0`, at most four decimal places and 18 digits in all. |
 
 Any valid access token, any role — a preview mints nothing and reveals
 nothing beyond the public market read, so there is no admin gate.
@@ -217,8 +217,8 @@ nothing beyond the public market read, so there is no admin gate.
   "side": "buy",
   "outcome_id": "4f2a...",
   "quantity": "10.0000",
-  "total": "-13.3742",
-  "average_price": "1.3374",
+  "total": "-6.2340",
+  "average_price": "0.6234",
   "prices": [
     { "outcome_id": "4f2a...", "position": 0, "price": "0.6234" },
     { "outcome_id": "b7e1...", "position": 1, "price": "0.3766" }
@@ -248,14 +248,26 @@ because LMSR already expects the pool to be the side that can lose money.
 `prices` and `post_trade_prices` carry no such bias: nobody is charged a
 price, so both are `ROUND_HALF_UP`, same as everywhere else in this backend.
 
-**Where that bites: a sell can be refused rather than quoted.** In a badly
-skewed market an outcome is genuinely worth almost nothing, and a real
-quantity of it prices below one tick. Rounding down would leave `total` at
-zero — you would give up the shares and be paid nothing — while the same
-shares cost a full tick to buy, so D-041 refuses the request instead:
-`proceeds_below_tick` (422), below. A sub-tick buy needs no such refusal —
-`ROUND_CEILING` already charges the whole tick, which is the pool's favour —
-so this only ever fires on a sell.
+**Where that bites: a small sell is refused rather than quoted, in every
+market.** A sell whose proceeds are under one tick (`0.0001`) would round down
+to `total: "0.0000"` — you would give up the shares and be paid nothing — so
+the request is refused instead: `proceeds_below_tick` (422), below. This is
+not a skewed-market edge case. It fires whenever the quantity is below roughly
+`0.0001 / price` of the outcome being sold. In an ordinary market with prices
+of `0.7216` and `0.2784`, selling `0.0001` shares of the first is refused and
+`0.0002` is paid `0.0001`; for the second, even `0.0003` is refused and the
+smallest sell paid anything is `0.0004`.
+
+For the sell form: treat `proceeds_below_tick` as "increase the quantity",
+not as an error. A minimum of `0.0001 / price`, rounded up to four decimal
+places, predicts it from the `prices` you already hold, but the server's
+answer is the authority — prices move between your read and the request.
+
+A buy below one tick is charged the whole tick, which is the pool's favour,
+and needs no refusal. The exception is a buy the engine prices at **exactly**
+zero, which happens only past about `110 × b` of skew between outcomes: that
+is refused as `cost_below_tick` (422). You will essentially never see it in
+practice, but handle it the same way.
 
 **`state_version`** is the quote reference (D-011) — a JSON number, not a
 string, because it is a count and not money — and the only one. [T-2] #22
@@ -305,12 +317,12 @@ inventing new ones:
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 404 | `market_not_found` | No such market. Not distinguished from a draft or a submitted one. |
-| 409 | `market_not_published` | The market exists but has not been published, so it has no terms to open a book from. |
+| 404 | `market_not_found` | No such market — and also a draft or a submitted one, which `market_service`'s public detail endpoint refuses with the same 404. This is what an unpublished market looks like from here. |
 | 409 | `insufficient_shares_outstanding` | A sell larger than this outcome's shares outstanding — the no-shorting rule. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
-| 422 | `quantity_too_large` | The cost prices above `99999999999999.9999`, the largest amount the ledger can store (D-040). Not reachable with any plausible quantity. |
-| 422 | `proceeds_below_tick` | A sell whose proceeds round down to `0.0000` at the ledger's scale (D-041). The other edge of the same quantization as `quantity_too_large`; a sub-tick buy is unaffected. |
+| 422 | `quantity_too_large` | The cost, or this outcome's shares outstanding after the trade, would exceed `99999999999999.9999`, the largest amount the ledger can store (D-040). Not reachable with any plausible quantity. A `quantity` of more than 18 digits in total is refused earlier, as plain validation. |
+| 422 | `proceeds_below_tick` | A sell whose proceeds round down to `0.0000` — any quantity below roughly `0.0001 / price`, in any market (D-041). Ask for more. |
+| 422 | `cost_below_tick` | A buy the engine prices at exactly `0.0000`, only past about `110 × b` of skew (D-041). Ask for more. |
 | 500 | `market_book_incomplete` | This service holds a book for the market with no outcome rows — state only a hand-run repair can produce. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
@@ -375,8 +387,7 @@ Errors, reusing the preview's codes:
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 404 | `market_not_found` | No such market. Not distinguished from a draft or a submitted one. |
-| 409 | `market_not_published` | The market exists but has not been published, so it has no terms to open a book from. |
+| 404 | `market_not_found` | No such market — and also a draft or a submitted one, which `market_service`'s public detail endpoint refuses with the same 404. |
 | 500 | `market_book_incomplete` | This service holds a book for the market with no outcome rows — state only a hand-run repair can produce. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
@@ -395,15 +406,21 @@ The same envelope as the other three services:
 | 403 | `not_an_administrator` | Valid token, wrong role |
 | 422 | — | FastAPI's own validation, e.g. `limit=0` |
 
-The preview route above adds six more of its own — `market_not_found` (404),
-`market_not_published` (409), `insufficient_shares_outstanding` (409),
-`unknown_outcome` (422), `quantity_too_large` (422),
-`proceeds_below_tick` (422) and
-`market_terms_unavailable` (503) — documented
-there rather than repeated here. The snapshot route reuses three of the
-same six — `market_not_found`, `market_not_published` and
-`market_terms_unavailable` — for the reason its own section gives: both
-routes share the same cold path.
+The preview route above adds seven more of its own — `market_not_found`
+(404), `insufficient_shares_outstanding` (409), `unknown_outcome` (422),
+`quantity_too_large` (422), `proceeds_below_tick` (422), `cost_below_tick`
+(422) and `market_terms_unavailable` (503) — documented there rather than
+repeated here. The snapshot route reuses three of them —
+`market_not_found`, `market_book_incomplete` and `market_terms_unavailable`
+— for the reason its own section gives: both routes share the same cold
+path.
+
+`market_not_published` (409) exists in `core/errors.py` and neither route can
+return it: `books.ensure_open` raises it only for terms whose `published_at`
+is null, and the public detail endpoint those terms come from answers `404`
+for every market that has not been published. It is reachable the day the
+ledger reads terms from somewhere that serves unpublished markets, and not
+before.
 
 Four more exist in `core/errors.py` and no route can return them yet:
 `insufficient_funds` (409), `idempotency_key_reused` (409),
