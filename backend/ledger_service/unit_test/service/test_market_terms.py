@@ -621,13 +621,19 @@ async def test_the_close_time_is_not_what_decides_anything_here() -> None:
 
 @pytest.mark.parametrize(
     "liquidity_b",
-    # `Infinity` is the one that used to get through: `Decimal("Infinity")
-    # <= 0` is False, so it passed the comparison, Postgres `numeric`
-    # stored it, and because the book is immutable every later price was
-    # `Infinity - Infinity` raising `InvalidOperation` — an unmapped 500 on
-    # that market forever. `NaN` was already safe, but by accident: the
-    # comparison itself raises, and `_parse`'s `except ArithmeticError`
-    # catches it. Both are named now so neither depends on an accident.
+    # `Infinity` is the one that used to get through the comparison:
+    # `Decimal("Infinity") <= 0` is False. It cannot actually be stored —
+    # `numeric(18, 4)` answers "a field with precision 18, scale 4 cannot
+    # hold an infinite value" — so the old behaviour was a `DataError` on the
+    # insert, which is not an `IntegrityError` and escaped `ensure_open`'s
+    # lost-race handler as an unmapped 500 on a market's first touch.
+    #
+    # `NaN` is the worse one and was safe only by accident: the comparison
+    # itself raises `InvalidOperation`, which `_parse`'s `except
+    # ArithmeticError` happens to catch — and `numeric(18, 4)` stores NaN
+    # quite happily, so it is the only unpriceable `b` that could really end
+    # up in an immutable book. Both are named now so neither depends on an
+    # accident.
     ["0", "0.0000", "-100.0000", "Infinity", "-Infinity", "NaN"],
 )
 async def test_a_liquidity_b_that_can_never_price_is_refused(liquidity_b: str) -> None:
@@ -660,9 +666,10 @@ async def test_a_seed_subsidy_that_cannot_fund_a_pool_is_refused(
 
     A **negative** one funds the pool backwards: `books.ensure_open` posts
     `Leg(platform, -(-250)) = +250` against `Leg(pool, -250)`, so the pool is
-    debited and the house credited. `_refuse_overdrafts` exempts only
-    PLATFORM, so it surfaces much later as an `InsufficientFunds` 409 on
-    somebody's ordinary first preview, about a balance that is not theirs.
+    debited and the house credited — and nothing downstream objects.
+    `_refuse_overdrafts` skips every account that is not a USER, so the pool
+    simply sits negative, and the first thing to notice is a settlement that
+    will not balance. This guard is the only thing in the path that says no.
 
     A **zero** one builds two zero legs, and `posting.post` refuses those as
     `UnbalancedTransaction` — a 422 blaming the caller for terms they never

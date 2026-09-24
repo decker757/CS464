@@ -231,7 +231,7 @@ nothing beyond the public market read, so there is no admin gate.
 **The sign convention.** `total` answers "what happens to your balance", the
 opposite sign from the engine's own "what does the market maker absorb":
 **negative on a buy** (credits leave you), **positive on a sell** (credits
-arrive). `average_price` is always positive — the direction already lives on
+arrive). `average_price` is never negative — the direction already lives on
 `total` — and is `abs(total) / quantity`, `ROUND_HALF_UP` at scale 4. It is a
 display figure derived from the authoritative total, never the other way
 round: [T-2] #22 charges `total`, never `quantity * average_price`.

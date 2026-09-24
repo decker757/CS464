@@ -1529,7 +1529,16 @@ reason against the decision today.
 lies exactly on a tick, or within the engine's last significant digit of one,
 can be quantized one tick away from its true tick. The *quoted* error — the
 difference between the total after rounding and the true cost — is bounded at
-one tick, 0.0001 credits, in either direction. That bound is a property of the
+one tick, 0.0001 credits, **plus the engine's own last-digit residue**, in
+either direction.
+
+Not a flat tick, and the difference is worth stating because this entry names
+its own reversal trigger. At `q = [1315, 1000]`, `b = 3`, a buy of `0.0001`
+has a true cost of `0.0001 - 2.5065e-50`: the correct ceiling is one tick, the
+quote is two, and the error is one tick *and* that residue. The overshoot is
+46 orders of magnitude below the tick it overshoots, so the bound is the right
+shape and the wrong arithmetic — a reason to say "plus the residue", not a
+reason to change the rounding. The bound is otherwise a property of the
 rounding, not of the engine: the engine's own error is relative, not a fixed
 floor.
 
