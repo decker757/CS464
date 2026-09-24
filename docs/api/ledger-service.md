@@ -215,8 +215,8 @@ nothing beyond the public market read, so there is no admin gate.
   "side": "buy",
   "outcome_id": "4f2a...",
   "quantity": "10.0000",
-  "total": "-13.3742",
-  "average_price": "1.3374",
+  "total": "-6.2340",
+  "average_price": "0.6234",
   "prices": [
     { "outcome_id": "4f2a...", "position": 0, "price": "0.6234" },
     { "outcome_id": "b7e1...", "position": 1, "price": "0.3766" }
@@ -307,8 +307,7 @@ inventing new ones:
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 404 | `market_not_found` | No such market. Not distinguished from a draft or a submitted one. |
-| 409 | `market_not_published` | The market exists but has not been published, so it has no terms to open a book from. |
+| 404 | `market_not_found` | No such market — and also a draft or a submitted one, which `market_service`'s public detail endpoint refuses with the same 404. This is what an unpublished market looks like from here. |
 | 409 | `insufficient_shares_outstanding` | A sell larger than this outcome's shares outstanding — the no-shorting rule. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
 | 422 | `quantity_too_large` | The cost, or this outcome's shares outstanding after the trade, would exceed `99999999999999.9999`, the largest amount the ledger can store (D-040). Not reachable with any plausible quantity. A `quantity` of more than 18 digits in total is refused earlier, as plain validation. |
@@ -331,12 +330,19 @@ The same envelope as the other three services:
 | 403 | `not_an_administrator` | Valid token, wrong role |
 | 422 | — | FastAPI's own validation, e.g. `limit=0` |
 
-The preview route above adds eight more of its own — `market_not_found`
-(404), `market_not_published` (409), `insufficient_shares_outstanding` (409),
-`unknown_outcome` (422), `quantity_too_large` (422), `proceeds_below_tick`
-(422), `cost_below_tick` (422) and `market_terms_unavailable` (503) — documented
-there rather than repeated here, since none of them can be returned anywhere
-else on this service.
+The preview route above adds seven more of its own — `market_not_found`
+(404), `insufficient_shares_outstanding` (409), `unknown_outcome` (422),
+`quantity_too_large` (422), `proceeds_below_tick` (422), `cost_below_tick`
+(422) and `market_terms_unavailable` (503) — documented there rather than
+repeated here, since none of them can be returned anywhere else on this
+service.
+
+`market_not_published` (409) exists in `core/errors.py` and this route cannot
+return it: `books.ensure_open` raises it only for terms whose `published_at`
+is null, and the public detail endpoint those terms come from answers `404`
+for every market that has not been published. It is reachable the day the
+ledger reads terms from somewhere that serves unpublished markets, and not
+before.
 
 Three more exist in `core/errors.py` and no route can return them yet:
 `insufficient_funds` (409), `idempotency_key_reused` (409) and

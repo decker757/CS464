@@ -70,10 +70,26 @@ async def ensure_open(
 
     `access_token` is the caller's own — forwarded to market_service exactly
     as D-018's Notes describe, and never minted here.
+
+    **Call this with nothing pending on the session.** The cold path below
+    rolls back before it reaches out to market_service, so a queued write
+    would be discarded rather than carried into the book's transaction. Every
+    caller today reaches here from a read that found no book, which is the
+    only shape this function was ever given.
     """
     book = await _find(session, market_id)
     if book is not None:
         return book
+
+    # The read above found nothing and wrote nothing, and SQLAlchemy autobegan
+    # a transaction to run it — so without this the connection it holds stays
+    # checked out of the pool for the whole of the call below, which is bounded
+    # only by `market_terms`' 5s timeout. `pool_size` is 10: roughly twenty
+    # concurrent first touches, or one slow market_service, and every other
+    # route on this service waits for a connection too. Rolling back discards
+    # nothing (see the docstring) and the statements after the call open a
+    # fresh transaction on a connection taken back from the pool then.
+    await session.rollback()
 
     terms = await market_terms.fetch(
         market_id, access_token=access_token, transport=transport

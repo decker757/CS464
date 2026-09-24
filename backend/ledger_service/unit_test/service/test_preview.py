@@ -266,7 +266,7 @@ def _expected_total(q: Sequence[Decimal], outcome: int, side: str, quantity: Dec
     correct for a sell is not recoverable from the rounding mode alone.
     """
     magnitude = _pricing().quantize_cost(
-        abs(_raw_cost(q, outcome, side, quantity)), side=_pricing().Side(side)
+        _raw_cost(q, outcome, side, quantity).copy_abs(), side=_pricing().Side(side)
     )
     return -magnitude if side == "buy" else magnitude
 
@@ -290,7 +290,7 @@ def _assert_rounding_is_load_bearing(
     to be exact at scale 4. If this fires, change `_QUANTITY` — do not relax
     the assertion it is protecting.
     """
-    raw = abs(_raw_cost(q, outcome, side, quantity))
+    raw = _raw_cost(q, outcome, side, quantity).copy_abs()
     assert raw != raw.quantize(_QUANTUM), (
         "this fixture's raw cost is already exact at scale 4, so the "
         "quantization tests below prove nothing; pick another quantity"
@@ -382,10 +382,10 @@ async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
     quote = await _quote(session, upstream)
 
     magnitude = _pricing().quantize_cost(
-        abs(_raw_cost(_Q, 0, "buy", _QUANTITY)), side=_pricing().Side.BUY
+        _raw_cost(_Q, 0, "buy", _QUANTITY).copy_abs(), side=_pricing().Side.BUY
     )
     assert quote.total == -magnitude
-    assert abs(quote.total) != abs(_raw_cost(_Q, 0, "buy", _QUANTITY))
+    assert abs(quote.total) != _raw_cost(_Q, 0, "buy", _QUANTITY).copy_abs()
 
 
 async def test_the_total_is_negative_on_a_buy_and_positive_on_a_sell(
@@ -1251,7 +1251,7 @@ async def test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero(
     upstream = _Upstream()
     await _warm(session, upstream, _SATURATED)
 
-    raw = abs(_raw_cost(_SATURATED, 1, "sell", _HUNDRED))
+    raw = _raw_cost(_SATURATED, 1, "sell", _HUNDRED).copy_abs()
     assert ZERO < raw < _QUANTUM, (
         "this fixture is meant to price a real trade at under one tick; "
         f"got {raw}, so the assertions below prove nothing"

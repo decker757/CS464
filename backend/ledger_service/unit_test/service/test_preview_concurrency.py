@@ -404,14 +404,23 @@ async def test_the_ledger_still_balances_after_a_race_of_first_previews(
 async def test_two_markets_opening_by_preview_at_once_do_not_deadlock(
     session: AsyncSession,
 ) -> None:
-    """ADR 0015's lock-ordering rule, at the point D-036 says the preview reaches it.
+    """Two markets opening at once finish, rather than waiting on each other.
 
-    Every market's funding touches the *same* `PLATFORM` row, so two markets
-    opening simultaneously contend on one account while each also holds its own
-    pool. `accounts.lock` takes account locks ascending by id — an order both
-    callers agree on without coordinating — and a market id sorts unpredictably
-    against the all-zero platform owner, so a path that locked in the order its
-    legs happened to be listed would deadlock here roughly half the time.
+    **This does not prove ADR 0015's lock ordering, and it used to claim it
+    did.** Every funding transaction touches the same `PLATFORM` row and its
+    own pool, so the two callers here want `{platform, pool_a}` and
+    `{platform, pool_b}` — one row in common. A cycle needs two transactions
+    wanting the *same two* rows in opposite orders, so this pair cannot
+    deadlock however `accounts.lock` sorts. `books.ensure_open` also lists its
+    legs `[platform, pool]` every time, so even unsorted both callers agree.
+    Delete the `sorted()` in `accounts.lock` and this test stays green, which
+    is the definition of a test that is not evidence.
+
+    What it does hold is worth holding: contention on the shared platform row
+    serialises rather than stalls, and the pool account race resolves, for
+    every caller, inside the timeout. Testing the ordering rule itself needs
+    two transactions that each take two pool rows, which nothing in this
+    service does yet — [T-2] #22 is the first writer that could.
 
     A deadlock shows up as a hang rather than a failure, so it is bounded.
     """

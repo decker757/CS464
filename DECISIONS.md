@@ -1400,7 +1400,7 @@ of PR #108 disproved that: a buy of 100 shares against `q = [12000, 1]` at
 
 ---
 
-### D-NEW — An absolute value on money is `copy_abs()`, never `abs()`
+### D-042 — An absolute value on money is `copy_abs()`, never `abs()`
 
 **Date:** 2026-09-23 · **Ticket:** #21 · **Status:** active
 
@@ -1467,6 +1467,9 @@ Move these into the log above when they're settled.
   executes — in which case `post()` gains a variant that stops short of commit,
   or the trade accepts the ledger write as its own boundary and builds
   compensation around it — is still #22's to decide.
+- **`occurred_at` for a market that has never traded.** The realtime contract
+  defines it only as the time of the event. `state_changed_at` set at handoff is a
+  proposal, not something the contract says.
 - **Whether share quantities share money's scale of 4.** Settled at the API
   boundary by D-038 and still open inside the service. The preview refuses a
   quantity finer than scale 4, so nothing can *arrive* below it; what nobody has
@@ -1509,34 +1512,13 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
-- **`posting.post()` commits internally — settled for a caller with nothing to
-  write afterward, still open for one that does.** [F-7] #96 (D-032) answered
-  this for `books.ensure_open`: order every write through
-  `session.begin_nested()` and call `post()` last, so its own commit lands
-  everything together. That works whenever the call into `post()` is the
-  caller's last write. [T-2] #22 is not guaranteed to be that shape — a trade's
-  `state_version` bump and its position update on `MarketOutcome` would have to
-  precede the call into `post()`, in the same transaction, under D-032's rule,
-  never after it. Whether that ordering is workable for the trade path, or
-  whether #22 needs to check its write against a quote taken *after* the trade
-  executes — in which case `post()` gains a variant that stops short of commit,
-  or the trade accepts the ledger write as its own boundary and builds
-  compensation around it — is still #22's to decide.
-- **Nothing refuses a market whose `seed_subsidy` is below `b·ln(n)`.**
-  `core/opening_prices.py::max_platform_loss` computes the worst case and
-  `MarketOut` reports it beside the subsidy, but `service/validation.py` never
-  compares them — `_liquidity_problems` checks both are present and positive and
-  says in its own docstring that the comparison is "deliberately NOT checked",
-  on the grounds that an administrator may knowingly seed a market for less.
-  That was a defensible call while the number was only displayed. Once [F-7] #96
-  funds a pool from it, an undersubsidised market is one whose pool goes
-  negative under ordinary trading, and `_refuse_overdrafts` exempts every
-  non-USER account, so nothing anywhere will say so. Whether that stays an
-  informed choice, becomes a submission rule, or becomes a warning the ledger
-  records at book creation is undecided. It is market_service's rule to make
-  either way, not the ledger's.
-- **How long the terms pull may block, given it runs inside a transaction
-  holding row locks.** `service/market_terms.py::_TIMEOUT` is five seconds on
+- **How long the terms pull may block.** Half of this is now settled: it no
+  longer runs holding a pooled connection. `books.ensure_open` rolls back the
+  read that found no book before it calls out, so a slow market_service costs
+  one request its own latency rather than costing every route on this service
+  a connection out of a pool of ten. What is still open is the ceiling itself,
+  and the row locks [T-2] #22 will hold across it.
+  `service/market_terms.py::_TIMEOUT` is five seconds on
   every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
   is currently inherited in substance even though it is written out in the
   source, and no test can tell the line's deletion from its presence (D-030,

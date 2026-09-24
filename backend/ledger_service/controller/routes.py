@@ -212,11 +212,15 @@ async def user_entries(
     description=_PREVIEW_DESCRIPTION,
     responses={
         401: {"description": "Missing, malformed or expired access token."},
-        404: {"description": "No such market."},
+        404: {
+            "description": (
+                "No such market — including a draft or a submitted one, "
+                "which market_service refuses with the same 404."
+            )
+        },
         409: {
             "description": (
-                "The market has not been published yet, or this sell is "
-                "larger than the outcome's shares outstanding."
+                "This sell is larger than the outcome's shares outstanding."
             )
         },
         422: {
