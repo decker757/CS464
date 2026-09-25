@@ -408,7 +408,7 @@ Errors, reusing the preview's codes:
 
 ## POST /ledger/markets/{market_id}/trades
 
-[T-2] #22. Buy shares in an open market. This service's first write route.
+[T-2] #22, [T-3] #23. Buy or sell shares in an open market. This service's first write route.
 
 ```jsonc
 // request
@@ -428,10 +428,16 @@ is `accounts.ensure(USER, claims.sub)`, read from the signed token, never
 from the request; the credited side is always this market's pool. That is
 the whole answer ADR 0009's amendment gives to "how does a service prove it
 is a service": this route accepts nothing a trader could use to move money
-that is not their own. Buy only — `side` is the literal `"buy"`, and anything
-else, including `"sell"`, is `422`. A sell needs [T-3] #23's per-user
-holdings check under this same lock, which this ticket has nothing to check
-against yet.
+that is not their own. `side` is `"buy"` or `"sell"`, and anything else is
+`422`.
+
+**A sell is checked against the caller's own position** in that outcome, under
+the same book lock, and refused `409 insufficient_shares_held` if it is larger
+— including a caller with no position at all, who has `held: "0.0000"`. It is
+not checked against the market's shares outstanding, and a position in one
+outcome cannot fund a sell of another. A sell releases cost basis at average
+cost and leaves a position sold to zero as a `0.0000` row. A trader with a zero
+balance can still sell, since a sell credits them.
 
 `quantity` is D-038's rule again: `> 0`, at most four decimal places, a
 fifth is `422` rather than rounded — and at most 18 digits in all, the width
@@ -462,7 +468,8 @@ can re-preview and retry without guessing which way it was wrong.
 
 **`total` is exactly what `GET .../preview` quoted for the same trade** —
 signed negative on a buy, quantized `ROUND_CEILING` against the unsigned
-cost, the same function both routes call. `state_version` is the book's
+cost, and positive on a sell, quantized `ROUND_FLOOR` against the unsigned
+proceeds, the same function both routes call. `state_version` is the book's
 counter **after** this trade, not before it. **The response carries no
 prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
@@ -505,6 +512,10 @@ back `409 market_closed` — the trade already happened and charged the
 trader, and the only question a retry asks is what its answer was. With the
 gate first, that retry would be told its money was never spent.
 
+**The preview and this route deliberately disagree about holdings too.** The
+preview does not check them, so it can quote a sell that this route then
+refuses `409 insufficient_shares_held`.
+
 **The preview and this route deliberately disagree about a closed market,
 and it is not a bug.** `GET .../preview` never checks whether a market is
 open — it has no lock to check under and no decision to make, so a closed
@@ -517,15 +528,18 @@ Errors:
 
 | Status | `code` | When |
 | --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
 | 404 | `market_not_found` | No such market. |
 | 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
 | 409 | `quote_stale` | The quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
-| 409 | `insufficient_funds` | This account cannot afford the trade. `error.details` carries `balance` and `required`. |
+| 409 | `insufficient_funds` | A buy this account cannot afford. `error.details` carries `balance` and `required`. |
+| 409 | `insufficient_shares_held` | A sell larger than this caller's position in this outcome. `error.details` carries `held` and `requested`, decimal strings at scale 4. |
 | 409 | `idempotency_key_reused` | This idempotency key already names a different trade — a different `outcome_id`, `side` or `quantity`. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
-| 422 | `quantity_too_large` | The cost, or the traded outcome's resulting shares outstanding, is above `99999999999999.9999` — the same two bounds the preview refuses at (D-040). |
-| 422 | `cost_below_tick` | The buy's cost rounds to `0.0000` at the ledger's scale, so real shares would be charged nothing (D-041). |
-| 422 | — | A malformed body, an extra field, `side` other than `"buy"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. FastAPI's own validation; carries `{"detail": [...]}` rather than the `{"error": {...}}` envelope, matching the preview route's query-string validation. |
+| 422 | `quantity_too_large` | A buy whose cost, or whose resulting shares outstanding, is above `99999999999999.9999` — the same two bounds the preview refuses at (D-040). |
+| 422 | `cost_below_tick` | A buy whose cost rounds to `0.0000` at the ledger's scale, so real shares would be charged nothing (D-041). |
+| 422 | `proceeds_below_tick` | A sell whose proceeds round to `0.0000`. Ask for more. |
+| 422 | — | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. FastAPI's own validation; carries `{"detail": [...]}` rather than the `{"error": {...}}` envelope, matching the preview route's query-string validation. |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
 
@@ -564,9 +578,14 @@ declared responses, because it becomes reachable the day the ledger reads
 terms from somewhere that serves unpublished markets. Do not write a handler
 for it today.
 
-`insufficient_funds` (409), `idempotency_key_reused` (409), `market_closed`
-(409) and `quote_stale` (409, new in [T-2] #22) are the trade route's own,
-documented in its section above. `unbalanced_transaction` (422) is
+`insufficient_funds` (409), `insufficient_shares_held` (409, new in [T-3]
+#23), `idempotency_key_reused` (409), `market_closed` (409) and `quote_stale`
+(409, new in [T-2] #22) are the trade route's own, documented in its section
+above. `insufficient_shares_outstanding` (409) is unreachable on the trade
+route: each outcome's shares outstanding equal the sum of its positions, so
+`insufficient_shares_held` always refuses first. It stays in the code as a
+backstop and is out of the trade route's table on purpose; only the preview
+can return it. `unbalanced_transaction` (422) is
 `core/errors.py`'s and no route can return it: `service/trading.py` always
 builds two balanced legs, so it is a guard against a bug in this service
 rather than a response any request can provoke. `pending_writes_on_replay`
