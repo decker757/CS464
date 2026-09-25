@@ -39,7 +39,6 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.trade_fixtures import (
-    LARGE_QUANTITY,
     Q,
     QUANTITY,
     SMALL_QUANTITY,
@@ -62,6 +61,7 @@ from unit_test.trade_fixtures import (
     session_factory,
     trading,
     transaction_count,
+    twice_affordable,
     warm,
 )
 
@@ -317,14 +317,16 @@ async def test_concurrent_buys_from_one_user_across_markets_cannot_overdraw(
     Ernest's — this ticket is the first caller that can reach it from two
     directions at once.
 
-    The number of fills is computed from the configured grant rather than
-    written down, so the test does not silently become vacuous for whoever
-    sets `STARTING_CREDITS` in their own `.env`.
+    The quantity is sized from the configured grant rather than written
+    down (`twice_affordable`), so the test neither goes vacuous nor asks its
+    barrier for more connections than the pool holds for whoever sets
+    `STARTING_CREDITS` in their own `.env`.
     """
     user_id = uuid.uuid4()
     credits = await fund(session, user_id)
 
-    cost = -expected_total(Q, 0, "buy", LARGE_QUANTITY)
+    quantity = twice_affordable(credits)
+    cost = -expected_total(Q, 0, "buy", quantity)
     affordable = int(credits // cost)
     assert affordable >= 1, (
         f"a trade costs {cost} against a grant of {credits}, so nothing can "
@@ -348,7 +350,7 @@ async def test_concurrent_buys_from_one_user_across_markets_cannot_overdraw(
                     own,
                     upstream,
                     user_id=user_id,
-                    quantity=LARGE_QUANTITY,
+                    quantity=quantity,
                     client_key=f"key-{upstream.market_id}",
                 )
             except errors().InsufficientFunds:
@@ -373,13 +375,14 @@ async def test_no_user_balance_goes_negative_under_a_mixed_race(
     """The property rather than the arithmetic of one scenario.
 
     Three traders against three markets, nine requests, every one of them for
-    a quantity that two of cannot be afforded. Some fill, some are refused for
+    a quantity each trader can afford twice and not three times. Some fill, some are refused for
     funds, some are refused stale. Whatever the interleaving, no account holds
     less than nothing and the ledger still sums to zero.
     """
     users = [uuid.uuid4() for _ in range(3)]
     for user_id in users:
-        await fund(session, user_id)
+        credits = await fund(session, user_id)
+    quantity = twice_affordable(credits)
 
     upstreams = [Upstream() for _ in range(3)]
     for upstream in upstreams:
@@ -397,7 +400,7 @@ async def test_no_user_balance_goes_negative_under_a_mixed_race(
                     own,
                     upstream,
                     user_id=user_id,
-                    quantity=LARGE_QUANTITY,
+                    quantity=quantity,
                     client_key=f"{user_id}-{upstream.market_id}",
                 )
             except (errors().InsufficientFunds, errors().QuoteStale):

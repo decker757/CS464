@@ -66,6 +66,7 @@ from unit_test.trade_fixtures import (
     token,
     trading,
     transaction_count,
+    unaffordable,
     warm,
     writes,
 )
@@ -758,15 +759,15 @@ async def test_an_insufficient_balance_is_refused_and_writes_nothing(
     await warm(session, upstream)
     credits = await fund(session, user_id)
 
-    unaffordable = Decimal("1111.1111")
-    assert -expected_total(Q, 0, "buy", unaffordable) > credits, (
+    quantity = unaffordable(credits)
+    assert -expected_total(Q, 0, "buy", quantity) > credits, (
         "this quantity has to cost more than the starting grant or the test "
         "is not exercising a refusal at all"
     )
     before = await entry_count(session)
 
     with pytest.raises(errors().InsufficientFunds):
-        await buy(session, upstream, user_id=user_id, quantity=unaffordable)
+        await buy(session, upstream, user_id=user_id, quantity=quantity)
     await session.rollback()
 
     assert await _committed_state(entry_count) == before

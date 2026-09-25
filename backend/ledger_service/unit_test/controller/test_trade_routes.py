@@ -45,7 +45,15 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import bearer, mint_token
-from unit_test.trade_fixtures import B, Q, QUANTITY, SUBSIDY, Recorder
+from unit_test.trade_fixtures import (
+    B,
+    Q,
+    QUANTITY,
+    SUBSIDY,
+    Recorder,
+    expected_total,
+    unaffordable,
+)
 
 _CLIENT_KEY = "client-key-1"
 
@@ -583,7 +591,10 @@ async def test_a_stale_quote_is_409_with_the_versions_in_details(
 
 
 async def test_an_unaffordable_trade_is_409_insufficient_funds(
-    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    trade_client,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    starting_credits: Decimal,
 ) -> None:
     """409 rather than 422: nothing about the request is malformed and the
     same request may well succeed later. The existing `details` with `balance`
@@ -592,10 +603,12 @@ async def test_an_unaffordable_trade_is_409_insufficient_funds(
     market = _Market()
     await _warm(session, market)
     _Terms().install(monkeypatch, market)
+    quantity = unaffordable(starting_credits)
+    assert -expected_total(Q, 0, "buy", quantity) > starting_credits
 
     response = await client.post(
         _path(market.market_id),
-        json=_body(market, quantity="1111.1111"),
+        json=_body(market, quantity=str(quantity)),
         headers=bearer(uuid.uuid4()),
     )
 

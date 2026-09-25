@@ -137,12 +137,6 @@ Q = [Decimal("311.7000"), Decimal("88.3000")]
 QUANTITY = Decimal("41.0000")
 SMALL_QUANTITY = Decimal("13.3333")
 
-# Priced against `Q` at `B` this costs 387.9413, so a trader holding the
-# default 1000 starting credits can afford exactly two. Used by the overdraft
-# race, which computes the number of fills from the configured grant rather
-# than assuming it.
-LARGE_QUANTITY = Decimal("411.1111")
-
 FUTURE = "2027-01-05T12:00:00Z"
 
 # A ceiling, not a duration. Everything here should finish in milliseconds;
@@ -538,6 +532,39 @@ def expected_total(
         abs(raw_cost(q, outcome, side, quantity)), side=pricing().Side(side)
     )
     return -magnitude if side == "buy" else magnitude
+
+
+def unaffordable(credits: Decimal) -> Decimal:
+    """A buy of outcome 0 against `Q` that costs more than `credits`.
+
+    Derived from the grant rather than written down, so a refusal test still
+    refuses for whoever sets `STARTING_CREDITS` in their own `.env`. Outcome 0
+    leads `Q`, so a buy of x shares of it never costs less than x - b*ln 2,
+    and `credits + 2b` clears any grant. Callers still assert it.
+    """
+    return credits + 2 * B
+
+
+def twice_affordable(credits: Decimal) -> Decimal:
+    """A buy of outcome 0 against `Q` that `credits` can afford exactly twice.
+
+    For the overdraft races, which need somebody refused whatever the grant
+    is. A fixed quantity against a larger grant fills every party: the mixed
+    race turns vacuous, and the one-user race asks its barrier for more
+    connections than the pool holds and never starts.
+
+    The largest whole-tick buy costing at most `credits / 2.5` — two fit, a
+    third does not. Bisected, because the cost has no closed-form inverse.
+    """
+    budget = credits / Decimal("2.5")
+    lo, hi = 0, int(unaffordable(budget) / QUANTUM)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if -expected_total(Q, 0, "buy", mid * QUANTUM) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo * QUANTUM
 
 
 def floored_total(

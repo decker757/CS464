@@ -48,12 +48,14 @@ from unit_test.trade_fixtures import (
     entities,
     entry_count,
     errors,
+    expected_total,
     fund,
     lmsr,
     q_of,
     session_factory,
     trading,
     transaction_count,
+    unaffordable,
     warm,
 )
 
@@ -325,9 +327,11 @@ async def test_a_refused_trade_publishes_nothing(
         version = 9
         expected = errors().QuoteStale
     else:
-        quantity = Decimal("1111.1111")
+        quantity = unaffordable(credits)
         expected = errors().InsufficientFunds
-        assert credits < quantity, "this quantity has to be unaffordable"
+        assert -expected_total(Q, 0, "buy", quantity) > credits, (
+            "this quantity has to be unaffordable"
+        )
 
     with pytest.raises(expected):
         await buy(
