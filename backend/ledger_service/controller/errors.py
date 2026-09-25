@@ -9,7 +9,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from core.errors import InsufficientFunds, LedgerError
+from core.errors import InsufficientFunds, LedgerError, QuoteStale
 
 _log = logging.getLogger(__name__)
 
@@ -30,6 +30,11 @@ def register_error_handlers(app: FastAPI) -> None:
                 "balance": str(exc.balance),
                 "required": str(exc.required),
             }
+        elif isinstance(exc, QuoteStale):
+            # Ints, not decimal strings: `state_version` is a count, the same
+            # reason `PreviewOut.state_version` is a JSON number rather than
+            # a string.
+            error["details"] = {"quoted": exc.quoted, "current": exc.current}
 
         # A 5xx in this envelope is the ledger saying its own data is wrong,
         # and before this it was the only 500 in the service that reached the

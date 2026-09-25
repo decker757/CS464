@@ -25,7 +25,9 @@ request after a market's first is the single read and writes nothing.
 book with no outcome rows as no book, so the cold path finds the book,
 returns, and the read comes back empty a second time. A book left holding a
 single row is the same fault one step along: it survives an emptiness check
-and dies in `core/lmsr.py`, so the floor here is `books.MIN_OUTCOMES`.
+and dies in `core/lmsr.py`, so the floor here is `books.MIN_OUTCOMES`. That
+guard is `refuse_unpriceable`, public because [T-2] #22's locked read is its
+second caller.
 """
 
 from __future__ import annotations
@@ -81,14 +83,30 @@ async def read_or_open(
         )
         rows = await _read(session, market_id)
 
-    # Fewer than two, not zero, and on **both** paths. `core/lmsr.py` refuses
-    # a `q` naming one outcome with a bare `ValueError`, which is not a
-    # `LedgerError` and reaches the client as the same unmapped 500 this check
-    # exists to stop. Guarding only the cold path would have missed the case
-    # entirely: a book damaged down to one row already exists, so every read
-    # of it is warm and returns before the cold path is reached. Same floor
-    # `books._refuse_unpriceable` enforces on the way in.
-    if len(rows) < books.MIN_OUTCOMES:
+    # On **both** paths: a book damaged down to one row already exists, so
+    # every read of it is warm and returns before the cold path is reached.
+    refuse_unpriceable(len(rows), rows[0].liquidity_b if rows else None)
+
+    return rows
+
+
+def refuse_unpriceable(outcome_count: int, b: Decimal | None) -> None:
+    """Raise `MarketBookIncomplete` for a book the engine cannot price.
+
+    The one copy of this guard. `read_or_open` calls it on the shared price
+    read, and [T-2] #22's `service/trading.py` calls it on its own read
+    under the book lock, which cannot go through `read_or_open` — so the
+    trade and the preview refuse the same books for the same reasons.
+
+    Takes the count and `b` rather than rows because the two callers read
+    different shapes: a joined `Row` projection here, `MarketOutcome` and
+    `MarketBook` entities on the trade path.
+    """
+    # Fewer than two, not zero. `core/lmsr.py` refuses a `q` naming one
+    # outcome with a bare `ValueError`, which is not a `LedgerError` and
+    # reaches the client as the same unmapped 500 this check exists to stop.
+    # Same floor `books._refuse_unpriceable` enforces on the way in.
+    if outcome_count < books.MIN_OUTCOMES:
         raise MarketBookIncomplete
 
     # The book's own `b`, before it reaches the engine. `books.ensure_open`
@@ -102,11 +120,8 @@ async def read_or_open(
     # `NaN` is why this is worth having rather than a null check: it is the
     # only unpriceable `b` `numeric(18, 4)` will store, and it does not even
     # reach `_require_positive_b` as False — `NaN <= 0` raises.
-    b = rows[0].liquidity_b
-    if not b.is_finite() or b <= 0:
+    if b is None or not b.is_finite() or b <= 0:
         raise MarketBookIncomplete
-
-    return rows
 
 
 def priced(rows: Sequence[Row], raw: list[Decimal]) -> list[PricedOutcome]:

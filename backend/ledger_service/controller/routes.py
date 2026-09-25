@@ -5,20 +5,22 @@ business rule lives here, and no route builds an error response by hand. Domain
 errors raised below the controller are turned into JSON by
 `errors.register_error_handlers`.
 
-Every route reads. There is deliberately no POST, PUT, PATCH or DELETE:
+Nothing edits or removes a ledger entry, ever, and there is no PUT, PATCH or
+DELETE anywhere on this service. That is the whole design, it is enforced by
+a trigger rather than by this file being short, and a route added here in a
+hurry would fail against the database.
 
-- Nothing edits or removes a ledger entry, ever. That is the whole design, it
-  is enforced by a trigger rather than by this file being short, and a route
-  added here in a hurry would fail against the database.
-- Nothing *writes* one over HTTP yet either. `service/posting.py` holds the
-  write path, and the endpoint that exposes it belongs to [T-2] #22, together
-  with the decision about how a trading service proves it is a trading service.
-  A write route that trusted a trader's own token would be a route for minting
-  yourself credits.
+**`POST /markets/{market_id}/trades` is this service's first write route.**
+[T-2] #22 answers ADR 0009's deferred service-auth question for exactly this
+shape of caller: the route takes no account, no amount and no leg — the
+request model is `extra="forbid"` over five fields, none of them money — so
+the debited account is `accounts.ensure(USER, claims.sub)` rather than
+anything in the body, and a trader's own token is safe to accept because
+there is nothing in the request for it to mint. See ADR 0009's amendment.
 
-The grant is the exception that proves it: reading a balance can write, because
-[B-1] #32's starting credits are minted lazily on first read. See
-`service/grants.py`.
+The grant is the older exception that proves the same rule from the read
+side: reading a balance can write, because [B-1] #32's starting credits are
+minted lazily on first read. See `service/grants.py`.
 """
 
 from __future__ import annotations
@@ -34,7 +36,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # The two private helpers below take a plain AsyncSession: FastAPI never looks
 # at them, so an Annotated[..., Depends(...)] there would advertise an
 # injection that does not happen.
-from controller.dependencies import AccessToken, CurrentAdmin, CurrentUser, DbSession
+from controller.dependencies import (
+    AccessToken,
+    CurrentAdmin,
+    CurrentUser,
+    DbSession,
+    RedisClient,
+)
 from core.config import get_settings
 from core.pricing import Side
 from model.schemas import (
@@ -44,8 +52,15 @@ from model.schemas import (
     OutcomePriceOut,
     PreviewOut,
     SnapshotOut,
+    TradeIn,
+    TradeOut,
 )
-from service import ledger_service, preview as preview_service, snapshot as snapshot_service
+from service import (
+    ledger_service,
+    preview as preview_service,
+    snapshot as snapshot_service,
+    trading,
+)
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -333,6 +348,102 @@ async def market_snapshot(
             for p in result.prices
         ],
         occurred_at=result.occurred_at,
+    )
+
+
+_TRADE_DESCRIPTION = (
+    "[T-2] #22. Buy shares in an open market. This service's first write "
+    "route: it takes no account, no amount and no leg — the request model "
+    "is `extra=\"forbid\"`, and the debited account is the caller's own, "
+    "read from the token's `sub` (ADR 0009's amendment).\n\n"
+    "**A retry answers before a status check runs.** The idempotency "
+    "lookup is unlocked and first: a hit is compared against this request "
+    "and replayed — no HTTP call to market_service, no lock — even on a "
+    "market that has since closed, so a trade that committed and lost its "
+    "response is never told `market_closed` for a trade that in fact "
+    "charged the trader (ADR 0017).\n\n"
+    "**The stored idempotency key is derived**, "
+    "`trade:<user_id>:<market_id>:<idempotency_key>` — the client's string "
+    "is never stored as sent, so it only has to be unique to the caller "
+    "who sent it.\n\n"
+    "**`state_version` is required and compared under the book's own lock, "
+    "for strict equality.** Either direction — older or newer than the "
+    "book — is `409 quote_stale`, with `quoted` and `current` in "
+    "`error.details`.\n\n"
+    "Buy only. A sell is refused `422` until [T-3] #23 adds the per-user "
+    "holdings check this route needs before it can accept one.\n\n"
+    "On success, a price event publishes after the transaction commits; a "
+    "publish failure never fails the trade and never surfaces here."
+)
+
+
+@router.post(
+    "/markets/{market_id}/trades",
+    response_model=TradeOut,
+    status_code=201,
+    summary="Buy shares in an open market",
+    description=_TRADE_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "The market is not open for trading, the quoted "
+                "`state_version` is stale, this account cannot afford the "
+                "trade, or this idempotency key already names a different "
+                "trade."
+            )
+        },
+        422: {
+            "description": (
+                "A malformed body, an extra field, `side` other than "
+                "\"buy\", a quantity at five decimal places, <= 0 or wider "
+                "than 18 digits, an `outcome_id` that is not this market's, "
+                "a quantity whose cost or resulting shares outstanding "
+                "exceed what the ledger can store, or a buy whose cost "
+                "rounds to nothing (`cost_below_tick`, D-041)."
+            )
+        },
+        500: {
+            "description": (
+                "`market_book_incomplete`: this service holds a book for the "
+                "market that cannot be priced — no outcome rows, one of "
+                "them, or a `liquidity_b` the engine cannot use. A server "
+                "fault; not worth retrying."
+            )
+        },
+        503: {"description": "market_service could not be reached right now."},
+    },
+)
+async def buy_shares(
+    market_id: uuid.UUID,
+    body: TradeIn,
+    user: CurrentUser,
+    access_token: AccessToken,
+    session: DbSession,
+    redis: RedisClient,
+) -> TradeOut:
+    result = await trading.execute(
+        session,
+        market_id,
+        user_id=user.user_id,
+        outcome_id=body.outcome_id,
+        side=Side.BUY,
+        quantity=body.quantity,
+        state_version=body.state_version,
+        idempotency_key=body.idempotency_key,
+        access_token=access_token,
+        redis_client=redis,
+    )
+    return TradeOut(
+        transaction_id=result.transaction_id,
+        user_id=result.user_id,
+        market_id=result.market_id,
+        outcome_id=result.outcome_id,
+        side=Side(result.side),
+        quantity=result.quantity,
+        total=result.total,
+        state_version=result.state_version,
     )
 
 

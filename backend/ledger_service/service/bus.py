@@ -6,10 +6,13 @@ Copied rather than imported — four lines of `redis.publish` are below ADR
 by `unit_test/service/test_price_publish.py`, which reads that file as source
 text rather than importing it.
 
-**Nothing in this ticket calls `publish`.** The caller is [T-2] #22, after its
-own commit — publishing before the commit would announce a price a rollback
-then un-makes. `unit_test/service/test_price_publish.py::test_nothing_in_this_service_calls_publish`
-holds that shape for exactly this ticket and is deleted by #22.
+**[T-2] #22 is the caller.** `service/trading.py::execute` calls this after
+its own commit — publishing before the commit would announce a price a
+rollback then un-makes, and it is called on a fresh, successful trade only:
+never on a rejection and never on a replay, both of which move no price.
+`unit_test/service/test_price_publish.py::test_nothing_in_this_service_calls_publish`
+held that shape for exactly one ticket, the one before this, and #22 deletes
+it — its own docstring said it would.
 
 **A publish failure never reaches the caller.** Nothing acknowledges and
 nothing subscribes on the producer's behalf, so a trade that has already

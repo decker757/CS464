@@ -4,13 +4,15 @@ Base URL `http://localhost:8003` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8003/docs).
 
-Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13, and
-[T-1] #21's cost preview.
+Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
+[T-1] #21's cost preview, and [T-2] #22's buy route.
 
-Why balances are derived rather than stored, why a read can write, and why
-there is no write endpoint yet:
-[ADR 0009](../adr/0009-the-ledger-write-path.md). Why positions will live here
+Why balances are derived rather than stored and why a read can write:
+[ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
+answer how a write route authenticates a caller. Why positions live here
 rather than with markets: [ADR 0005](../adr/0005-trading-service-boundary.md).
+Why the ledger asks market_service whether a market is still open, once per
+trade: [ADR 0017](../adr/0017-the-ledger-and-a-stopped-market.md).
 
 ## Endpoints
 
@@ -22,13 +24,15 @@ rather than with markets: [ADR 0005](../adr/0005-trading-service-boundary.md).
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
+| POST | `/ledger/markets/{market_id}/trades` | Buy shares |
 | GET | `/health` | Liveness and readiness probe |
 
-**Every route reads.** There is no POST, PUT, PATCH or DELETE, and there never
-will be one that edits or removes an entry — the ledger is append-only, enforced
-by a database trigger rather than by the absence of a route. The endpoint that
-*writes* a movement arrives with [T-2] #22, together with the decision about how
-a trading service authenticates to it.
+**Every other route reads, and none of them ever will edit or remove an
+entry** — the ledger is append-only, enforced by a database trigger rather
+than by the absence of a route. `POST .../trades` is this service's first
+write, and [T-2] #22 answers ADR 0009's deferred question about it: the route
+takes no account, no amount and no leg, so a trader's own token is a safe
+credential for it in a way it could never be for a route that accepted one.
 
 The balance route, the preview route and the snapshot route are each an
 exception to "reads don't write," and for the same reason: a balance mints a
@@ -402,6 +406,129 @@ Errors, reusing the preview's codes:
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. Only a hand-run repair or a half-applied migration produces it. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
 
+## POST /ledger/markets/{market_id}/trades
+
+[T-2] #22. Buy shares in an open market. This service's first write route.
+
+```jsonc
+// request
+{
+  "outcome_id": "4f2a...",
+  "side": "buy",
+  "quantity": "10.0000",
+  "state_version": 42,
+  "idempotency_key": "a client-generated string, unique to this caller"
+}
+```
+
+**Takes no account and no amount.** The request model is `extra="forbid"`
+over exactly these five fields — an `account_id`, an `amount`, a `total` or a
+`legs` array in the body is `422`, not silently dropped. The debited account
+is `accounts.ensure(USER, claims.sub)`, read from the signed token, never
+from the request; the credited side is always this market's pool. That is
+the whole answer ADR 0009's amendment gives to "how does a service prove it
+is a service": this route accepts nothing a trader could use to move money
+that is not their own. Buy only — `side` is the literal `"buy"`, and anything
+else, including `"sell"`, is `422`. A sell needs [T-3] #23's per-user
+holdings check under this same lock, which this ticket has nothing to check
+against yet.
+
+`quantity` is D-038's rule again: `> 0`, at most four decimal places, a
+fifth is `422` rather than rounded — and at most 18 digits in all, the width
+of `Numeric(18, 4)`, the same ceiling the preview's query parameter carries.
+Past validation, a quantity whose cost **or whose resulting shares
+outstanding** would not fit that column is `422 quantity_too_large`: the
+trade writes both, and the preview refuses the same request for the same
+reason. `state_version` is **required** — an
+optional staleness field would let a client silently opt out of the only
+staleness protection a trade has — and is compared for **strict equality**,
+either direction, under the book row's own lock; a mismatch is
+`409 quote_stale` with `quoted` and `current` in `error.details`, so a client
+can re-preview and retry without guessing which way it was wrong.
+
+```jsonc
+// response, 201
+{
+  "transaction_id": "36fd...",
+  "user_id": "5f3e...",
+  "market_id": "9d1c...",
+  "outcome_id": "4f2a...",
+  "side": "buy",
+  "quantity": "10.0000",
+  "total": "-13.3742",
+  "state_version": 43
+}
+```
+
+**`total` is exactly what `GET .../preview` quoted for the same trade** —
+signed negative on a buy, quantized `ROUND_CEILING` against the unsigned
+cost, the same function both routes call. `state_version` is the book's
+counter **after** this trade, not before it. **The response carries no
+prices.** A replayed price was true once and is a lie afterwards; `total` is
+what the trader was charged, for ever. Render a price from the `price` frame
+or from `GET .../snapshot` instead.
+
+### The idempotency key is derived, and a retry is answered before anything
+else runs
+
+The stored key is **not** `idempotency_key` as sent. It is
+`trade:<user_id>:<market_id>:<idempotency_key>` — this route's own answer to
+"The trade's idempotency key is derived by the server; the client's value is
+one component of it". A verbatim key would let a trader submit a trade keyed
+`signup-grant:<somebody else's user id>`, after which that user's first
+balance read would find the key already present and never receive their
+starting credits — silently, permanently, in a table nothing rewrites. The
+derivation confines a collision to one caller in one market, which is what an
+idempotency key is for; a client's string only has to be unique *to itself*.
+
+**The order on this route is fixed, and getting it backwards is the kind of
+bug that has no symptom until a market closes mid-retry.**
+
+1. The idempotency lookup, **unlocked and first** — before the market-open
+   status is even checked, and before any HTTP call. A hit is compared
+   against the request (`outcome_id`, `side` and `quantity` — `quantity`
+   compared numerically, so `10` and `10.0000` are the same trade) and
+   returned with the **same `201`** and a byte-identical body; a mismatch is
+   `409 idempotency_key_reused`. `state_version` is **not** part of that
+   comparison — a client that lost its response is expected to re-preview
+   before retrying, and the version it now quotes is newer, for the same
+   trade.
+2. Only then the gate: is this market still open? Read off
+   `market_service`'s public detail endpoint, once, forwarding this
+   request's own token.
+3. The book row's lock, and a second idempotency check under it, before this
+   request writes anything of its own.
+
+**Why the lookup runs before the gate, not after.** A trade that committed
+and whose response was lost, retried after the market closed, must not come
+back `409 market_closed` — the trade already happened and charged the
+trader, and the only question a retry asks is what its answer was. With the
+gate first, that retry would be told its money was never spent.
+
+**The preview and this route deliberately disagree about a closed market,
+and it is not a bug.** `GET .../preview` never checks whether a market is
+open — it has no lock to check under and no decision to make, so a closed
+market still prices a hypothetical trade. This route decides whether a real
+one may happen, and refuses `409 market_closed` on the same closed market
+the preview just quoted a number for. A preview is arithmetic and fires on
+every keystroke; a trade is a decision and fires once (ADR 0017).
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 404 | `market_not_found` | No such market. |
+| 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
+| 409 | `quote_stale` | The quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
+| 409 | `insufficient_funds` | This account cannot afford the trade. `error.details` carries `balance` and `required`. |
+| 409 | `idempotency_key_reused` | This idempotency key already names a different trade — a different `outcome_id`, `side` or `quantity`. |
+| 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
+| 422 | `quantity_too_large` | The cost, or the traded outcome's resulting shares outstanding, is above `99999999999999.9999` — the same two bounds the preview refuses at (D-040). |
+| 422 | `cost_below_tick` | The buy's cost rounds to `0.0000` at the ledger's scale, so real shares would be charged nothing (D-041). |
+| 422 | — | A malformed body, an extra field, `side` other than `"buy"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. FastAPI's own validation; carries `{"detail": [...]}` rather than the `{"error": {...}}` envelope, matching the preview route's query-string validation. |
+| 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
+| 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
+
 ## Errors
 
 The same envelope as the other three services:
@@ -432,21 +559,17 @@ every other domain error, and no request can currently reach it.
 `books.ensure_open` raises it only for terms whose `published_at` is null, and
 the public detail endpoint those terms come from answers `404` for every
 market that has not been published — so a draft arrives here as
-`market_not_found`, not as this. It is left in place, and out of both routes'
+`market_not_found`, not as this. It is left in place, and out of all three routes'
 declared responses, because it becomes reachable the day the ledger reads
 terms from somewhere that serves unpublished markets. Do not write a handler
 for it today.
 
-Four more exist in `core/errors.py` and no route can return them yet:
-`insufficient_funds` (409), `idempotency_key_reused` (409),
-`unbalanced_transaction` (422) and `market_closed` (409). They belong to the
-write path and are documented here so that [T-2] #22's endpoint is a route
-rather than a second opinion about what they mean. `insufficient_funds`
-carries `error.details` with `balance` and `required`, because a trading
-service has to tell somebody how short they were.
-
-`market_closed` is ADR 0017's: the trade path will read market_service's
-public detail endpoint once per trade that is not a replay of one already
-committed, and refuse this code when that market's derived status is not
-`"open"` — spelled the same way market_service spells its own version of the
-same refusal, so a frontend error handler built for one serves both.
+`insufficient_funds` (409), `idempotency_key_reused` (409), `market_closed`
+(409) and `quote_stale` (409, new in [T-2] #22) are the trade route's own,
+documented in its section above. `unbalanced_transaction` (422) is
+`core/errors.py`'s and no route can return it: `service/trading.py` always
+builds two balanced legs, so it is a guard against a bug in this service
+rather than a response any request can provoke. `pending_writes_on_replay`
+(500) is the same shape one layer down, in `service/posting.py` — a caller
+of the write primitive reaching its replay branch with work still pending,
+which every caller this service has is built not to do.
