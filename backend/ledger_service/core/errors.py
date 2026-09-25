@@ -13,6 +13,8 @@ is a route and a docstring rather than a second opinion about what these mean.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 
 class LedgerError(Exception):
     """Base class for every ledger domain error."""
@@ -189,12 +191,13 @@ class MarketNotPublished(LedgerError):
 class InsufficientSharesOutstanding(LedgerError):
     """A sell larger than this outcome's shares outstanding. [T-1] #21.
 
-    The no-shorting rule, enforced against `q_i` rather than against a
-    per-user holding — this service has no positions table, and the holdings
-    check is [T-3] #23's, meaning anything only under the trade's lock
-    (D-012). What this refuses is a sell that would drive `q_i` negative,
-    which `C(q)` has no answer for: the preview would otherwise quote a
-    number for shares that do not exist anywhere.
+    The no-shorting rule against `q_i`, which is the whole market's, not one
+    trader's. On the trade route it is unreachable: each outcome's `q` equals
+    the sum of the positions in it, so the holding check
+    (`InsufficientSharesHeld`) always refuses first. It stays as a backstop —
+    nothing in the database stops a hand-repaired book's `q` going negative,
+    which `C(q)` has no answer for. The preview still reaches it, because the
+    preview checks no holding.
 
     409 rather than 422: nothing about the request is malformed, and the same
     request succeeds against a book with more shares outstanding. It is the
@@ -205,6 +208,32 @@ class InsufficientSharesOutstanding(LedgerError):
     status_code = 409
     code = "insufficient_shares_outstanding"
     message = "This sell is larger than the shares outstanding for this outcome."
+
+
+class InsufficientSharesHeld(LedgerError):
+    """A sell larger than the caller's own position in that outcome. [T-3] #23.
+
+    409 for `InsufficientFunds`' reason: the request is well formed and the
+    state refuses it. Distinct from `InsufficientSharesOutstanding`, whose
+    remedy is not the caller's: this one is fixed by selling at most `held`.
+
+    Carries both figures, which the raiser has already put at scale 4
+    (`service/trading.py`), so a caller with no position reads
+    `"0.0000"` and a request of `10` reads `"10.0000"`, and a sell form can
+    offer "sell all" without a second request.
+    """
+
+    status_code = 409
+    code = "insufficient_shares_held"
+
+    def __init__(self, *, held: Decimal, requested: Decimal) -> None:
+        self.held = held
+        self.requested = requested
+        self.message = (
+            f"This account holds {self.held} shares of this outcome and the "
+            f"sell asks for {self.requested}."
+        )
+        super().__init__(self.message)
 
 
 class QuantityTooLarge(LedgerError):

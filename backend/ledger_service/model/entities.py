@@ -83,10 +83,9 @@ class AccountKind(StrEnum):
 class TransactionKind(StrEnum):
     """Why credits moved.
 
-    SIGNUP_GRANT is the only member today because it is the only movement any
-    shipped code performs. TRADE_BUY, TRADE_SELL and SETTLEMENT arrive with
-    [T-2] #22, [T-3] #23 and [3.4] #12, and are Python-only additions for the
-    same reason as `AccountKind`.
+    SIGNUP_GRANT is the oldest member. TRADE_BUY and TRADE_SELL arrived with
+    [T-2] #22 and [T-3] #23, and SETTLEMENT arrives with [3.4] #12. Each is a
+    Python-only addition for the same reason as `AccountKind`.
     """
 
     SIGNUP_GRANT = "signup_grant"
@@ -100,6 +99,10 @@ class TransactionKind(StrEnum):
     # addition like the two above: the column is a non-native `Enum`, so this
     # needs no migration against a database that already has the table.
     TRADE_BUY = "trade_buy"
+
+    # MARKET_POOL -> USER, posted once per sell. [T-3] #23. Non-native like the
+    # rest, so it needs no migration either.
+    TRADE_SELL = "trade_sell"
 
 
 _ACCOUNT_KIND_COLUMN = Enum(
