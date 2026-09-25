@@ -2517,6 +2517,285 @@ the specific 49-character client key.
 
 ---
 
+### D-NEW — A sell releases cost basis at average cost: the remaining basis is rounded half-up and the released basis is the difference
+
+**Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
+
+**Decision.** On a sell of `x` from a position of `held` shares at `basis`,
+the remaining basis is `basis × (held − x) / held`, computed inside
+`core/lmsr.py`'s engine context and quantized `ROUND_HALF_UP` to scale 4. The
+released basis is `basis − remaining`, an exact subtraction at scale 4. A sell
+of the whole position is an explicit branch that writes `0.0000` for both
+quantity and basis. The arithmetic is a pure function in `core/`.
+
+This clarifies "`cost_basis` is stored; average entry price is derived".
+Its "cumulative net `cost_basis`" means net of **released basis**, never net
+of proceeds.
+
+**Why average cost.** It is the only method `(quantity, cost_basis)` can
+support. "`ledger.positions` stores quantity and cost basis, keyed on the
+triple" gives one row per holding and no lots, and FIFO or specific-lot
+accounting needs lots. It is also the method under which "average entry
+price", which [T-4] #24 displays, means what a trader expects: a sell leaves
+it where it was, to within rounding.
+
+**Why round the remainder and derive the release.** Rounding one side and
+deriving the other makes `released + remaining == basis` hold on every sell.
+Over a full sell-down, the released amounts therefore add up to exactly what
+was paid. Rounding drift on an early sell is absorbed by a later one, and a
+full exit leaves nothing behind. At a basis of `10.0000` over `3.0000` shares,
+three sells of one share release `3.3333`, `3.3333`, `3.3334` and leave
+`0.0000`.
+
+**Why half-up and not directional.** The directional rounding in
+"`quantize_cost` takes an unsigned magnitude; the caller applies the sign"
+exists so that the residue of money *charged* goes to the pool. Cost basis
+charges nobody and moves no credits, so there is no side for a residue to
+favour. It takes the rounding every other non-charged figure in this service
+takes. The choice is observable: a basis of `29.8428` over `54.3333` shares,
+selling `10.0000`, leaves `24.3503` half-up and `24.3502` floored.
+
+**Why engine precision.** `basis × remaining_quantity` can reach 36
+significant digits, and the ambient 28-digit context would round the product
+before the quantize ran. That is the hazard in "An absolute value on money is
+`copy_abs()`, never `abs()`", arriving through a multiplication. Multiplying
+before dividing keeps the product exact whenever the division is.
+
+**Rejected.** *Net cash*, `cost_basis -= proceeds`: a profitable sell drives
+it negative, which `ck_positions_cost_basis_nonneg` refuses, and a full exit
+leaves minus the realized P&L instead of zero, so `basis / quantity` stops
+being a price. *Rounding the average entry price and multiplying back*: at
+`10.0000` over `3.0000` the average rounds to `3.3333`, three sells release
+`9.9999`, and the last `0.0001` is either stranded on a zero-quantity row or
+lost. *Floor or ceiling on the remainder*: a directional mode with no
+direction to favour.
+
+**Reversal trigger.** A ticket that requires lot-level accounting (FIFO,
+tax lots, per-fill P&L). That needs a lots table, and this entry and the
+single-row schema reverse together.
+
+**Notes.** The positions table's claim to be "reconstructible from the
+entries" now depends on this rule. Replaying a user's trade contexts in order
+through it reproduces `cost_basis` exactly, and any other rule reproduces a
+different number. `TransactionKind.TRADE_SELL` arrives with this ticket and,
+like `TRADE_BUY`, is a non-native enum member that needs no migration.
+
+Selling all but `0.0001` of a position leaves dust: at `29.8428` over
+`54.3333`, selling `54.3332` leaves `0.0001` shares at a basis of `0.0001`,
+an average entry of `1.0000`. That is correct arithmetic, and [T-4] #24
+should expect it.
+
+---
+
+### D-NEW — A position sold to zero keeps its row
+
+**Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
+
+**Decision.** A sell that empties a position UPDATEs it to quantity
+`0.0000`, basis `0.0000`. The row is never deleted. A later buy accumulates
+onto it as a fresh basis.
+
+**Why.** The holding check guarantees a sell's row exists, so a sell is
+always an UPDATE, and the trade path keeps exactly two write shapes: INSERT
+on a first buy, UPDATE otherwise. Deleting would add a third shape for no
+reader that needs it. "`ledger.positions` stores quantity and cost basis,
+keyed on the triple" already allowed `quantity >= 0` rather than `> 0` for
+this case, and `test_a_zero_position_is_allowed` pins it.
+
+**Rejected.** Deleting at zero: a DELETE on the hot path, and
+delete-then-insert churn for a trader who exits and re-enters, in exchange
+for sparing readers a `WHERE quantity > 0`.
+
+**Reversal trigger.** Zero rows measurably costing a reader. [3.4] #12's
+1,000-positions-in-five-seconds criterion is the first place that could show
+it, and only if zero rows turn out to be a material share of the table.
+
+**Notes.** Every reader filters. [T-4] #24 shows `quantity > 0` only, and
+[3.4] #12 must skip zero rows: a zero payout leg is refused by `posting.post`
+as `UnbalancedTransaction`, so settling one fails the whole settlement.
+
+---
+
+### D-NEW — The holdings check is read under the book lock, and the position takes no lock of its own
+
+**Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
+
+**Decision.** The sell's position read runs after the `market_books` row
+lock, with no `with_for_update()` of its own. The same is true of the buy's
+read of the row it adds to.
+
+**Why.** Every writer of `ledger.positions` is the trade path, and the trade
+path takes the book lock before it reads a position. So every trade that
+could change a given `(user, market, outcome)` row has already queued on that
+market's book row. The book lock is what holds the position still, and the
+holding check is issued after that lock statement, which is ADR 0015's
+purpose: "anything whose value the lock exists to hold still" is read after
+the lock.
+
+ADR 0015 also sets the evidence standard for a lock: a race test that fails
+with the lock removed. The two-sells race fails five in five with the book
+row's `FOR UPDATE` removed. A lock on the position row alone could never be
+shown to matter, because nothing can reach that row without holding the book
+lock first. A lock no test can show is needed is not ADR 0015 evidence.
+
+**Rejected.** `with_for_update()` on the position read. It is free — book,
+then position, then accounts is a consistent order everywhere — and it
+matches ADR 0015's opening sentence word for word. It is rejected because it
+would be a lock nothing depends on, sitting beside the one that does, and the
+next reader would reasonably assume it is load-bearing.
+
+**Reversal trigger.** A second writer of positions that does not take the
+book lock first. [3.4] #12 is the candidate. If settlement takes the book lock
+before writing positions, as its issue now says, this entry stands. If it
+does not, the position read gets its own `FOR UPDATE`, in both writers.
+
+**Notes.** "Never goes negative" does not make a race test on this check.
+Without the book lock the losing sell writes a stale absolute quantity: a lost
+update, proceeds paid twice, and a position that is wrong but non-negative.
+The test asserts exactly one fill, the position, the balance, `q` against the
+positions, and the ledger. It also needs a re-quote loop, because two sells
+quoting one `state_version` are separated by `quote_stale` before either
+reaches this check.
+
+---
+
+### D-NEW — A sell larger than the caller's holding is `insufficient_shares_held`, distinct from `insufficient_shares_outstanding`
+
+**Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
+
+**Decision.** `InsufficientSharesHeld`, `409 insufficient_shares_held`, with
+`held` and `requested` as decimal strings in `error.details`. A caller with no
+position is refused with `held: "0.0000"`. Checked after `unknown_outcome`
+and before the outstanding check and any pricing.
+
+**Why a code of its own.** The two refusals have different remedies. *Held*
+is about the caller, and the fix is to sell at most `held`, which the details
+supply. *Outstanding* is about the whole market and, on the trade route, can
+only mean this service's own data is wrong (see "Shares outstanding equal the
+sum of positions"). A client that cannot tell them apart cannot offer the
+first fix, and would treat a server fault as a typing mistake.
+
+**Why 409.** `InsufficientFunds`' reason: the request is well formed, and the
+state refuses it. The same sell succeeds for a caller holding more.
+
+**Why details.** `InsufficientFunds` carries `balance` and `required`
+because "insufficient" alone is the least useful true sentence available. The
+same argument applies here, and a sell form can offer "sell all `held`"
+without a second request.
+
+**Rejected.** Reusing `insufficient_shares_outstanding`, for the reason
+above. A 422: nothing about the quantity is malformed on its own.
+
+**Reversal trigger.** Positions that stop being per user — a shared or
+team account holding shares — at which point "held" has to name whose
+holding, and the details with it.
+
+**Notes.** The preview does not check holdings and still should not: it has
+no lock, so its answer could be stale before anyone acted on it. A preview
+can therefore quote a sell the trade refuses with this code, which is the same
+deliberate asymmetry as `market_closed`.
+
+---
+
+### D-NEW — Shares outstanding equal the sum of positions, so the outstanding check is a backstop on the trade route
+
+**Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
+
+**Decision.** For every outcome, `market_outcomes.q` equals the sum of
+`positions.quantity` in it. `InsufficientSharesOutstanding` stays in the
+trade path as a backstop, off the route's error table and declared
+responses, and is mentioned in the Errors prose as unreachable.
+
+**Why it holds.** `q` has exactly two writers. Book creation writes it as
+zero, when no position can exist yet because the positions foreign key needs
+the outcome row. The trade path moves it by the traded quantity, in the same
+transaction and by the same amount as the position. By induction the two
+agree. So a sell that passes the holding check has `x ≤ held ≤ q`, and the
+outstanding check cannot fire.
+
+**Why keep it anyway.** `market_outcomes.q` has no `CHECK (q >= 0)` (see
+Open). If a hand-run repair ever leaves `q` below a holding, this check is the
+only thing between that book and a negative `q` that `C(q)` has no answer
+for. It costs one comparison.
+
+**Rejected.** Deleting the check as dead code: it is dead only while the
+invariant holds, and nothing in the database enforces the invariant.
+Listing it in the error table: #22 removed unreachable rows, and a client
+should not write a handler for a response that means this service is broken.
+
+**Reversal trigger.** Any second writer of `q` or of positions, beyond book
+creation and the trade path. [3.4] #12 is the candidate. When one lands, it
+either keeps each outcome's `q` equal to the sum of its positions, or it
+records here that this no longer holds — and the unreachability claimed
+above goes with it.
+
+**Notes.** It does **not** hold on test fixtures that write `q` directly,
+which leave `q` above the positions. Every test of this invariant starts from
+a book opened at zero. The one test that writes `q` directly on purpose is the
+backstop's own.
+
+---
+
+### D-NEW — Realized P&L is not stored
+
+**Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
+
+**Decision.** No column and no `Transaction.context` field for realized P&L
+or released basis.
+
+**Why.** Nothing asks for it. #23's criteria never mention it. [T-4] #24 asks
+for *unrealized* P&L, and its "realized outcome (paid out / worthless)" is
+the settlement result, not P&L from selling. It can also be derived: replaying
+a user's trade contexts in order through "A sell releases cost basis at
+average cost" reproduces the released basis of every sell, and proceeds are
+in `context.total` already.
+
+**Rejected.** *A column on positions*: a hand-applied migration against
+`cs464`, and a second running total beside one that is already a rollup.
+*`released_basis` in `context`*: the cheapest version and the one to reach
+for first if this reverses, but it adds a field nothing reads.
+
+**Reversal trigger.** A ticket that displays realized P&L per trade or per
+position, such as a trade history or a leaderboard ranking on it. Add
+`released_basis` to the sell's `context` then, not a column.
+
+---
+
+### D-NEW — A sell cannot take a market's pool below its seed subsidy
+
+**Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
+
+**Decision.** No overdraft check on the pool for a sell. `_refuse_overdrafts`
+exempting non-USER accounts is safe here, and this is the bound that makes it
+safe: before settlement, a pool opened at `q = 0` never holds less than its
+seed subsidy.
+
+**Why.** The pool holds `seed + Σ charged − Σ paid`. Buys round up and sells
+round down, so that is at least `seed + C(q) − C(0)`: the true costs
+telescope, because the LMSR cost function is path-independent. `C` increases
+in every `qᵢ`, and every `qᵢ ≥ 0` (the holding check, backstopped by the
+outstanding check), so `C(q) ≥ C(0)` and the pool is at least `seed`. A sell
+moves the pool back toward `C(0)` and can never pass it.
+
+**Rejected.** An overdraft check on MARKET_POOL for sells. By the argument
+above it could never fire, and "the check is an allowlist on USER" in
+`posting.py` says why adding a kind there means deciding it holds spendable
+money.
+
+**Reversal trigger.** Any case where a pool ends below its seed before
+settlement, which the pool-bound test asserts after mixed trading. Also a
+change that lets `q` start non-zero at book creation, or that lets `q` go
+negative.
+
+**Notes.** The one exception is the one-tick case in "A cost exactly on a
+tick can round one tick against the trader, or toward them on a sell". It
+needs about 120·b of skew and moves one tick. The pool's real loss happens at
+settlement, bounded by `b·ln(n)`, which is the existing Open question about
+subsidies below that. The bound does not hold on test books whose `q` was
+written directly, because their pool was never paid for that `q`.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
@@ -2586,3 +2865,14 @@ Move these into the log above when they're settled.
   work upstream, so too short a ceiling turns a slow-but-healthy market
   service into spurious 503s. Deciding it needs a measurement of what the
   gate's call and a first touch actually cost, which nobody has taken.
+- **`market_outcomes.q` has no `CHECK (q >= 0)`.** `positions` has
+  `quantity >= 0` and `market_books` has `state_version >= 0`, but the column
+  the pricing engine reads has nothing. Today nothing can write a negative
+  `q`: the holding check refuses first, and `InsufficientSharesOutstanding`
+  backstops it ("Shares outstanding equal the sum of positions, so the
+  outstanding check is a backstop on the trade route"). But that backstop is
+  the only guard, and `C(q)` over a negative `q` returns a number rather than
+  failing. Adding the CHECK is a constraint on an existing table, so it needs
+  a hand-applied file in `sql/migrations/` against `cs464`. Whether that is
+  worth it, and whether [3.4] #12 should land it since it is the next writer
+  of `q`, is undecided.

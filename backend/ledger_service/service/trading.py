@@ -1,6 +1,6 @@
-"""Buying shares. [T-2] #22
+"""Buying and selling shares. [T-2] #22, [T-3] #23
 
-The trade path: one buy, priced from `q` and `b` under the book row's lock,
+The trade path: one trade, priced from `q` and `b` under the book row's lock,
 written into `ledger.entries`, `ledger.positions`, `market_outcomes.q` and
 `market_books.state_version` in one transaction, and announced after it
 commits.
@@ -42,14 +42,17 @@ commits.
 8. Staleness: strict equality between the quoted `state_version` and the
    book's current one, either direction ("The trade's staleness check is
    strict `state_version` equality, and the field is required").
-9. The outcome, the no-shorting check, the price, D-040's bound on both the
+9. The outcome, the holding check on a sell (the caller's own position, read
+   here and taking no lock of its own — the book lock holds it still), the
+   outstanding check as a backstop, the price, D-040's bound on both the
    cost and the resulting `q`, and `quantize_cost` — which refuses a zero
    result itself (D-041) — in `service/preview.py::quote`'s order and through
    the same `core/pricing.py` helpers, so the two code paths cannot disagree
    about what a trade costs.
 10. The writes: `state_version` up by one, `state_changed_at` to this
     transaction's own moment, the traded outcome's `q`, and the position —
-    all as pending ORM changes, none of them committed yet.
+    added to on a buy, released at average cost on a sell — all as pending ORM
+    changes, none of them committed yet.
 11. `posting.post`, last, because it is the one statement in this whole path
     that commits. "The stored key is derived by the server; the client's
     value is one component of it" is why it is not handed the client's raw
@@ -60,13 +63,11 @@ commits.
 13. The publish, after the commit and never before it (ADR 0010), and never
     on a rejection or a replay.
 
-**Side-generic in shape, buy-only at the route.** This function threads
-`side: Side` through the same pricing helpers `service/preview.py` already
-takes a `Side` with, and the route above it accepts `buy` only — "The trade
-path is side-generic in shape and buy-only at the route". A sell needs
-[T-3] #23's per-user holdings check under this same lock, and there is
-nothing to hold that check against until this ticket has written some
-positions.
+**One path for both sides.** The side picks the sign of the delta, the
+rounding direction, the transaction kind and the shape of the position write,
+and nothing else: the order above is the same for a buy and a sell, which is
+what lets the sell inherit the replay, the gate, the staleness check and the
+publish without restating them.
 """
 
 from __future__ import annotations
@@ -84,13 +85,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
     IdempotencyKeyReused,
+    InsufficientSharesHeld,
     InsufficientSharesOutstanding,
     QuantityTooLarge,
     QuoteStale,
     UnknownOutcome,
 )
 from core.lmsr import _engine_context, cost_to_trade, prices as lmsr_prices
-from core.pricing import MAX_MAGNITUDE, Side, quantize_cost
+from core.pricing import MAX_MAGNITUDE, QUANTUM, Side, quantize_cost, release_basis
 from model.entities import (
     Account,
     MarketBook,
@@ -120,7 +122,7 @@ def trade_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
 
 @dataclass(frozen=True)
 class TradeResult:
-    """What one buy did. Exactly the seven fields "The trade response is
+    """What one trade did. Exactly the seven fields "The trade response is
     reconstructed from `Transaction.context`" lists, plus `transaction_id`.
 
     Deliberately carries no price. `test_the_response_carries_no_prices`
@@ -232,25 +234,38 @@ async def _read_outcomes(
     return (await session.execute(stmt)).scalars().all()
 
 
-async def _apply_position(
+async def _read_position(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
     market_id: uuid.UUID,
     outcome_id: uuid.UUID,
-    quantity: Decimal,
-    cost_basis: Decimal,
-    now: datetime,
-) -> None:
-    """The triple-keyed row this trade adds to. "#22 only ever adds to a
-    position", so this is always a credit to `quantity` and to `cost_basis`,
-    never a subtraction — [T-3] #23 is where a sell's effect is decided."""
+) -> Position | None:
+    """The triple-keyed row, or `None`. No `with_for_update()`: every writer
+    of a position is this path, and this path has already queued on the book
+    row, so the book lock is what holds the row still."""
     stmt = select(Position).where(
         Position.user_id == user_id,
         Position.market_id == market_id,
         Position.outcome_id == outcome_id,
     )
-    position = (await session.execute(stmt)).scalar_one_or_none()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def _add_to_position(
+    session: AsyncSession,
+    position: Position | None,
+    *,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    quantity: Decimal,
+    cost: Decimal,
+    now: datetime,
+) -> None:
+    """A buy: the shares and what they cost, added to the row, which is
+    created on a first buy. A row sold to zero accumulates onto its `0/0` as
+    a fresh basis."""
     if position is None:
         session.add(
             Position(
@@ -258,15 +273,27 @@ async def _apply_position(
                 market_id=market_id,
                 outcome_id=outcome_id,
                 quantity=quantity,
-                cost_basis=cost_basis,
+                cost_basis=cost,
                 created_at=now,
                 updated_at=now,
             )
         )
     else:
         position.quantity = position.quantity + quantity
-        position.cost_basis = position.cost_basis + cost_basis
+        position.cost_basis = position.cost_basis + cost
         position.updated_at = now
+
+
+def _release_from_position(
+    position: Position, *, quantity: Decimal, now: datetime
+) -> None:
+    """A sell: the shares out of the row and their average-cost share of the
+    basis with them ("A sell releases cost basis at average cost"). Proceeds
+    never enter it. A position sold to zero keeps its row at `0.0000/0.0000`."""
+    _, remaining = release_basis(position.cost_basis, position.quantity, quantity)
+    position.quantity = position.quantity - quantity
+    position.cost_basis = remaining
+    position.updated_at = now
 
 
 async def execute(
@@ -283,7 +310,7 @@ async def execute(
     redis_client: redis.Redis,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> TradeResult:
-    """Buy `quantity` of `outcome_id` in `market_id`, or replay a trade this
+    """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
     key already named.
 
     `access_token` is the caller's own, forwarded unchanged to the gate and
@@ -361,6 +388,23 @@ async def execute(
         raise UnknownOutcome
     index = ids.index(outcome_id)
 
+    # The holding check, after the book lock and before the outstanding check
+    # and any pricing. This user's position in this outcome, not the market's
+    # shares outstanding, and read without a lock of its own: the book lock
+    # holds it still.
+    position = await _read_position(
+        session, user_id=user_id, market_id=market_id, outcome_id=outcome_id
+    )
+    if side is Side.SELL:
+        held = position.quantity if position is not None else ZERO
+        if quantity > held:
+            raise InsufficientSharesHeld(
+                held=held.quantize(QUANTUM), requested=quantity.quantize(QUANTUM)
+            )
+
+    # A backstop: `q` equals the sum of positions, so the check above always
+    # refuses first. It is what stands between a hand-repaired book and a
+    # negative `q`.
     if side is Side.SELL and quantity > q[index]:
         raise InsufficientSharesOutstanding
 
@@ -397,15 +441,20 @@ async def execute(
     book.state_changed_at = now
     outcomes[index].q = q[index] + delta[index]
 
-    await _apply_position(
-        session,
-        user_id=user_id,
-        market_id=market_id,
-        outcome_id=outcome_id,
-        quantity=quantity,
-        cost_basis=magnitude,
-        now=now,
-    )
+    if side is Side.BUY:
+        _add_to_position(
+            session,
+            position,
+            user_id=user_id,
+            market_id=market_id,
+            outcome_id=outcome_id,
+            quantity=quantity,
+            cost=magnitude,
+            now=now,
+        )
+    else:
+        assert position is not None  # the holding check above
+        _release_from_position(position, quantity=quantity, now=now)
 
     pool_account = await session.get(Account, book.pool_account_id)
 
@@ -424,7 +473,7 @@ async def execute(
     transaction = await posting.post(
         session,
         idempotency_key=key,
-        kind=TransactionKind.TRADE_BUY,
+        kind=TransactionKind.TRADE_BUY if side is Side.BUY else TransactionKind.TRADE_SELL,
         legs=[
             Leg(account=user_account, amount=total),
             Leg(account=pool_account, amount=-total),
