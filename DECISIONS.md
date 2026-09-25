@@ -901,6 +901,10 @@ market service has its own with the same name and meaning, and they are
 deliberately not shared — ADR 0012's bar is not met by two error classes that
 happen to agree today.
 
+*Added by [T-2] #22:* the trade path holds no row locks across this call — the
+book lock is taken after both the gate and `ensure_open` — and it rolls back
+after its replay lookup misses, so the gate's call holds no connection either.
+
 ---
 
 ### D-031 — The terms client lives in `service/`, not `core/`
@@ -2303,13 +2307,14 @@ commit.
 **Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
 
 **Decision.** The trade service function takes `side: Side` and prices,
-quantizes, signs its legs and refuses sub-tick proceeds through the helpers
+quantizes, signs its legs and refuses a sub-tick result through the helpers
 that already take one. The route accepts `buy` only. [T-3] #23 widens it.
 
 **Why.** `core/pricing.py` was written for both sides on purpose — its module
 docstring says "`service/preview.py` today, [T-2] #22's trade path tomorrow",
-and `refuse_sub_tick_proceeds` lives there rather than in the preview because
-"[T-2] #22's write path has to make the same refusal". Writing a buy-shaped
+and `quantize_cost` refuses a zero result itself, rather than leaving it to a
+separate function, because "[T-2] #22's write path has to make the same
+refusal, and a separate function is one a caller can forget to call". Writing a buy-shaped
 path and having #23 generalise it would mean #23 rewriting the money path,
 which is a second opinion about what a trade is.
 
@@ -2548,22 +2553,24 @@ Move these into the log above when they're settled.
   close time and `publish` re-runs every submission rule — so this is about what
   should happen if it ever becomes reachable, not a live bug. Both call sites
   document the state as unreachable and they should at least fail the same way.
-- **How long the terms pull may block.** Half of this is now settled: it no
-  longer runs holding a pooled connection. `books.ensure_open` rolls back the
-  read that found no book before it calls out, so a slow market_service costs
-  one request its own latency rather than costing every route on this service
-  a connection out of a pool of ten. What is still open is the ceiling itself,
-  and the row locks [T-2] #22 will hold across it — now on every trade rather
-  than once per market, since `market_status.ensure_trading` (ADR 0017) calls
-  the same client on the hot path. #114 holds the connection-reuse half.
-  `service/market_terms.py::_TIMEOUT` is five seconds on
-  every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the budget
-  is currently inherited in substance even though it is written out in the
-  source, and no test can tell the line's deletion from its presence (D-030,
-  corrected). The argument in D-030 is an argument for a *shorter* read
-  timeout than a browse page would use: this call is made on the trade path
-  with a database session and, once [T-2] #22 lands, row locks held. Against
-  that, a first touch is the one request that does real work upstream, and too
-  short a ceiling turns a slow-but-healthy market service into spurious 503s
-  on a trader's first trade in a market. Deciding it needs a measurement of
-  what a first touch actually costs, which nobody has taken.
+- **How long the terms pull may block.** Only the ceiling is open now. No
+  call to market_service holds a database connection or a row lock any more:
+  `books.ensure_open` rolls back the read that found no book before it calls
+  out ("The cold path holds no connection across the terms pull"), and
+  [T-2] #22's trade path rolls back after its replay lookup misses, before
+  `market_status.ensure_trading` calls the same client on every non-replay
+  trade. #22 takes the book row lock only after both calls have returned, so
+  it holds no row locks across either — a slow market_service costs a trade
+  its own latency, not a connection out of a pool of ten, and it serialises
+  nothing behind it. #115 moves the gate's release into the gate itself, for
+  every caller, and #114 holds the connection-reuse half. What is still open
+  is the ceiling itself. `service/market_terms.py::_TIMEOUT` is five seconds
+  on every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the
+  budget is currently inherited in substance even though it is written out
+  in the source, and no test can tell the line's deletion from its presence
+  (D-030, corrected). Now that nothing is held across the call, the case for
+  a *shorter* timeout is the trader waiting, not the pool: every trade now
+  waits on this call, and a first touch is the one request that does real
+  work upstream, so too short a ceiling turns a slow-but-healthy market
+  service into spurious 503s. Deciding it needs a measurement of what the
+  gate's call and a first touch actually cost, which nobody has taken.

@@ -434,7 +434,12 @@ holdings check under this same lock, which this ticket has nothing to check
 against yet.
 
 `quantity` is D-038's rule again: `> 0`, at most four decimal places, a
-fifth is `422` rather than rounded. `state_version` is **required** — an
+fifth is `422` rather than rounded — and at most 18 digits in all, the width
+of `Numeric(18, 4)`, the same ceiling the preview's query parameter carries.
+Past validation, a quantity whose cost **or whose resulting shares
+outstanding** would not fit that column is `422 quantity_too_large`: the
+trade writes both, and the preview refuses the same request for the same
+reason. `state_version` is **required** — an
 optional staleness field would let a client silently opt out of the only
 staleness protection a trade has — and is compared for **strict equality**,
 either direction, under the book row's own lock; a mismatch is
@@ -513,16 +518,16 @@ Errors:
 | Status | `code` | When |
 | --- | --- | --- |
 | 404 | `market_not_found` | No such market. |
-| 409 | `market_not_published` | The market exists but has not been published. |
 | 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
 | 409 | `quote_stale` | The quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
 | 409 | `insufficient_funds` | This account cannot afford the trade. `error.details` carries `balance` and `required`. |
 | 409 | `idempotency_key_reused` | This idempotency key already names a different trade — a different `outcome_id`, `side` or `quantity`. |
-| 409 | `insufficient_shares_outstanding` | Inherited from the preview; unreachable on a buy. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
-| 422 | `quantity_too_large` | The cost prices above `99999999999999.9999`. |
-| 422 | — | A malformed body, an extra field, `side` other than `"buy"`, or a quantity at five decimal places or `<= 0`. FastAPI's own validation; carries `{"detail": [...]}` rather than the `{"error": {...}}` envelope, matching the preview route's query-string validation. |
-| 503 | `market_terms_unavailable` | `market_service` could not be reached. |
+| 422 | `quantity_too_large` | The cost, or the traded outcome's resulting shares outstanding, is above `99999999999999.9999` — the same two bounds the preview refuses at (D-040). |
+| 422 | `cost_below_tick` | The buy's cost rounds to `0.0000` at the ledger's scale, so real shares would be charged nothing (D-041). |
+| 422 | — | A malformed body, an extra field, `side` other than `"buy"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. FastAPI's own validation; carries `{"detail": [...]}` rather than the `{"error": {...}}` envelope, matching the preview route's query-string validation. |
+| 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
+| 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
 
 ## Errors
 
@@ -554,7 +559,7 @@ every other domain error, and no request can currently reach it.
 `books.ensure_open` raises it only for terms whose `published_at` is null, and
 the public detail endpoint those terms come from answers `404` for every
 market that has not been published — so a draft arrives here as
-`market_not_found`, not as this. It is left in place, and out of both routes'
+`market_not_found`, not as this. It is left in place, and out of all three routes'
 declared responses, because it becomes reachable the day the ledger reads
 terms from somewhere that serves unpublished markets. Do not write a handler
 for it today.
