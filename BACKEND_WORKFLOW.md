@@ -28,7 +28,11 @@ and the one to believe if the two ever drift.
 
 - Python 3.13, FastAPI, SQLAlchemy 2.0 async, asyncpg, Postgres
 - Five services: `auth_service`, `market_service`, `audit_service`,
-  `ledger_service`, `realtime_service`. Each has its own schema and login role.
+  `ledger_service`, `realtime_service`. Auth, market and ledger each own a schema
+  and connect as their own login role. `audit_service` has a login role and owns
+  no schema: `audit` belongs to the superuser, and `audit_svc` only reads it
+  (ADR 0006). `realtime_service` has no role, no schema and no `DATABASE_URL`
+  (ADR 0010).
 - `backend/shared/` — config, paging, roles, security, testing. Narrow by ADR 0012.
 - pytest, `asyncio_mode = auto`, tests run against real Postgres, never SQLite
 - Migrations: hand-written idempotent SQL in `sql/migrations/`. No Alembic yet (#75)
@@ -44,17 +48,19 @@ the two that govern my work.
 backend/<name>_service/
   controller/   # routes
   service/      # orchestration
-  core/         # pure logic, no DB
+  core/         # errors, and the seams onto shared/ (ADR 0012)
   model/        # entities
   main.py       # only file allowed to see everything
 unit_test/
-  core/  model/        # no DB needed, fast
-  service/  controller/ # need DB
+  core/  model/        # run without a database (D-031, CLAUDE.md)
+  service/  controller/ # need Postgres; realtime_service's need Redis instead (CLAUDE.md "Running things")
   test_import_boundary.py
 ```
 
-Import direction is `controller → service → core/model`. Never upward. There's a
-test enforcing it.
+Import direction is `controller → service → core/model`. Never upward. No test
+enforces that direction. It's a review convention. `test_import_boundary.py`
+enforces only that no service imports another. See "The terms client lives in
+`service/`, not `core/`".
 
 ---
 
@@ -65,13 +71,25 @@ test enforcing it.
 2. **Nothing that moves money reads Redis.** Redis is display and fan-out only.
 3. **Balances are derived by summing ledger entries.** No cached balance column.
 4. **Every transaction's legs sum to zero.** Globally the ledger sums to zero.
-5. **Money is `Decimal`, `Numeric(18,4)`, quantized `ROUND_HALF_UP`.** No floats in
-   the money path, ever. Amounts cross the API as decimal strings, not JSON numbers.
+5. **Money is `Decimal`, `Numeric(18,4)`, and rounds directionally.** No floats in
+   the money path, ever. The ledger's amounts and the public market projection
+   cross the API as decimal strings, not JSON numbers (ADR 0009). `MarketOut`
+   deliberately sends JSON numbers: see "Two schemas: `PublicMarketOut` beside an
+   unchanged `MarketOut`".
+   - Rounding a cost: "`quantize_cost` takes an unsigned magnitude; the caller
+     applies the sign" in DECISIONS.md.
+   - `ROUND_HALF_UP` at scale 4 is for displayed prices only: "The price read exists
+     once, and the price quantizer is in `core/pricing.py`".
+   - Absolute values: "An absolute value on money is `copy_abs()`, never `abs()`".
 6. **The ledger is append-only, enforced by a database trigger.** Don't try to work
    around it.
-7. **Cost must be computed inside the lock.** Reading `q`, computing cost, then
-   writing is a race. If a design needs cost computed outside the locked
-   transaction, it's wrong — stop and tell me.
+7. **A charged cost is computed under the book lock. A quoted cost is not.**
+   - The trade path's order (replay lookup, then status gate, then book lock) is
+     ADR 0017's.
+   - The preview locks nothing on a warm book: "Preview takes no locks", as scoped
+     by "D-012's "no locks" is the warm path; the first touch locks twice".
+   - If a design charges a cost that was priced outside the trade's lock, it's
+     wrong. Stop and tell me.
 8. **Websocket publish fires after commit, never inside the transaction.**
 
 ## Open questions — stop and ask, don't guess
@@ -123,8 +141,9 @@ and the entry is wrong — say so rather than following it.
 name, a test that just covers a criterion.
 
 Use the format at the top of the file. Append only — never renumber, never delete.
-A decision that changes gets a new entry and the old one is marked
-`superseded by D-0NN`.
+A decision that changes gets a new entry, and the old one is marked superseded by
+the new entry's title. The author never writes a number: a new entry stays
+`D-NEW` until its PR merges (see "What makes a test evidence").
 
 If a decision is big enough to constrain someone else's work or would be expensive
 to reverse, it needs an ADR, and **writing it is part of the ticket** — a new record
@@ -143,7 +162,8 @@ When a session ends with an unresolved question, add it to the **Open** section 
 the bottom rather than guessing.
 
 Commit log changes with the work they describe, not separately:
-`docs(<service>): record D-0NN <title>`
+`docs(<service>): record <title>`. There's no number, because the entry is
+`D-NEW` until merge.
 
 ---
 
@@ -248,12 +268,30 @@ For pricing (`#43`), additionally property tests:
 - Stable at `q/b` up to 10,000 (`e^(q/b)` overflows past ~700 — use log-sum-exp)
 
 For anything touching money, additionally:
-- Rollback test: force a mid-operation failure, assert zero ledger rows written
-- Concurrency test: real `asyncio.gather` across separate sessions, assert no
-  overdraft and the ledger still sums to zero
+- Rollback test: force a mid-operation failure and assert that zero ledger rows
+  were written. Where to count is covered by the "asserts after
+  `session.rollback()`" bullet below.
+- Concurrency test: assert no overdraft and that the ledger still sums to zero.
+  What makes it a race is ADR 0015's, and the race-test bullet below.
 
 `unit_test/core/` and `unit_test/model/` need no database and run fast. Put pure
 logic there.
+
+### What makes a test evidence
+
+- **A test that asserts after `session.rollback()` proves nothing.** The rollback
+  erases the writes the test is looking for. Under READ COMMITTED, a second
+  session can't see uncommitted writes either. Count in the request's own
+  session, before any rollback.
+- **A validator test must feed the invalid value.**
+- **A race test is evidence only if it fails with its lock or re-check
+  removed** (ADR 0015). Name the line you removed.
+- **A connection-release test probes the session and the pool while the upstream
+  call is stalled.** It must fail with the release removed. A test that only
+  shows the call succeeds proves nothing. For an example, see "The cold path
+  holds no connection across the terms pull".
+- **A DECISIONS.md entry is `D-NEW` until its PR merges.** Never take the next
+  number from the file.
 
 ---
 
@@ -300,12 +338,15 @@ git push --force-with-lease
 Ernest asked for this explicitly, so he can follow the reasoning.
 
 ```bash
-git add backend/shared/lmsr.py
-git commit -m "feat(shared): LMSR cost and price functions"
+git add backend/ledger_service/core/lmsr.py
+git commit -m "feat(ledger): LMSR cost and price functions"
 
-git add backend/shared/unit_test/core/test_lmsr.py
-git commit -m "test(shared): property tests for LMSR"
+git add backend/ledger_service/unit_test/core/test_lmsr.py
+git commit -m "test(ledger): property tests for LMSR"
 ```
+
+The engine lives in `ledger_service/core/lmsr.py`, not in `shared/`. See ADR 0005
+and ADR 0012's amendment.
 
 Format `type(scope): description`. Types: `feat`, `fix`, `test`, `refactor`,
 `chore`, `docs`.
@@ -315,10 +356,11 @@ Format `type(scope): description`. Types: `feat`, `fix`, `test`, `refactor`,
 ```bash
 .venv/Scripts/pytest    # Windows layout; CI runs a bare `pytest`
 git push -u origin 43-lmsr-pricing-engine
-gh pr create --base dev --title "[F-3] LMSR pricing engine" --body "Closes #43"
+gh pr create --base dev --title "[F-3] LMSR pricing engine" --body "<Refs|Closes> #43"
 ```
 
-`Closes #43` moves the board card to Done on merge.
+Pick the trailer by CLAUDE.md's Branches rule: `Refs #N` while the ticket has
+open sub-issues, `Closes #N` otherwise.
 
 **Before requesting review**
 - All tests pass locally
@@ -338,3 +380,11 @@ Everything local. No hosted services, no external APIs. Copy `.env.example` to
 
 Migrations are applied by hand:
 `docker compose exec -T db psql ...` against `sql/migrations/`.
+
+**Switching from a #22-or-later branch to an earlier one:** #22's `create_all`
+leaves `ledger.positions` in `cs464_test`, and that breaks the earlier branch's
+`drop_all`. Drop the table:
+
+```bash
+docker compose exec -T db psql -U cs464 -d cs464_test -c "DROP TABLE ledger.positions CASCADE;"
+```
