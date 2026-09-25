@@ -78,6 +78,34 @@ async def _seed(session: AsyncSession):
     return user, platform
 
 
+async def _seed_with_a_dirty_outcome(session: AsyncSession):
+    """`_seed`, plus the trade path's own pending write: `q` assigned on a
+    loaded `MarketOutcome`, left in `session.dirty` by `autoflush=False`.
+
+    The book is opened before `_seed` runs, not after: `ensure_open` rolls
+    back on a cold market, which would expire the accounts `_seed` returns.
+    """
+    upstream = Upstream()
+    await books().ensure_open(
+        session,
+        upstream.market_id,
+        access_token=token(),
+        transport=upstream.transport,
+    )
+    user, platform = await _seed(session)
+    outcome = (
+        await session.execute(
+            select(entities().MarketOutcome).where(
+                entities().MarketOutcome.market_id == upstream.market_id,
+                entities().MarketOutcome.position == 0,
+            )
+        )
+    ).scalar_one()
+    outcome.q = Decimal("41.0000")
+    assert session.dirty
+    return user, platform
+
+
 async def _replay(session: AsyncSession, user, platform):
     """The identical movement again, under the same key."""
     return await posting().post(
@@ -140,28 +168,40 @@ async def test_a_replay_with_a_pending_update_is_refused(
     case this guard exists for, so it is driven with exactly that write
     rather than with a convenient one.
     """
-    upstream = Upstream()
-    await books().ensure_open(
-        session,
-        upstream.market_id,
-        access_token=token(),
-        transport=upstream.transport,
-    )
-    user, platform = await _seed(session)
-
-    outcome = (
-        await session.execute(
-            select(entities().MarketOutcome).where(
-                entities().MarketOutcome.market_id == upstream.market_id,
-                entities().MarketOutcome.position == 0,
-            )
-        )
-    ).scalar_one()
-    outcome.q = Decimal("41.0000")
-    assert session.dirty
+    user, platform = await _seed_with_a_dirty_outcome(session)
 
     with pytest.raises(errors().PendingWritesOnReplay):
         await _replay(session, user, platform)
+
+
+async def test_a_replay_found_by_the_insert_race_is_refused_too(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`post`'s other replay: the lookup under the lock misses, the INSERT
+    hits the unique index, and the second lookup finds the key.
+
+    Driven by hiding the first lookup, because two real sessions only get
+    here when their legs share no account, and the trade path's book lock
+    keeps a trade from ever doing that today. The pending write is flushed
+    inside the SAVEPOINT and expired by its rollback, so a guard that asked
+    the session at this branch would find it clean — which is why `post`
+    records whether its caller had pending work before it does anything.
+    """
+    user, platform = await _seed_with_a_dirty_outcome(session)
+
+    real = posting().find_by_idempotency_key
+    lookups = 0
+
+    async def miss_the_first(own: AsyncSession, key: str):
+        nonlocal lookups
+        lookups += 1
+        return None if lookups == 1 else await real(own, key)
+
+    monkeypatch.setattr(posting(), "find_by_idempotency_key", miss_the_first)
+
+    with pytest.raises(errors().PendingWritesOnReplay):
+        await _replay(session, user, platform)
+    assert lookups == 2, "the replay was not reached through the INSERT race"
 
 
 async def test_the_refusal_commits_nothing(session: AsyncSession) -> None:

@@ -2105,10 +2105,12 @@ refuses to replay into a dirty session" is the alarm, not the net.
 
 **Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
 
-**Decision.** `posting.post`'s replay branch raises `PendingWritesOnReplay`
-instead of committing when `session.new or session.dirty or session.deleted` is
-non-empty at that point. Its own commit, ahead of the trade path, and Ernest is
-told before it lands — `posting.py` is his.
+**Decision.** Both of `posting.post`'s replay branches — the lookup under the
+account locks, and the second lookup after an `IntegrityError` on the key —
+raise `PendingWritesOnReplay` instead of returning when the caller entered
+`post` with `session.new or session.dirty or session.deleted` non-empty. Its
+own commit, ahead of the trade path, and Ernest is told before it lands —
+`posting.py` is his.
 
 **Why.** The entry above is a discipline, and a discipline that fails silently
 and corrupts `q` for ever is worth an assertion. This turns "a caller got the
@@ -2133,7 +2135,7 @@ behaviour:
 Confirmed by instrumenting `_replay` and driving all three paths, the race one
 barrier-synchronised per ADR 0015.
 
-**Rejected.** Checking at the top of `post` rather than on the replay branch:
+**Rejected.** Raising at the top of `post` rather than on the replay branches:
 it would forbid the shape "The book's writes share `posting.post`'s commit,
 and nothing may follow it" depends on, which is every caller this service has.
 Not raising at all and documenting the rule instead — the rule was already
@@ -2146,6 +2148,16 @@ assignments on loaded rows and are still in `session.dirty` when `post` runs,
 because `autoflush=False` and `accounts.lock` issues only SELECTs — but it is a
 detection, not a proof. A future caller that flushes before calling `post` sits
 outside it, and the entry above is still the rule that protects that caller.
+
+Whether the caller had pending work is recorded on entry to `post`, not asked at
+each branch. The second branch is reached after the SAVEPOINT has flushed the
+caller's writes and rolled them back, which expires them, so the session looks
+clean there whatever the caller was holding. Nothing is committed on that
+branch, but the caller would still get somebody else's transaction back as
+though its own had landed, holding expired entities. No trade reaches it today
+— the book lock queues two trades on one key before either gets to `post` —
+and `test_a_replay_found_by_the_insert_race_is_refused_too` drives it by hiding
+the first lookup.
 
 `PendingWritesOnReplay` is a `LedgerError` at 500 rather than a bare exception,
 so the response keeps the one error envelope `controller/errors.py` exists to
