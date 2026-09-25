@@ -31,6 +31,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
 from core.errors import CostBelowTick, ProceedsBelowTick
+from core.lmsr import _engine_context
 
 # `Numeric(18, 4)`'s shape, restated rather than imported from
 # `model/entities.py::AMOUNT_SCALE`. `model` imports `core.database`, so a
@@ -123,3 +124,41 @@ def quantize_cost(magnitude: Decimal, *, side: Side | str) -> Decimal:
     if quantized == 0:
         raise CostBelowTick if side is Side.BUY else ProceedsBelowTick
     return quantized
+
+
+def release_basis(
+    basis: Decimal, held: Decimal, quantity: Decimal
+) -> tuple[Decimal, Decimal]:
+    """A sell's `(released, remaining)` cost basis. [T-3] #23
+
+    A sell releases cost basis at average cost: the remaining basis is
+    `basis * (held - quantity) / held`, rounded `ROUND_HALF_UP` to scale 4,
+    and the released basis is `basis - remaining`. Rounding one side and
+    deriving the other makes `released + remaining == basis` on every sell,
+    so a position sold down in any number of pieces releases exactly what
+    was paid for it.
+
+    Half-up, not `quantize_cost`'s directional rounding: cost basis charges
+    nobody, so there is no side for the residue to favour.
+
+    The product runs at the engine's precision. `basis * remaining` can reach
+    36 significant digits, and the caller's ambient 28 would round it before
+    the quantize ran. Multiplied before divided, so the product is exact
+    whenever the division is. A full exit is its own branch and leaves
+    nothing behind.
+
+    Precondition `0 < quantity <= held`, else `ValueError`: the holding check
+    refuses a larger sell long before this is reached, and a negative
+    remaining basis is not something to return quietly.
+    """
+    if not 0 < quantity <= held:
+        raise ValueError(f"quantity must be in (0, {held}], got {quantity}")
+    if quantity == held:
+        return basis, Decimal(0).quantize(QUANTUM)
+
+    with _engine_context():
+        remaining = (basis * (held - quantity) / held).quantize(
+            QUANTUM, rounding=ROUND_HALF_UP
+        )
+        released = basis - remaining
+    return released, remaining
