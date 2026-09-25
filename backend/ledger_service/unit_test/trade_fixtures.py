@@ -592,7 +592,7 @@ def assert_rounding_is_load_bearing(
     a rounder `b` fails here with a sentence about why instead of hollowing
     out four tests silently.
     """
-    magnitude = abs(raw_cost(q, outcome, "buy", quantity))
+    magnitude = raw_cost(q, outcome, "buy", quantity).copy_abs()
     up = magnitude.quantize(QUANTUM, rounding=ROUND_CEILING)
     down = magnitude.quantize(QUANTUM, rounding=ROUND_FLOOR)
     assert up != down, (
