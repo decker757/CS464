@@ -330,7 +330,12 @@ class TradeOut(BaseModel):
     outcome_id: uuid.UUID
     side: Side
     quantity: Decimal = Field(
-        description="Echoed back exactly as it was stored, D-038's scale."
+        description=(
+            "Echoed back exactly as it was sent, trailing zeros and all, the "
+            "same as the preview's (D-038) — `10` stays `10`, not `10.0000`. "
+            "A replay compares it numerically, so either spelling is the "
+            "same trade."
+        )
     )
     total: Decimal = Field(
         description=(
