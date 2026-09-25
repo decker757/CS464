@@ -11,7 +11,8 @@ commits.
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
    hit names a committed, append-only transaction, and a miss is trusted for
-   nothing except declining to skip the gate below.
+   nothing except declining to skip the gate below. A miss is then rolled
+   back, so the gate's HTTP call holds no pooled connection.
 2. The gate, `service/market_status.py::ensure_trading` — one call to
    market_service's public detail endpoint, forwarding the caller's own
    token, refusing `409 market_closed` on anything but a derived status of
@@ -35,13 +36,16 @@ commits.
 7. `q`, `b` and the outcomes, read fresh — cheap, because the book row's lock
    makes this session's own prior read of `state_version` already correct,
    but read again anyway so the statement log shows a read after the lock
-   rather than one that predates it.
+   rather than one that predates it. A book that cannot be priced is
+   `MarketBookIncomplete`, through `book_prices.refuse_unpriceable` — the
+   guard the preview and the snapshot use.
 8. Staleness: strict equality between the quoted `state_version` and the
    book's current one, either direction ("The trade's staleness check is
    strict `state_version` equality, and the field is required").
-9. The outcome, the no-shorting check, the price, `quantize_cost`, D-040's
-   bound and D-041's sub-tick refusal — `core/pricing.py`, the same helpers
-   `service/preview.py` already calls, so the two code paths cannot disagree
+9. The outcome, the no-shorting check, the price, D-040's bound on both the
+   cost and the resulting `q`, and `quantize_cost` — which refuses a zero
+   result itself (D-041) — in `service/preview.py::quote`'s order and through
+   the same `core/pricing.py` helpers, so the two code paths cannot disagree
    about what a trade costs.
 10. The writes: `state_version` up by one, `state_changed_at` to this
     transaction's own moment, the traded outcome's `q`, and the position —
@@ -85,14 +89,8 @@ from core.errors import (
     QuoteStale,
     UnknownOutcome,
 )
-from core.lmsr import cost_to_trade, prices as lmsr_prices
-from core.pricing import (
-    MAX_MAGNITUDE,
-    Side,
-    quantize_cost,
-    quantize_display,
-    refuse_sub_tick_proceeds,
-)
+from core.lmsr import _engine_context, cost_to_trade, prices as lmsr_prices
+from core.pricing import MAX_MAGNITUDE, Side, quantize_cost
 from model.entities import (
     Account,
     MarketBook,
@@ -102,7 +100,7 @@ from model.entities import (
     TransactionKind,
 )
 from model.schemas import OutcomePrice, PriceEvent
-from service import books, bus, grants, market_status, posting
+from service import book_prices, books, bus, grants, market_status, posting
 from service.posting import Leg
 
 ZERO = Decimal(0)
@@ -303,6 +301,20 @@ async def execute(
     if pre_gate is not None:
         return pre_gate
 
+    # "The cold path holds no connection across the terms pull", for the
+    # gate. The lookup above autobegan a transaction nothing ends, and the
+    # gate's first act is an HTTP call — so without this, one pooled
+    # connection sits `idle in transaction` for up to the terms timeout on
+    # every trade that is not a replay. Rolling back discards nothing: a miss
+    # loaded nothing, nothing is pending and no lock is held yet, and a miss
+    # is trusted for nothing below. #115 carries the release inside the gate
+    # itself, for every caller.
+    assert not (session.new or session.dirty or session.deleted), (
+        "trading.execute() rolls back before the gate: nothing may be "
+        "pending on the session when it is called"
+    )
+    await session.rollback()
+
     # 2. The gate. Refuses `MarketClosed`, `MarketTermsUnavailable` or
     # `MarketNotFound` before anything below writes a thing.
     await market_status.ensure_trading(
@@ -330,8 +342,13 @@ async def execute(
     if under_lock is not None:
         return under_lock
 
-    # 7. Read fresh, after the lock.
+    # 7. Read fresh, after the lock. Local rather than
+    # `book_prices.read_or_open`: the trade writes `q` through these entities,
+    # which that projection does not return, and its empty-read fallback
+    # would call `books.ensure_open` under this lock. The guard after it is
+    # the shared one, so the trade refuses exactly the books the preview does.
     outcomes = await _read_outcomes(session, market_id)
+    book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
     q = [outcome.q for outcome in outcomes]
     b = book.liquidity_b
     ids = [outcome.outcome_id for outcome in outcomes]
@@ -352,10 +369,24 @@ async def execute(
     delta = [ZERO] * len(q)
     delta[index] = quantity if side is Side.BUY else -quantity
 
-    magnitude = quantize_cost(abs(cost_to_trade(q, b, delta)), side=side)
-    if magnitude > MAX_MAGNITUDE:
+    with _engine_context():
+        after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
+
+    # D-040, both halves, in `service/preview.py::quote`'s order: this path
+    # writes the resulting `q` as well as the cost into `Numeric(18, 4)`, and
+    # both are checked before anything is quantized, because quantizing a
+    # value wider than the ambient 28 digits raises `InvalidOperation`.
+    if after_q[index] > MAX_MAGNITUDE:
         raise QuantityTooLarge
-    refuse_sub_tick_proceeds(magnitude, side=side)
+
+    # `copy_abs`, never `abs` (D-042): `abs` rounds at the ambient precision.
+    raw = cost_to_trade(q, b, delta).copy_abs()
+    if raw > MAX_MAGNITUDE:
+        raise QuantityTooLarge
+
+    # Refuses a result of `0.0000` itself — `CostBelowTick` on a buy,
+    # `ProceedsBelowTick` on a sell (D-041).
+    magnitude = quantize_cost(raw, side=side)
 
     total = -magnitude if side is Side.BUY else magnitude
 
@@ -409,17 +440,15 @@ async def execute(
     # rejection or a replay — both of which have already returned by this
     # point. A publish failure is swallowed inside `bus.publish` and never
     # reaches here.
-    after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
+    # `book_prices.priced`, the snapshot's own function, so the frame and
+    # `GET .../snapshot` give the same strings for the same state because
+    # there is one quantizer, not because two copies agree.
     event = PriceEvent(
         market_id=market_id,
         state_version=book.state_version,
         prices=[
-            OutcomePrice(
-                outcome_id=outcome.outcome_id,
-                position=outcome.position,
-                price=quantize_display(price),
-            )
-            for outcome, price in zip(outcomes, lmsr_prices(after_q, b))
+            OutcomePrice(outcome_id=p.outcome_id, position=p.position, price=p.price)
+            for p in book_prices.priced(outcomes, lmsr_prices(after_q, b))
         ],
         occurred_at=now,
     )

@@ -3,10 +3,10 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-There is no request model in this file, because there is no route that writes.
-The write path is `service/posting.py` and the endpoint that will call it
-arrives with [T-2] #22, along with the decision about how a service
-authenticates to it.
+One request model, `TradeIn`, for the one route that writes: [T-2] #22's
+`POST /ledger/markets/{market_id}/trades`. It carries no account, no amount
+and no leg — `extra="forbid"` refuses a body naming one — which is the answer
+ADR 0009's amendment gives to how a caller authenticates to the write path.
 
 **Amounts are strings, and that is the one deliberate departure from the market
 service**, whose `MarketOut` serialises `liquidity_b` as a JSON number. That was
@@ -280,10 +280,13 @@ class TradeIn(BaseModel):
     )
     quantity: Decimal = Field(
         gt=0,
+        max_digits=18,
         decimal_places=4,
         description=(
             "Shares to buy. At most four decimal places (D-038) — a fifth "
-            "is 422 rather than rounded."
+            "is 422 rather than rounded. At most 18 digits in all, the width "
+            "of `Numeric(18, 4)` and the preview's own ceiling: a quantity "
+            "wider than the column could never be written as a share count."
         ),
     )
     state_version: int = Field(

@@ -397,9 +397,19 @@ _TRADE_DESCRIPTION = (
         422: {
             "description": (
                 "A malformed body, an extra field, `side` other than "
-                "\"buy\", a quantity at five decimal places or <= 0, an "
-                "`outcome_id` that is not this market's, or a quantity "
-                "whose cost prices above what the ledger can store."
+                "\"buy\", a quantity at five decimal places, <= 0 or wider "
+                "than 18 digits, an `outcome_id` that is not this market's, "
+                "a quantity whose cost or resulting shares outstanding "
+                "exceed what the ledger can store, or a buy whose cost "
+                "rounds to nothing (`cost_below_tick`, D-041)."
+            )
+        },
+        500: {
+            "description": (
+                "`market_book_incomplete`: this service holds a book for the "
+                "market that cannot be priced — no outcome rows, one of "
+                "them, or a `liquidity_b` the engine cannot use. A server "
+                "fault; not worth retrying."
             )
         },
         503: {"description": "market_service could not be reached right now."},

@@ -398,13 +398,17 @@ async def test_two_outcomes_of_one_market_are_two_positions(
         state_version=1,
     )
 
+    # Read off `first` before the second lookup: `position_of` expires the
+    # whole session, and an expired attribute read afterwards is a lazy load
+    # outside the greenlet — `MissingGreenlet`, not an assertion.
     first = await position_of(
         session, user_id, upstream.market_id, upstream.outcomes[0]
     )
+    first_quantity = first.quantity
     second = await position_of(
         session, user_id, upstream.market_id, upstream.outcomes[1]
     )
-    assert first.quantity == QUANTITY
+    assert first_quantity == QUANTITY
     assert second.quantity == SMALL_QUANTITY
 
 
@@ -990,3 +994,323 @@ async def test_the_staleness_check_reads_the_version_under_the_lock(
         "this path wrote before it took the book lock:\n"
         f"{writes(lowered[:lock_at])}"
     )
+
+
+# =========================================================================
+# Reconciled with dev after #108 and #110
+# =========================================================================
+async def _idle_in_transaction() -> int:
+    """Backends of this role in this database sitting `idle in transaction`.
+
+    `test_preview.py`'s query, from a connection of its own: a session that
+    ran a statement and has not ended its transaction sits in this state for
+    as long as it waits, which is exactly a pooled connection held across a
+    call to somebody else.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    from core.database import get_engine  # noqa: PLC0415
+
+    async with get_engine().connect() as conn:
+        return (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() "
+                    "AND usename = current_user "
+                    "AND state = 'idle in transaction' "
+                    "AND pid <> pg_backend_pid()"
+                )
+            )
+        ).scalar_one()
+
+
+async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_service(
+    session: AsyncSession,
+) -> None:
+    """The gate's HTTP call runs with no transaction open.
+
+    The unlocked replay lookup autobegins a transaction, and `get_session`
+    does not wrap a request in one of its own, so nothing ended it: the gate
+    then called market_service with a pooled connection `idle in transaction`
+    for as long as the call took — up to the terms timeout, on every trade
+    that is not a replay, against a `pool_size` of 10. "The cold path holds
+    no connection across the terms pull" is the same fault on the preview.
+
+    A warm book and a funded trader, so the gate's call is the only one and
+    the probe runs at exactly that call. Three views of one fact: the
+    session's own `in_transaction()`, the pool's `checkedout()`, and
+    Postgres's `pg_stat_activity` while the call is stalled. **Remove the
+    rollback after the replay miss in `trading.execute` and this goes red.**
+    """
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_engine  # noqa: PLC0415
+
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    await fund(session, user_id)
+
+    pool = get_engine().pool
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[dict[str, object]] = []
+
+    async def stall() -> None:
+        seen.append(
+            {
+                "session in a transaction": session.in_transaction(),
+                "pooled connections checked out": pool.checkedout(),
+            }
+        )
+        entered.set()
+        await release.wait()
+
+    upstream.before_response = stall
+
+    task = asyncio.create_task(buy(session, upstream, user_id=user_id))
+    try:
+        async with asyncio.timeout(10):
+            await entered.wait()
+        idle = await _idle_in_transaction()
+    finally:
+        release.set()
+        trade = await task
+
+    clean = {"session in a transaction": False, "pooled connections checked out": 0}
+    assert seen == [clean]
+    assert idle == 0, f"{idle} backend(s) idle in transaction across the gate's call"
+    assert upstream.calls == 1
+    assert trade.state_version == 1
+
+
+async def test_a_cold_trade_reaches_ensure_open_with_nothing_pending(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`books.ensure_open` asserts nothing is pending on the session, because
+    its cold path rolls back before the terms pull. #22's order satisfies it
+    by construction — the replay lookup and the gate only read — and this
+    records the session at the moment of the call rather than trusting that.
+
+    Two upstream calls, so the cold path really ran: the gate's, then the
+    terms pull's.
+    """
+    from service import books as books_module  # noqa: PLC0415
+
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await fund(session, user_id)
+
+    real = books_module.ensure_open
+    pending: list[tuple[int, int, int]] = []
+
+    async def recording(s, market_id, **kwargs):  # noqa: ANN001, ANN003
+        pending.append((len(s.new), len(s.dirty), len(s.deleted)))
+        return await real(s, market_id, **kwargs)
+
+    monkeypatch.setattr(books_module, "ensure_open", recording)
+
+    trade = await buy(session, upstream, user_id=user_id)
+
+    assert pending == [(0, 0, 0)]
+    assert upstream.calls == 2
+    assert trade.state_version == 1
+
+
+async def _damage(session: AsyncSession, upstream: Upstream, how: str) -> None:
+    from sqlalchemy import delete, update  # noqa: PLC0415
+
+    from unit_test.conftest import strip_outcomes  # noqa: PLC0415
+
+    ents = entities()
+    if how == "no_outcomes":
+        await strip_outcomes(session, upstream.market_id)
+        return
+    if how == "one_outcome":
+        await session.execute(
+            delete(ents.MarketOutcome).where(
+                ents.MarketOutcome.market_id == upstream.market_id,
+                ents.MarketOutcome.position == 1,
+            )
+        )
+    else:
+        await session.execute(
+            update(ents.MarketBook)
+            .where(ents.MarketBook.market_id == upstream.market_id)
+            .values(liquidity_b=Decimal(how))
+        )
+    await session.commit()
+
+
+# No `Infinity`: `numeric(18, 4)` refuses to store one, so it cannot be
+# sitting in a book. `NaN` it stores happily.
+@pytest.mark.parametrize(
+    "how", ["no_outcomes", "one_outcome", "0.0000", "-100.0000", "NaN"]
+)
+async def test_an_incomplete_book_is_market_book_incomplete_and_writes_nothing(
+    session: AsyncSession, how: str
+) -> None:
+    """The trade refuses the books the preview refuses, for the same reasons,
+    through the same guard — `book_prices.refuse_unpriceable`, called on the
+    trade's own read under the book lock.
+
+    Before it did, a book with no outcome rows was `unknown_outcome` (422),
+    blaming the request for the ledger's own damaged data, and an unpriceable
+    `b` was a bare `ValueError` out of `core/lmsr.py` — an unmapped 500.
+    """
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    await fund(session, user_id)
+    await _damage(session, upstream, how)
+    before = await entry_count(session)
+
+    with pytest.raises(Exception) as raised:
+        await buy(session, upstream, user_id=user_id)
+    await session.rollback()
+
+    assert isinstance(raised.value, errors().LedgerError), (
+        f"an incomplete book raised an unmapped "
+        f"{type(raised.value).__name__}: {raised.value!r}"
+    )
+    assert raised.value.code == "market_book_incomplete"
+    assert raised.value.status_code == 500
+    assert await _committed_state(entry_count) == before
+    assert (
+        await _committed_state(lambda s: book_row(s, upstream.market_id))
+    ).state_version == 0
+    assert (
+        await _committed_state(
+            lambda s: position_of(s, user_id, upstream.market_id, upstream.outcomes[0])
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("liquidity_b", "0"),
+        ("liquidity_b", "-1"),
+        ("liquidity_b", "NaN"),
+        ("liquidity_b", "Infinity"),
+        ("seed_subsidy", "0"),
+        ("seed_subsidy", "-1"),
+    ],
+)
+async def test_terms_that_cannot_open_a_book_are_refused_on_a_cold_trade(
+    session: AsyncSession, field: str, value: str
+) -> None:
+    """dev's `b` and `seed_subsidy` refusals, reached from the trade path.
+
+    The gate passes — the market is open — and `books.ensure_open` then
+    refuses the terms before it writes a book, as the 503 the contract
+    promises. Nothing is written: no book, no pool funding, no trade.
+    """
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await fund(session, user_id)
+    upstream.body[field] = value
+    before = await entry_count(session)
+
+    with pytest.raises(errors().MarketTermsUnavailable):
+        await buy(session, upstream, user_id=user_id)
+    await session.rollback()
+
+    assert await _committed_state(entry_count) == before
+    assert await _committed_state(lambda s: q_of(s, upstream.market_id)) == []
+
+
+async def test_a_quantity_whose_resulting_q_exceeds_the_column_is_refused(
+    session: AsyncSession,
+) -> None:
+    """D-040's second half: the resulting `q`, not only the cost.
+
+    Every digit of this quantity fits `Numeric(18, 4)`, and so does its cost
+    — but added to the `q` already outstanding it does not, so the book write
+    would be a `NumericValueOutOfRange`. The preview refuses this exact
+    request as `quantity_too_large`; the trade has to agree, rather than
+    answering `insufficient_funds` for a trade no balance could ever make
+    storable.
+    """
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    await fund(session, user_id)
+    quantity = Decimal("99999999999999.9999")
+    before = await entry_count(session)
+
+    with pytest.raises(errors().QuantityTooLarge):
+        await buy(session, upstream, user_id=user_id, quantity=quantity)
+    await session.rollback()
+
+    assert await _committed_state(entry_count) == before
+
+
+async def test_the_trade_charges_the_previews_tick_where_ambient_abs_would_not(
+    session: AsyncSession,
+) -> None:
+    """D-042's `copy_abs`, on the one book where it changes the charge.
+
+    D-044's own example: at `q = [1000, 1100]`, `b = 300`, buying 200 of
+    outcome 0 costs exactly 100, and the engine returns
+    `100.000…0001` with the one in its 49th place. `copy_abs` keeps that
+    digit and `ROUND_CEILING` charges `100.0001`, which is what the preview
+    quotes. A bare `abs()` rounds to the ambient 28 digits first, drops it,
+    and charges `100.0000` — a trade that disagrees with its own preview by a
+    tick, which is the one thing this route promises never to do.
+    """
+    upstream = Upstream()
+    upstream.body["liquidity_b"] = "300"
+    user_id = uuid.uuid4()
+    await warm(session, upstream, [Decimal("1000.0000"), Decimal("1100.0000")])
+    await fund(session, user_id)
+
+    quote = await preview().quote(
+        session,
+        upstream.market_id,
+        outcome_id=upstream.outcomes[0],
+        side=pricing().Side.BUY,
+        quantity=Decimal("200.0000"),
+        access_token=token(),
+        transport=upstream.transport,
+    )
+    assert quote.total == Decimal("-100.0001"), (
+        "this book no longer lands on D-044's tick case, so the test below "
+        "cannot tell copy_abs from abs"
+    )
+
+    trade = await buy(
+        session, upstream, user_id=user_id, quantity=Decimal("200.0000")
+    )
+
+    assert trade.total == quote.total
+
+
+async def test_a_buy_that_prices_at_zero_is_cost_below_tick_and_writes_nothing(
+    session: AsyncSession,
+) -> None:
+    """`quantize_cost` refuses a result of `0.0000` itself, since #108 —
+    there is no separate refusal for the trade path to forget to call.
+
+    Past about 110·b of skew the engine prices a small buy of the unlikely
+    outcome at exactly zero. Charging nothing for real shares is the
+    surprise D-041 exists to prevent, and on a buy the code names the cost,
+    not the proceeds.
+    """
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    skewed = [ZERO, Decimal("20000.0000")]
+    await warm(session, upstream, skewed)
+    await fund(session, user_id)
+    before = await entry_count(session)
+
+    with pytest.raises(errors().CostBelowTick):
+        await buy(
+            session, upstream, user_id=user_id, outcome=0, quantity=Decimal("0.0001")
+        )
+    await session.rollback()
+
+    assert await _committed_state(entry_count) == before
+    assert await _committed_state(lambda s: q_of(s, upstream.market_id)) == skewed

@@ -699,3 +699,119 @@ async def test_the_route_is_documented_as_a_post_that_creates(
 
     assert "post" in path
     assert "201" in path["post"]["responses"]
+
+
+# =========================================================================
+# Reconciled with dev after #108 and #110
+# =========================================================================
+async def test_a_quantity_wider_than_the_column_is_422_not_500(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preview's digit ceiling, on the write path: 18 digits in all, the
+    width of `Numeric(18, 4)`.
+
+    `1E+25` has no fifth decimal place and is greater than zero, so `gt=0`
+    and `decimal_places=4` both let it through. Past them it reaches the
+    pricing path, where quantizing a value that wide raises
+    `InvalidOperation` — an unmapped 500 for a body the route can see is
+    wrong.
+    """
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    response = await client.post(
+        _path(market.market_id),
+        json=_body(market, quantity="1E+25"),
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 422
+    assert recorder.calls == []
+
+
+async def test_an_incomplete_book_is_500_market_book_incomplete(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In the envelope, with the code, and with nothing published. The
+    service-layer tests cover every damaged shape and the rows left behind;
+    this holds only that the refusal leaves the route as the mapped 500."""
+    from unit_test.conftest import strip_outcomes  # noqa: PLC0415
+
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    await strip_outcomes(session, market.market_id)
+    _Terms().install(monkeypatch, market)
+
+    response = await client.post(
+        _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "market_book_incomplete"
+    assert recorder.calls == []
+
+
+async def test_the_published_prices_are_the_snapshot_routes_strings(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both docs pages promise a client the same price strings from the
+    `price` frame and from `GET .../snapshot` for the same state, and that
+    holds because both go through `book_prices.priced` and
+    `core/pricing.py::quantize_price`, not because two copies agree.
+
+    Asserted end to end: the event the trade published, against the snapshot
+    route's body read straight after it — the same post-trade state.
+    """
+    import json  # noqa: PLC0415
+
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+    headers = bearer(uuid.uuid4())
+
+    traded = await client.post(
+        _path(market.market_id), json=_body(market), headers=headers
+    )
+    assert traded.status_code == 201
+
+    snapshot = await client.get(
+        f"/ledger/markets/{market.market_id}/snapshot", headers=headers
+    )
+    assert snapshot.status_code == 200
+
+    event = json.loads(recorder.calls[0][1])
+    body = snapshot.json()
+    assert event["state_version"] == body["state_version"] == 1
+    assert event["prices"] == body["prices"]
+    assert event["occurred_at"] == body["occurred_at"]
+
+
+async def test_the_trade_contract_does_not_offer_market_not_published(
+    trade_client,
+) -> None:
+    """`market_not_published` cannot reach a caller of this route: the gate
+    runs first, and market_service's public detail route answers 404 for a
+    draft or a submitted market, so an unpublished market is
+    `market_not_found` before `books.ensure_open` ever reads `published_at`.
+    `test_preview_routes.py` holds the same for the preview; this is the
+    trade route's copy. Asserted on the code string, not on prose.
+    """
+    import json  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    client, _ = trade_client
+    operation = (await client.get("/openapi.json")).json()["paths"][
+        "/ledger/markets/{market_id}/trades"
+    ]["post"]
+    assert "market_not_published" not in json.dumps(operation).lower()
+
+    doc = (Path(__file__).resolve().parents[4] / "docs/api/ledger-service.md").read_text(
+        encoding="utf-8"
+    )
+    section = doc.split("## POST /ledger/markets/{market_id}/trades", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    assert "market_not_published" not in section
