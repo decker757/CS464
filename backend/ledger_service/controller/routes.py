@@ -352,9 +352,9 @@ async def market_snapshot(
 
 
 _TRADE_DESCRIPTION = (
-    "[T-2] #22. Buy shares in an open market. This service's first write "
-    "route: it takes no account, no amount and no leg — the request model "
-    "is `extra=\"forbid\"`, and the debited account is the caller's own, "
+    "[T-2] #22, [T-3] #23. Buy or sell shares in an open market. This "
+    "service's first write route: it takes no account, no amount and no "
+    "leg — the request model is `extra=\"forbid\"`, and the debited account is the caller's own, "
     "read from the token's `sub` (ADR 0009's amendment).\n\n"
     "**A retry answers before a status check runs.** The idempotency "
     "lookup is unlocked and first: a hit is compared against this request "
@@ -370,8 +370,9 @@ _TRADE_DESCRIPTION = (
     "for strict equality.** Either direction — older or newer than the "
     "book — is `409 quote_stale`, with `quoted` and `current` in "
     "`error.details`.\n\n"
-    "Buy only. A sell is refused `422` until [T-3] #23 adds the per-user "
-    "holdings check this route needs before it can accept one.\n\n"
+    "**A sell is checked against the caller's own position**, under the "
+    "same lock, and refused `409 insufficient_shares_held` if it is larger. "
+    "`total` is negative on a buy and positive on a sell.\n\n"
     "On success, a price event publishes after the transaction commits; a "
     "publish failure never fails the trade and never surfaces here."
 )
@@ -381,27 +382,30 @@ _TRADE_DESCRIPTION = (
     "/markets/{market_id}/trades",
     response_model=TradeOut,
     status_code=201,
-    summary="Buy shares in an open market",
+    summary="Trade shares in an open market",
     description=_TRADE_DESCRIPTION,
     responses={
         401: {"description": "Missing, malformed or expired access token."},
         404: {"description": "No such market."},
         409: {
             "description": (
-                "The market is not open for trading, the quoted "
-                "`state_version` is stale, this account cannot afford the "
-                "trade, or this idempotency key already names a different "
-                "trade."
+                "`market_closed`: the market is not open for trading. "
+                "`quote_stale`: the quoted `state_version` is stale. "
+                "`insufficient_funds`: a buy this account cannot afford. "
+                "`insufficient_shares_held`: a sell larger than this "
+                "caller's position in this outcome. "
+                "`idempotency_key_reused`: this key already names a "
+                "different trade."
             )
         },
         422: {
             "description": (
                 "A malformed body, an extra field, `side` other than "
-                "\"buy\", a quantity at five decimal places, <= 0 or wider "
-                "than 18 digits, an `outcome_id` that is not this market's, "
-                "a quantity whose cost or resulting shares outstanding "
-                "exceed what the ledger can store, or a buy whose cost "
-                "rounds to nothing (`cost_below_tick`, D-041)."
+                "\"buy\" or \"sell\", a quantity at five decimal places, "
+                "<= 0 or wider than 18 digits; `unknown_outcome`; "
+                "`quantity_too_large`; `cost_below_tick` on a buy whose "
+                "cost rounds to nothing; `proceeds_below_tick` on a sell "
+                "whose proceeds round to nothing (D-041)."
             )
         },
         500: {
@@ -412,10 +416,16 @@ _TRADE_DESCRIPTION = (
                 "fault; not worth retrying."
             )
         },
-        503: {"description": "market_service could not be reached right now."},
+        503: {
+            "description": (
+                "`market_terms_unavailable`: market_service could not be "
+                "reached right now, or returned unusable terms on a first "
+                "trade."
+            )
+        },
     },
 )
-async def buy_shares(
+async def execute_trade(
     market_id: uuid.UUID,
     body: TradeIn,
     user: CurrentUser,
@@ -428,7 +438,7 @@ async def buy_shares(
         market_id,
         user_id=user.user_id,
         outcome_id=body.outcome_id,
-        side=Side.BUY,
+        side=Side(body.side),
         quantity=body.quantity,
         state_version=body.state_version,
         idempotency_key=body.idempotency_key,

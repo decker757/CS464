@@ -9,7 +9,12 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from core.errors import InsufficientFunds, LedgerError, QuoteStale
+from core.errors import (
+    InsufficientFunds,
+    InsufficientSharesHeld,
+    LedgerError,
+    QuoteStale,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -29,6 +34,11 @@ def register_error_handlers(app: FastAPI) -> None:
             error["details"] = {
                 "balance": str(exc.balance),
                 "required": str(exc.required),
+            }
+        elif isinstance(exc, InsufficientSharesHeld):
+            error["details"] = {
+                "held": str(exc.held),
+                "requested": str(exc.requested),
             }
         elif isinstance(exc, QuoteStale):
             # Ints, not decimal strings: `state_version` is a count, the same

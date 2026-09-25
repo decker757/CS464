@@ -254,7 +254,7 @@ class PreviewOut(BaseModel):
 
 
 class TradeIn(BaseModel):
-    """A buy order. [T-2] #22.
+    """A trade order, a buy or a sell. [T-2] #22, [T-3] #23.
 
     `extra="forbid"`, and that is the whole of ADR 0009's amendment: the
     route "takes no account, no amount and no leg", which is only true if a
@@ -262,10 +262,8 @@ class TradeIn(BaseModel):
     default is `extra="ignore"`. `total` is in that refusal too, because it
     is the field a client would most plausibly echo back from a preview.
 
-    `side` is `Literal["buy"]` rather than `core.pricing.Side`: a sell is
-    unsafe until [T-3] #23 adds the per-user holdings check under the book
-    lock, so this route refuses one with a 422 rather than accepting it and
-    refusing it one layer down.
+    `side` is `Literal["buy", "sell"]`: anything else is a 422 here rather
+    than a refusal a layer down. The route converts it to `core.pricing.Side`.
 
     `state_version` is required, not optional with a default — an optional
     staleness field would let a client silently opt out of the only
@@ -275,15 +273,15 @@ class TradeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     outcome_id: uuid.UUID
-    side: Literal["buy"] = Field(
-        description="Buy only, until [T-3] #23 widens this route."
+    side: Literal["buy", "sell"] = Field(
+        description="`buy` or `sell`; anything else is 422."
     )
     quantity: Decimal = Field(
         gt=0,
         max_digits=18,
         decimal_places=4,
         description=(
-            "Shares to buy. At most four decimal places (D-038) — a fifth "
+            "Shares to trade. At most four decimal places (D-038) — a fifth "
             "is 422 rather than rounded. At most 18 digits in all, the width "
             "of `Numeric(18, 4)` and the preview's own ceiling: a quantity "
             "wider than the column could never be written as a share count."
@@ -311,7 +309,7 @@ class TradeIn(BaseModel):
 
 
 class TradeOut(BaseModel):
-    """What one buy did. [T-2] #22.
+    """What one trade did. [T-2] #22, [T-3] #23.
 
     Built from `Transaction.context` by `service/trading.py::result_of`, the
     one function the fresh path and both replay paths all call — so a retry
@@ -340,8 +338,9 @@ class TradeOut(BaseModel):
     total: Decimal = Field(
         description=(
             "Signed and quantized exactly as `PreviewOut.total` is — "
-            "negative on a buy, because credits leave the trader. This is "
-            "the number that was charged, the same one the preview quoted."
+            "negative on a buy, because credits leave the trader, and "
+            "positive on a sell, because credits arrive. This is the number "
+            "that was charged or paid, the same one the preview quoted."
         )
     )
     state_version: int = Field(
