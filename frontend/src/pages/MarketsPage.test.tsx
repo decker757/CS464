@@ -55,6 +55,21 @@ describe('MarketsPage', () => {
     expect(screen.getAllByText('Closed').length).toBeGreaterThanOrEqual(1)
   })
 
+  it('does not show a future closing date on a market closed early', async () => {
+    // An admin can close a market before its close_time, and close_time stays
+    // in the future — so the card must go by the status, not only the clock.
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () =>
+        HttpResponse.json({
+          markets: [{ id: 'c3', status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z' }],
+        }),
+      ),
+    )
+    renderPage()
+    await screen.findByText('Closed early by an admin?')
+    expect(screen.queryByText(/closes/i)).not.toBeInTheDocument()
+  })
+
   it('shows an empty state when no markets are returned', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
