@@ -17,6 +17,40 @@ export async function listMarkets(params?: { status?: string; q?: string }): Pro
   return res.data.markets
 }
 
+export interface PublicOutcome {
+  id: string
+  position: number
+  label: string
+}
+
+export interface PublicSource {
+  id: string
+  position: number
+  url: string
+  label: string | null
+}
+
+export interface PublicMarketDetail {
+  id: string
+  status: 'open' | 'closed' | 'pending_resolution' | 'approved'
+  question: string
+  description: string | null
+  outcomes: PublicOutcome[]
+  close_time: string
+  resolution_time: string
+  resolution_criteria: string
+  resolution_sources: PublicSource[]
+  liquidity_b: string
+  seed_subsidy: string
+  published_at: string
+  proposed_outcome_id: string | null
+}
+
+export async function getMarket(id: string): Promise<PublicMarketDetail> {
+  const res = await api.get<PublicMarketDetail>(`${MARKET_BASE}/public/markets/${id}`)
+  return res.data
+}
+
 export interface OutcomeOut {
   id: string
   position: number
