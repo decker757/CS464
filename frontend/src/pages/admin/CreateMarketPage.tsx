@@ -1,7 +1,10 @@
 import type { CSSProperties } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import axios from 'axios'
+import type { ApiError } from '../../api/errors'
 import {
+  type BlockingHint,
   type SaveMarketResponse,
   publishMarket,
   saveMarket,
@@ -13,28 +16,36 @@ import { CREAM, GOLD, NAV } from '../../theme/colors'
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
+type OutcomeRow = { id: string; label: string }
+type SourceRow = { id: string; url: string; label: string }
+
 type FormState = {
   question: string
   description: string
-  outcomes: string[]
+  outcomes: OutcomeRow[]
   closeTime: string
   resolutionTime: string
   criteria: string
-  sources: { url: string; label: string }[]
+  sources: SourceRow[]
   liquidityB: string
   seedSubsidy: string
 }
 
-const DEFAULT_FORM: FormState = {
-  question: '',
-  description: '',
-  outcomes: ['Yes', 'No'],
-  closeTime: '',
-  resolutionTime: '',
-  criteria: '',
-  sources: [{ url: '', label: '' }],
-  liquidityB: '',
-  seedSubsidy: '',
+function createDefaultForm(): FormState {
+  return {
+    question: '',
+    description: '',
+    outcomes: [
+      { id: crypto.randomUUID(), label: 'Yes' },
+      { id: crypto.randomUUID(), label: 'No' },
+    ],
+    closeTime: '',
+    resolutionTime: '',
+    criteria: '',
+    sources: [{ id: crypto.randomUUID(), url: '', label: '' }],
+    liquidityB: '',
+    seedSubsidy: '',
+  }
 }
 
 function toISO(s: string): string | undefined {
@@ -45,6 +56,14 @@ function toISO(s: string): string | undefined {
 function parseNum(s: string): number | undefined {
   const n = parseFloat(s)
   return isNaN(n) ? undefined : n
+}
+
+// Spec [FE][1.1] point 11: round to 4dp before sending to avoid a 422 on the
+// fifth-decimal boundary check the server enforces.
+function roundPrice(s: string): number | undefined {
+  const n = parseFloat(s)
+  if (isNaN(n)) return undefined
+  return Math.round(n * 10000) / 10000
 }
 
 const sectionCard: CSSProperties = {
@@ -111,7 +130,7 @@ export default function CreateMarketPage() {
   const navigate = useNavigate()
   const [draftKey] = useState(() => crypto.randomUUID())
 
-  const [form, setForm] = useState<FormState>(DEFAULT_FORM)
+  const [form, setForm] = useState<FormState>(createDefaultForm)
   const formRef = useRef<FormState>(form)
   useEffect(() => { formRef.current = form }, [form])
 
@@ -124,12 +143,13 @@ export default function CreateMarketPage() {
   const [lastSave, setLastSave] = useState<SaveMarketResponse | null>(null)
   const [submitError, setSubmitError] = useState('')
   const [publishError, setPublishError] = useState('')
+  const [publishDetails, setPublishDetails] = useState<BlockingHint[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const isSavingRef = useRef(false)
 
   const getHint = (field: string) =>
-    lastSave?.blocking_submission.find(b => b.field === field)?.message
+    [...publishDetails, ...(lastSave?.blocking_submission ?? [])].find(b => b.field === field)?.message
 
   const doSave = useCallback(async (status: 'draft' | 'submitted') => {
     // Autosave skips if another save is in flight; manual submit always proceeds.
@@ -142,15 +162,15 @@ export default function CreateMarketPage() {
       status,
       question: f.question || undefined,
       description: f.description || undefined,
-      outcomes: f.outcomes.map(label => ({ label })),
+      outcomes: f.outcomes.map(o => ({ label: o.label })),
       close_time: toISO(f.closeTime),
       resolution_time: toISO(f.resolutionTime),
       resolution_criteria: f.criteria || undefined,
       resolution_sources: f.sources
         .filter(s => s.url.trim())
         .map(s => ({ url: s.url.trim(), label: s.label.trim() || undefined })),
-      liquidity_b: parseNum(f.liquidityB),
-      seed_subsidy: parseNum(f.seedSubsidy),
+      liquidity_b: roundPrice(f.liquidityB),
+      seed_subsidy: roundPrice(f.seedSubsidy),
     }
     try {
       const res = await saveMarket(body)
@@ -160,6 +180,14 @@ export default function CreateMarketPage() {
       setSaveStatus('saved')
       return res
     } catch (err) {
+      if (axios.isAxiosError<ApiError>(err)) {
+        const code = err.response?.data?.error?.code
+        // These codes mean the market has moved past draft on another session.
+        // Update local status so the autosave interval stops and the form locks.
+        if (code === 'market_not_editable') { setMarketStatus('submitted'); setSaveStatus('idle'); return null }
+        if (code === 'market_already_open') { setMarketStatus('open');      setSaveStatus('idle'); return null }
+        if (code === 'market_closed')       { setMarketStatus('closed');    setSaveStatus('idle'); return null }
+      }
       setSaveStatus('error')
       throw err
     } finally {
@@ -191,36 +219,43 @@ export default function CreateMarketPage() {
     if (!marketId || publishing) return
     setPublishing(true)
     setPublishError('')
+    setPublishDetails([])
     try {
       await publishMarket(marketId)
       navigate('/markets')
-    } catch {
+    } catch (err) {
+      if (axios.isAxiosError<ApiError>(err)) {
+        const details = err.response?.data?.error?.details
+        if (details?.length) setPublishDetails(details)
+      }
       setPublishError('Publish failed. Please try again.')
       setPublishing(false)
     }
   }
 
-  const updateOutcome = (i: number, value: string) =>
-    setForm(f => { const o = [...f.outcomes]; o[i] = value; return { ...f, outcomes: o } })
+  const updateOutcome = (id: string, value: string) =>
+    setForm(f => ({ ...f, outcomes: f.outcomes.map(o => o.id === id ? { ...o, label: value } : o) }))
   const addOutcome = () =>
-    setForm(f => ({ ...f, outcomes: [...f.outcomes, ''] }))
-  const removeOutcome = (i: number) =>
-    setForm(f => ({ ...f, outcomes: f.outcomes.filter((_, j) => j !== i) }))
+    setForm(f => ({ ...f, outcomes: [...f.outcomes, { id: crypto.randomUUID(), label: '' }] }))
+  const removeOutcome = (id: string) =>
+    setForm(f => ({ ...f, outcomes: f.outcomes.filter(o => o.id !== id) }))
 
-  const updateSource = (i: number, field: 'url' | 'label', value: string) =>
-    setForm(f => { const s = [...f.sources]; s[i] = { ...s[i], [field]: value }; return { ...f, sources: s } })
+  const updateSource = (id: string, field: 'url' | 'label', value: string) =>
+    setForm(f => ({ ...f, sources: f.sources.map(s => s.id === id ? { ...s, [field]: value } : s) }))
   const addSource = () =>
-    setForm(f => ({ ...f, sources: [...f.sources, { url: '', label: '' }] }))
-  const removeSource = (i: number) =>
-    setForm(f => ({ ...f, sources: f.sources.filter((_, j) => j !== i) }))
+    setForm(f => ({ ...f, sources: [...f.sources, { id: crypto.randomUUID(), url: '', label: '' }] }))
+  const removeSource = (id: string) =>
+    setForm(f => ({ ...f, sources: f.sources.filter(s => s.id !== id) }))
 
   const isSubmitted = marketStatus === 'submitted'
   const isLocked = marketStatus !== 'draft'
 
   const questionHint = getHint('question')
+  const outcomesHint = getHint('outcomes')
   const closeTimeHint = getHint('close_time')
   const resolutionTimeHint = getHint('resolution_time')
   const criteriaHint = getHint('resolution_criteria')
+  const resolutionSourcesHint = getHint('resolution_sources')
   const seedSubsidyHint = getHint('seed_subsidy')
   const liquidityBHint = getHint('liquidity_b')
   const seedSubsidyNum = parseNum(form.seedSubsidy)
@@ -282,22 +317,22 @@ export default function CreateMarketPage() {
         {/* Section: Outcomes */}
         <div style={sectionCard}>
           <h2 style={sectionTitle}>Outcomes</h2>
-          {getHint('outcomes') && (
-            <p style={{ fontSize: 12, color: '#9ca3af', margin: '-12px 0 16px' }}>{getHint('outcomes')}</p>
+          {outcomesHint && (
+            <p style={{ fontSize: 12, color: '#9ca3af', margin: '-12px 0 16px' }}>{outcomesHint}</p>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {form.outcomes.map((label, i) => {
+            {form.outcomes.map((outcome, i) => {
               const outcomeHint = getHint(`outcomes[${i}].label`)
               const initialPrice = lastSave?.market.outcomes[i]?.initial_price
               return (
-                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <div key={outcome.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
                     <Field id={`outcome-${i}`} label={`Outcome ${i + 1}`} hint={outcomeHint}>
                       <input
                         id={`outcome-${i}`}
                         style={inputBase(!!outcomeHint)}
-                        value={label}
-                        onChange={e => updateOutcome(i, e.target.value)}
+                        value={outcome.label}
+                        onChange={e => updateOutcome(outcome.id, e.target.value)}
                         placeholder={i === 0 ? 'Yes' : i === 1 ? 'No' : 'Outcome label'}
                         disabled={isLocked}
                         {...focusHandlers(!!outcomeHint)}
@@ -312,7 +347,7 @@ export default function CreateMarketPage() {
                   {form.outcomes.length > 2 && !isLocked && (
                     <button
                       type="button"
-                      onClick={() => removeOutcome(i)}
+                      onClick={() => removeOutcome(outcome.id)}
                       aria-label={`Remove outcome ${i + 1}`}
                       style={{ paddingTop: 22, lineHeight: '50px', background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 20 }}
                     >
@@ -379,23 +414,23 @@ export default function CreateMarketPage() {
               <p style={{ fontSize: 13, fontWeight: 600, color: NAV, margin: '0 0 8px' }}>
                 Resolution sources *
               </p>
-              {getHint('resolution_sources') && (
+              {resolutionSourcesHint && (
                 <p style={{ fontSize: 12, color: '#9ca3af', margin: '-4px 0 12px' }}>
-                  {getHint('resolution_sources')}
+                  {resolutionSourcesHint}
                 </p>
               )}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {form.sources.map((src, i) => {
                   const urlHint = getHint(`resolution_sources[${i}].url`)
                   return (
-                    <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <div key={src.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                       <div style={{ flex: 2 }}>
                         <Field id={`src-url-${i}`} label={i === 0 ? 'URL' : ' '} hint={urlHint}>
                           <input
                             id={`src-url-${i}`}
                             style={inputBase(!!urlHint)}
                             value={src.url}
-                            onChange={e => updateSource(i, 'url', e.target.value)}
+                            onChange={e => updateSource(src.id, 'url', e.target.value)}
                             placeholder="https://…"
                             disabled={isLocked}
                             {...focusHandlers(!!urlHint)}
@@ -408,7 +443,7 @@ export default function CreateMarketPage() {
                             id={`src-label-${i}`}
                             style={inputBase(false)}
                             value={src.label}
-                            onChange={e => updateSource(i, 'label', e.target.value)}
+                            onChange={e => updateSource(src.id, 'label', e.target.value)}
                             placeholder="e.g. MAS statistics"
                             disabled={isLocked}
                             {...focusHandlers(false)}
@@ -418,7 +453,7 @@ export default function CreateMarketPage() {
                       {form.sources.length > 1 && !isLocked && (
                         <button
                           type="button"
-                          onClick={() => removeSource(i)}
+                          onClick={() => removeSource(src.id)}
                           aria-label={`Remove source ${i + 1}`}
                           style={{ marginTop: i === 0 ? 22 : 0, lineHeight: '50px', background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 20 }}
                         >
@@ -509,7 +544,7 @@ export default function CreateMarketPage() {
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={submitting}
+              disabled={submitting || (lastSave?.blocking_submission.length ?? 0) > 0}
               style={{
                 backgroundColor: NAV,
                 color: '#fff',
@@ -518,8 +553,8 @@ export default function CreateMarketPage() {
                 padding: '14px 32px',
                 fontSize: 15,
                 fontWeight: 600,
-                cursor: submitting ? 'default' : 'pointer',
-                opacity: submitting ? 0.6 : 1,
+                cursor: submitting || (lastSave?.blocking_submission.length ?? 0) > 0 ? 'default' : 'pointer',
+                opacity: submitting || (lastSave?.blocking_submission.length ?? 0) > 0 ? 0.6 : 1,
               }}
             >
               {submitting ? 'Submitting…' : 'Submit for Review'}
