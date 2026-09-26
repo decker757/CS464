@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -37,6 +37,12 @@ const baseSaveResponse = {
     max_platform_loss: 69.3147,
   },
   blocking_submission: [] as { field: string; message: string }[],
+}
+
+// Autosave only sends a form that differs from what was last saved, so a test
+// that wants a save has to change something first.
+function touchForm() {
+  fireEvent.change(screen.getByLabelText('Question *'), { target: { value: 'Will it rain in Singapore tomorrow?' } })
 }
 
 function renderPage() {
@@ -85,6 +91,7 @@ describe('CreateMarketPage', () => {
   it('autosave fires after 3 seconds and shows Saved', async () => {
     vi.useFakeTimers()
     renderPage()
+    touchForm()
     await act(() => vi.advanceTimersByTimeAsync(3100))
     expect(screen.getByText('Saved')).toBeInTheDocument()
   })
@@ -92,6 +99,7 @@ describe('CreateMarketPage', () => {
   it('shows initial_price beside outcomes after first autosave', async () => {
     vi.useFakeTimers()
     renderPage()
+    touchForm()
     await act(() => vi.advanceTimersByTimeAsync(3100))
     const prices = screen.getAllByText('50.0% start')
     expect(prices.length).toBe(2)
@@ -100,6 +108,7 @@ describe('CreateMarketPage', () => {
   it('shows max_platform_loss from server response', async () => {
     vi.useFakeTimers()
     renderPage()
+    touchForm()
     await act(() => vi.advanceTimersByTimeAsync(3100))
     expect(screen.getByLabelText('max platform loss')).toHaveTextContent('69.3147')
   })
@@ -118,9 +127,73 @@ describe('CreateMarketPage', () => {
     )
     vi.useFakeTimers()
     renderPage()
+    touchForm()
     await act(() => vi.advanceTimersByTimeAsync(3100))
     expect(screen.getByText('A close time is required.')).toBeInTheDocument()
     expect(screen.getByText('A seed subsidy is required.')).toBeInTheDocument()
+  })
+
+  it('does not save a form nobody has touched', async () => {
+    let calls = 0
+    server.use(http.post(`${MARKET_BASE}/markets`, () => { calls++; return HttpResponse.json(baseSaveResponse) }))
+    vi.useFakeTimers()
+    renderPage()
+    await act(() => vi.advanceTimersByTimeAsync(9100))
+    expect(calls).toBe(0)
+  })
+
+  it('does not autosave again until something changes', async () => {
+    let calls = 0
+    server.use(http.post(`${MARKET_BASE}/markets`, () => { calls++; return HttpResponse.json(baseSaveResponse) }))
+    vi.useFakeTimers()
+    renderPage()
+    touchForm()
+    await act(() => vi.advanceTimersByTimeAsync(9100))
+    expect(calls).toBe(1)
+    fireEvent.change(screen.getByLabelText('Question *'), { target: { value: 'Will it rain in Singapore on Friday?' } })
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    expect(calls).toBe(2)
+  })
+
+  it('shows a source hint under the row it is about when an earlier row is blank', async () => {
+    // Blank URLs are not sent, so the server's resolution_sources[0] is the
+    // second row on screen here.
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () =>
+        HttpResponse.json({
+          ...baseSaveResponse,
+          blocking_submission: [{ field: 'resolution_sources[0].url', message: 'Use an http or https link.' }],
+        }),
+      ),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /add source/i }))
+    fireEvent.change(document.getElementById('src-url-1')!, { target: { value: 'ftp://example.com' } })
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    const second = document.getElementById('src-url-1')!.parentElement!
+    expect(within(second).getByText('Use an http or https link.')).toBeInTheDocument()
+    const first = document.getElementById('src-url-0')!.parentElement!
+    expect(within(first).queryByText('Use an http or https link.')).not.toBeInTheDocument()
+  })
+
+  it('does not send a zero seed subsidy, says why, and blocks submit', async () => {
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, async ({ request }) => {
+        bodies.push(await request.json() as Record<string, unknown>)
+        return HttpResponse.json(baseSaveResponse)
+      }),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    touchForm()
+    fireEvent.change(screen.getByLabelText(/seed subsidy/i), { target: { value: '0' } })
+    expect(screen.getByText('Must be greater than zero.')).toBeInTheDocument()
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).not.toHaveProperty('seed_subsidy')
+    expect(screen.getByRole('button', { name: /submit for review/i })).toBeDisabled()
   })
 
   it('can add and remove outcome rows', async () => {
