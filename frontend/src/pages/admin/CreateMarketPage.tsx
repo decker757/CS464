@@ -66,6 +66,47 @@ function roundPrice(s: string): number | undefined {
   return Math.round(n * 10000) / 10000
 }
 
+// The column holds at most 99999999999999.9999, which is 1e14 as a JS number.
+const PRICE_LIMIT = 1e14
+
+// What is wrong with a pricing input, if anything. The server refuses the
+// whole save for a zero, negative or oversized value, so none of the other
+// edits would be saved either — catch it here and don't send the field.
+function priceInputError(s: string): string | undefined {
+  if (!s.trim()) return undefined
+  const n = roundPrice(s)
+  if (n === undefined) return 'Enter a number.'
+  if (n <= 0) return 'Must be greater than zero.'
+  if (n >= PRICE_LIMIT) return 'That number is too large.'
+  return undefined
+}
+
+function sendablePrice(s: string): number | undefined {
+  return priceInputError(s) ? undefined : roundPrice(s)
+}
+
+// Everything POST /markets gets from the form, apart from draft_key and status.
+function saveFields(f: FormState) {
+  return {
+    question: f.question || undefined,
+    description: f.description || undefined,
+    outcomes: f.outcomes.map(o => ({ label: o.label })),
+    close_time: toISO(f.closeTime),
+    resolution_time: toISO(f.resolutionTime),
+    resolution_criteria: f.criteria || undefined,
+    resolution_sources: sentSources(f)
+      .map(s => ({ url: s.url.trim(), label: s.label.trim() || undefined })),
+    liquidity_b: sendablePrice(f.liquidityB),
+    seed_subsidy: sendablePrice(f.seedSubsidy),
+  }
+}
+
+// Rows with a blank URL are not sent, so the server's resolution_sources[k]
+// is the k-th row that has one — not necessarily the k-th row on screen.
+function sentSources(f: FormState) {
+  return f.sources.filter(s => s.url.trim())
+}
+
 const sectionCard: CSSProperties = {
   backgroundColor: '#fff',
   border: '1px solid rgba(182,145,70,0.15)',
@@ -133,6 +174,10 @@ export default function CreateMarketPage() {
   const [form, setForm] = useState<FormState>(createDefaultForm)
   const formRef = useRef<FormState>(form)
   useEffect(() => { formRef.current = form }, [form])
+  // What the server last accepted. It starts as the blank form, so opening
+  // the page and walking away creates no draft, and an autosave with nothing
+  // new to say is skipped (market-service.md, notes for [FE][1.1], point 2).
+  const lastSavedRef = useRef(JSON.stringify(saveFields(form)))
 
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [marketId, setMarketId] = useState<string | null>(null)
@@ -141,6 +186,10 @@ export default function CreateMarketPage() {
   useEffect(() => { marketStatusRef.current = marketStatus }, [marketStatus])
 
   const [lastSave, setLastSave] = useState<SaveMarketResponse | null>(null)
+  // Row ids in the order they were sent, so a hint for outcomes[k] or
+  // resolution_sources[k] lands on the row it was about, even after rows are
+  // added or removed and before the next save catches up.
+  const [sentIds, setSentIds] = useState<{ outcomes: string[]; sources: string[] }>({ outcomes: [], sources: [] })
   const [submitError, setSubmitError] = useState('')
   const [publishError, setPublishError] = useState('')
   const [publishDetails, setPublishDetails] = useState<BlockingHint[]>([])
@@ -152,31 +201,21 @@ export default function CreateMarketPage() {
     [...publishDetails, ...(lastSave?.blocking_submission ?? [])].find(b => b.field === field)?.message
 
   const doSave = useCallback(async (status: 'draft' | 'submitted') => {
-    // Autosave skips if another save is in flight; manual submit always proceeds.
-    if (isSavingRef.current && status === 'draft') return null
+    const f = formRef.current
+    const fields = saveFields(f)
+    const snapshot = JSON.stringify(fields)
+    // Autosave skips if nothing changed or another save is in flight; manual
+    // submit always proceeds.
+    if (status === 'draft' && (snapshot === lastSavedRef.current || isSavingRef.current)) return null
     isSavingRef.current = true
     setSaveStatus('saving')
-    const f = formRef.current
-    const body = {
-      draft_key: draftKey,
-      status,
-      question: f.question || undefined,
-      description: f.description || undefined,
-      outcomes: f.outcomes.map(o => ({ label: o.label })),
-      close_time: toISO(f.closeTime),
-      resolution_time: toISO(f.resolutionTime),
-      resolution_criteria: f.criteria || undefined,
-      resolution_sources: f.sources
-        .filter(s => s.url.trim())
-        .map(s => ({ url: s.url.trim(), label: s.label.trim() || undefined })),
-      liquidity_b: roundPrice(f.liquidityB),
-      seed_subsidy: roundPrice(f.seedSubsidy),
-    }
     try {
-      const res = await saveMarket(body)
+      const res = await saveMarket({ draft_key: draftKey, status, ...fields })
+      lastSavedRef.current = snapshot
       setMarketId(res.market.id)
       setMarketStatus(res.market.status)
       setLastSave(res)
+      setSentIds({ outcomes: f.outcomes.map(o => o.id), sources: sentSources(f).map(s => s.id) })
       setSaveStatus('saved')
       return res
     } catch (err) {
@@ -256,8 +295,12 @@ export default function CreateMarketPage() {
   const resolutionTimeHint = getHint('resolution_time')
   const criteriaHint = getHint('resolution_criteria')
   const resolutionSourcesHint = getHint('resolution_sources')
-  const seedSubsidyHint = getHint('seed_subsidy')
-  const liquidityBHint = getHint('liquidity_b')
+  const seedSubsidyHint = priceInputError(form.seedSubsidy) ?? getHint('seed_subsidy')
+  const liquidityBHint = priceInputError(form.liquidityB) ?? getHint('liquidity_b')
+  const cannotSubmit = submitting
+    || (lastSave?.blocking_submission.length ?? 0) > 0
+    || priceInputError(form.seedSubsidy) !== undefined
+    || priceInputError(form.liquidityB) !== undefined
   const seedSubsidyNum = parseNum(form.seedSubsidy)
 
   return (
@@ -322,8 +365,9 @@ export default function CreateMarketPage() {
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {form.outcomes.map((outcome, i) => {
-              const outcomeHint = getHint(`outcomes[${i}].label`)
-              const initialPrice = lastSave?.market.outcomes[i]?.initial_price
+              const k = sentIds.outcomes.indexOf(outcome.id)
+              const outcomeHint = k >= 0 ? getHint(`outcomes[${k}].label`) : undefined
+              const initialPrice = k >= 0 ? lastSave?.market.outcomes[k]?.initial_price : undefined
               return (
                 <div key={outcome.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
@@ -421,7 +465,8 @@ export default function CreateMarketPage() {
               )}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {form.sources.map((src, i) => {
-                  const urlHint = getHint(`resolution_sources[${i}].url`)
+                  const k = sentIds.sources.indexOf(src.id)
+                  const urlHint = k >= 0 ? getHint(`resolution_sources[${k}].url`) : undefined
                   return (
                     <div key={src.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                       <div style={{ flex: 2 }}>
@@ -544,7 +589,7 @@ export default function CreateMarketPage() {
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={submitting || (lastSave?.blocking_submission.length ?? 0) > 0}
+              disabled={cannotSubmit}
               style={{
                 backgroundColor: NAV,
                 color: '#fff',
@@ -553,8 +598,8 @@ export default function CreateMarketPage() {
                 padding: '14px 32px',
                 fontSize: 15,
                 fontWeight: 600,
-                cursor: submitting || (lastSave?.blocking_submission.length ?? 0) > 0 ? 'default' : 'pointer',
-                opacity: submitting || (lastSave?.blocking_submission.length ?? 0) > 0 ? 0.6 : 1,
+                cursor: cannotSubmit ? 'default' : 'pointer',
+                opacity: cannotSubmit ? 0.6 : 1,
               }}
             >
               {submitting ? 'Submitting…' : 'Submit for Review'}

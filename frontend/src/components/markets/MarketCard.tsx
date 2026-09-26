@@ -1,17 +1,11 @@
 import { Link } from 'react-router-dom'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import { NAV } from '../../theme/colors'
+import { STATUS_CONFIG, tradingStopped } from './marketStatus'
 
-const STATUS_CONFIG: Record<PublicMarketSummary['status'], { label: string; color: string; bg: string; border: string }> = {
-  open:               { label: 'Open',    color: '#16a34a', bg: 'rgba(22,163,74,0.1)',   border: 'rgba(22,163,74,0.25)' },
-  closed:             { label: 'Closed',  color: '#6b7280', bg: 'rgba(107,114,128,0.1)', border: 'rgba(107,114,128,0.25)' },
-  pending_resolution: { label: 'Pending', color: '#d97706', bg: 'rgba(217,119,6,0.1)',   border: 'rgba(217,119,6,0.25)' },
-  approved:           { label: 'Settled', color: '#2563eb', bg: 'rgba(37,99,235,0.1)',   border: 'rgba(37,99,235,0.25)' },
-}
-
-function formatCloseTime(iso: string): string {
-  const d = new Date(iso)
-  if (d <= new Date()) return 'Closed'
+function formatCloseTime(market: PublicMarketSummary): string {
+  if (tradingStopped(market.status, market.close_time)) return 'Closed'
+  const d = new Date(market.close_time)
   return `Closes ${d.toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' })}`
 }
 
@@ -59,7 +53,7 @@ export default function MarketCard({ market }: { market: PublicMarketSummary }) 
             {label}
           </span>
           <span style={{ fontSize: 12, color: '#9ca3af', textAlign: 'right' }}>
-            {formatCloseTime(market.close_time)}
+            {formatCloseTime(market)}
           </span>
         </div>
         <p style={{ fontSize: 15, fontWeight: 600, color: NAV, lineHeight: 1.5, margin: 0 }}>
