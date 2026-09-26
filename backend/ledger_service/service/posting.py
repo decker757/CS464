@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientFunds,
+    PendingWritesOnReplay,
     UnbalancedTransaction,
 )
 from model.entities import (
@@ -119,10 +120,27 @@ async def post(
     _require_balanced(legs)
     fingerprint = _fingerprint(kind, legs)
 
+    # "`posting.post` refuses to replay into a dirty session", on both of the
+    # branches below that replay. Recorded here rather than asked at each
+    # one, because the second is reached after the SAVEPOINT's flush and
+    # rollback, which expire the caller's pending writes — by then the
+    # session looks clean whatever the caller was holding.
+    caller_pending = bool(session.new or session.dirty or session.deleted)
+
     await accounts.lock(session, [leg.account.id for leg in legs])
 
     existing = await find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
+        # This commit is about to flush the whole session, so a caller
+        # holding pending writes would have them committed alongside a
+        # transaction that wrote no entries of its own — [T-2] #22's trade
+        # path is the first caller that can reach this with `q`,
+        # `state_version` and a position still pending. Raised before the
+        # commit, not rolled back after it: there is no way to discard only
+        # the caller's writes once this point is reached.
+        if caller_pending:
+            raise PendingWritesOnReplay
+
         # Committed although nothing was written, because the locks above are
         # held until this transaction ends and a replay should not hold them
         # for the rest of the caller's request.
@@ -166,6 +184,12 @@ async def post(
         existing = await find_by_idempotency_key(session, idempotency_key)
         if existing is None:
             raise
+        # The same refusal as the branch above. The savepoint's rollback has
+        # discarded the caller's writes rather than committing them, but the
+        # caller still gets back somebody else's transaction as though its
+        # own had landed, holding entities that rollback has expired.
+        if caller_pending:
+            raise PendingWritesOnReplay
         transaction = _replay(existing, fingerprint)
 
     await session.commit()

@@ -110,6 +110,25 @@ to ADR 0006 to move, not to a packaging change.
 
 **`bus.py::publish`** — four lines of `redis.publish`. Below the bar.
 
+> **Extended by [F-9] #112.** `PriceEvent` is copied too, and it is the more
+> interesting copy of the two: `publish` is four lines whose divergence is
+> loud, and the model is a contract whose divergence is silent — the producer
+> serialises a field the consumer forbids, the consumer drops the whole event,
+> and the symptom three services away is prices that stop updating with nothing
+> logged on the side that caused it. Neither service may import the other, so
+> the two are held together by a test that reads
+> `realtime_service/model/schemas.py` and `service/bus.py` as source and parses
+> them with `ast`. A file read is not an import: `test_import_boundary.py`
+> still passes, and the container, which holds no copy of the other service,
+> never runs it.
+>
+> **Reversal trigger.** This stays a copy while there are two callers and the
+> pin can see both files. Move `PriceEvent` into `shared/` if a third service
+> needs it, or if the source-reading pin ever stops running — the test for the
+> latter is `ci-backend.yml` gaining per-service path filtering, which would
+> retire the pin silently and leave the copies unguarded, and that is the point
+> at which indirection is cheaper than a contract nothing checks.
+
 The bar, stated once: a module earns a place in `shared/` when every caller
 needs the identical behaviour *and* a divergence between two copies would be a
 bug rather than a design choice. Similar code is not enough. ADR 0003 refused

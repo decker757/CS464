@@ -197,3 +197,26 @@ def starting_credits() -> Decimal:
     behaviour, and would fail for whoever set STARTING_CREDITS in their .env.
     """
     return get_settings().starting_credits
+
+
+async def strip_outcomes(session, market_id: uuid.UUID) -> None:
+    """Delete a market's outcome rows, leaving the book behind. Committed.
+
+    The state `MarketBookIncomplete` exists for, and the only way to reach it:
+    nothing in this service writes a book without its outcomes, because
+    `books.ensure_open` inserts both in one savepoint.
+
+    Here rather than in each suite because three files built it inline and the
+    guard's definition of "incomplete" has already moved once — from "no rows"
+    to "fewer than `MIN_OUTCOMES`". Three hand-written setups is three places
+    to find on the next move, and the one that is missed goes on passing for
+    the wrong reason.
+    """
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    from model.entities import MarketOutcome  # noqa: PLC0415
+
+    await session.execute(
+        delete(MarketOutcome).where(MarketOutcome.market_id == market_id)
+    )
+    await session.commit()

@@ -17,6 +17,17 @@ whole point of doing it this way rather than monkeypatching `fetch` itself:
 the bug D-016 exists to prevent lives in the parsing, and a patched-out `fetch`
 would never run it.
 
+**Three tests left this file in [F-8] #109 and live in `test_market_books.py`
+now.** `test_a_market_with_null_terms_is_unavailable_rather_than_funded`,
+`test_terms_that_could_never_be_priced_are_refused` and
+`test_a_ten_outcome_market_is_not_refused` were rules about *writing a book* —
+a `b` that can never be priced, an outcome list that can never be priced —
+being enforced on a read. ADR 0017 moves them to `books.ensure_open`, where
+the write is, because a market_service returning a null `b` must not start
+refusing trades on books snapshotted weeks earlier. What stays here is what
+any caller structurally needs: an object, a matching id, a parseable status,
+and values of the right type.
+
 Driving the real market service over `ASGITransport` is not an option and never
 will be. `unit_test/test_import_boundary.py` fails any `import market_service`
 from this suite, because that import succeeds under pytest — `pythonpath = . ..`
@@ -508,24 +519,100 @@ async def test_a_body_for_a_different_market_is_refused() -> None:
         )
 
 
-async def test_a_market_with_null_terms_is_unavailable_rather_than_funded() -> None:
-    """`liquidity_b` and `seed_subsidy` are `Decimal | None` on the wire.
+# --- [F-8] #109: the client carries the status and decides nothing --------
+async def test_the_status_is_carried_through() -> None:
+    """ADR 0017: `fetch` gains `status`, and it is the field the gate reads.
 
-    Structurally nullable, because `MarketDraftRequest` lets a draft omit both.
-    Unreachable for a published market — `_liquidity_problems` requires each to
-    be present and positive, and `publish` re-runs every submission rule — so
-    this is defending a state the market service says cannot happen.
+    Read off `PublicMarketOut`, whose `status` is already ADR 0011's predicate
+    applied — `displayed_status` only ever turns OPEN into CLOSED (D-022,
+    D-027) — so one field answers both the clock's close and an
+    administrator's early one. That is the whole reason the gate reads this
+    projection rather than restating the predicate on this side.
 
-    Worth defending anyway: the failure it prevents is a book created with a
-    null `b`, which is a market that can never be priced and a pool funded with
-    nothing. Refusing beats writing a row that no later code can use.
+    Carried as the wire string. An enum here would be a second copy of
+    `MarketStatus`, whose members this service cannot import and must not
+    retype: `test_import_boundary.py` fails any `import market_service`,
+    because that import resolves under pytest and is an `ImportError` in the
+    container.
     """
-    with pytest.raises(_errors().MarketTermsUnavailable):
-        await _terms().fetch(
-            _MARKET_ID,
-            access_token=_token(),
-            transport=_responds(body=_terms_body(liquidity_b=None)),
-        )
+    terms = await _terms().fetch(
+        _MARKET_ID, access_token=_token(), transport=_responds()
+    )
+
+    assert terms.status == "open"
+
+
+@pytest.mark.parametrize(
+    "status", ["closed", "pending_resolution", "approved", "settled"]
+)
+async def test_fetch_does_not_refuse_a_market_that_is_not_open(
+    status: str,
+) -> None:
+    """One client, one parse path, and no opinion about what it carries.
+
+    ADR 0017 is explicit: "The client carries the status; the trade path
+    decides on it." Three readers need terms for a market nobody may trade —
+    [3.4] #12's settlement reads `q` from a book whose market stopped weeks
+    ago, the realtime snapshot serves a closed market's prices, and
+    `books.ensure_open` gives a CLOSED market a book on purpose. A client that
+    refused a non-open status would break all three, and it would do it
+    silently: the first symptom is a settlement that cannot find the positions
+    it is meant to pay out.
+
+    The gate in `service/market_status.py` is the only thing in this service
+    that may turn this value into a refusal.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(status=status)),
+    )
+
+    assert terms.status == status
+
+
+async def test_a_null_liquidity_b_is_carried_rather_than_refused() -> None:
+    """The refusal that moved, asserted from the side it moved *off*.
+
+    `test_market_books.py::test_a_market_with_null_terms_is_unavailable_rather_than_funded`
+    holds the rule at `books.ensure_open` now. This holds the other half — that
+    `_parse` no longer has an opinion — and the two together are the whole of
+    ADR 0017's argument: refusing a null `b` is the right answer when you are
+    about to write it into an immutable book, and the wrong answer when you are
+    asking whether a market is open, because the `b` that matters was
+    snapshotted at first touch and is never read again.
+
+    `MarketTerms.liquidity_b` widens to `Decimal | None` here, which is what
+    `PublicMarketOut` has declared on the other side all along. Until this
+    ticket the ledger's type was narrower than the endpoint's contract and the
+    refusal was what papered over the gap.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(liquidity_b=None)),
+    )
+
+    assert terms.liquidity_b is None
+    assert terms.seed_subsidy == Decimal("250.0000")
+
+
+async def test_a_null_seed_subsidy_is_carried_rather_than_refused() -> None:
+    """The money half of the same move.
+
+    Separate from the test above because the two fields fail differently once
+    they reach a book: a null `b` is a market that can never be priced, and a
+    null subsidy is a pool funded with nothing. Both are `ensure_open`'s to
+    refuse now, and neither is this function's.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(seed_subsidy=None)),
+    )
+
+    assert terms.seed_subsidy is None
+    assert terms.liquidity_b == Decimal("100.0000")
 
 
 @pytest.mark.parametrize(
@@ -543,43 +630,95 @@ async def test_a_market_with_null_terms_is_unavailable_rather_than_funded() -> N
         ),
     ],
 )
-async def test_terms_that_could_never_be_priced_are_refused(
+async def test_an_unpriceable_outcome_list_is_carried_rather_than_refused(
     label: str, outcomes: list[dict[str, object]]
 ) -> None:
-    """The same defence as a null `liquidity_b`, for the outcome list.
+    """`_refuse_unpriceable` moved too, and these are the four cases it held.
 
-    A book is written once and is immutable under ADR 0005, so a bad one is
-    not something a later read corrects — which is the argument for refusing
-    rather than storing, and it applies to all four of these.
+    Same four bodies as
+    `test_market_books.py::test_terms_that_could_never_be_priced_are_refused`,
+    asserted from the opposite direction: the client parses them and hands them
+    on, and `books.ensure_open` is what refuses to write a book from them.
 
-    One outcome prices at 1.0 and none is a sum with no terms: the market
-    opens, funds its pool from the platform, and quotes a price nobody can
-    trade against. A repeated id or position is a unique constraint on
-    `market_outcomes`, so without this it reaches the database and fails
-    inside `books.ensure_open`'s savepoint — where `except IntegrityError` is
-    watching for a lost first-touch race. It re-raises correctly, because no
-    committed book is found, but the caller gets a 500 describing nothing,
-    and the race handler is left catching two unrelated things.
+    So `MarketTerms.outcomes` may now legitimately be empty or hold one
+    element. What has *not* moved is the shape of an individual outcome — an
+    id that is not a UUID or a position that is not a number is still a 503
+    from here, and `test_valid_json_that_is_not_a_market_is_unavailable` below
+    still owns that.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        transport=_responds(body=_terms_body(outcomes=outcomes)),
+    )
 
-    Unreachable from a correct market service: `publish` re-runs every
-    submission rule, and those require between two and ten named outcomes with
-    server-assigned positions.
+    assert len(terms.outcomes) == len(outcomes)
+
+
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        ("status is absent", {k: v for k, v in _terms_body().items() if k != "status"}),
+        ("status is null", _terms_body(status=None)),
+        ("status is a number", _terms_body(status=3)),
+        ("status is a list", _terms_body(status=["open"])),
+        ("status is an object", _terms_body(status={"value": "open"})),
+    ],
+)
+async def test_a_status_that_is_not_a_string_is_unavailable(
+    label: str, body: object
+) -> None:
+    """"A parseable status" — ADR 0017's third structural rule for `_parse`.
+
+    The field the gate decides on has to arrive as something the gate can
+    compare, and the failure of it not arriving is the loudest kind of quiet:
+    every case here is `!= "open"`, so a gate handed one of them refuses the
+    trade as `409 market_closed` with no exception raised anywhere. A
+    market_service that had broken or been misconfigured would be telling every
+    trader on the platform that every market had closed — permanently, in a
+    system where nothing reopens a market.
+
+    Refused here instead, as the 503 that means the dependency is the problem.
+    Same shape of defence as `_to_decimal` refusing a `bool`: the malformation
+    that does not raise on its own is the one worth a rule.
     """
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
-            _MARKET_ID,
-            access_token=_token(),
-            transport=_responds(body=_terms_body(outcomes=outcomes)),
+            _MARKET_ID, access_token=_token(), transport=_responds(body=body)
         )
 
 
-async def test_a_ten_outcome_market_is_not_refused() -> None:
-    """The ceiling is the market service's, and this is not the place to restate it.
+def test_market_terms_without_a_status_cannot_be_built() -> None:
+    """The dataclass holds the same line `_parse` does, not a looser one.
 
-    `MAX_OUTCOMES` is ten on the other side. A floor here is about what can be
-    priced at all; a ceiling would be a second copy of somebody else's rule,
-    and the failure it would cause — a published market the ledger silently
-    refuses to open a book for — is worse than the one it would prevent.
+    The test above proves `_parse` never lets an unknown status through. That
+    is one construction path, and `MarketTerms` is built by others: every test
+    double that stands in for `fetch`, and whatever cache or second parse path
+    arrives later. A default of `"open"` on the field opened the gate for all
+    of them — a market whose status nobody supplied read as tradeable, with no
+    exception anywhere, on the one check that stands between a trader and a
+    closed market. No test could see it while `_parse` was the only caller,
+    because `_parse` always passes one.
+
+    So a value built without a status is not a value at all.
+    """
+    with pytest.raises(TypeError):
+        _terms().MarketTerms(  # type: ignore[call-arg]
+            market_id=_MARKET_ID,
+            liquidity_b=None,
+            seed_subsidy=None,
+            published_at=None,
+            outcomes=[],
+        )
+
+
+async def test_a_ten_outcome_market_still_parses() -> None:
+    """The ceiling is the market service's, and the floor left this file.
+
+    `test_a_ten_outcome_market_is_not_refused` moved to `test_market_books.py`
+    with the rule it argues about. What is left here is the narrower claim that
+    a ten-outcome body parses into ten `OutcomeTerms` — no count rule of any
+    kind survives in `_parse`, in either direction.
     """
     outcomes = [{"id": str(uuid.uuid4()), "position": i} for i in range(10)]
 

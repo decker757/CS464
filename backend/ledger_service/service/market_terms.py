@@ -51,11 +51,34 @@ class OutcomeTerms:
 
 @dataclass(frozen=True)
 class MarketTerms:
-    """A market's terms, read once and handed to `service/books.py` to copy."""
+    """A market's terms, read once and handed to `service/books.py` to copy.
+
+    `status` is the wire string from market_service's public projection —
+    already ADR 0011's derived predicate applied, so it is the one field that
+    answers both the clock's close and an administrator's early one. Carried
+    here and never gated on: `service/market_status.py::ensure_trading` is
+    the only place in this service allowed to turn it into a refusal
+    (ADR 0017).
+
+    `liquidity_b` and `seed_subsidy` are `Decimal | None` because the wire
+    contract they are read from (`PublicMarketOut`) declares them nullable.
+    Structurally possible on a draft and unreachable on anything `fetch`
+    returns a 200 for; `service/books.py::ensure_open` is what refuses a null
+    one, because the refusal is about *writing an immutable book*, not about
+    reading terms for a market that may be years past its first touch.
+
+    `status` has no default, and must never get one. `_parse` refuses a
+    missing status as a 503, and a default would undo that for every other
+    construction path — a test double standing in for `fetch`, a cache, a
+    second parse — by handing out `"open"` for a status nobody supplied. On
+    the money gate, that is a fail-open no test would see.
+    `test_market_terms_without_a_status_cannot_be_built` holds it.
+    """
 
     market_id: uuid.UUID
-    liquidity_b: Decimal
-    seed_subsidy: Decimal
+    status: str
+    liquidity_b: Decimal | None
+    seed_subsidy: Decimal | None
     published_at: datetime | None
     outcomes: list[OutcomeTerms]
 
@@ -76,16 +99,20 @@ async def fetch(
     | 401 | `NotAuthenticated` | 401 |
 
     "Not this market" is every way a 200 can fail to be usable: bytes that are
-    not JSON, JSON that is not an object, a field of the wrong type, a null
-    `liquidity_b` or `seed_subsidy`, and a body whose `id` is some other
-    market's. `_parse` below holds all of it, and says why it is one `try`
-    rather than several.
+    not JSON, JSON that is not an object, a field of the wrong type, a
+    `status` that is missing or not a string, and a body whose `id` is some
+    other market's. `_parse` below holds all of it, and says why it is one
+    `try` rather than several.
 
-    A published market's `liquidity_b` and `seed_subsidy` are refused as
-    unavailable too if either is null on the wire — structurally possible
-    (`MarketDraftRequest` lets a draft omit both) and unreachable in practice,
-    since `publish` re-runs every submission rule. Refusing beats writing a
-    book with a `b` that can never be priced.
+    **This function carries what it reads and decides nothing on it.**
+    `liquidity_b`, `seed_subsidy` and the outcome list are handed back exactly
+    as parsed, null or unpriceable or not — ADR 0017: those are rules about
+    *writing a book*, and `service/books.py::ensure_open` is where they are
+    enforced now. `status` is carried the same way; only
+    `service/market_status.py::ensure_trading` may turn it into a refusal.
+    `test_the_close_time_is_not_what_decides_anything_here` pins the general
+    shape this is one instance of: a market past `close_time`, or not open,
+    still has terms, and this function still hands them back.
     """
     settings = get_settings()
 
@@ -93,16 +120,18 @@ async def fetch(
     # connection pool that serves exactly one request and is then closed, so
     # nothing here is reused: DNS, TCP and TLS are paid every time.
     #
-    # Affordable because of where this sits. `books.ensure_open` calls it only
-    # when a market has no book — once per market, ever — and every later
-    # touch returns on the fast path without reaching this module at all. The
-    # cost is one handshake per market, against a first touch that is already
-    # doing a round trip to another service and three inserts.
+    # **That is no longer cheap, and this is the known cost rather than a
+    # justification.** It was written when `books.ensure_open` was the only
+    # caller — once per market, ever. `market_status.ensure_trading` (ADR
+    # 0017) now calls it on every trade that is not a replay, so every trade
+    # pays a fresh handshake to market_service, on the hottest path there is.
     #
-    # A module-level client would be faster and would buy two problems: it
-    # needs closing in `main.py`'s lifespan, and it fixes the transport at
-    # construction, which is the seam the whole test suite drives this through.
-    # Revisit if a second caller appears that is not once-per-market.
+    # The fix is one `httpx.AsyncClient` for the process, opened and closed on
+    # `main.py`'s lifespan the way the Redis client already is, with the
+    # transport still injectable per call for the suite. That is the named
+    # follow-up and its own ticket (#114), not a change to make in passing here: it
+    # moves the seam every test in this module and in `test_market_status.py`
+    # drives through, and it wants the lifespan pattern done once, properly.
     async with httpx.AsyncClient(
         base_url=settings.market_service_url,
         transport=transport,
@@ -113,7 +142,15 @@ async def fetch(
                 f"/public/markets/{market_id}",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-        except httpx.TransportError as exc:
+        # `RequestError`, not `TransportError`. `TransportError` covers the
+        # connect errors, timeouts and protocol errors, and misses
+        # `httpx.DecodingError` — a response whose `Content-Encoding` lies —
+        # which inherits from `RequestError` directly. That one escaped as an
+        # unmapped 500 rather than the 503 this table promises, and since ADR
+        # 0017 the same client runs on the trade path rather than once per
+        # market. Everything under `RequestError` means the same thing here:
+        # the request did not come back usable, and the dependency is why.
+        except httpx.RequestError as exc:
             raise MarketTermsUnavailable from exc
 
     if response.status_code == 404:
@@ -157,6 +194,18 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
     the failures of *parsing a value*, and a `MemoryError` or a
     `KeyboardInterrupt` arriving mid-parse is not the market service being
     malformed.
+
+    **What stays here, since ADR 0017.** What any caller structurally needs:
+    an object, a matching id, a parseable `status`, and every field typed
+    correctly. A `liquidity_b`/`seed_subsidy` of the wrong *type* (a bool, an
+    unparseable string) is still refused here — that is a malformed response,
+    not a term this side has an opinion about. **What moved to
+    `service/books.py::ensure_open`:** refusing a *null* `liquidity_b` or
+    `seed_subsidy`, and refusing an outcome list that could be stored but
+    never priced (`_refuse_unpriceable`). Those are rules about writing an
+    immutable book, and enforcing them here would mean a market_service that
+    started returning a null `b` refusing trades on books snapshotted weeks
+    earlier, against a value this service read once and never rereads.
     """
     try:
         if not isinstance(body, dict):
@@ -165,8 +214,16 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
 
         liquidity_b = _to_decimal(body.get("liquidity_b"))
         seed_subsidy = _to_decimal(body.get("seed_subsidy"))
-        if liquidity_b is None or seed_subsidy is None:
-            raise MarketTermsUnavailable
+
+        # ADR 0017's third structural rule, beside "an object" and "a
+        # matching id": a parseable status. Every non-string case is
+        # `!= "open"`, so a naive comparison downstream would refuse it as a
+        # closed market with no exception anywhere — the loudest kind of
+        # quiet, in a system where nothing reopens a market. Refused here
+        # instead, as the 503 that means the dependency is the problem.
+        status = body.get("status")
+        if not isinstance(status, str):
+            raise TypeError("status is not a string")
 
         published_raw = body.get("published_at")
         published_at = (
@@ -179,7 +236,6 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
             )
             for o in body.get("outcomes", [])
         ]
-        _refuse_unpriceable(outcomes)
 
         # The response's own id, checked against the one asked for. It was
         # parsed and then never read before, which made it a field that could
@@ -194,6 +250,7 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
 
         return MarketTerms(
             market_id=returned_id,
+            status=status,
             liquidity_b=liquidity_b,
             seed_subsidy=seed_subsidy,
             published_at=published_at,
@@ -207,44 +264,6 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         ValueError,
     ) as exc:
         raise MarketTermsUnavailable from exc
-
-
-# The fewest outcomes a market can be priced with. Two, the same floor
-# `market_service/service/validation.py::MIN_OUTCOMES` enforces at submission
-# — restated rather than imported, because `unit_test/test_import_boundary.py`
-# fails any `import market_service` from this service and is right to: that
-# import resolves under pytest and is an ImportError in the container.
-_MIN_OUTCOMES = 2
-
-
-def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
-    """Terms that could be stored but never priced. Same defence as null `b`.
-
-    Three ways a well-formed outcome list is still unusable, and none of them
-    is reachable from a correct market service — `publish` re-runs every
-    submission rule, which requires between two and ten named outcomes with
-    server-assigned positions. They are refused for the reason the null-terms
-    check is: the book is written once and is immutable under ADR 0005, so a
-    bad one is not something a later read corrects.
-
-    **Fewer than two outcomes.** `C(q) = b·ln(Σ e^(q_i/b))` over one outcome
-    prices it at 1.0 and over none is a sum with no terms. Either way the
-    market opens, funds its pool, and quotes a price nobody can trade against.
-
-    **A repeated outcome id or position.** Both are unique constraints on
-    `market_outcomes`, so these reach the database and fail there — inside
-    `books.ensure_open`'s savepoint, where the `except IntegrityError` is
-    watching for a *lost first-touch race*. It re-raises correctly, because
-    `_find` finds no committed book, but the request ends as a 500 on a
-    condition that is the upstream being wrong. Caught here it is the 503 the
-    contract promises, and the race handler keeps meaning only what it says.
-    """
-    if len(outcomes) < _MIN_OUTCOMES:
-        raise MarketTermsUnavailable
-    if len({o.outcome_id for o in outcomes}) != len(outcomes):
-        raise MarketTermsUnavailable
-    if len({o.position for o in outcomes}) != len(outcomes):
-        raise MarketTermsUnavailable
 
 
 def _to_decimal(value: object) -> Decimal | None:
