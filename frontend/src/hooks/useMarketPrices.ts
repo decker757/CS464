@@ -1,71 +1,105 @@
-import { useEffect, useRef, useState } from 'react'
+import axios from 'axios'
+import { useEffect, useState } from 'react'
+import { getMarketSnapshot, type OutcomePrice, type PriceState } from '../api/ledgerApi'
+
+export type { OutcomePrice }
 
 const WS_BASE = import.meta.env.VITE_REALTIME_WS_URL ?? 'ws://localhost:8004'
+const MAX_RETRY_MS = 30_000
 
-export interface OutcomePrice {
-  outcome_id: string
-  position: number
-  price: string
-}
-
+// The market's current prices: the snapshot when the page opens, then every
+// live update. null until the first one arrives, and while reconnecting.
+// Follows "The two sequences a client needs" in docs/api/realtime-service.md.
 export function useMarketPrices(marketId: string | null): OutcomePrice[] | null {
-  const [prices, setPrices] = useState<OutcomePrice[] | null>(null)
-  const [reconnectCount, setReconnectCount] = useState(0)
-  const stateVersionRef = useRef(-1)
+  // Tagged with the market they belong to, so switching markets shows null
+  // straight away rather than the previous market's prices.
+  const [state, setState] = useState<{ marketId: string; prices: OutcomePrice[] | null } | null>(null)
 
   useEffect(() => {
     if (!marketId) return
 
-    stateVersionRef.current = -1
-    setPrices(null)
+    // Set by the cleanup. Closing the socket ourselves fires onclose too, and
+    // without this flag that close would schedule a reconnect of its own.
+    let cancelled = false
+    let ws: WebSocket | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let attempt = 0
+    let version = -1
 
-    const ws = new WebSocket(`${WS_BASE}/ws/prices`)
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ action: 'subscribe', market_id: marketId }))
+    // Snapshot and price frame share a shape, so one function applies both.
+    // Anything not newer than what is on screen is dropped: a snapshot can be
+    // newer than a frame still in flight, and replicas keep separate counts.
+    const apply = (s: PriceState) => {
+      if (cancelled || s.state_version <= version) return
+      version = s.state_version
+      setState({ marketId, prices: [...s.prices].sort((a, b) => a.position - b.position) })
     }
 
-    ws.onmessage = (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data as string)
+    const loadSnapshot = () => getMarketSnapshot(marketId).then(apply)
+
+    const connect = () => {
+      const socket = new WebSocket(`${WS_BASE}/ws/prices`)
+      ws = socket
+
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ action: 'subscribe', market_id: marketId }))
+      }
+
+      socket.onmessage = (event: MessageEvent) => {
+        let msg
+        try { msg = JSON.parse(event.data as string) } catch { return }
         if (msg.type === 'subscribed') {
-          // Ack received: market is subscribed. [] distinguishes "subscribed,
-          // no trades yet" from null ("not yet acked or connection lost").
-          setPrices(prev => prev ?? [])
-          return
+          attempt = 0
+          // Fetched after the ack, not before: from here on every trade
+          // arrives on the socket, and everything earlier is in the snapshot.
+          // The version check drops any overlap.
+          loadSnapshot().catch(() => {})
+        } else if (msg.type === 'price') {
+          apply(msg as PriceState)
         }
-        if (msg.type !== 'price') return
-        if (msg.state_version <= stateVersionRef.current) return
-        stateVersionRef.current = msg.state_version
-        const sorted = [...(msg.prices as OutcomePrice[])].sort(
-          (a, b) => a.position - b.position,
-        )
-        setPrices(sorted)
-      } catch {
-        // ignore malformed frames
+      }
+
+      socket.onclose = (event: CloseEvent) => {
+        if (cancelled) return
+        // Blank the prices rather than leave them frozen, and forget the
+        // version so the next snapshot is accepted even if nothing traded.
+        version = -1
+        setState({ marketId, prices: null })
+        // Origin refused: retrying cannot help.
+        if (event.code === 4403) return
+
+        const delay = Math.min(1000 * 2 ** attempt, MAX_RETRY_MS)
+        attempt += 1
+        const reconnect = () => {
+          if (!cancelled) retryTimer = setTimeout(connect, delay)
+        }
+
+        // 4401 / 4408: the access token expired. A browser socket cannot send
+        // a fresh one, so refresh the cookie first — any request through
+        // `api` does that via its interceptor, and the snapshot is one we need
+        // anyway. If even that is refused, the session is over; stop.
+        if (event.code === 4401 || event.code === 4408) {
+          loadSnapshot().then(reconnect, (err: unknown) => {
+            if (axios.isAxiosError(err) && err.response?.status === 401) return
+            reconnect()
+          })
+        } else {
+          reconnect()
+        }
       }
     }
 
-    ws.onclose = (event) => {
-      // Reset so the UI shows no data rather than freezing on stale prices.
-      setPrices(null)
-      // Reconnect on ordinary server-side close (e.g. deploy restart).
-      // Auth expiry (4408) and "too far behind" (4409) also reconnect; the
-      // snapshot endpoint (not yet built) is needed for a full recovery after
-      // 4409. 4403 (origin denied) is the only code that makes reconnecting
-      // pointless.
-      if (event.code !== 4403) {
-        setReconnectCount(c => c + 1)
-      }
-    }
+    connect()
 
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
+      cancelled = true
+      clearTimeout(retryTimer)
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ action: 'unsubscribe', market_id: marketId }))
       }
-      ws.close()
+      ws?.close()
     }
-  }, [marketId, reconnectCount])
+  }, [marketId])
 
-  return prices
+  return state && state.marketId === marketId ? state.prices : null
 }
