@@ -101,17 +101,29 @@ def cost_to_trade(q: Sequence[Decimal], b: Decimal, delta: Sequence[Decimal]) ->
     caller's problem to solve.** A saturated outcome is genuinely worth almost
     nothing, so a real trade in one prices below `Numeric(18, 4)`'s 0.0001
     tick: 100 shares against `q = [1560, 0]` at `b = 100` costs 0.0000288, and
-    a wider spread reaches exactly zero. Quantized `ROUND_HALF_UP` at the
-    write, both become a share transfer charged 0 credits — the leak is bounded
-    by one tick per trade and it runs in the trader's favour.
+    a wider spread reaches exactly zero.
 
-    The engine does not round it off, because rounding here is the round-trip
-    profit the boundary contract exists to prevent, and because the choice
-    between charging a minimum tick, rounding toward the house and refusing the
-    trade is a decision about money that belongs where there is a request to
-    refuse. That is [T-2] #22. `test_a_sub_tick_trade_is_priced_not_rounded`
-    pins what this function does today so the decision is made deliberately and
-    not inherited by accident.
+    **[T-1] #21 changed what happens next, and this paragraph used to say
+    otherwise.** It described the write as `ROUND_HALF_UP`, which made a
+    sub-tick trade a share transfer charged 0 credits "in the trader's
+    favour". `core/pricing.py::quantize_cost` (D-039) now runs in front of
+    `posting._quantize`, rounding a buy's magnitude up and a sell's down, so
+    both sides round *against* the trader: the same 100 shares cost 0.0001 to
+    buy and pay 0 to sell.
+
+    The engine still does not round it off, because rounding here is the
+    round-trip profit the boundary contract exists to prevent. What the engine
+    also does not decide is what happens to a sell that floors to zero:
+    charging a minimum tick, rounding toward the house and refusing the trade
+    were choices about money that belonged where there is a request to
+    refuse. #21 is that place, and now makes both halves of the choice —
+    `core/pricing.py::quantize_cost` refuses it on either side (D-041),
+    rather than inheriting a zero-cost trade by default. "A wider spread
+    reaches exactly zero" above is the case that made the refusal cover
+    buys: `ROUND_CEILING` of exactly zero is zero.
+    `test_a_sub_tick_trade_is_priced_not_rounded` still pins what this
+    function itself does: price the trade honestly and leave rounding and
+    refusal to the caller.
     """
     _require_outcomes(q)
     _require_positive_b(b)

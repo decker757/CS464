@@ -26,6 +26,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -94,6 +95,11 @@ class TransactionKind(StrEnum):
     # its own rather than SIGNUP_GRANT, so a market's subsidy does not render on
     # somebody's statement as a welcome bonus.
     MARKET_SEED = "market_seed"
+
+    # USER -> MARKET_POOL, posted once per trade. [T-2] #22. A Python-only
+    # addition like the two above: the column is a non-native `Enum`, so this
+    # needs no migration against a database that already has the table.
+    TRADE_BUY = "trade_buy"
 
 
 _ACCOUNT_KIND_COLUMN = Enum(
@@ -192,7 +198,18 @@ class Transaction(Base):
     #
     # Callers namespace it: `signup-grant:<user_id>` is the one this service
     # generates for itself.
-    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    #
+    # 255 rather than the original 120. [T-2] #22's derived trade key is
+    # `trade:<user_id>:<market_id>:<client key>` — 80 characters of prefix
+    # before the client's own string even starts — and
+    # `test_a_client_key_naming_the_grant_namespace_cannot_touch_it` drives a
+    # client key that is itself a namespaced key
+    # (`signup-grant:<uuid>`, 49 characters) to prove the derivation confines
+    # a collision to one caller. 120 truncates that combination; 255 leaves
+    # room for a client key longer than any of this service's own namespaced
+    # keys with margin to spare. Needs `sql/migrations/0007-ledger-trade-idempotency-key-width.sql`
+    # against a database that already has this column.
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
     # A hash of the legs, so a replayed key can be told from a reused one.
     #
@@ -431,6 +448,74 @@ class MarketOutcome(Base):
         UniqueConstraint(
             "market_id", "position", name="uq_market_outcomes_market_position"
         ),
+    )
+
+
+class Position(Base):
+    """A trader's net holding in one outcome of one market. [T-2] #22.
+
+    Primary key is the triple `(user_id, market_id, outcome_id)` rather than a
+    surrogate id — the same argument `MarketOutcome`'s pair makes: nothing
+    references a position by an identity of its own, and [T-4] #24 reaches
+    them by the triple.
+
+    **This table is not append-only, and must not carry `ledger.entries`'
+    trigger.** It is a rollup, UPDATEd on every second buy into the same
+    outcome, and reconstructible from the entries — which stay the record.
+    `cost_basis` is stored and the average entry price is derived at read
+    time ("`cost_basis` is stored; average entry price is derived"), the same
+    reason there is no `balance_after` column on `Entry`.
+
+    `#22 only ever adds to a position` — a partial sell's effect on
+    `cost_basis` is [T-3] #23's to decide, not this ticket's.
+    """
+
+    __tablename__ = "positions"
+
+    # `user_id` names a row in `auth.users` and cannot be a foreign key —
+    # `ledger_svc` holds no grant on that schema (ADR 0003), the same trade
+    # `Account.owner_id` already makes.
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+
+    # `(market_id, outcome_id)` IS a composite foreign key, below — this
+    # service's own table, in its own schema, named the same way
+    # `market_outcomes.market_id` references `market_books.market_id`
+    # ("`pool_account_id` is a foreign key; `market_id` still is not").
+    market_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    outcome_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+
+    # "Shares keep money's scale of 4, in `q` and in positions": a quantity
+    # arrives at scale 4 and addition at scale 4 is closed, so nothing a
+    # trader was quoted for is rounded between the quote and this row.
+    quantity: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+    cost_basis: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    # The one column on this table with no counterpart anywhere else in this
+    # file: every other table here is append-only or write-once, and this is
+    # the only one whose rows change after they are written.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["market_id", "outcome_id"],
+            ["market_outcomes.market_id", "market_outcomes.outcome_id"],
+            name="fk_positions_market_outcome",
+        ),
+        # The no-shorting rule per user, the counterpart to
+        # `InsufficientSharesOutstanding`'s per-outcome one. [T-3] #23
+        # enforces it under the book lock; this is the backstop, not the
+        # check.
+        CheckConstraint("quantity >= 0", name="ck_positions_quantity_nonneg"),
+        CheckConstraint("cost_basis >= 0", name="ck_positions_cost_basis_nonneg"),
     )
 
 

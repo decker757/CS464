@@ -106,12 +106,26 @@ class IdempotencyKeyReused(LedgerError):
 class MarketTermsUnavailable(LedgerError):
     """market_service could not be reached, or answered as if it were down.
 
-    D-030. Covers a refused connection, a timeout, a 5xx, and a 200 whose body
+    Wider than its name now suggests: this covers the market's *terms* — its
+    `liquidity_b`, `seed_subsidy` and outcomes, read once at first touch — and,
+    since ADR 0017, the ledger's attempt to learn whether a market is still
+    *open*, read on every trade. Both are the same dependency and the same
+    failure mode, so they share one code: a caller cannot act differently on
+    "the terms could not be read" versus "the status could not be read", and
+    the principle behind this service's error codes is that a caller can act
+    differently on each one it has.
+
+    D-030 covers a refused connection, a timeout, a 5xx, and a 200 whose body
     is not a market — the market service is treated as down rather than the
     ledger crashing on a parse error it cannot recover from. Also raised for a
     published market whose `liquidity_b` or `seed_subsidy` arrived null, which
     `service/validation.py` on the other side should never produce: refusing
-    beats writing a book with a `b` that can never be priced.
+    beats writing a book with a `b` that can never be priced. ADR 0017 adds a
+    404 for a market that already holds a book — that market was published,
+    so a 404 at that point is market_service answering incorrectly rather
+    than a market that is gone — and a `status` field that is missing or not
+    a string, because a sick dependency must never be read as a closed
+    market.
 
     503 because the request was fine and the dependency was not, and because a
     trade that failed this way is worth retrying in a moment.
@@ -120,6 +134,27 @@ class MarketTermsUnavailable(LedgerError):
     status_code = 503
     code = "market_terms_unavailable"
     message = "Could not read this market's terms right now. Try again shortly."
+
+
+class MarketClosed(LedgerError):
+    """This market is not open for trading. [F-8] #109, ADR 0017.
+
+    Read off market_service's public detail endpoint, whose `status` is
+    already ADR 0011's derived predicate — the clock's close and an
+    administrator's early one both arrive through this one field, so this is
+    a comparison against `"open"` rather than a list of the statuses that
+    happened to exist when it was written.
+
+    409 for `InsufficientFunds`'s reason: the request is well formed and it is
+    the state that refuses it — the same trade would have succeeded an hour
+    ago and may never succeed again. Spelled `market_closed` to match
+    market_service's own code, so a frontend error handler built for one
+    serves both.
+    """
+
+    status_code = 409
+    code = "market_closed"
+    message = "This market is not open for trading."
 
 
 class MarketNotFound(LedgerError):
@@ -151,6 +186,153 @@ class MarketNotPublished(LedgerError):
     message = "This market has not been published yet."
 
 
+class InsufficientSharesOutstanding(LedgerError):
+    """A sell larger than this outcome's shares outstanding. [T-1] #21.
+
+    The no-shorting rule, enforced against `q_i` rather than against a
+    per-user holding — this service has no positions table, and the holdings
+    check is [T-3] #23's, meaning anything only under the trade's lock
+    (D-012). What this refuses is a sell that would drive `q_i` negative,
+    which `C(q)` has no answer for: the preview would otherwise quote a
+    number for shares that do not exist anywhere.
+
+    409 rather than 422: nothing about the request is malformed, and the same
+    request succeeds against a book with more shares outstanding. It is the
+    state of the book that refuses it, the same distinction `InsufficientFunds`
+    already draws.
+    """
+
+    status_code = 409
+    code = "insufficient_shares_outstanding"
+    message = "This sell is larger than the shares outstanding for this outcome."
+
+
+class QuantityTooLarge(LedgerError):
+    """The priced cost is above what `Numeric(18, 4)` can store. [T-1] #21, D-040.
+
+    422, for the reason D-038 refuses a fifth decimal place: this is a
+    property of the quantity asked for, not of the book's state, and the
+    correction belongs where the typing happened. `InsufficientSharesOutstanding`
+    is 409 because the same request succeeds against a book with more shares
+    outstanding; this one succeeds against no book at all.
+
+    Refused rather than returned, because "the previewed number is the charged
+    number" is this route's whole contract and a `total` of 15 integer digits
+    is a number [T-2] #22 cannot write. Returning it quotes a trade whose
+    confirm step is a `NumericValueOutOfRange` — a 500 arriving after the
+    trader committed to a quote this service answered 200 to.
+    """
+
+    status_code = 422
+    code = "quantity_too_large"
+    message = "This quantity prices above the largest cost the ledger can store."
+
+
+class ProceedsBelowTick(LedgerError):
+    """A sell whose proceeds quantize to `0.0000`. [T-1] #21, D-041.
+
+    The other edge of the quantization `QuantityTooLarge` refuses at: a
+    magnitude `Numeric(18, 4)` cannot honestly represent is refused rather
+    than quoted, in either direction. Here that means real shares priced at
+    nothing — quoting the zero takes them for free, and paying a minimum tick
+    would pay the trader more than they are worth, which is the residue
+    running toward the trader rather than the pool (D-039). Refusing is the
+    only answer that keeps both rules.
+
+    422 rather than 409, decided in D-041 as the closer call of the two: it
+    pairs with `QuantityTooLarge` as the two edges of one quantization, and
+    the trader's correction — a larger quantity — is typing, the same place
+    D-038 and D-040 put it, even though this refusal, unlike that one, does
+    depend on the book's `q`.
+    """
+
+    status_code = 422
+    code = "proceeds_below_tick"
+    message = "This sell's proceeds round down to nothing at the ledger's scale."
+
+
+class CostBelowTick(LedgerError):
+    """A buy the engine prices at exactly zero. [T-1] #21.
+
+    `ProceedsBelowTick`'s other side, raised from the same place. Past about
+    110·b of skew the engine returns exactly zero, and `ROUND_CEILING` of zero
+    is zero, so a real quantity would be quoted for nothing. Its own code
+    because a buyer told "proceeds below tick" has been told something false.
+    """
+
+    status_code = 422
+    code = "cost_below_tick"
+    message = "This buy's cost rounds to nothing at the ledger's scale."
+
+
+class UnknownOutcome(LedgerError):
+    """`outcome_id` does not name one of this market's outcomes. [T-1] #21.
+
+    422 rather than 404: the market was found and it is the *parameter* that
+    is wrong. A 404 already means "no such market" for this service
+    (`MarketNotFound`), and a client could not tell the two apart if both
+    outcome and market questions used it — two different bugs with two
+    different fixes.
+    """
+
+    status_code = 422
+    code = "unknown_outcome"
+    message = "This outcome does not belong to this market."
+
+
+class QuoteStale(LedgerError):
+    """The quoted `state_version` no longer names the book. [T-2] #22.
+
+    "The trade's staleness check is strict `state_version` equality, and the
+    field is required" — re-read under the book row's lock and compared
+    against what the trade quoted. Either direction is refused: older than the
+    book (somebody else traded first) and newer than the book (a version that
+    does not exist yet) are both a quote that no longer describes this market.
+
+    409 for `InsufficientFunds`'s reason: nothing about the request is
+    malformed, and the same request would have succeeded against yesterday's
+    price. Carries `quoted` and `current` so a client can re-preview and
+    retry without guessing which way it was wrong.
+    """
+
+    status_code = 409
+    code = "quote_stale"
+
+    def __init__(self, *, quoted: int, current: int) -> None:
+        self.quoted = quoted
+        self.current = current
+        self.message = (
+            f"This quote named state_version {quoted}; the market is now at "
+            f"{current}. Re-preview and retry."
+        )
+        super().__init__(self.message)
+
+
+class PendingWritesOnReplay(LedgerError):
+    """`posting.post` reached its replay branch with unwritten work already in
+    the session. [T-2] #22.
+
+    "`posting.post` refuses to replay into a dirty session": the replay branch
+    calls `session.commit()`, which flushes the whole session — so a caller
+    holding pending writes would have them committed alongside a transaction
+    that wrote no entries of its own. This is the alarm for a caller that got
+    "A caller holding pending writes must establish under its own lock that
+    the idempotency key is absent" wrong, raised before the commit rather than
+    rolled back after it, because by the time `post` reaches this point there
+    is no way to discard only the caller's writes.
+
+    500 rather than 409: nothing the client sent is wrong and nothing it can
+    do differently helps. This is the service reporting a bug in itself.
+    """
+
+    status_code = 500
+    code = "pending_writes_on_replay"
+    message = (
+        "A caller reached a replay with unwritten work already pending in "
+        "the session. This is a bug in this service, not in the request."
+    )
+
+
 class UnbalancedTransaction(LedgerError):
     """The legs do not sum to zero, so this is not a movement of credits.
 
@@ -166,3 +348,22 @@ class UnbalancedTransaction(LedgerError):
     status_code = 422
     code = "unbalanced_transaction"
     message = "The debits and credits of a transaction must sum to zero."
+
+
+class MarketBookIncomplete(LedgerError):
+    """A market's book exists and has no outcome rows.
+
+    Nothing in this service can write that state: `service/books.py::ensure_open`
+    inserts the book and its outcomes in one savepoint. It takes a hand-run
+    repair or a half-applied migration. It is named anyway because the price
+    read joins the two tables, so such a book reads as *no* book, the cold
+    path finds it and returns, and the second read comes back empty — which
+    used to be an `IndexError` and a bare, unmapped 500.
+
+    500 because the ledger's own data is wrong: not the caller's to fix, and
+    not worth retrying.
+    """
+
+    status_code = 500
+    code = "market_book_incomplete"
+    message = "This market's book is missing its outcomes. This is a server fault."

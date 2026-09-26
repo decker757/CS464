@@ -3,10 +3,10 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-There is no request model in this file, because there is no route that writes.
-The write path is `service/posting.py` and the endpoint that will call it
-arrives with [T-2] #22, along with the decision about how a service
-authenticates to it.
+One request model, `TradeIn`, for the one route that writes: [T-2] #22's
+`POST /ledger/markets/{market_id}/trades`. It carries no account, no amount
+and no leg — `extra="forbid"` refuses a body naming one — which is the answer
+ADR 0009's amendment gives to how a caller authenticates to the write path.
 
 **Amounts are strings, and that is the one deliberate departure from the market
 service**, whose `MarketOut` serialises `liquidity_b` as a JSON number. That was
@@ -24,10 +24,11 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from core.pricing import Side
 from model.entities import Entry, TransactionKind
 
 
@@ -143,6 +144,296 @@ class LedgerEntryOut(BaseModel):
             kind=entry.transaction.kind,
             context=entry.transaction.context,
         )
+
+
+class OutcomePriceOut(BaseModel):
+    """One outcome's price. [T-1] #21.
+
+    Field for field what `realtime_service`'s `OutcomePrice` puts on the
+    socket — `outcome_id`, `position`, `price` — so a client renders a
+    snapshot, a price frame and this preview with one function rather than
+    three. That includes `price`'s bounds, the one invariant among the three:
+    a price outside [0, 1] is refused on the socket and must not ship here.
+    """
+
+    outcome_id: uuid.UUID
+    position: int = Field(
+        ge=0,
+        description=(
+            "The outcome's order within the market, so a categorical market "
+            "renders the same way twice without a second lookup."
+        ),
+    )
+    price: Decimal = Field(
+        ge=0,
+        le=1,
+        description="The marginal price of one share, as an exact decimal string.",
+        examples=["0.7216"],
+    )
+
+    @field_serializer("price")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class PreviewOut(BaseModel):
+    """What one trade would cost, and how it would move the market. [T-1] #21.
+
+    `state_version` is the quote reference (D-011) and the only one — nothing
+    else here is a second answer to "has this market moved". [T-2] #22
+    compares it, under its own lock, against the version current when a trade
+    is confirmed.
+    """
+
+    market_id: uuid.UUID
+    state_version: int = Field(
+        description=(
+            "The book's own counter, the same one `PriceEvent` and the "
+            "snapshot report. Not a JSON string: it is a count, not money."
+        )
+    )
+
+    side: Side
+    outcome_id: uuid.UUID
+
+    quantity: Decimal = Field(
+        description=(
+            "Echoed back at the scale it arrived with, trailing zeros and "
+            "all (D-038) — `10` comes back as `10`, `10.0000` as `10.0000`. "
+            "It is not normalised to scale 4: this field is how a client "
+            "matches a quote to the keystroke that asked for it. Compare it "
+            "as a decimal rather than as a string — the scale survives the "
+            "round trip, the exact characters do not, so `.5` comes back as "
+            "`0.5` and `10.` as `10`."
+        ),
+        examples=["10.0000"],
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed: negative on a buy, because credits leave the trader; "
+            "positive on a sell, because they arrive. Quantized by the same "
+            "function [T-2] #22 uses to build its legs, buy rounding the "
+            "ceiling and sell the floor, so this is the number that would be "
+            "charged."
+        ),
+        examples=["-7.3152"],
+    )
+    average_price: Decimal = Field(
+        description=(
+            "abs(total) / quantity, from the quantized total, ROUND_HALF_UP "
+            "at scale 4. **Do not render it as a fraction of a credit, and "
+            "do not assume it lies strictly between 0 and 1.** LMSR prices "
+            "are a softmax, so a share is worth under one credit and an "
+            "ordinary trade averages accordingly — but this is derived from "
+            "a total that has already been rounded to a tick, and both ends "
+            "escape. The smallest buy there is, 0.0001 shares, costs a "
+            "fraction of a tick and is charged the whole one (D-039), which "
+            "divides out to exactly 1.0000; on a skewed book the engine's "
+            "last digit can carry a sub-tick cost over a tick boundary "
+            "(D-044) and it reads higher still. At the other end, a large "
+            "buy in a saturated outcome can cost one tick in total and "
+            "divide down to 0.0000. Display only — [T-2] #22 charges "
+            "`total`, never quantity * average_price."
+        ),
+        examples=["0.7315"],
+    )
+
+    prices: list[OutcomePriceOut] = Field(
+        description="The market's current price, every outcome, ordered by position."
+    )
+    post_trade_prices: list[OutcomePriceOut] = Field(
+        description=(
+            "The price of every outcome this trade would leave behind, "
+            "computed from `core/lmsr.py` and not estimated."
+        )
+    )
+
+    @field_serializer("quantity", "total", "average_price")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class TradeIn(BaseModel):
+    """A buy order. [T-2] #22.
+
+    `extra="forbid"`, and that is the whole of ADR 0009's amendment: the
+    route "takes no account, no amount and no leg", which is only true if a
+    body naming one is refused rather than silently dropped — Pydantic's
+    default is `extra="ignore"`. `total` is in that refusal too, because it
+    is the field a client would most plausibly echo back from a preview.
+
+    `side` is `Literal["buy"]` rather than `core.pricing.Side`: a sell is
+    unsafe until [T-3] #23 adds the per-user holdings check under the book
+    lock, so this route refuses one with a 422 rather than accepting it and
+    refusing it one layer down.
+
+    `state_version` is required, not optional with a default — an optional
+    staleness field would let a client silently opt out of the only
+    staleness protection a trade has.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome_id: uuid.UUID
+    side: Literal["buy"] = Field(
+        description="Buy only, until [T-3] #23 widens this route."
+    )
+    quantity: Decimal = Field(
+        gt=0,
+        max_digits=18,
+        decimal_places=4,
+        description=(
+            "Shares to buy. At most four decimal places (D-038) — a fifth "
+            "is 422 rather than rounded. At most 18 digits in all, the width "
+            "of `Numeric(18, 4)` and the preview's own ceiling: a quantity "
+            "wider than the column could never be written as a share count."
+        ),
+    )
+    state_version: int = Field(
+        description=(
+            "The `state_version` the preview quoted. Compared, under the "
+            "book's own lock, for strict equality against the market's "
+            "current one; a mismatch either direction is `409 quote_stale`."
+        )
+    )
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=175,
+        description=(
+            "One trade, once, however many times this is sent. The stored "
+            "key is derived — `trade:<user_id>:<market_id>:<this value>` — "
+            "so this string only has to be unique to the caller who sent it. "
+            "Bounded so the derived key always fits `transactions."
+            "idempotency_key`'s column width (255): 80 characters of "
+            "derivation prefix, 175 left for this value."
+        ),
+    )
+
+
+class TradeOut(BaseModel):
+    """What one buy did. [T-2] #22.
+
+    Built from `Transaction.context` by `service/trading.py::result_of`, the
+    one function the fresh path and both replay paths all call — so a retry
+    cannot return a different shape from the original, and a retry returns
+    this byte-for-byte.
+
+    Carries no prices. A replayed price was true once and is a lie
+    afterwards, unlike `total`, which is what the trader was charged for
+    ever — prices are the realtime contract's, the `price` frame or the
+    snapshot route beside this one.
+    """
+
+    transaction_id: uuid.UUID
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: Side
+    quantity: Decimal = Field(
+        description=(
+            "Echoed back exactly as it was sent, trailing zeros and all, the "
+            "same as the preview's (D-038) — `10` stays `10`, not `10.0000`. "
+            "A replay compares it numerically, so either spelling is the "
+            "same trade."
+        )
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed and quantized exactly as `PreviewOut.total` is — "
+            "negative on a buy, because credits leave the trader. This is "
+            "the number that was charged, the same one the preview quoted."
+        )
+    )
+    state_version: int = Field(
+        description="The book's counter after this trade, not before it."
+    )
+
+    @field_serializer("quantity", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+# One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared
+# separately and field for field the same — same three fields, same bounds,
+# same `str(value)` serializer — with only `OutcomePrice` pinned against
+# `realtime_service` by `test_price_event.py`. Nothing pinned the two local
+# copies against each other, so a bound changed on one would have diverged
+# silently from the other; and `SnapshotOut` used one while `PriceEvent` used
+# the other, which is exactly the pair both docs pages promise are
+# byte-for-byte identical. The alias keeps the name the pin reads and the
+# name the snapshot was written against, over one definition.
+OutcomePrice = OutcomePriceOut
+
+
+class PriceEvent(BaseModel):
+    """A market's price after something moved it. The Redis payload. [F-9] #112.
+
+    The producer's half of the contract `realtime_service/model/schemas.py`
+    defines and validates on the way in with `extra="forbid"`. Copied rather
+    than imported — see `OutcomePrice`'s docstring — and pinned the same way.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    market_id: uuid.UUID
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePrice] = Field(min_length=2)
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        """A naive value is UTC, and leaves with the offset that says so.
+
+        `SnapshotOut` below does the same to its copy of this field. Without
+        it a naive datetime from [T-2] #22 would reach the socket with no
+        offset, and every browser would read it as local time. Naive versus
+        aware has already caused bugs in this repository (CLAUDE.md).
+        """
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class SnapshotOut(BaseModel):
+    """The authoritative price read. [F-9] #112.
+
+    Byte-for-byte the `price` frame `docs/api/realtime-service.md` pins,
+    without its `type` — `market_id`, `state_version`, `prices`,
+    `occurred_at` — so a client renders a snapshot and a price frame with one
+    function.
+    """
+
+    market_id: uuid.UUID
+    # The same constraints `PriceEvent` puts on these two fields. They were
+    # absent here, which made "byte-for-byte the `price` frame" a promise the
+    # models themselves disagreed with: a client validating one shape and
+    # handed the other would accept what the socket refuses. Harmless today
+    # because `book_prices` enforces the floor upstream, and invisible the day
+    # a second caller does not go through it.
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePriceOut] = Field(min_length=2)
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        """`.isoformat()`, the same call `PriceEvent` makes, and for the same
+        reason the docstring above gives.
+
+        Without this pydantic writes its own RFC-3339 form, which spells UTC
+        as a trailing `Z` where `.isoformat()` spells it `+00:00`. Both are
+        valid and they are not the same string, so "byte-for-byte the `price`
+        frame" was false for this one field — and the test that guards it
+        only asserted the offset was present, which is true of both.
+        """
+        return value.isoformat()
 
 
 class LedgerEntryListResponse(BaseModel):

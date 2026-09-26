@@ -200,6 +200,27 @@ swallows every `Exception` and logs, because a task that ended on a dropped
 connection is a service in which no market ever closes again and nothing says
 so. `CancelledError` derives from `BaseException`, so shutdown still works.
 
+> **Extended by [ADR 0017](0017-the-ledger-and-a-stopped-market.md), [F-8]
+> #109.** This record settled how a *market service* reader learns that a
+> market has stopped, and every reader it had was inside that service. The
+> ledger is the first one outside it, and it cannot read either of the two
+> values this record's predicate is about — `ledger_svc` holds no grant on
+> `market.*`.
+>
+> The rule is unchanged and is not restated a sixth time. The trade path asks
+> `GET /public/markets/{id}` and reads the status the amendment above already
+> derives, so the answer it acts on is this record's predicate, evaluated once,
+> in the service that owns the values. An early close is covered by the same
+> field for the same reason: the derivation only ever turns OPEN into CLOSED,
+> and a market ADR 0014 stopped by hand is already CLOSED in the column.
+>
+> What ADR 0017 adds is the cost of asking across a boundary: one round trip
+> per trade, and a window between the answer and the commit that this record's
+> own test accepts. The sweep is still not a correctness parameter — switching
+> `CLOSE_SWEEP_ENABLED` off still cannot let a trade through — and an outage
+> closes the window rather than widening it, because an unreachable market
+> service refuses the trade.
+
 ## Alternatives rejected
 
 **Redis as the timer** — a TTL per market, or a sorted set polled by score.

@@ -39,10 +39,11 @@ composite holds no cross-schema grant and cannot read `q`. ADR 0012 carries the
 amendment. It moves to `shared/` when a second caller can read `q`, and nothing
 planned adds one.
 
-The websocket server ([F-2] #42) has landed, but only the transport half: the
-socket, the pub/sub relay, the auth and the staleness rules. The authoritative
-snapshot endpoint and the `state_version` it reports need `q` and `b`, so they
-land with [F-3] #43 and [T-2] #22, on the ledger. `docs/api/realtime-service.md`
+The websocket server ([F-2] #42) is only the transport half: the socket, the
+pub/sub relay, the auth and the staleness rules. The authoritative snapshot and
+the `state_version` it reports need `q` and `b`, so they live on the ledger —
+`GET /ledger/markets/{id}/snapshot` — and the ledger publishes a price frame
+after every trade commits ([T-2] #22). `docs/api/realtime-service.md`
 specifies them.
 
 ## Running things
@@ -277,14 +278,23 @@ their own balance and history, permanently. The rule belongs in the caller: a
 reused key naming different money is a bug for a trade and an edit for a grant,
 and only the caller knows which.
 
-**The ledger's write path has no HTTP endpoint, on purpose.**
-`ledger_service/service/posting.py` holds the double entry, the idempotency key
-and the row lock, and nothing routes to it. Adding a write route means first
-answering how a *service* proves it is a service — every route in this
-repository authenticates a person from a signed token, and a ledger write route
-that accepted a trader's own token is a route for minting yourself credits.
-That decision belongs to [T-2] #22, which has the caller. The primitive is not
-untested scaffolding: the starting grant goes through it.
+**The ledger has one write route, and it takes no money.**
+`POST /ledger/markets/{id}/trades` ([T-2] #22) accepts a trader's own token,
+which is safe only because the body names no account, no amount and no leg:
+`TradeIn` is `extra="forbid"`, the debited account comes from the token's
+`sub`, and the price is computed under the book lock. A write route that took
+an amount or an account from the request would be a route for minting yourself
+credits, and would first have to answer how a *service* proves it is a service.
+ADR 0009's amendment.
+
+`posting.post` commits, so on the trade path it is the last call, and
+everything the trade writes is still pending when it runs. Two rules follow.
+The trade re-checks its idempotency key **under the book lock, before it writes
+anything** — the unlocked lookup at the top only ever short-circuits. And `post`
+refuses to replay into a session holding pending writes (`500
+pending_writes_on_replay`), because its replay commits the whole session and
+would grant a duplicate's shares against one payment. Lock order is the book
+row, then the accounts.
 
 **`ledger.entries` is append-only via a trigger that ships with the table.**
 `model/entities.py` attaches it as an `after_create` DDL event, so it is
@@ -467,6 +477,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0014** closing a market early, by any admin, with the reason in the log
 - **0015** every read that decides a write is locked, and the wider lock goes first
 - **0016** deciding a proposal, by any admin but the proposer, with APPROVED as a status
+- **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
