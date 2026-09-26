@@ -6,6 +6,7 @@ import LandingPage from './pages/LandingPage'
 import LoginPage from './pages/LoginPage'
 import MarketsPage from './pages/MarketsPage'
 import RegisterPage from './pages/RegisterPage'
+import CreateMarketPage from './pages/admin/CreateMarketPage'
 
 export default function App() {
   return (
@@ -16,7 +17,8 @@ export default function App() {
           <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
           <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
           <Route path="/markets" element={<ProtectedRoute><MarketsPage /></ProtectedRoute>} />
-          {/* /portfolio, /admin — added as built */}
+          <Route path="/admin/markets/new" element={<ProtectedRoute requireAdmin><CreateMarketPage /></ProtectedRoute>} />
+          {/* /portfolio — added as built */}
         </Routes>
       </AuthProvider>
     </BrowserRouter>

@@ -10,6 +10,7 @@ import AppNavbar from './AppNavbar'
 import ProtectedRoute from './ProtectedRoute'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
+const admin: User = { id: '2', username: 'bob', email: 'bob@smu.edu.sg', role: 'admin', created_at: '2026-01-01' }
 
 /** The navbar on its own, for what it renders. */
 function renderNavbar(user: User | null | undefined) {
@@ -65,6 +66,16 @@ describe('AppNavbar', () => {
   it('shows the logged-in username', () => {
     renderNavbar(trader)
     expect(screen.getByText('alice')).toBeInTheDocument()
+  })
+
+  it('shows the New Market link for admins', () => {
+    renderNavbar(admin)
+    expect(screen.getByRole('link', { name: /new market/i })).toBeInTheDocument()
+  })
+
+  it('does not show the New Market link for traders', () => {
+    renderNavbar(trader)
+    expect(screen.queryByRole('link', { name: /new market/i })).not.toBeInTheDocument()
   })
 
   it('offers no logout control when nobody is signed in', () => {
