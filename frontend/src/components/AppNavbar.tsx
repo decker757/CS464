@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { GOLD, NAV } from '../theme/colors'
 import { TrendIcon } from './auth/AuthIcons'
@@ -53,6 +54,25 @@ export default function AppNavbar() {
         <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
           {user && (
             <>
+              {user.role === 'admin' && (
+                <Link
+                  to="/admin/markets/new"
+                  style={{
+                    color: 'rgba(255,255,255,0.85)',
+                    fontSize: 14,
+                    fontWeight: 500,
+                    textDecoration: 'none',
+                    padding: '8px 18px',
+                    borderRadius: 8,
+                    border: `1px solid ${GOLD}`,
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = `rgba(168,134,74,0.2)` }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'transparent' }}
+                >
+                  + New Market
+                </Link>
+              )}
               <span style={{ color: 'rgba(255,255,255,0.75)', fontSize: 14 }}>
                 {user.username}
               </span>
