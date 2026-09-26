@@ -2,18 +2,9 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppNavbar from '../components/AppNavbar'
+import { STATUS_CONFIG, tradingStopped } from '../components/markets/marketStatus'
 import { useMarketPrices } from '../hooks/useMarketPrices'
 import { CREAM, NAV } from '../theme/colors'
-
-const STATUS_CONFIG: Record<
-  PublicMarketDetail['status'],
-  { label: string; color: string; bg: string; border: string }
-> = {
-  open:               { label: 'Open',    color: '#16a34a', bg: 'rgba(22,163,74,0.1)',   border: 'rgba(22,163,74,0.25)' },
-  closed:             { label: 'Closed',  color: '#6b7280', bg: 'rgba(107,114,128,0.1)', border: 'rgba(107,114,128,0.25)' },
-  pending_resolution: { label: 'Pending', color: '#d97706', bg: 'rgba(217,119,6,0.1)',   border: 'rgba(217,119,6,0.25)' },
-  approved:           { label: 'Settled', color: '#2563eb', bg: 'rgba(37,99,235,0.1)',   border: 'rgba(37,99,235,0.25)' },
-}
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-SG', {
@@ -59,6 +50,14 @@ export default function MarketDetailPage() {
   }, [market?.close_time])
 
   const tradeable = market?.status === 'open' && !pastClose
+
+  // An early close leaves close_time in the future, so "Closed <close_time>"
+  // would name a date that has not happened yet.
+  function closeLabel(m: PublicMarketDetail): string {
+    if (!pastClose && !tradingStopped(m.status, m.close_time)) return `Closes ${formatDate(m.close_time)}`
+    if (pastClose) return `Closed ${formatDate(m.close_time)}`
+    return 'Closed early'
+  }
 
   const winningOutcome = market?.proposed_outcome_id
     ? market.outcomes.find(o => o.id === market.proposed_outcome_id)
@@ -106,9 +105,7 @@ export default function MarketDetailPage() {
                   {STATUS_CONFIG[market.status].label}
                 </span>
                 <span style={{ fontSize: 13, color: '#9ca3af' }}>
-                  {!pastClose
-                    ? `Closes ${formatDate(market.close_time)}`
-                    : `Closed ${formatDate(market.close_time)}`}
+                  {closeLabel(market)}
                 </span>
               </div>
               <h1 style={{ fontSize: 26, fontWeight: 800, color: NAV, margin: 0, lineHeight: 1.4, letterSpacing: '-0.3px' }}>
@@ -190,7 +187,7 @@ export default function MarketDetailPage() {
                       {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
                     </p>
                     <p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>
-                      {outcomePrice ? 'implied probability' : 'no trades yet'}
+                      {outcomePrice ? 'implied probability' : 'loading price…'}
                     </p>
                   </div>
                 )

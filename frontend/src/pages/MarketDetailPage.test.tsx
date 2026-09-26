@@ -76,12 +76,23 @@ describe('MarketDetailPage', () => {
     expect(screen.getByText('Open')).toBeInTheDocument()
   })
 
-  it('shows outcome cards with no-trades placeholder when no price events received', async () => {
+  it('shows a placeholder on each outcome until the first price arrives', async () => {
     renderPage()
     await screen.findByText('Will Singapore core inflation be below 2% for December 2026?')
     expect(screen.getByLabelText('Yes price')).toHaveTextContent('—')
     expect(screen.getByLabelText('No price')).toHaveTextContent('—')
-    expect(screen.getAllByText('no trades yet').length).toBe(2)
+    expect(screen.getAllByText('loading price…').length).toBe(2)
+  })
+
+  it('says closed early, not a future closing date, for a market an admin closed', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+        HttpResponse.json({ ...baseMarket, status: 'closed' }),
+      ),
+    )
+    renderPage()
+    expect(await screen.findByText('Closed early')).toBeInTheDocument()
+    expect(screen.queryByText(/^Closes \d/)).not.toBeInTheDocument()
   })
 
   it('shows trading controls for open markets', async () => {
