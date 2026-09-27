@@ -17,22 +17,11 @@ from decimal import Decimal
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.errors import (
-    InsufficientSharesOutstanding,
-    QuantityTooLarge,
-    UnknownOutcome,
-)
-from core.lmsr import _engine_context, cost_to_trade, prices as lmsr_prices
-from core.pricing import (
-    MAX_MAGNITUDE,
-    Side,
-    quantize_cost,
-    quantize_price,
-)
+from core.errors import UnknownOutcome
+from core.lmsr import _engine_context, prices as lmsr_prices
+from core.pricing import Side, quantize_price, trade_cost_of
 from service import book_prices
 from service.book_prices import PricedOutcome
-
-ZERO = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -69,8 +58,6 @@ async def quote(
     market the first touch opens and funds the book and commits, forwarding
     `access_token` unchanged, so call it with nothing pending on the session.
     """
-    # Coerced before the `is` comparisons below: `"sell" is Side.SELL` is
-    # False, so a raw string would fall through every one of them as a buy.
     side = Side(side)
     rows = await book_prices.read_or_open(
         session, market_id, access_token=access_token, transport=transport
@@ -87,36 +74,13 @@ async def quote(
         raise UnknownOutcome
 
     index = ids.index(outcome_id)
+    cost = trade_cost_of(q, b, index=index, side=side, quantity=quantity)
 
-    if side is Side.SELL and quantity > q[index]:
-        raise InsufficientSharesOutstanding
-
-    delta = [ZERO] * len(q)
-    delta[index] = quantity if side is Side.BUY else -quantity
-
-    with _engine_context():
-        after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
-
-    # D-040: the trade stores both the cost and the new `q` in
-    # `Numeric(18, 4)`. Checked before quantizing, which raises
-    # `InvalidOperation` past the ambient 28 digits.
-    if after_q[index] > MAX_MAGNITUDE:
-        raise QuantityTooLarge
-
-    # `copy_abs`, never `abs` (D-042): `abs` rounds at the ambient precision
-    # and can carry the magnitude across a tick before the directional
-    # rounding runs.
-    raw = cost_to_trade(q, b, delta).copy_abs()
-    if raw > MAX_MAGNITUDE:
-        raise QuantityTooLarge
-
-    magnitude = quantize_cost(raw, side=side)
-    total = -magnitude if side is Side.BUY else magnitude
     # An average price is a price, so `quantize_price` rounds it (D-052). The
     # division runs in the engine's pinned context, out of reach of an
     # ambient trap or precision.
     with _engine_context():
-        average_price = quantize_price(magnitude / quantity)
+        average_price = quantize_price(cost.magnitude / quantity)
 
     return Quote(
         market_id=market_id,
@@ -124,9 +88,9 @@ async def quote(
         side=side,
         outcome_id=outcome_id,
         quantity=quantity,
-        total=total,
+        total=cost.total,
         average_price=average_price,
         prices=book_prices.priced(rows, lmsr_prices(q, b)),
-        post_trade_prices=book_prices.priced(rows, lmsr_prices(after_q, b)),
+        post_trade_prices=book_prices.priced(rows, lmsr_prices(cost.after_q, b)),
     )
 

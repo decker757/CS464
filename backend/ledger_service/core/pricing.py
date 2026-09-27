@@ -4,7 +4,7 @@
 negative for a sell (D-002). `quantize_cost` is the boundary between that and
 `Numeric(18, 4)`: it takes the trade's **unsigned magnitude** and the side, and
 rounds it to scale 4 so that the residue always favours the pool. The caller —
-`service/preview.py` today, [T-2] #22's trade path tomorrow — applies the sign
+`trade_cost_of`, for both the preview and the trade — applies the sign
 afterwards.
 
 **Why a magnitude rather than the engine's signed answer.** The acceptance
@@ -27,11 +27,18 @@ Pure. No session, no clock, no configuration.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
-from core.errors import CostBelowTick, ProceedsBelowTick
-from core.lmsr import _engine_context
+from core.errors import (
+    CostBelowTick,
+    InsufficientSharesOutstanding,
+    ProceedsBelowTick,
+    QuantityTooLarge,
+)
+from core.lmsr import _engine_context, cost_to_trade
 
 # `Numeric(18, 4)`'s shape, restated rather than imported from
 # `model/entities.py::AMOUNT_SCALE`. `model` imports `core.database`, so a
@@ -49,7 +56,7 @@ QUANTUM = Decimal(1).scaleb(-_SCALE)
 # The largest magnitude `Numeric(18, 4)` can hold: 14 integer digits and 4
 # fractional ones, so `99999999999999.9999`. A cost above this is a cost the
 # ledger cannot store, which makes it a cost nothing can charge — see
-# `service/preview.py`, which is the layer with a request to refuse (D-040).
+# `trade_cost_of` (D-040).
 MAX_MAGNITUDE = Decimal(10) ** (_PRECISION - _SCALE) - QUANTUM
 
 
@@ -78,6 +85,15 @@ class Side(StrEnum):
 
     BUY = "buy"
     SELL = "sell"
+
+
+@dataclass(frozen=True)
+class TradeCost:
+    """What one trade costs, and the `q` it leaves behind."""
+
+    after_q: tuple[Decimal, ...]
+    magnitude: Decimal  # unsigned, rounded toward the pool
+    total: Decimal  # signed for the trader: negative on a buy
 
 
 def quantize_cost(magnitude: Decimal, *, side: Side | str) -> Decimal:
@@ -124,6 +140,51 @@ def quantize_cost(magnitude: Decimal, *, side: Side | str) -> Decimal:
     if quantized == 0:
         raise CostBelowTick if side is Side.BUY else ProceedsBelowTick
     return quantized
+
+
+def trade_cost_of(
+    q: Sequence[Decimal],
+    b: Decimal,
+    *,
+    index: int,
+    side: Side | str,
+    quantity: Decimal,
+) -> TradeCost:
+    """Price `quantity` of outcome `index` at `q`, `b`.
+
+    The one pricing sequence the preview and the trade share, so the two
+    cannot disagree about what a trade costs. Raises
+    `InsufficientSharesOutstanding` for a sell above `q[index]`,
+    `QuantityTooLarge` past `Numeric(18, 4)` on the new `q` or the cost
+    (D-040), and `CostBelowTick`/`ProceedsBelowTick` via `quantize_cost`
+    (D-041).
+
+    `side` is coerced, as in `quantize_cost`: `"sell" is Side.SELL` is False,
+    so an unconverted string would be priced as a buy.
+    """
+    side = Side(side)
+    if side is Side.SELL and quantity > q[index]:
+        raise InsufficientSharesOutstanding
+
+    delta = [Decimal(0)] * len(q)
+    delta[index] = quantity if side is Side.BUY else -quantity
+
+    with _engine_context():
+        after_q = tuple(q_i + d_i for q_i, d_i in zip(q, delta))
+
+    # D-040: checked before quantizing, which raises `InvalidOperation` past
+    # the ambient 28 digits.
+    if after_q[index] > MAX_MAGNITUDE:
+        raise QuantityTooLarge
+
+    # `copy_abs`, never `abs` (D-042): `abs` rounds at the ambient precision.
+    raw = cost_to_trade(q, b, delta).copy_abs()
+    if raw > MAX_MAGNITUDE:
+        raise QuantityTooLarge
+
+    magnitude = quantize_cost(raw, side=side)
+    total = -magnitude if side is Side.BUY else magnitude
+    return TradeCost(after_q=after_q, magnitude=magnitude, total=total)
 
 
 def release_basis(
