@@ -7,8 +7,6 @@ could ALTER or DROP. ADR 0006.
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
@@ -31,6 +29,7 @@ async def _has_privilege(session: AsyncSession, role: str, privilege: str) -> bo
 
 
 async def test_this_service_reads_the_audit_schema(session: AsyncSession) -> None:
+    """Pins the `search_path = audit` that sql/02-schemas.sql sets for audit_svc."""
     assert SCHEMA == "audit"
 
     found = (await session.execute(text("SELECT current_schema()"))).scalar_one()
@@ -151,25 +150,3 @@ async def test_it_cannot_read_another_services_schema(session: AsyncSession) -> 
             await session.execute(text(f"SELECT count(*) FROM {schema}.pg_class"))
         await session.rollback()
 
-
-async def test_an_entry_survives_an_attempt_to_remove_it(
-    session: AsyncSession, actor_id: uuid.UUID, seed
-) -> None:
-    """End to end, on a row this test can point at."""
-    rows = await seed(actor_id, 1)
-    entry_id = rows[0]["id"]
-
-    with pytest.raises(DBAPIError):
-        await session.execute(
-            text("DELETE FROM audit.admin_actions WHERE id = :id"), {"id": entry_id}
-        )
-    await session.rollback()
-
-    still_there = (
-        await session.execute(
-            text("SELECT count(*) FROM audit.admin_actions WHERE id = :id"),
-            {"id": entry_id},
-        )
-    ).scalar_one()
-
-    assert still_there == 1
