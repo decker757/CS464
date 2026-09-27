@@ -2517,6 +2517,765 @@ the specific 49-character client key.
 
 ---
 
+### D-NEW — An oversized `limit` is clamped, not refused
+
+**Date:** 2026-09-27 · **Ticket:** #15, #13 · **Status:** active
+
+**Decision.** On the audit feed (`GET /audit/actions`, #15) and the admin user
+list (`GET /admin/users`, #13), a `limit` above `max_page_size` is lowered to
+the ceiling. The request still succeeds.
+
+**Why.** A caller that asks for more than the ceiling wants as much as it can
+get. A 422 on `limit=1000` is a worse answer than the 200 rows the server is
+willing to serve. The ledger history does the same.
+
+**Rejected.** Refusing an oversized `limit` with a 422.
+
+**Notes.** Recorded in #127 from the comments at
+`audit_service/controller/routes.py` and `auth_service/controller/admin_routes.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — The audit feed and the user list page by keyset, not OFFSET
+
+**Date:** 2026-09-27 · **Ticket:** #15, #13 · **Status:** active
+
+**Decision.** Both lists are read newest first, and a page is asked for with a
+cursor that names a position: "everything strictly older than
+(`occurred_at`, `id`)" for the audit feed, and (`created_at`, `id`) for the
+user list. Neither uses OFFSET.
+
+**Why.** Both lists only grow at the newest end, which is the end being read
+from. With OFFSET, a row added between page 1 and page 2 pushes the window
+down: the last row of page 1 comes back as the first row of page 2, and the
+row behind it is never shown. In the audit log that means one record shown
+twice and another skipped. In the user list, the admin paging through to find
+one account is exactly the reader who would never notice. A cursor stays put
+whatever is added. For the audit log it is also the query the indexes in
+`sql/02-schemas.sql` are built for: jump to the cursor and read on, rather than
+counting and throwing away OFFSET rows on every page.
+
+`auth.users` is not append-only (roles and suspensions change), but that does
+not matter. A row only appears by registration, and neither `created_at` nor
+`id` is ever written twice, so an update cannot move a row in this order.
+
+The id is in the cursor because the timestamp is not unique. Two rows can land
+in the same microsecond, and two users registered in one transaction share
+`now()` exactly. Ordered by the timestamp alone, Postgres may return tied rows
+in a different order between queries, and a cursor cannot survive that.
+
+**Rejected.** OFFSET paging.
+
+**Notes.** The cursor format lives in `shared/paging.py` (ADR 0012); each
+service's `core/paging.py` only turns a bad one into its own error. Recorded in
+#127 from the comments at `audit_service/core/paging.py` and
+`auth_service/core/paging.py`, which the refactor shortened.
+
+---
+
+### D-NEW — Every kind of bad cursor gets the same error
+
+**Date:** 2026-09-27 · **Ticket:** #15, #13 · **Status:** active
+
+**Decision.** In the audit and auth services, `core/paging.decode_cursor`
+turns every way a cursor can be broken — bad base64, a missing separator, a
+UUID that will not parse — into one `MalformedCursor` (400
+`malformed_cursor`).
+
+**Why.** A client cannot do anything different about any of them. Describing
+the failure precisely only helps someone probing what the value is made of.
+
+**Rejected.** A separate error for each way a cursor can be broken.
+
+**Notes.** Recorded in #127 from the comments at `audit_service/core/paging.py`
+and `auth_service/core/paging.py`, which the refactor shortened.
+
+---
+
+### D-NEW — A cursor the service did not issue is refused, not treated as page one
+
+**Date:** 2026-09-27 · **Ticket:** #15, #13 · **Status:** active
+
+**Decision.** A cursor that did not come from a previous response is a 400
+`malformed_cursor`, with the message "Pass back the `next_cursor` from the
+previous response, unmodified."
+
+**Why.** What is inside a cursor is the service's business, so a client should
+only ever send back what `next_cursor` gave it. Saying so plainly beats
+quietly starting again from the newest page, which would loop forever.
+
+**Rejected.** Ignoring a bad cursor and starting again from the newest page.
+
+**Notes.** The auth service uses the same code and message as the audit and
+ledger services on purpose. It is the same cursor format, and the frontend
+should not have to learn three spellings of one mistake. Recorded in #127 from
+the comments at `audit_service/core/errors.py` and `auth_service/core/errors.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — The writing service makes the audit entry's id, not the database
+
+**Date:** 2026-09-27 · **Ticket:** #15, #16 · **Status:** active
+
+**Decision.** `audit.admin_actions.id` is a `uuid4()` made in the writing
+service's own code, in `service/audit.py::record`. There is no server-side
+default for it.
+
+**Why.** A writing service holds INSERT on the audit table and no SELECT
+(ADR 0006). A server-side default would have to be read back with RETURNING,
+and RETURNING is a read: it needs SELECT. That grant must not be given, because
+SELECT is what would let one service read another service's actions. Making the
+id in Python lets a writer insert without it. It is also why `record` returns
+nothing: the service cannot read back the row it just wrote.
+
+**Rejected.** A server-side default on the id column.
+
+**Notes.** `market_service` writes the same way, and its `model/audit.py` gives
+the same reason. Recorded in #127 from the comments at
+`audit_service/model/entities.py` and `auth_service/service/audit.py`, which
+the refactor shortened.
+
+---
+
+### D-NEW — The audit service checks tokens with dependencies, not middleware
+
+**Date:** 2026-09-27 · **Ticket:** #1, reused in #15 · **Status:** active
+
+**Decision.** The audit service checks the token and the admin role with
+FastAPI dependencies (`get_claims`, `require_admin`), the same shape as the
+market service.
+
+**Why.** Three reasons, first given in the market service ([1.1] #1):
+
+- A dependency defaults to closed; middleware defaults to open. Middleware
+  runs on every request, including `/health` and `/docs`, so it needs a list of
+  paths to skip, and a route added later is unprotected unless someone
+  remembers.
+- FastAPI shows a dependency in `/docs`, so the contract says which routes
+  need a token. Michelle codes against that page.
+- It hands the route typed claims. Middleware would have to pass them through
+  `request.state`, untyped.
+
+**Rejected.** Middleware.
+
+**Notes.** The full version of this reasoning is the docstring of
+`market_service/controller/dependencies.py`. Recorded in #127 from the comment
+at `audit_service/controller/dependencies.py`, which the refactor shortened.
+
+---
+
+### D-NEW — The audit feed's page sizes are settings, not constants
+
+**Date:** 2026-09-27 · **Ticket:** #15 · **Status:** active
+
+**Decision.** `default_page_size` (50) and `max_page_size` (200) live in
+`core/config.py` as settings.
+
+**Why.** An audit log only grows, so an unbounded read gets slower every week
+it is asked; the route needs a ceiling. They are settings only because the
+right page size depends on what the admin console shows, which is Michelle's
+call, and it may differ between a laptop and a deploy.
+
+**Rejected.** Hard-coded constants.
+
+**Notes.** The auth service's user list (#13) has the same two settings with the
+same defaults, for the same reason. Recorded in #127 from the comment at
+`audit_service/core/config.py`, which the refactor shortened.
+
+---
+
+### D-NEW — The audit feed matches an action type exactly, not by prefix
+
+**Date:** 2026-09-27 · **Ticket:** #15 · **Status:** active
+
+**Decision.** `?action_type=` filters with `=`, not with a prefix match.
+
+**Why.** `market.submitted` and `market.submitted.reverted` are different
+actions. A prefix match would quietly fold a future action type into an
+existing filter.
+
+**Rejected.** Prefix matching.
+
+**Notes.** Recorded in #127 from the comment at
+`audit_service/service/audit_service.py`, which the refactor shortened.
+
+---
+
+### D-NEW — A cursor is decoded before the query runs
+
+**Date:** 2026-09-27 · **Ticket:** #15, #13 · **Status:** active
+
+**Decision.** `list_actions` (audit) and `search_users` (auth) decode the
+cursor before building the query. A bad one raises `MalformedCursor`, which the
+controller turns into a 400.
+
+**Why.** A bad value that reached the database would come back as a driver
+error, and that becomes a 500.
+
+**Rejected.** Passing the cursor into the query and letting the database
+reject it.
+
+**Notes.** Recorded in #127 from the comments at
+`audit_service/service/audit_service.py` and `auth_service/service/user_admin.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — A non-admin reading the audit log gets 403, not 401
+
+**Date:** 2026-09-27 · **Ticket:** #1, reused in #15 · **Status:** active
+
+**Decision.** A caller with a valid token but no admin role gets 403
+`not_an_administrator`. 401 is kept for a token that is missing, malformed or
+expired.
+
+**Why.** Reading the log is an admin's privilege: it records what admins did
+to other people's accounts and markets. The two codes mean different things to
+the frontend, as in the market service ([1.1] #1). 401 means the session is
+gone, and logging in again helps. 403 means the session is fine and this
+account will never be let in, so retrying cannot help.
+
+**Rejected.** Answering both cases with 401.
+
+**Notes.** Recorded in #127 from the comment at `audit_service/core/errors.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — The username is trimmed in a before-validator
+
+**Date:** 2026-09-27 · **Ticket:** #89 · **Status:** active
+
+**Decision.** `RegisterRequest._trim_username` runs with `mode="before"`, so the
+username is trimmed before `Field` checks its length.
+
+**Why.** An after-validator only runs once `min_length` and `max_length` have
+already passed. So `" ab"` was accepted as three characters and stored as two.
+
+**Rejected.** An after-validator, which was the bug. `str_strip_whitespace` on
+the whole model, which would trim the password too.
+
+**Notes.** Recorded in #127 from the comment at `auth_service/model/schemas.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — Login checks a dummy hash when the account does not exist
+
+**Date:** 2026-09-27 · **Ticket:** #30 · **Status:** active
+
+**Decision.** When no account matches, `authenticate` calls
+`security.dummy_verify()`, which checks the password against a throwaway
+Argon2 hash, before refusing with `InvalidCredentials`.
+
+**Why.** Checking a throwaway hash takes as long as checking a real one. So the
+response time does not reveal whether the account exists, just as the error
+message does not.
+
+**Rejected.** Refusing an unknown account straight away, which would answer
+faster and so confirm that the account does not exist.
+
+**Notes.** Recorded in #127 from the comment at `auth_service/core/security.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — Suspension is checked only after the password is proven
+
+**Date:** 2026-09-27 · **Ticket:** #30 · **Status:** active
+
+**Decision.** `authenticate` checks `is_suspended` only after the password has
+been verified.
+
+**Why.** A suspended account gets its own message (403 `account_suspended`).
+Checked first, that message would let an attacker find out which accounts are
+suspended without knowing any password.
+
+**Rejected.** Checking suspension before the password.
+
+**Notes.** Recorded in #127 from the comment at
+`auth_service/service/auth_service.py`, which the refactor shortened.
+
+---
+
+### D-NEW — A lost registration race names the field by looking again, not from the constraint name
+
+**Date:** 2026-09-27 · **Ticket:** #29 · **Status:** active
+
+**Decision.** When two people register the same username or email at once, the
+loser's flush fails with `IntegrityError`. `register` then rolls back and runs
+the `_taken_fields` lookup again to say which field clashed.
+
+**Why.** The winner has committed by then, so the lookup that came back clear a
+moment ago can now name the field. The database error carries the constraint
+name too, but reading it would tie this code to asyncpg and to the index names
+in `model/entities.py`. The answer can still be empty if the winning account
+was deleted in between; `DuplicateUser` then gives its generic message.
+
+**Rejected.** Reading the field from the constraint name in the error.
+
+**Notes.** Recorded in #127 from the comment at
+`auth_service/service/auth_service.py`, which the refactor shortened.
+
+---
+
+### D-NEW — The user search escapes LIKE's wildcards
+
+**Date:** 2026-09-27 · **Ticket:** #13 · **Status:** active
+
+**Decision.** Before the search text goes into `ilike`, `\`, `%` and `_` are
+escaped, so it matches as the literal text the admin typed. The backslash is
+escaped first.
+
+**Why.** `_` is what makes this necessary rather than tidy. Usernames may
+contain `_`, and half the team has one, so an unescaped search for `ernest_t`
+would also find `ernestXt`. The backslash goes first, or it would escape the
+escapes. The match is a case-insensitive substring rather than an exact one,
+because an admin looking into a problem usually has part of a name from a
+support message, not all of it.
+
+**Rejected.** Passing the search text to LIKE unescaped.
+
+**Notes.** `/docs` states it too: in `q`, "`%` and `_` are not wildcards".
+Recorded in #127 from the comment at `auth_service/service/user_admin.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — The user list uses `raiseload`, not `noload`, for refresh tokens
+
+**Date:** 2026-09-27 · **Ticket:** #13 · **Status:** active
+
+**Decision.** The user search query adds `raiseload(User.refresh_tokens)`.
+
+**Why.** `User.refresh_tokens` is `lazy="selectin"`. Without this, every page
+of users would also load every refresh token those accounts hold: a second
+query, with no limit on its rows, for data no response here contains. This is
+the one place users are loaded in bulk.
+
+`raiseload` and `noload` fail differently. `noload` would hand back an empty
+list for an account that has three live sessions, which is a wrong answer that
+looks like a right one. `raiseload` says plainly that the attribute was not
+loaded. Nothing in this story needs the tokens, and whatever does should ask
+for them in its own query.
+
+**Rejected.** The default `selectin` load. `noload`.
+
+**Notes.** D-027 met the same `noload` problem in `market_service`. Recorded in
+#127 from the comment at `auth_service/service/user_admin.py`, which the
+refactor shortened.
+
+---
+
+### D-NEW — The user search is a sequential scan, with `pg_trgm` as the upgrade
+
+**Date:** 2026-09-27 · **Ticket:** #13 · **Status:** active
+
+**Decision.** The `%fragment%` search reads the whole table, and that cost is
+accepted.
+
+**Why.** A pattern that can match anywhere in the string cannot use the
+`lower(username)` indexes, which exist for uniqueness and not for this. Only a
+trigram index helps a match like that. At this project's size the whole table
+is a page or two of memory.
+
+**Rejected.** Adding a trigram index now, while it is not needed.
+
+**Notes.** The upgrade, once the table outgrows that, is
+`CREATE EXTENSION pg_trgm` and a GIN index on each column. It changes nothing
+above `search_users`. Recorded in #127 from the comment at
+`auth_service/service/user_admin.py`, which the refactor shortened.
+
+---
+
+### D-NEW — A role change reloads its locked target with `populate_existing`
+
+**Date:** 2026-09-27 · **Ticket:** #16 · **Status:** active
+
+**Decision.** `change_role` loads the target with
+`session.get(User, target_id, with_for_update=True, populate_existing=True)`.
+
+**Why.** So the role it reads comes from the locked row, never from a copy of
+the user this session had already loaded before it held the lock. The lock is
+what stops the answer changing between the question and the decision, and only
+a read taken under the lock gets that protection.
+
+**Rejected.** Locking without `populate_existing`, which can hand back the copy
+the session already had.
+
+**Notes.** ADR 0015 (PR #85, where this was added) records the wider rule: a
+read that decides a write is locked, and the administrator set is locked before
+the target. This entry records only the `populate_existing` part. Recorded in
+#127 from the comment at `auth_service/service/user_admin.py`, which the
+refactor shortened.
+
+---
+
+### D-NEW — `UserNotFound` says plainly that the id does not exist
+
+**Date:** 2026-09-27 · **Ticket:** #16 · **Status:** active
+
+**Decision.** A role change for an unknown user id is a 404 `user_not_found`,
+"No user with that id."
+
+**Why.** Unlike login, there is nothing to hide. The caller has already proven
+they are an admin, and saying an id does not exist tells them nothing they
+could not learn from the user list they are allowed to read.
+
+**Rejected.** A deliberately vague error, like `InvalidCredentials` at login.
+
+**Notes.** Recorded in #127 from the comment at `auth_service/core/errors.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — `LastAdministrator` is a 409, not a 403
+
+**Date:** 2026-09-27 · **Ticket:** #16 · **Status:** active
+
+**Decision.** Refusing a demotion that would leave no administrator is a 409
+`last_administrator`.
+
+**Why.** It is a conflict, not a forbidden action. The caller is allowed to do
+this and the request is well formed; it is the current state of the system
+that refuses. A moment later, once somebody else is promoted, the same request
+would succeed.
+
+**Rejected.** 403.
+
+**Notes.** ADR 0007 records how this case arises (two admins demoting each
+other at the same instant) and the lock that catches it. This entry records
+only the status code. Recorded in #127 from the comment at
+`auth_service/core/errors.py`, which the refactor shortened.
+
+---
+
+### D-NEW — Logout needs no access token and always reports success
+
+**Date:** 2026-09-27 · **Ticket:** #31 · **Status:** active
+
+**Decision.** `POST /auth/logout` does not require authentication. It revokes
+the refresh token if one is sent, clears both cookies, and always answers
+"Logged out."
+
+**Why.** Logging out must still work when the access token has already
+expired. It always reports success so that a caller cannot use it to find out
+which refresh tokens are live.
+
+**Rejected.** Requiring a valid access token. Reporting an unknown or already
+revoked refresh token as an error.
+
+**Notes.** ADR 0002 records that logout works by revoking the refresh token.
+Recorded in #127 from the comment at `auth_service/controller/routes.py`, which
+the refactor shortened.
+
+---
+
+### D-NEW — The refresh cookie is scoped to `/auth`
+
+**Date:** 2026-09-27 · **Ticket:** #31 · **Status:** active
+
+**Decision.** The access cookie has path `/`. The refresh cookie has path
+`/auth` (`refresh_cookie_path`).
+
+**Why.** Narrower than `/`, so the long-lived refresh token is not sent along
+on every API call. Wide enough to reach both `/auth/refresh` and
+`/auth/logout`. Logout has to receive it, because logout is what revokes it.
+
+**Rejected.** Path `/`, which sends it on every call. Any path narrower than
+`/auth`, which would miss one of the two routes that need it.
+
+**Notes.** Recorded in #127 from the comments at
+`auth_service/controller/transport.py` and `auth_service/core/config.py`, which
+the refactor shortened.
+
+---
+
+### D-NEW — One socket may watch at most 50 markets
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** `max_subscriptions_per_connection`, default 50.
+
+**Why.** Every subscription costs a set entry, and a loop step on every event
+sent out. A client that subscribes in a loop is the cheapest denial of service
+there is against a server whose whole job is holding connections open. 50 is
+generous for real use: the [X-4] #37 client watches the market on screen, and a
+market list page watches the markets it has shown.
+
+**Rejected.** No limit.
+
+**Notes.** Recorded in #127 from the comment at `realtime_service/core/config.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — Over the limit, a new subscription is refused; the oldest is not dropped
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** A subscribe past the limit gets a `too_many_subscriptions` error
+frame, and the connection stays open. Re-sending a subscription the socket
+already holds is never refused: the limit counts markets, not commands.
+
+**Why.** A client that hits the limit has lost track of what it is watching.
+Quietly dropping a market it believes it is subscribed to would show someone a
+price that has silently stopped updating.
+
+**Rejected.** Dropping the oldest subscription to make room.
+
+**Notes.** Recorded in #127 from the comment at `realtime_service/core/errors.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — When a connection fails for several reasons, the first one is reported
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** `Connection.fail` keeps the first reason it is given and ignores
+the rest.
+
+**Why.** The first reason is the cause; the rest follow from it. A socket
+dropped for an expired token also stops draining its queue. Reporting
+`slow_consumer` to a client whose real problem is an expired session would send
+it off to debug its network instead of refreshing its token.
+
+**Rejected.** Keeping the last reason.
+
+**Notes.** Recorded in #127 from the comment at
+`realtime_service/controller/connection.py`, which the refactor shortened.
+
+---
+
+### D-NEW — Acknowledgements go through the same send queue as prices
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** Every frame sent to a client, including the `subscribed` and
+`unsubscribed` replies and error frames, goes through `Connection.enqueue`.
+
+**Why.** So a `subscribed` reply can never overtake a price that was already
+queued. A client that saw the price first would have good reason to throw it
+away, as belonging to a market it had not finished subscribing to.
+
+**Rejected.** Sending acknowledgements straight to the socket, around the
+queue.
+
+**Notes.** ADR 0010 records why each connection has a queue and a single
+sender; this entry adds that replies use it too. Recorded in #127 from the
+comment at `realtime_service/controller/connection.py`, which the refactor
+shortened.
+
+---
+
+### D-NEW — The close reason is picked in priority passes, after every result is collected
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** When a connection's tasks finish, `_ending` first collects the
+exception of every finished task, then decides in order: a domain error
+(`RealtimeError`) wins; otherwise an unexpected failure closes with 1011 and is
+logged; otherwise a disconnect means there is nobody left to send a close
+frame to.
+
+**Why.** More than one task can finish at the same moment.
+
+- Collecting first reads every finished task's exception. Returning early would
+  leave one unread, and asyncio then logs "Task exception was never retrieved"
+  hours later from somewhere unrelated.
+- Separate passes make the answer the same whatever order the tasks come out
+  in. A set has no order. This really happens: when a client vanishes, the
+  reader ends with `WebSocketDisconnect` while the sender's `send_json` raises
+  a plain `RuntimeError` from Starlette. Judged in one pass, the same event
+  closed either as a normal disconnect or as 1011, depending on which task the
+  set happened to give first.
+
+**Rejected.** A single loop that returns on the first exception it meets.
+
+**Notes.** Recorded in #127 from the comment at
+`realtime_service/controller/routes.py`, which the refactor shortened.
+
+---
+
+### D-NEW — The outcome is read before the other tasks are cancelled, and they are not awaited
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** `_serve` works out the ending from the finished tasks first, then
+cancels the rest and does not await them.
+
+**Why.** Reading first makes sure every finished task's exception is read
+(see the entry above), and it stays true even if `_serve` is itself cancelled
+during the cleanup. Not awaiting is safe: a cancelled task makes no more
+progress of its own, it only wakes up into its own `CancelledError`, so none of
+them can touch the socket again once `cancel` has been called. Awaiting them
+would hand control back to the event loop for nothing, at the moment the
+connection is most likely to be torn down underneath us.
+
+**Rejected.** Cancelling before reading the outcome. Awaiting the cancelled
+tasks.
+
+**Notes.** Recorded in #127 from the comments at
+`realtime_service/controller/routes.py`, which the refactor shortened.
+
+---
+
+### D-NEW — A bad origin is refused before the upgrade, and logged for the operator
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** A socket from an origin not in `CORS_ORIGINS` is closed with
+4403 without being accepted, and a warning naming the origin is logged. A bad
+token is handled the other way: the socket is accepted, then closed with 4401.
+
+**Why.** Accepting a cross-origin socket even briefly is the very thing the
+origin check exists to prevent, and the refused page is not owed a readable
+error. The operator does get one, in the log, because a mistake in
+`CORS_ORIGINS` looks exactly the same from the browser. A bad token is
+different: a socket refused before the upgrade reaches JavaScript as a failure
+with no code and no reason, and [X-4] #37 has to tell an expired session apart
+from a dead network, so that one is accepted in order to send a reason.
+
+**Rejected.** Accepting and then closing for a bad origin too, like a bad
+token.
+
+**Notes.** ADR 0010 records why the origin check is written by hand at all.
+Recorded in #127 from the comment at `realtime_service/controller/routes.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — A malformed message from Redis is logged as a warning
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** A price message that is not text, or does not match
+`PriceEvent`, is dropped and logged at warning level. A stale duplicate is
+dropped and logged only at debug level.
+
+**Why.** A message that fails to decode is a bug in the producer, and what
+users see is prices that silently stop updating. The log line is the only thing
+that will tell anyone which of the two services is at fault. A duplicate is
+different: it is the expected result of a producer retrying, and dropping it is
+the guard doing its job. Nothing in this path may raise, because an exception
+would end the Redis subscription for every connected client over one bad
+message.
+
+**Rejected.** Dropping malformed messages silently.
+
+**Notes.** Recorded in #127 from the comment at `realtime_service/service/bus.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — The bus waits between retries outside the error branch, and a connection that came up resets the wait
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** `PriceBus.run` sleeps after `_consume` has returned or raised,
+not inside the `except` branch. The wait starts at 0.5 s and doubles up to
+10 s, and it goes back to 0.5 s whenever the subscription actually came up.
+
+**Why.** The sleep comes after `_consume` has closed its Redis client. Inside
+the failure branch, a `finally` would only run once that branch had finished,
+so a dead connection would be held open for the whole wait, up to ten seconds
+of a socket nobody reads. Resetting after a real connection means a long,
+healthy subscription that drops reconnects quickly, and only a Redis that
+really cannot be reached gets backed off from. The loop never gives up:
+dropping every client because the bus blinked would turn a blip into a
+reconnect storm.
+
+**Rejected.** Sleeping inside the `except` branch. Never resetting the wait.
+
+**Notes.** Recorded in #127 from the comment at `realtime_service/service/bus.py`,
+which the refactor shortened.
+
+---
+
+### D-NEW — The subscription hub keeps two indexes, and prunes both through one helper
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** `Hub` keeps `_by_market` (market to connections) and
+`_by_subscriber` (connection to markets). An entry whose set becomes empty is
+deleted, and both indexes are cleaned up by the one `_discard` helper.
+
+**Why.**
+
+- *Two indexes.* `_by_market` answers "who wants this event", on every
+  broadcast. `_by_subscriber` answers "what was this connection watching", on
+  every disconnect. The second costs a few bytes per subscription and stops a
+  disconnect from being a scan of every market. Connections drop all the time,
+  and a feed that got slower the more markets existed would be slowing down for
+  a reason that has nothing to do with load.
+- *Pruning.* Both maps live as long as the process and would otherwise only
+  ever gain keys. Markets pile up for the life of the platform, so a map that
+  never pruned would be a slow leak in the one process meant to stay up for
+  days. It would also make `len(index)` mean something other than what its
+  callers think.
+- *One helper.* Writing the cleanup out twice by hand is how the two maps came
+  to disagree: the market side pruned empty sets and the subscriber side did
+  not, so a client that unsubscribed from its last market and stayed connected
+  was still counted by `connection_count`.
+
+**Rejected.** One index, with a scan on disconnect. Leaving empty entries in
+place. Separate hand-written cleanup for each map.
+
+**Notes.** Recorded in #127 from the comments at
+`realtime_service/service/subscriptions.py`, which the refactor shortened.
+
+---
+
+### D-NEW — The subscription limit is enforced in the hub, not the route
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** `Hub.subscribe` raises `TooManySubscriptions`. The route only
+turns it into an error frame. The count comes from the hub, not from a counter
+on the connection.
+
+**Why.** It is a rule about the hub's own state. A rule enforced by its only
+caller is a rule the second caller will not enforce: a bulk-subscribe command
+or an admin tool would quietly skip a limit held in the controller. It also
+means the limit is tested without a socket, which is where the backend
+conventions put a business rule. Asking the hub for the count means there is
+one answer to the question rather than two that can disagree.
+
+**Rejected.** Checking the limit in the route. Counting subscriptions on the
+connection.
+
+**Notes.** Recorded in #127 from the comment at
+`realtime_service/service/subscriptions.py`, which the refactor shortened.
+
+---
+
+### D-NEW — The version gate is per process, not shared through Redis
+
+**Date:** 2026-09-27 · **Ticket:** #42 · **Status:** active
+
+**Decision.** `VersionGate` keeps each market's newest forwarded
+`state_version` in the process's own memory. Replicas do not share it.
+
+**Why.** A gate that all replicas agreed on would be a distributed lock in
+front of a price feed, bought only to save a redundant re-render. It would make
+every broadcast wait on a network round trip, in a service whose whole purpose
+is being faster than a page refresh. The gate is not the client's guarantee
+anyway: the client has to drop older events itself, because its snapshot can
+be newer than an event in flight, and a reconnect can land on a replica with
+its own high-water mark.
+
+**Rejected.** Sharing the gate through Redis.
+
+**Notes.** ADR 0010 already records that replicas share no state and that the
+client must check versions too. This entry adds the cost reason for not sharing
+the gate. Recorded in #127 from the comment at
+`realtime_service/service/ordering.py`, which the refactor shortened.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
