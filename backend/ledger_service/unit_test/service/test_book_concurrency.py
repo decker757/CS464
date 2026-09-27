@@ -394,9 +394,9 @@ async def test_every_transaction_balances_on_its_own_after_a_race(
 async def test_two_markets_opening_at_once_do_not_deadlock(
     session: AsyncSession,
 ) -> None:
-    """ADR 0015's lock order: two markets share the platform account, so locks
-    must be taken ascending by id or this deadlocks about half the time.
-    `asyncio.timeout` turns a hang into a named failure.
+    """Two markets opening at once share the platform account and must both
+    finish. It shares one row, so it cannot prove the ascending lock order
+    (see `test_preview_concurrency.py`). `asyncio.timeout` names a hang.
     """
     first, second = uuid.uuid4(), uuid.uuid4()
 

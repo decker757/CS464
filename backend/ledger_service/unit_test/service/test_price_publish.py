@@ -1,38 +1,8 @@
-"""`service/bus.py::publish` — the four lines, and the rule around them. [F-9] #112
+"""`service/bus.py::publish`, and the rule around it. [F-9] #112, D-049.
 
-No database. This sits under `unit_test/service/` because the function does,
-and because `realtime_service`'s own `test_bus.py` sits there too; nothing in
-this file needs Postgres and it runs without `docker compose up -d db`.
-
-**The fake Redis is a recorder, not a library.** `publish(client, event, ...)`
-takes the client as a parameter, which is the same seam `transport=` gives
-`service/market_terms.py`: duck typing is enough, so there is no `fakeredis`
-dependency to add and no server to start. It is also *better* than a live
-Redis for what is asserted here — the recorder captures the exact channel
-string and the exact JSON bytes, where a real round trip would prove delivery
-and say nothing about either.
-
-**What a recorder cannot prove is that the channel matches the subscriber's.**
-A wrong string publishes successfully, into a channel nobody is listening on,
-and no amount of local assertion notices. So the channel is pinned a second
-way: by reading `realtime_service/service/bus.py` as source text and pulling
-`PRICE_CHANNEL` out of it. A file read, not an import — see
-`unit_test/test_dependency_pins.py`, which explains why that is allowed and
-why it only ever runs in a checkout.
-
----
-
-**A note on `transaction_id`, which is a spec disagreement, flagged not
-resolved.** The criteria give the signature as `publish(client, event)` and
-require a failure to be "logged with the committed transaction's id". Those
-cannot both hold: `PriceEvent` is `extra="forbid"` over four fields and none of
-them is a transaction id, so there is nowhere for the id to arrive from. These
-tests assume it is a keyword-only argument — `publish(client, event, *,
-transaction_id)` — because the id is the only thing that lets a human find the
-trade whose broadcast was lost, and because the natural call site in [T-2] #22
-has it to hand: `posting.post` returns the transaction it committed. If the
-answer is meant to be something else, this is the file to change and the
-decision is Ihsan's (D-007).
+No database. The Redis client is a recorder, which captures the exact channel
+and payload. A recorder cannot prove the channel matches the subscriber's, so
+that is pinned by reading `realtime_service/service/bus.py` as source text.
 """
 
 from __future__ import annotations
@@ -72,19 +42,8 @@ _DOCUMENTED_CHANNEL = "market.price"
 
 
 def _module_constant(path: pathlib.Path, name: str) -> str:
-    """A module-level string constant, read out of a source file with `ast`.
-
-    Parsed rather than matched. A regex over this file matches its prose —
-    `realtime_service/service/bus.py` opens with four paragraphs about why the
-    channel is one rather than per-market, and mentions `PRICE_CHANNEL` by name
-    in three of them — and it also breaks on formatting that changes nothing:
-    single quotes, a trailing comment, a line wrapped by a formatter, a type
-    annotation. `ast` sees the assignment, so only a real change to the value
-    can fail this, and a reformat cannot.
-
-    Only module-level assignments count. A `PRICE_CHANNEL` defined inside a
-    class or a function is not the constant this producer has to agree with,
-    and matching one would be the pin quietly reading the wrong thing.
+    """A module-level string constant, read out of a source file with `ast`:
+    a regex would match prose and break on reformatting (D-048).
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
 
@@ -117,13 +76,8 @@ _TRANSACTION_ID = uuid.UUID("36fd0000-0000-4000-8000-0000000000aa")
 
 
 class _Recorder:
-    """A Redis client that remembers, and optionally throws.
-
-    `publish` on the real async client is a coroutine returning the number of
-    subscribers that received the message. Returning zero is the honest value
-    here and is deliberately not asserted on anywhere: nothing acknowledges,
-    and a producer that started caring how many subscribers there were would be
-    one step from an outbox.
+    """A Redis client that remembers, and optionally throws. Its subscriber
+    count is never asserted on: nothing acknowledges (ADR 0010).
     """
 
     def __init__(self, *, raises: Exception | None = None) -> None:
@@ -155,33 +109,15 @@ def _event(**overrides: object):
 # The channel
 # =========================================================================
 def test_the_channel_is_the_documented_one() -> None:
-    """`market.price`, named once in this service and pinned here.
-
-    A different string is the failure mode with no symptom on this side: the
-    publish succeeds, returns cleanly, and goes into a channel nobody has
-    subscribed to. Nothing downstream errors — prices simply stop arriving.
-    """
+    """`market.price`, as documented: a wrong channel fails with no symptom."""
     assert _bus().PRICE_CHANNEL == _DOCUMENTED_CHANNEL
 
 
 def test_the_channel_is_the_one_realtime_service_subscribes_to() -> None:
-    """The half of that claim this service cannot make on its own.
+    """The two services agree on the channel, read from the other's source.
 
-    Read out of `realtime_service/service/bus.py` with `ast`, because the copy
-    cannot be an import (ADR 0012) and because the string being right *here* is
-    not the property that matters — the property is that the two agree. That
-    file's own comment says changing the string "is a contract change that
-    breaks the producer silently", and this is the assertion that makes it
-    loud.
-
-    **This fires on a PR that touches only `realtime_service`, and that is
-    load-bearing.** `ci-backend.yml`'s path filter is at workflow level and
-    matches `backend/**`, and its matrix runs all five services on every run —
-    so a field or channel rename over there starts this job too. A future move
-    to per-service path filtering would silently retire this test and
-    `test_price_event.py`'s field pin along with it; both depend on the filter
-    staying coarse, and the caveat already in that workflow's header about
-    required checks is the neighbouring version of the same trap.
+    Relies on CI running this job for a PR that touches only
+    `realtime_service`; per-service path filtering would retire it (D-048).
     """
     theirs = _module_constant(_REALTIME_BUS, "PRICE_CHANNEL")
 
@@ -205,13 +141,8 @@ async def test_the_event_goes_to_that_channel_and_no_other() -> None:
 # The payload
 # =========================================================================
 async def test_the_payload_is_the_price_event_as_json() -> None:
-    """What goes on the channel is what the consumer validates.
-
-    Asserted by decoding rather than by string equality, so the test does not
-    pin key order — but the key **set** is exact, because the consumer reads it
-    with `extra="forbid"` and drops the whole event over a field it has no
-    contract for.
-    """
+    """What goes on the channel is what the consumer validates: decoded, with
+    the exact key set, since the consumer forbids extras."""
     client = _Recorder()
     event = _event()
 
@@ -226,10 +157,7 @@ async def test_the_payload_is_the_price_event_as_json() -> None:
 
 
 async def test_the_payload_carries_every_outcome_as_a_decimal_string() -> None:
-    """Every outcome, not only the one traded — a trade moves the whole softmax
-    and a client rendering one would show a market whose prices no longer sum
-    to one. And each price as a string, because this is the last hop before a
-    browser's `JSON.parse` turns a number into an IEEE double."""
+    """Every outcome, each price a decimal string at scale 4."""
     client = _Recorder()
 
     await _bus().publish(client, _event(), transaction_id=_TRANSACTION_ID)
@@ -243,10 +171,7 @@ async def test_the_payload_carries_every_outcome_as_a_decimal_string() -> None:
 
 
 async def test_the_payload_is_text_rather_than_bytes() -> None:
-    """The consumer opens its client with `decode_responses=True` and drops
-    anything that is not a `str` — `PriceBus._decode` logs "ignoring non-text
-    message" and returns. Publishing `bytes` would be delivered and discarded.
-    """
+    """The consumer discards anything that is not a `str`."""
     client = _Recorder()
 
     await _bus().publish(client, _event(), transaction_id=_TRANSACTION_ID)
@@ -255,13 +180,8 @@ async def test_the_payload_is_text_rather_than_bytes() -> None:
 
 
 async def test_one_publish_sends_exactly_one_message() -> None:
-    """A retry inside `publish` would be an outbox with one entry.
-
-    ADR 0010 is explicit that there is no retry here and will not be one: the
-    recovery path is the client's reconnect-and-snapshot, and a duplicate is
-    only harmless because `service/ordering.py` drops it. Sending twice by
-    default makes that guard load-bearing rather than defensive.
-    """
+    """No retry inside `publish` (ADR 0010): recovery is the client's
+    reconnect-and-snapshot."""
     client = _Recorder()
 
     await _bus().publish(client, _event(), transaction_id=_TRANSACTION_ID)
@@ -273,18 +193,8 @@ async def test_one_publish_sends_exactly_one_message() -> None:
 # The failure that must not propagate
 # =========================================================================
 async def test_a_publish_that_raises_does_not_reach_the_caller() -> None:
-    """The rule the whole design rests on.
-
-    Nothing acknowledges and nothing subscribes on the producer's behalf, so if
-    the publish throws, the trade has still committed and is still correct. The
-    caller here is [T-2] #22, which will have already committed by the time it
-    calls this — the exception has nowhere useful to go and turning a committed
-    trade into a 500 would tell a trader their trade failed when it had charged
-    them.
-
-    Asserted as "returns normally", which is the only observable form of "never
-    fails its caller" available while #22 does not exist.
-    """
+    """The trade has already committed, so a failed publish returns normally
+    (D-049)."""
     client = _Recorder(raises=ConnectionError("redis is unreachable"))
 
     await _bus().publish(client, _event(), transaction_id=_TRANSACTION_ID)
@@ -293,17 +203,8 @@ async def test_a_publish_that_raises_does_not_reach_the_caller() -> None:
 async def test_a_failure_is_logged_with_the_transaction_id(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Swallowed is not the same as silent, and the difference is this line.
-
-    A lost broadcast recovers on its own — the client snapshots on its next
-    reconnect — so nothing will ever page anybody about it. That makes the log
-    the only record that it happened, and the transaction id the only thing in
-    it that leads back to the trade: the market id names a market that has had
-    thousands of trades, and `state_version` is meaningless without it.
-
-    Matched against `caplog.text` rather than against a named logger, so the
-    assertion is about what a human reading the log can find rather than about
-    which module emitted it.
+    """Swallowed is not silent: the log is the only record, and the transaction
+    id the only field leading back to the trade (D-049).
     """
     client = _Recorder(raises=ConnectionError("redis is unreachable"))
 
@@ -323,11 +224,7 @@ async def test_a_failure_is_logged_with_the_transaction_id(
 async def test_a_successful_publish_logs_no_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The other half, and the one that keeps the line above worth reading.
-
-    This runs once per trade. A warning on the happy path is a log nobody
-    greps, which is the same as no log at all on the day it matters.
-    """
+    """No warning on the happy path, which runs once per trade."""
     client = _Recorder()
 
     with caplog.at_level(logging.WARNING):
@@ -337,14 +234,8 @@ async def test_a_successful_publish_logs_no_failure(
 
 
 async def test_the_failure_that_is_swallowed_is_the_bus_one_only() -> None:
-    """A `CancelledError` is shutdown, not a Redis blip.
-
-    `except Exception` covers it in Python 3.13 only by accident of hierarchy —
-    it does not, `CancelledError` inherits `BaseException` — and an
-    `except BaseException` here would swallow the signal that the process is
-    going away. Pinned so that a broad catch written to satisfy the tests above
-    does not quietly acquire it.
-    """
+    """A `CancelledError` is shutdown, not a Redis blip, and must propagate: an
+    `except BaseException` would swallow it."""
     import asyncio  # noqa: PLC0415
 
     client = _Recorder(raises=asyncio.CancelledError())
@@ -353,17 +244,5 @@ async def test_the_failure_that_is_swallowed_is_the_bus_one_only() -> None:
         await _bus().publish(client, _event(), transaction_id=_TRANSACTION_ID)
 
 
-# =========================================================================
-# The caller
-# =========================================================================
-#
-# `test_nothing_in_this_service_calls_publish` stood here and was deleted by
-# [T-2] #22, which is the ticket that adds the caller. It held [F-9] #112's
-# "primitive before caller" shape for exactly one ticket and became false the
-# moment the trade path called `publish`, exactly as its own docstring and
-# #22's issue both said it would.
-#
-# What replaced it is `unit_test/service/test_trade_publish.py`, which asserts
-# the three things the primitive could not assert about itself: that a
-# committed trade publishes once, that the publish happens after the commit,
-# and that a publish which fails does not fail the trade.
+# The caller's side (once per trade, after the commit, never failing the
+# trade) is `unit_test/service/test_trade_publish.py`.

@@ -1,32 +1,10 @@
 """What a trade will cost, before anybody commits to it. [T-1] #21
 
-Business rules, driven through `service/preview.py` with no HTTP *inbound*.
-Status codes, query-string validation and the shape on the wire belong to
-`unit_test/controller/test_preview_routes.py`; what is asserted here is the
-arithmetic, the reads it makes, and the writes it does and does not perform.
-
-The *outbound* call is stubbed at the transport, the same way
-`test_market_books.py` does it, so the cold path exercises the real request,
-the real `Authorization` header and the real decimal-string parsing without a
-market service running and without importing one — `test_import_boundary.py`
-fails any `import market_service` from this suite.
-
-**Three things this file deliberately does not test.**
-
-*Whether the market is still open.* The ledger cannot know: the book stores no
-status, `close_time` is not snapshotted, and ADR 0014 leaves `close_time` in
-the future on an early close. The issue's Notes say a preview on a closed
-market returns a number, and the frontend gates on #62's derived status. How
-the ledger learns a market has stopped trading is [T-2] #22's problem.
-
-*Whether the caller holds the shares they are selling.* A sell is priced
-arithmetically. The per-user holdings check is [T-3] #23's and only means
-anything under the trade's lock (D-012). What *is* checked here is the
-no-shorting rule against shares outstanding, which is a property of the book.
-
-*Whether `state_version` increments.* Nothing in this repository increments it
-— `MarketBook`'s docstring says so and hands it to #22. The one test that needs
-a newer version writes the column directly and says so.
+The arithmetic, the reads it makes and the writes it does not, driven through
+`service/preview.py`; status codes and the wire shape are
+`test_preview_routes.py`'s. The outbound call is stubbed at the transport.
+Not tested here: whether the market is open (ADR 0017 keeps that off the
+preview) and the caller's own holdings (the trade's check, D-012).
 """
 
 from __future__ import annotations
@@ -49,20 +27,15 @@ from unit_test.conftest import mint_token, strip_outcomes
 
 
 def _preview():
-    """Imported inside each test rather than at module scope.
-
-    `service/preview.py` does not exist yet, and a top-level import would be
-    one collection error taking the whole file down as a single red line.
-    Reached through here, every test fails on its own, named after the
-    criterion it holds (D-007).
-    """
+    """Imported inside each test, so a missing name fails one test rather than
+    collection (D-007)."""
     from service import preview  # noqa: PLC0415
 
     return preview
 
 
 def _pricing():
-    """`core/pricing.py`: `quantize_cost` and `Side`. Neither exists yet."""
+    """`core/pricing.py`, reached lazily like `_preview`."""
     from core import pricing  # noqa: PLC0415
 
     return pricing
@@ -92,29 +65,19 @@ _QUANTUM = Decimal("0.0001")
 _B = Decimal("100.0000")
 _SUBSIDY = Decimal("250.0000")
 
-# Asymmetric on purpose. With a uniform `q` every outcome prices identically,
-# so a bug that read the `q` vector in the wrong order — by insertion, by
-# outcome id, by anything but `position` — would be invisible in every
-# assertion in this file.
+# Asymmetric on purpose: with a uniform `q`, reading the vector in the wrong
+# order would be invisible.
 _Q = [Decimal("137.5000"), Decimal("42.2500")]
 
-# Chosen so the raw cost lands off a tick boundary. Asserted rather than
-# assumed, in `_assert_rounding_is_load_bearing` below: a quantity whose cost
-# happens to be exact at scale 4 would make the rounding tests tautological,
-# and that is a property of this number, not of the code under test.
+# Chosen so the raw cost lands off a tick boundary, which
+# `_assert_rounding_is_load_bearing` checks.
 _QUANTITY = Decimal("13.3333")
 
 
 # --- upstream -------------------------------------------------------------
 class _Upstream:
-    """A stand-in market service that counts its calls and keeps the token.
-
-    Both are load-bearing. The count separates "the cold path opened the book"
-    from "every request re-fetches the terms", which is the difference between
-    D-008's accepted one-off cost and a network round trip on every keystroke.
-    The token is the D-018 forwarding rule: the ledger sends the caller's own
-    credential upstream and mints nothing of its own.
-    """
+    """A stand-in market service that counts its calls (D-008's one-off cost)
+    and keeps the forwarded token (D-018)."""
 
     def __init__(
         self,
@@ -175,13 +138,7 @@ async def _quote(
     access_token: str | None = None,
     transport: httpx.MockTransport | None = None,
 ):
-    """One preview, with the ticket's parameter names.
-
-    `side` arrives here as the wire string and is converted to `Side` at the
-    boundary, because that is what the route does: parsed once, passed down as
-    the enum, so the service never re-validates a string the controller has
-    already checked.
-    """
+    """One preview, with `side` converted to `Side` as the route does."""
     return await _preview().quote(
         session,
         upstream.market_id,
@@ -196,13 +153,8 @@ async def _quote(
 async def _warm(
     session: AsyncSession, upstream: _Upstream, q: Sequence[Decimal] = tuple(_Q)
 ):
-    """A market whose book exists and whose outcomes hold shares.
-
-    `q` is written directly. Nothing in this repository moves it — that is
-    [T-2] #22's trade path — so a test that wants a market anybody has traded
-    in has to write the state a trade would have left, exactly as
-    `test_market_books.py` had to write nothing and price nothing.
-    """
+    """A market whose book exists and whose outcomes hold shares, with `q`
+    written directly as a trade would have left it."""
     book = await _books().ensure_open(
         session,
         upstream.market_id,
@@ -240,11 +192,7 @@ async def _book_row(session: AsyncSession, upstream: _Upstream):
 # --- the expected arithmetic ---------------------------------------------
 #
 # Recomputed from `core/lmsr.py` and `core/pricing.py` rather than pinned as
-# literals. The criterion is "computed from ledger_service/core/lmsr.py, not
-# estimated", and `unit_test/core/test_lmsr.py` already pins the engine against
-# an independent float implementation — so a literal here would be a third
-# restatement of the same number, and the one most likely to be copied out of
-# a failing run.
+# literals; `test_lmsr.py` already pins the engine against a float reference.
 def _delta(q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal):
     delta = [ZERO] * len(q)
     delta[outcome] = quantity if side == "buy" else -quantity
@@ -256,16 +204,8 @@ def _raw_cost(q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal):
 
 
 def _expected_total(q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal):
-    """The signed total, built the way the criteria describe it in order.
-
-    Magnitude out of the engine, quantized by side, then the sign applied by
-    the caller — negative on a buy because credits leave the trader. Doing it
-    in any other order is the bug `quantize_cost`'s unsigned signature exists
-    to prevent, and `unit_test/core/test_pricing.py` holds the argument for it.
-    That convention is not recorded in DECISIONS.md and probably should be: it
-    is a numeric contract at a boundary, and the reason `ROUND_FLOOR` is
-    correct for a sell is not recoverable from the rounding mode alone.
-    """
+    """The signed total: magnitude from the engine, quantized by side, then
+    the sign applied, negative on a buy (D-039)."""
     magnitude = _pricing().quantize_cost(
         _raw_cost(q, outcome, side, quantity).copy_abs(), side=_pricing().Side(side)
     )
@@ -273,24 +213,15 @@ def _expected_total(q: Sequence[Decimal], outcome: int, side: str, quantity: Dec
 
 
 def _expected_prices(q: Sequence[Decimal]) -> list[Decimal]:
-    """`ROUND_HALF_UP` at scale 4, with no direction to favour.
-
-    Nobody is charged a price — the money is `total`, and `[T-2] #22` builds
-    its legs from that. A directional rule here would bias a displayed
-    probability for no one's benefit.
-    """
+    """`ROUND_HALF_UP` at scale 4: nobody is charged a price."""
     return [p.quantize(_QUANTUM, rounding=ROUND_HALF_UP) for p in prices(list(q), _B)]
 
 
 def _assert_rounding_is_load_bearing(
     q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal
 ) -> None:
-    """Guard on the fixture, not on the code.
-
-    Every assertion about rounding below is worthless if the raw cost happens
-    to be exact at scale 4. If this fires, change `_QUANTITY` — do not relax
-    the assertion it is protecting.
-    """
+    """Guard on the fixture, not the code: rounding assertions are worthless
+    on a cost exact at scale 4. If it fires, change `_QUANTITY`."""
     raw = _raw_cost(q, outcome, side, quantity).copy_abs()
     assert raw != raw.quantize(_QUANTUM), (
         "this fixture's raw cost is already exact at scale 4, so the "
@@ -301,15 +232,8 @@ def _assert_rounding_is_load_bearing(
 # --- structural capture ---------------------------------------------------
 @contextlib.contextmanager
 def _capture_sql() -> Iterator[list[str]]:
-    """Every statement the block sends to Postgres, in order.
-
-    Attached to the engine rather than inferred from timings, because the four
-    facts below are structural claims and a structural claim deserves a
-    structural assertion. `before_cursor_execute` sees the compiled statement
-    text, which is what makes "one statement, joining these two tables, with no
-    `FOR UPDATE` and no write" checkable without pinning the join syntax, the
-    column list or the alias names.
-    """
+    """Every statement the block sends to Postgres, in order, from the
+    engine's `before_cursor_execute`."""
     statements: list[str] = []
     engine = get_engine().sync_engine
 
@@ -341,14 +265,7 @@ def _writes(statements: Sequence[str]) -> list[str]:
 async def test_the_total_is_computed_from_the_lmsr_cost_function(
     session: AsyncSession,
 ) -> None:
-    """The second criterion: computed from `core/lmsr.py`, not estimated.
-
-    `C(q + delta) - C(q)` for a one-outcome delta, quantized by side. An
-    implementation that multiplied the current marginal price by the quantity
-    would agree with this to two or three decimal places on a small trade and
-    diverge on a large one, which is exactly the trade where a trader would
-    notice being charged something other than what they were quoted.
-    """
+    """The second criterion: computed from `core/lmsr.py`, not estimated."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -360,21 +277,9 @@ async def test_the_total_is_computed_from_the_lmsr_cost_function(
 async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
     session: AsyncSession,
 ) -> None:
-    """The whole point of D-014, pinned: one code path quotes and charges.
-
-    The criterion is "quantized by the same function [T-2] #22 uses to build
-    its legs, so the previewed number is the charged number". That function is
-    `core/pricing.py::quantize_cost`, and this test spells out the composition
-    the trade path will repeat — magnitude from the engine, `quantize_cost` by
-    side, sign applied last — and asserts the preview produces exactly it.
-
-    The fixture guard above is what makes this mean anything: the raw cost has
-    a non-zero fifth decimal place, so an implementation that quantized
-    `ROUND_HALF_UP`, or quantized in the wrong place, or did not quantize at
-    all, is off by a tick here rather than agreeing by luck.
-
-    ADR 0005's stated fear is a trader quoted one number and charged another.
-    This is the assertion that stands between this repository and that.
+    """D-014: the preview quantizes with `quantize_cost`, the function the
+    trade charges with. The fixture guard makes a wrong rounding miss by a
+    tick rather than agree by luck.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
@@ -392,13 +297,8 @@ async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
 async def test_the_total_is_negative_on_a_buy_and_positive_on_a_sell(
     session: AsyncSession,
 ) -> None:
-    """The sign convention, stated from the trader's side.
-
-    Negative means credits leave them, positive means credits arrive. It is the
-    opposite sign from `cost_to_trade`'s, deliberately: the engine answers "what
-    does this cost the market maker to absorb", and the response answers "what
-    happens to your balance", and [X-4] #37 renders the second.
-    """
+    """From the trader's side: negative means credits leave them, the opposite
+    of `cost_to_trade`'s sign."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -414,14 +314,7 @@ async def test_the_total_is_negative_on_a_buy_and_positive_on_a_sell(
 async def test_it_works_for_buy_and_sell_on_every_outcome(
     session: AsyncSession, side: str, outcome: int
 ) -> None:
-    """The sixth criterion, over the whole cross product.
-
-    Two sides times every outcome, each against the arithmetic recomputed for
-    that exact position. A market has more than one outcome and every one of
-    them is tradeable in both directions; an implementation that special-cased
-    position zero, or that priced the traded outcome against the first `q` in
-    the row set, passes a single-outcome test and fails here.
-    """
+    """The sixth criterion, over both sides and every outcome."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -433,16 +326,8 @@ async def test_it_works_for_buy_and_sell_on_every_outcome(
 
 
 async def test_the_q_vector_is_ordered_by_position(session: AsyncSession) -> None:
-    """`position`, not insertion order and not the outcome id.
-
-    `market_outcomes` has a composite primary key and no surrogate id (D-034),
-    so an unordered `SELECT` hands back rows in whatever order Postgres finds
-    them — which is stable enough to pass every other test in this file and
-    free to change on a vacuum. With `q` asymmetric, reading the vector
-    backwards prices outcome 0 as if it were outcome 1.
-
-    Asserted by pricing a market whose `q` is reversed and checking the answers
-    swap rather than stay put.
+    """`position`, not insertion order: an unordered read is stable enough to
+    pass other tests and free to change. Asserted by reversing `q`.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
@@ -461,13 +346,8 @@ async def test_the_q_vector_is_ordered_by_position(session: AsyncSession) -> Non
 async def test_average_price_is_the_quantized_total_over_the_quantity(
     session: AsyncSession,
 ) -> None:
-    """The fourth criterion: `abs(total) / quantity`, from the *quantized* total.
-
-    From the quantized total and not from the raw cost, because the average is
-    supposed to explain the number the trader is about to pay. An average
-    derived from the unrounded cost would not multiply back to the total, and
-    the first person to check the arithmetic by hand would file a bug.
-    """
+    """The fourth criterion: `abs(total) / quantity`, from the quantized total,
+    so it multiplies back to what the trader pays."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -482,12 +362,7 @@ async def test_average_price_is_the_quantized_total_over_the_quantity(
 async def test_average_price_is_positive_on_both_sides(
     session: AsyncSession,
 ) -> None:
-    """`abs()`, so it reads as a price rather than as a direction.
-
-    The sign already lives on `total`. A negative average price would be a
-    second place for it, disagreeing with the first the moment somebody formats
-    one and not the other.
-    """
+    """A price, not a direction: the sign already lives on `total`."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -501,18 +376,8 @@ async def test_average_price_is_positive_on_both_sides(
 async def test_average_price_rounds_half_up_because_it_is_derived_not_charged(
     session: AsyncSession,
 ) -> None:
-    """Not directional, and the reason is worth stating where somebody will read it.
-
-    `total` is directional because the residue on it is money and it has to go
-    to the pool. `average_price` is a display figure derived from that
-    authoritative total: [T-2] #22 charges `total`, never
-    `quantity * average_price`, so there is no residue here to send anywhere
-    and nothing to protect the pool from. `ROUND_HALF_UP` is then the honest
-    rounding for a number whose only job is to be read.
-
-    A future reader who "fixes" this to match the cost rounding makes the
-    displayed average disagree with the total it was divided out of, in the
-    direction that flatters the quote.
+    """Half up, not directional: the trade charges `total`, never
+    `quantity * average_price`, so there is no residue to send anywhere.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
@@ -528,14 +393,8 @@ async def test_average_price_rounds_half_up_because_it_is_derived_not_charged(
 async def test_prices_carry_every_outcome_in_position_order(
     session: AsyncSession,
 ) -> None:
-    """"the market's current prices" — all of them, ordered the way `PriceEvent` is.
-
-    Every outcome, not only the one being traded: a trade moves all of them and
-    a client rendering one would show a market whose prices no longer sum to
-    one. `position` travels with each price for the reason `OutcomePrice`
-    carries it — so a categorical market renders in the order the administrator
-    arranged, twice, without a second lookup.
-    """
+    """"the market's current prices": every outcome, ordered and carrying
+    `position` the way `PriceEvent` does."""
     upstream = _Upstream(outcomes=3)
     q = [Decimal("137.5000"), Decimal("42.2500"), Decimal("88.0000")]
     await _warm(session, upstream, q)
@@ -550,13 +409,8 @@ async def test_prices_carry_every_outcome_in_position_order(
 async def test_post_trade_prices_are_the_prices_the_trade_would_leave(
     session: AsyncSession,
 ) -> None:
-    """"the post-trade price of **every** outcome", computed, not estimated.
-
-    `prices(q + delta, b)`, where `delta` is the trade. Every outcome again,
-    because moving one `q_i` moves the whole softmax — an implementation that
-    recomputed only the traded outcome would leave the other prices at their
-    pre-trade values and show a market that does not add up.
-    """
+    """"the post-trade price of every outcome": moving one `q_i` moves the
+    whole softmax."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -570,14 +424,8 @@ async def test_post_trade_prices_are_the_prices_the_trade_would_leave(
 async def test_a_buy_raises_the_traded_outcome_s_post_trade_price(
     session: AsyncSession,
 ) -> None:
-    """The direction, asserted separately from the value.
-
-    "how it moves the price before confirming" is the story, and a sign error
-    in the delta would still satisfy the equality test above if the same sign
-    error were made in this file. This one is stated in terms nobody can get
-    backwards: buying an outcome makes it dearer and buying it makes every
-    other outcome cheaper.
-    """
+    """The direction, separately from the value: a sign error shared by the
+    code and the oracle would pass the equality test above."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -590,24 +438,9 @@ async def test_a_buy_raises_the_traded_outcome_s_post_trade_price(
 async def test_post_trade_prices_need_not_sum_to_exactly_one_at_scale_four(
     session: AsyncSession,
 ) -> None:
-    """A tolerance, pinned, rather than an equality that would be a lie.
-
-    LMSR's marginal prices sum to 1 in exact arithmetic. Quantized to scale 4
-    they need not: each one absorbs up to half a tick of rounding, so `n`
-    outcomes can miss by `n * 0.00005` under `ROUND_HALF_UP`. The engine will
-    not normalise them — `prices()` says so in its docstring, and pre-normalised
-    numbers would be a second source of truth for a price.
-
-    The bound asserted here is the looser `n * 0.0001`, which also covers a
-    truncating rounding rule. That is deliberate: this test exists to catch a
-    wrong price *vector* — a missing outcome, a stale `q`, a softmax over the
-    wrong denominator, each of which misses by a lot — and not to re-assert the
-    rounding mode, which `_expected_prices` above already pins exactly.
-
-    `realtime_service` makes the same refusal from the other end: its
-    `PriceEvent` deliberately does not check that prices sum to one, because a
-    relay that rejected a correct price over a rounding tolerance would be
-    worse than one that relays what the authority said.
+    """Quantized prices sum to 1 only within a tolerance, and the engine does
+    not normalise them. The loose bound catches a wrong price vector, not the
+    rounding mode.
     """
     upstream = _Upstream(outcomes=3)
     q = [Decimal("137.5000"), Decimal("42.2500"), Decimal("88.0000")]
@@ -625,18 +458,8 @@ async def test_post_trade_prices_need_not_sum_to_exactly_one_at_scale_four(
 async def test_buying_then_selling_the_same_quantity_never_profits(
     session: AsyncSession,
 ) -> None:
-    """The property [F-3] #43 holds for the engine, carried to the quantized money.
-
-    `test_lmsr.py` proves the raw magnitudes are equal. That is not enough: the
-    round trip happens at scale 4, so the question is whether the two
-    quantizations can pull apart in the trader's favour. They cannot, because
-    the buy rounds up and the sell rounds down — and this is the test that says
-    so in credits rather than in rounding modes.
-
-    The sell is priced against the `q` the buy would have left, which is what
-    makes this a round trip rather than two independent quotes. Written
-    directly, standing in for [T-2] #22's increment.
-    """
+    """[F-3] #43's round-trip property, in quantized credits: the sell is
+    priced against the `q` the buy would have left."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -658,12 +481,8 @@ async def test_buying_then_selling_the_same_quantity_never_profits(
 async def test_state_version_is_the_book_s_own_counter(
     session: AsyncSession,
 ) -> None:
-    """D-011: the same counter `PriceEvent` and the snapshot report.
-
-    Read off `market_books`, not invented per request. A second counter would
-    be a second answer to "has this market moved", and #22's staleness check
-    compares the one the trader was quoted against the one under its lock.
-    """
+    """D-011: the book's own counter, the one the trade's staleness check
+    compares."""
     upstream = _Upstream()
     book = await _warm(session, upstream)
 
@@ -676,18 +495,8 @@ async def test_state_version_is_the_book_s_own_counter(
 async def test_a_preview_after_an_intervening_version_bump_returns_the_newer_number(
     session: AsyncSession,
 ) -> None:
-    """The reference tracks the book, rather than being read once and cached.
-
-    The `UPDATE` below stands in for [T-2] #22's increment: nothing in this
-    repository moves `state_version` yet, and a test that waited for a real
-    trade would be waiting for the ticket this one unblocks. What matters is
-    that the row changed under the preview between two calls, which is exactly
-    what a committed trade would look like from here.
-
-    A preview that returned a stale version would be worse than one that
-    returned none: #22 compares it under lock and would accept a quote taken
-    against a `q` that has since moved.
-    """
+    """The reference tracks the book rather than being cached. The `UPDATE`
+    stands in for a committed trade."""
     upstream = _Upstream()
     book = _entities().MarketBook
     await _warm(session, upstream)
@@ -712,16 +521,8 @@ async def test_a_preview_after_an_intervening_version_bump_returns_the_newer_num
 async def test_a_sell_larger_than_that_outcome_s_q_is_refused(
     session: AsyncSession,
 ) -> None:
-    """The seventh criterion, at 409 with its own code.
-
-    Against shares *outstanding*, not against a per-user holding — the ledger
-    has no positions table yet and [T-3] #23 owns the holdings check. What this
-    refuses is a sell that would drive `q_i` negative, which is not a trade the
-    cost function has an answer for: `C(q)` is defined there, so the preview
-    would quote a number for shares that do not exist anywhere.
-
-    Refused rather than clamped. A clamp would quote a different trade from the
-    one asked for, and the trader would confirm a quantity they never typed.
+    """The seventh criterion, at 409: against shares outstanding, not the
+    caller's holding. Refused rather than clamped to a trade nobody asked for.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
@@ -738,13 +539,7 @@ async def test_a_sell_larger_than_that_outcome_s_q_is_refused(
 async def test_a_sell_of_exactly_that_outcome_s_q_is_allowed(
     session: AsyncSession,
 ) -> None:
-    """The boundary, on the permitted side.
-
-    Selling every outstanding share returns `q_i` to zero, which is the state
-    the market opened in and a perfectly ordinary one to price. An
-    implementation that used `>=` refuses the one trade that closes a market
-    out, and would do it only on the last sale.
-    """
+    """The boundary, on the permitted side: a `>=` would refuse the last sale."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -754,14 +549,8 @@ async def test_a_sell_of_exactly_that_outcome_s_q_is_allowed(
 
 
 async def test_a_buy_is_never_refused_for_size(session: AsyncSession) -> None:
-    """The rule is about shares outstanding and applies to one side only.
-
-    A buy can be arbitrarily large — LMSR has a price for every quantity, and
-    whether the trader can afford it is a balance question that belongs under
-    #22's lock, not in a preview. Refusing a big buy here would be the ledger
-    deciding whether a trade may happen, which D-014 explicitly says it does
-    not do.
-    """
+    """The rule is about shares outstanding and applies to sells only;
+    affordability is the trade's question (D-014)."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -773,15 +562,8 @@ async def test_a_buy_is_never_refused_for_size(session: AsyncSession) -> None:
 async def test_a_sell_is_priced_with_no_holdings_check(
     session: AsyncSession,
 ) -> None:
-    """The sixth criterion's second half: priced arithmetically.
-
-    The caller here holds nothing — there is no positions table in this service
-    and no row anywhere says otherwise — and still gets a number, because the
-    only thing that constrains a sell in this ticket is shares outstanding. The
-    per-user check is [T-3] #23's and, per D-012, only means anything under the
-    trade's lock: a preview that checked it would be quoting a refusal that
-    could be stale by the time anybody acted on it.
-    """
+    """A caller holding nothing still gets a sell price: the holdings check
+    only means anything under the trade's lock (D-012)."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -798,21 +580,8 @@ async def test_a_sell_is_priced_with_no_holdings_check(
 async def test_the_pricing_read_is_one_statement_joining_the_two_tables(
     session: AsyncSession,
 ) -> None:
-    """D-013, asserted structurally rather than by timing or by eye.
-
-    Two facts, and the second is the one that catches a lazy load. Exactly one
-    statement touches `market_books`, and that same statement also touches
-    `market_outcomes` — so `q`, `b` and `state_version` come back under one
-    snapshot. Under READ COMMITTED two statements fail in the dangerous
-    direction: read `q` first and `state_version` second and a trade committing
-    between them hands back a version newer than the `q` that was priced, which
-    #22 then finds current and executes against.
-
-    Exactly one, not at most one, pins the ordering too. On a warm market the
-    join read comes *first* and `books.ensure_open` is the fallback when it
-    returns nothing — not a preamble that checks for the book and then reads it
-    again. The issue's Notes leave no room for the second shape: "every one
-    after it is a single indexed read".
+    """D-013, structurally: exactly one statement touches `market_books`, and
+    it joins `market_outcomes`, so the warm path is a single read.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
@@ -829,17 +598,8 @@ async def test_the_pricing_read_is_one_statement_joining_the_two_tables(
 
 
 async def test_a_warm_preview_takes_no_locks(session: AsyncSession) -> None:
-    """D-012, as corrected by D-036: the *pricing read* is unlocked.
-
-    ADR 0015's rule is about reads that decide a write, and it says reads
-    feeding no write stay unlocked. A preview decides nothing — the gap to
-    confirm is a human one, seconds to minutes, and no lock survives it, which
-    is why the staleness check is #22's under its own lock instead.
-
-    The cost of getting this wrong is not correctness but contention: a preview
-    fires on every keystroke, and a `FOR UPDATE` here serialises every trader
-    typing a quantity into the same market.
-    """
+    """D-012, as corrected by D-036: the pricing read is unlocked, or every
+    keystroke in a market queues."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -851,14 +611,8 @@ async def test_a_warm_preview_takes_no_locks(session: AsyncSession) -> None:
 
 
 async def test_a_warm_preview_writes_nothing(session: AsyncSession) -> None:
-    """The fourth structural fact, and the one the other three do not cover.
-
-    A statement count and a lock check both pass against an implementation that
-    prices correctly and then writes something on the way out — a cached price,
-    a hit counter, a `last_previewed_at`. This is a `GET`, it is the hottest
-    read in the system, and the only write it is allowed to perform is the
-    first touch that opens a book.
-    """
+    """A warm preview writes nothing: the only write a preview may make is the
+    first touch."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -873,14 +627,8 @@ async def test_a_warm_preview_writes_nothing(session: AsyncSession) -> None:
 async def test_a_preview_changes_nothing_on_a_warm_market(
     session: AsyncSession,
 ) -> None:
-    """The same claim as state, rather than as statements.
-
-    No ledger entries, no version bump, and the book row identical field by
-    field afterwards. Asserted alongside the statement capture rather than
-    instead of it, because the two fail differently: a write through a path
-    this capture does not see would show up here, and a write that happens to
-    restore the same values would show up there.
-    """
+    """The same claim as state: no entries, and the book row unchanged. It
+    fails differently from the statement capture."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -924,15 +672,7 @@ async def test_a_preview_changes_nothing_on_a_warm_market(
 async def test_the_first_preview_on_a_cold_market_opens_the_book(
     session: AsyncSession,
 ) -> None:
-    """The ninth criterion, and D-037: the preview is a market's first toucher.
-
-    D-008 settled that terms arrive by lazy pull and named no caller, because
-    neither #21 nor #22 existed. #21 lands first, so a `GET` in the ledger
-    calls another service, writes a book, writes its outcomes and funds a pool
-    — then prices from what it just wrote. Refusing instead would show a trader
-    an error on the one read whose whole purpose is to be safe to fire on every
-    keystroke.
-    """
+    """The ninth criterion, and D-037: the preview is a market's first toucher."""
     upstream = _Upstream()
 
     quote = await _quote(session, upstream)
@@ -952,14 +692,8 @@ async def test_the_first_preview_on_a_cold_market_opens_the_book(
 async def test_a_cold_market_prices_from_the_book_it_just_opened(
     session: AsyncSession,
 ) -> None:
-    """"and prices from it" — a real number out of a market that opened at `q = 0`.
-
-    Every `q` is zero at book creation, which is what makes the opening price
-    uniform: `C(q)` at `q = 0` gives every outcome `1/n`. So the first preview
-    on a binary market quotes against 0.5 each, and that is the number this
-    asserts — not a placeholder, not a null, not a second request telling the
-    client to try again.
-    """
+    """"and prices from it": a binary market opened at `q = 0` quotes 0.5
+    each."""
     upstream = _Upstream()
 
     quote = await _quote(session, upstream)
@@ -972,15 +706,7 @@ async def test_a_cold_market_prices_from_the_book_it_just_opened(
 async def test_the_second_preview_makes_no_http_call_at_all(
     session: AsyncSession,
 ) -> None:
-    """"once per market ever", as the stronger of the two available claims.
-
-    The weaker one is that the pool is funded once; that is `test_market_books.py`'s.
-    This is the one that decides whether the ledger holds a runtime dependency
-    on `market_service` forever or only for a market's first touch. Every
-    preview after the first must be a single indexed read, or D-008's accepted
-    one-off cost becomes a network round trip on every keystroke and a market
-    service outage stops trading in markets that already have books.
-    """
+    """"once per market ever": after the first, no call to market_service."""
     upstream = _Upstream()
 
     await _quote(session, upstream)
@@ -995,18 +721,7 @@ async def test_the_second_preview_makes_no_http_call_at_all(
 async def test_the_cold_path_forwards_the_caller_s_own_token(
     session: AsyncSession,
 ) -> None:
-    """D-018's Notes, and the reason the route needs `AccessToken` beside `CurrentUser`.
-
-    The ledger sends the trader's own bearer token upstream and mints nothing
-    of its own. A token minted here would be this service asserting an identity
-    it was not given, on a route that reaches another service — which is the
-    service-to-service auth question ADR 0009 deferred to #22, arriving early
-    through a read.
-
-    The raw token is therefore a dependency of its own: `CurrentUser` hands the
-    route decoded claims, and claims cannot be re-signed into the credential
-    the upstream call needs.
-    """
+    """D-018: the caller's own token goes upstream, and none is minted."""
     upstream = _Upstream()
     token = _token()
 
@@ -1018,18 +733,8 @@ async def test_the_cold_path_forwards_the_caller_s_own_token(
 async def test_the_cold_path_takes_the_handoff_s_locks(
     session: AsyncSession,
 ) -> None:
-    """D-036, asserted rather than asserted-away.
-
-    The criteria say the pricing read takes no locks and, one bullet later,
-    that the cold path "writes and takes the handoff's locks". Both are true
-    and the second is the one nobody would guess from D-012's title:
-    `books.ensure_open` ends in `posting.post`, which holds `PLATFORM` and this
-    market's pool `FOR UPDATE` while the funding transaction commits.
-
-    Pinned here so the correction has evidence rather than prose, and so that a
-    future reader who deletes a lock to make "preview takes no locks" literally
-    true sees a red test naming the entry that explains why it is not.
-    """
+    """D-036: the cold path does take the handoff's locks. Do not delete one to
+    make "preview takes no locks" literally true."""
     upstream = _Upstream()
 
     with _capture_sql() as statements:
@@ -1045,19 +750,7 @@ async def test_the_cold_path_takes_the_handoff_s_locks(
 async def test_a_preview_on_a_closed_market_returns_a_number(
     session: AsyncSession,
 ) -> None:
-    """The issue's Notes, stated as a test so nobody adds the check later.
-
-    The ledger cannot know whether a market is still open: the book stores no
-    status, `close_time` is not snapshotted, and ADR 0014 leaves `close_time`
-    in the future on an early close, so even snapshotting it would not answer
-    the question. The frontend gates on #62's derived status; [T-2] #22 owns
-    how the ledger learns, and that is tracked separately.
-
-    Published is the gate on a book, not tradeable — the same rule
-    `test_a_closed_market_still_gets_a_book` holds one layer down, and for the
-    same reason settlement in [3.4] #12 reads `q` from markets that stopped
-    trading weeks earlier.
-    """
+    """A preview on a closed market returns a number (ADR 0017)."""
     upstream = _Upstream(status="closed")
 
     quote = await _quote(session, upstream)
@@ -1068,27 +761,8 @@ async def test_a_preview_on_a_closed_market_returns_a_number(
 async def test_a_preview_on_a_warm_closed_market_makes_no_http_call(
     session: AsyncSession,
 ) -> None:
-    """[F-8] #109's "unchanged", as the assertion that can actually catch it.
-
-    `test_the_second_preview_makes_no_http_call_at_all` above uses an open
-    market, so it would stay green against a preview that had grown a status
-    check — the check would hit the same warm-path early return and never
-    reach the wire. A *closed* market is the one input that separates them:
-    a preview that asks market_service anything is a preview that has started
-    gating, and ADR 0017 says it must not.
-
-    The asymmetry is the point and not an oversight. A preview decides nothing
-    and writes nothing, which is why it takes no lock (D-012, D-036), and ADR
-    0005 budgets this path explicitly — one hop per quote is a budget, two is
-    a latency problem in an interaction that fires on every keystroke. A
-    preview fires on every keystroke; a trade fires once. So the preview
-    returns a number for a market the trade that follows it will refuse
-    `409 market_closed`, and `docs/api/ledger-service.md` has to say so in one
-    sentence or it reads as a bug.
-
-    The frontend gates the button on the derived status [BE][X] #62 already
-    serves. The ledger gates the money, in `service/market_status.py`, on the
-    trade path only.
+    """ADR 0017: a preview never asks market_service whether a market is open.
+    A closed market is the input that would catch a status check being added.
     """
     upstream = _Upstream(status="closed")
     await _warm(session, upstream)
@@ -1109,14 +783,8 @@ async def test_a_preview_on_a_warm_closed_market_makes_no_http_call(
 async def test_an_unknown_outcome_id_is_refused_as_unknown_outcome(
     session: AsyncSession,
 ) -> None:
-    """The tenth criterion: checked against the book, and 422 rather than 404.
-
-    422 because the market was found and the *parameter* is wrong. A 404 would
-    say the market does not exist, which is the answer `market_not_found`
-    already owns for a genuinely absent market — and a client cannot tell "I
-    sent a bad outcome id" from "this market is gone" if both arrive as 404,
-    which are two different bugs with two different fixes.
-    """
+    """The tenth criterion: 422, not 404, because the market was found and the
+    parameter is wrong."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -1138,18 +806,8 @@ async def test_an_unknown_outcome_id_is_refused_as_unknown_outcome(
 async def test_an_unknown_outcome_on_a_cold_market_leaves_the_funded_book_behind(
     session: AsyncSession,
 ) -> None:
-    """Deliberate, and stated so it is not mistaken for a leak.
-
-    The criteria order the checks: `side`, `quantity` and the market id are
-    validated before any HTTP call or write; `outcome_id` is checked "against
-    the book once it exists". So a bad outcome id on a never-touched market
-    opens the book, funds the pool, and then refuses.
-
-    That is the right trade. The market is real and published — the terms pull
-    proved it — and the book it just wrote is the same book the next honest
-    request would have created. Rolling it back would throw away a correct,
-    idempotent, once-per-market write because a query string was wrong, and
-    would leave the next caller paying the terms timeout again.
+    """Deliberate, not a leak: the book a bad outcome id opens is the one the
+    next honest request would have created (D-037).
     """
     upstream = _Upstream()
 
@@ -1180,14 +838,7 @@ async def test_an_unknown_outcome_on_a_cold_market_leaves_the_funded_book_behind
 async def test_an_unreachable_market_service_leaves_nothing_behind(
     session: AsyncSession,
 ) -> None:
-    """D-030's 503, and the state afterwards.
-
-    `test_market_terms.py` owns which exception an unreachable upstream maps
-    to. What this owns is that a preview which failed that way wrote nothing —
-    no book, no pool account, no entries — because a partial book is worse than
-    a clean failure: it makes the *next* request take the fast path and price
-    from a book that was never finished.
-    """
+    """D-030's 503, and nothing written afterwards."""
     upstream = _Upstream()
 
     with pytest.raises(_errors().MarketTermsUnavailable):
@@ -1207,15 +858,8 @@ async def test_an_unreachable_market_service_leaves_nothing_behind(
 
 
 async def test_an_unpublished_market_gets_no_quote(session: AsyncSession) -> None:
-    """The eleventh criterion reuses [F-7] #96's codes rather than inventing any.
-
-    A draft or a submitted market has no book and must not get one — `b` and
-    the subsidy are only immutable once publication has frozen them, and a book
-    copied from a draft would snapshot terms an administrator can still edit.
-    The preview does not restate that rule; it inherits whatever
-    `books.ensure_open` decides, which is what keeps one answer to "may this
-    market have a book".
-    """
+    """The eleventh criterion, inherited from `books.ensure_open` rather than
+    restated."""
     upstream = _Upstream(published_at=None)
 
     with pytest.raises(_errors().MarketNotPublished):
@@ -1228,13 +872,8 @@ async def test_an_unpublished_market_gets_no_quote(session: AsyncSession) -> Non
 async def test_the_ledger_still_sums_to_zero_after_a_run_of_previews(
     session: AsyncSession,
 ) -> None:
-    """The strongest single assertion available about this service, after the
-    one path in this ticket that moves money.
-
-    Three markets opened by preview, each funded once, and every entry ever
-    written summed. If a subsidy was credited without being debited, or a
-    preview wrote a leg of its own, this is not zero.
-    """
+    """Three markets opened by preview, each funded once, and the whole ledger
+    still sums to zero."""
     for _ in range(3):
         upstream = _Upstream()
         await _quote(session, upstream)
@@ -1263,29 +902,9 @@ _HUNDRED = Decimal("100.0000")
 async def test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero(
     session: AsyncSession,
 ) -> None:
-    """D-041. Proceeds that quantize to zero are refused, not quoted.
-
-    `quantize_cost` floors a sell's magnitude (D-039), so proceeds under one
-    tick reach `0.0000`, and quoting that takes real shares for nothing —
-    the surprise this ticket exists to prevent. The alternative, paying a
-    minimum tick, hands the trader more than the shares are worth and breaks
-    "the residue accrues to the pool, never to the trader", so refusing is the
-    only answer that keeps both rules. It mirrors `QuantityTooLarge` (D-040):
-    a quote the column cannot honestly represent is refused, at either edge of
-    the quantization.
-
-    The buy assertion is the other half, not a spare. The same 100 shares
-    still cost a full tick, because `ROUND_CEILING` rounds toward the house
-    and a buy above zero needs no refusal — so this is not a rule about
-    sub-tick trades, it is a rule about totals of *zero*, and an
-    implementation that refused every sub-tick buy would fail here.
-
-    The refusal is raised by `core/pricing.py::quantize_cost` rather than by
-    this service, because [T-2] #22 has to make the same
-    refusal on the write path: a rule about money that lives only in the
-    preview is a rule #22 inherits by copying it or by forgetting to. This
-    test drives it through `quote`, which is the assertion that the preview
-    actually calls it; `unit_test/core/test_pricing.py` holds the rule itself.
+    """D-041. Proceeds that quantize to zero are refused, not quoted, while the
+    same sub-tick buy is charged a tick. Driven through `quote` to show the
+    preview calls `quantize_cost`.
     """
     upstream = _Upstream()
     await _warm(session, upstream, _SATURATED)
@@ -1307,14 +926,8 @@ async def test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero(
 async def test_a_quantity_that_prices_above_the_column_is_refused(
     session: AsyncSession,
 ) -> None:
-    """D-040. A cost `Numeric(18, 4)` cannot hold is refused, not returned.
-
-    `total` is quoted as the number [T-2] #22 will charge, and #22 writes it
-    into `Numeric(18, 4)` — 14 integer digits. A quantity of 1e15 prices at 15
-    of them, so returning it quotes a trade whose confirm step is a
-    `NumericValueOutOfRange`: a 500 arriving *after* the trader committed to a
-    quote this service answered 200 to.
-    """
+    """D-040. A cost `Numeric(18, 4)` cannot hold is refused, not quoted for a
+    trade that would then fail to store."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -1327,12 +940,7 @@ async def test_a_quantity_that_prices_above_the_column_is_refused(
 async def test_an_ordinary_large_quantity_is_still_quoted(
     session: AsyncSession,
 ) -> None:
-    """The ceiling is the column's, not a guess at what a trade should be.
-
-    Without this, D-040's refusal could tighten to any round number and no
-    test would notice. A cost of ~1e13 is absurd as a trade and entirely
-    storable, so it must come back priced.
-    """
+    """The ceiling is the column's: an absurd but storable cost is priced."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -1343,9 +951,8 @@ async def test_an_ordinary_large_quantity_is_still_quoted(
 
 
 
-
 # =========================================================================
-# Review fixes on PR #108
+# Precision, zero totals and raw-string sides
 # =========================================================================
 async def _set_b(session: AsyncSession, upstream: _Upstream, b: Decimal) -> None:
     """`b` written directly, as `_set_q` writes `q`: `_Upstream` serves one `b`."""
@@ -1466,17 +1073,11 @@ async def test_a_raw_string_sell_still_meets_the_no_shorting_rule(
 
 
 # =========================================================================
-# Second review on PR #108
+# The cold path's connection, and damaged books
 # =========================================================================
 class _Stalled:
-    """A market service that records what the caller holds, then stalls.
-
-    Every request runs `probe` the moment it reaches the upstream — the point
-    at which anything held across the call is observable — and the first one
-    then waits for `release`. Probing *every* call rather than the first
-    matters: a path that fetched once with nothing held and then again inside
-    a transaction would pass a check of the first alone.
-    """
+    """A market service that records what the caller holds on every call, then
+    stalls until `release`."""
 
     def __init__(
         self, upstream: _Upstream, probe: Callable[[], dict[str, object]]
@@ -1500,13 +1101,8 @@ class _Stalled:
 
 
 async def _idle_in_transaction() -> int:
-    """Backends of this role in this database sitting `idle in transaction`.
-
-    Postgres's own view, from a connection of its own: a session that ran a
-    statement and has not ended its transaction is in this state for as long
-    as it waits, which is exactly a pooled connection held across a call to
-    somebody else.
-    """
+    """Backends of this role in this database sitting `idle in transaction`,
+    from Postgres's own view."""
     async with get_engine().connect() as conn:
         return (
             await conn.execute(
@@ -1524,24 +1120,10 @@ async def _idle_in_transaction() -> int:
 async def test_a_cold_preview_holds_no_connection_while_market_service_is_slow(
     session: AsyncSession,
 ) -> None:
-    """The first touch's HTTP call runs with no transaction open.
+    """The first touch's HTTP call runs with no transaction open (D-043).
 
-    The pricing read autobegins a transaction, and `get_session` does not wrap
-    the request in one of its own, so nothing ended it: the cold path used to
-    call market_service with that transaction open and its pooled connection
-    `idle in transaction` for as long as the call took — up to the terms
-    timeout. `pool_size` is 10, so a slow market service or twenty cold
-    previews at once took every connection, and every other route on the
-    service waited behind them.
-
-    Three views of the same fact. At every upstream call, the session says it
-    has no transaction and the pool says nothing is checked out; while the
-    first call is stalled, Postgres says no backend of this role is idle in a
-    transaction. And there is exactly one call, so no second fetch can hide
-    behind a clean first one. **Remove the rollback in `books.ensure_open`
-    and this goes red** — as it did against the code before the fix. A
-    rollback in the preview alone does not turn it green: `ensure_open`'s own
-    lookup begins a fresh transaction before the fetch.
+    Checked from the session, the pool and Postgres, with exactly one call.
+    Remove the rollback in `books.ensure_open` and this goes red.
     """
     upstream = _Upstream()
     pool = get_engine().pool
@@ -1572,14 +1154,8 @@ async def test_a_cold_preview_holds_no_connection_while_market_service_is_slow(
 async def test_a_book_with_no_outcome_rows_is_a_named_error_not_an_index_error(
     session: AsyncSession,
 ) -> None:
-    """The re-read after the cold path is guarded, not indexed blind.
-
-    Nothing in this service writes a book without its outcomes —
-    `books.ensure_open` inserts both in one savepoint — so this takes a hand
-    edit. It is guarded anyway because the pricing read is an inner join: such
-    a book reads as no book, the cold path finds the row and returns, the
-    re-read is empty, and `rows[0]` was an `IndexError` and an unmapped 500.
-    """
+    """A book with no outcome rows reads as no book twice; the re-read is a
+    named error, not an `IndexError`."""
     upstream = _Upstream()
     await _warm(session, upstream)
     await strip_outcomes(session, upstream.market_id)
@@ -1594,15 +1170,8 @@ async def test_a_book_with_no_outcome_rows_is_a_named_error_not_an_index_error(
 async def test_the_oracle_agrees_with_the_preview_past_the_ambient_precision(
     session: AsyncSession,
 ) -> None:
-    """`_expected_total` takes `copy_abs()`, the rule the preview follows.
-
-    Every other test in this file prices a trade whose raw cost fits in 28
-    digits, where `abs()` and `copy_abs()` agree — so an oracle using `abs()`
-    passed while contradicting the decision that bans it on money. This is the
-    fixture where they part: the engine's `-99.99999…9317` rounds up to
-    `100` at the ambient precision, and an `abs()` oracle expects the tick the
-    preview correctly refuses to pay.
-    """
+    """`_expected_total` takes `copy_abs()`, like the preview (D-042), on the
+    fixture where `abs()` would differ."""
     upstream = _Upstream()
     q = [Decimal("7000"), ZERO]
     await _warm(session, upstream, q)
@@ -1615,14 +1184,8 @@ async def test_the_oracle_agrees_with_the_preview_past_the_ambient_precision(
 async def test_every_display_figure_goes_through_one_half_up_helper(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Prices, post-trade prices and `average_price` share one rounding rule.
-
-    Structural, and says so: every figure here is `ROUND_HALF_UP` at scale 4
-    either way, so no input separates one helper from two hand-rolled copies.
-    What this pins is that there is one place to change, so the copies cannot
-    drift — and it is the seam #110's `core/pricing.py::quantize_price`
-    replaces.
-    """
+    """Prices, post-trade prices and `average_price` share one rounding helper
+    (D-052)."""
     upstream = _Upstream()
     await _warm(session, upstream)
     marker = Decimal("0.5000")
@@ -1641,19 +1204,8 @@ async def test_every_display_figure_goes_through_one_half_up_helper(
 async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
     session: AsyncSession,
 ) -> None:
-    """The warm path, which is the one a damaged book actually takes.
-
-    `MarketBookIncomplete` first guarded only an empty read, and only after
-    the cold path had run. Both halves were wrong for this case. A book cut
-    down to a single outcome row reads as a *book* — the join returns one row,
-    not none — so `read_or_open` returned it on the warm path and never
-    reached the check, and `core/lmsr.py::_require_outcomes` then refused a
-    `q` of one with a bare `ValueError`: not a `LedgerError`, so an unmapped
-    500, which is exactly what naming this error was meant to stop.
-
-    A book already damaged is a book that already exists, so every read of it
-    is warm. Guarding the cold path alone would have covered the case that
-    cannot happen and missed the one that can.
+    """A book cut to one outcome row reads as a book, so the guard must run on
+    the warm path, not only after the cold one.
     """
     from sqlalchemy import delete  # noqa: PLC0415
 
@@ -1690,20 +1242,8 @@ async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
 async def test_a_book_whose_b_cannot_price_is_a_named_error_not_a_value_error(
     session: AsyncSession, bad_b: str
 ) -> None:
-    """The read side of the `b` rule, and why the ingress guard is not enough.
-
-    `service/market_terms.py` refuses a non-finite or non-positive `b` before
-    a book is written, which protects every book written from that point on
-    and nothing already there — a row from before the guard, or from the
-    hand-run repair `MarketBookIncomplete` exists to name, still prices.
-    `b` then goes straight into `cost_to_trade`, whose `_require_positive_b`
-    raises a bare `ValueError`: unmapped, so a 500 with no envelope, on an
-    immutable book, forever.
-
-    `NaN` is the case that makes this worth having. `numeric(18, 4)` stores
-    it — it refuses `Infinity` outright — so NaN is the only unpriceable `b`
-    that can actually be sitting in a row, and `_require_positive_b` does not
-    catch it: `NaN <= 0` raises rather than returning True.
+    """The read side of the `b` rule: the ingress guard protects new books
+    only, and NaN is storable and slips `_require_positive_b`.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
