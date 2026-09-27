@@ -65,46 +65,35 @@ def test_the_role_travels_as_a_plain_string_claim() -> None:
     assert payload["role"] == "admin"
 
 
-def _token_without_a_role_claim(username: str = "ernest_t") -> str:
-    """A token minted before the role claim existed, or by an older deploy."""
+def _hand_signed_token(secret: str | None = None, **claims: object) -> str:
+    """Sign a token with PyJWT directly, for shapes `create_access_token` will not build.
+
+    Carries no role claim unless one is passed.
+    """
     settings = get_settings()
     now = datetime.now(UTC)
-    return jwt.encode(
-        {
-            "sub": str(uuid.uuid4()),
-            "username": username,
-            "iss": settings.jwt_issuer,
-            "iat": now,
-            "exp": now + timedelta(minutes=5),
-        },
-        settings.jwt_secret,
-        algorithm=settings.jwt_algorithm,
-    )
+    payload = {
+        "sub": str(uuid.uuid4()),
+        "username": "ernest_t",
+        "iss": settings.jwt_issuer,
+        "iat": now,
+        "exp": now + timedelta(minutes=5),
+        **claims,
+    }
+    signing_key = secret if secret is not None else settings.jwt_secret
+    return jwt.encode(payload, signing_key, algorithm=settings.jwt_algorithm)
 
 
 def test_a_token_with_no_role_claim_decodes_as_a_trader() -> None:
     """Fail closed. The token is still valid; it just carries no authority."""
-    claims = security.decode_access_token(_token_without_a_role_claim())
+    claims = security.decode_access_token(_hand_signed_token())
 
     assert claims is not None
     assert claims.role is UserRole.TRADER
 
 
 def test_an_unrecognised_role_decodes_as_a_trader() -> None:
-    settings = get_settings()
-    now = datetime.now(UTC)
-    token = jwt.encode(
-        {
-            "sub": str(uuid.uuid4()),
-            "username": "ernest_t",
-            "role": "super_admin",   # a role only a newer build knows about
-            "iss": settings.jwt_issuer,
-            "iat": now,
-            "exp": now + timedelta(minutes=5),
-        },
-        settings.jwt_secret,
-        algorithm=settings.jwt_algorithm,
-    )
+    token = _hand_signed_token(role="super_admin")  # only a newer build knows it
 
     claims = security.decode_access_token(token)
 
@@ -113,36 +102,14 @@ def test_an_unrecognised_role_decodes_as_a_trader() -> None:
 
 
 def test_expired_token_is_rejected() -> None:
-    settings = get_settings()
     past = datetime.now(UTC) - timedelta(hours=1)
-    expired = jwt.encode(
-        {
-            "sub": str(uuid.uuid4()),
-            "username": "ernest_t",
-            "iss": settings.jwt_issuer,
-            "iat": past,
-            "exp": past + timedelta(seconds=1),
-        },
-        settings.jwt_secret,
-        algorithm=settings.jwt_algorithm,
-    )
+    expired = _hand_signed_token(iat=past, exp=past + timedelta(seconds=1))
 
     assert security.decode_access_token(expired) is None
 
 
 def test_token_signed_with_another_key_is_rejected() -> None:
-    settings = get_settings()
-    forged = jwt.encode(
-        {
-            "sub": str(uuid.uuid4()),
-            "username": "attacker",
-            "iss": settings.jwt_issuer,
-            "iat": datetime.now(UTC),
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        },
-        "a-different-secret-of-sufficient-length",
-        algorithm="HS256",
-    )
+    forged = _hand_signed_token(secret="a-different-secret-of-sufficient-length")
 
     assert security.decode_access_token(forged) is None
 
