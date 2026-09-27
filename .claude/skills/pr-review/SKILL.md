@@ -105,7 +105,9 @@ For every test **added or changed** in the diff, decide one of:
   say which test to fold it into, or suggest `parametrize` / `it.each`.
 
 Do not mark a guard test decorative just because it looks trivial — the root
-`CLAUDE.md` names the ones that are deliberate.
+`CLAUDE.md` names the ones that are deliberate. Nor because today's code has no
+branch for it, or because it reads prose: if it pins a promise from the ticket,
+an ADR or `docs/api/`, it stays. Check the ticket before agreeing to remove one.
 
 Then list **missing** tests: a criterion with no test, no failure case
 asserting the exact error code, and for anything that moves money, no rollback
