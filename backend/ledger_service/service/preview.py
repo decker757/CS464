@@ -65,8 +65,9 @@ async def quote(
     Raises `UnknownOutcome`; `InsufficientSharesOutstanding` for a sell above
     the outcome's `q` (the caller's own holding is the trade's check); and
     `QuantityTooLarge` for a cost or `q` beyond `Numeric(18, 4)` (D-040).
-    `quantize_cost` refuses a total below one tick (D-041). On a cold market
-    it opens the book, forwarding `access_token` unchanged.
+    `quantize_cost` refuses a total that quantizes to zero (D-041). On a cold
+    market the first touch opens and funds the book and commits, forwarding
+    `access_token` unchanged, so call it with nothing pending on the session.
     """
     # Coerced before the `is` comparisons below: `"sell" is Side.SELL` is
     # False, so a raw string would fall through every one of them as a buy.

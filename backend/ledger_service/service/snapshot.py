@@ -39,6 +39,9 @@ async def snapshot(
 ) -> Snapshot:
     """This market's current price. Opens the book first if nobody has yet,
     forwarding `access_token` unchanged.
+
+    On a cold market that first touch commits, so call it with nothing
+    pending on the session.
     """
     rows = await book_prices.read_or_open(
         session, market_id, access_token=access_token, transport=transport

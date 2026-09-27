@@ -102,7 +102,8 @@ def test_redis_url_has_a_default(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_app_boots_with_no_redis_url_in_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The app constructs with no REDIS_URL, as CI's boot check does (D-046).
+    """The app constructs with no REDIS_URL in the environment (D-046). CI
+    always sets REDIS_URL, so its boot step cannot catch a missing default.
 
     `get_settings` is cached, so it is cleared on the way in and out, or every
     later test reads a Settings built without this variable.

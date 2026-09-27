@@ -68,9 +68,9 @@ def cost_to_trade(q: Sequence[Decimal], b: Decimal, delta: Sequence[Decimal]) ->
     """`C(q + Δ) − C(q)`: positive is owed by the trader, negative is proceeds.
 
     Unrounded, and it can fall below the ledger's 0.0001 tick: a saturated
-    outcome is worth almost nothing. Rounding against the trader and refusing
-    a sub-tick trade are the caller's, in `core/pricing.py::quantize_cost`
-    (D-039, D-041).
+    outcome is worth almost nothing. Rounding against the trader, and refusing
+    a total that quantizes to zero, are the caller's, in
+    `core/pricing.py::quantize_cost` (D-039, D-041).
     """
     _require_outcomes(q)
     _require_positive_b(b)

@@ -46,6 +46,9 @@ async def read_or_open(
     """This market's book, one row per outcome, ordered by position. Opens the
     book first if nobody has yet, forwarding `access_token` unchanged.
 
+    On a cold market that first touch commits (`books.ensure_open`), so call
+    it with nothing pending on the session.
+
     Every row carries `state_version`, `liquidity_b`, `state_changed_at`,
     `outcome_id`, `position` and `q`. Raises `MarketBookIncomplete` rather
     than return a book the engine cannot price.

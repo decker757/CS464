@@ -65,10 +65,11 @@ async def post(
 ) -> Transaction:
     """Record one movement of credits, or replay the one this key already named.
 
-    Commits before it returns, on every path, so a caller may write nothing
-    after it (D-032). Raises `UnbalancedTransaction`, `IdempotencyKeyReused`,
-    `InsufficientFunds`, and `PendingWritesOnReplay` when a replay would
-    commit the caller's pending writes.
+    Commits before it returns, on success and on a replay, so a caller may
+    write nothing after it (D-032). Otherwise it raises before any commit:
+    `UnbalancedTransaction`, `IdempotencyKeyReused`, `InsufficientFunds`, or
+    `PendingWritesOnReplay` when a replay would commit the caller's pending
+    writes.
 
     The order is the design: round, refuse unbalanced legs, lock every account
     ascending by id (ADR 0009), then look the key up and check overdrafts under

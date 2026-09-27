@@ -34,12 +34,14 @@ async def ensure_trading(
 
     Raises `MarketClosed` for any status but "open". A 404 is
     `MarketTermsUnavailable` if the market has a book (market_service is
-    wrong) and `MarketNotFound` if not; that unlocked `books.find` decides only
-    an error code (ADR 0017). Every other upstream failure propagates from
+    wrong) and `MarketNotFound` if not (ADR 0017). That `books.find` is
+    unlocked: ADR 0015 locks reads that decide a write, and this one decides
+    only an error code. Every other upstream failure propagates from
     `market_terms.fetch`, so a sick dependency is never read as closed.
 
-    Does not roll back before the HTTP call, unlike `books.ensure_open`: a
-    caller holding a transaction pins a pooled connection for up to five
+    Unlike `books.ensure_open`, this cannot roll back before the HTTP call:
+    its caller may hold pending writes or locks, which a rollback would lose.
+    So a caller holding a transaction pins a pooled connection for up to five
     seconds. The trade path releases its own first; #115 moves that in here.
     """
     try:

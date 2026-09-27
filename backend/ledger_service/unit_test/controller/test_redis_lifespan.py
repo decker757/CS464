@@ -155,8 +155,8 @@ async def test_the_client_is_built_from_the_configured_url(
 async def test_the_app_still_starts_when_redis_is_unreachable(
     clean_database: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Startup must not depend on the bus being up: fails against a `PING` on
-    startup to "fail fast" (D-047)."""
+    """Startup must not depend on the bus being up. Goes red if someone adds a
+    startup `PING` to "fail fast" (D-047)."""
 
     def unreachable(url: str, *args: object, **kwargs: object) -> _FakeClient:
         client = _FakeClient(url)
