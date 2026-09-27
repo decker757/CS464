@@ -22,6 +22,7 @@ from core.errors import (
 )
 from model.entities import Market, MarketStatus
 from service import market_service
+from service.validation import MIN_EVIDENCE_NOTE_LENGTH
 
 # Aliased so the names do not shadow an `actor` argument.
 from unit_test.conftest import (
@@ -315,6 +316,26 @@ async def test_a_note_too_short_to_document_anything_is_refused(
             actor,
             market.id,
             _proposal(_winner(market), evidence_url=None, evidence_note="ok"),
+        )
+
+    assert [p.field for p in raised.value.problems] == ["evidence_note", "evidence"]
+
+
+async def test_the_note_minimum_is_counted_after_stripping(
+    session: AsyncSession,
+) -> None:
+    """Spaces must not stretch a short note past the floor."""
+    actor = _actor()
+    market = await closed_market(session, actor)
+    padded = "    short    "
+    assert len(padded) >= MIN_EVIDENCE_NOTE_LENGTH > len(padded.strip())
+
+    with pytest.raises(ProposalIncomplete) as raised:
+        await market_service.propose_outcome(
+            session,
+            actor,
+            market.id,
+            _proposal(_winner(market), evidence_url=None, evidence_note=padded),
         )
 
     assert [p.field for p in raised.value.problems] == ["evidence_note", "evidence"]
