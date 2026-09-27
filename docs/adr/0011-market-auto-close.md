@@ -53,6 +53,22 @@ entirely with `CLOSE_SWEEP_ENABLED` — makes an admin dashboard's counts stale
 and cannot let a single trade through. That is why ten seconds is a comfortable
 default rather than a nervous one.
 
+> **Amended 2026-09-27 by #138.** "Makes an admin dashboard's counts stale" is
+> not the whole cost. [3.1] #9 gates proposing on `status == CLOSED` (ADR
+> 0013), so with `CLOSE_SWEEP_ENABLED=false` on **every** replica no market
+> ever reaches CLOSED by the clock, and `propose_outcome` refuses every one of
+> them with `market_not_closed`, indefinitely. The resolution epic stops
+> behind the switch.
+>
+> It is still the safe direction, which is why this is written down rather
+> than derived: the error refuses a proposal and never lets a trade or a
+> proposal through that should not be. It is also fully recoverable —
+> re-enable the sweep on any one replica and its first pass closes the whole
+> backlog, oldest first. `close_early` cannot stand in for it: it refuses a
+> market whose `close_time` has passed (ADR 0014), which is every market
+> stuck here. One replica with the sweep off is harmless while another runs
+> it; the switch exists for that, not for turning the sweep off everywhere.
+
 ### The sweep is a partial-index scan inside the market service
 
 An `asyncio` task in the service's lifespan, because `market_svc` is the only
