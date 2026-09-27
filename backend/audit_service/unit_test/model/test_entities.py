@@ -16,16 +16,22 @@ _COLUMNS = text(
     "SELECT column_name, is_nullable FROM information_schema.columns "
     "WHERE table_schema = 'audit' AND table_name = 'admin_actions'"
 )
+_MODEL_COLUMNS = frozenset(column.name for column in AdminAction.__table__.columns)
+
+
+async def _nullability_by_column(session: AsyncSession) -> dict[str, str]:
+    """Each column the table has, mapped to its `is_nullable` ('YES' or 'NO')."""
+    rows = (await session.execute(_COLUMNS)).mappings()
+    return {row.column_name: row.is_nullable for row in rows}
 
 
 async def test_the_model_names_every_column_the_table_has(
     session: AsyncSession,
 ) -> None:
     """A column in the SQL and not in the model is one no query can ever read."""
-    in_database = {
-        row.column_name for row in (await session.execute(_COLUMNS)).mappings()
-    }
-    in_model = {column.name for column in AdminAction.__table__.columns}
+    columns = await _nullability_by_column(session)
+    in_database = set(columns)
+    in_model = _MODEL_COLUMNS
 
     assert in_database - in_model == set()
 
@@ -34,10 +40,9 @@ async def test_the_model_invents_no_column_the_table_lacks(
     session: AsyncSession,
 ) -> None:
     """And one in the model but not the SQL fails every query at runtime."""
-    in_database = {
-        row.column_name for row in (await session.execute(_COLUMNS)).mappings()
-    }
-    in_model = {column.name for column in AdminAction.__table__.columns}
+    columns = await _nullability_by_column(session)
+    in_database = set(columns)
+    in_model = _MODEL_COLUMNS
 
     assert in_model - in_database == set()
 
@@ -46,11 +51,8 @@ async def test_the_model_agrees_about_what_may_be_null(
     session: AsyncSession,
 ) -> None:
     """Only what a writer always knows is NOT NULL. ADR 0006."""
-    nullable_in_database = {
-        row.column_name
-        for row in (await session.execute(_COLUMNS)).mappings()
-        if row.is_nullable == "YES"
-    }
+    columns = await _nullability_by_column(session)
+    nullable_in_database = {name for name, nullable in columns.items() if nullable == "YES"}
     nullable_in_model = {
         column.name for column in AdminAction.__table__.columns if column.nullable
     }
@@ -73,9 +75,6 @@ async def test_the_fields_the_story_requires_are_mandatory(
     session: AsyncSession, column: str
 ) -> None:
     """[4.3] #15's first criterion: actor, action type, target and timestamp on every entry."""
-    is_nullable = {
-        row.column_name: row.is_nullable
-        for row in (await session.execute(_COLUMNS)).mappings()
-    }
+    is_nullable = await _nullability_by_column(session)
 
     assert is_nullable[column] == "NO"
