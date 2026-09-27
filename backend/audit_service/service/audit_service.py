@@ -34,6 +34,25 @@ class ActionPage:
         return self.next_cursor is not None
 
 
+def _ordered_query(filters: ActionFilter) -> Select[tuple[AdminAction]]:
+    """Build the filtered feed query, newest first with ties broken by id.
+
+    The id tiebreak is half the keyset contract, and the order matches the
+    indexes in sql/02-schemas.sql.
+    """
+    stmt = select(AdminAction)
+
+    if filters.actor_id is not None:
+        stmt = stmt.where(AdminAction.actor_id == filters.actor_id)
+
+    if filters.action_type is not None:
+        # Exact, not prefix: a prefix would fold a future
+        # `market.submitted.reverted` into the `market.submitted` filter.
+        stmt = stmt.where(AdminAction.action_type == filters.action_type)
+
+    return stmt.order_by(AdminAction.occurred_at.desc(), AdminAction.id.desc())
+
+
 async def list_actions(
     session: AsyncSession,
     *,
@@ -66,22 +85,3 @@ async def list_actions(
     page = rows[:limit]
     last = page[-1]
     return ActionPage(actions=page, next_cursor=encode_cursor(last.occurred_at, last.id))
-
-
-def _ordered_query(filters: ActionFilter) -> Select[tuple[AdminAction]]:
-    """Build the filtered feed query, newest first with ties broken by id.
-
-    The id tiebreak is half the keyset contract, and the order matches the
-    indexes in sql/02-schemas.sql.
-    """
-    stmt = select(AdminAction)
-
-    if filters.actor_id is not None:
-        stmt = stmt.where(AdminAction.actor_id == filters.actor_id)
-
-    if filters.action_type is not None:
-        # Exact, not prefix: a prefix would fold a future
-        # `market.submitted.reverted` into the `market.submitted` filter.
-        stmt = stmt.where(AdminAction.action_type == filters.action_type)
-
-    return stmt.order_by(AdminAction.occurred_at.desc(), AdminAction.id.desc())
