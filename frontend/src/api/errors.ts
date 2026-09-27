@@ -8,9 +8,18 @@ export interface ApiError {
   }
 }
 
-// FastAPI 422 shape: returned when pydantic rejects a field (e.g. malformed email)
+// One entry of a FastAPI 422: pydantic rejected a field (e.g. malformed email).
+// `loc` is the path to it, like ['body', 'email']; a list index is a number.
+interface ValidationEntry {
+  loc: (string | number)[]
+  msg: string
+  type: string
+}
+
+// FastAPI's own errors. A 422 sends `detail` as a list of entries; others,
+// like its 404 for an unknown route, send it as a plain string.
 export interface FastApiError {
-  detail?: { loc: string[]; msg: string; type: string }[]
+  detail?: ValidationEntry[] | string
 }
 
 export const GENERIC_ERROR = 'Something went wrong. Please try again.'
@@ -35,13 +44,35 @@ interface FormErrorOptions {
   fieldErrorCodes?: readonly string[]
 }
 
-/** What a failed form submission should show. Only one of the two is ever set. */
+/**
+ * What a failed form submission should show. A 422 can set both: a message
+ * under each field it names, and one above the form for anything else.
+ */
 export interface FormErrorView {
   fieldErrors: Record<string, string>
   formError: string
 }
 
-/** Turn a failed request into either per-field messages or one message for the whole form. */
+/**
+ * Sort a 422's entries into the form's fields. Each field keeps its first
+ * message; the first entry that names no field becomes the form message.
+ */
+function describeValidationErrors(entries: ValidationEntry[], fields: readonly string[]): FormErrorView {
+  const fieldErrors: Record<string, string> = {}
+  let formError = ''
+  for (const entry of entries) {
+    const field = String(entry.loc[entry.loc.length - 1])
+    if (fields.includes(field)) {
+      if (!(field in fieldErrors)) fieldErrors[field] = entry.msg
+    } else if (!formError) {
+      formError = entry.msg || GENERIC_ERROR
+    }
+  }
+  if (Object.keys(fieldErrors).length === 0 && !formError) formError = GENERIC_ERROR
+  return { fieldErrors, formError }
+}
+
+/** Turn a failed request into per-field messages, one message for the whole form, or both. */
 export function describeFormError(
   err: unknown,
   { fields, codeMessages = {}, fieldErrorCodes = [] }: FormErrorOptions,
@@ -49,18 +80,17 @@ export function describeFormError(
   if (!axios.isAxiosError(err)) return { fieldErrors: {}, formError: GENERIC_ERROR }
   const data = err.response?.data as (ApiError & FastApiError) | undefined
 
-  // FastAPI 422: pydantic rejected a field
-  const first = data?.detail?.[0]
-  if (first) {
-    const field = first.loc[first.loc.length - 1]
-    if (fields.includes(field)) return { fieldErrors: { [field]: first.msg }, formError: '' }
-    return { fieldErrors: {}, formError: first.msg || GENERIC_ERROR }
-  }
+  const detail = data?.detail
+  if (Array.isArray(detail)) return describeValidationErrors(detail, fields)
 
   const code = data?.error?.code
   if (code && codeMessages[code]) return { fieldErrors: {}, formError: codeMessages[code] }
-  if (code && fieldErrorCodes.includes(code)) {
-    const fieldErrors = Object.fromEntries(errorDetails(err).map((d) => [d.field, d.message]))
+
+  // A code like duplicate_user normally names its fields in `details`. When
+  // it names none, fall through to its message rather than show nothing.
+  const details = errorDetails(err)
+  if (code && fieldErrorCodes.includes(code) && details.length > 0) {
+    const fieldErrors = Object.fromEntries(details.map((d) => [d.field, d.message]))
     return { fieldErrors, formError: '' }
   }
   return { fieldErrors: {}, formError: data?.error?.message || GENERIC_ERROR }

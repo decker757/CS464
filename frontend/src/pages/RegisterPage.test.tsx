@@ -22,6 +22,14 @@ function renderRegisterPage() {
   )
 }
 
+// The message shown under one field: the alert inside the same Field as its
+// label, so a message that landed above the form or under another field
+// does not count.
+function fieldError(label: string) {
+  const labelElement = screen.getByText(label, { selector: 'label' })
+  return within(labelElement.parentElement as HTMLElement).queryByRole('alert')
+}
+
 const fillForm = async (
   user: ReturnType<typeof userEvent.setup>,
   overrides: Partial<Record<'username' | 'email' | 'password', string>> = {},
@@ -156,6 +164,49 @@ describe('RegisterPage — integration', () => {
     expect(within(emailField as HTMLElement).getByRole('alert')).toHaveTextContent(
       'value is not a valid email address',
     )
+  })
+
+  it('shows the message of a duplicate_user that names no field', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          { error: { code: 'duplicate_user', message: 'That account already exists.', details: [] } },
+          { status: 409 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('That account already exists.')
+  })
+
+  it('shows every field a 422 names, not only the first', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          {
+            detail: [
+              { type: 'string_too_long', loc: ['body', 'username'], msg: 'Username is too long.' },
+              { type: 'string_too_short', loc: ['body', 'password'], msg: 'Password is too weak.' },
+            ],
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    await screen.findAllByRole('alert')
+    expect(fieldError('Username')).toHaveTextContent('Username is too long.')
+    expect(fieldError('Password')).toHaveTextContent('Password is too weak.')
   })
 
   it('shows generic error when the server is unreachable', async () => {

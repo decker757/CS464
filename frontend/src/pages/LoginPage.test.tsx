@@ -132,4 +132,22 @@ describe('LoginPage — integration', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('The request body is not valid JSON.')
   })
+
+  // FastAPI's own 404 for an unknown route sends `detail` as a string, not
+  // the list a 422 sends; the parser used to index into it and throw.
+  it('shows the generic error when the server sends detail as a string', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/login', () =>
+        HttpResponse.json({ detail: 'Not Found' }, { status: 404 }),
+      ),
+    )
+
+    renderLoginPage()
+    await user.type(screen.getByLabelText('Username or Email'), 'alice')
+    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Please try again.')
+  })
 })
