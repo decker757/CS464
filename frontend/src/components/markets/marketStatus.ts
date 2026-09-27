@@ -1,9 +1,15 @@
-import type { PublicMarketSummary } from '../../api/marketApi'
+import type { MarketSummaryOut, PublicMarketSummary } from '../../api/marketApi'
 import type { Tone } from '../ui/Badge'
 
 export type MarketStatus = PublicMarketSummary['status']
 
-export const STATUS_CONFIG: Record<MarketStatus, { label: string; tone: Tone }> = {
+// The admin's own markets can also be in draft or submitted, which a trader
+// never sees (market-service.md's six statuses).
+export type AdminMarketStatus = MarketSummaryOut['status']
+
+export const STATUS_CONFIG: Record<AdminMarketStatus, { label: string; tone: Tone }> = {
+  draft:              { label: 'Draft',    tone: 'neutral' },
+  submitted:          { label: 'Submitted', tone: 'warning' },
   open:               { label: 'Open',    tone: 'success' },
   closed:             { label: 'Closed',  tone: 'neutral' },
   pending_resolution: { label: 'Pending', tone: 'warning' },
@@ -14,7 +20,7 @@ export const STATUS_CONFIG: Record<MarketStatus, { label: string; tone: Tone }> 
 // know yet (a new one from the backend, like #12's `settled`) is shown as its
 // own name rather than crashing the page.
 export function statusDisplay(status: string): { label: string; tone: Tone } {
-  if (Object.hasOwn(STATUS_CONFIG, status)) return STATUS_CONFIG[status as MarketStatus]
+  if (Object.hasOwn(STATUS_CONFIG, status)) return STATUS_CONFIG[status as AdminMarketStatus]
   return { label: status.replaceAll('_', ' '), tone: 'neutral' }
 }
 
