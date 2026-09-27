@@ -1,12 +1,7 @@
 """What reaches the audit log from this service, and what does not. [4.3] #15
 
-Every test here reads the log back as `audit_svc`, because `auth_svc` cannot —
-it holds INSERT and no SELECT, which is what stops one service reading
-another's actions.
-
-The log is append-only and nothing may truncate it, so rows from earlier tests
-in this database are still present. Each test scopes itself to an actor id no
-other test has used.
+Read back as `audit_svc`, since `auth_svc` holds INSERT only. Each test scopes
+itself to a fresh actor id, since the log cannot be emptied. ADR 0006.
 """
 
 from __future__ import annotations
@@ -128,13 +123,9 @@ async def test_an_absent_reason_is_null_rather_than_empty(
 async def test_two_concurrent_promotions_of_one_trader_are_recorded_once(
     session: AsyncSession, audit_reader: AsyncSession, registered_user: User
 ) -> None:
-    """Two administrators promote the same person in the same instant.
+    """Two administrators promote the same person at once. ADR 0015.
 
-    Two real transactions. Read without a lock both see TRADER, both write
-    ADMIN, and both append a `trader → admin`: one transition attributed to two
-    people, in a log whose purpose is to say who did what. `change_role` locks
-    the target before reading the role, so the second request waits for the
-    first, re-reads ADMIN, and is the idempotent case — no write and no entry.
+    The second waits on the target's lock, re-reads ADMIN, and writes nothing.
     """
     import asyncio  # noqa: PLC0415
 
@@ -143,8 +134,7 @@ async def test_two_concurrent_promotions_of_one_trader_are_recorded_once(
     first, second = _actor(username="ernest_t"), _actor(username="ihsan_b")
     factory = get_session_factory()
 
-    # Both connected before either starts, so the outcome is decided by the
-    # lock and not by which session had to open a connection first.
+    # Both connected first, so the lock decides the outcome. ADR 0015.
     barrier = asyncio.Barrier(2)
 
     async def promote(actor: Actor) -> None:
@@ -165,11 +155,7 @@ async def test_two_concurrent_promotions_of_one_trader_are_recorded_once(
 async def test_it_records_who_the_actor_was_rather_than_who_they_are(
     session: AsyncSession, audit_reader: AsyncSession, registered_user: User
 ) -> None:
-    """A snapshot, so a later rename or demotion cannot rewrite history.
-
-    `audit_svc` holds no grant on auth.users, so an entry that named the actor
-    only by id would be unreadable to the one role allowed to read it.
-    """
+    """A snapshot, so a later rename or demotion cannot rewrite history."""
     actor = _actor(username="ernest_t")
 
     await user_admin.change_role(
@@ -186,11 +172,7 @@ async def test_it_records_who_the_actor_was_rather_than_who_they_are(
 async def test_a_change_to_the_role_already_held_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession, registered_user: User
 ) -> None:
-    """A request that changed nothing is not a decision.
-
-    The same argument ADR 0006 makes about draft autosave: an audit log that
-    collects non-events is a log nobody finishes reading.
-    """
+    """A request that changed nothing is not a decision."""
     actor = _actor()
 
     await user_admin.change_role(
@@ -254,22 +236,13 @@ async def test_a_second_change_appends_rather_than_replaces(
 async def test_this_service_cannot_read_the_log_it_writes_to(
     session: AsyncSession,
 ) -> None:
-    """The reason every test above needs a second connection.
-
-    INSERT and no SELECT is what stops the auth service reading what the market
-    service did. Granting SELECT here to make a test simpler would be a
-    decision to couple them; ADR 0006 argues the shape of the exception.
-    """
+    """Why the tests above need a second connection. Do not grant SELECT. ADR 0006."""
     with pytest.raises(ProgrammingError):
         await session.execute(text("SELECT 1 FROM audit.admin_actions"))
 
 
 async def test_the_audit_grant_is_exactly_insert(session: AsyncSession) -> None:
-    """The market service asserts the same shape for market_svc.
-
-    SELECT here would let this service read what market and the ledger did.
-    UPDATE or DELETE would end the append-only guarantee. Either turns this red.
-    """
+    """Guard: exactly INSERT, as the market service asserts for market_svc. ADR 0006."""
     rows = (
         await session.execute(
             text(

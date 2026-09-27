@@ -1,11 +1,6 @@
-"""How tokens travel between the client and this service.
+"""How tokens travel: httpOnly cookies for browsers, bearer headers for services.
 
-Two ways in, one way to verify. Browsers get httpOnly cookies so a refresh
-survives F5 and no token is reachable from JavaScript. Internal callers such
-as the trading engine and the websocket server send `Authorization: Bearer`.
-Both funnel into the same signature check in `dependencies.get_current_user`.
-
-Rationale and the rejected alternatives: docs/adr/0002-auth-token-transport.md
+Both reach the one signature check in `dependencies.get_current_user`. ADR 0002.
 """
 
 from __future__ import annotations
@@ -19,11 +14,10 @@ _BEARER_PREFIX = "bearer "
 
 
 def extract_access_token(request: Request) -> str | None:
-    """Authorization header wins over the cookie.
+    """Return the access token from the Authorization header, else the cookie.
 
-    An explicitly attached credential should beat one the browser sent
-    ambiently, so a service call carrying its own token is never silently
-    reinterpreted as whoever happens to be logged in.
+    ADR 0002: the header wins. A bearer header with an empty token returns
+    None without falling back to the cookie.
     """
     header = request.headers.get("Authorization", "")
     if header.lower().startswith(_BEARER_PREFIX):
@@ -34,9 +28,9 @@ def extract_access_token(request: Request) -> str | None:
 
 
 def extract_refresh_token(request: Request) -> str | None:
-    """Same precedence rule as the access token: explicit header beats cookie.
+    """Return the X-Refresh-Token header, else the refresh cookie, else None.
 
-    Non-browser clients hold no cookie jar and send X-Refresh-Token instead.
+    Header first, as for the access token; non-browser clients have no cookie jar.
     """
     header = request.headers.get("X-Refresh-Token", "").strip()
     if header:
@@ -60,8 +54,8 @@ def set_auth_cookies(response: Response, tokens: TokenPair) -> None:
         path="/",
         **common,
     )
-    # Path-scoped so the long-lived credential is not attached to every API
-    # call. It must still reach /auth/logout, which is what revokes it.
+    # Path-scoped so the long-lived credential is not sent on every call. It
+    # must still reach /auth/logout, which revokes it.
     response.set_cookie(
         settings.refresh_cookie_name,
         tokens.refresh_token,

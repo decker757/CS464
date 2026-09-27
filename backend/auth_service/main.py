@@ -1,8 +1,4 @@
-"""Composition root for the auth service.
-
-Wires configuration, the database and the routes together. This is the only
-place that decides which concrete implementations run.
-"""
+"""Composition root for the auth service: config, database and routes. [A-1..A-3]"""
 
 from __future__ import annotations
 
@@ -19,8 +15,7 @@ from controller.routes import router as auth_router
 from core.config import get_settings
 from core.database import create_all, dispose_engine
 
-# Imported for its side effect: registering the mappers on Base before
-# create_all runs. Do not rely on another module pulling it in transitively.
+# Registers the mappers on Base before create_all runs. Keep it explicit.
 from model import entities  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +23,7 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Replace with Alembic: [F-5] #75. Four services share this database
-    # now that [F-1] #41 has landed, which is what that ticket is for.
+    # Replace with Alembic: [F-5] #75.
     await create_all()
     yield
     await dispose_engine()
@@ -49,8 +43,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # allow_credentials with an exact origin list, never "*", or the browser
-    # silently drops the auth cookie.
+    # ADR 0002: credentialed CORS needs an exact origin list, never "*".
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

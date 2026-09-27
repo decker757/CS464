@@ -1,9 +1,4 @@
-"""HTTP wiring for the administrative routes. [4.4] #16, [4.1] #13
-
-Business rules are asserted one layer down in unit_test/service. What is
-checked here is only what the controller is responsible for: status codes, the
-response envelope, and who the guard lets through.
-"""
+"""HTTP wiring for the administrative routes: status codes and the guard. [4.4] #16, [4.1] #13"""
 
 from __future__ import annotations
 
@@ -72,13 +67,7 @@ async def test_the_response_never_contains_a_password_or_a_hash(
 async def test_a_promotion_binds_this_service_without_a_new_token(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """The administrator here is still carrying a token minted before promotion.
-
-    It says `role: trader` and the route works anyway, because this service
-    reads the row rather than the claim. Only services that cannot read
-    auth.users — the market service — wait out the token's lifetime. ADR 0007
-    records that asymmetry; this is it, asserted.
-    """
+    """The admin's token still says `trader`; this service reads the row. ADR 0007."""
     response = await admin_client.patch(_url(target_user_id), json={"role": "admin"})
 
     assert response.status_code == 200
@@ -135,12 +124,7 @@ async def test_an_unknown_user_gets_404(admin_client: AsyncClient) -> None:
 async def test_an_unknown_role_is_rejected_by_the_schema(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """422 from Pydantic, before anything reaches the service layer.
-
-    This is also what stops `super_admin` being granted by a client that read
-    an old ticket: the vocabulary is closed, and widening it is a decision made
-    in core/roles.py rather than in a request body.
-    """
+    """The role vocabulary is closed; `super_admin` cannot be granted. ADR 0007."""
     response = await admin_client.patch(
         _url(target_user_id), json={"role": "super_admin"}
     )
@@ -158,15 +142,10 @@ async def test_a_malformed_user_id_is_rejected(admin_client: AsyncClient) -> Non
 async def test_the_access_cookie_reaches_this_prefix(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """These routes live under /admin, every other authenticated route under /auth.
+    """The access cookie must reach /admin as well as /auth.
 
-    The access cookie is written with `path="/"` and reaches both. The refresh
-    cookie is deliberately scoped to `refresh_cookie_path` so the long-lived
-    credential is not attached to every request, and nothing here needs it.
-
-    Asserted rather than assumed, because narrowing the access cookie's path to
-    match its sibling's would 401 every admin route from a browser while
-    leaving bearer-token callers — including most of this suite — working.
+    Narrowing its path to match the refresh cookie's would 401 every admin route
+    from a browser while bearer callers kept working.
     """
     assert "Authorization" not in admin_client.headers
     assert admin_client.cookies.get("access_token") is not None
@@ -179,13 +158,7 @@ async def test_the_access_cookie_reaches_this_prefix(
 async def test_a_suspended_administrator_gets_403(
     admin_client: AsyncClient, target_user_id: str, session
 ) -> None:
-    """Suspension is checked before the role is, and reports as itself.
-
-    `get_current_user` refuses a suspended account before `require_admin` ever
-    looks at the role, so the caller is told their account is suspended rather
-    than that they are not an administrator. The distinction matters: one is
-    fixable by an administrator, the other is a lie.
-    """
+    """Suspension is checked before the role, and reports as itself."""
     from sqlalchemy import text  # noqa: PLC0415
 
     await session.execute(
@@ -202,14 +175,7 @@ async def test_a_suspended_administrator_gets_403(
 async def test_demoting_the_other_administrator_is_allowed(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """The 409 is not reachable this way, and that is the point.
-
-    The caller is an administrator and cannot be their own target, so whenever
-    a demotion gets this far there are at least two and one survives it. Only
-    the concurrent case can reach `last_administrator`; it is asserted in
-    unit_test/service/test_role_changes.py, where two transactions can be run
-    against each other.
-    """
+    """Sequentially the 409 is unreachable; only the race reaches it. ADR 0007."""
     await admin_client.patch(_url(target_user_id), json={"role": "admin"})
 
     response = await admin_client.patch(_url(target_user_id), json={"role": "trader"})
@@ -235,8 +201,7 @@ async def test_an_administrator_lists_every_account(
 async def test_a_query_narrows_the_list(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """Matching is asserted properly in unit_test/service. What is checked here
-    is that `q` reaches the service layer at all."""
+    """That `q` reaches the service layer; matching is tested there."""
     response = await admin_client.get(USERS, params={"q": "michelle"})
 
     assert [user["username"] for user in response.json()["users"]] == ["michelle_l"]
@@ -245,10 +210,7 @@ async def test_a_query_narrows_the_list(
 async def test_the_list_carries_the_id_the_ledger_takes(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """The point of the search: this service turns a name into the `user_id`
-    that `GET /ledger/users/{user_id}/entries` wants. The two halves of the
-    story meet at this field and nowhere else — no credit total appears here,
-    because this service does not know that credits exist."""
+    """The `user_id` the ledger's history route takes, and no balance."""
     body = (await admin_client.get(USERS, params={"q": "michelle"})).json()
 
     assert body["users"][0]["id"] == target_user_id
@@ -258,8 +220,7 @@ async def test_the_list_carries_the_id_the_ledger_takes(
 async def test_the_list_reports_suspension(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """Visible here, written by [4.2] #14, and the reason `AdminUserOut` exists
-    rather than another field on `UserOut`."""
+    """Written by [4.2] #14; the reason `AdminUserOut` exists."""
     body = (await admin_client.get(USERS, params={"q": "michelle"})).json()
 
     assert body["users"][0]["is_suspended"] is False
@@ -268,11 +229,7 @@ async def test_the_list_reports_suspension(
 async def test_the_list_never_contains_a_password_or_a_hash(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """An administrator is entitled to see who exists, not to see a credential.
-
-    The one route that returns several rows of user data at once, so the one
-    where a field added to the wrong schema would leak in bulk.
-    """
+    """The one route returning many users, so where a leak would be in bulk."""
     response = await admin_client.get(USERS)
 
     assert VALID_PASSWORD not in response.text
@@ -314,12 +271,10 @@ async def test_a_cursor_we_did_not_issue_is_a_400(admin_client: AsyncClient) -> 
 async def test_an_oversized_limit_is_clamped_not_refused(
     admin_client: AsyncClient,
 ) -> None:
-    """A caller asking for more than the ceiling wants as much as it can get,
-    and a 422 would be a worse answer than the rows the server will serve."""
+    """A caller asking for more than the ceiling wants as much as it can get."""
     assert (await admin_client.get(USERS, params={"limit": 100000})).status_code == 200
 
 
 async def test_a_zero_limit_is_refused(admin_client: AsyncClient) -> None:
-    """Clamping the top end is a kindness; a page of nothing is a bug in the
-    caller and saying so is more useful than serving it."""
+    """A page of nothing is a caller bug, so it is refused, not clamped."""
     assert (await admin_client.get(USERS, params={"limit": 0})).status_code == 422

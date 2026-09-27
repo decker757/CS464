@@ -1,9 +1,4 @@
-"""HTTP wiring for the five routes.
-
-Business rules are asserted one layer down in unit_test/service. What is
-checked here is only what the controller is responsible for: status codes, the
-response envelope, and that a domain error reaches the client in one shape.
-"""
+"""HTTP wiring for the session routes: status codes and the error envelope."""
 
 from __future__ import annotations
 

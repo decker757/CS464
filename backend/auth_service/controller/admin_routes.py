@@ -1,18 +1,8 @@
 """Administrative routes: one user acting on another. [4.4] #16, [4.1] #13
 
-Kept apart from `routes.py`, which is a user acting on their own session. The
-split is for /docs as much as for the code — that page is the contract Michelle
-codes against ([FE][4.1] #57 and [FE][4.2] #60 land here next), and "how do I
-log in" and "how do I grant somebody administrative authority" should not be
-one list.
-
-Reading is here too, and it is the odd one out: searching accounts changes
-nothing and is not audited. It belongs beside the routes that do change things
-because the guard and the audience are the same, and because the frontend
-reaches one of these pages by way of the other.
-
-Thin, like its sibling: parse, delegate, return. The rules are in
-`service/user_admin.py` and are tested there without HTTP.
+Apart from `routes.py` (a user's own session) so /docs lists them separately.
+The account search is here too, though it changes nothing, because the guard
+and the audience are the same. Rules live in `service/user_admin.py`.
 """
 
 from __future__ import annotations
@@ -92,10 +82,8 @@ async def list_users(
     ] = None,
 ) -> UserListResponse:
     settings = get_settings()
-    # Clamped rather than rejected, like the audit feed and the ledger history.
-    # A caller asking for more than the ceiling wants as much as it can get,
-    # and a 422 on `limit=1000` would be a worse answer than the 200 rows the
-    # server is willing to serve.
+    # Clamped, not refused, like the audit feed and the ledger history: a
+    # caller asking for more than the ceiling wants as much as it can get.
     page_size = min(limit or settings.default_page_size, settings.max_page_size)
 
     page = await user_admin.search_users(

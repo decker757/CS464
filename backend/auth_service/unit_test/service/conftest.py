@@ -24,13 +24,7 @@ async def registered_user(session: AsyncSession, register_request: RegisterReque
 
 @pytest.fixture
 async def another_administrator(session: AsyncSession) -> User:
-    """A second administrator, so a demotion under test is not the last one.
-
-    Needed by every demotion test since the last-administrator guard landed.
-    Without one in the database, demoting anybody is refused — which is the
-    point of the guard, and is asserted directly in
-    `test_the_only_administrator_cannot_be_demoted_by_anyone`.
-    """
+    """A second administrator, so a demotion under test is not of the last one."""
     user = User(
         username="admin_spare",
         email="admin.spare@example.com",

@@ -1,7 +1,7 @@
-"""Request and response contracts.
+"""Request and response contracts, published at /docs for the frontend.
 
-These generate the OpenAPI schema at /docs, which is the contract the frontend
-codes against for [FE][A-1] #46, [FE][A-2] #47 and [FE][A-3] #48.
+[A-1] #29, [A-2] #30, [A-3] #31, [4.1] #13, [4.4] #16. Class docstrings and
+field descriptions here are the /docs text.
 """
 
 from __future__ import annotations
@@ -26,12 +26,10 @@ class RegisterRequest(BaseModel):
     @field_validator("username", mode="before")
     @classmethod
     def _trim_username(cls, v: object) -> object:
-        """Trim before `Field` counts the length, not after. #89
+        """Trim before `Field` counts the length. #89
 
-        An after-validator only runs once `min_length` and `max_length` have
-        already passed, so `" ab"` was accepted as three characters and stored
-        as two. Not `str_strip_whitespace` on the model: that would trim the
-        password too.
+        Must stay a before-validator, or `" ab"` passes as three characters.
+        Not `str_strip_whitespace`: that would trim the password too.
         """
         return v.strip() if isinstance(v, str) else v
 
@@ -72,21 +70,14 @@ class UserOut(BaseModel):
     id: uuid.UUID
     username: str
     email: EmailStr
-    # Exposed so [FE][1.1] #45 can decide whether to render the market-creation
-    # UI at all. It is a hint for the interface only: every admin-only route
-    # re-reads the role from the signed token and never trusts the client.
+    # A hint for the UI only; every admin-only route checks authority itself.
     role: UserRole
     created_at: datetime
 
     @field_validator("created_at")
     @classmethod
     def _always_utc(cls, v: datetime) -> datetime:
-        """Guarantee every timestamp we emit carries an explicit UTC offset.
-
-        A driver that hands back a naive datetime would otherwise make the same
-        account serialise with a trailing Z on register and without one on
-        /auth/me, leaving the frontend to special case it.
-        """
+        """Give a naive datetime UTC, so every route serialises it with a Z."""
         return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
 

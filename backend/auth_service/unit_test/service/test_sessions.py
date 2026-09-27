@@ -103,14 +103,9 @@ async def test_a_suspended_user_cannot_refresh(
 async def test_two_concurrent_refreshes_of_one_token_leave_one_winner_and_no_session(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The legitimate client and whoever copied its cookie, in the same instant.
+    """The client and whoever copied its cookie, at once. ADR 0015.
 
-    Two real transactions. Read without a lock both see the token live, both
-    revoke it, both are issued a session, and the replay that should have cut
-    every session for this user goes unnoticed, because each request's write
-    lands after the other's check. `_load_refresh` locks the row, so the second
-    request waits for the first and then re-reads the revocation it wrote: it
-    is the replay, and it is treated exactly as a sequential one is.
+    The second waits on the row lock, re-reads the revocation, and is the replay.
     """
     import asyncio  # noqa: PLC0415
 
@@ -120,8 +115,7 @@ async def test_two_concurrent_refreshes_of_one_token_leave_one_winner_and_no_ses
     await session.commit()
     factory = get_session_factory()
 
-    # Both connected before either starts, so the outcome is decided by the
-    # lock and not by which session had to open a connection first.
+    # Both connected first, so the lock decides the outcome. ADR 0015.
     barrier = asyncio.Barrier(2)
 
     async def refresh() -> str:
