@@ -23,13 +23,7 @@ from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
 
 import pytest
 
-
-def _release_basis():
-    """Lazy, so a missing function fails each test on its own criterion
-    rather than taking the file down as one collection error."""
-    from core import pricing  # noqa: PLC0415
-
-    return pricing.release_basis
+from core.pricing import release_basis
 
 
 def _engine_context():
@@ -74,7 +68,7 @@ def test_the_rounding_mode_is_observable_in_these_inputs() -> None:
 # The worked examples, exactly as the issue states them
 # =========================================================================
 def test_the_worked_example_leaves_24_3503_half_up_not_24_3502() -> None:
-    released, remaining = _release_basis()(
+    released, remaining = release_basis(
         Decimal("29.8428"), Decimal("54.3333"), Decimal("10.0000")
     )
 
@@ -88,11 +82,10 @@ def test_three_sells_of_one_release_3_3333_3_3333_3_3334_and_leave_zero() -> Non
     price instead and multiplying back would release `9.9999` and strand the
     last tick — the rejected alternative in "A sell releases cost basis at
     average cost"."""
-    release = _release_basis()
     basis, held = Decimal("10.0000"), Decimal("3.0000")
     released_each = []
     for _ in range(3):
-        released, basis = release(basis, held, Decimal("1.0000"))
+        released, basis = release_basis(basis, held, Decimal("1.0000"))
         released_each.append(released)
         held -= Decimal("1.0000")
 
@@ -112,7 +105,7 @@ def test_three_sells_of_one_release_3_3333_3_3333_3_3334_and_leave_zero() -> Non
 def test_released_plus_remaining_is_the_old_basis_on_every_sell(
     basis: Decimal, held: Decimal, quantity: Decimal
 ) -> None:
-    released, remaining = _release_basis()(basis, held, quantity)
+    released, remaining = release_basis(basis, held, quantity)
 
     assert released + remaining == basis
     assert remaining == _exact_remaining(basis, held, quantity).quantize(
@@ -124,11 +117,10 @@ def test_a_position_sold_down_in_pieces_releases_exactly_its_basis() -> None:
     """The worked example's position, sold in three pieces whose sizes do
     not divide it evenly. Drift on an early piece is absorbed by a later
     one."""
-    release = _release_basis()
     basis, held = Decimal("29.8428"), Decimal("54.3333")
     total_released = Decimal("0.0000")
     for piece in (Decimal("10.0000"), Decimal("7.7777"), Decimal("36.5556")):
-        released, basis = release(basis, held, piece)
+        released, basis = release_basis(basis, held, piece)
         total_released += released
         held -= piece
 
@@ -138,7 +130,7 @@ def test_a_position_sold_down_in_pieces_releases_exactly_its_basis() -> None:
 
 
 def test_a_full_exit_releases_the_whole_basis_and_leaves_zero() -> None:
-    released, remaining = _release_basis()(
+    released, remaining = release_basis(
         Decimal("29.8428"), Decimal("54.3333"), Decimal("54.3333")
     )
 
@@ -151,7 +143,7 @@ def test_selling_all_but_a_tick_leaves_dust_at_an_average_of_one() -> None:
     """The Notes of "A sell releases cost basis at average cost": `0.0001`
     shares at `0.0001` basis. Correct arithmetic, and half-up is what makes
     it — a floor would leave `0.0000` basis on a live share."""
-    released, remaining = _release_basis()(
+    released, remaining = release_basis(
         Decimal("29.8428"), Decimal("54.3333"), Decimal("54.3332")
     )
 
@@ -160,7 +152,7 @@ def test_selling_all_but_a_tick_leaves_dust_at_an_average_of_one() -> None:
 
 
 def test_the_results_are_at_scale_4() -> None:
-    released, remaining = _release_basis()(
+    released, remaining = release_basis(
         Decimal("29.8428"), Decimal("54.3333"), Decimal("10.0000")
     )
 
@@ -201,7 +193,7 @@ def test_the_product_is_computed_at_engine_precision() -> None:
 
     with localcontext() as hostile:
         hostile.prec = 28
-        released, remaining = _release_basis()(basis, held, quantity)
+        released, remaining = release_basis(basis, held, quantity)
 
     assert remaining == exact
     assert released == basis - exact
@@ -221,4 +213,4 @@ def test_a_quantity_outside_zero_to_held_is_a_value_error(quantity: Decimal) -> 
     with one has skipped it, and a negative remaining basis is not a thing to
     return quietly."""
     with pytest.raises(ValueError):
-        _release_basis()(Decimal("29.8428"), Decimal("54.3333"), quantity)
+        release_basis(Decimal("29.8428"), Decimal("54.3333"), quantity)

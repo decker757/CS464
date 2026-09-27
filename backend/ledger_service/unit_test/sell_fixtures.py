@@ -50,7 +50,6 @@ from unit_test.trade_fixtures import (
     errors,
     expected_total,
     lmsr,
-    pricing,
     raw_cost,
     session_factory,
     token,
@@ -78,12 +77,6 @@ AT_ZERO = (ZERO, ZERO)
 
 
 # --- lazy handles --------------------------------------------------------
-def release_basis():
-    """`core/pricing.py::release_basis`, [T-3] #23's pure rule. Does not
-    exist yet."""
-    return pricing().release_basis
-
-
 def snapshot_module():
     from service import snapshot  # noqa: PLC0415
 

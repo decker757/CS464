@@ -33,6 +33,27 @@ from unit_test.controller.test_trade_routes import (  # noqa: F401 - fixture
 _OPERATION = "execute_trade_ledger_markets__market_id__trades_post"
 _TRADE_HEADING = "## POST /ledger/markets/{market_id}/trades"
 
+# #23's error table, by status. The codeless 422 row is FastAPI's own.
+_ISSUE_CODES = {
+    "401": ["invalid_token"],
+    "404": ["market_not_found"],
+    "409": [
+        "market_closed",
+        "quote_stale",
+        "insufficient_funds",
+        "insufficient_shares_held",
+        "idempotency_key_reused",
+    ],
+    "422": [
+        "unknown_outcome",
+        "quantity_too_large",
+        "cost_below_tick",
+        "proceeds_below_tick",
+    ],
+    "500": ["market_book_incomplete"],
+    "503": ["market_terms_unavailable"],
+}
+
 
 def _body(market: _Market, *, side: str, quantity: str, version: int, key: str) -> dict:
     return {
@@ -243,8 +264,9 @@ async def test_the_declared_responses_are_the_tables_and_omit_the_unreachable_tw
     responses = operation["responses"]
 
     assert set(responses) == {"201", "401", "404", "409", "422", "500", "503"}
-    assert "insufficient_shares_held" in responses["409"]["description"]
-    assert "proceeds_below_tick" in responses["422"]["description"]
+    for status, codes in _ISSUE_CODES.items():
+        for code in codes:
+            assert f"`{code}`" in responses[status]["description"], (status, code)
 
     serialised = json.dumps(operation).lower()
     assert "insufficient_shares_outstanding" not in serialised

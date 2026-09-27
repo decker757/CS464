@@ -10,9 +10,9 @@ It exists because of the D-NEW entry "The holdings check is read under the
 book lock, and the position takes no lock of its own". The sell's holding
 check reads the position with no `with_for_update()`, and that is safe only
 because every writer of positions takes the market's book row lock first.
-The trade path does. A second writer — settlement, [3.4] #12, is the
-candidate PR #120's review named — that skipped the book lock would read the
-same share count as a concurrent sell, and one would overwrite the other.
+The trade path does. A second writer that skipped the book lock —
+settlement, [3.4] #12, is the likely one — would read the same share count
+as a concurrent sell, and one would overwrite the other.
 
 When this fails, do not just add the module to `_KNOWN_WRITERS`. Read that
 entry first. Either the new writer takes the book lock before it reads or

@@ -387,8 +387,12 @@ _TRADE_DESCRIPTION = (
     summary="Trade shares in an open market",
     description=_TRADE_DESCRIPTION,
     responses={
-        401: {"description": "Missing, malformed or expired access token."},
-        404: {"description": "No such market."},
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access token."
+            )
+        },
+        404: {"description": "`market_not_found`: no such market."},
         409: {
             "description": (
                 "`market_closed`: the market is not open for trading. "

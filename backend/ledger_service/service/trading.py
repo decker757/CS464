@@ -477,10 +477,11 @@ async def execute(
 
     # 11. `post`. Commits everything pending above, together with the two
     # legs below, or none of it if this raises.
+    kind = TransactionKind.TRADE_BUY if side is Side.BUY else TransactionKind.TRADE_SELL
     transaction = await posting.post(
         session,
         idempotency_key=key,
-        kind=TransactionKind.TRADE_BUY if side is Side.BUY else TransactionKind.TRADE_SELL,
+        kind=kind,
         legs=[
             Leg(account=user_account, amount=total),
             Leg(account=pool_account, amount=-total),

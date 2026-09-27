@@ -76,6 +76,7 @@ from unit_test.trade_fixtures import (
     fund,
     locks,
     pool_balance,
+    posting,
     preview,
     pricing,
     raw_cost,
@@ -215,7 +216,6 @@ async def test_the_transaction_kind_is_trade_sell(session: AsyncSession) -> None
         )
     ).scalar_one()
     assert kind is ents.TransactionKind.TRADE_SELL
-    assert ents.TransactionKind.TRADE_SELL.value == "trade_sell"
 
 
 async def test_a_sell_moves_q_down_and_the_version_up_by_one(
@@ -270,6 +270,41 @@ async def test_proceeds_below_a_tick_are_refused_and_write_nothing(
     assert recorder.calls == []
 
 
+async def test_a_sell_that_fails_inside_post_writes_nothing_and_publishes_nothing(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rollback test. `post` raises with the sell's own writes pending —
+    the position released, `q` and `state_version` moved — and none of them
+    reaches the database, and nothing is announced.
+
+    Those writes are still pending on the session when `post` raises; the
+    request's own rollback, `core/database.py::get_session`'s, discards them.
+    So the count before that rollback is the footprint's column selects —
+    nothing was flushed into the transaction early — and `assert_wrote_nothing`
+    runs after it, with its second-session read."""
+    upstream, user_id = await _holder(session)
+    before = await footprint(session, upstream.market_id)
+    recorder = Recorder()
+    pending_positions: list[tuple[Decimal, Decimal]] = []
+
+    async def failing_post(request_session: AsyncSession, **_: object) -> None:
+        for row in request_session.dirty:
+            if isinstance(row, entities().Position):
+                pending_positions.append((row.quantity, row.cost_basis))
+        raise RuntimeError("post failed")
+
+    monkeypatch.setattr(posting(), "post", failing_post)
+
+    with pytest.raises(RuntimeError, match="post failed"):
+        await sell(session, upstream, user_id=user_id, redis_client=recorder)
+
+    assert pending_positions == [(REMAINING_QUANTITY, REMAINING_BASIS)]
+    assert await footprint(session, upstream.market_id) == before
+    await session.rollback()
+    await assert_wrote_nothing(session, upstream.market_id, before)
+    assert recorder.calls == []
+
+
 # =========================================================================
 # The holding check
 # =========================================================================
@@ -277,10 +312,10 @@ async def test_proceeds_below_a_tick_are_refused_and_write_nothing(
 async def test_the_service_refuses_a_quantity_that_is_not_positive(
     session: AsyncSession, quantity: Decimal
 ) -> None:
-    """PR #120's review: the route's `gt=0` was the only thing refusing this,
-    so a direct caller's sell of `-5` passed the holding check, was priced as
-    a buy of 5 and paid out as proceeds. `execute` refuses it itself, before
-    it reads or writes anything."""
+    """`execute` refuses a quantity of zero or less itself, before it reads
+    or writes anything, rather than trusting the route's `gt=0`. A sell of
+    `-5` would pass the holding check, be priced as a buy of 5 and be paid
+    out as proceeds."""
     upstream, user_id = await _holder(session)
     before = await footprint(session, upstream.market_id)
     recorder = Recorder()
