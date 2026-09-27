@@ -34,7 +34,8 @@ and the one to believe if the two ever drift.
   INSERT on it — INSERT only so its own suite can seed rows (ADR 0006,
   `sql/02-schemas.sql`). `realtime_service` has no role, no schema and no
   `DATABASE_URL` (ADR 0010).
-- `backend/shared/` — config, paging, roles, security, testing. Narrow by ADR 0012.
+- `backend/shared/` — narrow by ADR 0012. What is in it, and the bar for adding
+  anything, is CLAUDE.md's `backend/shared/` section; don't copy the list here.
 - pytest, `asyncio_mode = auto`, tests run against real Postgres, never SQLite
 - Migrations: hand-written idempotent SQL in `sql/migrations/`. No Alembic yet (#75)
 - Frontend is separate: npm, Vite, React 19, TS. Not mine.
@@ -73,6 +74,9 @@ enforces only that no service imports another. See "The terms client lives in
 
 ## Invariants — never break these
 
+Each of these is CLAUDE.md's or an ADR's; this list is a reminder, and their
+wording wins where the two differ.
+
 1. **Postgres is the only source of truth.** Price is computed from `q` and `b`,
    never stored as authoritative.
 2. **Nothing that moves money reads Redis.** Redis is display and fan-out only.
@@ -102,16 +106,17 @@ enforces only that no service imports another. See "The terms client lives in
    - If a design charges a cost that was priced outside the trade's lock, it's
      wrong. Stop and tell me.
 8. **Websocket publish fires after commit, never inside the transaction.**
+9. **`posting.post()` commits, so it is the last call on any path that writes.**
+   Settled by "The book's writes share `posting.post`'s commit, and nothing may
+   follow it" and, for the trade path, CLAUDE.md's "The ledger has one write
+   route, and it takes no money".
+10. **The trade route accepts a trader's own token, and that is not a hole.** Its
+    body names no account, no amount and no leg (ADR 0009's amendment). A new
+    write route that would take an amount or an account from the request needs
+    service-to-service auth first, and that still doesn't exist: stop and ask.
 
 ## Open questions — stop and ask, don't guess
 
-- `posting.post()` calls `session.commit()` internally. Settled for a caller with
-  nothing to write afterwards — "The book's writes share `posting.post`'s
-  commit, and nothing may follow it": order every write through
-  `session.begin_nested()` and call `post()` last. Still open for [T-2] #22,
-  whose `state_version` bump and `q` update may not fit that shape.
-- Service-to-service auth for ledger writes doesn't exist. A trader's bearer token
-  cannot authorize a ledger mutation — that's a self-mint hole.
 - Whether an under-subsidised market should be refused. The pool *is* funded —
   `books.ensure_open` posts `seed_subsidy` from the PLATFORM account on a
   market's first touch ([F-7] #96, "Seed subsidy is posted at book creation") —
@@ -208,9 +213,10 @@ Check before writing any code:
 If the issue body contradicts this file or an ADR, say so and stop. Don't reconcile
 it yourself.
 
-**Read the board, don't write to it.** Status moves automatically — linking a PR
-sets In progress, merging sets Done. Don't run `gh project item-edit` or
-`gh issue edit` unless I ask.
+**Read the board, don't write to it.** Linking a PR sets In progress. Merging
+into `dev` does **not** close the issue — GitHub only auto-closes on the default
+branch, `main` — so it never reaches Done by itself; tell me when a PR merges and
+I'll close it. Don't run `gh project item-edit` or `gh issue edit` unless I ask.
 
 The test-writing session gets its acceptance criteria from `gh issue view`, never
 from the implementation.
@@ -266,23 +272,11 @@ just the code that got written?
 
 ### What tests must cover
 
-Ernest's stated standard:
-
-- **Unit** — helpers, validators, and anything added in this PR
-- **Integration** — at least one main-flow test, and at least one failure case
-  asserting the correct error code
-
-For pricing (`#43`), additionally property tests:
-- Prices across outcomes sum to 1
-- Cost is monotonically increasing in each `qᵢ`
-- Buy-then-immediately-sell never yields a profit
-- Stable at `q/b` up to 10,000 (`e^(q/b)` overflows past ~700 — use log-sum-exp)
-
-For anything touching money, additionally:
-- Rollback test: force a mid-operation failure and assert that zero ledger rows
-  were written. Here the operation's own rollback is what's under test.
-- Concurrency test: assert no overdraft and that the ledger still sums to zero.
-  What makes it a race is ADR 0015's, and the race-test bullet below.
+The floor is `backend/CLAUDE.md` → Tests: a unit test for each new helper, one
+main-flow test, a failure case asserting the exact error code, and — for anything
+that moves money — a rollback test (the operation's own rollback) and a
+concurrency test (ADR 0015 says what makes it a race). What counts as a test
+worth keeping is the root CLAUDE.md's "Tests earn their place".
 
 `unit_test/core/` and `unit_test/model/` need no database and run fast. Put pure
 logic there.
@@ -296,8 +290,8 @@ logic there.
   sees only committed writes. Count in the request's own session before any
   rollback, and from a second session for committed ones. Source: @decker757's
   review on #110, of `test_a_refused_gate_writes_nothing`. This is not the
-  rollback test above, which tests the operation's rollback, not one the test
-  adds.
+  rollback test `backend/CLAUDE.md` asks for, which tests the operation's
+  rollback, not one the test adds.
 - **A validator test must feed the invalid value.**
 - **A race test is evidence only if it fails with its lock or re-check
   removed** (ADR 0015). Name the line you removed.
@@ -310,8 +304,8 @@ logic there.
 
 ## Git — one branch per ticket, no exceptions
 
-Base is `dev`, never `main`. Ernest rebases `dev` often, sometimes several times a
-day.
+Base is `dev`, never `main`. `dev` moves several times a day; rebase onto it
+before asking for review.
 
 **Start**
 
@@ -338,8 +332,8 @@ git checkout dev
 git pull origin dev
 git checkout 43-lmsr-pricing-engine
 git rebase dev
-# fix conflicts, then
-git add .
+# fix conflicts, then stage only the files you resolved
+git add <resolved files>
 git rebase --continue
 git push --force-with-lease
 ```
@@ -369,7 +363,7 @@ Format `type(scope): description`. Types: `feat`, `fix`, `test`, `refactor`,
 ```bash
 .venv/Scripts/pytest    # Windows layout; CI runs a bare `pytest`
 git push -u origin 43-lmsr-pricing-engine
-gh pr create --base dev --title "[F-3] LMSR pricing engine" --body "<Refs|Closes> #43"
+gh pr create --base dev --title "[F-3] LMSR pricing engine (#43)" --body "<Refs|Closes> #43"
 ```
 
 Pick the trailer by CLAUDE.md's Branches rule: `Refs #N` while the ticket has
