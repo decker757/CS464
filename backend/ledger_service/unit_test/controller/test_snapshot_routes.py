@@ -1,26 +1,10 @@
 """Status codes, authorisation and the shape on the wire. [F-9] #112
 
-Business rules are tested in `unit_test/service/test_snapshot.py` without HTTP.
-What is asserted here is what the controller owns: who may call the route,
-which status code each refusal carries, and what the JSON looks like —
-including which fields are strings, which is an exactness decision rather than
-a formatting one.
-
-**The shape is the point of this file.** `docs/api/realtime-service.md` pins
-the snapshot body as the `price` frame without its `type`, "identical on
-purpose. A client that renders a snapshot and a client that renders an event
-should be running the same function." Nothing generated enforces that —
-OpenAPI has no vocabulary for a WebSocket, so there is no schema check that
-will catch the two drifting. The field-set assertions below are the
-enforcement.
-
-**The cold path is stubbed at `market_terms.fetch` rather than at a
-transport**, the same way `test_preview_routes.py` does it: a route cannot be
-handed an `httpx.MockTransport`. The service-layer tests exercise the real
-request building through one, and `test_market_terms.py` owns the
-upstream-to-error mapping. What is left here is whether a domain error raised
-below the controller becomes the right status and the right code, and a stub
-that raises the domain error directly is the most honest way to ask that.
+What the controller owns: who may call the route, each refusal's status and
+code, and the JSON. The body must be the `price` frame without its `type`
+(`docs/api/realtime-service.md`), and nothing generated checks that, so the
+field-set assertions here do. The cold path is stubbed at
+`market_terms.fetch`.
 """
 
 from __future__ import annotations
@@ -66,11 +50,8 @@ _B = Decimal("100.0000")
 _SUBSIDY = Decimal("250.0000")
 _Q = [Decimal("137.5000"), Decimal("42.2500")]
 
-# Every field in the response, and nothing else. Asserted as a set so that a
-# gained field is a failure rather than an unnoticed addition — the consumer of
-# the matching socket frame validates with `extra="forbid"`, so an extra field
-# there is a dropped event, and a client written against one shape and handed
-# the other is the bug this pins.
+# Every field in the response, and nothing else: the matching socket frame
+# forbids extra fields.
 _FIELDS = {"market_id", "state_version", "prices", "occurred_at"}
 _PRICE_FIELDS = {"outcome_id", "position", "price"}
 
@@ -134,12 +115,8 @@ async def _warm(
 
 
 class _Terms:
-    """A stub for `market_terms.fetch`, patched onto the module.
-
-    Patched there rather than onto `books`, because `books.py` holds the module
-    and resolves `market_terms.fetch` at call time — so this is the same
-    function the real path calls, reached the same way.
-    """
+    """A stub for `market_terms.fetch`, patched onto the module, which
+    `books.py` resolves at call time."""
 
     def __init__(self, *, raises: Exception | None = None) -> None:
         self.calls = 0
@@ -180,13 +157,7 @@ class _Terms:
 async def test_a_trader_may_read_a_snapshot(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """Any valid access token, any role (D-018), like the preview beside it.
-
-    A snapshot mints nothing and reveals nothing beyond what the public market
-    read already shows. It is also the read every socket client makes before it
-    can render anything, so an admin gate here would mean no trader could open
-    a market page at all.
-    """
+    """Any valid access token, any role (D-018)."""
     market = _Market()
     await _warm(session, market)
 
@@ -210,12 +181,7 @@ async def test_an_administrator_may_read_a_snapshot_too(
 async def test_an_anonymous_caller_is_refused(
     client: AsyncClient, session: AsyncSession
 ) -> None:
-    """401 `invalid_token`, reusing the preview's code as the criteria require.
-
-    Every read in this backend authenticates a person from a signed token, and
-    this is no exception — even though the socket that follows it will
-    authenticate the same person again at the handshake.
-    """
+    """401 `invalid_token`, reusing the preview's code."""
     market = _Market()
     await _warm(session, market)
 
@@ -229,14 +195,7 @@ async def test_an_anonymous_caller_is_refused(
 async def test_an_expired_token_is_refused(
     client: AsyncClient, session: AsyncSession
 ) -> None:
-    """The fifteen-minute window, on this route like every other.
-
-    Worth pinning here specifically: `docs/api/realtime-service.md`'s reconnect
-    sequence has a client fetch this after its socket closed with `4408` —
-    token expired while connected — so an expired token arriving here is the
-    *expected* shape of a client that has not refreshed yet, and it must get a
-    401 rather than a stale price.
-    """
+    """An expired token gets a 401, not a stale price."""
     market = _Market()
     await _warm(session, market)
 
@@ -251,14 +210,8 @@ async def test_an_expired_token_is_refused(
 async def test_the_cookie_is_accepted_too(
     client: AsyncClient, session: AsyncSession, user_id: uuid.UUID
 ) -> None:
-    """ADR 0002: the browser sends a cookie, a service sends a header.
-
-    Load-bearing on this route for the reason it is on the preview — the
-    credential is forwarded upstream on a market's first touch, so the cookie
-    has to survive being read by `extract_access_token` and handed on as a
-    bearer token — and for one more: the browser opening the socket next has no
-    way to send a header either, so cookie-only is the whole realtime path.
-    """
+    """ADR 0002: the browser sends a cookie, through `AccessToken` too; the
+    realtime path is cookie-only."""
     market = _Market()
     await _warm(session, market)
     client.cookies.set("access_token", mint_token(user_id, UserRole.TRADER))
@@ -274,17 +227,8 @@ async def test_the_cookie_is_accepted_too(
 async def test_the_body_is_a_price_frame_without_its_type(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The criterion: `market_id`, `state_version`, `prices`, `occurred_at`.
-
-    Asserted as an exact set in both directions. A missing field is a client
-    that cannot resume its version check; an extra one is the two shapes
-    diverging, which is the thing `docs/api/realtime-service.md` promises will
-    not happen — "a client that renders a snapshot and a client that renders an
-    event should be running the same function".
-
-    `type` is absent because it belongs to the socket envelope, not to the
-    event: `realtime_service`'s `PriceEvent.frame()` adds it on the way out.
-    """
+    """The criterion: exactly `market_id`, `state_version`, `prices`,
+    `occurred_at`. `type` belongs to the socket envelope."""
     market = _Market()
     await _warm(session, market)
 
@@ -297,12 +241,7 @@ async def test_the_body_is_a_price_frame_without_its_type(
 async def test_each_price_carries_its_outcome_and_position(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The nested shape, which the check above cannot see.
-
-    `position` is what lets a categorical market render in the order the
-    administrator arranged without a second lookup, and it is the field most
-    likely to be dropped as redundant because the list is already ordered.
-    """
+    """The nested shape, which the check above cannot see."""
     market = _Market()
     await _warm(session, market)
 
@@ -318,19 +257,8 @@ async def test_each_price_carries_its_outcome_and_position(
 async def test_every_price_is_a_json_string(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The ledger's standing rule, on the last hop before a browser parses it.
-
-    A JSON number is an IEEE double by the time `JSON.parse` has run, and this
-    service is careful to keep its arithmetic exact all the way from `q`
-    through `core/lmsr.py`'s fifty digits to the quantized price. Handing the
-    result through a double at the edge throws that away, and the socket frame
-    beside it already sends a string — so a number here would make the two
-    shapes differ on the one property the page insists they share.
-
-    Checked with `isinstance` against `str` rather than by parsing, because
-    `json.loads` turns `0.6234` into a float that compares equal to
-    `Decimal("0.6234")`; the assertion has to be about the type on the wire.
-    """
+    """Prices are JSON strings at scale 4, like the socket frame's, checked by
+    type on the wire."""
     market = _Market()
     await _warm(session, market)
 
@@ -344,13 +272,8 @@ async def test_every_price_is_a_json_string(
 async def test_state_version_is_a_json_number(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The one field deliberately not a string, matching `PriceEvent`.
-
-    It is a count, not money. A client compares it with `>` against the version
-    it last rendered, and the first consumer that forgot to parse a string
-    would order `"9"` after `"10"` — silently rendering a stale price and
-    discarding the correction.
-    """
+    """Deliberately not a string, matching `PriceEvent`: a count compared with
+    `>`."""
     market = _Market()
     await _warm(session, market)
 
@@ -363,20 +286,8 @@ async def test_state_version_is_a_json_number(
 async def test_occurred_at_reaches_the_wire_with_an_offset(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """Timezone-aware, always UTC, and spelled the way the frame spells it.
-
-    A naive value serialises without the offset and the client parses it as
-    local time. The other three services carry the same guard for the same
-    reason, and CLAUDE.md records that this has already caused bugs here.
-
-    **The offset assertion alone was not enough, and this is the review that
-    found it.** `SnapshotOut` had no serializer for this field, so pydantic
-    wrote its own RFC-3339 form — a trailing `Z` — while `PriceEvent` wrote
-    `.isoformat()`'s `+00:00`. Both parse, both are aware, and the two
-    strings differ, so `SnapshotOut`'s "byte-for-byte the `price` frame"
-    was false for the one field nobody was comparing. Asserted against a
-    frame built from the same instant rather than against a literal, so this
-    stays true if the shared spelling ever changes.
+    """Timezone-aware, and spelled exactly as a `PriceEvent` built from the
+    same instant spells it: a `Z` and a `+00:00` both parse but differ.
     """
     market = _Market()
     await _warm(session, market)
@@ -409,9 +320,7 @@ async def test_occurred_at_reaches_the_wire_with_an_offset(
 async def test_the_market_id_is_echoed(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """So a client holding several open markets can route the body without
-    remembering which request it belongs to — the same reason the socket frame
-    carries it rather than relying on the subscription."""
+    """So a client holding several open markets can route the body."""
     market = _Market()
     await _warm(session, market)
 
@@ -423,12 +332,7 @@ async def test_the_market_id_is_echoed(
 async def test_a_malformed_market_id_is_422(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
-    """FastAPI's own path validation, before anything below the controller runs.
-
-    Asserted so that a market id that is not a UUID cannot reach
-    `books.ensure_open` and become a 503 about a dependency that was never
-    asked anything.
-    """
+    """FastAPI's own path validation, before anything below runs."""
     response = await client.get("/ledger/markets/not-a-uuid/snapshot", headers=trader_headers)
 
     assert response.status_code == 422
@@ -457,11 +361,7 @@ async def test_an_unpublished_market_is_409(
     trader_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """409 `market_not_published`. A draft has no terms to open a book from.
-
-    Not 404: the market exists, and telling a caller it does not would be a
-    different bug to chase.
-    """
+    """409 `market_not_published`, as the handler maps it."""
     terms = _Terms().install(monkeypatch, published=False)
 
     response = await client.get(_path(terms.market_id), headers=trader_headers)
@@ -476,12 +376,7 @@ async def test_an_unreachable_market_service_is_503(
     trader_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """503 `market_terms_unavailable`, and only on a first touch.
-
-    The request was fine and the dependency was not, which is what makes it
-    worth retrying — and after one success it can never fire for this market
-    again.
-    """
+    """503 `market_terms_unavailable`, only on a first touch."""
     terms = _Terms(raises=_errors().MarketTermsUnavailable()).install(monkeypatch)
 
     response = await client.get(_path(terms.market_id), headers=trader_headers)
@@ -494,9 +389,7 @@ async def test_the_error_envelope_is_the_one_every_service_uses(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`{"error": {"code", "message"}}`, so the frontend parses one shape across
-    the whole backend — including the socket, whose `error` frame wraps the
-    same envelope."""
+    """`{"error": {"code", "message"}}`, the envelope every service uses."""
     terms = _Terms(raises=_errors().MarketNotFound()).install(monkeypatch)
 
     body = (await client.get(_path(terms.market_id), headers=trader_headers)).json()
@@ -511,17 +404,8 @@ async def test_the_error_envelope_is_the_one_every_service_uses(
 async def test_a_closed_market_returns_prices_rather_than_an_error(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The criterion's own wording: a snapshot on a closed market "returns a
-    number".
-
-    Asserted at this layer as well as at the service layer, because the two
-    fail differently. A gate added below shows up in
-    `test_snapshot.py::test_a_closed_market_makes_no_status_hop`; a gate added
-    *here*, as a route-level check before the service is called, would pass
-    every service-layer test in the suite.
-
-    `market_closed` is 409 in `core/errors.py` and belongs to the trade path
-    alone (ADR 0017). It must never come out of this route.
+    """A closed market "returns a number" at the route too, where a gate
+    added here would pass every service test. ADR 0017.
     """
     market = _Market(status="closed")
     await _warm(session, market)
@@ -535,13 +419,7 @@ async def test_a_closed_market_returns_prices_rather_than_an_error(
 async def test_a_book_with_no_outcome_rows_is_a_500_in_the_envelope(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """Still a 500, now with the envelope and a code a log search can find.
-
-    Before the read was shared this was an `IndexError` out of `rows[0]`,
-    which no handler maps: a bare 500 with no body the frontend could parse.
-    The state takes a hand-run repair to reach, and `test_snapshot.py`
-    explains how. This holds only the HTTP shape.
-    """
+    """A 500 in the envelope, with a code a log search can find."""
     from sqlalchemy import delete  # noqa: PLC0415
 
     market = _Market()

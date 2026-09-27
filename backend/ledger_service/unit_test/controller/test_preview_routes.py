@@ -1,18 +1,9 @@
 """Status codes, authorisation and the shape on the wire. [T-1] #21
 
-Business rules are tested in `unit_test/service/test_preview.py` without HTTP.
-What is asserted here is what the controller owns: who may call the route, what
-the query string is allowed to say, which status code each refusal carries, and
-what the JSON looks like — including which fields are strings, which is a money
-decision rather than a formatting one.
-
-**The cold path is stubbed at `market_terms.fetch` rather than at a transport.**
-A route cannot be handed an `httpx.MockTransport`; the service-layer tests
-exercise the real request building, the real headers and the real parsing
-through one, and `test_market_terms.py` owns the upstream-to-error mapping. What
-is left for this layer is whether a domain error raised below it becomes the
-right status and the right code, and a stub that raises the domain error
-directly is the most honest way to ask that question.
+What the controller owns: who may call the route, what the query string may
+say, each refusal's status and code, and the JSON shape. Business rules are
+`test_preview.py`'s. The cold path is stubbed at `market_terms.fetch`, since a
+route cannot be handed a transport.
 """
 
 from __future__ import annotations
@@ -54,15 +45,11 @@ _B = Decimal("100.0000")
 _SUBSIDY = Decimal("250.0000")
 _Q = [Decimal("137.5000"), Decimal("42.2500")]
 
-# `core/lmsr.py::cost_to_trade`'s own docstring example: at `b = 100`,
-# selling 100 shares of the second outcome against this `q` pays 0.0000288,
-# which floors to nothing; buying 100 costs 0.0000784, which ceils to a tick. The service-layer test guards that the fixture really is
-# sub-tick; here it only has to reach the wire as a status code.
+# At `b = 100`, selling 100 of the second outcome pays 0.0000288, which floors
+# to nothing; buying 100 costs 0.0000784, which ceils to a tick.
 _SATURATED = [Decimal("1560.0000"), Decimal("100.0000")]
 
-# Every field in the response, and nothing else. Asserted as a set so that an
-# extra one is a failure rather than an unnoticed addition — see
-# `test_the_response_is_the_quote_and_no_second_reference`.
+# Every field in the response, and nothing else.
 _FIELDS = {
     "market_id",
     "state_version",
@@ -75,11 +62,8 @@ _FIELDS = {
     "post_trade_prices",
 }
 
-# The money and price fields. `quantity` is in here with the rest not because
-# it is normalised — D-038 echoes it at whatever scale it arrived, and
-# `test_a_quantity_is_echoed_at_the_scale_it_arrived` pins that — but because
-# it is the one field a client could otherwise round-trip through an IEEE
-# double and hand back to a confirm step as a different number.
+# The money fields, `quantity` included: it is echoed at the scale it arrived
+# (D-038) and must not round-trip through a float either.
 _DECIMAL_STRINGS = {"quantity", "total", "average_price"}
 
 
@@ -147,12 +131,8 @@ async def _warm(
 
 
 class _Terms:
-    """A stub for `market_terms.fetch`, recording what it was asked.
-
-    Patched onto the module rather than onto `books`, because `books.py` holds
-    the module and resolves `market_terms.fetch` at call time — so this is the
-    same function the real path calls, reached the same way.
-    """
+    """A stub for `market_terms.fetch`, recording what it was asked. Patched
+    onto the module, which `books.py` resolves at call time."""
 
     def __init__(self, *, raises: Exception | None = None) -> None:
         self.calls = 0
@@ -197,14 +177,7 @@ async def test_a_trader_may_preview(
     session: AsyncSession,
     trader_headers: dict[str, str],
 ) -> None:
-    """The first criterion: any valid access token, any role (D-018).
-
-    A preview mints nothing and reveals nothing beyond what the public market
-    read and the realtime snapshot already show, so the trader's own token is
-    the right credential and there is no admin gate. D-014's Notes say this
-    explicitly, and say why it does not reopen ADR 0009's deferred
-    service-auth question: that one is about a *write* route.
-    """
+    """The first criterion: any valid access token, any role (D-018, D-014)."""
     market = _Market()
     await _warm(session, market)
 
@@ -268,13 +241,7 @@ async def test_an_expired_token_is_refused(
 async def test_the_cookie_is_accepted_too(
     client: AsyncClient, session: AsyncSession, user_id: uuid.UUID
 ) -> None:
-    """ADR 0002: the browser sends a cookie, a service sends a header.
-
-    Worth asserting on this route specifically. It is the one the frontend
-    calls on every keystroke, and it is also the one that forwards the
-    credential upstream — so the cookie has to survive being read by
-    `extract_access_token` and handed on as a bearer token.
-    """
+    """ADR 0002: the browser sends a cookie, through `AccessToken` too."""
     market = _Market()
     await _warm(session, market)
     client.cookies.set("access_token", mint_token(user_id, UserRole.TRADER))
@@ -292,17 +259,8 @@ async def test_the_cookie_is_accepted_too(
 async def test_every_money_and_price_field_is_a_json_string(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The third criterion's wire half, and the ledger's standing rule.
-
-    A JSON number is an IEEE double by the time a browser has parsed it, and
-    `0.1 + 0.2` is famously not `0.3`. The ledger is careful to keep its
-    arithmetic exact all the way from `q` to the quantized total, and handing
-    the result through a double on the last hop throws that away. `BalanceOut`
-    and `OutcomePrice` both already serialise with `str()` for this reason.
-
-    Checked with `is` against `str` rather than by parsing, because
-    `json.loads` turns `1000.0` into a float that compares equal to
-    `Decimal("1000")` — the assertion has to be about the type on the wire.
+    """Money and prices are JSON strings, checked by type on the wire, since a
+    parsed float compares equal to the Decimal it lost precision from.
     """
     market = _Market()
     await _warm(session, market)
@@ -328,15 +286,8 @@ async def test_every_money_and_price_field_is_a_json_string(
 async def test_state_version_is_a_json_number(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The one field that is deliberately not a string.
-
-    It is a counter, not money: nothing is lost by putting an integer through a
-    double, and a client compares it with `>` against the version it last
-    rendered. `PriceEvent.state_version` is an `int` and the snapshot reports
-    the same, so a string here would make the frontend coerce one of the three
-    before comparing them — which is the bug [X-4] #37's ordering rule exists
-    to avoid.
-    """
+    """Deliberately not a string: a counter a client compares with `>`, an
+    `int` in the event and the snapshot too."""
     market = _Market()
     await _warm(session, market)
 
@@ -355,14 +306,8 @@ async def test_state_version_is_a_json_number(
 async def test_the_response_is_the_quote_and_no_second_reference(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The fifth criterion's "not a second one", asserted as an absence.
-
-    `state_version` is the quote reference and nothing else is. A `quote_id`,
-    an `expires_at`, a `priced_at` — any of them would be a second answer to
-    "has this market moved", and #22 checks exactly one number under its lock.
-    An exact field set is the only way to catch one being added, because every
-    other test in this suite passes happily beside an extra key.
-    """
+    """The fifth criterion: `state_version` is the only quote reference, so the
+    field set is exact."""
     market = _Market()
     await _warm(session, market)
 
@@ -380,18 +325,8 @@ async def test_the_response_is_the_quote_and_no_second_reference(
 async def test_prices_match_the_price_event_shape(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """`prices` is `PriceEvent.prices`, field for field.
-
-    Three keys per outcome — `outcome_id`, `position`, `price` — with `position`
-    a number and `price` a string, exactly as `OutcomePrice` puts them on the
-    socket. A client that renders a snapshot, a price frame and a preview
-    should be running one function over all three; a fourth shape here would
-    make that three functions.
-
-    Read off `realtime_service/model/schemas.py` rather than off
-    `docs/api/realtime-service.md`, because that page is generated from nothing
-    and its own header says so.
-    """
+    """`prices` is `PriceEvent.prices`, field for field, so one client function
+    renders the snapshot, the frame and the preview."""
     market = _Market()
     await _warm(session, market)
 
@@ -415,13 +350,8 @@ async def test_prices_match_the_price_event_shape(
 async def test_the_side_and_ids_are_echoed_back(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """What was asked comes back with the answer.
-
-    The frontend debounces this route and fires it on every keystroke, so
-    responses arrive out of order. Without the request echoed into the
-    response, a client cannot tell which quantity a quote belongs to and will
-    eventually render the cost of a number the trader has already deleted.
-    """
+    """What was asked comes back with the answer, so a client can match
+    out-of-order responses to keystrokes."""
     market = _Market()
     await _warm(session, market)
 
@@ -449,14 +379,8 @@ async def test_a_quantity_with_five_decimal_places_is_422(
     trader_headers: dict[str, str],
     quantity: str,
 ) -> None:
-    """Refused rather than rounded, and that is the whole point (D-038).
-
-    Money is `Numeric(18, 4)` and a quantity is quoted at the same scale.
-    Silently rounding `10.00005` to `10.0001` quotes a trade for a quantity the
-    trader did not type, and [T-2] #22 would then charge for that one — so the
-    preview would be accurate about a trade nobody asked for. A 422 puts the
-    correction where the typing happened.
-    """
+    """Refused rather than rounded (D-038): rounding quotes a quantity the
+    trader did not type."""
     market = _Market()
     await _warm(session, market)
 
@@ -476,12 +400,8 @@ async def test_a_quantity_that_is_not_a_positive_decimal_is_422(
     trader_headers: dict[str, str],
     quantity: str,
 ) -> None:
-    """`gt 0`. A trade of nothing has a cost of nothing and is not a question.
-
-    A negative quantity is the one worth naming: with `side` already carrying
-    the direction, a negative would be a second place for it, and a `-5` sell
-    would price a buy while the response said "sell".
-    """
+    """`gt 0`: `side` carries the direction, so a negative quantity would be a
+    second place for it."""
     market = _Market()
     await _warm(session, market)
 
@@ -501,12 +421,7 @@ async def test_an_unrecognised_side_is_422(
     trader_headers: dict[str, str],
     side: str,
 ) -> None:
-    """Two values, parsed once, at the boundary.
-
-    `"BUY"` is in the list deliberately. Case-folding it would be a kindness
-    that costs a second rule the service layer does not know about, and the
-    enum's values are the wire's.
-    """
+    """Two values, parsed once at the boundary, and not case-folded."""
     market = _Market()
     await _warm(session, market)
 
@@ -522,8 +437,7 @@ async def test_an_unrecognised_side_is_422(
 async def test_a_missing_parameter_is_422(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """All three are required. None of them has a sensible default: a preview
-    with no quantity is not a smaller question, it is no question."""
+    """All three parameters are required."""
     market = _Market()
     await _warm(session, market)
 
@@ -539,13 +453,7 @@ async def test_a_missing_parameter_is_422(
 async def test_a_malformed_market_id_is_422(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
-    """The market id is validated as a UUID before anything reads or writes.
-
-    A path parameter that is not a UUID cannot name a market, so there is
-    nothing to look up and nothing to be unavailable — 422 rather than 404 or
-    503, and settled by the route signature rather than by a check anybody
-    could forget.
-    """
+    """The market id is validated as a UUID before anything reads or writes."""
     response = await client.get(
         "/ledger/markets/not-a-uuid/preview",
         params=_params(uuid.uuid4()),
@@ -558,13 +466,8 @@ async def test_a_malformed_market_id_is_422(
 async def test_an_unknown_outcome_id_is_422_and_not_404(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The tenth criterion, exactly as it is worded.
-
-    422 because the market was found and the parameter is wrong. A 404 here
-    would collide with `market_not_found`, and a client could not tell "I sent
-    a bad outcome id" from "this market is gone" — two different bugs with two
-    different fixes.
-    """
+    """The tenth criterion: 422, because the market was found and the
+    parameter is wrong."""
     market = _Market()
     await _warm(session, market)
 
@@ -584,16 +487,8 @@ async def test_side_and_quantity_are_validated_before_any_http_call_or_write(
     trader_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The tenth criterion's first sentence, on a market with no book.
-
-    This is the ordering that matters. A malformed query string on a cold
-    market must not reach `market_service`, must not open a book and must not
-    fund a pool — otherwise a typo in a debounced keystroke costs a network
-    round trip and a ledger transaction, and a bot sending nonsense would open
-    a book for every market id it could guess.
-
-    Asserted as three facts, because the status code alone is satisfied by an
-    implementation that does all of that and *then* returns 422.
+    """A malformed query string on a cold market reaches no market_service,
+    opens no book and funds no pool, not just a 422.
     """
     terms = _Terms().install(monkeypatch)
 
@@ -625,13 +520,7 @@ async def test_side_and_quantity_are_validated_before_any_http_call_or_write(
 async def test_a_sell_larger_than_the_outcome_s_q_is_409(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The seventh criterion at the wire.
-
-    409 rather than 422: nothing about the request is malformed and the same
-    request would succeed on a market where more shares were outstanding. It is
-    the state of the book that refuses it — the same distinction
-    `InsufficientFunds` already draws one file over.
-    """
+    """The seventh criterion: 409, because the book's state refuses it."""
     market = _Market()
     await _warm(session, market)
 
@@ -648,13 +537,7 @@ async def test_a_sell_larger_than_the_outcome_s_q_is_409(
 async def test_an_unreachable_market_service_is_503(
     client: AsyncClient, trader_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-030's 503, reaching the wire unchanged through the preview.
-
-    A 503 says the market service is down and the request is worth retrying in
-    a moment, which is the only thing a client can act on. Collapsing it into a
-    500 would report a bug in the ledger for a condition that is neither a bug
-    nor the caller's fault.
-    """
+    """D-030's 503, reaching the wire unchanged through the preview."""
     from core.errors import MarketTermsUnavailable  # noqa: PLC0415
 
     terms = _Terms(raises=MarketTermsUnavailable()).install(monkeypatch)
@@ -672,13 +555,7 @@ async def test_an_unreachable_market_service_is_503(
 async def test_an_unknown_market_is_404(
     client: AsyncClient, trader_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """404 `market_not_found`, and deliberately not distinguished from a draft.
-
-    `browsing.get_published` on the other side makes "no such market", "a
-    draft" and "submitted" indistinguishable on purpose, so this side inherits
-    the ambiguity. All three are permanent, which is what separates this from
-    the 503 above: retrying never helps.
-    """
+    """404 `market_not_found`, not distinguished from a draft."""
     from core.errors import MarketNotFound  # noqa: PLC0415
 
     terms = _Terms(raises=MarketNotFound()).install(monkeypatch)
@@ -696,12 +573,7 @@ async def test_an_unknown_market_is_404(
 async def test_an_unpublished_market_is_409(
     client: AsyncClient, trader_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """409 `market_not_published`. The market exists and has no book coming.
-
-    `published_at is not None` is the condition, read off the response rather
-    than inferred from a status the market service could change independently
-    of this rule.
-    """
+    """409 `market_not_published`, as the handler maps it."""
     terms = _Terms().install(monkeypatch, published=False)
 
     response = await client.get(
@@ -717,12 +589,8 @@ async def test_an_unpublished_market_is_409(
 async def test_an_upstream_401_is_401(
     client: AsyncClient, trader_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-030: a token the ledger forwarded and market_service refused.
-
-    401 rather than 503, because this is the caller's session problem and is
-    fixed by logging in again — not by the ledger claiming its dependency is
-    unavailable and inviting a retry that will fail identically.
-    """
+    """D-030: a forwarded token market_service refused is the caller's 401,
+    not a 503."""
     from core.errors import NotAuthenticated  # noqa: PLC0415
 
     terms = _Terms(raises=NotAuthenticated()).install(monkeypatch)
@@ -743,17 +611,7 @@ async def test_an_upstream_401_is_401(
 async def test_the_route_forwards_the_caller_s_own_token_upstream(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The `AccessToken` dependency, and the reason it exists beside `CurrentUser`.
-
-    `CurrentUser` hands the route decoded claims, and claims cannot be
-    re-signed into a credential. The cold path needs the raw token, because
-    D-018's Notes have the ledger forwarding the caller's own and minting
-    nothing — a token minted here would be this service asserting an identity
-    it was not given, on a call to another service.
-
-    Both dependencies read `transport.extract_access_token`, so the header and
-    the cookie reach the upstream call identically.
-    """
+    """`AccessToken` forwards the caller's own raw token upstream (D-018)."""
     terms = _Terms().install(monkeypatch)
     token = mint_token(uuid.uuid4(), UserRole.TRADER)
 
@@ -769,14 +627,8 @@ async def test_the_route_forwards_the_caller_s_own_token_upstream(
 async def test_a_cookie_session_forwards_its_own_token_too(
     client: AsyncClient, user_id: uuid.UUID, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The browser's half of ADR 0002, through the same dependency.
-
-    The frontend sends a cookie, never a header, so this is the path that
-    actually runs in production. If `AccessToken` read the `Authorization`
-    header alone, every cold market would answer 401 from `market_service` for
-    a trader whose session was perfectly valid — and it would do it only on
-    markets nobody had previewed yet.
-    """
+    """The browser sends a cookie, never a header, and that token is the one
+    forwarded (ADR 0002)."""
     terms = _Terms().install(monkeypatch)
     token = mint_token(user_id, UserRole.TRADER)
     client.cookies.set("access_token", token)
@@ -789,18 +641,7 @@ async def test_a_cookie_session_forwards_its_own_token_too(
 async def test_a_quantity_is_echoed_at_the_scale_it_arrived(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """D-038's echo rule, at three different scales.
-
-    Every other test in this file sends the default `"10.0000"`, whose scale
-    already matches the answer a normalising implementation would give — so
-    none of them can tell "echoed as sent" from "quantized to 4". This one
-    sends `"10"` and `"1.5"`, where the two answers differ.
-
-    It is `str(Decimal)` doing the work: `Decimal("10")` keeps its exponent, so
-    the trailing zeros a client sent come back and the ones it did not send do
-    not appear. That is what lets a client match a debounced response to the
-    keystroke that asked for it by string equality.
-    """
+    """D-038's echo rule, at scales where echoing and quantizing to 4 differ."""
     market = _Market()
     await _warm(session, market)
 
@@ -818,13 +659,7 @@ async def test_a_quantity_is_echoed_at_the_scale_it_arrived(
 async def test_a_quantity_that_prices_above_the_column_is_422(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """D-040. 422 and a code of its own, not a 500 from the confirm step.
-
-    422 rather than 409 for the reason D-038 gives: this is the quantity
-    asked for, not the state of the book. `insufficient_shares_outstanding`
-    is 409 because the same request succeeds against a book holding more
-    shares; this request succeeds against no book at all.
-    """
+    """D-040. 422 with a code of its own, not a 500 from the confirm step."""
     market = _Market()
     await _warm(session, market)
 
@@ -841,19 +676,8 @@ async def test_a_quantity_that_prices_above_the_column_is_422(
 async def test_a_sell_whose_proceeds_quantize_to_zero_is_422(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """D-041 at the wire, on `cost_to_trade`'s own saturated example.
-
-    The other edge of the same quantization, so it carries the same status as
-    `quantity_too_large` with a code of its own: in both cases the number the
-    ledger would store is not what the trade is worth, and the correction is a
-    different quantity. A client needs the two apart — one is fixed by asking
-    for less and the other by asking for more — which is why this is not
-    folded into `quantity_too_large`.
-
-    Distinct from `insufficient_shares_outstanding`, which this request would
-    also be eligible for on a smaller book: here the shares exist, and it is
-    what they are worth that cannot be paid honestly.
-    """
+    """D-041 at the wire: 422 `proceeds_below_tick`, apart from
+    `quantity_too_large` because the fix is the opposite quantity."""
     market = _Market()
     await _warm(session, market, _SATURATED)
 
@@ -870,14 +694,7 @@ async def test_a_sell_whose_proceeds_quantize_to_zero_is_422(
 async def test_the_same_sub_tick_quantity_is_still_priced_on_a_buy(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The refusal is about proceeds, not about sub-tick trades.
-
-    Same market, same outcome, same quantity, opposite side: `ROUND_CEILING`
-    charges the whole tick, which is the house's favour, so there is nothing to
-    refuse. Without this, an implementation that refused both sides at the
-    route would pass the test above and quietly stop quoting half the trades
-    in a saturated outcome.
-    """
+    """The refusal is about proceeds: the same sub-tick buy is charged a tick."""
     market = _Market()
     await _warm(session, market, _SATURATED)
 
@@ -892,7 +709,7 @@ async def test_the_same_sub_tick_quantity_is_still_priced_on_a_buy(
 
 
 # =========================================================================
-# Review fixes on PR #108
+# Precision and zero totals at the wire
 # =========================================================================
 async def test_a_quantity_with_more_digits_than_the_column_is_422_not_500(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
@@ -943,18 +760,12 @@ async def test_a_buy_whose_resulting_q_overflows_is_422_quantity_too_large(
 
 
 # =========================================================================
-# Second review on PR #108
+# The documented contract
 # =========================================================================
 async def test_a_quantity_echo_preserves_scale_not_the_literal_string(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """What the `quantity` description now promises, and no more.
-
-    `str(Decimal)` keeps the exponent, so the scale a client sent comes back —
-    but not its spelling: `.5` is `0.5` and `10.` is `10`. A client matching a
-    response to a keystroke compares decimal values, not strings.
-    Characterisation: this behaviour did not change, the description did.
-    """
+    """The scale a client sent comes back, not its spelling: `.5` is `0.5`."""
     market = _Market()
     await _warm(session, market)
 
@@ -973,21 +784,9 @@ async def test_a_quantity_echo_preserves_scale_not_the_literal_string(
 async def test_the_preview_contract_does_not_offer_market_not_published(
     client: AsyncClient,
 ) -> None:
-    """A 409 for an unpublished market cannot reach a caller of this route.
-
-    `market_service`'s public detail route answers 404 for a draft or a
-    submitted market, so `market_terms.fetch` raises `MarketNotFound` before
-    `books.ensure_open` ever sees `published_at`. A documented 409 is a
-    handler the frontend writes for a state that never occurs, beside a 404
-    it may then fail to treat as the answer it actually is.
-
-    **Asserted on the error code, not on prose.** This used to grep the whole
-    serialized operation for the bare substring "not published", which covers
-    every summary, parameter description and response description on the
-    route — including the 404's, whose entire subject is drafts and submitted
-    markets. The first person to write "a market that has not been published
-    yet" in any of them would have turned this red with no defect behind it.
-    The code string is the contract; the prose around it is not.
+    """A 409 for an unpublished market cannot reach a caller of this route
+    (market_service answers 404 first), so the contract must not offer it.
+    Asserted on the error code, not on prose.
     """
     operation = (await client.get("/openapi.json")).json()["paths"][
         "/ledger/markets/{market_id}/preview"
