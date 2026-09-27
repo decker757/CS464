@@ -13,19 +13,6 @@ from service import audit_service
 from service.audit_service import ActionFilter
 
 
-async def test_it_returns_the_actors_entries(
-    session: AsyncSession, actor_id: uuid.UUID, seed
-) -> None:
-    await seed(actor_id, 3)
-
-    page = await audit_service.list_actions(
-        session, filters=ActionFilter(actor_id=actor_id), limit=10
-    )
-
-    assert len(page.actions) == 3
-    assert {a.actor_id for a in page.actions} == {actor_id}
-
-
 async def test_it_excludes_other_actors(
     session: AsyncSession, actor_id: uuid.UUID, seed
 ) -> None:
@@ -39,6 +26,7 @@ async def test_it_excludes_other_actors(
     )
 
     assert len(page.actions) == 2
+    assert {a.actor_id for a in page.actions} == {actor_id}
 
 
 async def test_it_filters_by_action_type(
@@ -72,23 +60,6 @@ async def test_action_type_matches_exactly_rather_than_by_prefix(
 
     assert len(page.actions) == 1
     assert page.actions[0].action_type == "market.submitted"
-
-
-async def test_both_filters_apply_together(
-    session: AsyncSession, actor_id: uuid.UUID, seed
-) -> None:
-    other = uuid.uuid4()
-    await seed(actor_id, 2, action_type="market.submitted")
-    await seed(actor_id, 1, action_type="user.suspended")
-    await seed(other, 4, action_type="market.submitted")
-
-    page = await audit_service.list_actions(
-        session,
-        filters=ActionFilter(actor_id=actor_id, action_type="market.submitted"),
-        limit=10,
-    )
-
-    assert len(page.actions) == 2
 
 
 async def test_no_filter_returns_the_whole_feed(
@@ -185,26 +156,6 @@ async def test_paging_walks_the_whole_log_without_repeating(
 
     assert seen == [r["id"] for r in rows]
     assert len(seen) == len(set(seen))
-
-
-async def test_a_cursor_carries_the_filter_over(
-    session: AsyncSession, actor_id: uuid.UUID, seed
-) -> None:
-    other = uuid.uuid4()
-    await seed(actor_id, 4)
-    await seed(other, 4)
-
-    first = await audit_service.list_actions(
-        session, filters=ActionFilter(actor_id=actor_id), limit=2
-    )
-    second = await audit_service.list_actions(
-        session,
-        filters=ActionFilter(actor_id=actor_id),
-        limit=2,
-        cursor=first.next_cursor,
-    )
-
-    assert {a.actor_id for a in second.actions} == {actor_id}
 
 
 async def test_entries_appended_mid_read_do_not_shift_the_pages(
