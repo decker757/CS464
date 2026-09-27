@@ -38,6 +38,20 @@ describe('LoginPage — client-side validation', () => {
     expect(alerts).toHaveLength(2)
     expect(mockLogin).not.toHaveBeenCalled()
   })
+
+  // The form is noValidate and the inputs are not `required`, so only
+  // aria-invalid can tell a screen reader which fields are wrong.
+  it('marks both empty inputs invalid', async () => {
+    const user = userEvent.setup()
+    renderLoginPage()
+    expect(screen.getByLabelText('Username or Email')).toBeValid()
+
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+
+    await screen.findAllByRole('alert')
+    expect(screen.getByLabelText('Username or Email')).toBeInvalid()
+    expect(screen.getByLabelText('Password')).toBeInvalid()
+  })
 })
 
 describe('LoginPage — integration', () => {

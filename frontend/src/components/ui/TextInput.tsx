@@ -5,5 +5,5 @@ export interface TextInputProps extends React.InputHTMLAttributes<HTMLInputEleme
 }
 
 export default function TextInput({ invalid = false, className = '', ...props }: TextInputProps) {
-  return <input {...props} className={`${controlClass(invalid)} h-[50px] ${className}`} />
+  return <input {...props} aria-invalid={invalid || undefined} className={`${controlClass(invalid)} h-[50px] ${className}`} />
 }
