@@ -22,8 +22,10 @@ or rename untouched files in a feature PR; that belongs in its own PR.
 
 ```
 src/api/          the axios instance, one file per backend service
-                  (auth.ts, markets.ts, ledger.ts) of typed request
+                  (authApi.ts, marketApi.ts, ledgerApi.ts) of typed request
                   functions, and error parsing (errors.ts)
+src/components/ui/  the shared building blocks: Button, TextInput, Field,
+                  Card, Badge, Logo, icons. Look here before styling anything
 src/components/   reusable pieces; feature-specific ones in a subfolder
                   (components/auth/, components/landing/)
 src/pages/        one per route; composes components and owns page state
@@ -34,7 +36,7 @@ src/test/         MSW server and handlers
 ```
 
 Pages and components never write a URL string. They call a typed function
-from `src/api/<service>.ts`, so every endpoint is written down once.
+from `src/api/<service>Api.ts`, so every endpoint is written down once.
 
 Tests sit next to the file they test: `LoginPage.tsx` → `LoginPage.test.tsx`.
 
@@ -67,14 +69,12 @@ If a helper is used by two files, it moves to `src/utils/` (pure) or
 - Use Tailwind classes. Colours come from the `@theme` tokens in
   `src/index.css` — `bg-smu-navy`, `text-smu-gold`, `bg-smu-cream`. Add a new
   colour there, not as a hex string in a component.
-- `src/theme/colors.ts` repeats those tokens as JS constants. Do not add to it;
-  it goes away as files move to Tailwind.
 - Hover and focus use `hover:` and `focus:` classes, never
   `onMouseEnter`/`onMouseLeave` handlers that edit `style`.
 - `style={{}}` only for values computed at runtime, like a bar width from a
   price.
-- The same set of classes in two places means a component is missing
-  (`Button`, `TextInput`, `Card`). Make the component; do not copy the classes.
+- The same set of classes in two places means a component is missing. Use the
+  one in `src/components/ui/` or add one there; do not copy the classes.
 
 ## Data and errors
 
