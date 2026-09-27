@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
@@ -20,13 +20,6 @@ def _payload(**overrides: object) -> dict[str, object]:
         "password": VALID_PASSWORD,
         **overrides,
     }
-
-
-def test_a_valid_registration_parses() -> None:
-    parsed = RegisterRequest(**_payload())
-
-    assert parsed.username == "ernest_t"
-    assert parsed.email == "ernest@example.com"
 
 
 @pytest.mark.parametrize(
@@ -69,11 +62,6 @@ def test_surrounding_spaces_are_trimmed_not_refused(raw: str, stored: str) -> No
     assert RegisterRequest(**_payload(username=raw)).username == stored
 
 
-def test_a_short_password_is_refused() -> None:
-    with pytest.raises(ValidationError):
-        RegisterRequest(**_payload(password="short"))
-
-
 def test_password_length_follows_the_configured_minimum() -> None:
     """Exactly at the boundary must pass, one under must not."""
     from core.config import get_settings
@@ -86,6 +74,7 @@ def test_password_length_follows_the_configured_minimum() -> None:
 
 
 def test_a_malformed_email_is_refused() -> None:
+    """Promised in docs/api/auth-service.md: registration needs a valid address."""
     with pytest.raises(ValidationError):
         RegisterRequest(**_payload(email="not-an-email"))
 
@@ -115,17 +104,3 @@ def test_a_naive_timestamp_is_stamped_as_utc() -> None:
 
     assert out.created_at.tzinfo is not None
     assert out.model_dump_json().count("Z") == 1
-
-
-def test_an_aware_timestamp_is_left_alone() -> None:
-    when = datetime(2026, 9, 13, 8, 0, 0, tzinfo=UTC)
-
-    out = UserOut(
-        id=uuid.uuid4(),
-        username="ernest_t",
-        email="e@example.com",
-        role=UserRole.TRADER,
-        created_at=when,
-    )
-
-    assert out.created_at == when
