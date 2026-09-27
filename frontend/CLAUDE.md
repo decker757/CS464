@@ -18,6 +18,21 @@ backend ticket, not a workaround here.
 These rules apply to code you write or substantially rewrite. Do not restyle
 or rename untouched files in a feature PR; that belongs in its own PR.
 
+## Rules for both sides
+
+The root `CLAUDE.md` ("Code style, tests and review") sets four rules that
+apply here too. It has the detail; this is the short version:
+
+- **Search before you write.** Reuse or extend what already exists. A PR that
+  would add a second copy of some logic extracts it instead.
+- **Readable beats clever.** Use the framework's own tools, but when that makes
+  a line hard to read, write the plain version.
+- **Tests earn their place.** Every test traces to an acceptance criterion, a
+  Definition of Done item, a written invariant or a real bug. A test that would
+  still pass with the feature broken gets deleted.
+- **Review against the ticket.** Run `/pr-review` before asking a person to
+  review, and nobody reviews their own work.
+
 ## Where things go
 
 ```

@@ -486,6 +486,12 @@ green, it tests nothing. A guard test named in this file or an ADR —
 `test_the_audit_grant_is_exactly_insert`, the "no credits in auth" tests, the
 socket origin test — looks trivial on purpose and is not decorative.
 
+A test that pins a promise from a ticket, an ADR or `docs/api/` also stays,
+even when today's code has no branch for it or the test reads prose: its job is
+to fail when somebody later adds the check or edits the text that breaks the
+promise. "Any role may preview" and "an oversized limit is clamped" are tests
+of this kind, and #127's reviews caught four of them removed by mistake.
+
 **Review against the ticket.** `/pr-review <PR#>` (`.claude/skills/pr-review/`)
 checks a PR against its issue's acceptance criteria and Definition of Done,
 these conventions, and the test rule above. Run it on your own branch before
