@@ -1,106 +1,100 @@
-import { GOLD, NAV } from '../../theme/colors'
+// A static, decorative market card for the landing page. None of it is live data.
 
 const SPARKLINE_POINTS: [number, number][] = [
   [0, 52], [12, 50], [24, 48], [36, 51], [48, 55],
   [60, 58], [72, 56], [84, 60], [96, 62], [108, 64],
 ]
 
+const ODDS = [
+  { label: 'YES', pct: 64, text: 'text-success', bar: 'bg-success' },
+  { label: 'NO', pct: 36, text: 'text-danger', bar: 'bg-danger' },
+]
+
 function Sparkline() {
-  const w = 108
-  const h = 36
-  const ys = SPARKLINE_POINTS.map((p) => p[1])
+  const width = 108
+  const height = 36
+  const ys = SPARKLINE_POINTS.map((point) => point[1])
   const minY = Math.min(...ys)
   const maxY = Math.max(...ys)
-  const scaleY = (y: number) => h - ((y - minY) / (maxY - minY)) * h
+  const scaleY = (y: number) => height - ((y - minY) / (maxY - minY)) * height
 
-  const pathD = SPARKLINE_POINTS.map(([x, y], i) =>
-    `${i === 0 ? 'M' : 'L'} ${x} ${scaleY(y)}`
-  ).join(' ')
-  const areaD = `${pathD} L ${w} ${h} L 0 ${h} Z`
-  const last = SPARKLINE_POINTS[SPARKLINE_POINTS.length - 1]
+  const linePath = SPARKLINE_POINTS
+    .map(([x, y], i) => {
+      const command = i === 0 ? 'M' : 'L' // move to the first point, draw a line to the rest
+      return `${command} ${x} ${scaleY(y)}`
+    })
+    .join(' ')
+  const areaPath = `${linePath} L ${width} ${height} L 0 ${height} Z`
+  const [lastX, lastY] = SPARKLINE_POINTS[SPARKLINE_POINTS.length - 1]
 
   return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: 'block', overflow: 'visible' }}>
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="block overflow-visible text-success">
       <defs>
         <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#16a34a" stopOpacity="0.18" />
-          <stop offset="100%" stopColor="#16a34a" stopOpacity="0" />
+          <stop offset="0%" stopColor="currentColor" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={areaD} fill="url(#sparkGrad)" />
-      <path d={pathD} fill="none" stroke="#16a34a" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={last[0]} cy={scaleY(last[1])} r="3" fill="#16a34a" />
+      <path d={areaPath} fill="url(#sparkGrad)" />
+      <path d={linePath} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={lastX} cy={scaleY(lastY)} r="3" fill="currentColor" />
     </svg>
   )
 }
 
 export default function MarketPreviewCard() {
   return (
-    <div
-      style={{
-        backgroundColor: '#fff',
-        borderRadius: 16,
-        border: `1px solid rgba(168,134,74,0.3)`,
-        borderTop: `3px solid ${GOLD}`,
-        boxShadow: '0 12px 48px rgba(21,30,85,0.13)',
-        padding: '24px 24px 20px',
-        width: '100%',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <span style={{ fontSize: 10, fontWeight: 700, color: GOLD, backgroundColor: 'rgba(168,134,74,0.1)', padding: '3px 9px', borderRadius: 20, textTransform: 'uppercase', letterSpacing: '0.6px' }}>
+    <div className="w-full rounded-2xl border border-t-[3px] border-smu-gold/30 border-t-smu-gold bg-white px-6 pt-6 pb-5 shadow-hero">
+      <div className="mb-3.5 flex items-center justify-between">
+        <span className="rounded-full bg-smu-gold/10 px-[9px] py-[3px] text-[10px] font-bold tracking-[0.6px] text-smu-gold uppercase">
           Open · Closes 30 Oct
         </span>
-        <span style={{ fontSize: 11, color: '#6b7280', display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#16a34a', display: 'inline-block' }} />
+        <span className="flex items-center gap-1 text-[11px] text-muted">
+          <span className="inline-block size-1.5 rounded-full bg-success" />
           Live
         </span>
       </div>
 
-      <p style={{ fontSize: 14, fontWeight: 600, color: NAV, lineHeight: 1.45, marginBottom: 16 }}>
+      <p className="mb-4 text-sm leading-[1.45] font-semibold text-smu-navy">
         Will SMU's handball team win SUNIG this year?
       </p>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 14 }}>
+      <div className="mb-3.5 flex items-end justify-between">
         <div>
-          <p style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4 }}>YES · 7-day trend</p>
+          <p className="mb-1 text-[10px] text-subtle">YES · 7-day trend</p>
           <Sparkline />
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <p style={{ fontSize: 10, color: '#9ca3af', marginBottom: 2 }}>Current</p>
-          <p style={{ fontSize: 22, fontWeight: 800, color: '#16a34a', lineHeight: 1 }}>64¢</p>
-          <p style={{ fontSize: 11, color: '#16a34a' }}>▲ +4¢ today</p>
+        <div className="text-right">
+          <p className="mb-0.5 text-[10px] text-subtle">Current</p>
+          <p className="text-[22px] leading-none font-extrabold text-success">64¢</p>
+          <p className="text-[11px] text-success">▲ +4¢ today</p>
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-        {([{ label: 'YES', pct: 64, color: '#16a34a' }, { label: 'NO', pct: 36, color: '#dc2626' }] as const).map(({ label, pct, color }) => (
-          <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color, width: 28 }}>{label}</span>
-            <div style={{ flex: 1, height: 5, backgroundColor: '#f3f4f6', borderRadius: 99, overflow: 'hidden' }}>
-              <div style={{ width: `${pct}%`, height: '100%', backgroundColor: color, borderRadius: 99 }} />
+      <div className="mb-4 flex flex-col gap-2">
+        {ODDS.map(({ label, pct, text, bar }) => (
+          <div key={label} className="flex items-center gap-2.5 text-xs">
+            <span className={`w-7 font-bold ${text}`}>{label}</span>
+            <div className="h-[5px] flex-1 overflow-hidden rounded-full bg-track">
+              <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
             </div>
-            <span style={{ fontSize: 12, fontWeight: 600, color, width: 28, textAlign: 'right' }}>{pct}%</span>
+            <span className={`w-7 text-right font-semibold ${text}`}>{pct}%</span>
           </div>
         ))}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <button style={{ flex: 1, padding: '9px 0', backgroundColor: 'rgba(22,163,74,0.1)', color: '#16a34a', fontWeight: 700, fontSize: 13, border: '1px solid rgba(22,163,74,0.25)', borderRadius: 8, cursor: 'default' }}>
-          Buy YES · 64¢
-        </button>
-        <button style={{ flex: 1, padding: '9px 0', backgroundColor: 'rgba(220,38,38,0.08)', color: '#dc2626', fontWeight: 700, fontSize: 13, border: '1px solid rgba(220,38,38,0.2)', borderRadius: 8, cursor: 'default' }}>
-          Buy NO · 36¢
-        </button>
+      <div className="mb-4 flex gap-2 text-[13px] font-bold">
+        <button type="button" className="flex-1 rounded-lg border border-success/25 bg-success/10 py-[9px] text-success">Buy YES · 64¢</button>
+        <button type="button" className="flex-1 rounded-lg border border-danger/20 bg-danger/8 py-[9px] text-danger">Buy NO · 36¢</button>
       </div>
 
-      <div style={{ backgroundColor: '#fafafa', borderRadius: 8, padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ width: 24, height: 24, borderRadius: '50%', backgroundColor: 'rgba(21,30,85,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: NAV, flexShrink: 0 }}>
+      <div className="flex items-center gap-2 rounded-lg bg-surface-muted px-3 py-[9px]">
+        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-smu-navy/10 text-[11px] font-bold text-smu-navy">
           S
         </div>
-        <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
-          <strong style={{ color: NAV }}>sarah_lim</strong> bought 20 YES shares
-          <span style={{ color: '#9ca3af' }}> · just now</span>
+        <p className="text-xs text-muted">
+          <strong className="text-smu-navy">sarah_lim</strong> bought 20 YES shares
+          <span className="text-subtle"> · just now</span>
         </p>
       </div>
     </div>

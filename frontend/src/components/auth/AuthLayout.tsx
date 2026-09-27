@@ -1,3 +1,4 @@
+import Eyebrow from '../ui/Eyebrow'
 import { ChevronLeftIcon } from '../ui/icons'
 import Logo from '../ui/Logo'
 import BrandPanel from './BrandPanel'
@@ -30,7 +31,7 @@ export default function AuthLayout({ eyebrow, title, subtitle, error, footer, ch
             Back to home
           </a>
 
-          <span className="mb-1.5 block text-[11px] font-bold tracking-[1px] text-smu-gold uppercase">{eyebrow}</span>
+          <Eyebrow className="mb-1.5 text-[11px]">{eyebrow}</Eyebrow>
           <h1 className="mb-1 text-2xl font-extrabold tracking-[-0.3px] text-smu-navy">{title}</h1>
           <p className="mb-5 text-sm leading-normal text-muted">{subtitle}</p>
 

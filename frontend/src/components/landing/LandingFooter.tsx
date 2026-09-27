@@ -1,7 +1,7 @@
 export default function LandingFooter() {
   return (
-    <footer style={{ borderTop: '1px solid rgba(168,134,74,0.2)', padding: '24px 32px', textAlign: 'center' }}>
-      <p style={{ fontSize: 13, color: '#9ca3af' }}>PredictSMU — CS464 Project</p>
+    <footer className="border-t border-smu-gold/20 px-8 py-6 text-center">
+      <p className="text-[13px] text-subtle">PredictSMU — CS464 Project</p>
     </footer>
   )
 }
