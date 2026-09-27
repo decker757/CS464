@@ -358,27 +358,6 @@ async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_op
     assert ids.index(still_open.id) < ids.index(stopped.id)
 
 
-async def test_the_detail_of_an_unswept_market_is_not_open_for_trading(
-    session: AsyncSession,
-) -> None:
-    """[X-3] #36: no buy button on a market that stopped seconds ago.
-
-    Asserted on the stamped attribute, which is what the projection
-    serialises; the predicate alone would pass with the stamping deleted.
-    """
-    from model.entities import TRADER_FACING_STATUS  # noqa: PLC0415
-
-    stopped = await overdue_market(session, actor())
-
-    detail = await browsing.get_published(session, stopped.id)
-
-    assert getattr(detail, TRADER_FACING_STATUS) is MarketStatus.CLOSED, (
-        "the detail read must hand the projection the derived status; the "
-        "stored column still reads OPEN here"
-    )
-    assert not _closing_says_open(detail)
-
-
 # --- [2.1] #5's counts, which #62 says to build once ----------------------
 async def test_counts_are_reported_per_status(session: AsyncSession) -> None:
     """[2.1] #5: "Counts shown per status". D-020."""

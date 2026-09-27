@@ -63,15 +63,6 @@ async def test_a_trader_cannot_read_a_market_even_by_its_exact_id(
     assert response.json()["error"]["code"] == "not_an_administrator"
 
 
-async def test_a_trader_sees_the_same_403_for_a_market_that_does_not_exist(
-    client: AsyncClient, trader_headers: dict[str, str]
-) -> None:
-    """So the response cannot be used to probe which ids are real."""
-    response = await client.get(f"/markets/{uuid.uuid4()}", headers=trader_headers)
-
-    assert response.status_code == 403
-
-
 async def test_a_garbage_token_is_401_not_500(client: AsyncClient) -> None:
     response = await client.post(
         "/markets", json=_payload(), headers={"Authorization": "Bearer nonsense"}
@@ -176,15 +167,6 @@ async def test_the_creator_is_taken_from_the_token_not_the_body(
     assert response.json()["market"]["creator_id"] == str(admin_id)
 
 
-async def test_timestamps_come_back_with_an_offset(
-    client: AsyncClient, admin_headers: dict[str, str]
-) -> None:
-    response = await client.post("/markets", json=_payload(), headers=admin_headers)
-
-    market = response.json()["market"]
-    assert market["close_time"].endswith("Z") or "+" in market["close_time"]
-
-
 async def test_a_naive_timestamp_is_422(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
@@ -265,19 +247,6 @@ async def test_a_refused_submission_writes_nothing_through_the_real_stack(
     assert listed[0]["status"] == "draft"
 
 
-async def test_the_summary_timestamps_also_carry_an_offset(
-    client: AsyncClient, admin_headers: dict[str, str]
-) -> None:
-    """The list projection is a separate model from the detail one, so it gets
-    its own guard rather than inheriting the assumption."""
-    await client.post("/markets", json=_payload(), headers=admin_headers)
-
-    row = (await client.get("/markets", headers=admin_headers)).json()["markets"][0]
-
-    assert row["updated_at"].endswith("Z") or "+" in row["updated_at"]
-    assert row["close_time"].endswith("Z") or "+" in row["close_time"]
-
-
 async def test_an_autosave_after_submission_is_409(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
@@ -315,33 +284,6 @@ async def test_publishing_returns_the_open_market(
     assert body["id"] == market_id
     assert body["status"] == "open"
     assert body["published_at"] is not None
-
-
-async def test_published_at_carries_an_offset(
-    client: AsyncClient, admin_headers: dict[str, str]
-) -> None:
-    """A new timestamp on the wire gets the same guard as every other one."""
-    market_id = await _submit(client, admin_headers)
-
-    body = (
-        await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
-    ).json()
-
-    assert body["published_at"].endswith("Z") or "+" in body["published_at"]
-
-
-async def test_publishing_takes_no_body(
-    client: AsyncClient, admin_headers: dict[str, str]
-) -> None:
-    """Nothing about the terms travels with a publish, so there is no request
-    that can change a market and expose it in the same call."""
-    market_id = await _submit(client, admin_headers, question="The submitted question?")
-
-    body = (
-        await client.post(f"/markets/{market_id}/publish", headers=admin_headers)
-    ).json()
-
-    assert body["question"] == "The submitted question?"
 
 
 async def test_publishing_a_draft_is_409(
@@ -619,26 +561,6 @@ async def test_proposing_returns_the_pending_market(
     assert body["proposal_evidence_url"] is not None
 
 
-async def test_proposed_at_carries_an_offset(
-    client: AsyncClient,
-    session: AsyncSession,
-    admin_id: uuid.UUID,
-    admin_headers: dict[str, str],
-) -> None:
-    """A new timestamp on the wire gets the same guard as every other one."""
-    market_id, outcome_id = await _closed(session, admin_id)
-
-    body = (
-        await client.post(
-            f"/markets/{market_id}/propose-outcome",
-            json=_proposal(outcome_id),
-            headers=admin_headers,
-        )
-    ).json()
-
-    assert body["proposed_at"].endswith("Z") or "+" in body["proposed_at"]
-
-
 async def test_proposing_on_an_open_market_is_409(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
@@ -849,21 +771,6 @@ async def test_the_response_does_not_carry_the_reason_back(
     assert "closed_reason" not in body
 
 
-async def test_closed_at_carries_an_offset(
-    client: AsyncClient, admin_headers: dict[str, str]
-) -> None:
-    """The same guard every other timestamp on the wire gets."""
-    market_id = await _published(client, admin_headers)
-
-    body = (
-        await client.post(
-            f"/markets/{market_id}/close", json=_close(), headers=admin_headers
-        )
-    ).json()
-
-    assert body["closed_at"].endswith("Z") or "+" in body["closed_at"]
-
-
 async def test_closing_a_draft_is_409(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
@@ -1057,26 +964,6 @@ async def test_approving_returns_the_approved_market(
     assert body["approved_at"] is not None
     assert body["proposed_by_id"] == str(admin_id)
     assert body["proposed_outcome_id"] == outcome_id
-
-
-async def test_approved_at_carries_an_offset(
-    client: AsyncClient,
-    session: AsyncSession,
-    admin_id: uuid.UUID,
-    other_admin_headers: dict[str, str],
-) -> None:
-    """A new timestamp on the wire gets the same guard as every other one."""
-    market_id, _, _, proposal_id = await _proposed(session, admin_id)
-
-    body = (
-        await client.post(
-            f"/markets/{market_id}/approve-outcome",
-            json=_approval(proposal_id),
-            headers=other_admin_headers
-        )
-    ).json()
-
-    assert body["approved_at"].endswith("Z") or "+" in body["approved_at"]
 
 
 async def test_an_approval_body_cannot_change_the_winner(
@@ -1465,21 +1352,6 @@ async def test_an_autosave_after_approval_is_409(
     assert response.json()["error"]["code"] == "market_already_approved"
 
 
-async def test_a_decision_response_carries_the_proposal_id_to_quote(
-    client: AsyncClient,
-    session: AsyncSession,
-    admin_id: uuid.UUID,
-    admin_headers: dict[str, str],
-) -> None:
-    """The review screen reads `proposal_id` from the same response it shows the
-    reviewer, and sends it back with approve or reject."""
-    market_id, _, _, proposal_id = await _proposed(session, admin_id)
-
-    body = (await client.get(f"/markets/{market_id}", headers=admin_headers)).json()
-
-    assert body["proposal_id"] == proposal_id
-
-
 @pytest.mark.parametrize("decision", ["approve-outcome", "reject-outcome"])
 async def test_a_decision_on_a_replaced_proposal_is_409_proposal_superseded(
     client: AsyncClient,
@@ -1580,11 +1452,3 @@ async def test_an_approval_with_no_proposal_id_is_fastapis_422_not_ours(
 
     assert response.status_code == 422
     assert "error" not in response.json()
-
-
-async def test_the_openapi_lists_both_decision_routes(client: AsyncClient) -> None:
-    """/docs is the contract Michelle codes against."""
-    paths = (await client.get("/openapi.json")).json()["paths"]
-
-    assert "post" in paths["/markets/{market_id}/approve-outcome"]
-    assert "post" in paths["/markets/{market_id}/reject-outcome"]

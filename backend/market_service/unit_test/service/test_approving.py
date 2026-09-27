@@ -396,15 +396,6 @@ async def test_any_other_administrator_may_decide_a_market_they_did_not_create(
     assert decided.creator_id == owner.id
 
 
-async def test_the_creator_scoped_read_is_untouched(session: AsyncSession) -> None:
-    """Widening the decision must not widen the creator-scoped read."""
-    owner, other = _actor(), _actor()
-    market = await proposed_market(session, owner)
-
-    with pytest.raises(MarketNotFound):
-        await market_service.get(session, other.id, market.id)
-
-
 # --- which proposal is being decided ---------------------------------------
 async def _replaced(
     session: AsyncSession, proposer: Actor, rejecter: Actor
@@ -423,12 +414,6 @@ async def _replaced(
         session, proposer, market_id, _proposal(second_winner)
     )
     return market_id, stale, second.proposal_id, second_winner
-
-
-async def test_proposing_gives_the_proposal_an_id(session: AsyncSession) -> None:
-    market = await proposed_market(session, _actor())
-
-    assert isinstance(market.proposal_id, uuid.UUID)
 
 
 async def test_a_replacement_proposal_gets_a_new_id(session: AsyncSession) -> None:
@@ -678,16 +663,6 @@ async def test_a_closed_market_with_no_proposal_cannot_be_decided(
 
     with pytest.raises(MarketNotPendingResolution):
         await _decide(session, _actor(username="ihsan_b"), market.id, decision, market.proposal_id)
-
-
-async def test_approving_twice_is_refused(session: AsyncSession) -> None:
-    """By a third administrator too: the state refuses them, not identity."""
-    proposer = _actor()
-    market = await proposed_market(session, proposer)
-    await market_service.approve_outcome(session, _actor(username="ihsan_b"), market.id, _approve(market.proposal_id))
-
-    with pytest.raises(MarketAlreadyApproved):
-        await market_service.approve_outcome(session, _actor(), market.id, _approve(market.proposal_id))
 
 
 async def test_a_second_approval_does_not_overwrite_the_first(

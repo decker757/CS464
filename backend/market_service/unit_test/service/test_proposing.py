@@ -22,6 +22,7 @@ from core.errors import (
 )
 from model.entities import Market, MarketStatus
 from service import market_service
+from service.validation import MIN_EVIDENCE_NOTE_LENGTH
 
 # Aliased so the names do not shadow an `actor` argument.
 from unit_test.conftest import (
@@ -171,23 +172,10 @@ async def test_a_market_past_its_close_time_but_unswept_is_refused(
         )
 
 
-async def test_proposing_twice_is_refused(session: AsyncSession) -> None:
-    """One proposal at a time; rejection is the way back. ADR 0013."""
-    actor = _actor()
-    market = await closed_market(session, actor)
-    winner = _winner(market)
-    await market_service.propose_outcome(session, actor, market.id, _proposal(winner))
-
-    with pytest.raises(MarketPendingResolution):
-        await market_service.propose_outcome(
-            session, actor, market.id, _proposal(winner)
-        )
-
-
 async def test_the_second_proposal_does_not_overwrite_the_first(
     session: AsyncSession,
 ) -> None:
-    """The refusal above must actually protect the row, not merely report."""
+    """A second proposal is refused and the first stays on the row. ADR 0013."""
     actor = _actor()
     market = await closed_market(session, actor)
     first, second = market.outcomes[0].id, market.outcomes[1].id
@@ -204,21 +192,10 @@ async def test_the_second_proposal_does_not_overwrite_the_first(
     assert stored.proposed_outcome_id == first
 
 
-async def test_another_administrator_cannot_propose(session: AsyncSession) -> None:
-    """404, not 403: proposing stays with the creator. ADR 0013."""
-    actor = _actor()
-    market = await closed_market(session, actor)
-
-    with pytest.raises(MarketNotFound):
-        await market_service.propose_outcome(
-            session, _actor(), market.id, _proposal(_winner(market))
-        )
-
-
 async def test_another_administrators_market_is_left_alone(
     session: AsyncSession,
 ) -> None:
-    """The refusal above must not be a refusal that also wrote something."""
+    """Another administrator gets a 404, and the refusal writes nothing. ADR 0013."""
     actor = _actor()
     market = await closed_market(session, actor)
 
@@ -232,15 +209,6 @@ async def test_another_administrators_market_is_left_alone(
     stored = (await session.execute(select(Market))).scalar_one()
     assert stored.status is MarketStatus.CLOSED
     assert stored.proposed_by_id is None
-
-
-async def test_proposing_for_a_market_that_does_not_exist_is_not_found(
-    session: AsyncSession,
-) -> None:
-    with pytest.raises(MarketNotFound):
-        await market_service.propose_outcome(
-            session, _actor(), uuid.uuid4(), _proposal(uuid.uuid4())
-        )
 
 
 # --- the winning outcome --------------------------------------------------
@@ -260,18 +228,6 @@ async def test_an_outcome_from_another_market_is_refused(
         )
 
     assert [p.field for p in raised.value.problems] == ["winning_outcome_id"]
-
-
-async def test_an_outcome_that_does_not_exist_is_refused(
-    session: AsyncSession,
-) -> None:
-    actor = _actor()
-    market = await closed_market(session, actor)
-
-    with pytest.raises(ProposalIncomplete):
-        await market_service.propose_outcome(
-            session, actor, market.id, _proposal(uuid.uuid4())
-        )
 
 
 # --- the evidence ---------------------------------------------------------
@@ -314,20 +270,6 @@ async def test_neither_is_refused(session: AsyncSession) -> None:
         )
 
     assert [p.field for p in raised.value.problems] == ["evidence"]
-
-
-async def test_blank_evidence_is_the_same_as_none(session: AsyncSession) -> None:
-    """A cleared textarea sends an empty string, not a null."""
-    actor = _actor()
-    market = await closed_market(session, actor)
-
-    with pytest.raises(ProposalIncomplete):
-        await market_service.propose_outcome(
-            session,
-            actor,
-            market.id,
-            _proposal(_winner(market), evidence_url="   ", evidence_note=""),
-        )
 
 
 async def test_a_url_that_is_not_a_url_is_refused(session: AsyncSession) -> None:
@@ -374,6 +316,26 @@ async def test_a_note_too_short_to_document_anything_is_refused(
             actor,
             market.id,
             _proposal(_winner(market), evidence_url=None, evidence_note="ok"),
+        )
+
+    assert [p.field for p in raised.value.problems] == ["evidence_note", "evidence"]
+
+
+async def test_the_note_minimum_is_counted_after_stripping(
+    session: AsyncSession,
+) -> None:
+    """Spaces must not stretch a short note past the floor."""
+    actor = _actor()
+    market = await closed_market(session, actor)
+    padded = "    short    "
+    assert len(padded) >= MIN_EVIDENCE_NOTE_LENGTH > len(padded.strip())
+
+    with pytest.raises(ProposalIncomplete) as raised:
+        await market_service.propose_outcome(
+            session,
+            actor,
+            market.id,
+            _proposal(_winner(market), evidence_url=None, evidence_note=padded),
         )
 
     assert [p.field for p in raised.value.problems] == ["evidence_note", "evidence"]

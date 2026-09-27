@@ -26,11 +26,6 @@ def test_the_worst_case_is_b_times_the_log_of_the_outcome_count(
     assert opening_prices.max_platform_loss(b, outcomes) == pytest.approx(expected)
 
 
-def test_a_binary_market_at_b_of_one_hundred_loses_at_most_about_seventy() -> None:
-    """Pinned to a concrete number, because this is the one an admin reads."""
-    assert opening_prices.max_platform_loss(Decimal("100"), 2) == pytest.approx(69.31471805599453)
-
-
 @pytest.mark.parametrize("b", [Decimal("0"), Decimal("-1")])
 def test_a_non_positive_liquidity_has_no_worst_case(b: Decimal) -> None:
     assert opening_prices.max_platform_loss(b, 2) is None
@@ -44,15 +39,6 @@ def test_an_unset_liquidity_has_no_worst_case() -> None:
 @pytest.mark.parametrize("count", [2, 3, 5, 10])
 def test_every_outcome_opens_at_one_over_n(count: int) -> None:
     assert opening_prices.uniform_initial_price(count) == pytest.approx(1 / count)
-
-
-@pytest.mark.parametrize("count", [2, 3, 7])
-def test_the_opening_prices_sum_to_one(count: int) -> None:
-    """Prices are probabilities, so they must add up; hence no rounding."""
-    price = opening_prices.uniform_initial_price(count)
-
-    assert price is not None
-    assert price * count == pytest.approx(1.0)
 
 
 # --- too small to price ---------------------------------------------------

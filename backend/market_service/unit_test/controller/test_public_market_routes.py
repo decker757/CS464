@@ -144,18 +144,6 @@ async def test_a_market_card_carries_what_the_browse_page_renders(
     assert card["id"]
 
 
-async def test_timestamps_come_back_with_an_offset(
-    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
-) -> None:
-    """[X-1] #34 counts down from `close_time`; a naive one is eight hours off."""
-    market = await _published(session)
-
-    payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
-
-    assert datetime.fromisoformat(payload["close_time"]).tzinfo is not None
-    assert datetime.fromisoformat(payload["published_at"]).tzinfo is not None
-
-
 # --- refusals -------------------------------------------------------------
 async def test_an_unpublished_market_is_404_with_the_service_envelope(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]

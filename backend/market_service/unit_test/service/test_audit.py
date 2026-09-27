@@ -12,13 +12,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import get_session_factory
 from core.errors import DraftIncomplete
 from model.audit import AdminAction
-from service import market_service
+from model.entities import Market, MarketStatus
+from service import audit, market_service
 from service.audit import Actor
 
 # Aliased so the names do not shadow an `actor` argument.
@@ -249,22 +251,6 @@ async def test_the_two_snapshots_have_the_same_shape(
         e for e in entries if e["action_type"] == AdminAction.MARKET_PUBLISHED.value
     )
     assert published["context"] == submitted["context"]
-
-
-async def test_the_publication_entry_and_the_status_commit_together(
-    session: AsyncSession, audit_reader: AsyncSession
-) -> None:
-    """ADR 0006's claim: an entry visible to a second connection is committed."""
-    actor = _actor()
-
-    market = await _publish(session, actor)
-
-    published = [
-        e for e in await _entries(audit_reader, actor)
-        if e["action_type"] == AdminAction.MARKET_PUBLISHED.value
-    ]
-    assert len(published) == 1
-    assert published[0]["target_id"] == market.id
 
 
 # --- closing a market early [2.3] #7 --------------------------------------
@@ -876,17 +862,63 @@ async def test_a_refused_submission_records_nothing(
     assert await _entries(audit_reader, actor) == []
 
 
-async def test_the_entry_and_the_market_commit_together(
-    session: AsyncSession, audit_reader: AsyncSession
+class _AuditInsertFailed(Exception):
+    """Raised only by `_fail_to_record`, so no other failure can pass for it."""
+
+
+async def _fail_to_record(*args: object, **kwargs: object) -> None:
+    """Stands in for `audit.record` when the audit insert itself fails."""
+    raise _AuditInsertFailed
+
+
+async def test_a_submission_whose_entry_fails_writes_no_market(
+    session: AsyncSession,
+    audit_reader: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The other direction: an entry a second connection sees is committed."""
+    """ADR 0006: the action and its entry commit together. If the entry fails
+    after the market's flush, the submission must not survive without it."""
     actor = _actor()
+    monkeypatch.setattr(audit, "record", _fail_to_record)
 
+    with pytest.raises(_AuditInsertFailed):
+        await _save(session, actor, status="submitted")
+    await session.rollback()
+
+    async with get_session_factory()() as fresh:
+        stored = (
+            await fresh.execute(select(Market).where(Market.creator_id == actor.id))
+        ).scalars().all()
+
+    assert stored == []
+    assert await _entries(audit_reader, actor) == []
+
+
+async def test_a_publication_whose_entry_fails_leaves_the_market_submitted(
+    session: AsyncSession,
+    audit_reader: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0006, for the entry that matters most: no market goes live without a
+    record of who published it."""
+    actor = _actor()
     market, _, _ = await _save(session, actor, status="submitted")
+    market_id = market.id
+    monkeypatch.setattr(audit, "record", _fail_to_record)
 
-    entries = await _entries(audit_reader, actor)
-    assert len(entries) == 1
-    assert entries[0]["target_id"] == market.id
+    with pytest.raises(_AuditInsertFailed):
+        await market_service.publish(session, actor, market_id)
+    await session.rollback()
+
+    async with get_session_factory()() as fresh:
+        stored = await market_service.get(fresh, actor.id, market_id)
+        status, published_at = stored.status, stored.published_at
+
+    assert status is MarketStatus.SUBMITTED
+    assert published_at is None
+    assert AdminAction.MARKET_PUBLISHED.value not in {
+        entry["action_type"] for entry in await _entries(audit_reader, actor)
+    }
 
 
 # --- the grants that make it append-only ----------------------------------
