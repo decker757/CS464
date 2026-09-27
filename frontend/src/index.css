@@ -18,7 +18,9 @@
   --color-danger: #dc2626;
   --color-success: #16a34a;
   --color-warning: #d97706;
+  --color-warning-strong: #92400e;
   --color-info: #2563eb;
+  --color-info-strong: #1d4ed8;
 
   --shadow-card: 0 2px 8px rgba(21, 30, 85, 0.05);
   --shadow-card-hover: 0 4px 20px rgba(21, 30, 85, 0.1);

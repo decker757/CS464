@@ -1,6 +1,5 @@
-import type { CSSProperties } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import type { ApiError } from '../../api/errors'
 import {
@@ -9,10 +8,14 @@ import {
   publishMarket,
   saveMarket,
 } from '../../api/marketApi'
-import AppNavbar from '../../components/AppNavbar'
+import AppLayout from '../../components/layout/AppLayout'
+import BackLink from '../../components/ui/BackLink'
+import Badge from '../../components/ui/Badge'
+import Button from '../../components/ui/Button'
+import SectionCard from '../../components/ui/SectionCard'
 import Field from '../../components/ui/Field'
-import { focusHandlers, inputBase } from '../../components/auth/inputStyles'
-import { CREAM, GOLD, NAV } from '../../theme/colors'
+import TextArea from '../../components/ui/TextArea'
+import TextInput from '../../components/ui/TextInput'
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -107,64 +110,22 @@ function sentSources(f: FormState) {
   return f.sources.filter(s => s.url.trim())
 }
 
-const sectionCard: CSSProperties = {
-  backgroundColor: '#fff',
-  border: '1px solid rgba(182,145,70,0.15)',
-  borderRadius: 16,
-  padding: '24px 28px',
-  marginBottom: 20,
-  boxShadow: '0 2px 8px rgba(21,30,85,0.05)',
+const DEFAULT_OUTCOME_PLACEHOLDERS = ['Yes', 'No']
+
+const SAVE_STATUS_TEXT: Record<SaveStatus, { text: string; className: string } | null> = {
+  idle: null,
+  saving: { text: 'Saving…', className: 'text-subtle' },
+  saved: { text: 'Saved', className: 'text-success' },
+  error: { text: 'Save failed', className: 'text-danger' },
 }
 
-const sectionTitle: CSSProperties = {
-  fontSize: 15,
-  fontWeight: 700,
-  color: NAV,
-  margin: '0 0 20px',
-  paddingBottom: 12,
-  borderBottom: '1px solid rgba(182,145,70,0.12)',
-}
-
-function textareaStyle(hasError: boolean): CSSProperties {
-  return {
-    width: '100%',
-    padding: '12px 14px',
-    fontSize: 15,
-    borderRadius: 10,
-    border: `1px solid ${hasError ? '#dc2626' : '#e2e0da'}`,
-    backgroundColor: '#fff',
-    color: NAV,
-    outline: 'none',
-    boxSizing: 'border-box',
-    transition: 'border-color 0.15s, box-shadow 0.15s',
-    resize: 'vertical',
-    fontFamily: 'inherit',
-    minHeight: 100,
-  }
-}
-
-function textareaFocus(hasError: boolean) {
-  return {
-    onFocus: (e: React.FocusEvent<HTMLTextAreaElement>) => {
-      e.target.style.borderColor = NAV
-      e.target.style.boxShadow = '0 0 0 3px rgba(21,30,85,0.08)'
-    },
-    onBlur: (e: React.FocusEvent<HTMLTextAreaElement>) => {
-      e.target.style.borderColor = hasError ? '#dc2626' : '#e2e0da'
-      e.target.style.boxShadow = 'none'
-    },
-  }
-}
-
-const ghostBtn: CSSProperties = {
-  fontSize: 13,
-  color: NAV,
-  background: 'none',
-  border: '1px dashed rgba(21,30,85,0.3)',
-  borderRadius: 8,
-  padding: '6px 14px',
-  cursor: 'pointer',
-  marginTop: 8,
+/** The red × that removes one row of a repeating list. */
+function RemoveRowButton({ label, className = '', onClick }: { label: string; className?: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} aria-label={label} className={`cursor-pointer text-xl leading-[50px] text-danger ${className}`}>
+      ×
+    </button>
+  )
 }
 
 export default function CreateMarketPage() {
@@ -304,353 +265,229 @@ export default function CreateMarketPage() {
   const seedSubsidyNum = parseNum(form.seedSubsidy)
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: CREAM }}>
-      <AppNavbar />
-      <main style={{ maxWidth: 800, margin: '0 auto', padding: '48px 32px' }}>
-
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
-          <div>
-            <Link
-              to="/markets"
-              style={{ fontSize: 13, color: '#6b7280', textDecoration: 'none', display: 'block', marginBottom: 6 }}
-            >
-              ← Markets
-            </Link>
-            <h1 style={{ fontSize: 28, fontWeight: 800, color: NAV, margin: 0, letterSpacing: '-0.3px' }}>
-              New Market
-            </h1>
-          </div>
-          <div style={{ paddingTop: 28, fontSize: 13, textAlign: 'right' }}>
-            {saveStatus === 'saving' && <span style={{ color: '#9ca3af' }}>Saving…</span>}
-            {saveStatus === 'saved' && <span style={{ color: '#16a34a' }}>Saved</span>}
-            {saveStatus === 'error' && <span style={{ color: '#dc2626' }}>Save failed</span>}
-          </div>
+    <AppLayout width="max-w-[800px]">
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <BackLink to="/markets" label="Markets" className="mb-1.5 block" />
+          <h1 className="text-[28px] font-extrabold tracking-[-0.3px] text-smu-navy">New Market</h1>
         </div>
+        {SAVE_STATUS_TEXT[saveStatus] && (
+          <span className={`pt-7 text-[13px] ${SAVE_STATUS_TEXT[saveStatus].className}`}>
+            {SAVE_STATUS_TEXT[saveStatus].text}
+          </span>
+        )}
+      </div>
 
-        {/* Section: Question */}
-        <div style={sectionCard}>
-          <h2 style={sectionTitle}>Question</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <Field id="question" label="Question *" hint={questionHint}>
-              <input
-                id="question"
-                style={inputBase(!!questionHint)}
-                value={form.question}
-                onChange={e => setForm(f => ({ ...f, question: e.target.value }))}
-                placeholder="e.g. Will Singapore core inflation be below 2% for December 2026?"
-                disabled={isLocked}
-                {...focusHandlers(!!questionHint)}
-              />
-            </Field>
-            <Field id="description" label="Description (optional)">
-              <textarea
-                id="description"
-                style={textareaStyle(false)}
-                value={form.description}
-                onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="Additional context for traders"
-                disabled={isLocked}
-                {...textareaFocus(false)}
-              />
-            </Field>
-          </div>
+      <SectionCard title="Question" className="mb-5">
+        <div className="flex flex-col gap-4">
+          <Field id="question" label="Question *" hint={questionHint}>
+            <TextInput
+              id="question"
+              invalid={!!questionHint}
+              value={form.question}
+              onChange={e => setForm(f => ({ ...f, question: e.target.value }))}
+              placeholder="e.g. Will Singapore core inflation be below 2% for December 2026?"
+              disabled={isLocked}
+            />
+          </Field>
+          <Field id="description" label="Description (optional)">
+            <TextArea
+              id="description"
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              placeholder="Additional context for traders"
+              disabled={isLocked}
+            />
+          </Field>
         </div>
+      </SectionCard>
 
-        {/* Section: Outcomes */}
-        <div style={sectionCard}>
-          <h2 style={sectionTitle}>Outcomes</h2>
-          {outcomesHint && (
-            <p style={{ fontSize: 12, color: '#9ca3af', margin: '-12px 0 16px' }}>{outcomesHint}</p>
-          )}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {form.outcomes.map((outcome, i) => {
-              const k = sentIds.outcomes.indexOf(outcome.id)
-              const outcomeHint = k >= 0 ? getHint(`outcomes[${k}].label`) : undefined
-              const initialPrice = k >= 0 ? lastSave?.market.outcomes[k]?.initial_price : undefined
-              return (
-                <div key={outcome.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                  <div style={{ flex: 1 }}>
-                    <Field id={`outcome-${i}`} label={`Outcome ${i + 1}`} hint={outcomeHint}>
-                      <input
-                        id={`outcome-${i}`}
-                        style={inputBase(!!outcomeHint)}
-                        value={outcome.label}
-                        onChange={e => updateOutcome(outcome.id, e.target.value)}
-                        placeholder={i === 0 ? 'Yes' : i === 1 ? 'No' : 'Outcome label'}
-                        disabled={isLocked}
-                        {...focusHandlers(!!outcomeHint)}
-                      />
-                    </Field>
-                  </div>
-                  {initialPrice != null && (
-                    <span style={{ paddingTop: 22, lineHeight: '50px', fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
-                      {(initialPrice * 100).toFixed(1)}% start
-                    </span>
-                  )}
-                  {form.outcomes.length > 2 && !isLocked && (
-                    <button
-                      type="button"
-                      onClick={() => removeOutcome(outcome.id)}
-                      aria-label={`Remove outcome ${i + 1}`}
-                      style={{ paddingTop: 22, lineHeight: '50px', background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 20 }}
-                    >
-                      ×
-                    </button>
-                  )}
+      <SectionCard title="Outcomes" className="mb-5">
+        {outcomesHint && <p className="-mt-3 mb-4 text-xs text-subtle">{outcomesHint}</p>}
+        <div className="flex flex-col gap-2">
+          {form.outcomes.map((outcome, i) => {
+            const k = sentIds.outcomes.indexOf(outcome.id)
+            const outcomeHint = k >= 0 ? getHint(`outcomes[${k}].label`) : undefined
+            const initialPrice = k >= 0 ? lastSave?.market.outcomes[k]?.initial_price : undefined
+            return (
+              <div key={outcome.id} className="flex items-start gap-2">
+                <div className="flex-1">
+                  <Field id={`outcome-${i}`} label={`Outcome ${i + 1}`} hint={outcomeHint}>
+                    <TextInput
+                      id={`outcome-${i}`}
+                      invalid={!!outcomeHint}
+                      value={outcome.label}
+                      onChange={e => updateOutcome(outcome.id, e.target.value)}
+                      placeholder={DEFAULT_OUTCOME_PLACEHOLDERS[i] ?? 'Outcome label'}
+                      disabled={isLocked}
+                    />
+                  </Field>
                 </div>
-              )
-            })}
-          </div>
-          {form.outcomes.length < 10 && !isLocked && (
-            <button type="button" onClick={addOutcome} style={ghostBtn}>
-              + Add outcome
-            </button>
-          )}
+                {initialPrice != null && (
+                  <span className="pt-[22px] text-xs leading-[50px] whitespace-nowrap text-muted">
+                    {(initialPrice * 100).toFixed(1)}% start
+                  </span>
+                )}
+                {form.outcomes.length > 2 && !isLocked && (
+                  <RemoveRowButton label={`Remove outcome ${i + 1}`} className="pt-[22px]" onClick={() => removeOutcome(outcome.id)} />
+                )}
+              </div>
+            )
+          })}
         </div>
+        {form.outcomes.length < 10 && !isLocked && (
+          <Button variant="dashed" size="xs" onClick={addOutcome} className="mt-2">+ Add outcome</Button>
+        )}
+      </SectionCard>
 
-        {/* Section: Timeline */}
-        <div style={sectionCard}>
-          <h2 style={sectionTitle}>Timeline</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <Field id="close-time" label="Closes at *" hint={closeTimeHint}>
-              <input
-                id="close-time"
-                type="datetime-local"
-                style={inputBase(!!closeTimeHint)}
-                value={form.closeTime}
-                onChange={e => setForm(f => ({ ...f, closeTime: e.target.value }))}
-                disabled={isLocked}
-                {...focusHandlers(!!closeTimeHint)}
-              />
-            </Field>
-            <Field id="resolution-time" label="Resolves by *" hint={resolutionTimeHint}>
-              <input
-                id="resolution-time"
-                type="datetime-local"
-                style={inputBase(!!resolutionTimeHint)}
-                value={form.resolutionTime}
-                onChange={e => setForm(f => ({ ...f, resolutionTime: e.target.value }))}
-                disabled={isLocked}
-                {...focusHandlers(!!resolutionTimeHint)}
-              />
-            </Field>
-          </div>
+      <SectionCard title="Timeline" className="mb-5">
+        <div className="grid grid-cols-2 gap-4">
+          <Field id="close-time" label="Closes at *" hint={closeTimeHint}>
+            <TextInput
+              id="close-time"
+              type="datetime-local"
+              invalid={!!closeTimeHint}
+              value={form.closeTime}
+              onChange={e => setForm(f => ({ ...f, closeTime: e.target.value }))}
+              disabled={isLocked}
+            />
+          </Field>
+          <Field id="resolution-time" label="Resolves by *" hint={resolutionTimeHint}>
+            <TextInput
+              id="resolution-time"
+              type="datetime-local"
+              invalid={!!resolutionTimeHint}
+              value={form.resolutionTime}
+              onChange={e => setForm(f => ({ ...f, resolutionTime: e.target.value }))}
+              disabled={isLocked}
+            />
+          </Field>
         </div>
+      </SectionCard>
 
-        {/* Section: Resolution */}
-        <div style={sectionCard}>
-          <h2 style={sectionTitle}>Resolution</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            <Field id="criteria" label="Resolution criteria *" hint={criteriaHint}>
-              <textarea
-                id="criteria"
-                style={textareaStyle(!!criteriaHint)}
-                value={form.criteria}
-                onChange={e => setForm(f => ({ ...f, criteria: e.target.value }))}
-                placeholder="Exactly what determines the outcome? e.g. Resolves YES if the MAS print for December 2026, as first published, is strictly below 2.0%."
-                disabled={isLocked}
-                {...textareaFocus(!!criteriaHint)}
-              />
-            </Field>
+      <SectionCard title="Resolution" className="mb-5">
+        <div className="flex flex-col gap-5">
+          <Field id="criteria" label="Resolution criteria *" hint={criteriaHint}>
+            <TextArea
+              id="criteria"
+              invalid={!!criteriaHint}
+              value={form.criteria}
+              onChange={e => setForm(f => ({ ...f, criteria: e.target.value }))}
+              placeholder="Exactly what determines the outcome? e.g. Resolves YES if the MAS print for December 2026, as first published, is strictly below 2.0%."
+              disabled={isLocked}
+            />
+          </Field>
 
-            <div>
-              <p style={{ fontSize: 13, fontWeight: 600, color: NAV, margin: '0 0 8px' }}>
-                Resolution sources *
-              </p>
-              {resolutionSourcesHint && (
-                <p style={{ fontSize: 12, color: '#9ca3af', margin: '-4px 0 12px' }}>
-                  {resolutionSourcesHint}
-                </p>
-              )}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {form.sources.map((src, i) => {
-                  const k = sentIds.sources.indexOf(src.id)
-                  const urlHint = k >= 0 ? getHint(`resolution_sources[${k}].url`) : undefined
-                  return (
-                    <div key={src.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                      <div style={{ flex: 2 }}>
-                        <Field id={`src-url-${i}`} label={i === 0 ? 'URL' : ' '} hint={urlHint}>
-                          <input
-                            id={`src-url-${i}`}
-                            style={inputBase(!!urlHint)}
-                            value={src.url}
-                            onChange={e => updateSource(src.id, 'url', e.target.value)}
-                            placeholder="https://…"
-                            disabled={isLocked}
-                            {...focusHandlers(!!urlHint)}
-                          />
-                        </Field>
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <Field id={`src-label-${i}`} label={i === 0 ? 'Label (optional)' : ' '}>
-                          <input
-                            id={`src-label-${i}`}
-                            style={inputBase(false)}
-                            value={src.label}
-                            onChange={e => updateSource(src.id, 'label', e.target.value)}
-                            placeholder="e.g. MAS statistics"
-                            disabled={isLocked}
-                            {...focusHandlers(false)}
-                          />
-                        </Field>
-                      </div>
-                      {form.sources.length > 1 && !isLocked && (
-                        <button
-                          type="button"
-                          onClick={() => removeSource(src.id)}
-                          aria-label={`Remove source ${i + 1}`}
-                          style={{ marginTop: i === 0 ? 22 : 0, lineHeight: '50px', background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 20 }}
-                        >
-                          ×
-                        </button>
-                      )}
+          <div>
+            <p className="mb-2 text-[13px] font-semibold text-smu-navy">Resolution sources *</p>
+            {resolutionSourcesHint && <p className="-mt-1 mb-3 text-xs text-subtle">{resolutionSourcesHint}</p>}
+            <div className="flex flex-col gap-2.5">
+              {form.sources.map((src, i) => {
+                const k = sentIds.sources.indexOf(src.id)
+                const urlHint = k >= 0 ? getHint(`resolution_sources[${k}].url`) : undefined
+                return (
+                  <div key={src.id} className="flex items-start gap-2">
+                    <div className="flex-[2]">
+                      <Field id={`src-url-${i}`} label={i === 0 ? 'URL' : ' '} hint={urlHint}>
+                        <TextInput
+                          id={`src-url-${i}`}
+                          invalid={!!urlHint}
+                          value={src.url}
+                          onChange={e => updateSource(src.id, 'url', e.target.value)}
+                          placeholder="https://…"
+                          disabled={isLocked}
+                        />
+                      </Field>
                     </div>
-                  )
-                })}
-              </div>
-              {!isLocked && (
-                <button type="button" onClick={addSource} style={ghostBtn}>
-                  + Add source
-                </button>
-              )}
+                    <div className="flex-1">
+                      <Field id={`src-label-${i}`} label={i === 0 ? 'Label (optional)' : ' '}>
+                        <TextInput
+                          id={`src-label-${i}`}
+                          value={src.label}
+                          onChange={e => updateSource(src.id, 'label', e.target.value)}
+                          placeholder="e.g. MAS statistics"
+                          disabled={isLocked}
+                        />
+                      </Field>
+                    </div>
+                    {form.sources.length > 1 && !isLocked && (
+                      <RemoveRowButton label={`Remove source ${i + 1}`} className={i === 0 ? 'mt-[22px]' : ''} onClick={() => removeSource(src.id)} />
+                    )}
+                  </div>
+                )
+              })}
             </div>
+            {!isLocked && (
+              <Button variant="dashed" size="xs" onClick={addSource} className="mt-2">+ Add source</Button>
+            )}
           </div>
         </div>
+      </SectionCard>
 
-        {/* Section: Pricing */}
-        <div style={sectionCard}>
-          <h2 style={sectionTitle}>Pricing</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <Field id="seed-subsidy" label="Seed subsidy (credits) *" hint={seedSubsidyHint}>
-              <input
-                id="seed-subsidy"
-                type="number"
-                min={0}
-                step="0.01"
-                style={inputBase(!!seedSubsidyHint)}
-                value={form.seedSubsidy}
-                onChange={e => setForm(f => ({ ...f, seedSubsidy: e.target.value }))}
-                placeholder="e.g. 250"
-                disabled={isLocked}
-                {...focusHandlers(!!seedSubsidyHint)}
-              />
-            </Field>
-            <Field
+      <SectionCard title="Pricing" className="mb-5">
+        <div className="grid grid-cols-2 gap-4">
+          <Field id="seed-subsidy" label="Seed subsidy (credits) *" hint={seedSubsidyHint}>
+            <TextInput
+              id="seed-subsidy"
+              type="number"
+              min={0}
+              step="0.01"
+              invalid={!!seedSubsidyHint}
+              value={form.seedSubsidy}
+              onChange={e => setForm(f => ({ ...f, seedSubsidy: e.target.value }))}
+              placeholder="e.g. 250"
+              disabled={isLocked}
+            />
+          </Field>
+          <Field id="liquidity-b" label="Liquidity parameter b" hint={liquidityBHint ?? 'Leave blank to use the server default'}>
+            <TextInput
               id="liquidity-b"
-              label="Liquidity parameter b"
-              hint={liquidityBHint ?? 'Leave blank to use the server default'}
-            >
-              <input
-                id="liquidity-b"
-                type="number"
-                min={0}
-                step="0.01"
-                style={inputBase(!!liquidityBHint)}
-                value={form.liquidityB}
-                onChange={e => setForm(f => ({ ...f, liquidityB: e.target.value }))}
-                placeholder="Default: 100"
-                disabled={isLocked}
-                {...focusHandlers(!!liquidityBHint)}
-              />
-            </Field>
+              type="number"
+              min={0}
+              step="0.01"
+              invalid={!!liquidityBHint}
+              value={form.liquidityB}
+              onChange={e => setForm(f => ({ ...f, liquidityB: e.target.value }))}
+              placeholder="Default: 100"
+              disabled={isLocked}
+            />
+          </Field>
+        </div>
+        {lastSave?.market.max_platform_loss != null && (
+          <div aria-label="max platform loss" className="mt-4 rounded-control bg-smu-cream px-4 py-3 text-[13px] text-muted">
+            Max platform loss:{' '}
+            <strong className="text-smu-navy">{lastSave.market.max_platform_loss.toFixed(4)} credits</strong>
+            {seedSubsidyNum != null && (
+              seedSubsidyNum >= lastSave.market.max_platform_loss
+                ? <span className="ml-3 font-semibold text-success">✓ Seed subsidy covers worst case</span>
+                : <span className="ml-3 font-semibold text-warning">⚠ Seed subsidy below max loss</span>
+            )}
           </div>
-          {lastSave?.market.max_platform_loss != null && (
-            <div
-              aria-label="max platform loss"
-              style={{ marginTop: 16, padding: '12px 16px', backgroundColor: CREAM, borderRadius: 10, fontSize: 13, color: '#6b7280' }}
-            >
-              Max platform loss:{' '}
-              <strong style={{ color: NAV }}>{lastSave.market.max_platform_loss.toFixed(4)} credits</strong>
-              {seedSubsidyNum != null && (
-                <span style={{
-                  marginLeft: 12,
-                  fontWeight: 600,
-                  color: seedSubsidyNum >= lastSave.market.max_platform_loss ? '#16a34a' : '#d97706',
-                }}>
-                  {seedSubsidyNum >= lastSave.market.max_platform_loss
-                    ? '✓ Seed subsidy covers worst case'
-                    : '⚠ Seed subsidy below max loss'}
-                </span>
-              )}
+        )}
+      </SectionCard>
+
+      <div className="flex flex-col items-start gap-3 pb-12">
+        {submitError && <p role="alert" className="text-[13px] text-danger">{submitError}</p>}
+
+        {!isLocked && (
+          <Button variant="primary" size="lg" onClick={handleSubmit} disabled={cannotSubmit}>
+            {submitting ? 'Submitting…' : 'Submit for Review'}
+          </Button>
+        )}
+
+        {isSubmitted && (
+          <>
+            {publishError && <p role="alert" className="text-[13px] text-danger">{publishError}</p>}
+            <div className="flex items-center gap-2 text-[13px] text-muted">
+              <Badge tone="warning">Submitted</Badge>
+              Market is ready to be published.
             </div>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'flex-start', paddingBottom: 48 }}>
-          {submitError && (
-            <p role="alert" style={{ fontSize: 13, color: '#dc2626', margin: 0 }}>
-              {submitError}
-            </p>
-          )}
-
-          {!isLocked && (
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={cannotSubmit}
-              style={{
-                backgroundColor: NAV,
-                color: '#fff',
-                border: 'none',
-                borderRadius: 10,
-                padding: '14px 32px',
-                fontSize: 15,
-                fontWeight: 600,
-                cursor: cannotSubmit ? 'default' : 'pointer',
-                opacity: cannotSubmit ? 0.6 : 1,
-              }}
-            >
-              {submitting ? 'Submitting…' : 'Submit for Review'}
-            </button>
-          )}
-
-          {isSubmitted && (
-            <>
-              {publishError && (
-                <p role="alert" style={{ fontSize: 13, color: '#dc2626', margin: 0 }}>
-                  {publishError}
-                </p>
-              )}
-              <div style={{ fontSize: 13, color: '#6b7280', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{
-                  display: 'inline-block',
-                  padding: '3px 12px',
-                  borderRadius: 20,
-                  backgroundColor: 'rgba(217,119,6,0.1)',
-                  color: '#d97706',
-                  fontWeight: 700,
-                  fontSize: 11,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                }}>
-                  Submitted
-                </span>
-                Market is ready to be published.
-              </div>
-              <button
-                type="button"
-                onClick={handlePublish}
-                disabled={publishing}
-                style={{
-                  backgroundColor: GOLD,
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 10,
-                  padding: '14px 32px',
-                  fontSize: 15,
-                  fontWeight: 600,
-                  cursor: publishing ? 'default' : 'pointer',
-                  opacity: publishing ? 0.6 : 1,
-                }}
-              >
-                {publishing ? 'Publishing…' : 'Publish Market'}
-              </button>
-            </>
-          )}
-        </div>
-      </main>
-    </div>
+            <Button variant="gold" size="lg" onClick={handlePublish} disabled={publishing}>
+              {publishing ? 'Publishing…' : 'Publish Market'}
+            </Button>
+          </>
+        )}
+      </div>
+    </AppLayout>
   )
 }

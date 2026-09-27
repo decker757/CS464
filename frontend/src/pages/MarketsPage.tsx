@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { listMarkets, type PublicMarketSummary } from '../api/marketApi'
-import AppNavbar from '../components/AppNavbar'
+import AppLayout from '../components/layout/AppLayout'
 import MarketCard from '../components/markets/MarketCard'
-import { CREAM, NAV } from '../theme/colors'
 
 export default function MarketsPage() {
   const [markets, setMarkets] = useState<PublicMarketSummary[]>([])
@@ -17,35 +16,22 @@ export default function MarketsPage() {
   }, [])
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: CREAM }}>
-      <AppNavbar />
-      <main style={{ maxWidth: 1200, margin: '0 auto', padding: '48px 32px' }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, color: NAV, marginBottom: 32, letterSpacing: '-0.3px' }}>
-          Markets
-        </h1>
+    <AppLayout width="max-w-[1200px]">
+      <h1 className="mb-8 text-[28px] font-extrabold tracking-[-0.3px] text-smu-navy">Markets</h1>
 
-        {loading && (
-          <p style={{ color: '#6b7280', fontSize: 14 }}>Loading markets…</p>
-        )}
+      {loading && <p className="text-sm text-muted">Loading markets…</p>}
 
-        {error && (
-          <p role="alert" style={{ color: '#dc2626', fontSize: 14 }}>
-            Failed to load markets. Please try again.
-          </p>
-        )}
+      {error && <p role="alert" className="text-sm text-danger">Failed to load markets. Please try again.</p>}
 
-        {!loading && !error && markets.length === 0 && (
-          <p style={{ color: '#6b7280', fontSize: 14 }}>No markets available right now.</p>
-        )}
+      {!loading && !error && markets.length === 0 && (
+        <p className="text-sm text-muted">No markets available right now.</p>
+      )}
 
-        {!loading && !error && markets.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 16 }}>
-            {markets.map((m) => (
-              <MarketCard key={m.id} market={m} />
-            ))}
-          </div>
-        )}
-      </main>
-    </div>
+      {!loading && !error && markets.length > 0 && (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
+          {markets.map((market) => <MarketCard key={market.id} market={market} />)}
+        </div>
+      )}
+    </AppLayout>
   )
 }
