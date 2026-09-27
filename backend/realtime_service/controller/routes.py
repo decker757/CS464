@@ -1,24 +1,8 @@
-"""The socket. [F-2] #42
+"""The price socket: authenticate, turn frames into hub calls, choose the close. [F-2] #42
 
-Thin in the same sense the other services' routes are thin: it authenticates,
-translates frames into hub calls, and chooses how the connection ends. The rule
-about who receives what is in `service/subscriptions.py`, and the rule about
-what is too old to send is in `service/ordering.py`.
-
-**There is no snapshot endpoint here, and there will not be one.** The ticket
-asks for one and it belongs to whoever owns `q` — which ADR 0005 puts with the
-ledger, and which does not exist yet. Serving it from this service would mean
-answering from the last event this replica happened to see, and a client that
-reconnected to a process started thirty seconds ago would receive an empty
-answer in the same shape as a true one. A cache that cannot tell you it is
-empty is worse than no cache. `docs/api/realtime-service.md` specifies the
-endpoint; ADR 0010 records why it is specified here and implemented elsewhere.
-
-**A connection ends for exactly four reasons**, and every one of them is a task
-below finishing first: the client went away, its token expired, it fell too far
-behind, or the socket broke. `asyncio.wait` on the four is what makes that list
-exhaustive rather than aspirational — there is no path where one of them
-finishes and the others keep running.
+Who receives what is `service/subscriptions.py`; what is too old to send is
+`service/ordering.py`. Do not add a snapshot endpoint here: it lives on the
+ledger, which owns `q`. ADR 0010.
 """
 
 from __future__ import annotations
@@ -60,10 +44,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Nothing below raises this deliberately. It is what an unexpected exception
-# closes with, so that a bug here is distinguishable on the client from any of
-# the four ordinary endings — 1011 is RFC 6455's "the server hit a condition
-# that prevented it from fulfilling the request", which is exactly true.
+# What an unexpected exception closes with (RFC 6455's "internal error"), so a
+# bug is distinguishable on the client from the four ordinary endings.
 _INTERNAL_ERROR = (1011, "Internal error.")
 
 
@@ -71,15 +53,11 @@ _INTERNAL_ERROR = (1011, "Internal error.")
 async def prices(websocket: WebSocket) -> None:
     """Live market prices, for any signed-in user.
 
-    No role check. A price is public to everybody who can see the market, and
-    an admin's view of it is the same number — `core/roles.py` records why the
-    claim is carried anyway.
+    No role check: a price is the same number for everybody.
     """
-    # Refused before the upgrade, unlike the token check below: accepting a
-    # cross-origin socket even briefly is the thing this check exists to
-    # prevent, and the page being refused is not one we owe a readable error
-    # to. The operator does get one, here, because a misconfigured
-    # CORS_ORIGINS looks identical from the browser.
+    # Refused before the upgrade, unlike the token: accepting a cross-origin
+    # socket even briefly is what this check prevents. Logged, because a
+    # misconfigured CORS_ORIGINS looks identical from the browser.
     if not transport.origin_allowed(websocket):
         logger.warning(
             "refused a socket from origin %r; add it to CORS_ORIGINS if it is ours",
@@ -90,10 +68,8 @@ async def prices(websocket: WebSocket) -> None:
 
     claims = _authenticate(websocket)
     if claims is None:
-        # Accepted and then closed, so the client can read a code and a reason.
-        # A handshake refused before the upgrade reaches JavaScript as an
-        # opaque failure — the WebSocket API exposes no HTTP status — and
-        # [X-4] #37 has to tell an expired session apart from a dead network.
+        # Accept, then close, so the browser can read the code: it cannot read
+        # why a handshake was refused. docs/api/realtime-service.md.
         await websocket.accept()
         await _close(websocket, NotAuthenticated.close_code, NotAuthenticated.message)
         return
@@ -107,9 +83,8 @@ async def prices(websocket: WebSocket) -> None:
     try:
         ending = await _serve(websocket, connection, claims, hub)
     finally:
-        # Before the close, and in a finally, because a connection left in the
-        # hub is a connection the next broadcast tries to write to. This is the
-        # only place it happens, and every ending passes through it.
+        # In a finally and before the close: a connection left in the hub is
+        # one the next broadcast writes to. Every ending passes through here.
         hub.forget(connection)
 
     if ending is not None:
@@ -128,8 +103,9 @@ async def _serve(
 ) -> tuple[int, str] | None:
     """Run the connection until one of its four tasks finishes.
 
-    Returns how to close, or None when the client already closed and there is
-    nothing left to say to it.
+    The client left, the token expired, the queue overflowed, or the socket
+    broke; `asyncio.wait` on all four makes that list exhaustive. Returns how
+    to close, or None when the client already closed.
     """
     tasks = {
         asyncio.create_task(_read_commands(websocket, connection, hub), name="reader"),
@@ -140,19 +116,12 @@ async def _serve(
 
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-    # Read the outcome BEFORE unwinding. Every finished task's exception has to
-    # be retrieved or asyncio logs "Task exception was never retrieved" from a
-    # garbage collection somewhere unrelated, hours later — and doing it first
-    # means that stays true even if this coroutine is itself cancelled during
-    # the cleanup below.
+    # Read the outcome before cancelling, so every finished task's exception is
+    # retrieved even if this coroutine is itself cancelled during the cleanup.
     ending = _ending(done)
 
-    # Cancelled and not awaited, which is deliberate. There is nothing to wait
-    # for: a cancelled coroutine makes no further progress of its own, it only
-    # resumes into its own CancelledError, so none of these can touch the socket
-    # again once `cancel` has been called. Awaiting them would hand control back
-    # to the event loop for no result, at the one moment a connection is most
-    # likely to be torn down underneath us.
+    # Cancelled, not awaited: a cancelled task cannot touch the socket again,
+    # and awaiting would only yield to the loop while the socket is torn down.
     for task in pending:
         task.cancel()
 
@@ -162,26 +131,11 @@ async def _serve(
 def _ending(done: set[asyncio.Task[Any]]) -> tuple[int, str] | None:
     """Decide how to close from whichever tasks finished.
 
-    More than one can land in `done`, so every exception is collected before any
-    of them is acted on, and the priority is then applied in explicit passes.
-    Both halves of that matter.
-
-    Collecting first is what retrieves every finished task's exception. An early
-    return would leave a sibling's unretrieved, and asyncio logs that from a
-    garbage collection somewhere unrelated, hours later.
-
-    Passing in priority order is what makes the result independent of iteration
-    order, and a single loop with early returns does not achieve it — a set has
-    no order, so which of two exceptions it yields first is down to object
-    hashing. That is not hypothetical here: a client vanishing finishes the
-    reader with `WebSocketDisconnect` while the pump's concurrent `send_json`
-    raises a plain `RuntimeError` from Starlette's own "cannot send once a close
-    message has been sent" guard. Judged in one pass, the same real event closed
-    as an ordinary disconnect or as `1011` depending on which task the set
-    happened to yield first.
-
-    So: a domain reason wins outright, an unexpected failure beats a disconnect,
-    and a disconnect means there is nobody left to send a close frame to.
+    Several can finish together and a set has no order, so every exception is
+    collected first (which also retrieves it), then judged by priority in
+    separate passes: a domain reason wins, an unexpected failure beats a
+    disconnect, and a disconnect needs no close frame. Do not fold this into one
+    loop with early returns; `test_ending.py` shows the race that brings back.
     """
     failures = [
         exc
@@ -206,11 +160,8 @@ def _ending(done: set[asyncio.Task[Any]]) -> tuple[int, str] | None:
 async def _read_commands(websocket: WebSocket, connection: Connection, hub: Hub) -> None:
     """Consume client commands until the client goes away.
 
-    Ends by raising `WebSocketDisconnect`, which `_ending` reads as the ordinary
-    close. A `ClientProtocolError` does not end anything: the client is told
-    what it sent wrong and the connection carries on, because one mistyped frame
-    is a bug in one frame and dropping the socket would turn it into a reconnect
-    loop.
+    Ends by raising `WebSocketDisconnect`. A `ClientProtocolError` is answered
+    with an error frame and the loop carries on.
     """
     while True:
         message = await websocket.receive()
@@ -227,10 +178,8 @@ async def _read_commands(websocket: WebSocket, connection: Connection, hub: Hub)
 def _apply(raw: str | None, connection: Connection, hub: Hub) -> None:
     """Turn one client frame into a hub call and an acknowledgement.
 
-    No rule of its own. The per-connection ceiling is the hub's, and it raises
-    `TooManySubscriptions` — a `ClientProtocolError` like any other, which
-    `_read_commands` turns into an error frame without knowing what it was
-    about.
+    The subscription ceiling is the hub's rule; its `TooManySubscriptions` is a
+    `ClientProtocolError` like any other.
     """
     command = _parse(raw)
 
@@ -246,9 +195,7 @@ def _apply(raw: str | None, connection: Connection, hub: Hub) -> None:
 def _parse(raw: str | None) -> ClientCommand:
     """Validate a frame onto `ClientCommand`, or say which half was wrong.
 
-    `raw` is None for a binary frame. The protocol is JSON text and a client
-    sending bytes has the same problem as one sending "hello", so it gets the
-    same answer rather than an internal error.
+    `raw` is None for a binary frame, which gets the same answer as bad JSON.
     """
     if raw is None:
         raise MalformedCommand
@@ -268,55 +215,35 @@ def _parse(raw: str | None) -> ClientCommand:
 
 
 def _which_field(exc: ValidationError) -> ClientProtocolError:
-    """Pick the more useful of two errors from a validation failure.
-
-    "Your command was invalid" is true and useless. There are exactly two
-    fields, and telling somebody which one they got wrong is the difference
-    between a fix and a bisect.
-    """
+    """The error naming the field that failed: `action`, else `market_id`."""
     fields = {str(error["loc"][0]) for error in exc.errors() if error.get("loc")}
     return UnknownAction() if "action" in fields else InvalidMarketId()
 
 
 async def _expire(claims: TokenClaims) -> None:
-    """Close the connection when its access token runs out.
+    """Raise `SessionExpired` when the access token runs out.
 
-    The only place in this repository where a token's expiry is enforced by
-    anything other than the next request failing. Every HTTP service checks
-    `exp` once and is finished in milliseconds; a socket authorised on a
-    fifteen-minute token can still be open hours later, and ADR 0002's
-    "the 15-minute TTL is what bounds that window" is only true of this service
-    if something acts on the bound.
+    A socket can outlive its fifteen-minute token by hours; this is what keeps
+    ADR 0002's bound true here. ADR 0010.
     """
     await asyncio.sleep(claims.seconds_until_expiry())
     raise SessionExpired
 
 
 async def _fail_when_dropped(connection: Connection) -> None:
-    """Turn a failure recorded by the fan-out into an ending.
-
-    `Connection.enqueue` cannot raise — it runs inside the broadcast loop — so a
-    connection that overflows records the reason and sets an event. This is the
-    task waiting on it.
-    """
+    """Raise the failure `Connection.enqueue` recorded, since it cannot raise itself."""
     raise await connection.wait_failed()
 
 
 async def _close(websocket: WebSocket, code: int, reason: str) -> None:
-    """Close once, with a reason short enough to be legal.
-
-    RFC 6455 caps a close reason at 123 bytes and treats a longer one as a
-    protocol error, so the client would lose the reason entirely at exactly the
-    moment it most needs it.
-    """
+    """Close once, with the reason cut to `MAX_CLOSE_REASON_BYTES`."""
     if websocket.client_state is WebSocketState.DISCONNECTED:
         return
 
     try:
         await websocket.close(code=code, reason=_truncate(reason))
     except RuntimeError:
-        # The client closed between the check above and here. There is nobody
-        # left to tell, and this is the ordinary shape of a browser tab closing.
+        # The client closed between the check above and here: a tab closing.
         logger.debug("socket already gone before close")
 
 
@@ -324,6 +251,5 @@ def _truncate(reason: str) -> str:
     encoded = reason.encode()
     if len(encoded) <= MAX_CLOSE_REASON_BYTES:
         return reason
-    # errors="ignore" drops a multi-byte character the cut landed inside,
-    # rather than raising on a reason that was only ever advisory.
+    # errors="ignore" drops a character the cut split, rather than raising.
     return encoded[:MAX_CLOSE_REASON_BYTES].decode(errors="ignore")

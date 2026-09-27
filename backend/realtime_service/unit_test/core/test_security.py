@@ -100,14 +100,8 @@ def test_seconds_until_expiry_counts_down() -> None:
 
 
 def test_seconds_until_expiry_floors_at_zero() -> None:
-    """Never negative, because it is passed to `asyncio.sleep`.
-
-    A negative sleep raises, and it would raise inside the task supervising a
-    connection that had just been authorised — turning "this token is already
-    expired" into an internal error. `decode_access_token` refuses an expired
-    token, so this is the defence for a token that expires between the decode
-    and the watchdog starting.
-    """
+    """Never negative, because the expiry watchdog sleeps on it; this covers a
+    token that expires between the decode and the watchdog starting."""
     already_gone = TokenClaims(
         user_id=uuid.uuid4(),
         username="ernest_t",
@@ -135,15 +129,11 @@ def test_seconds_until_expiry_takes_an_injected_clock() -> None:
 def test_nothing_in_this_service_mints_a_token() -> None:
     """This service consumes identity and never issues it.
 
-    Under HS256 the secret it verifies with would also let it sign, so the
-    restriction is architectural rather than cryptographic and there is nothing
-    but this test holding it. ADR 0002.
+    Under HS256 the verifying secret could also sign, so only this test holds
+    the line. ADR 0002.
     """
-    # The service's own tree AND the shared package. [F-6] #76 moved the
-    # verifier into `backend/shared/security.py`, so a scan rooted at this
-    # service alone would no longer look at the file that actually decodes a
-    # token — and adding `create_access_token` there would hand a minting path
-    # to all four consuming services with this test still green.
+    # `shared/` too: the verifier lives there, and a minting path added beside
+    # it would reach every consuming service.
     service_root = pathlib.Path(__file__).resolve().parents[2]
     shared_root = service_root.parent / "shared"
 

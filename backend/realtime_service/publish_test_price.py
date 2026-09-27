@@ -1,21 +1,13 @@
-"""Publish a price event by hand, so the socket can be driven before trading exists.
+"""Publish one price event by hand, to drive the socket without a trade.
 
-[T-2] #22 is the real producer. Until it lands nothing publishes anything, which
-would leave [X-4] #37 building a live-price client against a feed that is
-silent — and "my subscription is not working" and "nobody has traded" look
-identical from a browser.
-
-This is not a fixture and not a mock. It imports the same `PriceEvent` and the
-same `publish` the service validates against, so a payload it sends is a payload
-[T-2] #22 could have sent, and a client that works against it works against the
-real thing.
+Uses the service's own `PriceEvent` and `publish`, so what it sends is what a
+real producer could send.
 
     cd backend/realtime_service
     .venv/bin/python publish_test_price.py <market-id> [state-version] [yes-price]
 
-With no arguments it invents a market id and prints it, which is enough to
-subscribe to from a browser console. Re-run with a higher state version to move
-the price; re-run with a lower one to watch the staleness guard drop it.
+With no arguments it invents a market id and prints it. Re-run with a higher
+state version to move the price, or a lower one to watch the gate drop it.
 """
 
 from __future__ import annotations

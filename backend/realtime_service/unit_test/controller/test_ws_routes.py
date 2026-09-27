@@ -1,16 +1,8 @@
 """The socket: who may open one, what it accepts, and how it ends.
 
-Driven through Starlette's `TestClient`, which speaks the real WebSocket
-protocol over ASGI rather than over a network — so the handshake, the frames
-and the close codes are the ones a browser would see.
-
-Delivery is exercised by publishing to Redis rather than by calling
-`hub.broadcast` from the test. That is not thoroughness for its own sake: the
-app runs in its own event loop in another thread, `asyncio.Queue` is not thread
-safe, and a broadcast issued from the test thread could enqueue a frame without
-ever waking the task waiting to send it. Publishing puts the broadcast back on
-the loop that owns the connection, which is also the only path production ever
-takes.
+Delivery is driven by publishing to Redis, not by calling `hub.broadcast`: the
+app runs its own event loop in another thread, and `asyncio.Queue` is not
+thread safe, so a broadcast from the test thread might never wake the pump.
 """
 
 from __future__ import annotations
@@ -40,10 +32,8 @@ _ALLOWED_ORIGIN = "http://localhost:5173"
 def connected_client(client, redis_url: str):
     """A client whose bus has actually subscribed, plus a publisher.
 
-    Redis pub/sub has no buffering: a message published before the subscription
-    lands is discarded rather than delayed. Polling `/health` is how this suite
-    knows the bus is live, and it is the reason that endpoint reports the bus
-    separately from `status`.
+    Waits on `/health` because Redis discards a message published before the
+    subscription lands.
     """
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
@@ -136,11 +126,9 @@ def test_the_header_wins_over_the_cookie(client, market_id: uuid.UUID) -> None:
 
 
 def test_a_socket_from_an_unlisted_origin_is_refused(client) -> None:
-    """CORS does not apply to WebSockets — there is no preflight and the browser
-    enforces nothing — so this check is hand-written in `controller/transport.py`
-    and this is the test holding it. It is what stops a page on another origin
-    opening a feed as a logged-in victim on the day ADR 0002's `SameSite=None`
-    possibility arrives."""
+    """The guard on the hand-written origin check: CORS does not apply to
+    WebSockets, so this is the only thing refusing another site's page.
+    ADR 0010."""
     headers = {**bearer(), "origin": "http://evil.test"}
 
     with pytest.raises(WebSocketDisconnect):
@@ -331,11 +319,8 @@ def test_a_stale_price_never_reaches_the_socket(
 def test_a_socket_closes_when_its_token_expires(
     client, market_id: uuid.UUID
 ) -> None:
-    """The only place in this repository where a token's expiry is enforced by
-    anything other than the next request failing. Without it, a socket
-    authorised on a fifteen-minute token would keep streaming for hours, and
-    ADR 0002's "the 15-minute TTL is what bounds that window" would not be true
-    of this service."""
+    """Without this a socket outlives its fifteen-minute token by hours.
+    ADR 0010."""
     with client.websocket_connect(
         "/ws/prices", headers=bearer(expires_in=1)
     ) as websocket:

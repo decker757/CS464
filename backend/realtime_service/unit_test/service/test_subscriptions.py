@@ -1,9 +1,5 @@
-"""The fan-out: who receives which market's events.
-
-Driven entirely through the `Subscriber` protocol, with no socket anywhere —
-which is the point of the protocol. Every rule here is a business rule and it is
-tested without the transport, exactly as the backend conventions require.
-"""
+"""The fan-out: who receives which market's events. Driven through the
+`Subscriber` protocol, with no socket."""
 
 from __future__ import annotations
 
@@ -106,7 +102,8 @@ def test_forget_removes_a_subscriber_from_every_market(
 
 
 def test_forget_is_safe_for_a_subscriber_that_never_subscribed() -> None:
-    """Every connection closed for an expired token before it said a word."""
+    """A client that leaves, or whose token expires mid-connection, before it
+    subscribes to anything."""
     Hub().forget(Recorder())  # must not raise
 
 
@@ -199,14 +196,8 @@ def test_connection_count_ignores_a_subscriber_watching_nothing(
 def test_unsubscribing_from_the_last_market_leaves_no_connection_behind(
     market_id: uuid.UUID,
 ) -> None:
-    """The half of the bookkeeping that `forget` does not cover.
-
-    `connection_count` says "subscribers holding at least one subscription", and
-    a client that unsubscribes from its last market while staying connected
-    holds none. This failed while the two indexes pruned differently: the market
-    side dropped its emptied set and the subscriber side left one sitting under
-    the key, so the count stayed at one until the socket actually closed.
-    """
+    """Regression: the two indexes once pruned differently, and a client that
+    unsubscribed from its last market was still counted until it disconnected."""
     hub = Hub()
     watcher = Recorder()
     hub.subscribe(watcher, market_id)
@@ -239,12 +230,7 @@ def test_a_connection_may_not_watch_unlimited_markets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A client that subscribes in a loop is the cheapest denial of service
-    available against a server whose whole job is holding connections open.
-
-    Tested here rather than through a socket because it is a rule about the
-    hub's own state. It used to live in the route, which meant a second caller
-    — a bulk-subscribe command, an admin tool — would have bypassed it silently.
-    """
+    against a server that holds connections open."""
     monkeypatch.setattr(get_settings(), "max_subscriptions_per_connection", 2)
     hub = Hub()
     watcher = Recorder()

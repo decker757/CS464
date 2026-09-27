@@ -1,40 +1,17 @@
-"""Domain errors.
+"""Domain errors, and the close code each one ends a socket with. [F-2] #42
 
-Plain exceptions with no framework imports, so the service layer can raise them
-without knowing WebSockets exist.
-
-**There is no `controller/errors.py` in this service, and that is deliberate.**
-Every other service here maps a domain error onto an HTTP status code, because
-every other service answers HTTP requests. This one's only HTTP surface is
-`/health` and `/docs`, and neither can raise anything below. What this service
-actually has to get right is the *socket* vocabulary: which conditions close a
-connection, with what code, and which are reported in band and leave it open.
-That is the table below, and it is the contract [X-4] #37's client reads.
-
-Close codes are in the 4000-4999 range, which RFC 6455 reserves for the
-application and which is the only range a browser can read back off a closed
-socket together with a reason. A client has to tell "your token expired, get a
-new one and reconnect" apart from "the network went away", and #37's last three
-acceptance criteria are all about that distinction.
-
-| Condition | Code | What the client should do |
-| --- | --- | --- |
-| No, malformed or foreign token | 4401 | Refresh the session, then reconnect. |
-| Origin not in the allowlist | 4403 | Nothing. This is not your server. |
-| Token expired mid-connection | 4408 | Refresh the session, then reconnect. |
-| Too far behind to catch up | 4409 | Reconnect, snapshot, resume. |
-
-Everything else is a `ClientProtocolError`: the connection stays open and the
-client is told what it sent wrong. A malformed frame is a bug in one caller,
-not grounds for dropping a session that is otherwise fine.
+No framework imports, so `service/` can raise these without knowing about
+WebSockets. The close codes, and what a client should do about each, are the
+table in `docs/api/realtime-service.md`. `OriginNotAllowed` is the exception:
+it is refused before the upgrade, so the browser sees an HTTP 403 and never a
+4403 close frame. A `ClientProtocolError` is answered in band and leaves the
+socket open.
 """
 
 from __future__ import annotations
 
-# RFC 6455 caps a close reason at 123 bytes, and a frame that exceeds it is a
-# protocol error rather than a truncated message — so the reason gets cut in
-# `controller/routes.py` before it is sent. Every `message` below is written to
-# fit, but the cut is there because the next one somebody adds will not be.
+# RFC 6455's limit on a close reason. A longer one is a protocol error and the
+# client loses the reason entirely, so `controller/routes.py` cuts to this.
 MAX_CLOSE_REASON_BYTES = 123
 
 
@@ -49,14 +26,8 @@ class RealtimeError(Exception):
 class NotAuthenticated(RealtimeError):
     """Missing, malformed, expired or foreign access token at the handshake.
 
-    Note the shape this forces on `controller/routes.py`: the connection is
-    accepted and then immediately closed, rather than refused outright. A
-    handshake rejected before the upgrade completes reaches a browser as an
-    opaque failure with no code and no reason — the WebSocket API gives
-    JavaScript no way to read the HTTP status — so the client cannot tell an
-    expired session from a service that is down, and #37's "visibly indicated"
-    state becomes a guess. Accepting costs one round trip and buys the client
-    an answer.
+    Sent by accepting and then closing, not by refusing the upgrade: a browser
+    cannot read why a handshake was refused. docs/api/realtime-service.md.
     """
 
     close_code = 4401
@@ -67,21 +38,9 @@ class NotAuthenticated(RealtimeError):
 class OriginNotAllowed(RealtimeError):
     """The handshake carried a browser Origin that is not in CORS_ORIGINS.
 
-    This check has to be written out by hand, and it is the one piece of this
-    service that has no counterpart in the other four. CORS does not apply to
-    WebSockets: there is no preflight, and the browser enforces nothing about
-    who may open one. The `CORSMiddleware` in `main.py` guards `/health` and
-    `/docs` and does not look at this route.
-
-    What stops a page on evil.com opening a socket here as a logged-in user
-    today is `SameSite=Lax`, which keeps the cookie off a cross-site handshake.
-    ADR 0002 records that switching to `SameSite=None` is a real possibility
-    before [5.3] #19 — and on the day that happens, this check is the only
-    thing standing between a logged-in victim and a live feed opened by
-    somebody else's page.
-
-    Absent Origin is allowed: a service-to-service caller sends none, and the
-    attack this refuses is a browser attack, which by definition sends one.
+    CORS does not apply to WebSockets, so this check is hand-written, and on
+    the day ADR 0002's `SameSite=None` arrives it is the only defence against a
+    feed opened by another site. ADR 0010.
     """
 
     close_code = 4403
@@ -90,14 +49,7 @@ class OriginNotAllowed(RealtimeError):
 
 
 class SessionExpired(RealtimeError):
-    """The access token ran out while the connection was open.
-
-    Not a handshake failure — this connection was authorised, and stopped
-    being. Every other service in this repository checks `exp` once per request
-    and is finished in milliseconds. A socket accepted on a fifteen-minute
-    token can still be open hours later, and ADR 0002's bounded-revocation
-    argument only holds if something eventually acts on the bound.
-    """
+    """The access token ran out while the connection was open. ADR 0010."""
 
     close_code = 4408
     code = "session_expired"
@@ -105,13 +57,9 @@ class SessionExpired(RealtimeError):
 
 
 class SlowConsumer(RealtimeError):
-    """The connection banked more undelivered events than it is allowed to.
+    """The connection banked more undelivered frames than it may.
 
-    Dropped rather than buffered, and this is the right answer rather than a
-    concession. Everything queued behind a stalled client is a price that is
-    already stale, so delivering it late is worse than not delivering it at
-    all. The client reconnects, fetches a snapshot and resumes from the truth,
-    which is the protocol working exactly as [X-4] #37 specifies.
+    Dropped, not buffered: queued prices are already stale. ADR 0010.
     """
 
     close_code = 4409
@@ -122,10 +70,8 @@ class SlowConsumer(RealtimeError):
 class ClientProtocolError(RealtimeError):
     """The client sent something this server does not understand.
 
-    Reported in band and the connection stays open. A client that mistypes one
-    frame has a bug in one frame, and dropping the socket would turn that into
-    a reconnect storm against a server whose entire job is holding connections
-    open.
+    Answered in band and the socket stays open: one bad frame is a bug in one
+    frame, and closing would turn it into a reconnect storm.
     """
 
     code = "bad_command"
@@ -149,11 +95,8 @@ class UnknownAction(ClientProtocolError):
 class InvalidMarketId(ClientProtocolError):
     """`market_id` was absent or not a UUID.
 
-    Deliberately not "no such market". This service holds no market table and
-    cannot tell a market that does not exist from one that exists and has never
-    traded — it would need a grant on `market.*`, which `sql/02-schemas.sql`
-    exists to refuse. Subscribing to an id that names nothing is legal and
-    silent, and simply never delivers anything.
+    Never "no such market": this service holds no market table and cannot
+    tell. docs/api/realtime-service.md.
     """
 
     code = "invalid_market_id"
@@ -163,10 +106,8 @@ class InvalidMarketId(ClientProtocolError):
 class TooManySubscriptions(ClientProtocolError):
     """This connection is already watching as many markets as it may.
 
-    Refused rather than evicting the oldest subscription, because a client that
-    hits this has lost track of what it is watching, and silently dropping a
-    market it believes it is subscribed to would show somebody a price that
-    quietly stopped updating.
+    Refused rather than evicting the oldest, which would silently freeze a
+    price the client believes it is still watching.
     """
 
     code = "too_many_subscriptions"

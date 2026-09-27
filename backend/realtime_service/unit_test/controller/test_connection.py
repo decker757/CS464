@@ -1,10 +1,7 @@
 """One client's socket, and the queue in front of it.
 
-Driven in the test's own event loop with a stand-in for the WebSocket, which is
-what makes the overflow deterministic. It cannot be provoked through
-`TestClient`: that harness buffers everything the server sends into an unbounded
-stream, so `send_json` never blocks, the pump always keeps up and the queue
-never fills. Real network backpressure has no equivalent there.
+Uses a stand-in socket, because `TestClient` buffers every send without limit
+and so can never fill the queue.
 """
 
 from __future__ import annotations

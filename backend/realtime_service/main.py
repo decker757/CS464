@@ -1,14 +1,7 @@
-"""Composition root for the realtime service.
+"""Composition root: wires settings, the bus and the socket together. [F-2] #42
 
-Wires configuration, the bus and the socket together. This is the only place
-that decides which concrete implementations run.
-
-**Note what is missing: there is no database.** No engine, no session, no
-`create_all`, no schema and no login role, which makes this the only backend
-service that needs nothing from `sql/` and cannot be broken by anything in it.
-That is not a coincidence — it is ADR 0010's argument for why a fifth service
-was affordable at all. This one holds connections and relays frames; every
-durable fact it repeats belongs to somebody else.
+There is no database here and there must not be one: no engine, no session,
+nothing in `sql/`. ADR 0010.
 """
 
 from __future__ import annotations
@@ -41,10 +34,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # The bus returns only on cancellation, so this is the shutdown path and
-        # not an error path. Awaiting it is what makes the Redis connection
-        # close before the process exits rather than during interpreter
-        # teardown, where the traceback would be unreadable.
+        # The bus returns only on cancellation. Awaiting it closes the Redis
+        # connection before the process exits, not during interpreter teardown.
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -68,10 +59,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Guards /health and /docs, and nothing else: CORS does not apply to
-    # WebSocket handshakes. The socket's origin check is a hand-written one in
-    # `controller/transport.py`, and that split is the single easiest thing to
-    # get wrong about this service.
+    # Guards /health and /docs only: CORS does not apply to a WebSocket
+    # handshake. `controller/transport.py::origin_allowed` is the socket's
+    # origin check and is not a duplicate of this. ADR 0010.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
