@@ -4,16 +4,21 @@ import { getMarketSnapshot, type OutcomePrice, type PriceState } from '../api/le
 
 export type { OutcomePrice }
 
+// [X-4] #37 AC 6: the UI displays connection state.
+export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'degraded'
+
 const WS_BASE = import.meta.env.VITE_REALTIME_WS_URL ?? 'ws://localhost:8004'
 const MAX_RETRY_MS = 30_000
 
-// The market's current prices: the snapshot when the page opens, then every
-// live update. null until the first one arrives, and while reconnecting.
-// Follows "The two sequences a client needs" in docs/api/realtime-service.md.
-export function useMarketPrices(marketId: string | null): OutcomePrice[] | null {
-  // Tagged with the market they belong to, so switching markets shows null
-  // straight away rather than the previous market's prices.
-  const [state, setState] = useState<{ marketId: string; prices: OutcomePrice[] | null } | null>(null)
+type MarketPriceState = {
+  marketId: string
+  prices: OutcomePrice[] | null
+  status: ConnectionStatus
+}
+
+// Current prices and connection status; retains last known prices during reconnect rather than blanking them.
+export function useMarketPrices(marketId: string | null): { prices: OutcomePrice[] | null; status: ConnectionStatus } {
+  const [state, setState] = useState<MarketPriceState | null>(null)
 
   useEffect(() => {
     if (!marketId) return
@@ -32,7 +37,7 @@ export function useMarketPrices(marketId: string | null): OutcomePrice[] | null 
     const apply = (s: PriceState) => {
       if (cancelled || s.state_version <= version) return
       version = s.state_version
-      setState({ marketId, prices: [...s.prices].sort((a, b) => a.position - b.position) })
+      setState({ marketId, prices: [...s.prices].sort((a, b) => a.position - b.position), status: 'connected' })
     }
 
     const loadSnapshot = () => getMarketSnapshot(marketId).then(apply)
@@ -61,12 +66,19 @@ export function useMarketPrices(marketId: string | null): OutcomePrice[] | null 
 
       socket.onclose = (event: CloseEvent) => {
         if (cancelled) return
-        // Blank the prices rather than leave them frozen, and forget the
-        // version so the next snapshot is accepted even if nothing traded.
+        // Forget the version so the next snapshot is accepted even if nothing traded.
         version = -1
-        setState({ marketId, prices: null })
-        // Origin refused: retrying cannot help.
-        if (event.code === 4403) return
+
+        // Origin refused: retrying cannot help. Mark degraded but keep last
+        // known prices visible (AC 7).
+        if (event.code === 4403) {
+          setState(prev => prev ? { ...prev, status: 'degraded' } : { marketId, prices: null, status: 'degraded' })
+          return
+        }
+
+        // Keep last known prices while reconnecting (AC 7: retain stale prices
+        // during temporary loss rather than blanking the display).
+        setState(prev => prev ? { ...prev, status: 'reconnecting' } : { marketId, prices: null, status: 'reconnecting' })
 
         const delay = Math.min(1000 * 2 ** attempt, MAX_RETRY_MS)
         attempt += 1
@@ -80,7 +92,10 @@ export function useMarketPrices(marketId: string | null): OutcomePrice[] | null 
         // anyway. If even that is refused, the session is over; stop.
         if (event.code === 4401 || event.code === 4408) {
           loadSnapshot().then(reconnect, (err: unknown) => {
-            if (axios.isAxiosError(err) && err.response?.status === 401) return
+            if (axios.isAxiosError(err) && err.response?.status === 401) {
+              setState(prev => prev ? { ...prev, status: 'degraded' } : { marketId, prices: null, status: 'degraded' })
+              return
+            }
             reconnect()
           })
         } else {
@@ -101,5 +116,6 @@ export function useMarketPrices(marketId: string | null): OutcomePrice[] | null 
     }
   }, [marketId])
 
-  return state && state.marketId === marketId ? state.prices : null
+  if (!state || state.marketId !== marketId) return { prices: null, status: 'connecting' }
+  return { prices: state.prices, status: state.status }
 }
