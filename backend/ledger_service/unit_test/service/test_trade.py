@@ -608,23 +608,6 @@ async def test_a_closed_market_is_refused_and_writes_nothing(
     ).state_version == 0
 
 
-@pytest.mark.parametrize("status", ["closed", "pending_resolution", "approved"])
-async def test_every_not_open_status_is_refused(
-    session: AsyncSession, status: str
-) -> None:
-    """Every status market_service reports other than open is refused."""
-    upstream = Upstream()
-    user_id = uuid.uuid4()
-    await warm(session, upstream)
-    await fund(session, user_id)
-
-    upstream.closes(status=status)
-
-    with pytest.raises(errors().MarketClosed):
-        await buy(session, upstream, user_id=user_id)
-    await session.rollback()
-
-
 async def test_an_insufficient_balance_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:

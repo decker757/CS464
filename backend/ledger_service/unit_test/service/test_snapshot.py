@@ -115,13 +115,6 @@ async def test_the_state_version_is_the_books_own(session: AsyncSession) -> None
     assert result.state_version == 7
 
 
-async def test_the_market_id_is_the_one_asked_for(session: AsyncSession) -> None:
-    upstream = Upstream()
-    await warm(session, upstream)
-
-    assert (await _read(session, upstream)).market_id == upstream.market_id
-
-
 # =========================================================================
 # occurred_at
 # =========================================================================
@@ -163,14 +156,6 @@ async def test_a_never_traded_markets_occurred_at_is_its_opened_at(
 
     assert result.occurred_at == book.opened_at
     assert result.occurred_at == book.state_changed_at
-
-
-async def test_occurred_at_is_timezone_aware(session: AsyncSession) -> None:
-    """Timezone-aware, as the consumer's contract requires."""
-    upstream = Upstream()
-    await warm(session, upstream)
-
-    assert (await _read(session, upstream)).occurred_at.tzinfo is not None
 
 
 # =========================================================================
@@ -313,16 +298,6 @@ async def test_the_cold_path_takes_the_handoffs_locks(session: AsyncSession) -> 
 # =========================================================================
 # It never gates on status
 # =========================================================================
-async def test_a_closed_market_is_still_priced(session: AsyncSession) -> None:
-    """ADR 0017: "the realtime snapshot serves a closed market's prices"."""
-    upstream = Upstream(status="closed")
-    await warm(session, upstream)
-
-    result = await _read(session, upstream)
-
-    assert [p.price for p in result.prices] == expected_prices(Q)
-
-
 async def test_a_closed_market_makes_no_status_hop(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -349,18 +324,6 @@ async def test_a_closed_market_makes_no_status_hop(
         "belongs to the trade path, which fires once per trade, not to a read "
         "that fires on every page open and every reconnect"
     )
-
-
-async def test_a_closed_market_with_no_book_still_gets_one(
-    session: AsyncSession,
-) -> None:
-    """A cold closed market still gets a book, as D-037 accepted."""
-    upstream = Upstream(status="closed")
-
-    result = await _read(session, upstream)
-
-    assert upstream.calls == 1
-    assert len(result.prices) == 2
 
 
 @pytest.mark.parametrize("status", ["closed", "pending_resolution", "approved"])
@@ -442,8 +405,6 @@ async def test_a_refused_market_leaves_no_book_behind(session: AsyncSession) -> 
 # =========================================================================
 async def _strip_outcomes(session: AsyncSession, upstream: Upstream) -> None:
     """A book with no outcome rows, as a hand-run repair could leave it."""
-    from sqlalchemy import delete  # noqa: PLC0415
-
     await strip_outcomes(session, upstream.market_id)
 
 

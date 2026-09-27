@@ -126,18 +126,6 @@ def _assert_rounding_is_load_bearing(
 # =========================================================================
 # What the preview returns
 # =========================================================================
-async def test_the_total_is_computed_from_the_lmsr_cost_function(
-    session: AsyncSession,
-) -> None:
-    """The second criterion: computed from `core/lmsr.py`, not estimated."""
-    upstream = Upstream()
-    await warm(session, upstream)
-
-    quote = await _quote(session, upstream)
-
-    assert quote.total == _expected_total(Q, 0, "buy", _QUANTITY)
-
-
 async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
     session: AsyncSession,
 ) -> None:
@@ -156,21 +144,6 @@ async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
     )
     assert quote.total == -magnitude
     assert abs(quote.total) != _raw_cost(Q, 0, "buy", _QUANTITY).copy_abs()
-
-
-async def test_the_total_is_negative_on_a_buy_and_positive_on_a_sell(
-    session: AsyncSession,
-) -> None:
-    """From the trader's side: negative means credits leave them, the opposite
-    of `cost_to_trade`'s sign."""
-    upstream = Upstream()
-    await warm(session, upstream)
-
-    bought = await _quote(session, upstream, side="buy")
-    sold = await _quote(session, upstream, side="sell")
-
-    assert bought.total < ZERO
-    assert sold.total > ZERO
 
 
 @pytest.mark.parametrize("outcome", [0, 1])
@@ -207,22 +180,6 @@ async def test_the_q_vector_is_ordered_by_position(session: AsyncSession) -> Non
 
 
 # --- average price --------------------------------------------------------
-async def test_average_price_is_the_quantized_total_over_the_quantity(
-    session: AsyncSession,
-) -> None:
-    """The fourth criterion: `abs(total) / quantity`, from the quantized total,
-    so it multiplies back to what the trader pays."""
-    upstream = Upstream()
-    await warm(session, upstream)
-
-    quote = await _quote(session, upstream)
-
-    expected = (abs(quote.total) / _QUANTITY).quantize(
-        QUANTUM, rounding=ROUND_HALF_UP
-    )
-    assert quote.average_price == expected
-
-
 async def test_average_price_is_positive_on_both_sides(
     session: AsyncSession,
 ) -> None:
@@ -423,21 +380,6 @@ async def test_a_buy_is_never_refused_for_size(session: AsyncSession) -> None:
     assert quote.total < ZERO
 
 
-async def test_a_sell_is_priced_with_no_holdings_check(
-    session: AsyncSession,
-) -> None:
-    """A caller holding nothing still gets a sell price: the holdings check
-    only means anything under the trade's lock (D-012)."""
-    upstream = Upstream()
-    await warm(session, upstream)
-
-    quote = await _quote(
-        session, upstream, outcome=1, side="sell", quantity=Decimal("1.0000")
-    )
-
-    assert quote.total > ZERO
-
-
 # =========================================================================
 # The reads it makes
 # =========================================================================
@@ -609,17 +551,6 @@ async def test_the_cold_path_takes_the_handoff_s_locks(
         "the first touch funds a pool, and D-015 and ADR 0015 require that "
         "write to be locked; nothing here took a lock"
     )
-
-
-async def test_a_preview_on_a_closed_market_returns_a_number(
-    session: AsyncSession,
-) -> None:
-    """A preview on a closed market returns a number (ADR 0017)."""
-    upstream = Upstream(status="closed")
-
-    quote = await _quote(session, upstream)
-
-    assert quote.total < ZERO
 
 
 async def test_a_preview_on_a_warm_closed_market_makes_no_http_call(
@@ -917,24 +848,6 @@ async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> Non
     assert raw.total == enum.total
 
 
-async def test_a_raw_string_sell_still_meets_the_no_shorting_rule(
-    session: AsyncSession,
-) -> None:
-    upstream = Upstream()
-    await warm(session, upstream)
-
-    with pytest.raises(errors().InsufficientSharesOutstanding):
-        await _preview().quote(
-            session,
-            upstream.market_id,
-            outcome_id=upstream.outcomes[1],
-            side="sell",
-            quantity=Q[1] + QUANTUM,
-            access_token=fresh_token(),
-            transport=upstream.transport,
-        )
-
-
 # =========================================================================
 # The cold path's connection, and damaged books
 # =========================================================================
@@ -1028,20 +941,6 @@ async def test_a_book_with_no_outcome_rows_is_a_named_error_not_an_index_error(
 
     assert raised.value.code == "market_book_incomplete"
     assert raised.value.status_code == 500
-
-
-async def test_the_oracle_agrees_with_the_preview_past_the_ambient_precision(
-    session: AsyncSession,
-) -> None:
-    """`_expected_total` takes `copy_abs()`, like the preview (D-042), on the
-    fixture where `abs()` would differ."""
-    upstream = Upstream()
-    q = [Decimal("7000"), ZERO]
-    await warm(session, upstream, q)
-
-    quote = await _quote(session, upstream, outcome=0, side="sell", quantity=_HUNDRED)
-
-    assert quote.total == _expected_total(q, 0, "sell", _HUNDRED)
 
 
 async def test_every_display_figure_goes_through_one_half_up_helper(

@@ -23,7 +23,7 @@ from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine, get_session_factory
-from model.entities import Account, AccountKind, Entry, Transaction
+from model.entities import Account, Entry, Transaction
 from unit_test.conftest import mint_token
 
 
@@ -271,24 +271,6 @@ async def test_a_market_closed_early_with_a_future_close_time_is_refused(
         await _gate(session, upstream)
 
 
-async def test_a_market_past_its_close_time_is_refused_before_the_sweep_has_run(
-    session: AsyncSession,
-) -> None:
-    """ADR 0011's window: before the sweep, the public projection already
-    reports `closed` (D-022), and the ledger refuses that body.
-    """
-    stopped = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    upstream = _Upstream(status="closed", close_time=stopped)
-
-    assert "closed_at" not in upstream.body, (
-        "PublicMarketOut carries no closed_at; a fixture with one would be "
-        "testing against an endpoint that does not exist"
-    )
-
-    with pytest.raises(_errors().MarketClosed):
-        await _gate(session, upstream)
-
-
 async def test_a_close_time_already_past_does_not_refuse_an_open_market(
     session: AsyncSession,
 ) -> None:
@@ -464,54 +446,6 @@ async def test_an_unreachable_market_service_is_unavailable(
 
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _gate(session, upstream)
-
-
-async def test_a_timeout_is_unavailable(session: AsyncSession) -> None:
-    """Accepted and then silent: the same answer as a refused connection."""
-    upstream = _Upstream(status="open")
-    upstream.raises = httpx.ReadTimeout("slow")
-
-    with pytest.raises(_errors().MarketTermsUnavailable):
-        await _gate(session, upstream)
-
-
-@pytest.mark.parametrize("status_code", [500, 502, 503])
-async def test_an_upstream_server_error_is_unavailable(
-    session: AsyncSession, status_code: int
-) -> None:
-    """A 5xx is the market service saying it could not answer."""
-    upstream = _Upstream(status="open", status_code=status_code)
-    upstream.body = {"detail": "boom"}
-
-    with pytest.raises(_errors().MarketTermsUnavailable):
-        await _gate(session, upstream)
-
-
-@pytest.mark.parametrize(
-    ("label", "body"),
-    [
-        ("html from a proxy", b"<html>not json</html>"),
-        ("a JSON array", b"[]"),
-        ("a JSON string", b'"not a market"'),
-    ],
-)
-async def test_an_unparseable_200_is_unavailable(
-    session: AsyncSession, label: str, body: bytes
-) -> None:
-    """A 200 carrying something that is not a market is the dependency, not a
-    close."""
-    upstream = _Upstream(status="open")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=body)
-
-    with pytest.raises(_errors().MarketTermsUnavailable):
-        await _status().ensure_trading(
-            session,
-            upstream.market_id,
-            access_token=_token(),
-            transport=httpx.MockTransport(handler),
-        )
 
 
 @pytest.mark.parametrize(

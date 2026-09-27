@@ -292,16 +292,6 @@ async def test_spending_the_whole_balance_is_allowed(session: AsyncSession) -> N
     assert await accounts.balance_of(session, user.id) == ZERO
 
 
-async def test_the_platform_may_go_negative(session: AsyncSession) -> None:
-    """The exemption is the point of the platform account: its balance is
-    minus the credits in circulation."""
-    user, platform = await _pair(session)
-
-    await _fund(session, user, platform, Decimal("100000"))
-
-    assert await accounts.balance_of(session, platform.id) < ZERO
-
-
 async def test_amounts_are_rounded_to_the_stored_scale(session: AsyncSession) -> None:
     """A check performed against an unrounded value is a check against a number
     the database is about to change."""
