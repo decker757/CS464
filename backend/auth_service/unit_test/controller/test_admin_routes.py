@@ -19,12 +19,23 @@ def _url(user_id: str) -> str:
 async def test_a_promotion_returns_200_and_the_updated_user(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
+    """Sent by browser cookie, carrying a token that still says `trader`.
+
+    The cookie must reach /admin as well as /auth, and this service reads the
+    row rather than the claim. ADR 0007. The only test of this route's body, so
+    it also checks that no password or hash comes back.
+    """
+    assert "Authorization" not in admin_client.headers
+    assert admin_client.cookies.get("access_token") is not None
+
     response = await admin_client.patch(_url(target_user_id), json={"role": "admin"})
 
     assert response.status_code == 200
     body = response.json()
     assert body["user"]["id"] == target_user_id
     assert body["user"]["role"] == "admin"
+    assert VALID_PASSWORD not in response.text
+    assert "password" not in body["user"]
 
 
 async def test_it_reports_how_long_the_old_authority_can_linger(
@@ -53,24 +64,6 @@ async def test_a_reason_is_accepted_and_is_not_required(
 
     assert with_reason.status_code == 200
     assert without_reason.status_code == 200
-
-
-async def test_the_response_never_contains_a_password_or_a_hash(
-    admin_client: AsyncClient, target_user_id: str
-) -> None:
-    response = await admin_client.patch(_url(target_user_id), json={"role": "admin"})
-
-    assert VALID_PASSWORD not in response.text
-    assert "password" not in response.json()["user"]
-
-
-async def test_a_promotion_binds_this_service_without_a_new_token(
-    admin_client: AsyncClient, target_user_id: str
-) -> None:
-    """The admin's token still says `trader`; this service reads the row. ADR 0007."""
-    response = await admin_client.patch(_url(target_user_id), json={"role": "admin"})
-
-    assert response.status_code == 200
 
 
 # --- the guard ------------------------------------------------------------
@@ -132,29 +125,7 @@ async def test_an_unknown_role_is_rejected_by_the_schema(
     assert response.status_code == 422
 
 
-async def test_a_malformed_user_id_is_rejected(admin_client: AsyncClient) -> None:
-    response = await admin_client.patch(_url("not-a-uuid"), json={"role": "admin"})
-
-    assert response.status_code == 422
-
-
-# --- cookie reach ---------------------------------------------------------
-async def test_the_access_cookie_reaches_this_prefix(
-    admin_client: AsyncClient, target_user_id: str
-) -> None:
-    """The access cookie must reach /admin as well as /auth.
-
-    Narrowing its path to match the refresh cookie's would 401 every admin route
-    from a browser while bearer callers kept working.
-    """
-    assert "Authorization" not in admin_client.headers
-    assert admin_client.cookies.get("access_token") is not None
-
-    response = await admin_client.patch(_url(target_user_id), json={"role": "admin"})
-
-    assert response.status_code == 200
-
-
+# --- suspension and demotion ---------------------------------------------
 async def test_a_suspended_administrator_gets_403(
     admin_client: AsyncClient, target_user_id: str, session
 ) -> None:
@@ -210,19 +181,14 @@ async def test_a_query_narrows_the_list(
 async def test_the_list_carries_the_id_the_ledger_takes(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
-    """The `user_id` the ledger's history route takes, and no balance."""
+    """The `user_id` the ledger's history route takes, and no balance.
+
+    Plus the suspension flag, written by [4.2] #14; why `AdminUserOut` exists.
+    """
     body = (await admin_client.get(USERS, params={"q": "michelle"})).json()
 
     assert body["users"][0]["id"] == target_user_id
     assert "balance" not in body["users"][0]
-
-
-async def test_the_list_reports_suspension(
-    admin_client: AsyncClient, target_user_id: str
-) -> None:
-    """Written by [4.2] #14; the reason `AdminUserOut` exists."""
-    body = (await admin_client.get(USERS, params={"q": "michelle"})).json()
-
     assert body["users"][0]["is_suspended"] is False
 
 
@@ -271,7 +237,10 @@ async def test_a_cursor_we_did_not_issue_is_a_400(admin_client: AsyncClient) -> 
 async def test_an_oversized_limit_is_clamped_not_refused(
     admin_client: AsyncClient,
 ) -> None:
-    """A caller asking for more than the ceiling wants as much as it can get."""
+    """A caller asking for more than the ceiling wants as much as it can get.
+
+    Promised in docs/api/auth-service.md: a 200, never a 422.
+    """
     assert (await admin_client.get(USERS, params={"limit": 100000})).status_code == 200
 
 

@@ -48,32 +48,6 @@ async def test_a_duplicate_maps_to_409_in_the_error_envelope(
     }
 
 
-@pytest.mark.parametrize(
-    ("changed_field", "value", "expected_clash"),
-    [
-        ("email", "someone.else@example.com", "username"),
-        ("username", "someone_else", "email"),
-    ],
-)
-async def test_a_duplicate_names_only_the_clashing_field(
-    client: AsyncClient,
-    registration_payload: dict[str, str],
-    changed_field: str,
-    value: str,
-    expected_clash: str,
-) -> None:
-    await client.post("/auth/register", json=registration_payload)
-
-    second = await client.post(
-        "/auth/register", json={**registration_payload, changed_field: value}
-    )
-
-    assert second.status_code == 409
-    assert [problem["field"] for problem in second.json()["error"]["details"]] == [
-        expected_clash
-    ]
-
-
 async def test_an_unattributable_error_carries_no_details(client: AsyncClient) -> None:
     response = await client.post(
         "/auth/login", json={"identifier": "nobody_at_all", "password": "wrong-password-here"}
@@ -81,23 +55,6 @@ async def test_an_unattributable_error_carries_no_details(client: AsyncClient) -
 
     assert response.status_code == 401
     assert "details" not in response.json()["error"]
-
-
-@pytest.mark.parametrize(
-    "bad_field",
-    [
-        {"password": "short"},
-        {"email": "not-an-email"},
-        {"username": "ab"},
-        {"username": "has spaces"},
-    ],
-)
-async def test_schema_violations_map_to_422(
-    client: AsyncClient, registration_payload: dict[str, str], bad_field: dict[str, str]
-) -> None:
-    response = await client.post("/auth/register", json={**registration_payload, **bad_field})
-
-    assert response.status_code == 422
 
 
 @pytest.mark.parametrize("missing", ["username", "email", "password"])

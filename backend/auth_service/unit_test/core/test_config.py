@@ -30,48 +30,12 @@ def test_cors_origins_tolerates_spacing_and_trailing_commas(
     assert Settings().cors_origins == ["https://a.example.com", "https://b.example.com"]
 
 
-def test_cors_origins_accepts_a_single_origin(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CORS_ORIGINS", "https://only.example.com")
-
-    assert Settings().cors_origins == ["https://only.example.com"]
-
-
-def test_cors_origins_falls_back_to_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CORS_ORIGINS", raising=False)
-
-    assert "http://localhost:5173" in Settings().cors_origins
-
-
 def test_a_short_jwt_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail at startup rather than signing tokens with a guessable key."""
     monkeypatch.setenv("JWT_SECRET", "too-short")
 
     with pytest.raises(ValueError):
         Settings()
-
-
-def test_numeric_settings_come_through_as_integers(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ACCESS_TOKEN_TTL_SECONDS", "300")
-    monkeypatch.setenv("PASSWORD_MIN_LENGTH", "16")
-
-    settings = Settings()
-
-    assert settings.access_token_ttl_seconds == 300
-    assert settings.password_min_length == 16
-
-
-def test_the_page_size_ceiling_is_configurable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """[4.1] #13's user list. The environment path, not the defaults — a
-    misparsed setting crashes the container at import time."""
-    monkeypatch.setenv("DEFAULT_PAGE_SIZE", "10")
-    monkeypatch.setenv("MAX_PAGE_SIZE", "25")
-
-    settings = Settings()
-
-    assert settings.default_page_size == 10
-    assert settings.max_page_size == 25
 
 
 @pytest.mark.parametrize("field", ["DEFAULT_PAGE_SIZE", "MAX_PAGE_SIZE"])

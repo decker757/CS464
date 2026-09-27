@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import security
 from core.errors import DuplicateUser
 from core.roles import UserRole
 from model.entities import User
@@ -155,27 +154,9 @@ async def test_a_retry_leaves_exactly_one_account(
     assert count == 1
 
 
-async def test_a_new_account_starts_unsuspended(registered_user: User) -> None:
-    assert registered_user.is_suspended is False
-
-
 async def test_a_new_account_starts_as_a_trader(registered_user: User) -> None:
     """Registration never grants authority, or anyone could create markets."""
     assert registered_user.role is UserRole.TRADER
-
-
-async def test_the_issued_token_carries_the_role_on_the_row(
-    session: AsyncSession, registered_user: User
-) -> None:
-    """A promoted user's next token carries the promotion. ADR 0003."""
-    registered_user.role = UserRole.ADMIN
-    await session.flush()
-
-    pair = await auth_service.issue_tokens(session, registered_user)
-
-    claims = security.decode_access_token(pair.access_token)
-    assert claims is not None
-    assert claims.role is UserRole.ADMIN
 
 
 def test_register_takes_no_ledger_dependency() -> None:

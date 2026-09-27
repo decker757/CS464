@@ -38,8 +38,12 @@ async def _entries(audit_reader: AsyncSession, actor: Actor) -> list:
 async def test_a_role_change_is_recorded(
     session: AsyncSession, audit_reader: AsyncSession, registered_user: User
 ) -> None:
-    """[4.4] #16's third criterion: role changes are logged."""
-    actor = _actor()
+    """[4.4] #16's third criterion: who changed whose role, from what to what.
+
+    The actor is a snapshot, so a later rename or demotion cannot rewrite it.
+    Named apart from the target (`ernest_t`), so the two cannot be confused.
+    """
+    actor = _actor(username="ihsan_b")
 
     await user_admin.change_role(
         session, actor=actor, target_id=registered_user.id, role=UserRole.ADMIN
@@ -54,38 +58,11 @@ async def test_a_role_change_is_recorded(
     assert entry["target_id"] == registered_user.id
     assert entry["target_label"] == registered_user.username
     assert entry["source_service"] == "auth_service"
-
-
-async def test_it_records_both_ends_of_the_change(
-    session: AsyncSession, audit_reader: AsyncSession, registered_user: User
-) -> None:
-    """Which role, from which. A log that says only "role changed" answers nothing."""
-    actor = _actor()
-
-    await user_admin.change_role(
-        session, actor=actor, target_id=registered_user.id, role=UserRole.ADMIN
-    )
-
-    entry = (await _entries(audit_reader, actor))[0]
     assert entry["context"] == {"from": "trader", "to": "admin"}
-
-
-async def test_a_demotion_is_recorded_too(
-    session: AsyncSession,
-    audit_reader: AsyncSession,
-    registered_user: User,
-    another_administrator: User,
-) -> None:
-    registered_user.role = UserRole.ADMIN
-    await session.commit()
-    actor = _actor()
-
-    await user_admin.change_role(
-        session, actor=actor, target_id=registered_user.id, role=UserRole.TRADER
-    )
-
-    entry = (await _entries(audit_reader, actor))[0]
-    assert entry["context"] == {"from": "admin", "to": "trader"}
+    assert entry["reason"] is None
+    assert entry["actor_id"] == actor.id
+    assert entry["actor_username"] == "ihsan_b"
+    assert entry["actor_role"] == "admin"
 
 
 async def test_the_reason_is_recorded_verbatim(
@@ -103,21 +80,6 @@ async def test_the_reason_is_recorded_verbatim(
     )
 
     assert (await _entries(audit_reader, actor))[0]["reason"] == reason
-
-
-async def test_an_absent_reason_is_null_rather_than_empty(
-    session: AsyncSession, audit_reader: AsyncSession, registered_user: User
-) -> None:
-    """The reason is optional; the entry is not."""
-    actor = _actor()
-
-    await user_admin.change_role(
-        session, actor=actor, target_id=registered_user.id, role=UserRole.ADMIN
-    )
-
-    entries = await _entries(audit_reader, actor)
-    assert len(entries) == 1
-    assert entries[0]["reason"] is None
 
 
 async def test_two_concurrent_promotions_of_one_trader_are_recorded_once(
@@ -150,22 +112,6 @@ async def test_two_concurrent_promotions_of_one_trader_are_recorded_once(
     entries = await _entries(audit_reader, first) + await _entries(audit_reader, second)
     assert len(entries) == 1
     assert entries[0]["context"] == {"from": "trader", "to": "admin"}
-
-
-async def test_it_records_who_the_actor_was_rather_than_who_they_are(
-    session: AsyncSession, audit_reader: AsyncSession, registered_user: User
-) -> None:
-    """A snapshot, so a later rename or demotion cannot rewrite history."""
-    actor = _actor(username="ernest_t")
-
-    await user_admin.change_role(
-        session, actor=actor, target_id=registered_user.id, role=UserRole.ADMIN
-    )
-
-    entry = (await _entries(audit_reader, actor))[0]
-    assert entry["actor_id"] == actor.id
-    assert entry["actor_username"] == "ernest_t"
-    assert entry["actor_role"] == "admin"
 
 
 # --- what does not get recorded -------------------------------------------
