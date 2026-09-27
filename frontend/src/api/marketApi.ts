@@ -158,3 +158,19 @@ export async function proposeOutcome(id: string, data: ProposeOutcomeRequest): P
   const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/propose-outcome`, data)
   return res.data
 }
+
+/**
+ * Agrees with a pending proposal, moving the market to approved ([3.2] #10).
+ * `proposalId` must be the id of the proposal the reviewer read, null included
+ * — never refetched at click time (market-service.md's approval-screen notes).
+ */
+export async function approveOutcome(id: string, proposalId: string | null): Promise<MarketOut> {
+  const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/approve-outcome`, { proposal_id: proposalId })
+  return res.data
+}
+
+/** Sends a pending proposal back to closed, with a reason ([3.2] #10). Same proposalId rule as approveOutcome. */
+export async function rejectOutcome(id: string, proposalId: string | null, reason: string): Promise<MarketOut> {
+  const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/reject-outcome`, { proposal_id: proposalId, reason })
+  return res.data
+}
