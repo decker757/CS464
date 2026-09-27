@@ -9,6 +9,7 @@ import MarketsPage from './pages/MarketsPage'
 import RegisterPage from './pages/RegisterPage'
 import AdminMarketsPage from './pages/admin/AdminMarketsPage'
 import CreateMarketPage from './pages/admin/CreateMarketPage'
+import ProposeOutcomePage from './pages/admin/ProposeOutcomePage'
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/markets/:id" element={<ProtectedRoute><MarketDetailPage /></ProtectedRoute>} />
           <Route path="/admin/markets" element={<ProtectedRoute requireAdmin><AdminMarketsPage /></ProtectedRoute>} />
           <Route path="/admin/markets/new" element={<ProtectedRoute requireAdmin><CreateMarketPage /></ProtectedRoute>} />
+          <Route path="/admin/markets/:id/propose-outcome" element={<ProtectedRoute requireAdmin><ProposeOutcomePage /></ProtectedRoute>} />
           {/* /portfolio — added as built */}
         </Routes>
       </AuthProvider>
