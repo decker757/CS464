@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import has_pending_writes
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientFunds,
@@ -165,7 +166,7 @@ async def post(
     # after the SAVEPOINT's rollback has expired the caller's writes, so the
     # session looks clean there. DECISIONS.md, "`posting.post` refuses to
     # replay into a dirty session".
-    caller_pending = bool(session.new or session.dirty or session.deleted)
+    caller_pending = has_pending_writes(session)
 
     await accounts.lock(session, [leg.account.id for leg in legs])
 
