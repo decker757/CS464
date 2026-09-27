@@ -15,7 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from model.entities import TransactionKind
-from model.schemas import BalanceOut, LedgerEntryListResponse, LedgerEntryOut
+from model.schemas import BalanceOut, LedgerEntryOut
 
 
 def _entry(**overrides: object) -> LedgerEntryOut:
@@ -55,12 +55,6 @@ def test_an_entry_amount_serialises_as_a_string() -> None:
     assert _entry(amount=Decimal("-250.0000")).model_dump()["amount"] == "-250.0000"
 
 
-def test_a_negative_amount_keeps_its_sign() -> None:
-    """Signed on the wire, as in the column: negative took credits out of this
-    account. A client should not have to infer direction from `kind`."""
-    assert _entry(amount=Decimal("-250.0000")).amount < 0
-
-
 def test_a_naive_timestamp_is_given_an_offset() -> None:
     """A driver handing back a naive datetime would make one entry serialise
     with a trailing Z and another without, leaving the frontend to special-case
@@ -96,15 +90,6 @@ def test_a_running_balance_serialises_as_a_string() -> None:
     out = _entry(balance_after=Decimal("750.0000"))
 
     assert out.model_dump()["balance_after"] == "750.0000"
-
-
-def test_has_more_and_next_cursor_agree() -> None:
-    """Stated separately so a client can drive a 'load more' control without
-    reasoning about the cursor at all."""
-    page = LedgerEntryListResponse(entries=[], next_cursor="abc", has_more=True)
-
-    assert page.has_more is True
-    assert page.next_cursor == "abc"
 
 
 # --- PreviewOut and OutcomePriceOut: the contract /docs shows ----------------

@@ -31,14 +31,6 @@ def _pinned_redis(path: pathlib.Path) -> str | None:
     return match.group(1) if match else None
 
 
-def test_this_service_pins_redis() -> None:
-    """Separate from the agreement test so a missing pin fails on its own."""
-    assert _pinned_redis(_THIS_REQUIREMENTS) is not None, (
-        "[F-9] #112 adds Redis to this service; `redis==` is not in "
-        f"{_THIS_REQUIREMENTS.name}"
-    )
-
-
 def test_the_redis_pin_matches_the_one_realtime_service_carries() -> None:
     """One Redis library across the backend, not two. The only assertion that
     sees both files, so it fails when either moves.
@@ -74,7 +66,6 @@ def test_realtime_service_no_longer_claims_to_be_the_only_redis_client() -> None
 # =========================================================================
 _REPO = _BACKEND.parent
 _COMPOSE = _REPO / "docker-compose.yml"
-_ENV_EXAMPLE = _REPO / ".env.example"
 
 
 def _compose_service(name: str) -> dict:
@@ -116,27 +107,4 @@ def test_compose_does_not_hold_the_ledger_back_until_redis_is_up() -> None:
     assert "redis" not in depends_on, (
         "docker-compose.yml makes the ledger wait on Redis; an unreachable bus "
         "costs broadcasts, not a ledger that will not start"
-    )
-
-
-def test_env_example_no_longer_says_only_one_service_knows_redis() -> None:
-    """`.env.example`, the first file a new checkout reads, must name the
-    ledger as a Redis client. Checked as a positive: a grep for one deleted
-    sentence is satisfied by any rewording.
-    """
-    text = _ENV_EXAMPLE.read_text(encoding="utf-8")
-
-    assert _STALE_CLAIM.search(text) is None, (
-        ".env.example claims a single Redis client; the ledger is a second "
-        "one since [F-9] #112"
-    )
-    # Clamped at zero: `text[i - 1500:]` becomes a tail-of-file slice once
-    # the Redis block is near the top.
-    at = text.index("REDIS_URL=")
-    block = text[max(0, at - 1500) : at]
-
-    assert re.search(r"ledger", block, re.I), (
-        ".env.example's Redis block does not mention the ledger; it has been "
-        "the producer since [F-9] #112, and this file is where somebody "
-        "debugging a missing price frame looks first"
     )

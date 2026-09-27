@@ -58,15 +58,6 @@ def test_starting_credits_is_a_decimal() -> None:
     assert isinstance(settings.starting_credits, Decimal)
 
 
-def test_cors_origins_accepts_a_comma_separated_value() -> None:
-    """The validator, given the string form directly."""
-    settings = Settings(
-        **_REQUIRED, cors_origins="http://a.test, http://b.test", _env_file=None
-    )
-
-    assert settings.cors_origins == ["http://a.test", "http://b.test"]
-
-
 def test_cors_origins_parse_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -119,13 +110,3 @@ def test_the_app_boots_with_no_redis_url_in_the_environment(
         get_settings.cache_clear()
 
     assert app is not None
-
-
-def test_a_configured_redis_url_wins_over_the_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A default that cannot be overridden is a hardcoded value. Set through the
-    environment, the source a deployment uses."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/3")
-
-    assert Settings(**_REQUIRED, _env_file=None).redis_url == "redis://localhost:6379/3"

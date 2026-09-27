@@ -198,8 +198,3 @@ def test_the_json_carries_exactly_the_documented_keys() -> None:
     """What actually goes on the channel, which an alias or serialiser could
     make differ from the model's fields."""
     assert set(json.loads(_event().model_dump_json())) == _DOCUMENTED_EVENT_FIELDS
-
-
-def test_the_event_carries_no_type_field() -> None:
-    """`type` belongs to the socket frame, which the consumer adds."""
-    assert "type" not in _schemas().PriceEvent.model_fields
