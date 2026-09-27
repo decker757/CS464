@@ -52,16 +52,43 @@ async def _taken_fields(session: AsyncSession, username: str, email: str) -> lis
     return taken
 
 
+async def _find_token_owner(session: AsyncSession, raw: str) -> uuid.UUID | None:
+    """Return the id of the user this raw token was issued to, or None.
+
+    Unlocked: a token's owner never changes. Only the column is selected, so no
+    token instance lands in the identity map before its row is locked.
+    """
+    stmt = select(RefreshToken.user_id).where(
+        RefreshToken.token_hash == security.hash_refresh_token(raw)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def _lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
+    """Lock and return the user's row, or None.
+
+    The lock every path that rotates or revokes all of a user's tokens shares,
+    so a replay's revoke-all cannot miss a token a rotation is inserting.
+    `populate_existing` so `is_suspended` comes from the locked row.
+    """
+    return await session.get(
+        User, user_id, with_for_update=True, populate_existing=True
+    )
+
+
 async def _lock_refresh_token(session: AsyncSession, raw: str) -> RefreshToken | None:
     """Lock and return the row for this raw token, or None.
 
     Locked because both callers write `revoked_at` from what they read; unlocked,
     two concurrent refreshes of one token would both succeed. ADR 0015.
+    `populate_existing` because loading the user already put its tokens in the
+    identity map, and a logout may have revoked this one since.
     """
     stmt = (
         select(RefreshToken)
         .where(RefreshToken.token_hash == security.hash_refresh_token(raw))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -148,7 +175,11 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
 
 
 async def revoke_all_for_user(session: AsyncSession, user_id: uuid.UUID) -> None:
-    """Revoke every live refresh token the user holds. Does not commit."""
+    """Revoke every live refresh token the user holds. Does not commit.
+
+    The caller must hold the user's row lock (`_lock_user`), or a rotation
+    committing meanwhile keeps the token it is inserting.
+    """
     stmt = select(RefreshToken).where(
         RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None)
     )
@@ -161,20 +192,29 @@ async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, T
     """Exchange a refresh token for a new pair, single use, and commit. [A-3] #31
 
     Raises InvalidToken. A revoked token is a replay of a leaked cookie, so it
-    revokes every session for that user first. ADR 0002.
+    revokes every session for that user first. ADR 0002. Locks the user, then
+    the token.
     """
+    owner_id = await _find_token_owner(session, raw)
+    if owner_id is None:
+        raise InvalidToken
+
+    # The user row before the token, on the rotation and the replay alike: a
+    # replay's revoke-all cannot see a token another rotation has inserted but
+    # not committed, so it must wait for that commit. ADR 0015; DECISIONS.md,
+    # "The refresh path locks the user row before the token".
+    user = await _lock_user(session, owner_id)
     record = await _lock_refresh_token(session, raw)
-    if record is None:
+    if user is None or record is None:
         raise InvalidToken
 
     if not record.is_active():
         if record.revoked_at is not None:
-            await revoke_all_for_user(session, record.user_id)
+            await revoke_all_for_user(session, user.id)
             await session.commit()
         raise InvalidToken
 
-    user = await session.get(User, record.user_id)
-    if user is None or user.is_suspended:
+    if user.is_suspended:
         raise InvalidToken
 
     record.revoked_at = datetime.now(UTC)
