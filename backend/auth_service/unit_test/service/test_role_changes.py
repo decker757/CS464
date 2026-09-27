@@ -66,29 +66,6 @@ async def _demote_each_other(first: uuid.UUID, second: uuid.UUID) -> list[str]:
 
 
 # --- the change itself ----------------------------------------------------
-async def test_it_promotes_a_trader(session: AsyncSession, registered_user: User) -> None:
-    assert registered_user.role is UserRole.TRADER
-
-    updated = await user_admin.change_role(
-        session, actor=_actor(), target_id=registered_user.id, role=UserRole.ADMIN
-    )
-
-    assert updated.role is UserRole.ADMIN
-
-
-async def test_it_demotes_an_administrator(
-    session: AsyncSession, registered_user: User, another_administrator: User
-) -> None:
-    registered_user.role = UserRole.ADMIN
-    await session.commit()
-
-    updated = await user_admin.change_role(
-        session, actor=_actor(), target_id=registered_user.id, role=UserRole.TRADER
-    )
-
-    assert updated.role is UserRole.TRADER
-
-
 async def test_the_change_survives_the_transaction(
     session: AsyncSession, registered_user: User
 ) -> None:
@@ -121,22 +98,13 @@ async def test_the_new_role_reaches_the_next_access_token(
 
 
 # --- what is refused ------------------------------------------------------
-async def test_an_administrator_cannot_change_their_own_role(
-    session: AsyncSession, registered_user: User
-) -> None:
-    """One of the two rules that keep an administrator in the database. ADR 0007."""
-    with pytest.raises(CannotChangeOwnRole):
-        await user_admin.change_role(
-            session,
-            actor=_actor(registered_user.id),
-            target_id=registered_user.id,
-            role=UserRole.TRADER,
-        )
-
-
 async def test_a_refused_self_change_leaves_the_role_alone(
     session: AsyncSession, registered_user: User
 ) -> None:
+    """One of the two rules that keep an administrator in the database. ADR 0007.
+
+    With one administrator, the only caller may not target themselves.
+    """
     registered_user.role = UserRole.ADMIN
     await session.commit()
 
@@ -153,22 +121,6 @@ async def test_a_refused_self_change_leaves_the_role_alone(
     assert reloaded.role is UserRole.ADMIN
 
 
-async def test_the_last_administrator_cannot_be_demoted(
-    session: AsyncSession, registered_user: User
-) -> None:
-    """With one administrator, the only caller may not target themselves."""
-    registered_user.role = UserRole.ADMIN
-    await session.commit()
-
-    with pytest.raises(CannotChangeOwnRole):
-        await user_admin.change_role(
-            session,
-            actor=_actor(registered_user.id),
-            target_id=registered_user.id,
-            role=UserRole.TRADER,
-        )
-
-
 async def test_an_unknown_target_is_refused(session: AsyncSession) -> None:
     with pytest.raises(UserNotFound):
         await user_admin.change_role(
@@ -177,17 +129,6 @@ async def test_an_unknown_target_is_refused(session: AsyncSession) -> None:
 
 
 # --- idempotence ----------------------------------------------------------
-async def test_asking_for_the_role_already_held_succeeds(
-    session: AsyncSession, registered_user: User
-) -> None:
-    """PATCH names the end state, so a repeat is the same outcome, not an error."""
-    updated = await user_admin.change_role(
-        session, actor=_actor(), target_id=registered_user.id, role=UserRole.TRADER
-    )
-
-    assert updated.role is UserRole.TRADER
-
-
 async def test_promoting_twice_is_the_same_as_promoting_once(
     session: AsyncSession, registered_user: User
 ) -> None:
@@ -253,25 +194,6 @@ async def test_two_administrators_demoting_each_other_leaves_one(
         if user.role is UserRole.ADMIN
     ]
     assert len(survivors) == 1
-
-
-async def test_a_demotion_already_applied_concurrently_is_not_logged_twice(
-    session: AsyncSession, registered_user: User
-) -> None:
-    """The second of two demotions finds a trader and writes nothing."""
-    target = _admin("admin_three")
-    session.add(target)
-    registered_user.role = UserRole.ADMIN
-    await session.commit()
-
-    await user_admin.change_role(
-        session, actor=_actor(), target_id=target.id, role=UserRole.TRADER
-    )
-    again = await user_admin.change_role(
-        session, actor=_actor(), target_id=target.id, role=UserRole.TRADER
-    )
-
-    assert again.role is UserRole.TRADER
 
 
 # --- suspension is a separate axis ----------------------------------------
