@@ -1,24 +1,8 @@
 """Opening a market's book, and funding its pool. [F-7] #96, D-008, D-009.
 
-The ledger has never heard of a market. ADR 0005 has `b` and the subsidy
-crossing at publish as an immutable snapshot, and that handoff was never built —
-`publish` writes an audit entry and nothing else. D-008 resolves it as a lazy
-pull on first touch, which is the shape the starting grant already uses: no
-event, no outbox, and no window in which the state is observably wrong, because
-the read that would observe the window is the read that closes it.
-
-Business rules, driven through the service layer with no HTTP *inbound*. There
-is no route to this and there will not be one in this ticket — the callers are
-[T-1] #21's preview and [T-2] #22's trade, and neither exists yet. What lands
-here is the primitive, exactly as `service/posting.py` landed before its caller.
-
-The *outbound* call is mocked at the transport, so these tests exercise the real
-request and the real parsing. `test_market_terms.py` owns the wire format;
-this file owns what gets written once the terms arrive.
-
-Concurrency lives in `test_book_concurrency.py`, because a race needs two
-sessions and two connections and the setup is worth keeping separate from the
-single-caller rules below.
+Driven through the service layer, with the outbound call mocked at the
+transport. `test_market_terms.py` owns the wire format and
+`test_book_concurrency.py` the races; this file owns what gets written.
 """
 
 from __future__ import annotations
@@ -45,27 +29,22 @@ from unit_test.conftest import mint_token
 
 
 def _books():
-    """Imported inside each test rather than at module scope.
-
-    `service/books.py` does not exist yet, and a top-level import would be one
-    collection error taking the whole file down as a single red line. Reached
-    through here, every test fails on its own, named after the criterion it
-    holds (D-007). Same convention as `market_service`'s `test_browsing.py`.
-    """
+    """Imported inside each test, so a missing name fails one test rather than
+    collection (D-007)."""
     from service import books  # noqa: PLC0415
 
     return books
 
 
 def _entities():
-    """`model/entities.py` exists; `MarketBook` and `MarketOutcome` do not yet."""
+    """`model/entities.py`, reached lazily like `_books`."""
     from model import entities  # noqa: PLC0415
 
     return entities
 
 
 def _errors():
-    """`core/errors.py` exists; the book errors below do not yet."""
+    """`core/errors.py`, reached lazily like `_books`."""
     from core import errors  # noqa: PLC0415
 
     return errors
@@ -85,22 +64,14 @@ def _outcome_ids() -> tuple[uuid.UUID, uuid.UUID]:
 
 
 def _raw(outcomes: list[object]) -> bool:
-    """True when the caller handed whole outcome dicts rather than ids.
-
-    An empty list counts as raw: it is the "no outcomes at all" case, and
-    the point of accepting it here is that a test asking for a malformed
-    list does not have to reach past this class into `_body` to get one.
-    """
+    """True when the caller handed whole outcome dicts rather than ids. An
+    empty list counts as raw: the "no outcomes at all" case."""
     return outcomes == [] or isinstance(outcomes[0], dict)
 
 
 class _Upstream:
-    """A stand-in market service that counts what it was asked.
-
-    The count is load-bearing in more than one test below: D-008's "a second
-    touch re-funds nothing" is the weaker of two claims, and the stronger one
-    — a second touch does not call out at all — is only observable here.
-    """
+    """A stand-in market service that counts what it was asked, so "a second
+    touch does not call out at all" is observable."""
 
     def __init__(
         self,
@@ -126,15 +97,8 @@ class _Upstream:
             "liquidity_b": None if liquidity_b is None else str(liquidity_b),
             "seed_subsidy": None if seed_subsidy is None else str(seed_subsidy),
             "published_at": published_at,
-            # Raw dicts pass straight through, so a test that needs a
-            # malformed outcome list — a duplicate position, a single
-            # outcome, an empty one — asks for it here rather than reaching
-            # past this class into `_body` afterwards. The sibling
-            # `_Upstream` in `test_market_status.py` builds its body
-            # differently, and a test poking at one would not survive being
-            # moved to the other.
-            # `is not None`, not truthiness: `outcomes=[]` is the "no
-            # outcomes at all" case and has to survive as an empty list.
+            # Raw dicts pass straight through, for a malformed outcome list.
+            # `is not None`, not truthiness: `outcomes=[]` must stay empty.
             "outcomes": (
                 outcomes
                 if outcomes is not None and _raw(outcomes)
@@ -177,13 +141,8 @@ async def _book(session: AsyncSession, market_id: uuid.UUID):
 async def test_the_first_touch_creates_the_book_from_the_market_s_terms(
     session: AsyncSession,
 ) -> None:
-    """D-008's first acceptance criterion, end to end.
-
-    Nothing existed; one call later there is a book carrying the snapshot. The
-    terms are a *copy* and that is the point — ADR 0005 calls it duplication
-    without coupling, because [1.4] #4 forbids editing a published market's
-    terms, so a copy of data that cannot change cannot drift from its source.
-    """
+    """D-008's first acceptance criterion, end to end: one call later there is
+    a book carrying a copy of the terms (ADR 0005)."""
     upstream = _Upstream()
 
     book = await _open(session, upstream)
@@ -198,16 +157,8 @@ async def test_the_first_touch_creates_the_book_from_the_market_s_terms(
 
 
 async def test_the_terms_are_stored_as_exact_decimals(session: AsyncSession) -> None:
-    """D-016, carried all the way to the column rather than only to the parse.
-
-    `test_market_terms.py` proves the value survives the wire. This proves it
-    survives the write, which is a different failure: a `Numeric(18, 4)` column
-    and a value that went through a float disagree in the fourth decimal place,
-    and nothing reports it.
-
-    Eighteen significant digits, for the reason spelled out there — a friendly
-    value passes this assertion even when routed through an IEEE double, so it
-    would not be a test of anything.
+    """D-016, carried to the column: the value survives the write, not only
+    the parse. Eighteen digits, because a friendly value survives a float.
     """
     exact = Decimal("12345678901234.5678")
     upstream = _Upstream(liquidity_b=exact, seed_subsidy=exact)
@@ -225,13 +176,8 @@ async def test_the_terms_are_stored_as_exact_decimals(session: AsyncSession) -> 
 async def test_one_outcome_row_is_written_per_outcome_at_q_zero(
     session: AsyncSession,
 ) -> None:
-    """`ledger.market_outcomes`, and the state a market opens in.
-
-    `q` is zero for every outcome, which is what makes the opening price
-    uniform — `C(q)` at `q = 0` gives every outcome `1/n`. No label: that is
-    display prose the market service owns, and copying it would be a second
-    source of truth for a string this side never renders.
-    """
+    """`ledger.market_outcomes`, and the state a market opens in: `q` zero for
+    every outcome, so the opening price is uniform."""
     upstream = _Upstream()
 
     await _open(session, upstream)
@@ -252,12 +198,7 @@ async def test_one_outcome_row_is_written_per_outcome_at_q_zero(
 
 
 async def test_the_book_opens_at_state_version_zero(session: AsyncSession) -> None:
-    """D-011: `state_version` is the quote reference, and it starts here.
-
-    The ticket's "the first trade publishes 1" belongs to [T-2] #22, which owns
-    the only code that increments this. There is no trade path in this ticket
-    and a test that faked one would be asserting against its own stub.
-    """
+    """D-011: `state_version` is the quote reference, and it starts at zero."""
     book = await _open(session, _Upstream())
 
     assert book.state_version == 0
@@ -266,17 +207,7 @@ async def test_the_book_opens_at_state_version_zero(session: AsyncSession) -> No
 async def test_state_changed_at_equals_opened_at_on_a_never_traded_market(
     session: AsyncSession,
 ) -> None:
-    """D-029, and equality rather than merely non-null.
-
-    For a market nobody has traded, the book's creation *is* its last state
-    change — `state_version` is 0 and every `q` is 0, and that state began when
-    this row was written. Any other value invents a moment that did not happen.
-
-    This is also what the realtime snapshot reports as `occurred_at` for such a
-    market, which is the open question D-029 closed: the contract defines
-    `occurred_at` only as "the time of the event", and a market with no events
-    has none to name.
-    """
+    """D-029, and equality rather than merely non-null."""
     book = await _open(session, _Upstream())
 
     assert book.state_changed_at == book.opened_at
@@ -287,13 +218,7 @@ async def test_state_changed_at_equals_opened_at_on_a_never_traded_market(
 async def test_the_subsidy_is_posted_from_the_platform_to_the_pool(
     session: AsyncSession,
 ) -> None:
-    """D-009. Two legs, summing to zero, exactly like the signup grant.
-
-    The platform goes down and the pool goes up, so the subsidy is a *movement*
-    rather than credits appearing from nowhere. That is what keeps
-    `SUM(amount)` over the whole of `ledger.entries` at zero, which is the one
-    assertion that would catch almost any mistake in this path.
-    """
+    """D-009. Two legs, summing to zero, exactly like the signup grant."""
     upstream = _Upstream()
 
     book = await _open(session, upstream)
@@ -308,16 +233,8 @@ async def test_the_subsidy_is_posted_from_the_platform_to_the_pool(
 async def test_the_pool_account_is_keyed_on_the_market_id(
     session: AsyncSession,
 ) -> None:
-    """D-028, and the thing the insert race depends on.
-
-    `Account.owner_id` is `mapped_column(Uuid, nullable=False)` and a market id
-    is a `Uuid`, so the market goes straight in it and
-    `uq_accounts_kind_owner` comes to mean "one pool per market".
-
-    A sentinel or a fresh `uuid4` here would type-check and pass every test in
-    this file. It would fail only under concurrency, by letting two callers
-    each create a pool account for one market — which is why this is asserted
-    directly rather than left to `test_book_concurrency.py` to catch.
+    """D-028, and the thing the insert race depends on. Asserted directly: a
+    fresh `uuid4` owner would fail only under concurrency.
     """
     upstream = _Upstream()
 
@@ -337,13 +254,7 @@ async def test_the_pool_account_is_keyed_on_the_market_id(
 async def test_the_funding_transaction_is_a_market_seed(
     session: AsyncSession,
 ) -> None:
-    """A kind of its own, so the history feed can say what this was.
-
-    `SIGNUP_GRANT` would render a market's subsidy on somebody's statement as a
-    welcome bonus. `TransactionKind` is a non-native `Enum`, so adding a member
-    is a Python change and never an `ALTER TYPE` — the same property that lets
-    `AccountKind.MARKET_POOL` arrive without a migration.
-    """
+    """A kind of its own, so the history feed can say what this was."""
     upstream = _Upstream()
 
     await _open(session, upstream)
@@ -359,17 +270,8 @@ async def test_the_funding_transaction_is_a_market_seed(
 async def test_an_unfunded_pool_is_allowed_to_go_negative(
     session: AsyncSession,
 ) -> None:
-    """D-009's actual mechanism, asserted rather than assumed.
-
-    `_refuse_overdrafts` skips every account that is not a `USER`, so a pool
-    drained past its subsidy goes quietly negative instead of failing. That is
-    required, not tolerated: LMSR pays out up to `b·ln(n)` more than it
-    collects, and a market maker that refused to pay a winner because its pool
-    was empty would be a market maker that does not work.
-
-    Spending straight out of a freshly opened pool is the smallest way to prove
-    the exemption is real. If this raises `InsufficientFunds`, every settlement
-    in [3.4] #12 fails the moment a market pays out more than it took in.
+    """D-009's mechanism: a pool drained past its subsidy goes negative rather
+    than failing, because LMSR can pay out more than it collects.
     """
     upstream = _Upstream()
     book = await _open(session, upstream)
@@ -396,12 +298,7 @@ async def test_an_unfunded_pool_is_allowed_to_go_negative(
 async def test_a_second_touch_returns_the_same_book_and_funds_nothing(
     session: AsyncSession,
 ) -> None:
-    """D-008's "a second touch re-funds nothing".
-
-    The balance is the assertion that matters. A pool funded twice is a market
-    with double the subsidy the administrator approved, and the platform
-    account carrying a liability nobody agreed to.
-    """
+    """D-008's "a second touch re-funds nothing", asserted on the balance."""
     upstream = _Upstream()
 
     first = await _open(session, upstream)
@@ -424,20 +321,8 @@ async def test_a_second_touch_returns_the_same_book_and_funds_nothing(
 async def test_a_second_touch_makes_no_http_call_at_all(
     session: AsyncSession,
 ) -> None:
-    """The stronger claim, and the one that decides the order of operations.
-
-    Read the book first. If it is there, return it — no HTTP, no idempotency
-    key lookup, nothing. The key protects the *funding transaction*; it is not
-    the fast path, and building the legs before checking for the book would
-    make every preview and every trade in an open market pay for a network
-    round trip to the market service.
-
-    This is the shape `grants.ensure_granted` already uses one layer down, and
-    for a sharper version of the same reason: it asks whether the grant exists
-    before it reads `STARTING_CREDITS`, so that changing the setting cannot
-    invalidate a fingerprint. Here the inputs come from another service over
-    the network, so the same ordering also removes the dependency entirely once
-    the book exists.
+    """The stronger claim: an existing book is returned before any HTTP or key
+    lookup, so a warm market never calls market_service.
     """
     upstream = _Upstream()
 
@@ -453,14 +338,8 @@ async def test_a_second_touch_makes_no_http_call_at_all(
 async def test_the_book_survives_a_market_service_that_has_since_gone_down(
     session: AsyncSession,
 ) -> None:
-    """The practical consequence of reading the book first.
-
-    Once a market has a book, trading in it does not depend on the market
-    service being reachable at all. If the terms were re-fetched on every touch,
-    a market service outage would stop trading in every already-open market —
-    turning a dependency that D-008 accepted for *first* touches into one that
-    sits in the hot path forever.
-    """
+    """The consequence of reading the book first: an open market does not
+    depend on market_service being reachable."""
     upstream = _Upstream()
     await _open(session, upstream)
 
@@ -483,14 +362,8 @@ async def test_a_market_that_is_not_published_gets_no_book(
 ) -> None:
     """The ticket's "book creation is refused for a market that isn't published".
 
-    `published_at is not None` is the condition, read off the response rather
-    than inferred from the status code. The 200/404 split does imply publication
-    today — `browsing.get_published` filters to the four public statuses — but
-    the book depends on publication, not on a route's current visibility rule,
-    and this is a one-field check that keeps the two from drifting.
-
-    Not the *status*: a CLOSED, PENDING_RESOLUTION or APPROVED market is
-    published and does get a book. See the test below.
+    `published_at` is the condition, not the status code or the status: a
+    closed market is published and does get a book (next test).
     """
     upstream = _Upstream(published_at=None)
 
@@ -499,14 +372,8 @@ async def test_a_market_that_is_not_published_gets_no_book(
 
 
 async def test_a_closed_market_still_gets_a_book(session: AsyncSession) -> None:
-    """Published is the gate, not tradeable. ADR 0011 stops trading, not reading.
-
-    [3.4] #12's settlement reads `q` from a book whose market stopped trading
-    weeks earlier, and the realtime snapshot serves a closed market's prices.
-    Gating on `status == "open"` here would make both impossible, and would do
-    it silently — the first symptom would be a settlement that cannot find the
-    positions it is supposed to pay out.
-    """
+    """Published is the gate, not tradeable: settlement and the snapshot read
+    closed markets' books (ADR 0017)."""
     upstream = _Upstream()
     upstream._body["status"] = "closed"
 
@@ -518,14 +385,8 @@ async def test_a_closed_market_still_gets_a_book(session: AsyncSession) -> None:
 async def test_a_refused_market_leaves_nothing_behind(
     session: AsyncSession,
 ) -> None:
-    """"No partial book" — the other half of the unreachable-service criterion.
-
-    A book with no funding, a pool account with no book, or a funding
-    transaction with no outcomes are each worse than the clean failure, because
-    each one makes the *next* call take the fast path and return a book that was
-    never finished. Whatever went wrong, the market must be left looking exactly
-    as untouched as it was.
-    """
+    """"No partial book": a half-written one would send the next call down the
+    fast path with a book that was never finished (D-032)."""
     upstream = _Upstream(published_at=None)
 
     with pytest.raises(_errors().MarketNotPublished):
@@ -545,11 +406,8 @@ async def test_a_refused_market_leaves_nothing_behind(
 async def test_an_unreachable_market_service_leaves_nothing_behind(
     session: AsyncSession,
 ) -> None:
-    """The ticket's tenth criterion, stated as state rather than as an error.
-
-    `test_market_terms.py` owns which exception this is. What this owns is that
-    the database is untouched afterwards — no book, no pool account, no entries.
-    """
+    """The ticket's tenth criterion, as state: no book, no pool account, no
+    entries."""
     market_id = _market_id()
 
     def dead(request: httpx.Request) -> httpx.Response:
@@ -572,40 +430,13 @@ async def test_an_unreachable_market_service_leaves_nothing_behind(
     ).scalar_one() == 0
 
 
-# --- [F-8] #109: the terms rules that moved here out of `_parse` ----------
-#
-# These four arrived from `test_market_terms.py` with their assertions intact.
-# ADR 0017 moved the rules they hold: refusing a null `b`, or an outcome list
-# that could be stored but never priced, is the right answer when you are
-# about to write it into a book that ADR 0005 makes immutable, and the wrong
-# answer on a read that decides whether a market is still trading. A
-# market_service that began returning a null `b` would otherwise start
-# refusing trades on books snapshotted weeks earlier, against a value this
-# service read once at first touch and never reads again.
-#
-# The arguments came with them, because they were always arguments about
-# writing.
+# --- [F-8] #109: the rules about writing a book (ADR 0017) ----------------
 async def test_a_market_with_null_terms_is_unavailable_rather_than_funded(
     session: AsyncSession,
 ) -> None:
-    """`liquidity_b` and `seed_subsidy` are `Decimal | None` on the wire.
-
-    Structurally nullable, because `MarketDraftRequest` lets a draft omit both.
-    Unreachable for a published market — `_liquidity_problems` requires each to
-    be present and positive, and `publish` re-runs every submission rule — so
-    this is defending a state the market service says cannot happen.
-
-    Worth defending anyway: the failure it prevents is a book created with a
-    null `b`, which is a market that can never be priced and a pool funded with
-    nothing. Refusing beats writing a row that no later code can use.
-
-    **Refused before the `MarketBook` is constructed**, not by the database.
-    Both columns are `nullable=False`, so a null reaching the insert raises
-    `IntegrityError` inside the first-touch savepoint — where the `except
-    IntegrityError` is watching for a lost race (D-010). It would re-raise
-    correctly, because `_find` finds no committed book, and the caller would
-    get a 500 describing nothing while the race handler quietly catches two
-    unrelated things.
+    """A null `b` is refused before the book is built, not by the database,
+    whose `IntegrityError` the race handler would mistake for D-010's race.
+    Unreachable from a correct market_service, and defended anyway.
     """
     upstream = _Upstream(liquidity_b=None)
 
@@ -616,15 +447,8 @@ async def test_a_market_with_null_terms_is_unavailable_rather_than_funded(
 async def test_a_null_seed_subsidy_is_refused_at_the_book_too(
     session: AsyncSession,
 ) -> None:
-    """The money half, which the moved test above does not cover.
-
-    Its own test rather than a case bolted onto the move, so the diff shows
-    plainly what came across unchanged and what [F-8] #109 added. The two
-    fields fail differently once they reach a book: a null `b` is a market
-    that can never be priced, and a null subsidy is a pool funded with
-    nothing — `posting.post` would be handed a leg of `None` and the
-    double-entry invariant has no answer for that.
-    """
+    """The money half: a null subsidy would hand `posting.post` a leg of
+    `None`."""
     upstream = _Upstream(seed_subsidy=None)
 
     with pytest.raises(_errors().MarketTermsUnavailable):
@@ -654,24 +478,8 @@ async def test_a_null_seed_subsidy_is_refused_at_the_book_too(
 async def test_terms_that_could_never_be_priced_are_refused(
     session: AsyncSession, label: str, outcomes: list[dict[str, object]]
 ) -> None:
-    """The same defence as a null `liquidity_b`, for the outcome list.
-
-    A book is written once and is immutable under ADR 0005, so a bad one is
-    not something a later read corrects — which is the argument for refusing
-    rather than storing, and it applies to all four of these.
-
-    One outcome prices at 1.0 and none is a sum with no terms: the market
-    opens, funds its pool from the platform, and quotes a price nobody can
-    trade against. A repeated id or position is a unique constraint on
-    `market_outcomes`, so without this it reaches the database and fails
-    inside `books.ensure_open`'s savepoint — where `except IntegrityError` is
-    watching for a lost first-touch race. It re-raises correctly, because no
-    committed book is found, but the caller gets a 500 describing nothing,
-    and the race handler is left catching two unrelated things.
-
-    Unreachable from a correct market service: `publish` re-runs every
-    submission rule, and those require between two and ten named outcomes with
-    server-assigned positions.
+    """The same defence as a null `liquidity_b`, for the outcome list: the
+    book is immutable (ADR 0005), so refuse rather than store.
     """
     upstream = _Upstream(outcomes=outcomes)
 
@@ -680,17 +488,8 @@ async def test_terms_that_could_never_be_priced_are_refused(
 
 
 async def test_a_ten_outcome_market_is_not_refused(session: AsyncSession) -> None:
-    """The ceiling is the market service's, and this is not the place to restate it.
-
-    `MAX_OUTCOMES` is ten on the other side. A floor here is about what can be
-    priced at all; a ceiling would be a second copy of somebody else's rule,
-    and the failure it would cause — a published market the ledger silently
-    refuses to open a book for — is worse than the one it would prevent.
-
-    Moved with the other three because the rule it argues about moved. Leaving
-    it beside a client that no longer holds either half of the floor-versus-
-    ceiling distinction would have left the reason in one file and the rule in
-    another.
+    """The ceiling is market_service's, and a copy here could refuse a
+    published market's book. The floor is about what can be priced at all.
     """
     upstream = _Upstream(outcomes=[uuid.uuid4() for _ in range(10)])
 
@@ -711,12 +510,7 @@ async def test_a_ten_outcome_market_is_not_refused(session: AsyncSession) -> Non
 
 # --- the invariant --------------------------------------------------------
 async def test_the_ledger_sums_to_zero_after_funding(session: AsyncSession) -> None:
-    """The single strongest assertion available about this service.
-
-    Every entry ever written, summed. If the subsidy was credited without being
-    debited, or a leg was dropped, or one side was rounded and the other was
-    not, this is not zero.
-    """
+    """Every entry ever written, summed, after funding: the invariant."""
     for _ in range(3):
         await _open(session, _Upstream())
 
@@ -730,12 +524,8 @@ async def test_the_ledger_sums_to_zero_after_funding(session: AsyncSession) -> N
 async def test_every_funding_transaction_balances_on_its_own(
     session: AsyncSession,
 ) -> None:
-    """The whole ledger summing to zero would also hold if two mistakes cancelled.
-
-    Three markets funded from one platform account is exactly the shape where
-    that could happen — an over-credit on one pool and an under-credit on
-    another net out across the table and show up only here.
-    """
+    """The whole ledger summing to zero would also hold if two mistakes
+    cancelled across three pools."""
     for _ in range(3):
         await _open(session, _Upstream())
 
@@ -753,13 +543,8 @@ async def test_every_funding_transaction_balances_on_its_own(
 async def test_the_grant_and_the_subsidy_do_not_collide_on_a_key(
     session: AsyncSession,
 ) -> None:
-    """Namespaced keys, and a market id that could also be a user id.
-
-    `idempotency_key` is unique across the whole ledger rather than per account,
-    so `market-open:<id>` and `signup-grant:<id>` have to be distinguishable
-    even when the two ids are byte-identical. They never are in practice; the
-    constraint is what makes that not matter.
-    """
+    """Namespaced keys: `idempotency_key` is unique ledger-wide, so the two
+    must differ even for one id."""
     shared_id = uuid.uuid4()
     upstream = _Upstream(market_id=shared_id)
 
@@ -777,29 +562,17 @@ async def test_the_grant_and_the_subsidy_do_not_collide_on_a_key(
 
 
 # =========================================================================
-# Review fixes on PR #110
+# The cold path's connection, and terms that must not reach a book
 # =========================================================================
 async def test_no_connection_is_held_while_the_terms_are_fetched(
     session: AsyncSession,
 ) -> None:
-    """The cold path must not hold a pooled connection across the HTTP call.
+    """The cold path must not hold a pooled connection across the HTTP call
+    (D-043).
 
-    `ensure_open` finds no book, and that read autobegins a transaction that
-    nothing used to end — so the connection stayed checked out for however
-    long market_service took, bounded only by a five-second timeout. With
-    `pool_size=10` that is roughly twenty concurrent first touches, or one
-    slow upstream, holding every connection this service has; `/balances/me`
-    waits behind them.
-
-    Asserted from inside the transport, which is the only place that runs
-    *during* the call. `in_transaction()` is the session's own answer and
-    `checkedout()` is the pool's, and both are here because they fail for
-    different reasons: a rollback that left the session dirty shows up in the
-    first, and a connection released by the session but still held by the pool
-    shows up in the second.
-
-    **Delete the `await session.rollback()` in `ensure_open` and this goes
-    red**, which is what makes it evidence rather than decoration.
+    Asserted from inside the transport, the only code that runs during the
+    call, from both the session and the pool. Fails with `ensure_open`'s
+    rollback removed.
     """
     observed: dict[str, object] = {}
     upstream = _Upstream()
@@ -829,30 +602,9 @@ async def test_no_connection_is_held_while_the_terms_are_fetched(
 async def test_a_zero_seed_subsidy_is_unavailable_rather_than_unbalanced(
     session: AsyncSession,
 ) -> None:
-    """Zero is refused with the nulls, not left to fail as a bad transaction.
-
-    market_service requires a subsidy greater than zero
-    (`validation.py::_liquidity_problems`, "The seed subsidy must be greater
-    than zero"), so a zero arriving here is the upstream being wrong. Left to
-    run, it builds two legs of `0.0000` and `posting.post` refuses them as
-    `UnbalancedTransaction` — a 422 telling the caller their request was
-    malformed about terms they never sent. `MarketTermsUnavailable` is the
-    503 the contract promises for an upstream that answered badly.
-
-    A **negative** one is worse than a zero, and worse than it first looks:
-    it funds the pool backwards, posting `Leg(platform, +250)` against
-    `Leg(pool, -250)`, and nothing downstream objects. `_refuse_overdrafts`
-    skips every account that is not a USER — `posting.py` says so, and [F-7]
-    #96 added MARKET_POOL without touching it — so the pool simply sits
-    negative, and the first thing to notice is a settlement that will not
-    balance. This guard is the only thing in the path that says no.
-
-    `Infinity` and `NaN` are here because `Decimal` takes both off the wire
-    and they slip a bare `<= 0` in opposite directions: infinity compares
-    `False` and NaN raises.
-
-    Nothing commits either way; what this pins is which error, and therefore
-    who the caller thinks is at fault.
+    """A bad subsidy is the upstream's fault: a 503, not a 422 from
+    `posting.post`'s zero legs. A negative one would fund the pool backwards
+    with nothing downstream objecting. Infinity and NaN slip a bare `<= 0`.
     """
     for bad in ("0", "0.0000", "-250.0000", "Infinity", "NaN"):
         upstream = _Upstream(seed_subsidy=bad)
@@ -868,20 +620,8 @@ async def test_a_zero_seed_subsidy_is_unavailable_rather_than_unbalanced(
 async def test_a_non_positive_liquidity_b_is_refused_before_the_book_is_written(
     session: AsyncSession,
 ) -> None:
-    """`b <= 0`, not just a null `b`. The book is immutable, so this is forever.
-
-    `C(q) = b·ln(Σ e^(q_i/b))` divides by `b`, and `core/lmsr.py` refuses a
-    non-positive one with a bare `ValueError` — not a `LedgerError`, so an
-    unmapped 500. Written once under ADR 0005 and never reread, a `b` of zero
-    would be every price that market ever quotes.
-
-    `Infinity` and `NaN` need `is_finite()`, not the comparison:
-    `Decimal("Infinity") <= 0` is simply `False`, and `Decimal("NaN") <= 0`
-    raises rather than answering. `numeric(18, 4)` refuses to store an
-    infinity — so that one used to fail as a `DataError` on the insert, which
-    is not an `IntegrityError` and escaped the lost-race handler as an
-    unmapped 500 — but it stores `NaN` quite happily, which makes NaN the one
-    that could really sit in a book forever.
+    """`b <= 0`, not just a null `b`: the book is immutable, so a bad `b` is
+    every price's unmapped 500, forever. Infinity and NaN need `is_finite()`.
     """
     for bad in ("0.0000", "-1.0000", "Infinity", "-Infinity", "NaN"):
         upstream = _Upstream(liquidity_b=bad)

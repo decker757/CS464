@@ -1,33 +1,10 @@
-"""The price read the preview and the snapshot share. Review of #110.
+"""The price read the preview and the snapshot share. D-052.
 
-`service/preview.py` and `service/snapshot.py` each had their own copy of this
-read and of the quantizer after it. The two reads differed by one selected
-column, the quantizers were identical apart from which dataclass they built,
-and the two dataclasses had identical fields. Both docs pages promise that the
-two endpoints return the same strings for the same state, and two copies could
-only keep that promise by staying in step by hand. This module keeps it by
-being the only copy.
-
-**The read** (D-013) is one statement joining `market_books` to
-`market_outcomes`, so `q`, `b`, `state_version` and `state_changed_at` come
-back under one snapshot. Under READ COMMITTED two statements fail in the
-dangerous direction: a trade committing between them hands back a
-`state_version` newer than the `q` that was priced. No `with_for_update()`:
-D-012, as corrected by D-036 — this read decides no write, so it takes no lock.
-
-**The cold path** is the same in both callers, so it lives here too. If the
-read comes back empty, `books.ensure_open` opens and funds the book, taking
-the handoff's own locks internally, and the read runs again (D-037). Every
-request after a market's first is the single read and writes nothing.
-
-**A second read that cannot be priced is `MarketBookIncomplete`**, not an
-`IndexError` and not a bare `ValueError` out of the engine. The join reads a
-book with no outcome rows as no book, so the cold path finds the book,
-returns, and the read comes back empty a second time. A book left holding a
-single row is the same fault one step along: it survives an emptiness check
-and dies in `core/lmsr.py`, so the floor here is `books.MIN_OUTCOMES`. That
-guard is `refuse_unpriceable`, public because [T-2] #22's locked read is its
-second caller.
+One copy, so both endpoints return the same price strings for the same state.
+One statement joins `market_books` to `market_outcomes`, so `q`, `b` and
+`state_version` come from one snapshot (D-013). No lock: it decides no write
+(D-012, D-036). On an empty read `books.ensure_open` opens the book and the
+read runs again (D-037).
 """
 
 from __future__ import annotations
@@ -67,14 +44,14 @@ async def read_or_open(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> Sequence[Row]:
     """This market's book, one row per outcome, ordered by position. Opens the
-    book first if nobody has yet.
+    book first if nobody has yet, forwarding `access_token` unchanged.
+
+    On a cold market that first touch commits (`books.ensure_open`), so call
+    it with nothing pending on the session.
 
     Every row carries `state_version`, `liquidity_b`, `state_changed_at`,
-    `outcome_id`, `position` and `q`. Never empty: an empty read after the
-    cold path raises `MarketBookIncomplete`.
-
-    `access_token` is the caller's own, forwarded to `books.ensure_open`
-    unchanged. Nothing is minted here.
+    `outcome_id`, `position` and `q`. Raises `MarketBookIncomplete` rather
+    than return a book the engine cannot price.
     """
     rows = await _read(session, market_id)
     if not rows:
@@ -83,8 +60,8 @@ async def read_or_open(
         )
         rows = await _read(session, market_id)
 
-    # On **both** paths: a book damaged down to one row already exists, so
-    # every read of it is warm and returns before the cold path is reached.
+    # On both paths: a book damaged down to one row is warm and never
+    # reaches the cold path.
     refuse_unpriceable(len(rows), rows[0].liquidity_b if rows else None)
 
     return rows
@@ -93,33 +70,18 @@ async def read_or_open(
 def refuse_unpriceable(outcome_count: int, b: Decimal | None) -> None:
     """Raise `MarketBookIncomplete` for a book the engine cannot price.
 
-    The one copy of this guard. `read_or_open` calls it on the shared price
-    read, and [T-2] #22's `service/trading.py` calls it on its own read
-    under the book lock, which cannot go through `read_or_open` — so the
-    trade and the preview refuse the same books for the same reasons.
-
-    Takes the count and `b` rather than rows because the two callers read
-    different shapes: a joined `Row` projection here, `MarketOutcome` and
-    `MarketBook` entities on the trade path.
+    The one copy of this guard: the trade path's locked read calls it too, so
+    the trade and the preview refuse the same books. Takes a count and `b`
+    because the two callers read different shapes.
     """
-    # Fewer than two, not zero. `core/lmsr.py` refuses a `q` naming one
-    # outcome with a bare `ValueError`, which is not a `LedgerError` and
-    # reaches the client as the same unmapped 500 this check exists to stop.
-    # Same floor `books._refuse_unpriceable` enforces on the way in.
+    # Fewer than two, not zero: `core/lmsr.py` raises a bare `ValueError` on
+    # one outcome, an unmapped 500.
     if outcome_count < books.MIN_OUTCOMES:
         raise MarketBookIncomplete
 
-    # The book's own `b`, before it reaches the engine. `books.ensure_open`
-    # refuses a non-finite or non-positive one at the ingress, which protects
-    # every book written from now on and nothing already there — a row from
-    # before that guard, or from the hand-run repair this error exists to
-    # name, still prices. `core/lmsr.py::_require_positive_b` then raises a
-    # bare `ValueError`, which is not a `LedgerError`, so it reaches the
-    # caller as an unmapped 500 on an immutable book, forever.
-    #
-    # `NaN` is why this is worth having rather than a null check: it is the
-    # only unpriceable `b` `numeric(18, 4)` will store, and it does not even
-    # reach `_require_positive_b` as False — `NaN <= 0` raises.
+    # `books.ensure_open` guards new books, not rows already stored. NaN is
+    # the one unpriceable `b` `numeric` will store, and `NaN <= 0` raises, so
+    # finiteness is checked first.
     if b is None or not b.is_finite() or b <= 0:
         raise MarketBookIncomplete
 
@@ -133,9 +95,8 @@ def priced(rows: Sequence[Row], raw: list[Decimal]) -> list[PricedOutcome]:
             position=row.position,
             price=quantize_price(price),
         )
-        # `strict`: a `raw` shorter than `rows` is a caller passing the
-        # wrong price vector, and silently returning a market missing an
-        # outcome renders prices that no longer sum to one.
+        # `strict`: a `raw` of the wrong length is a caller bug, and a
+        # silently dropped outcome renders prices that do not sum to one.
         for row, price in zip(rows, raw, strict=True)
     ]
 

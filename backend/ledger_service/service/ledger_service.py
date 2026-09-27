@@ -1,11 +1,7 @@
 """Reading a user's money. [B-2] #33, [4.1] #13
 
-The public face of the ledger, and the only part of it with routes today.
-HTTP is not mentioned in this file; failures are raised as domain errors.
-
-Both functions below start by making sure the caller's starting grant exists.
-That is not a convenience — it is where [B-1] #32's grant actually happens. See
-`service/grants.py` for why a read is the right place for it.
+Both reads first mint the caller's starting grant if it does not exist yet:
+that is where [B-1] #32's grant happens (ADR 0009).
 """
 
 from __future__ import annotations
@@ -24,12 +20,7 @@ from service import accounts, grants
 
 @dataclass(frozen=True)
 class UserBalance:
-    """What a user holds, and the account it was derived from.
-
-    Both, because every caller that wants one wants the other: the account id
-    is what makes a balance traceable to the entries it came from, and looking
-    it up separately would mean deriving the same account twice per request.
-    """
+    """What a user holds, and the account it was derived from."""
 
     account_id: uuid.UUID
     amount: Decimal
@@ -39,10 +30,7 @@ class UserBalance:
 class HistoryRow:
     """One entry, and what the account held once it had landed. [4.1] #13.
 
-    The two together, because a statement line that says "-250" without saying
-    what was left is half an answer to the question an administrator opened the
-    page to ask. `balance_after` is derived per read and stored nowhere; see
-    `accounts.balance_of` for why that is the design rather than a shortcut.
+    `balance_after` is derived per read and stored nowhere.
     """
 
     entry: Entry
@@ -62,13 +50,7 @@ class EntryPage:
 
 
 async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
-    """What this user holds right now. [B-2] #33.
-
-    Derived from their entries every time, never read from a column. "The
-    displayed balance is derived from or reconciled against the ledger" is
-    therefore not something this service has to remember to do; it is the only
-    thing it can do.
-    """
+    """What this user holds right now, derived from their entries. [B-2] #33."""
     # Mints the starting grant if this is the user's first read. [B-1] #32.
     account = await grants.ensure_granted(session, user_id)
     amount = await accounts.balance_of(session, account.id)
@@ -85,16 +67,8 @@ async def history_for_user(
     """One page of this user's entries, newest first, each with the balance it
     left behind. [4.1] #13.
 
-    `limit + 1` rows are fetched and the extra one is dropped, which is what
-    makes `has_more` exact without a second COUNT over a table that only grows
-    — and a count is the wrong question anyway, because the answer is stale by
-    the time it renders. Same approach as the audit feed.
-
-    The running balance costs exactly one more aggregate per page, not one per
-    row: sum the account up to the newest entry on the page, then walk down
-    subtracting each amount, because the balance before an entry is the balance
-    after it minus what it moved. Reading it back per row would be `limit`
-    round trips for arithmetic already in hand.
+    Fetches `limit + 1` rows so `has_more` is exact without a COUNT. Raises
+    `MalformedCursor`.
     """
     # Mints the starting grant if this is the user's first read. [B-1] #32.
     account = await grants.ensure_granted(session, user_id)
@@ -102,9 +76,8 @@ async def history_for_user(
     stmt = _ordered_query(account.id)
 
     if cursor is not None:
-        # Raises MalformedCursor, which the controller turns into a 400. Decoded
-        # before the query rather than let through to the database, where it
-        # would surface as a driver error and a 500.
+        # Decoded before the query, so a bad cursor is a 400 rather than a
+        # driver error.
         created_at, row_id = decode_cursor(cursor)
         stmt = stmt.where(
             tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id)
@@ -112,8 +85,6 @@ async def history_for_user(
 
     entries = list((await session.execute(stmt.limit(limit + 1))).scalars())
 
-    # The extra row is the whole of `has_more`: fetched, counted, and dropped
-    # before anything else looks at the page.
     page = entries[:limit]
     next_cursor = (
         encode_cursor(page[-1].created_at, page[-1].id)
@@ -132,16 +103,8 @@ async def _with_running_balance(
 ) -> list[HistoryRow]:
     """Pair each entry with what the account held once it had landed.
 
-    One query for the whole page, anchored at its newest row, then subtraction.
-    The anchor is what makes a page's figures independent of when it was
-    fetched: entries appended mid-read are strictly newer than it and so are
-    outside every sum on this page. Two administrators paging through one
-    account at different speeds see the same numbers beside the same entries.
-
-    The top row's balance is also, by construction, what
-    `GET /ledger/users/{id}/balance` returns when nothing has moved since —
-    both are `SUM(amount)` over the same rows, which is [4.1] #13's third
-    acceptance criterion holding because there is only one way to ask.
+    One aggregate anchored at the page's newest row, then subtraction walking
+    back. The anchor keeps a page's figures fixed while entries are appended.
     """
     if not entries:
         return []
@@ -154,22 +117,17 @@ async def _with_running_balance(
     rows: list[HistoryRow] = []
     for entry in entries:
         rows.append(HistoryRow(entry=entry, balance_after=running))
-        # Walking backwards through time, so undo what this entry did to get
-        # the balance the next one down left behind.
+        # Walking back in time: undo this entry to get the next one's balance.
         running -= entry.amount
 
     return rows
 
 
 def _ordered_query(account_id: uuid.UUID) -> Select[tuple[Entry]]:
-    """Newest first, with the tie broken by id.
+    """Newest first, tie broken by id, matching `ix_ledger_entries_account_feed`.
 
-    The ordering is half of the keyset contract and matches
-    `ix_ledger_entries_account_feed`. Ordering by `created_at` alone would be
-    worse here than in the audit log: both entries of a movement carry the
-    identical timestamp by construction, so without the id the order between
-    them is whatever Postgres feels like today, and a page boundary falling
-    between them would drop one side of somebody's trade.
+    Both legs of a movement share a timestamp, so without the id a page
+    boundary could drop one side of a trade.
     """
     return (
         select(Entry)

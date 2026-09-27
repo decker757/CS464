@@ -1,31 +1,10 @@
 """`posting.post` refuses to replay into a dirty session. [T-2] #22
 
-**Its own file, because `service/posting.py` is Ernest's** and this guard
-lands in its own commit. Nothing else in [T-2] #22 changes that module, and
-nothing in this file is about the trade path — it is about one branch of the
-write primitive and the two callers that already reach it.
-
-**What the guard is, and what it is not.** `post`'s replay branch calls
-`session.commit()`, and that commit flushes the whole session — so a caller
-holding unwritten work has it committed alongside a transaction that wrote no
-entries of its own. On the trade path that is a duplicate's `q`,
-`state_version` and position landing against a payment that was made once.
-The rule that prevents it is the caller's ("A caller holding pending writes
-must establish under its own lock that the idempotency key is absent"); this
-is the alarm that fires when a caller gets it wrong.
-
-It cannot be a *net*. By the time `post` reaches this point the caller's
-writes are already pending and there is no way to discard only those. So it
-raises before the damage instead of rolling back after it, which turns "a
-caller got the ordering wrong" from shares granted twice into a refused
-request and a traceback.
-
-**The two existing callers must not change behaviour**, and both halves of
-that are driven below rather than reasoned about: `grants.ensure_granted`
-flushes inside `accounts.ensure`'s SAVEPOINT, so the account is persistent
-rather than pending by the time `post` is called, and `books.ensure_open` on
-a lost first-touch race has its book and outcomes expunged by the savepoint
-rollback. A warm second touch never reaches `post` at all.
+The alarm for a caller that breaks the rule in DECISIONS.md, "A caller holding
+pending writes must establish under its own lock that the idempotency key is
+absent"; the guard itself is "`posting.post` refuses to replay into a dirty
+session". The existing callers must not change behaviour, which is driven
+below rather than argued.
 """
 
 from __future__ import annotations
@@ -123,13 +102,8 @@ async def _replay(session: AsyncSession, user, platform):
 # The guard
 # =========================================================================
 async def test_a_clean_session_still_replays(session: AsyncSession) -> None:
-    """The behaviour that must not change, asserted first.
-
-    Every caller this service has today reaches the replay branch with
-    nothing pending, so the guard has to be invisible to all of them. A check
-    written at the top of `post` rather than on the replay branch would
-    forbid the shape "The book's writes share `posting.post`'s commit, and
-    nothing may follow it" depends on, which is every caller there is.
+    """The behaviour that must not change: a replay with nothing pending.
+    A check at the top of `post` would forbid every caller's shape (D-032).
     """
     user, platform = await _seed(session)
     assert not (session.new or session.dirty or session.deleted)
@@ -159,14 +133,9 @@ async def test_a_replay_with_a_pending_insert_is_refused(
 async def test_a_replay_with_a_pending_update_is_refused(
     session: AsyncSession,
 ) -> None:
-    """`session.dirty`, which is the trade path's own shape.
-
-    The trade's writes are attribute assignments on loaded rows — `q` on a
-    `MarketOutcome`, `state_version` on a `MarketBook` — and they are still
-    in `session.dirty` when `post` runs, because the session is built with
-    `autoflush=False` and `accounts.lock` issues only SELECTs. That is the
-    case this guard exists for, so it is driven with exactly that write
-    rather than with a convenient one.
+    """`session.dirty`, the trade path's own shape: attribute assignments on
+    loaded rows, unflushed because of `autoflush=False`. Driven with exactly
+    that write.
     """
     user, platform = await _seed_with_a_dirty_outcome(session)
 
@@ -180,12 +149,9 @@ async def test_a_replay_found_by_the_insert_race_is_refused_too(
     """`post`'s other replay: the lookup under the lock misses, the INSERT
     hits the unique index, and the second lookup finds the key.
 
-    Driven by hiding the first lookup, because two real sessions only get
-    here when their legs share no account, and the trade path's book lock
-    keeps a trade from ever doing that today. The pending write is flushed
-    inside the SAVEPOINT and expired by its rollback, so a guard that asked
-    the session at this branch would find it clean — which is why `post`
-    records whether its caller had pending work before it does anything.
+    Driven by hiding the first lookup; real sessions reach it only when their
+    legs share no account. The rollback expires the pending write, which is
+    why `post` records it on entry.
     """
     user, platform = await _seed_with_a_dirty_outcome(session)
 
@@ -205,12 +171,8 @@ async def test_a_replay_found_by_the_insert_race_is_refused_too(
 
 
 async def test_the_refusal_commits_nothing(session: AsyncSession) -> None:
-    """The guard raises *before* the commit, which is the whole of its value.
-
-    Checked from a session of its own, because the caller's session is the
-    one whose pending writes are in question and asking it what the database
-    holds would be asking about the rollback rather than about the commit.
-    """
+    """The guard raises before the commit. Checked from a session of its own,
+    since the caller's would report its own rollback."""
     user, platform = await _seed(session)
 
     ents = entities()
@@ -231,14 +193,8 @@ async def test_the_refusal_commits_nothing(session: AsyncSession) -> None:
 
 
 async def test_it_is_a_ledger_error_at_500(session: AsyncSession) -> None:
-    """500 rather than 409, and a `LedgerError` rather than a bare exception.
-
-    Nothing the client sent is wrong and nothing it can do differently helps:
-    this is the service reporting a bug in itself. A `LedgerError` keeps the
-    response inside the one error envelope `controller/errors.py` exists to
-    preserve, so a client parsing four services' errors with one shape still
-    can.
-    """
+    """500, not 409: the service reporting a bug in itself. A `LedgerError`,
+    so the response keeps the one error envelope."""
     exc = errors().PendingWritesOnReplay
 
     assert issubclass(exc, errors().LedgerError)
@@ -252,14 +208,10 @@ async def test_it_is_a_ledger_error_at_500(session: AsyncSession) -> None:
 async def test_the_signup_grant_reaches_the_replay_branch_clean(
     session: AsyncSession,
 ) -> None:
-    """`grants.ensure_granted`'s session state at the moment it calls `post`.
+    """`grants.ensure_granted`'s session state when it calls `post`.
 
-    `accounts.ensure` flushes inside its own SAVEPOINT, so the account is
-    persistent rather than pending and the function adds nothing else. The
-    early return means the ordinary second read never reaches `post` at all;
-    the branch is reached only by a racing first read, so the body is
-    reproduced here without that early return — which is that race's session
-    state exactly, and the only way to drive the branch deterministically.
+    Only a racing first read reaches the replay branch, so the body is
+    reproduced without the early return: that race's session state exactly.
     """
     from core.config import get_settings  # noqa: PLC0415
 
@@ -296,19 +248,11 @@ async def test_the_signup_grant_reaches_the_replay_branch_clean(
 async def test_a_lost_first_touch_race_still_opens_one_book(
     session: AsyncSession,
 ) -> None:
-    """`books.ensure_open`'s losing caller, which is the other way the replay
-    branch is reached today.
+    """`books.ensure_open`'s losing caller, the other way the replay branch is
+    reached. The savepoint rollback expunges its book and outcomes, so it
+    reaches `post` clean.
 
-    The loser added its book and outcomes inside `session.begin_nested()`, the
-    `IntegrityError` rolled that SAVEPOINT back, and the rollback expunges
-    them — so by the time it calls `post` with the winner's
-    `market-open:<market_id>` key, its session is clean. If that were not
-    true, this race would start raising `PendingWritesOnReplay` at every
-    market's first touch, which is the loudest possible regression and the
-    reason it is driven rather than argued.
-
-    Barrier-synchronised per ADR 0015: without it the first caller can be
-    finished before the second opens a connection, and nobody loses.
+    Barrier-synchronised per ADR 0015, or nobody loses.
     """
     upstream = Upstream()
     start = asyncio.Barrier(4)
@@ -345,13 +289,8 @@ async def test_a_lost_first_touch_race_still_opens_one_book(
 async def test_a_warm_second_touch_never_reaches_post(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The third sentence of the criterion, and the cheapest one to hold.
-
-    `ensure_open` returns an existing book before it does anything else, so
-    the warm path cannot be affected by a guard on `post` at all. Asserted by
-    making `post` fail loudly if it is called, which is a stronger statement
-    than counting transactions: a `post` that was reached and replayed would
-    leave the count unchanged and go unnoticed.
+    """A warm touch returns before `post`. Asserted by making `post` fail if
+    called: a replay would leave a transaction count unchanged.
     """
     upstream = Upstream()
     await books().ensure_open(

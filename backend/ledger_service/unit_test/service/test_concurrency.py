@@ -1,10 +1,8 @@
 """Concurrent writers. [F-1] #41's "serialization so concurrent trades cannot
-overdraw", and [T-2] #22's fourth acceptance criterion in advance.
+overdraw". ADR 0009, ADR 0015.
 
-Every test here uses its own session per writer, because that is the only way
-to have two real database transactions. A single session running two coroutines
-shares one connection and one transaction, which would prove nothing: the thing
-under test is what Postgres does when two transactions want the same row.
+One session per writer: one session shares one transaction, which would prove
+nothing about two transactions wanting the same row.
 """
 
 from __future__ import annotations
@@ -200,12 +198,8 @@ async def test_a_retry_racing_its_original_is_answered_with_its_transaction(
     """A client resends a withdrawal whose response was lost while the original
     is still in flight, and the balance covers it exactly once.
 
-    Every copy finds no transaction under the key, because none has committed
-    yet. The lock queues them, and the first writes and commits. Looked up
-    before the lock, each of the rest then judged its overdraft against the
-    balance the first had just emptied and answered `InsufficientFunds` — for a
-    withdrawal that had succeeded. Looked up under the lock, each finds the
-    committed transaction and is answered with it.
+    The key lookup must be under the account lock, or each retry is refused as
+    an overdraft for a withdrawal that succeeded (ADR 0015).
     """
     user_id = uuid.uuid4()
     await _grant(user_id, Decimal("100"))

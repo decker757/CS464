@@ -1,31 +1,12 @@
 """Buying shares. [T-2] #22
 
-Business rules, driven through `service/trading.py` with no HTTP *inbound*.
-Status codes, body validation and the shape on the wire belong to
-`unit_test/controller/test_trade_routes.py`; what is asserted here is the
-arithmetic, the rows it writes, and the rows it does not.
+The arithmetic, the rows written and the rows not, driven through
+`service/trading.py` with the outbound call stubbed at the transport. Routes
+are `test_trade_routes.py`'s; races `test_trade_concurrency.py`'s; retries
+`test_trade_replay.py`'s; the publish `test_trade_publish.py`'s.
 
-The *outbound* call is stubbed at the transport, the same way
-`test_market_status.py` and `test_preview.py` do it, so the gate exercises the
-real request, the real `Authorization` header and the real parsing without a
-market service running and without importing one —
-`unit_test/test_import_boundary.py` fails any `import market_service` from
-this suite.
-
-**Four things live in other files and are deliberately not here.** The races
-and the ordering claims are `test_trade_concurrency.py`'s, because they need a
-session per party. Everything about a retry is `test_trade_replay.py`'s. The
-publish is `test_trade_publish.py`'s. `posting.post`'s new guard is
-`test_posting_pending_writes.py`'s, on its own because `service/posting.py` is
-Ernest's and the guard lands in its own commit.
-
-**Why the money assertions compare exact Decimals and never approximate.**
-The route's contract is that the previewed number is the charged number. An
-`abs(a - b) < epsilon` here would pass on a buy that floored, which is the one
-rounding mistake this path can make in the trader's favour, and it would pass
-on a total that had been through a float. Every comparison below is `==` on a
-`Decimal`, against a value recomputed from `core/lmsr.py` and
-`core/pricing.py`.
+Money is compared with `==` on exact Decimals, never approximately: a
+tolerance would pass a buy that floored, or a total that went through a float.
 """
 
 from __future__ import annotations
@@ -73,15 +54,8 @@ from unit_test.trade_fixtures import (
 
 
 async def _committed_state(fn):
-    """Run an assertion from a session of its own.
-
-    A rejected trade leaves its writes pending in the caller's session, and
-    `get_session` rolls them back when the request unwinds. Asking that same
-    session what the database holds would therefore be asking about the
-    rollback rather than about the commit. A second session, under READ
-    COMMITTED, sees only what landed — which is the claim "writes nothing"
-    actually makes.
-    """
+    """Run an assertion from a session of its own, which under READ COMMITTED
+    sees only what landed, not the caller's rolled-back writes."""
     async with session_factory()() as other:
         return await fn(other)
 
@@ -90,13 +64,8 @@ async def _committed_state(fn):
 # The constants these tests are built on
 # =========================================================================
 def test_the_rounding_direction_is_observable_in_these_fixtures() -> None:
-    """Not a test of the trade path. A test of the numbers it is driven with.
-
-    Every rounding assertion below compares the charged total against the
-    ceiling and against the floor and asserts it is the ceiling. If the raw
-    cost happened to be exact at scale 4 those two are the same number and all
-    of them pass on an implementation that floors. This fails first, and says
-    so, if anybody ever edits `B` or the quantities into something rounder.
+    """A guard on the fixtures, not the trade path: on a cost exact at scale 4
+    the ceiling and floor agree and every rounding test below proves nothing.
     """
     assert_rounding_is_load_bearing(Q, 0, QUANTITY)
     assert_rounding_is_load_bearing(Q, 0, SMALL_QUANTITY)
@@ -109,15 +78,8 @@ def test_the_rounding_direction_is_observable_in_these_fixtures() -> None:
 async def test_a_buy_debits_exactly_the_total_the_preview_quoted(
     session: AsyncSession,
 ) -> None:
-    """The first criterion, and the whole reason preview and trade share a
-    code path ("The preview endpoint lives on the ledger as a read").
-
-    The preview is taken first, against the same committed state, and the
-    trade is then asserted to charge that exact number. Not a recomputation
-    that happens to agree — the quote object itself, so a divergence between
-    the two code paths fails here rather than being discovered by a trader
-    whose balance moved by the wrong amount.
-    """
+    """The first criterion: the trade charges exactly the quote the preview
+    returned against the same state (D-014)."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -143,14 +105,8 @@ async def test_a_buy_debits_exactly_the_total_the_preview_quoted(
 
 
 async def test_the_cost_rounds_ceiling_and_not_floor(session: AsyncSession) -> None:
-    """"A buy rounds ceiling", asserted as a direction rather than a value.
-
-    The charged total is compared against both roundings of the same raw cost.
-    Asserting only that it equals the ceiling would also pass if the two were
-    equal; asserting that it is *not* the floor is what makes this a statement
-    about which way the residue runs. Under one tick either way, and it
-    belongs to the pool, which is the side LMSR already expects to lose money.
-    """
+    """"A buy rounds ceiling", asserted as a direction: equal to the ceiling
+    and not the floor (D-039)."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -169,10 +125,8 @@ async def test_the_cost_rounds_ceiling_and_not_floor(session: AsyncSession) -> N
 async def test_the_total_is_stored_at_the_columns_scale(
     session: AsyncSession,
 ) -> None:
-    """Four decimal places exactly, because that is what `Numeric(18, 4)`
-    holds and what the fingerprint in `posting.post` hashes. A total carrying
-    a fifth place would be rounded by Postgres on the way in, and a retry
-    computing it the other way would not match the stored transaction."""
+    """Four decimal places exactly, what `Numeric(18, 4)` holds and the
+    fingerprint hashes."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -221,10 +175,7 @@ async def test_a_trade_writes_exactly_two_entries(session: AsyncSession) -> None
 
 
 async def test_the_transaction_kind_is_trade_buy(session: AsyncSession) -> None:
-    """A kind of its own, so a trade does not render on somebody's statement
-    as a welcome bonus — the argument `MARKET_SEED` already made. A Python
-    change and nothing else: the column is a non-native `Enum`, so a new
-    member needs no migration."""
+    """A kind of its own, so the history can say what this was."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -257,10 +208,8 @@ async def test_the_ledger_still_sums_to_zero_after_a_trade(
 async def test_q_moves_by_the_filled_quantity_on_the_traded_outcome_only(
     session: AsyncSession,
 ) -> None:
-    """A trade moves one outcome's shares outstanding and leaves the rest
-    alone. The untraded outcome is asserted explicitly because a `q` vector
-    written by index rather than by `position` would move the wrong one, and
-    with an asymmetric `q` that is the bug this fixture exists to expose."""
+    """A trade moves one outcome's `q` and leaves the rest alone, which an
+    asymmetric `q` makes visible."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -274,9 +223,8 @@ async def test_q_moves_by_the_filled_quantity_on_the_traded_outcome_only(
 async def test_the_state_version_rises_by_exactly_one(
     session: AsyncSession,
 ) -> None:
-    """D-011's quote reference, incremented once per trade under the book
-    row's lock. The response reports the *post-trade* value, which is what a
-    client needs to quote its next trade against."""
+    """D-011's quote reference, incremented once per trade; the response
+    reports the post-trade value."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -293,15 +241,8 @@ async def test_the_state_version_rises_by_exactly_one(
 async def test_state_changed_at_advances_to_the_transactions_own_moment(
     session: AsyncSession,
 ) -> None:
-    """The fourth of the four writes.
-
-    D-029 pins `state_changed_at == opened_at` at book creation, on the
-    grounds that creating the book was the last state change there had been.
-    A trade is the next one, and the moment it names is the transaction's own
-    `occurred_at` rather than a second clock read — the snapshot route serves
-    this column as `occurred_at`, so two different values here would put a
-    price and its timestamp a few milliseconds out of step.
-    """
+    """The fourth write: the transaction's own `occurred_at`, not a second
+    clock read, since the snapshot serves this column (D-029)."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -322,13 +263,8 @@ async def test_state_changed_at_advances_to_the_transactions_own_moment(
 async def test_a_buy_writes_the_position_with_its_quantity_and_cost_basis(
     session: AsyncSession,
 ) -> None:
-    """The shares bought and the credits paid for them.
-
-    `cost_basis` is the *magnitude* — a positive number of credits — not the
-    signed total, because "`cost_basis` is stored; average entry price is
-    derived" makes [T-4] #24's average `cost_basis / quantity`, and a negative
-    basis would give a negative average price.
-    """
+    """The shares bought and the credits paid: `cost_basis` is the positive
+    magnitude, not the signed total (D-017)."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -347,13 +283,8 @@ async def test_a_buy_writes_the_position_with_its_quantity_and_cost_basis(
 async def test_a_second_buy_accumulates_on_the_same_row(
     session: AsyncSession,
 ) -> None:
-    """"#22 only ever adds to a position", and the primary key on the triple is
-    what makes that one row rather than two.
-
-    The second buy is priced against the `q` the first one left, so the two
-    costs differ — which is the point. A `cost_basis` that summed two copies
-    of the first cost, or overwrote rather than added, both pass a test using
-    one quantity twice against an unmoved book.
+    """A second buy adds to the same row. Its cost differs from the first, so
+    a doubled or overwritten `cost_basis` would fail.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -380,9 +311,7 @@ async def test_a_second_buy_accumulates_on_the_same_row(
 async def test_two_outcomes_of_one_market_are_two_positions(
     session: AsyncSession,
 ) -> None:
-    """`outcome_id` is part of the key, so a trader holding both sides holds
-    two rows. A key of `(user_id, market_id)` alone would silently merge them
-    and [T-4] #24 would report one position at a nonsense average price."""
+    """`outcome_id` is part of the key, so both sides are two rows."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -399,9 +328,8 @@ async def test_two_outcomes_of_one_market_are_two_positions(
         state_version=1,
     )
 
-    # Read off `first` before the second lookup: `position_of` expires the
-    # whole session, and an expired attribute read afterwards is a lazy load
-    # outside the greenlet — `MissingGreenlet`, not an assertion.
+    # Read before the second lookup, which expires the session: a later read
+    # would be a lazy load and `MissingGreenlet`.
     first = await position_of(
         session, user_id, upstream.market_id, upstream.outcomes[0]
     )
@@ -416,9 +344,7 @@ async def test_two_outcomes_of_one_market_are_two_positions(
 async def test_the_position_is_stored_at_money_scale(
     session: AsyncSession,
 ) -> None:
-    """"Shares keep money's scale of 4, in `q` and in positions". A quantity
-    arrives at scale 4 and addition at scale 4 is closed, so nothing a trader
-    was quoted for is rounded between the quote and the row."""
+    """"Shares keep money's scale of 4, in `q` and in positions"."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -440,14 +366,8 @@ async def test_the_position_is_stored_at_money_scale(
 async def test_the_stored_key_is_derived_by_the_server(
     session: AsyncSession,
 ) -> None:
-    """`trade:<user_id>:<market_id>:<client key>`, and the client's string is
-    never the stored key.
-
-    The hole this closes is not hypothetical: a verbatim key lets a trader
-    submit a trade named `signup-grant:<somebody else's user id>`, after which
-    that user's first balance read finds the key present, takes
-    `ensure_granted`'s early return, and never receives their starting
-    credits — permanently, in a table nothing rewrites.
+    """`trade:<user_id>:<market_id>:<client key>`; the client's string is never
+    the stored key, or a trader could squat another user's grant key.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -465,12 +385,8 @@ async def test_the_stored_key_is_derived_by_the_server(
 async def test_a_client_key_naming_the_grant_namespace_cannot_touch_it(
     session: AsyncSession,
 ) -> None:
-    """The attack the derivation exists to refuse, driven rather than argued.
-
-    A trader sends a client key spelled exactly like another user's signup
-    grant. The derivation namespaces it, so the victim's grant key is
-    untouched and their first balance read still mints their credits.
-    """
+    """A client key spelled like another user's grant key leaves that grant
+    untouched."""
     upstream = Upstream()
     attacker = uuid.uuid4()
     victim = uuid.uuid4()
@@ -494,9 +410,7 @@ async def test_a_client_key_naming_the_grant_namespace_cannot_touch_it(
 async def test_two_users_sending_one_client_key_make_two_trades(
     session: AsyncSession,
 ) -> None:
-    """The `user_id` component, asserted by removing the only thing that
-    separates the two requests. Both trades execute, both are charged, and
-    neither is answered with the other's transaction."""
+    """The `user_id` component: one client key from two users is two trades."""
     upstream = Upstream()
     first_user = uuid.uuid4()
     second_user = uuid.uuid4()
@@ -522,9 +436,8 @@ async def test_two_users_sending_one_client_key_make_two_trades(
 async def test_the_context_carries_everything_the_response_is_rebuilt_from(
     session: AsyncSession,
 ) -> None:
-    """`context` is the only durable description of a trade, written inside
-    `post`'s commit. If a field the response needs is missing from it, the
-    fresh path can still answer and every replay afterwards cannot."""
+    """`context` is the only durable description of a trade, so a replay can
+    rebuild the response only from what it holds."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -555,14 +468,8 @@ async def test_the_context_carries_everything_the_response_is_rebuilt_from(
 async def test_the_response_is_what_the_one_builder_makes_of_the_transaction(
     session: AsyncSession,
 ) -> None:
-    """"One function builds the response body from a `Transaction`", and the
-    fresh path calls it too.
-
-    Asserted by building the result a second time from the stored row and
-    comparing. Two builders would eventually disagree, and the case where they
-    disagree is the retry — which is exactly the case nobody exercises by
-    hand.
-    """
+    """One function builds the response from a `Transaction`, and the fresh
+    path uses it too, so a replay cannot disagree."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -575,13 +482,8 @@ async def test_the_response_is_what_the_one_builder_makes_of_the_transaction(
 
 
 async def test_the_response_carries_no_prices(session: AsyncSession) -> None:
-    """A replayed price was true once and is a lie afterwards, unlike `total`,
-    which is what the trader was charged for ever. Prices are the realtime
-    contract's — the `price` frame, or the snapshot endpoint.
-
-    Asserted over the attribute names rather than against a fixed field list,
-    so a `prices`, `post_trade_prices` or `average_price` added later fails
-    here instead of shipping a stale number into a replay.
+    """A replayed price would be stale, unlike `total`. Checked over attribute
+    names, so any price field added later fails.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -600,13 +502,8 @@ async def test_the_response_carries_no_prices(session: AsyncSession) -> None:
 async def test_the_book_row_is_locked_before_any_account_row(
     session: AsyncSession,
 ) -> None:
-    """D-015's "book row before account rows", now a live rule rather than a
-    vacuous one, because this ticket runs `post` *inside* the book lock.
-
-    Both locks are held at once, so the order they are taken in is what stops
-    two trades by one user in two different markets deadlocking against each
-    other. Asserted structurally: the first `FOR UPDATE` this path issues
-    names `market_books`, and the account locks come after it.
+    """D-015: book row before account rows, since `post` runs inside the book
+    lock. The first `FOR UPDATE` names `market_books`.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -630,14 +527,8 @@ async def test_the_book_row_is_locked_before_any_account_row(
 async def test_a_cold_market_opens_its_book_before_the_trade(
     session: AsyncSession,
 ) -> None:
-    """A market nobody has touched still trades.
-
-    `books.ensure_open` ends in `posting.post` and therefore commits, so it
-    runs before the book lock is taken — running it inside the trade's
-    transaction would end that transaction and drop the row lock mid-trade.
-    What this asserts is the outcome: the book exists, it is funded, and the
-    trade executed against it.
-    """
+    """A market nobody has touched still trades. `ensure_open` commits, so it
+    runs before the book lock."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await fund(session, user_id)
@@ -654,9 +545,8 @@ async def test_a_cold_market_opens_its_book_before_the_trade(
 async def test_a_user_who_has_never_been_read_is_granted_first(
     session: AsyncSession,
 ) -> None:
-    """`grants.ensure_granted` also ends in `post` and also commits, so it too
-    is ordered ahead of the lock. Without it a brand-new trader's first trade
-    is refused `insufficient_funds` against an account holding nothing."""
+    """A brand-new trader is granted before the lock, or their first trade is
+    refused against an empty account."""
     from core.config import get_settings  # noqa: PLC0415
 
     upstream = Upstream()
@@ -676,9 +566,7 @@ async def test_a_user_who_has_never_been_read_is_granted_first(
 async def test_the_market_is_asked_once_per_trade_with_the_callers_own_token(
     session: AsyncSession,
 ) -> None:
-    """ADR 0017's hop: one call per trade that is not a replay, forwarding the
-    credential the caller presented and minting nothing. The warm book means
-    the terms pull is not what is being counted here."""
+    """ADR 0017's hop: one call per trade, with the caller's own token."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -697,12 +585,8 @@ async def test_the_market_is_asked_once_per_trade_with_the_callers_own_token(
 async def test_a_closed_market_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """ADR 0017's `409 market_closed`, on a book that has existed for weeks.
-
-    The market closes *after* its book was opened, which is the shape an early
-    close has in production and the only shape that proves the gate is a live
-    read rather than something snapshotted at first touch.
-    """
+    """ADR 0017's `409 market_closed`, on a market closed after its book was
+    opened, so the gate must be a live read."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -728,10 +612,7 @@ async def test_a_closed_market_is_refused_and_writes_nothing(
 async def test_every_not_open_status_is_refused(
     session: AsyncSession, status: str
 ) -> None:
-    """One comparison against `"open"`, not a list of the statuses that
-    happened to exist when it was written. `settled` arrives with [3.4] #12
-    and a list-based gate would start accepting trades against settled markets
-    that morning."""
+    """Every status market_service reports other than open is refused."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -747,12 +628,8 @@ async def test_every_not_open_status_is_refused(
 async def test_an_insufficient_balance_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """`insufficient_funds` (409), raised by `posting._refuse_overdrafts`
-    under the account lock.
-
-    The book writes are already pending in the session when `post` raises, so
-    this is also the rollback test for the "all four writes or none" criterion:
-    `q`, `state_version` and the position must not survive a refused payment.
+    """`insufficient_funds` (409), under the account lock. Also the rollback
+    test for "all four writes or none": the pending book writes must not land.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -787,9 +664,8 @@ async def test_an_insufficient_balance_is_refused_and_writes_nothing(
 async def test_an_unknown_outcome_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """`unknown_outcome` (422), inherited from the preview. The market was
-    found and it is the parameter that is wrong, which is why this is not a
-    404 — 404 already means "no such market" on this service."""
+    """`unknown_outcome` (422): the market was found and the parameter is
+    wrong."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -819,13 +695,7 @@ async def test_an_unknown_outcome_is_refused_and_writes_nothing(
 async def test_a_quantity_that_prices_above_the_column_is_refused(
     session: AsyncSession,
 ) -> None:
-    """`quantity_too_large` (422), D-040's bound, checked on the *cost*.
-
-    The trade path has to make this refusal for the reason the preview does:
-    a `total` of fifteen integer digits is a number `Numeric(18, 4)` cannot
-    store, so writing it is a `NumericValueOutOfRange` — a 500 arriving after
-    the trader committed to a quote this service answered 200 to.
-    """
+    """`quantity_too_large` (422), D-040's bound on the cost."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -847,10 +717,7 @@ async def test_a_quantity_that_prices_above_the_column_is_refused(
 async def test_an_unreachable_market_service_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """`market_terms_unavailable` (503). The gate fails closed: an unreachable
-    market service refuses the trade rather than letting it run on a stale
-    answer, which is ADR 0017's argument that an outage narrows the window
-    rather than widening it."""
+    """`market_terms_unavailable` (503): the gate fails closed (ADR 0017)."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -868,10 +735,8 @@ async def test_an_unreachable_market_service_is_refused_and_writes_nothing(
 async def test_a_market_nobody_has_heard_of_is_not_found(
     session: AsyncSession,
 ) -> None:
-    """404 on a cold market the upstream does not know. A market that already
-    holds a book is the other case and is 503, because that market was
-    published and nothing here deletes one — `test_market_status.py` owns that
-    distinction and this only checks the trade path inherits it."""
+    """404 on a cold market the upstream does not know; `test_market_status.py`
+    owns the 503 case."""
     upstream = Upstream(status_code=404)
     user_id = uuid.uuid4()
     await fund(session, user_id)
@@ -887,13 +752,8 @@ async def test_a_market_nobody_has_heard_of_is_not_found(
 async def test_a_quote_older_than_the_book_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """Strict equality on `state_version`, the only staleness protection the
-    trade has ("The trade's staleness check is strict `state_version`
-    equality, and the field is required").
-
-    The book is moved by one real trade first, so the stale quote is stale for
-    the reason a trader's would be.
-    """
+    """Strict equality on `state_version`, the trade's only staleness check,
+    after one real trade has moved the book."""
     upstream = Upstream()
     mover = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -916,13 +776,8 @@ async def test_a_quote_older_than_the_book_is_refused_and_writes_nothing(
 async def test_a_quote_newer_than_the_book_is_refused_too(
     session: AsyncSession,
 ) -> None:
-    """Strict equality means both directions.
-
-    A `>=` comparison would read as "as fresh or fresher" and is the natural
-    thing to write. It accepts a version that does not exist yet, which is a
-    client that has invented its quote reference rather than read one, and it
-    accepts every replayed-from-the-future body a broken client can send.
-    """
+    """Strict equality means both directions: a `>=` would accept a version
+    that does not exist yet."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -936,9 +791,8 @@ async def test_a_quote_newer_than_the_book_is_refused_too(
 async def test_quote_stale_carries_the_quoted_and_the_current_version(
     session: AsyncSession,
 ) -> None:
-    """`error.details` with `quoted` and `current`, so a client can re-preview
-    and retry without guessing which way it was wrong. A bare 409 leaves the
-    frontend rendering "something moved" with nothing to resume from."""
+    """`quoted` and `current` travel with the error, so a client can
+    re-preview and retry."""
     upstream = Upstream()
     mover = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -960,15 +814,8 @@ async def test_quote_stale_carries_the_quoted_and_the_current_version(
 async def test_the_staleness_check_reads_the_version_under_the_lock(
     session: AsyncSession,
 ) -> None:
-    """ADR 0015: a check that has to hold under the lock is issued *after* the
-    lock statement.
-
-    Asserted structurally, because the alternative — reading `state_version`
-    before taking the book row — is a read whose answer another trade can
-    invalidate before this one writes, which is the whole failure ADR 0015
-    exists for. The book lock appears in the statement log before the read
-    that feeds the comparison.
-    """
+    """ADR 0015: the read that feeds the staleness check comes after the book
+    lock, and nothing is written before it."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -998,16 +845,11 @@ async def test_the_staleness_check_reads_the_version_under_the_lock(
 
 
 # =========================================================================
-# Reconciled with dev after #108 and #110
+# The gate's connection, damaged books, and the edges of the quantization
 # =========================================================================
 async def _idle_in_transaction() -> int:
-    """Backends of this role in this database sitting `idle in transaction`.
-
-    `test_preview.py`'s query, from a connection of its own: a session that
-    ran a statement and has not ended its transaction sits in this state for
-    as long as it waits, which is exactly a pooled connection held across a
-    call to somebody else.
-    """
+    """Backends of this role in this database sitting `idle in transaction`,
+    from Postgres's own view."""
     from sqlalchemy import text  # noqa: PLC0415
 
     from core.database import get_engine  # noqa: PLC0415
@@ -1029,20 +871,11 @@ async def _idle_in_transaction() -> int:
 async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_service(
     session: AsyncSession,
 ) -> None:
-    """The gate's HTTP call runs with no transaction open.
+    """The gate's HTTP call runs with no transaction open (D-043's fault on the
+    trade path).
 
-    The unlocked replay lookup autobegins a transaction, and `get_session`
-    does not wrap a request in one of its own, so nothing ended it: the gate
-    then called market_service with a pooled connection `idle in transaction`
-    for as long as the call took — up to the terms timeout, on every trade
-    that is not a replay, against a `pool_size` of 10. "The cold path holds
-    no connection across the terms pull" is the same fault on the preview.
-
-    A warm book and a funded trader, so the gate's call is the only one and
-    the probe runs at exactly that call. Three views of one fact: the
-    session's own `in_transaction()`, the pool's `checkedout()`, and
-    Postgres's `pg_stat_activity` while the call is stalled. **Remove the
-    rollback after the replay miss in `trading.execute` and this goes red.**
+    Checked from the session, the pool and Postgres. Remove the rollback after
+    the replay miss in `trading.execute` and this goes red.
     """
     import asyncio  # noqa: PLC0415
 
@@ -1089,13 +922,8 @@ async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_servic
 async def test_a_cold_trade_reaches_ensure_open_with_nothing_pending(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`books.ensure_open` asserts nothing is pending on the session, because
-    its cold path rolls back before the terms pull. #22's order satisfies it
-    by construction — the replay lookup and the gate only read — and this
-    records the session at the moment of the call rather than trusting that.
-
-    Two upstream calls, so the cold path really ran: the gate's, then the
-    terms pull's.
+    """The trade reaches `books.ensure_open` with nothing pending, recorded at
+    the call. Two upstream calls show the cold path ran.
     """
     from service import books as books_module  # noqa: PLC0415
 
@@ -1152,14 +980,8 @@ async def _damage(session: AsyncSession, upstream: Upstream, how: str) -> None:
 async def test_an_incomplete_book_is_market_book_incomplete_and_writes_nothing(
     session: AsyncSession, how: str
 ) -> None:
-    """The trade refuses the books the preview refuses, for the same reasons,
-    through the same guard — `book_prices.refuse_unpriceable`, called on the
-    trade's own read under the book lock.
-
-    Before it did, a book with no outcome rows was `unknown_outcome` (422),
-    blaming the request for the ledger's own damaged data, and an unpriceable
-    `b` was a bare `ValueError` out of `core/lmsr.py` — an unmapped 500.
-    """
+    """The trade refuses the books the preview refuses, through the same
+    guard, `book_prices.refuse_unpriceable`."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -1203,12 +1025,8 @@ async def test_an_incomplete_book_is_market_book_incomplete_and_writes_nothing(
 async def test_terms_that_cannot_open_a_book_are_refused_on_a_cold_trade(
     session: AsyncSession, field: str, value: str
 ) -> None:
-    """dev's `b` and `seed_subsidy` refusals, reached from the trade path.
-
-    The gate passes — the market is open — and `books.ensure_open` then
-    refuses the terms before it writes a book, as the 503 the contract
-    promises. Nothing is written: no book, no pool funding, no trade.
-    """
+    """`books.ensure_open`'s `b` and subsidy refusals, reached from a cold
+    trade: a 503, and nothing written."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await fund(session, user_id)
@@ -1226,15 +1044,8 @@ async def test_terms_that_cannot_open_a_book_are_refused_on_a_cold_trade(
 async def test_a_quantity_whose_resulting_q_exceeds_the_column_is_refused(
     session: AsyncSession,
 ) -> None:
-    """D-040's second half: the resulting `q`, not only the cost.
-
-    Every digit of this quantity fits `Numeric(18, 4)`, and so does its cost
-    — but added to the `q` already outstanding it does not, so the book write
-    would be a `NumericValueOutOfRange`. The preview refuses this exact
-    request as `quantity_too_large`; the trade has to agree, rather than
-    answering `insufficient_funds` for a trade no balance could ever make
-    storable.
-    """
+    """D-040's second half: the resulting `q` must fit the column too, as the
+    preview already refuses."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -1252,16 +1063,8 @@ async def test_a_quantity_whose_resulting_q_exceeds_the_column_is_refused(
 async def test_the_trade_charges_the_previews_tick_where_ambient_abs_would_not(
     session: AsyncSession,
 ) -> None:
-    """D-042's `copy_abs`, on the one book where it changes the charge.
-
-    D-044's own example: at `q = [1000, 1100]`, `b = 300`, buying 200 of
-    outcome 0 costs exactly 100, and the engine returns
-    `100.000…0001` with the one in its 49th place. `copy_abs` keeps that
-    digit and `ROUND_CEILING` charges `100.0001`, which is what the preview
-    quotes. A bare `abs()` rounds to the ambient 28 digits first, drops it,
-    and charges `100.0000` — a trade that disagrees with its own preview by a
-    tick, which is the one thing this route promises never to do.
-    """
+    """D-042's `copy_abs`, on D-044's book where a bare `abs()` would charge a
+    tick less than the preview quoted."""
     upstream = Upstream()
     upstream.body["liquidity_b"] = "300"
     user_id = uuid.uuid4()
@@ -1292,14 +1095,8 @@ async def test_the_trade_charges_the_previews_tick_where_ambient_abs_would_not(
 async def test_a_buy_that_prices_at_zero_is_cost_below_tick_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """`quantize_cost` refuses a result of `0.0000` itself, since #108 —
-    there is no separate refusal for the trade path to forget to call.
-
-    Past about 110·b of skew the engine prices a small buy of the unlikely
-    outcome at exactly zero. Charging nothing for real shares is the
-    surprise D-041 exists to prevent, and on a buy the code names the cost,
-    not the proceeds.
-    """
+    """D-041: a buy the engine prices at zero is refused by `quantize_cost`
+    itself, as `cost_below_tick`."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     skewed = [ZERO, Decimal("20000.0000")]

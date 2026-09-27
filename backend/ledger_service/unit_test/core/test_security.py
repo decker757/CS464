@@ -88,18 +88,12 @@ def test_an_unrecognised_role_fails_closed() -> None:
 def test_nothing_in_this_service_mints_a_token() -> None:
     """This service consumes identity and never issues it.
 
-    Under HS256 the secret it verifies with would also let it sign, so the
-    restriction is architectural rather than cryptographic and there is nothing
-    but this test holding it. ADR 0002.
-
-    `unit_test/` is excluded: the suite mints its own tokens on purpose, to
-    exercise the same path a real request takes.
+    Under HS256 the verifying secret could also sign, so nothing but this test
+    holds the restriction (ADR 0002). `unit_test/` mints on purpose and is
+    excluded.
     """
-    # The service's own tree AND the shared package. [F-6] #76 moved the
-    # verifier into `backend/shared/security.py`, so a scan rooted at this
-    # service alone would no longer look at the file that actually decodes a
-    # token — and adding `create_access_token` there would hand a minting path
-    # to all four consuming services with this test still green.
+    # The shared package too: the verifier lives there, and a minting path
+    # added there would reach every consuming service.
     service_root = pathlib.Path(__file__).resolve().parents[2]
     shared_root = service_root.parent / "shared"
 

@@ -1,22 +1,12 @@
 """Shared fixtures.
 
-Tests run against Postgres, not SQLite, as `ledger_svc` under the same grants
-the service uses in production. That matters here for a reason the other suites
-only half share: this service's claims are about what the database does under
-concurrency — a row lock that makes two writers take turns, a unique index that
-turns a race into a replay, a trigger that refuses an UPDATE. SQLite has no
-opinion about any of that, so a suite running on it would pass while proving
-nothing.
+Tests run against Postgres as `ledger_svc` under production grants: this
+service's claims are about row locks, unique indexes and triggers, which SQLite
+would pass while proving nothing. Start it with `docker compose up -d db`; the
+suite rebuilds the separate `cs464_test` database.
 
-Start the database with `docker compose up -d db` from the repo root. The suite
-uses the separate `cs464_test` database created by `sql/00-init.sh`, so it can
-drop and rebuild the schema without touching development data.
-
-Tokens here are minted with PyJWT directly rather than by importing anything
-from the auth service. That is deliberate: this service has no minting code and
-never will, so a test that signs its own token exercises the same path a real
-request takes, and it stays honest about the fact that the two services agree
-on a wire format rather than on an implementation.
+Tokens are signed with PyJWT directly: this service has no minting code, and
+the two services agree on a wire format, not an implementation.
 """
 
 from __future__ import annotations
@@ -29,8 +19,7 @@ from shared.testing import load_repo_env
 
 
 # Before any project module is imported. `get_settings` is lru_cached, so the
-# first call wins, and importing main.py triggers it. [F-6] #76 moved the
-# reader itself to `shared/testing.py`; it was identical in all five suites.
+# first call wins, and importing main.py triggers it.
 load_repo_env()
 
 _test_db = os.environ.get("LEDGER_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
@@ -85,12 +74,8 @@ def mint_token(
 ) -> str:
     """Sign a token the way the auth service does, for tests only.
 
-    Defaults to TRADER, unlike the market service's suite, because a trader is
-    the ordinary caller here: the routes that read your own balance are for
-    everybody and only the two that read somebody else's need an admin.
-
-    The overridable issuer and secret are what let a test prove this service
-    rejects a token from a system it does not trust.
+    Defaults to TRADER, the ordinary caller here. The overridable issuer and
+    secret let a test prove a foreign token is refused.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -115,21 +100,12 @@ def bearer(user_id: uuid.UUID, role: UserRole = UserRole.TRADER, **kwargs) -> di
 
 @pytest.fixture
 async def clean_database():
-    """Rebuild the schema, then hand over an empty database.
+    """Drop and rebuild the schema, then hand over an empty database.
 
-    Dropped and recreated rather than created-if-absent, for the reason the
-    market service's suite records: `create_all` only ever issues CREATE TABLE
-    IF NOT EXISTS, so a column added to `model/entities.py` never reaches a
-    test database that already has the table.
-
-    This is also what reinstalls the append-only trigger, which is attached to
-    `ledger.entries` as an after_create DDL event. A trigger written into
-    `sql/` instead would be dropped by the first rebuild here and never come
-    back, and `test_append_only.py` would pass in CI and fail in production —
-    or, worse, the reverse.
-
-    Deliberately not autouse. Only `session` and `client` depend on it, so the
-    pure unit tests under core/ never need Postgres running.
+    Dropped rather than created-if-absent, so a new column reaches the test
+    database. The rebuild also reinstalls the append-only trigger, an
+    `after_create` event (ADR 0009). Not autouse, so the tests under core/
+    never need Postgres.
     """
     from model import entities  # noqa: F401, PLC0415  - registers the mappers
 
@@ -157,9 +133,7 @@ async def session(clean_database):
 async def client(clean_database):
     """An HTTP client bound to the app, for controller-layer tests.
 
-    `create_app` is imported here rather than at module scope so that running
-    only the pure layers never constructs the application, in keeping with the
-    rule that nothing below the controller knows HTTP exists.
+    `create_app` is imported here so the pure layers never construct the app.
     """
     from main import create_app  # noqa: PLC0415
 
@@ -191,26 +165,15 @@ def admin_headers() -> dict[str, str]:
 
 @pytest.fixture
 def starting_credits() -> Decimal:
-    """Read from settings rather than hardcoded.
-
-    A test that spelled 1000 out would be asserting the default rather than the
-    behaviour, and would fail for whoever set STARTING_CREDITS in their .env.
-    """
+    """From settings, not hardcoded, so it holds whatever STARTING_CREDITS is."""
     return get_settings().starting_credits
 
 
 async def strip_outcomes(session, market_id: uuid.UUID) -> None:
     """Delete a market's outcome rows, leaving the book behind. Committed.
 
-    The state `MarketBookIncomplete` exists for, and the only way to reach it:
-    nothing in this service writes a book without its outcomes, because
-    `books.ensure_open` inserts both in one savepoint.
-
-    Here rather than in each suite because three files built it inline and the
-    guard's definition of "incomplete" has already moved once — from "no rows"
-    to "fewer than `MIN_OUTCOMES`". Three hand-written setups is three places
-    to find on the next move, and the one that is missed goes on passing for
-    the wrong reason.
+    The only way to reach `MarketBookIncomplete`: nothing in this service
+    writes a book without its outcomes.
     """
     from sqlalchemy import delete  # noqa: PLC0415
 

@@ -1,23 +1,9 @@
 """Two traders typing a quantity at the same instant. [T-1] #21, D-012, D-036
 
-Nothing here is simulated. Every party gets its own session, its own connection
-and its own database transaction, because the thing under test is what Postgres
-does when two transactions want the same rows — and, for the first test, what
-it does when they do *not*.
-
-**Every race is gated on an `asyncio.Barrier`, and that is not decoration.**
-`asyncio.gather` alone starts coroutines in order and the first can be most of
-the way through its work before the second has opened a connection, which
-produces a test that passes because the two never overlapped. `await
-own.connection()` forces the connection to exist, then the barrier holds both
-there until both have arrived. ADR 0015 makes that the standard for any test in
-this repository asserting something about two transactions.
-
-**The first test is the unusual one: it fails when a lock is *added*.** Every
-other race test in this suite fails when a lock is removed. D-012's claim is
-that the pricing read takes none, and the only honest way to assert an absence
-is to build the situation a lock would deadlock in and show that it does not.
-Each test below names what to change to watch it go red.
+Every party has its own session and transaction, and every race waits on an
+`asyncio.Barrier` after connecting (ADR 0015). The first test fails when a lock
+is *added*: the only honest way to assert D-012's absence of one. Each test
+names what to change to watch it go red.
 """
 
 from __future__ import annotations
@@ -36,12 +22,8 @@ from unit_test.conftest import mint_token
 
 
 def _preview():
-    """Imported inside each test rather than at module scope.
-
-    `service/preview.py` does not exist yet, and a top-level import would be
-    one collection error taking the whole file down as a single red line.
-    Reached through here, every test fails on its own (D-007).
-    """
+    """Imported inside each test, so a missing name fails one test rather than
+    collection (D-007)."""
     from service import preview  # noqa: PLC0415
 
     return preview
@@ -154,23 +136,10 @@ async def _quote(session: AsyncSession, upstream: _Upstream, *, outcome: int = 0
 async def test_two_concurrent_previews_of_a_warm_market_do_not_serialise(
     session: AsyncSession,
 ) -> None:
-    """D-012's actual claim, built as the situation a lock would hang in.
+    """D-012, built as the situation a lock would hang in: both parties price
+    and then hold their transactions open until both have a quote.
 
-    Both parties connect, meet at the barrier, price the same market, and then
-    **hold their transactions open** at a second barrier until both have
-    finished. Neither may proceed until the other has a quote in hand.
-
-    If the pricing read took `with_for_update()` on the book row — or on the
-    outcome rows — the second party would block inside `quote()` waiting for
-    the first party's transaction to end, and the first party would be waiting
-    at `done` for the second. Nothing would complete and `asyncio.timeout`
-    turns that into a failure with a name instead of a suite that hangs.
-
-    **Add `.with_for_update()` to the pricing read and this goes red**, which
-    is the reverse of every other race test in this suite and is the only way
-    to assert an absence honestly. D-012's cost argument is the reason it
-    matters: a preview fires on every keystroke, so a lock here queues every
-    trader typing a quantity into the same market behind one another.
+    Add `.with_for_update()` to the pricing read and this times out.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
@@ -203,16 +172,8 @@ async def test_two_concurrent_previews_of_a_warm_market_do_not_serialise(
 async def test_concurrent_previews_of_one_market_agree(
     session: AsyncSession,
 ) -> None:
-    """Same committed state, same answer, whatever the interleaving.
-
-    The preview is a pure function of `b`, `q` and the request, all read under
-    one statement (D-013). Two callers against an unchanged market must
-    therefore agree exactly — not approximately — and a disagreement would mean
-    one of them read a partial snapshot, which is the failure D-013's single
-    statement exists to rule out.
-
-    Eight parties rather than two, because a snapshot bug that needs a
-    particular interleaving will not show up in one pair.
+    """Same committed state, same answer, whatever the interleaving: a
+    disagreement would mean a partial snapshot (D-013). Eight parties.
     """
     upstream = _Upstream()
     await _warm(session, upstream)
@@ -237,13 +198,8 @@ async def test_concurrent_previews_of_one_market_agree(
 async def test_a_race_of_warm_previews_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """The read-only claim, under contention rather than in isolation.
-
-    `test_preview.py` proves a single warm preview writes nothing. This proves
-    the same under eight simultaneous callers, where a "create it if it is
-    missing" path with a narrow window would finally fire — the shape that
-    makes a bug appear only in production, on the busiest market, once.
-    """
+    """The read-only claim under eight simultaneous callers, where a narrow
+    "create it if missing" window would fire."""
     upstream = _Upstream()
     await _warm(session, upstream)
 
@@ -282,17 +238,11 @@ async def test_a_race_of_warm_previews_writes_nothing(
 async def test_concurrent_first_previews_open_exactly_one_book(
     session: AsyncSession,
 ) -> None:
-    """D-010's race, arriving through the caller D-037 says owns it.
+    """D-010's race through the preview (D-037): every caller gets a quote,
+    and one book, pool and subsidy exist.
 
-    `test_book_concurrency.py` proves `books.ensure_open` survives six
-    simultaneous first touches. This proves the preview inherits that rather
-    than wrapping it in a check of its own: every caller comes back with a
-    quote, one book exists, one pool account exists, and the subsidy was posted
-    once.
-
-    **Remove the `except IntegrityError` recovery in `books.ensure_open` and
-    this goes red**, with losing traders seeing a driver error on what is, for
-    them, an ordinary first look at a market.
+    Remove the `except IntegrityError` recovery in `books.ensure_open` and this
+    goes red.
     """
     upstream = _Upstream()
 
@@ -350,15 +300,8 @@ async def test_concurrent_first_previews_open_exactly_one_book(
 async def test_the_ledger_still_balances_after_a_race_of_first_previews(
     session: AsyncSession,
 ) -> None:
-    """Every entry ever written, summed, after the only path in this ticket
-    that moves money — under the contention D-036 records.
-
-    Three markets opened simultaneously by preview, all funded from the one
-    `PLATFORM` account, which is the shape where a dropped leg or a
-    double-funded pool would actually show up. The per-transaction check is
-    beside it because a whole-table zero survives two mistakes that cancelled,
-    and three pools funded from one house account is exactly where two such
-    mistakes would find each other.
+    """Three markets opened at once by preview from one `PLATFORM` account:
+    the ledger sums to zero, and so does each transaction (ADR 0009).
     """
     upstreams = [_Upstream() for _ in range(3)]
 
@@ -404,25 +347,11 @@ async def test_the_ledger_still_balances_after_a_race_of_first_previews(
 async def test_two_markets_opening_by_preview_at_once_do_not_deadlock(
     session: AsyncSession,
 ) -> None:
-    """Two markets opening at once finish, rather than waiting on each other.
+    """Two markets opening at once both finish, inside a timeout.
 
-    **This does not prove ADR 0015's lock ordering, and it used to claim it
-    did.** Every funding transaction touches the same `PLATFORM` row and its
-    own pool, so the two callers here want `{platform, pool_a}` and
-    `{platform, pool_b}` — one row in common. A cycle needs two transactions
-    wanting the *same two* rows in opposite orders, so this pair cannot
-    deadlock however `accounts.lock` sorts. `books.ensure_open` also lists its
-    legs `[platform, pool]` every time, so even unsorted both callers agree.
-    Delete the `sorted()` in `accounts.lock` and this test stays green, which
-    is the definition of a test that is not evidence.
-
-    What it does hold is worth holding: contention on the shared platform row
-    serialises rather than stalls, and the pool account race resolves, for
-    every caller, inside the timeout. Testing the ordering rule itself needs
-    two transactions that each take two pool rows, which nothing in this
-    service does yet — [T-2] #22 is the first writer that could.
-
-    A deadlock shows up as a hang rather than a failure, so it is bounded.
+    Not evidence for ADR 0015's lock order: the two share only the platform
+    row, so they cannot deadlock however `accounts.lock` sorts. What it holds
+    is that the shared row serialises rather than stalls.
     """
     first, second = _Upstream(), _Upstream()
 

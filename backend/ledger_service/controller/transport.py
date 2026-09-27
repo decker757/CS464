@@ -1,11 +1,7 @@
 """How the access token reaches this service.
 
-Read-only by design. Unlike the auth service's transport, there is no
-set_auth_cookies here: this service consumes a session it did not create and
-has no business issuing one.
-
-The precedence rule is copied deliberately, not shared. It is part of ADR
-0002's contract and every service has to agree on it.
+Read-only: this service consumes a session it did not create. The precedence
+rule is copied deliberately, not shared; it is part of ADR 0002's contract.
 """
 
 from __future__ import annotations

@@ -264,12 +264,9 @@ async def test_a_zero_limit_is_refused(
 async def test_there_is_no_write_route(
     client: AsyncClient, admin_headers: dict[str, str], method: str, path: str
 ) -> None:
-    """Nothing writes over HTTP yet, and nothing will ever edit or remove.
-
-    The write path is `service/posting.py`; the endpoint that exposes it
-    belongs to [T-2] #22, along with the decision about how a trading service
-    proves it is one. A write route trusting a trader's own token would be a
-    route for minting yourself credits.
+    """No route writes entries or transactions directly, and none edits or
+    removes one. The one write route is the trade, which takes no money
+    (ADR 0009's amendment).
     """
     response = await getattr(client, method)(path, headers=admin_headers)
 
