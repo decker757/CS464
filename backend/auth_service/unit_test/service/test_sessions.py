@@ -45,6 +45,8 @@ async def _wait_until_blocked_on_a_lock(session: AsyncSession, pid: int) -> None
         if await session.scalar(stmt, {"pid": pid}):
             return
         await asyncio.sleep(0.01)
+    # Carrying on would test the two sessions one after the other, not the race.
+    pytest.fail(f"backend {pid} never blocked on a lock")
 
 
 async def _refresh_in_own_session(
