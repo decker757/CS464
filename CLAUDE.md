@@ -445,12 +445,26 @@ that token expires. See `docs/adr/0003-market-service-boundary.md`.
 
 How code is written — naming, file layout, reuse, comments — is in
 `backend/CLAUDE.md` and `frontend/CLAUDE.md`. Claude loads each one when it
-works in that folder. Three rules hold on both sides:
+works in that folder. Four rules hold on both sides:
 
 **Search before you write.** Look for an existing function that does the job
 and reuse or extend it. When a PR would add the second copy of some logic, the
 extraction is part of that PR. Do not build abstractions for callers that do
 not exist yet.
+
+**Readable beats clever.** Use what the language and framework already give
+you — the standard library, SQLAlchemy, pydantic, React, Tailwind — rather
+than hand-writing your own version. But when using one makes a line hard to
+read, write the plain version instead. If a reviewer has to stop and decode a
+line, it is too clever. In practice:
+
+- a loop with well-named variables over a nested comprehension or a `reduce`
+- an `if`/`else` over a chained ternary
+- a named helper over a one-liner that does three things
+- no metaprogramming, decorators or type gymnastics just to save a few lines
+- no shortened names to save characters
+
+The test: could a teammate who did not write it explain it after one read?
 
 **Tests earn their place.** Every test traces to one of: an acceptance
 criterion, a Definition of Done item, an invariant written down in this file
@@ -476,6 +490,10 @@ socket origin test — looks trivial on purpose and is not decorative.
 checks a PR against its issue's acceptance criteria and Definition of Done,
 these conventions, and the test rule above. Run it on your own branch before
 asking a person to review.
+
+Work an agent wrote is reviewed the same way, by a different agent or a
+person, as soon as the agent says it is done and before anyone is told it is
+finished. Nobody marks their own work, human or agent.
 
 ## Frontend and backend split
 

@@ -25,9 +25,15 @@ Findings go back as comments for the author to fix.
   ```
   To read a whole changed file (not just the hunk), fetch the branch and use
   `git show origin/<headRefName>:<path>`. Do not `git checkout` it.
-- **Branch name given:** `git fetch origin` then `git diff origin/dev...origin/<branch>`.
+- **Branch name given:** `git fetch origin`, then diff `origin/<branch>` if it
+  has been pushed, or the local `<branch>` if it has not.
 - **Nothing given:** review the current branch: `git fetch origin dev` then
   `git diff origin/dev...HEAD`, plus uncommitted changes from `git diff HEAD`.
+
+**Stacked work:** if the PR body says `Stacked on #N`, or the branch was built
+on another feature branch, diff against that branch rather than `dev`, so you
+review only this part. Then check the part stands alone: it does one thing and
+passes its tests without the parts above it.
 
 Skip generated and vendored files (`package-lock.json`, `.venv/`, `node_modules/`).
 
@@ -123,7 +129,11 @@ Check the diff against the side-specific `CLAUDE.md`. Most useful first:
    lines of reasoning that belongs in `DECISIONS.md`.
 5. Frontend: hex colours, hover handlers editing `style`, URL strings or axios
    error parsing in a page.
-6. **PR shape** (root `CLAUDE.md` → Branches): commits not split by layer, a
+6. **Clever code** (root `CLAUDE.md` → Readable beats clever): nested
+   comprehensions, chained ternaries, one-liners doing several things,
+   metaprogramming or type tricks. Quote the line and write the plain version
+   beside it. A **Should fix**, unless nobody on the team could follow it.
+7. **PR shape** (root `CLAUDE.md` → Branches): commits not split by layer, a
    refactor mixed with a behaviour change, or a refactor PR that edits a test
    assertion. If the PR does more than one thing, suggest how to split it into
    a stack.
