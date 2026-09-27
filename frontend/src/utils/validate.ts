@@ -1,13 +1,11 @@
+import type { Registration } from '../api/authApi'
+
 const USERNAME_RE = /^[A-Za-z0-9_-]+$/
 const USERNAME_MIN = 3
 const USERNAME_MAX = 32
 const PASSWORD_MIN = 12
 
-export interface RegisterForm {
-  username: string
-  email: string
-  password: string
-}
+export type RegisterForm = Registration
 
 export interface RegisterErrors {
   username?: string

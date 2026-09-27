@@ -1,7 +1,6 @@
-import axios from 'axios'
 import { useState } from 'react'
-import api from '../api/axios'
-import { ApiError, FastApiError } from '../api/errors'
+import * as authApi from '../api/authApi'
+import { describeFormError } from '../api/errors'
 import AuthFooterLink from '../components/auth/AuthFooterLink'
 import AuthLayout from '../components/auth/AuthLayout'
 import Button from '../components/ui/Button'
@@ -9,13 +8,15 @@ import Field from '../components/ui/Field'
 import { Spinner } from '../components/ui/icons'
 import PasswordInput from '../components/ui/PasswordInput'
 import TextInput from '../components/ui/TextInput'
-import { User, useAuth } from '../context/AuthContext'
+import { useAuth } from '../context/AuthContext'
 import { RegisterErrors, validateRegister } from '../utils/validate'
+
+const REGISTER_FIELDS = ['username', 'email', 'password'] as const
 
 export default function RegisterPage() {
   const { login } = useAuth()
 
-  const [form, setForm] = useState({ username: '', email: '', password: '' })
+  const [form, setForm] = useState<authApi.Registration>({ username: '', email: '', password: '' })
   const [errors, setErrors] = useState<RegisterErrors>({})
   const [serverError, setServerError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -36,31 +37,14 @@ export default function RegisterPage() {
 
     setLoading(true)
     try {
-      const res = await api.post<{ user: User }>('/auth/register', form)
-      // GuestOnly owns the redirect — see the note in LoginPage.
-      login(res.data.user)
+      login(await authApi.register(form)) // GuestOnly owns the redirect, as on LoginPage
     } catch (err: unknown) {
-      if (!axios.isAxiosError(err)) { setServerError('Something went wrong. Please try again.'); return }
-      const data = err.response?.data as (ApiError & FastApiError) | undefined
-      if (data?.detail?.length) {
-        // FastAPI 422: pydantic rejected a field (e.g. malformed email the client regex passed)
-        const first = data.detail[0]
-        const field = first.loc[first.loc.length - 1] as string
-        if (field === 'username' || field === 'email' || field === 'password') {
-          setErrors({ [field]: first.msg })
-        } else {
-          setServerError(first.msg || 'Something went wrong. Please try again.')
-        }
-      } else if (data?.error?.code === 'duplicate_user') {
-        const fieldErrors = Object.fromEntries(
-          (data.error.details ?? []).map((d) => [d.field, d.message])
-        )
-        setErrors(fieldErrors)
-      } else if (data?.error?.message) {
-        setServerError(data.error.message)
-      } else {
-        setServerError('Something went wrong. Please try again.')
-      }
+      const { fieldErrors, formError } = describeFormError(err, {
+        fields: REGISTER_FIELDS,
+        fieldErrorCodes: ['duplicate_user'],
+      })
+      if (formError) setServerError(formError)
+      else setErrors(fieldErrors)
     } finally {
       setLoading(false)
     }

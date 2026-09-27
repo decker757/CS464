@@ -1,13 +1,8 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import api from '../api/axios'
+import * as authApi from '../api/authApi'
+import type { User } from '../api/authApi'
 
-export interface User {
-  id: string
-  username: string
-  email: string
-  role: 'trader' | 'admin'
-  created_at: string
-}
+export type { User }
 
 interface AuthContextType {
   user: User | null | undefined
@@ -36,8 +31,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const resolveIfStillUnknown = (value: User | null) =>
       setUser((current) => (current === undefined ? value : current))
 
-    api.get<User>('/auth/me')
-      .then((res) => resolveIfStillUnknown(res.data))
+    authApi.getCurrentUser()
+      .then(resolveIfStillUnknown)
       .catch(() => resolveIfStillUnknown(null))
   }, [])
 
@@ -50,7 +45,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // the session up because the network blinked is the wrong way to fail.
     // The error still propagates; the caller decides what to show.
     try {
-      await api.post('/auth/logout')
+      await authApi.logout()
     } finally {
       setUser(null)
     }
