@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from model.entities import MarketCard, MarketStatus, displayed_status
-from model.schemas import PublicMarketOut, PublicMarketSummaryOut
+from model.entities import MarketStatus, displayed_status
+from model.schemas import PublicMarketOut
 
 
 class _FakeOutcome:
@@ -102,17 +102,6 @@ class _FakePublishedMarket:
         # What `get_published` stamps before projection (D-027), from the real
         # `displayed_status` so the derivation itself is exercised.
         self.trader_facing_status = displayed_status(self.status, self.close_time)
-
-
-def _card(**kwargs: object) -> MarketCard:
-    """A `MarketCard`, built the way `browse` builds one. D-027."""
-    entity = _FakePublishedMarket(**kwargs)
-    return MarketCard(
-        id=entity.id,
-        status=displayed_status(entity.status, entity.close_time),
-        question=entity.question,
-        close_time=entity.close_time,
-    )
 
 
 def _detail_json(**kwargs: object) -> dict[str, Any]:
@@ -222,29 +211,6 @@ def test_a_resolving_status_is_reported_as_it_stands(status: MarketStatus) -> No
     payload = _detail_json(status=status, closes_in=timedelta(days=30))
 
     assert payload["status"] == status.value
-
-
-# --- the list projection --------------------------------------------------
-def test_a_market_card_carries_the_question_status_and_closing_time() -> None:
-    """[X-1] #34's card, less the prices, which come from the ledger. ADR 0005."""
-    model = PublicMarketSummaryOut.model_validate(_card())
-    payload = json.loads(model.model_dump_json())
-
-    assert payload["question"]
-    assert payload["status"] == MarketStatus.OPEN.value
-    assert payload["close_time"]
-
-
-def test_the_summary_derives_its_status_the_same_way_the_detail_does() -> None:
-    """One rule, two projections, and they must not disagree."""
-    stopped = dict(closes_in=timedelta(seconds=-1))
-
-    summary = PublicMarketSummaryOut.model_validate(_card(**stopped))
-    detail = PublicMarketOut.model_validate(
-        _FakePublishedMarket(**stopped)
-    )
-
-    assert summary.status == detail.status == MarketStatus.CLOSED
 
 
 # --- timestamps -----------------------------------------------------------

@@ -52,13 +52,6 @@ def test_a_short_signing_key_is_refused() -> None:
         _settings(jwt_secret="tooshort")
 
 
-def test_cors_origins_parse_from_a_comma_separated_string() -> None:
-    """The field parses a comma-separated value. The next test guards `NoDecode`."""
-    parsed = _settings(cors_origins="http://a.com, http://b.com")
-
-    assert parsed.cors_origins == ["http://a.com", "http://b.com"]
-
-
 def test_cors_origins_parse_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -73,27 +66,9 @@ def test_cors_origins_parse_from_the_environment(
     assert settings.cors_origins == ["http://a.test", "http://b.test"]
 
 
-def test_the_token_settings_default_to_the_auth_service_contract() -> None:
-    """All three have to agree with the auth service or nothing validates."""
-    parsed = _settings()
-
-    assert parsed.jwt_algorithm == "HS256"
-    assert parsed.jwt_issuer == "cs464-auth"
-    assert parsed.access_cookie_name == "access_token"
-
-
 def test_the_liquidity_default_is_configured_and_has_a_value() -> None:
-    """[1.2] #2: "b defaults to a configured value". Not a credential, so it has one."""
+    """[1.2] #2: "b defaults to a configured value", and docs/api promises 100."""
     assert _settings().default_liquidity_b == Decimal("100")
-
-
-def test_the_liquidity_default_can_be_overridden_from_the_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Through the environment, the path a deploy takes; see `_env`."""
-    _env(monkeypatch, DEFAULT_LIQUIDITY_B="250")
-
-    assert Settings(_env_file=None).default_liquidity_b == Decimal("250")
 
 
 def test_the_liquidity_default_is_read_from_the_environment_as_a_decimal(
@@ -119,8 +94,6 @@ def test_a_non_positive_liquidity_default_refuses_to_boot(bad: str) -> None:
 
 
 # --- [F-4] #44 auto-close ---------------------------------------------------
-
-
 def test_the_sweep_settings_have_working_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

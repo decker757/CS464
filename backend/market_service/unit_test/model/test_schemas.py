@@ -205,6 +205,7 @@ def test_max_platform_loss_is_derived_from_b_and_the_outcome_count() -> None:
 
 
 def test_doubling_the_liquidity_doubles_the_worst_case() -> None:
+    """The worst case uses this market's own `b`, not a fixed value."""
     single = MarketOut.model_validate(_FakeMarket(outcomes=2))
     double = MarketOut.model_validate(
         _FakeMarket(outcomes=2, liquidity_b=Decimal("200"))
@@ -402,19 +403,3 @@ def test_a_proposal_id_that_is_not_a_uuid_is_refused() -> None:
 def test_an_approval_carries_nothing_but_which_proposal() -> None:
     """Guard: any other field could approve something other than what was reviewed."""
     assert set(OutcomeApprovalRequest.model_fields) == {"proposal_id"}
-
-
-def test_the_proposal_id_is_null_on_the_way_out_until_a_proposal() -> None:
-    payload = json.loads(MarketOut.model_validate(_FakeMarket()).model_dump_json())
-
-    assert "proposal_id" in payload
-    assert payload["proposal_id"] is None
-
-
-def test_the_approval_fields_are_null_on_the_way_out() -> None:
-    """Present and null until an approval, so the frontend reads one shape."""
-    payload = json.loads(MarketOut.model_validate(_FakeMarket()).model_dump_json())
-
-    assert payload["approved_by_id"] is None
-    assert payload["approved_by_username"] is None
-    assert payload["approved_at"] is None

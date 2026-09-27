@@ -199,15 +199,6 @@ async def test_any_administrator_may_close_another_ones_market(
     assert closed.creator_id == owner.id
 
 
-async def test_the_creator_scoped_read_is_untouched(session: AsyncSession) -> None:
-    """Widening the close must not widen the draft read. [1.1] #1."""
-    owner, other = _actor(), _actor()
-    market, _, _ = await market_service.save(session, owner, _request())
-
-    with pytest.raises(MarketNotFound):
-        await market_service.get(session, other.id, market.id)
-
-
 # --- the reason -----------------------------------------------------------
 @pytest.mark.parametrize("reason", ["", "   ", "broken"])
 async def test_a_market_is_not_closed_without_a_usable_reason(

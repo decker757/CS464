@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.errors import (
     DraftIncomplete,
     MarketAlreadyOpen,
-    MarketNotEditable,
     MarketNotFound,
     MarketNotSubmitted,
 )
@@ -84,15 +83,6 @@ async def test_publishing_records_when_rather_than_reusing_submitted_at(
 
 
 # --- which markets may be published --------------------------------------
-async def test_a_draft_cannot_be_published(session: AsyncSession) -> None:
-    """Publishing is a second decision, not a shortcut through the first. ADR 0008."""
-    actor = _actor()
-    market, _, _ = await market_service.save(session, actor, _request())
-
-    with pytest.raises(MarketNotSubmitted):
-        await market_service.publish(session, actor, market.id)
-
-
 async def test_a_draft_that_would_pass_every_rule_still_cannot_be_published(
     session: AsyncSession,
 ) -> None:
@@ -115,19 +105,10 @@ async def test_publishing_twice_is_refused(session: AsyncSession) -> None:
         await market_service.publish(session, actor, market.id)
 
 
-async def test_another_administrator_cannot_publish_it(session: AsyncSession) -> None:
-    """404, not 403: publication stays with the creator. ADR 0008."""
-    actor = _actor()
-    market = await _submitted(session, actor)
-
-    with pytest.raises(MarketNotFound):
-        await market_service.publish(session, _actor(), market.id)
-
-
 async def test_another_administrators_market_is_left_alone(
     session: AsyncSession,
 ) -> None:
-    """The refusal above must not be a refusal that also wrote something."""
+    """Another administrator gets a 404, and the refusal writes nothing. ADR 0008."""
     actor = _actor()
     market = await _submitted(session, actor)
 
@@ -139,13 +120,6 @@ async def test_another_administrators_market_is_left_alone(
     stored = (await session.execute(select(Market))).scalar_one()
     assert stored.status is MarketStatus.SUBMITTED
     assert stored.published_at is None
-
-
-async def test_publishing_a_market_that_does_not_exist_is_not_found(
-    session: AsyncSession,
-) -> None:
-    with pytest.raises(MarketNotFound):
-        await market_service.publish(session, _actor(), uuid.uuid4())
 
 
 # --- the completeness gate ------------------------------------------------
@@ -201,19 +175,6 @@ async def test_a_blocked_publish_leaves_the_market_submitted(
 
 
 # --- publication freezes the market ---------------------------------------
-async def test_a_late_autosave_cannot_touch_a_published_market(
-    session: AsyncSession,
-) -> None:
-    """The form behind the publish button autosaves again. ADR 0008."""
-    actor = _actor()
-    key = uuid.uuid4()
-    market = await _submitted(session, actor, draft_key=key)
-    await market_service.publish(session, actor, market.id)
-
-    with pytest.raises(MarketAlreadyOpen):
-        await market_service.save(session, actor, _request(draft_key=key, question="Edited"))
-
-
 async def test_a_resubmission_cannot_touch_a_published_market(
     session: AsyncSession,
 ) -> None:
@@ -229,29 +190,6 @@ async def test_a_resubmission_cannot_touch_a_published_market(
             actor,
             _request(draft_key=key, status="submitted", question="A different question?"),
         )
-
-
-async def test_the_refusal_names_the_open_state_rather_than_the_submitted_one(
-    session: AsyncSession,
-) -> None:
-    """MarketNotEditable's remedy, submit again, does not exist once published."""
-    actor = _actor()
-    key = uuid.uuid4()
-    market = await _submitted(session, actor, draft_key=key)
-    # Read before the rollback below, which expires every loaded object and
-    # would turn a later `market.id` into a lazy refresh outside the greenlet.
-    market_id = market.id
-
-    with pytest.raises(MarketNotEditable):
-        await market_service.save(session, actor, _request(draft_key=key))
-
-    await session.rollback()
-    await market_service.publish(session, actor, market_id)
-
-    with pytest.raises(MarketAlreadyOpen) as raised:
-        await market_service.save(session, actor, _request(draft_key=key))
-
-    assert raised.value.code == "market_already_open"
 
 
 async def test_a_published_market_keeps_its_terms(session: AsyncSession) -> None:

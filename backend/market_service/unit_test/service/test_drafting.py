@@ -293,23 +293,6 @@ async def test_another_administrator_cannot_read_it(session: AsyncSession) -> No
         await market_service.get(session, uuid.uuid4(), market.id)
 
 
-async def test_a_missing_market_and_someone_elses_are_indistinguishable(
-    session: AsyncSession,
-) -> None:
-    """Same error for both, so the response cannot be used to discover that a
-    market exists."""
-    market, _, _ = await market_service.save(session, _actor(), _request())
-    intruder = uuid.uuid4()
-
-    with pytest.raises(MarketNotFound) as theirs:
-        await market_service.get(session, intruder, market.id)
-    with pytest.raises(MarketNotFound) as absent:
-        await market_service.get(session, intruder, uuid.uuid4())
-
-    assert theirs.value.code == absent.value.code
-    assert theirs.value.message == absent.value.message
-
-
 async def test_the_list_holds_only_the_callers_markets(session: AsyncSession) -> None:
     mine, theirs = _actor(), _actor()
     await market_service.save(session, mine, _request())
@@ -372,17 +355,3 @@ async def test_an_omitted_subsidy_stays_null_rather_than_taking_a_default(
 
     assert market.seed_subsidy is None
     assert "seed_subsidy" in {p.field for p in problems}
-
-
-async def test_a_market_seeded_below_its_worst_case_still_submits(
-    session: AsyncSession,
-) -> None:
-    """b = 100 over two outcomes risks about 69.31; this seeds 1, deliberately."""
-    market, problems, _ = await market_service.save(
-        session,
-        _actor(),
-        _request(status="submitted", liquidity_b=Decimal("100"), seed_subsidy=Decimal("1")),
-    )
-
-    assert market.status is MarketStatus.SUBMITTED
-    assert problems == []

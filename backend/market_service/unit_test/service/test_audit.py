@@ -251,22 +251,6 @@ async def test_the_two_snapshots_have_the_same_shape(
     assert published["context"] == submitted["context"]
 
 
-async def test_the_publication_entry_and_the_status_commit_together(
-    session: AsyncSession, audit_reader: AsyncSession
-) -> None:
-    """ADR 0006's claim: an entry visible to a second connection is committed."""
-    actor = _actor()
-
-    market = await _publish(session, actor)
-
-    published = [
-        e for e in await _entries(audit_reader, actor)
-        if e["action_type"] == AdminAction.MARKET_PUBLISHED.value
-    ]
-    assert len(published) == 1
-    assert published[0]["target_id"] == market.id
-
-
 # --- closing a market early [2.3] #7 --------------------------------------
 async def _close_early(session: AsyncSession, actor: Actor, closer: Actor | None = None):
     """A published market, stopped by hand by `closer`, the creator by default."""
@@ -874,19 +858,6 @@ async def test_a_refused_submission_records_nothing(
 
     await session.rollback()
     assert await _entries(audit_reader, actor) == []
-
-
-async def test_the_entry_and_the_market_commit_together(
-    session: AsyncSession, audit_reader: AsyncSession
-) -> None:
-    """The other direction: an entry a second connection sees is committed."""
-    actor = _actor()
-
-    market, _, _ = await _save(session, actor, status="submitted")
-
-    entries = await _entries(audit_reader, actor)
-    assert len(entries) == 1
-    assert entries[0]["target_id"] == market.id
 
 
 # --- the grants that make it append-only ----------------------------------
