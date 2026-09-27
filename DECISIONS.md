@@ -2316,7 +2316,7 @@ commit.
 
 ### D-NEW — The trade path is side-generic in shape and buy-only at the route
 
-**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** superseded by "The trade route accepts both sides"
 
 **Decision.** The trade service function takes `side: Side` and prices,
 quantizes, signs its legs and refuses a sub-tick result through the helpers
@@ -3593,6 +3593,42 @@ needs about 120·b of skew and moves one tick. The pool's real loss happens at
 settlement, bounded by `b·ln(n)`, which is the existing Open question about
 subsidies below that. The bound does not hold on test books whose `q` was
 written directly, because their pool was never paid for that `q`.
+
+---
+
+### D-NEW — The trade route accepts both sides
+
+**Date:** 2026-09-27 · **Ticket:** #23 · **Status:** active
+
+**Decision.** `POST /ledger/markets/{market_id}/trades` accepts `side: "sell"`
+as well as `"buy"`. This supersedes "The trade path is side-generic in shape
+and buy-only at the route". The side-generic service shape that entry chose
+stands unchanged: one `trading.execute` taking `side: Side`, with the side
+picking the sign of the delta, the rounding direction, the transaction kind
+and the shape of the position write, and nothing else.
+
+**Why.** The route was buy-only for one reason: a sell was unsafe until the
+per-user holding check existed and was read under the book lock. #23 adds
+that check ("The holdings check is read under the book lock, and the position
+takes no lock of its own"), the average-cost release of basis, and
+`insufficient_shares_held`. With the reason gone, keeping the route closed
+would leave sells implemented and untested at the boundary the frontend
+actually calls.
+
+Keeping one path for both sides is what let the sell inherit the replay, the
+gate, the staleness check and the publish without restating them, which is
+the whole return on the earlier entry's choice.
+
+**Rejected.** A separate sell route or a separate sell function. Either one
+is a second copy of the order `trading.py` fixes, and the two would first
+disagree on the path nobody tests, most likely the retry.
+
+**Reversal trigger.** A sell that has to differ from a buy in the order of
+the path, not just in sign, rounding, kind or position write: for example a
+check that must run before the gate, or a lock only one side takes. Then the
+single function stops being one path and the sides split. Settlement ([3.4]
+#12) is not that trigger. It is not a trade and does not go through this
+route.
 
 ---
 

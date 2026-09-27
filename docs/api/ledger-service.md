@@ -5,7 +5,8 @@ from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8003/docs).
 
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
-[T-1] #21's cost preview, and [T-2] #22's buy route.
+[T-1] #21's cost preview, and the trade route that buys ([T-2] #22) and
+sells ([T-3] #23).
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -24,7 +25,7 @@ trade: [ADR 0017](../adr/0017-the-ledger-and-a-stopped-market.md).
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
-| POST | `/ledger/markets/{market_id}/trades` | Buy shares |
+| POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | GET | `/health` | Liveness and readiness probe |
 
 **Every other route reads, and none of them ever will edit or remove an
@@ -423,12 +424,13 @@ Errors, reusing the preview's codes:
 
 **Takes no account and no amount.** The request model is `extra="forbid"`
 over exactly these five fields — an `account_id`, an `amount`, a `total` or a
-`legs` array in the body is `422`, not silently dropped. The debited account
-is `accounts.ensure(USER, claims.sub)`, read from the signed token, never
-from the request; the credited side is always this market's pool. That is
-the whole answer ADR 0009's amendment gives to "how does a service prove it
-is a service": this route accepts nothing a trader could use to move money
-that is not their own. `side` is `"buy"` or `"sell"`, and anything else is
+`legs` array in the body is `422`, not silently dropped. The trader's
+account is `accounts.ensure(USER, claims.sub)`, read from the signed token,
+never from the request, and the other leg is always this market's pool. On
+a buy the trader is debited and the pool credited; on a sell, the reverse.
+That is the whole answer ADR 0009's amendment gives to "how does a service
+prove it is a service": this route accepts nothing a trader could use to move
+money that is not their own. `side` is `"buy"` or `"sell"`, and anything else is
 `422`.
 
 **A sell is checked against the caller's own position** in that outcome, under
