@@ -225,6 +225,8 @@ Three rules:
 3. **Log decisions, not keystrokes.** If it fires on a timer, it does not
    belong here.
 
-A service that does not yet write to the log needs `model/audit.py` and
-`service/audit.py` copied in, plus `INSERT` on `audit.admin_actions` in
-`sql/02-schemas.sql`. `auth_service` needs both for [4.2] #14.
+A service that does not yet write to the log needs a `core/audit.py` seam naming
+its `SOURCE_SERVICE` over `backend/shared/audit.py`, its own `AdminAction` in
+`model/audit.py` and the typed `service/audit.py` wrapper — copy the auth
+service's three — plus `INSERT` on `audit.admin_actions` in
+`sql/02-schemas.sql`.
