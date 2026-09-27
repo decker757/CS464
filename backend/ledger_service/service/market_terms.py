@@ -68,6 +68,39 @@ def _to_decimal(value: object) -> Decimal | None:
     return Decimal(value)
 
 
+def _to_position(value: object) -> int:
+    """An outcome's position, which the contract types `int`.
+
+    `int()` would truncate 1.5 (arriving as `Decimal` via `parse_float`) and
+    read `true` as 1, so anything but a JSON integer is refused.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{type(value).__name__} is not a position")
+    return value
+
+
+def _to_published_at(value: object) -> datetime | None:
+    """`published_at`, where null and only null means unpublished.
+
+    Any other falsy value is malformed, not unpublished: `""` and `false`
+    would otherwise read as a market that was never published, a 409.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{type(value).__name__} is not a timestamp")
+    return datetime.fromisoformat(value)
+
+
+def _to_uuid(value: object) -> uuid.UUID:
+    """An id, which the contract sends as a string. `str()` of a JSON number
+    with 32 digits is 32 hex digits, and `uuid.UUID` would take it.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"{type(value).__name__} is not a uuid string")
+    return uuid.UUID(value)
+
+
 def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
     """A decoded body to `MarketTerms`, or `MarketTermsUnavailable`.
 
@@ -92,14 +125,13 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         if not isinstance(status, str):
             raise TypeError("status is not a string")
 
-        published_raw = body.get("published_at")
-        published_at = (
-            datetime.fromisoformat(published_raw) if published_raw else None
-        )
+        # Indexed, not `.get`: the contract always sends the key, so a missing
+        # one is a malformed body, not an unpublished market.
+        published_at = _to_published_at(body["published_at"])
 
         outcomes = [
             OutcomeTerms(
-                outcome_id=uuid.UUID(str(o["id"])), position=int(o["position"])
+                outcome_id=_to_uuid(o["id"]), position=_to_position(o["position"])
             )
             for o in body.get("outcomes", [])
         ]
@@ -107,7 +139,7 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         # The body's own id must match: a proxy answering with another
         # market's body would otherwise open this book with that market's `b`,
         # permanently.
-        returned_id = uuid.UUID(str(body["id"]))
+        returned_id = _to_uuid(body["id"])
         if returned_id != market_id:
             raise MarketTermsUnavailable
 
@@ -140,7 +172,7 @@ async def fetch(
     | upstream | raised | status |
     | --- | --- | --- |
     | connect error, timeout, 5xx | `MarketTermsUnavailable` | 503 |
-    | a 200 that is not this market | `MarketTermsUnavailable` | 503 |
+    | a 200 that does not decode, or is not this market | `MarketTermsUnavailable` | 503 |
     | 404 | `MarketNotFound` | 404 |
     | 401 | `NotAuthenticated` | 401 |
 
@@ -179,7 +211,9 @@ async def fetch(
         # D-033: a bare JSON number goes from its text straight to `Decimal`,
         # never through a float.
         body = json.loads(response.content, parse_float=Decimal)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    # `ValueError` covers `JSONDecodeError`, `UnicodeDecodeError` and an integer
+    # past Python's digit limit; `RecursionError` is nesting past the decoder's.
+    except (ValueError, RecursionError) as exc:
         raise MarketTermsUnavailable from exc
 
     return _parse(market_id, body)
