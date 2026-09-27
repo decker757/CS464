@@ -1,4 +1,4 @@
-"""Persistence models for the auth service."""
+"""Persistence models for the auth service: users and refresh tokens. [A-1..A-3]"""
 
 from __future__ import annotations
 
@@ -30,25 +30,19 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
 
-    # Stored as the user typed it; uniqueness is enforced case-insensitively by
-    # the functional indexes below, so "Ernest" cannot coexist with "ernest".
+    # Stored as typed; the functional indexes below make it unique ignoring case.
     username: Mapped[str] = mapped_column(String(32), nullable=False)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
 
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    # [4.2] #60 admin suspend/unsuspend reads and writes this flag.
+    # Written by [4.2] #14.
     is_suspended: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    # [1.1] #1 needs the market service to recognise an administrator, and it
-    # cannot read this table across the schema boundary, so the value is copied
-    # into the access token. Everyone starts a trader; promotion is a manual
-    # UPDATE until [4.4] #16 builds the real role management.
-    #
-    # native_enum=False stores a VARCHAR with a CHECK constraint rather than a
-    # Postgres ENUM type. Adding a member to a native enum is a migration that
-    # cannot run inside a transaction on older servers; widening a CHECK is an
-    # ordinary one, and [4.4] #16 will add three members.
+    # Copied into the access token, since other services cannot read this
+    # table. ADR 0003. native_enum=False makes it a plain varchar(16) with no
+    # CHECK, so a new UserRole member up to 16 characters needs no migration;
+    # a longer one needs an ALTER.
     role: Mapped[UserRole] = mapped_column(
         Enum(
             UserRole,
@@ -77,11 +71,7 @@ class User(Base):
 
 
 class RefreshToken(Base):
-    """A revocable handle on a session.
-
-    The raw token exists only in the client's cookie. Only its SHA-256 lands
-    here, so reading this table does not let anyone resume a session.
-    """
+    """A revocable handle on a session. Only the token's SHA-256 is stored."""
 
     __tablename__ = "refresh_tokens"
 
@@ -102,7 +92,7 @@ class RefreshToken(Base):
     def is_active(self, now: datetime | None = None) -> bool:
         now = now or _utcnow()
         expires_at = self.expires_at
-        # SQLite hands back naive datetimes; normalise before comparing.
+        # A naive value is read as UTC rather than failing the comparison.
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
         return self.revoked_at is None and expires_at > now
