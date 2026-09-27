@@ -1,9 +1,4 @@
-"""Domain errors.
-
-Plain exceptions with no framework imports, so the service layer can raise
-them without knowing HTTP exists. `controller/errors.py` owns the mapping from
-these to status codes.
-"""
+"""Domain errors, free of HTTP. `controller/errors.py` maps them to responses."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -23,21 +18,16 @@ class AuthError(Exception):
     status_code: int = 400
     code: str = "auth_error"
     message: str = "Authentication error."
-    #: Which inputs caused this error. The handler renders it as the envelope's
-    #: `details`, so the frontend can mark the offending fields instead of
-    #: parsing `message`. Empty when the error is not attributable to an input,
-    #: which is the normal case for a deliberately generic error.
+    #: The inputs at fault, rendered as the envelope's `details`. Empty for a
+    #: deliberately generic error.
     problems: Sequence[FieldProblem] = ()
 
 
 class DuplicateUser(AuthError):
     """[A-1] #29 - username or email is already taken.
 
-    Carries every clashing field rather than the first, so the form can mark
-    them all at once instead of making the user discover them one submission
-    at a time. `fields` is empty when a concurrent registration beat us to the
-    insert, because the database reports only that a unique constraint failed,
-    not which one.
+    Names every clashing field, so the form marks them all at once. `fields`
+    may be empty after a lost race whose winner has since been deleted.
     """
 
     status_code = 409
@@ -82,11 +72,9 @@ class InvalidToken(AuthError):
 
 
 class NotAnAdministrator(AuthError):
-    """[4.4] #16 - authenticated, but not carrying the admin role.
+    """[4.4] #16 - authenticated, but not an admin.
 
-    Same code and message as the market service's error of the same name, so
-    the frontend handles one shape for "you are signed in and still may not do
-    this" across both services.
+    Same code and message as the market service's, so the frontend handles one.
     """
 
     status_code = 403
@@ -97,9 +85,7 @@ class NotAnAdministrator(AuthError):
 class UserNotFound(AuthError):
     """[4.4] #16 - no user with that id.
 
-    Not deliberately vague, unlike InvalidCredentials. The caller is already a
-    proven administrator, so telling them an id does not exist reveals nothing
-    they could not learn from the user list they are entitled to read.
+    Not vague like InvalidCredentials: an admin can read the user list anyway.
     """
 
     status_code = 404
@@ -110,11 +96,7 @@ class UserNotFound(AuthError):
 class CannotChangeOwnRole(AuthError):
     """[4.4] #16 - an administrator may not change their own role.
 
-    One line, and it is the invariant that keeps the administrator set from
-    emptying: a change must come from an administrator and may not target
-    themselves, so the last remaining administrator has no legal target whose
-    demotion would leave zero. docs/adr/0007-admin-tiers-and-role-changes.md
-    explains why that matters more than the self-footgun it also prevents.
+    One of the two rules that keep the administrator set from emptying. ADR 0007.
     """
 
     status_code = 403
@@ -125,13 +107,8 @@ class CannotChangeOwnRole(AuthError):
 class MalformedCursor(AuthError):
     """[4.1] #13 - the `cursor` parameter did not come from a previous response.
 
-    Its contents are this service's business, so a client should only ever echo
-    back what `next_cursor` gave it. Saying so explicitly beats silently
-    restarting from the newest page, which would loop forever.
-
-    Same code and message as the audit and ledger services', because it is the
-    same cursor format and the frontend should not learn three spellings of one
-    mistake.
+    Refused rather than restarting from page one, which would loop a client
+    forever. Same code and message as the audit and ledger services'.
     """
 
     status_code = 400
@@ -140,18 +117,11 @@ class MalformedCursor(AuthError):
 
 
 class LastAdministrator(AuthError):
-    """[4.4] #16 - demoting this user would leave the system with no administrator.
+    """[4.4] #16 - demoting this user would leave no administrator.
 
-    The self-change rule alone does not prevent this. Two administrators can
-    demote each other at the same instant: each targets somebody else, so each
-    passes that check, and both transactions commit. Sequentially the set can
-    only shrink to one; concurrently it can reach zero, and nothing short of a
-    manual UPDATE gets it back.
-
-    A conflict rather than a forbidden action. The caller is entitled to do
-    this and the request is well formed; it is the state of the system that
-    refuses, and a moment later — once somebody else is promoted — the very
-    same request would succeed.
+    Reachable only when two admins demote each other at once. ADR 0007. A 409,
+    not a 403: the state refuses, and the same request succeeds once somebody
+    else is promoted.
     """
 
     status_code = 409

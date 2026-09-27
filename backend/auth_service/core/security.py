@@ -1,8 +1,7 @@
-"""Password hashing and token issuance/verification.
+"""Password hashing, and minting and verifying tokens. [A-1..A-3]
 
-This is the ONLY module that knows how a password is hashed or how a token is
-signed. Nothing else imports argon2 or jwt. Swapping the hash algorithm or
-moving from HS256 to RS256 is a change confined to this file.
+Argon2 and token minting live only here. Verifying is `shared/security.py`'s,
+bound to this service's settings below. ADR 0012.
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ from shared.security import TokenClaims
 # Argon2id with the argon2-cffi defaults, which track the OWASP recommendation.
 _hasher = PasswordHasher()
 
-# Verifying a throwaway hash costs the same as verifying a real one. Login uses
-# this when the account does not exist so response time does not leak existence.
+# Login verifies against this for an unknown account, so timing does not
+# reveal whether the account exists.
 _DUMMY_HASH = _hasher.hash("timing-equalisation-placeholder")
 
 
@@ -65,18 +64,15 @@ def needs_rehash(stored_hash: str) -> bool:
 def create_access_token(user_id: uuid.UUID, username: str, role: UserRole) -> str:
     """Mint an access token.
 
-    `role` is required rather than defaulted. A default would let a new call
-    site forget it and quietly mint a token whose authority does not match the
-    row it was minted from.
+    `role` has no default, so no call site can forget it and mint a token whose
+    authority differs from the row.
     """
     settings = get_settings()
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "username": username,
-        # Read by every other service to authorise admin-only routes. Services
-        # cannot query auth.users across the schema boundary, so this claim is
-        # the whole channel. See docs/adr/0003-market-service-boundary.md.
+        # ADR 0003: other services authorise from this claim alone.
         "role": UserRole(role).value,
         "iss": settings.jwt_issuer,
         "iat": now,
@@ -89,15 +85,8 @@ def create_access_token(user_id: uuid.UUID, username: str, role: UserRole) -> st
 def decode_access_token(token: str) -> TokenClaims | None:
     """Return the claims, or None for any malformed, expired or foreign token.
 
-    Verified through `shared/security.py`, the same function every other
-    service reads a token with. [F-6] #76.
-
-    This service is the one that signs, so it is the one where a verifier that
-    had drifted from the shared rule would be least visible: it would keep
-    accepting its own tokens perfectly while the rest of the system disagreed
-    about them. Minting stays here — ADR 0003 refused to share `core` so that
-    an encode path could not leak into a service that must not have one, and
-    the sharing goes one way only.
+    Through `shared/security.py`, as every service does, so this one cannot
+    drift from the rest. Minting stays here only. ADR 0012.
     """
     settings = get_settings()
     return _shared.decode_access_token(
@@ -111,10 +100,8 @@ def decode_access_token(token: str) -> TokenClaims | None:
 # --------------------------------------------------------------------------
 # Refresh tokens (opaque, stored hashed, revocable)
 # --------------------------------------------------------------------------
-# The access token cannot be revoked before it expires, so logout works by
-# revoking the refresh token: the session dies within one access-token TTL.
-# Only the SHA-256 of the token is stored, so a database leak does not hand
-# an attacker usable sessions.
+# Logout revokes the refresh token, since an access token cannot be revoked
+# (ADR 0002). Only its SHA-256 is stored, so a leaked table resumes nothing.
 def generate_refresh_token() -> tuple[str, str]:
     """Return (raw_token_for_the_client, hash_to_store)."""
     raw = secrets.token_urlsafe(48)

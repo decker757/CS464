@@ -16,9 +16,8 @@ from sqlalchemy.orm import DeclarativeBase
 from core.config import get_settings
 
 
-# This service's schema, created and granted in sql/02-schemas.sql. Named
-# explicitly rather than left to search_path, so a connection that arrives
-# without one cannot quietly create these tables in public.
+# Created and granted in sql/02-schemas.sql. Explicit, so a connection without
+# a search_path cannot create these tables in public.
 SCHEMA = "auth"
 
 
@@ -36,8 +35,7 @@ def get_engine() -> AsyncEngine:
         _engine = create_async_engine(
             get_settings().database_url,
             pool_size=10,
-            # Recycles a connection Postgres closed under us rather than
-            # handing a dead one to a request.
+            # Replace a connection Postgres closed rather than hand it out.
             pool_pre_ping=True,
         )
     return _engine
@@ -53,10 +51,9 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """One session and one transaction per request.
+    """Yield one session per request, rolled back if the request raises.
 
-    Committing is the service layer's job. This only guarantees that a request
-    which raises leaves nothing half-written.
+    Never commits; that is the service layer's job.
     """
     async with get_session_factory()() as session:
         try:
@@ -67,14 +64,10 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def create_all() -> None:
-    """Development and test convenience.
+    """Create any missing table in this service's schema. Until [F-5] #75.
 
-    Callers must have imported the entity module first so the mappers are
-    registered on `Base`. `main.py` does that; core must not reach up into
-    `model` to do it itself.
-
-    This service owns its schema alone, so create_all is safe for now. Move to
-    Alembic once the schema starts evolving against data worth keeping.
+    The caller must import `model.entities` first; core does not reach up into
+    `model`. Never alters an existing table.
     """
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
