@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,28 +19,31 @@ from model.entities import RefreshToken, User
 from model.schemas import RegisterRequest, TokenPair
 
 
+def _users_matching(*, username: str, email: str) -> Select[tuple[User]]:
+    """Select users with this username or this email, ignoring case."""
+    return select(User).where(
+        or_(
+            func.lower(User.username) == username.lower(),
+            func.lower(User.email) == email.lower(),
+        )
+    )
+
+
 async def _find_by_identifier(session: AsyncSession, identifier: str) -> User | None:
     """Look up by username or email, case-insensitively."""
-    needle = identifier.strip().lower()
-    stmt = select(User).where(
-        or_(func.lower(User.username) == needle, func.lower(User.email) == needle)
-    )
+    needle = identifier.strip()
+    stmt = _users_matching(username=needle, email=needle)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def _taken_fields(session: AsyncSession, username: str, email: str) -> list[str]:
     """Return every field already registered, in form order: at most two rows."""
-    wanted_username = username.lower()
-    wanted_email = email.lower()
-
-    stmt = select(User).where(
-        or_(
-            func.lower(User.username) == wanted_username,
-            func.lower(User.email) == wanted_email,
-        )
-    )
+    stmt = _users_matching(username=username, email=email)
     existing = (await session.execute(stmt)).scalars().all()
 
+    # Compared ignoring case, as `_users_matching` matched them.
+    wanted_username = username.lower()
+    wanted_email = email.lower()
     taken = []
     if any(user.username.lower() == wanted_username for user in existing):
         taken.append("username")
