@@ -209,6 +209,70 @@ describe('RegisterPage — integration', () => {
     expect(fieldError('Password')).toHaveTextContent('Password is too weak.')
   })
 
+  it('shows a 422 about a field and about the request together', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          {
+            detail: [
+              { type: 'value_error', loc: ['body', 'email'], msg: 'That email is not allowed.' },
+              { type: 'json_invalid', loc: ['body'], msg: 'The request body is not valid.' },
+            ],
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByText('The request body is not valid.')).toHaveAttribute('role', 'alert')
+    expect(fieldError('Email')).toHaveTextContent('That email is not allowed.')
+  })
+
+  it('replaces the last response\'s errors on each submit', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post(
+        'http://localhost:8000/auth/register',
+        () =>
+          HttpResponse.json(
+            {
+              error: {
+                code: 'duplicate_user',
+                message: 'Already registered',
+                details: [{ field: 'email', message: 'Email already registered' }],
+              },
+            },
+            { status: 409 },
+          ),
+        { once: true },
+      ),
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          { error: { code: 'internal_error', message: 'The server had a problem.' } },
+          { status: 500 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Email already registered')
+
+    // Editing another field clears only that field's error, so the email
+    // one is still on screen when the second response arrives.
+    await user.type(screen.getByLabelText('Username'), '2')
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByText('The server had a problem.')).toHaveAttribute('role', 'alert')
+    expect(fieldError('Email')).not.toBeInTheDocument()
+  })
+
   it('shows generic error when the server is unreachable', async () => {
     const user = userEvent.setup()
     server.use(

@@ -39,7 +39,11 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const validationErrors = validateLogin(form)
-    if (Object.keys(validationErrors).length > 0) { setErrors(validationErrors); return }
+    if (Object.keys(validationErrors).length > 0) {
+      setErrors(validationErrors)
+      setServerError('')
+      return
+    }
 
     setLoading(true)
     try {
@@ -51,8 +55,9 @@ export default function LoginPage() {
         fields: LOGIN_FIELDS,
         codeMessages: { invalid_credentials: 'Incorrect username or password.' },
       })
-      if (formError) setServerError(formError)
-      else setErrors(fieldErrors)
+      // Both, always: this response replaces whatever the last one showed.
+      setErrors(fieldErrors)
+      setServerError(formError)
     } finally {
       setLoading(false)
     }
