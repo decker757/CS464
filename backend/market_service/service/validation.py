@@ -52,22 +52,6 @@ def _is_reachable_url(raw: str) -> bool:
     return True
 
 
-def problems_blocking_submission(
-    market: Market, *, now: datetime | None = None
-) -> list[ValidationProblem]:
-    """Every reason `market` cannot leave DRAFT. Empty means it can."""
-    now = now or datetime.now(UTC)
-    problems: list[ValidationProblem] = []
-
-    problems += _question_problems(market)
-    problems += _outcome_problems(market)
-    problems += _timing_problems(market, now)
-    problems += _resolution_problems(market)
-    problems += _liquidity_problems(market)
-
-    return problems
-
-
 def _question_problems(market: Market) -> list[ValidationProblem]:
     question = (market.question or "").strip()
     if not question:
@@ -256,18 +240,6 @@ def _liquidity_problems(market: Market) -> list[ValidationProblem]:
     )
 
 
-# --- proposing an outcome. [3.1] #9 ---------------------------------------
-def problems_blocking_proposal(
-    market: Market, proposal: OutcomeProposalRequest
-) -> list[ValidationProblem]:
-    """Every reason this outcome cannot be proposed for `market`. Empty means it can.
-
-    Does not check the market's status: that is `propose_outcome`'s 409, not a
-    field to fix. Takes no clock, because nothing here depends on time.
-    """
-    return _winner_problems(market, proposal) + _evidence_problems(proposal)
-
-
 def _winner_problems(
     market: Market, proposal: OutcomeProposalRequest
 ) -> list[ValidationProblem]:
@@ -329,36 +301,6 @@ def _evidence_problems(proposal: OutcomeProposalRequest) -> list[ValidationProbl
     return problems
 
 
-# --- closing a market early. [2.3] #7 -------------------------------------
-def problems_blocking_close(request: MarketCloseRequest) -> list[ValidationProblem]:
-    """Every reason this market cannot be closed early. Empty means it can.
-
-    Checks only the reason; the market's state is `close_early`'s 409. Takes
-    the request, not the string, so a caller cannot pass the wrong string.
-    """
-    return _reason_problems(
-        request.reason,
-        minimum=MIN_CLOSE_REASON_LENGTH,
-        record_of="why this market was stopped before its closing time",
-    )
-
-
-# --- rejecting a proposed outcome. [3.2] #10 ------------------------------
-def problems_blocking_rejection(
-    request: OutcomeRejectionRequest,
-) -> list[ValidationProblem]:
-    """Every reason this proposal cannot be rejected. Empty means it can.
-
-    Checks only the reason. State and identity are `reject_outcome`'s 409 and
-    403, and are checked first. ADR 0016.
-    """
-    return _reason_problems(
-        request.reason,
-        minimum=MIN_REJECTION_REASON_LENGTH,
-        record_of="why this proposal was sent back",
-    )
-
-
 def _reason_problems(
     raw: str, *, minimum: int, record_of: str
 ) -> list[ValidationProblem]:
@@ -386,3 +328,58 @@ def _reason_problems(
         ]
 
     return []
+
+
+def problems_blocking_submission(
+    market: Market, *, now: datetime | None = None
+) -> list[ValidationProblem]:
+    """Every reason `market` cannot leave DRAFT. Empty means it can."""
+    now = now or datetime.now(UTC)
+    problems: list[ValidationProblem] = []
+
+    problems += _question_problems(market)
+    problems += _outcome_problems(market)
+    problems += _timing_problems(market, now)
+    problems += _resolution_problems(market)
+    problems += _liquidity_problems(market)
+
+    return problems
+
+
+def problems_blocking_proposal(
+    market: Market, proposal: OutcomeProposalRequest
+) -> list[ValidationProblem]:
+    """Every reason this outcome cannot be proposed for `market`. Empty means it can.
+
+    Does not check the market's status: that is `propose_outcome`'s 409, not a
+    field to fix. Takes no clock, because nothing here depends on time.
+    """
+    return _winner_problems(market, proposal) + _evidence_problems(proposal)
+
+
+def problems_blocking_close(request: MarketCloseRequest) -> list[ValidationProblem]:
+    """Every reason this market cannot be closed early. Empty means it can.
+
+    Checks only the reason; the market's state is `close_early`'s 409. Takes
+    the request, not the string, so a caller cannot pass the wrong string.
+    """
+    return _reason_problems(
+        request.reason,
+        minimum=MIN_CLOSE_REASON_LENGTH,
+        record_of="why this market was stopped before its closing time",
+    )
+
+
+def problems_blocking_rejection(
+    request: OutcomeRejectionRequest,
+) -> list[ValidationProblem]:
+    """Every reason this proposal cannot be rejected. Empty means it can.
+
+    Checks only the reason. State and identity are `reject_outcome`'s 409 and
+    403, and are checked first. ADR 0016.
+    """
+    return _reason_problems(
+        request.reason,
+        minimum=MIN_REJECTION_REASON_LENGTH,
+        record_of="why this proposal was sent back",
+    )

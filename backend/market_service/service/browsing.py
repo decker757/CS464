@@ -25,6 +25,13 @@ from model.entities import (
 )
 from service.closing import open_for_trading
 
+# The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
+# doubling is Python's, not SQL's.
+_LIKE_ESCAPE = "\\"
+
+# Postgres's two LIKE metacharacters.
+_LIKE_WILDCARDS = ("%", "_")
+
 
 def _visible() -> ColumnElement[bool]:
     """Every market a trader may reach: published, in any later status. [1.1] #1.
@@ -35,14 +42,6 @@ def _visible() -> ColumnElement[bool]:
     such as SETTLED would then be trader-visible the moment it was declared.
     """
     return Market.status.in_(PUBLIC_STATUSES)
-
-
-# The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
-# doubling is Python's, not SQL's.
-_LIKE_ESCAPE = "\\"
-
-# Postgres's two LIKE metacharacters.
-_LIKE_WILDCARDS = ("%", "_")
 
 
 def _question_contains(query: str) -> ColumnElement[bool]:

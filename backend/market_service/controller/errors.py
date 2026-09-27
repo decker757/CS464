@@ -4,6 +4,8 @@ Keeping this mapping in a single handler is what lets the routes stay free of
 status codes and lets the service layer raise plain exceptions.
 """
 
+from __future__ import annotations
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 

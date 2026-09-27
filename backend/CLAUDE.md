@@ -39,7 +39,7 @@ the same job, so `ensure_` means the same thing in every file:
 | `ensure_` | idempotent: create or check if needed, no-op otherwise | `grants.ensure_granted` |
 | `refuse_if_` | raise a domain error, return nothing | `_refuse_if_frozen` |
 | `is_` / `has_` / `can_` | return a bool, no side effects | `is_open_for_trading` |
-| `record_` | append an audit entry | `_record_publication` |
+| `record_` | append an audit entry | `market_audit.record_publication` |
 | `<noun>_of` / `to_<noun>` | pure conversion | `result_of` |
 
 Never: `handle_`, `process_`, `do_`, `manage_`, `helper`, `util`, `data`,

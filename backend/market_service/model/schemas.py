@@ -43,6 +43,18 @@ MAX_PROSE_LENGTH = 5000
 PRICING_DECIMAL_PLACES = 4
 MAX_PRICING_VALUE = Decimal("99999999999999.9999")
 
+# The precondition both decisions carry, described once. Required and nullable:
+# null matches only a proposal made before ids existed. ADR 0016.
+_PROPOSAL_ID_FIELD_DESCRIPTION = (
+    "The `proposal_id` of the proposal the administrator reviewed, exactly as "
+    "it was read — from `GET /markets/{id}`, or from the "
+    "`market.outcome_proposed` audit entry's `context`. Send `null` only for "
+    "a proposal that has none, which is one made before proposal ids existed. "
+    "If the market has since had that proposal rejected and a new one made, "
+    "the decision is refused as `409 proposal_superseded` rather than applied "
+    "to a proposal nobody here has read."
+)
+
 
 class OutcomeIn(BaseModel):
     """Blank is allowed. The admin may have added a row before naming it."""
@@ -245,19 +257,6 @@ class MarketCloseRequest(BaseModel):
             "question can no longer be settled as written."
         ],
     )
-
-
-# The precondition both decisions carry, described once. Required and nullable:
-# null matches only a proposal made before ids existed. ADR 0016.
-_PROPOSAL_ID_FIELD_DESCRIPTION = (
-    "The `proposal_id` of the proposal the administrator reviewed, exactly as "
-    "it was read — from `GET /markets/{id}`, or from the "
-    "`market.outcome_proposed` audit entry's `context`. Send `null` only for "
-    "a proposal that has none, which is one made before proposal ids existed. "
-    "If the market has since had that proposal rejected and a new one made, "
-    "the decision is refused as `409 proposal_superseded` rather than applied "
-    "to a proposal nobody here has read."
-)
 
 
 class OutcomeApprovalRequest(BaseModel):
@@ -573,7 +572,6 @@ class PublicMarketSummaryOut(_UtcTimestamps):
     status: MarketStatus
     question: str | None
     close_time: datetime | None
-
 
 
 class PublicMarketListResponse(BaseModel):

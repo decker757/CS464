@@ -5,6 +5,8 @@ must read identically (the JWT trio, the cookie name, CORS). [F-6] #76. Only
 what this service alone needs is declared here.
 """
 
+from __future__ import annotations
+
 from decimal import Decimal
 from functools import lru_cache
 
