@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
@@ -53,6 +53,21 @@ function renderPage(marketId = 'mkt-abc') {
       </MemoryRouter>
     </AuthContext.Provider>,
   )
+}
+
+// A router the test can move between markets, so the page stays mounted and
+// only the :id changes, as it does when a link goes from one market to another.
+function renderMovableRouter(marketId: string) {
+  const router = createMemoryRouter(
+    [{ path: '/markets/:id', element: <MarketDetailPage /> }],
+    { initialEntries: [`/markets/${marketId}`] },
+  )
+  render(
+    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
+      <RouterProvider router={router} />
+    </AuthContext.Provider>,
+  )
+  return router
 }
 
 describe('MarketDetailPage', () => {
@@ -155,5 +170,47 @@ describe('MarketDetailPage', () => {
     await screen.findByText('Will Singapore core inflation be below 2% for December 2026?')
     const backLink = container.querySelector('a[href="/markets"]')
     expect(backLink).toBeInTheDocument()
+  })
+
+  describe('when the route moves to another market', () => {
+    const closedMarket = {
+      ...baseMarket,
+      id: 'mkt-closed',
+      question: 'Did it rain on National Day 2025?',
+      status: 'closed' as const,
+      close_time: '2025-08-09T12:00:00Z',
+    }
+
+    it('shows the trading controls of an open market after a closed one', async () => {
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, ({ params }) =>
+          HttpResponse.json(params.id === 'mkt-closed' ? closedMarket : baseMarket),
+        ),
+      )
+      const router = renderMovableRouter('mkt-closed')
+      expect(await screen.findByText(/trading is closed/i)).toBeInTheDocument()
+
+      await act(() => router.navigate('/markets/mkt-abc'))
+
+      expect(await screen.findByRole('button', { name: /buy yes/i })).toBeInTheDocument()
+      expect(screen.queryByText(/trading is closed/i)).not.toBeInTheDocument()
+    })
+
+    it('drops the load error of a market that failed', async () => {
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, ({ params }) =>
+          params.id === 'mkt-missing'
+            ? HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 })
+            : HttpResponse.json(baseMarket),
+        ),
+      )
+      const router = renderMovableRouter('mkt-missing')
+      expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
+
+      await act(() => router.navigate('/markets/mkt-abc'))
+
+      expect(await screen.findByText(baseMarket.question)).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
   })
 })

@@ -46,31 +46,42 @@ function DetailItem({ label, children }: { label: string; children: React.ReactN
 
 export default function MarketDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const [market, setMarket] = useState<PublicMarketDetail | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
-  const [pastClose, setPastClose] = useState(false)
+  // Tagged with the market id it was loaded for, so moving to another market
+  // shows that one loading rather than the last one's market or error.
+  const [loaded, setLoaded] = useState<{ id: string; market: PublicMarketDetail | null; failed: boolean } | null>(null)
+  // The market whose close_time has passed while this page was open. An id
+  // rather than a flag, so it cannot carry over to the next market.
+  const [closedMarketId, setClosedMarketId] = useState<string | null>(null)
+
+  const current = loaded?.id === id ? loaded : null
+  const market = current?.market ?? null
+  const loading = current === null
+  const error = current?.failed ?? false
+  const pastClose = market !== null && closedMarketId === market.id
 
   const prices = useMarketPrices(market?.id ?? null)
 
   useEffect(() => {
     if (!id) return
-    getMarket(id)
-      .then(setMarket)
-      .catch(() => setError(true))
-      .finally(() => setLoading(false))
+    let cancelled = false
+    getMarket(id).then(
+      found => { if (!cancelled) setLoaded({ id, market: found, failed: false }) },
+      () => { if (!cancelled) setLoaded({ id, market: null, failed: true }) },
+    )
+    return () => { cancelled = true }
   }, [id])
 
   // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
   // so the controls lock the moment close_time passes, without a refetch.
+  const marketId = market?.id
+  const closeTime = market?.close_time
   useEffect(() => {
-    if (!market) return
-    const ms = new Date(market.close_time).getTime() - Date.now()
-    if (ms <= 0) { setPastClose(true); return }
+    if (!marketId || !closeTime) return
+    const ms = new Date(closeTime).getTime() - Date.now()
     if (ms > MAX_TIMEOUT_MS) return
-    const timer = setTimeout(() => setPastClose(true), ms)
+    const timer = setTimeout(() => setClosedMarketId(marketId), Math.max(ms, 0))
     return () => clearTimeout(timer)
-  }, [market?.close_time])
+  }, [marketId, closeTime])
 
   const tradeable = market?.status === 'open' && !pastClose
 
