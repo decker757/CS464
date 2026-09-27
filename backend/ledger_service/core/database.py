@@ -15,10 +15,9 @@ from sqlalchemy.orm import DeclarativeBase
 
 from core.config import get_settings
 
-# This service's schema, created and granted in sql/02-schemas.sql, where it
-# has been waiting since #67. Named explicitly rather than left to search_path,
-# so a connection that arrives without one cannot quietly create these tables
-# in public.
+# Created and granted in sql/02-schemas.sql. Named explicitly rather than left
+# to search_path, so a connection without one cannot create these tables in
+# public.
 SCHEMA = "ledger"
 
 
@@ -55,10 +54,8 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 async def get_session() -> AsyncIterator[AsyncSession]:
     """One session and one transaction per request.
 
-    Committing is the service layer's job. This only guarantees that a request
-    which raises leaves nothing half-written — which matters more here than
-    anywhere else in this repository, because half of a double-entry
-    transaction is a ledger that no longer sums to zero.
+    Committing is the service layer's job. This rolls back a request that
+    raises, so half a double-entry transaction is never left behind.
     """
     async with get_session_factory()() as session:
         try:
@@ -69,21 +66,12 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def create_all() -> None:
-    """Development and test convenience.
+    """Create this service's tables, and with them the append-only trigger on
+    `ledger.entries` (an `after_create` event, ADR 0009).
 
-    Callers must have imported the entity module first so the mappers are
-    registered on `Base`. `main.py` does that; core must not reach up into
-    `model` to do it itself.
-
-    This also installs the append-only trigger on `ledger.entries`, because
-    `model/entities.py` attaches it to that table as an `after_create` DDL
-    event. Anything that creates the table gets the trigger with it, including
-    `unit_test/conftest.py`, which rebuilds the schema per test.
-
-    Four services now share one database, so this is on borrowed time in the
-    same way the other two are: each only ever touches its own schema, which
-    keeps them from racing today, but the moment a column changes on a table
-    holding data worth keeping, this has to become Alembic.
+    Callers must import `model.entities` first; core must not reach up into
+    `model` to do it. Becomes Alembic before a column changes on a table
+    holding data worth keeping.
     """
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
