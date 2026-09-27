@@ -21,6 +21,11 @@ from model.entities import User
 from service import audit
 from service.audit import Actor
 
+# LIKE's pattern characters, escaped so a query matches as typed: `_` is legal
+# in usernames, so `ernest_t` must not match `ernestXt`. The backslash goes
+# first, or it would escape the escapes.
+_LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
 
 @dataclass(frozen=True)
 class UserPage:
@@ -34,18 +39,48 @@ class UserPage:
         return self.next_cursor is not None
 
 
-# LIKE's pattern characters, escaped so a query matches as typed: `_` is legal
-# in usernames, so `ernest_t` must not match `ernestXt`. The backslash goes
-# first, or it would escape the escapes.
-_LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
-
-
 def _contains(column: InstrumentedAttribute[str], needle: str) -> ColumnElement[bool]:
     """Match `needle` anywhere in `column`, ignoring case, as literal text.
 
     A substring, because an admin investigating usually has only a fragment.
     """
     return column.ilike(f"%{needle.translate(_LIKE_WILDCARDS)}%", escape="\\")
+
+
+def _ordered_query(query: str | None) -> Select[tuple[User]]:
+    """Build the search query: username or email, newest first, ties by id.
+
+    `raiseload` on the sessions: `lazy="selectin"` would otherwise fetch every
+    refresh token of every listed account. Not `noload`, which would pass off
+    an empty collection as the truth.
+    """
+    stmt = select(User).options(raiseload(User.refresh_tokens))
+
+    needle = (query or "").strip()
+    if needle:
+        stmt = stmt.where(
+            or_(_contains(User.username, needle), _contains(User.email, needle))
+        )
+
+    return stmt.order_by(User.created_at.desc(), User.id.desc())
+
+
+async def _lock_administrators(session: AsyncSession) -> set[uuid.UUID]:
+    """Lock and return the ids of every administrator who could act.
+
+    The lock turns two admins demoting each other into a queue. ADR 0007.
+    Keep `is_suspended` in the predicate: a suspended admin cannot log in, so
+    counting one hides an empty set.
+
+    [4.2] #14 must take this lock too, and refuse to suspend the last
+    unsuspended admin: that empties the set without touching `role`.
+    """
+    rows = await session.execute(
+        select(User.id)
+        .where(User.role == UserRole.ADMIN, User.is_suspended.is_(False))
+        .with_for_update()
+    )
+    return set(rows.scalars())
 
 
 async def search_users(
@@ -82,42 +117,6 @@ async def search_users(
     return UserPage(users=page, next_cursor=encode_cursor(last.created_at, last.id))
 
 
-def _ordered_query(query: str | None) -> Select[tuple[User]]:
-    """Build the search query: username or email, newest first, ties by id.
-
-    `raiseload` on the sessions: `lazy="selectin"` would otherwise fetch every
-    refresh token of every listed account. Not `noload`, which would pass off
-    an empty collection as the truth.
-    """
-    stmt = select(User).options(raiseload(User.refresh_tokens))
-
-    needle = (query or "").strip()
-    if needle:
-        stmt = stmt.where(
-            or_(_contains(User.username, needle), _contains(User.email, needle))
-        )
-
-    return stmt.order_by(User.created_at.desc(), User.id.desc())
-
-
-async def _administrators_for_update(session: AsyncSession) -> set[uuid.UUID]:
-    """Lock and return the ids of every administrator who could act.
-
-    The lock turns two admins demoting each other into a queue. ADR 0007.
-    Keep `is_suspended` in the predicate: a suspended admin cannot log in, so
-    counting one hides an empty set.
-
-    [4.2] #14 must take this lock too, and refuse to suspend the last
-    unsuspended admin: that empties the set without touching `role`.
-    """
-    rows = await session.execute(
-        select(User.id)
-        .where(User.role == UserRole.ADMIN, User.is_suspended.is_(False))
-        .with_for_update()
-    )
-    return set(rows.scalars())
-
-
 async def change_role(
     session: AsyncSession,
     *,
@@ -139,7 +138,7 @@ async def change_role(
     # The set first and the target second, on every path, or two of these
     # deadlock. ADR 0015. `populate_existing` so the role comes from the locked
     # row, never from an instance this session loaded before the lock.
-    remaining = await _administrators_for_update(session)
+    remaining = await _lock_administrators(session)
     target = await session.get(
         User, target_id, with_for_update=True, populate_existing=True
     )

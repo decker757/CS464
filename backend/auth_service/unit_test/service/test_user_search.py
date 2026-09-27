@@ -137,7 +137,7 @@ async def test_the_newest_registration_comes_first(session: AsyncSession) -> Non
 
 
 async def test_a_suspended_account_is_still_listed(session: AsyncSession) -> None:
-    """Unlike `_administrators_for_update`: a suspended account is often the one sought."""
+    """Unlike `_lock_administrators`: a suspended account is often the one sought."""
     await _make(session, "suspended_one", "suspended@example.com", suspended=True)
 
     assert await _search(session) == ["suspended_one"]

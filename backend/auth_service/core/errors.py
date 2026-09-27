@@ -1,5 +1,7 @@
 """Domain errors, free of HTTP. `controller/errors.py` maps them to responses."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 

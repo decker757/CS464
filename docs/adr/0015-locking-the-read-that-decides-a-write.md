@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-16
 - **Affects:** [1.3] #3, [1.4] #4, [A-3] #31, [4.4] #16, [F-1] #41, [T-2] #22, [4.3] #15, PR #85
-- **Implemented in:** `backend/market_service/service/market_service.py` (`_find_by_draft_key`, `_terms_snapshot`), `backend/auth_service/service/auth_service.py` (`_load_refresh`), `backend/auth_service/service/user_admin.py` (`change_role`), `backend/ledger_service/service/posting.py` (`post`)
+- **Implemented in:** `backend/market_service/service/market_service.py` (`_find_by_draft_key`, `_terms_snapshot`), `backend/auth_service/service/auth_service.py` (`_lock_refresh_token`), `backend/auth_service/service/user_admin.py` (`change_role`), `backend/ledger_service/service/posting.py` (`post`)
 
 ## Context
 
@@ -65,7 +65,7 @@ outside a transition:
   decides from a row nobody else is changing. The loser of a save-versus-publish
   race now blocks on the SELECT, re-reads OPEN, and is refused exactly as a
   second publish is.
-- `auth_service._load_refresh` — both callers write `revoked_at` from what
+- `auth_service._lock_refresh_token` — both callers write `revoked_at` from what
   they read. The second of two concurrent refreshes re-reads the revocation
   the first wrote, and is treated as the replay it is.
 - `user_admin.change_role` — the target's row, before its role is read. The
