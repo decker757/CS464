@@ -299,6 +299,21 @@ async def buy(
     )
 
 
+async def retry_on_quote_stale(
+    own: AsyncSession, attempt, *, version: int, retries: int
+):
+    """Call `attempt(version)`, and on `quote_stale` roll back and retry at the
+    version the refusal names. Bounded, so a path that refuses forever fails
+    with a name rather than a suite that spins."""
+    for _ in range(retries):
+        try:
+            return await attempt(version)
+        except errors().QuoteStale as stale:
+            await own.rollback()
+            version = stale.current
+    raise AssertionError(f"never got past quote_stale in {retries} tries")
+
+
 async def warm(
     session: AsyncSession, upstream: Upstream, q: Sequence[Decimal] = tuple(Q)
 ):

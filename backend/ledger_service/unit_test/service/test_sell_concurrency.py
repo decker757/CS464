@@ -39,26 +39,13 @@ from unit_test.trade_fixtures import (
     assert_ledger_balances,
     balance_of_user,
     buy,
-    errors,
     fund,
     pool_balance,
+    retry_on_quote_stale,
     session_factory,
 )
 
 _RETRIES = 8
-
-
-async def _requoting(own: AsyncSession, attempt, *, version: int):
-    """Call `attempt(version)`, and on `quote_stale` roll back and retry at
-    the version the refusal names. Bounded, so a path that refuses forever is
-    a failure with a name."""
-    for _ in range(_RETRIES):
-        try:
-            return await attempt(version)
-        except errors().QuoteStale as stale:
-            await own.rollback()
-            version = stale.current
-    raise AssertionError("never got past quote_stale")
 
 
 async def test_two_sells_exceeding_the_position_one_fills_one_is_refused_held(
@@ -123,7 +110,10 @@ async def test_two_sells_exceeding_the_position_one_fills_one_is_refused_held(
                 )
 
             try:
-                return ("filled", await _requoting(own, attempt, version=1))
+                filled = await retry_on_quote_stale(
+                    own, attempt, version=1, retries=_RETRIES
+                )
+                return ("filled", filled)
             except insufficient_shares_held() as refused:
                 await own.rollback()
                 return ("held", refused)
@@ -201,7 +191,9 @@ async def test_q_equals_the_sum_of_positions_under_concurrent_buys_and_sells(
                     client_key=f"{user_id}-{side}-{outcome}",
                 )
 
-            return await _requoting(own, attempt, version=len(users))
+            return await retry_on_quote_stale(
+                own, attempt, version=len(users), retries=_RETRIES
+            )
 
     async with asyncio.timeout(TIMEOUT):
         results = await asyncio.gather(*(party(*p) for p in plan))
