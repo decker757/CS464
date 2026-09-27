@@ -1,5 +1,5 @@
-import { act, render, screen } from '@testing-library/react'
-import { http, HttpResponse } from 'msw'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
@@ -32,15 +32,20 @@ const baseMarket = {
   proposed_outcome_id: null,
 }
 
-// Stub WebSocket — tests don't exercise live prices; that's in useMarketPrices tests.
-const mockWs = {
-  send: vi.fn(),
-  close: vi.fn(),
-  onopen: null as (() => void) | null,
-  onmessage: null as ((e: { data: string }) => void) | null,
-  readyState: 1,
-}
-vi.stubGlobal('WebSocket', vi.fn(() => mockWs))
+// MSW WebSocket link for the realtime price socket. Silently accepts
+// connections so the hook connects without errors; indicator tests drive
+// the close from the server side.
+const priceService = ws.link('ws://localhost:8004/ws/prices')
+
+// Stub WebSocket — most tests don't exercise live prices (that's in
+// useMarketPrices tests). A silent MSW handler keeps the hook happy.
+beforeEach(() => {
+  server.use(priceService.addEventListener('connection', () => { /* silent */ }))
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 function renderPage(marketId = 'mkt-abc') {
   return render(
@@ -261,5 +266,29 @@ describe('MarketDetailPage', () => {
       expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
     })
+  })
+
+  it('shows a reconnecting indicator when the connection drops', async () => {
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      priceService.addEventListener('connection', ({ client }) => { wsClient = client }),
+    )
+    renderPage()
+    await screen.findByText('Will Singapore core inflation be below 2% for December 2026?')
+    await waitFor(() => expect(wsClient).not.toBeNull())
+    act(() => wsClient!.close(1000))
+    expect(await screen.findByText(/reconnecting to live prices/i)).toBeInTheDocument()
+  })
+
+  it('shows a degraded indicator when the origin is refused', async () => {
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      priceService.addEventListener('connection', ({ client }) => { wsClient = client }),
+    )
+    renderPage()
+    await screen.findByText('Will Singapore core inflation be below 2% for December 2026?')
+    await waitFor(() => expect(wsClient).not.toBeNull())
+    act(() => wsClient!.close(4403))
+    expect(await screen.findByText(/live prices unavailable/i)).toBeInTheDocument()
   })
 })
