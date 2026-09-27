@@ -1,13 +1,8 @@
 """A user's statement, and the running balance beside it. [4.1] #13
 
-The story is an administrator investigating an anomaly, so what matters is not
-that a page comes back but that the numbers on it can be trusted: each figure
-is the balance as at that entry, the newest one is the balance the balance
-route reports, and neither changes because somebody traded while the page was
-being read.
-
-Every expectation below is computed independently, from the entries themselves,
-rather than by re-running the arithmetic under test.
+Each figure is the balance as at that entry, the newest is the balance route's
+answer, and neither moves because somebody traded mid-read. Expectations are
+computed from the entries themselves, not by the arithmetic under test.
 """
 
 from __future__ import annotations
@@ -32,19 +27,10 @@ async def _movements(
 ) -> Account:
     """Post one movement per amount against this user, oldest first.
 
-    Timestamps are injected a second apart rather than left to the clock, so
-    the feed order is the order written here and an assertion about "the entry
-    below this one" means something. Signed from the user's point of view:
-    negative takes credits out of their account and into the platform's.
-
-    Reads the balance first, which is what mints the starting grant — so every
-    history below opens on a funded account, exactly as a real one does, and
-    the debits have something to come out of.
-
-    The clock starts from the newest entry already on the account rather than
-    from now, so that a second call appends to the first call's history instead
-    of interleaving with it. Injected timestamps are seconds ahead of real time
-    and a fresh `now()` would land underneath them.
+    Signed from the user's side. Reads the balance first, which mints the
+    grant. Timestamps are injected a second apart, starting after the newest
+    entry already there, so the feed order is the order written here and a
+    second call appends rather than interleaves.
     """
     await ledger_service.balance_of_user(session, user_id)
 
@@ -153,12 +139,8 @@ async def test_the_newest_running_balance_is_the_balance_route_s_answer(
 async def test_a_debit_lowers_the_balance_it_leaves(
     session: AsyncSession, user_id: uuid.UUID
 ) -> None:
-    """The direction of the walk, stated on its own.
-
-    Off by one in the subtraction, or a walk in the wrong direction, still
-    produces a plausible column of numbers. This is the assertion that says
-    which way time runs.
-    """
+    """The direction of the walk: a wrong one still produces a plausible
+    column of numbers."""
     await _movements(session, user_id, [Decimal("-250")])
 
     page = await ledger_service.history_for_user(session, user_id, limit=10)
@@ -184,12 +166,8 @@ async def test_a_history_with_only_the_grant_shows_the_grant(
 async def test_the_running_balance_continues_across_pages(
     session: AsyncSession, user_id: uuid.UUID
 ) -> None:
-    """Page 2 picks up where page 1 left off.
-
-    The failure this guards against is a per-page balance that restarts from
-    the newest entry of whichever page is being rendered, which looks right on
-    page 1 and is wrong everywhere after it.
-    """
+    """Page 2 picks up where page 1 left off, rather than restarting from its
+    own newest entry."""
     account = await _movements(
         session,
         user_id,
@@ -217,12 +195,8 @@ async def test_paging_agrees_with_reading_it_all_at_once(
 async def test_a_page_past_the_end_is_empty(
     session: AsyncSession, user_id: uuid.UUID
 ) -> None:
-    """No rows, and so no newest entry to anchor an aggregate on.
-
-    Not reachable by following `next_cursor`, which is exact — this is the
-    client that kept a cursor from yesterday, or built one. It has to come back
-    empty rather than raise on the first element of an empty page.
-    """
+    """No rows, and so no newest entry to anchor an aggregate on: a stale or
+    hand-built cursor comes back empty rather than raising."""
     await _movements(session, user_id, [Decimal("-250")])
 
     oldest = (
@@ -243,14 +217,8 @@ async def test_a_page_past_the_end_is_empty(
 async def test_a_movement_arriving_mid_read_does_not_move_an_earlier_figure(
     session: AsyncSession, user_id: uuid.UUID
 ) -> None:
-    """The reason the sum is anchored to a position rather than counted back
-    from today's balance.
-
-    An administrator opens page 1, the user trades, the administrator asks for
-    page 2. Counting back from the live balance would shift every figure below
-    the new entry by its amount, and the statement would stop adding up in the
-    middle. Anchoring puts the new entry outside every sum on the pages already
-    fetched.
+    """Why the sum is anchored to a position: counting back from the live
+    balance would shift every figure on page 2 by a trade made after page 1.
     """
     account = await _movements(
         session, user_id, [Decimal("-250"), Decimal("100"), Decimal("-75")]
@@ -274,11 +242,8 @@ async def test_a_movement_arriving_mid_read_does_not_move_an_earlier_figure(
 
 
 def test_the_running_balance_is_not_a_column() -> None:
-    """`ledger.entries` must never grow one. [4.1] #13's third criterion is
-    true because a balance has exactly one definition; a stored `balance_after`
-    would be a second, and a concurrent write is all it takes to make the two
-    disagree. The entity docstring says so; this fails if somebody adds it
-    anyway."""
+    """`ledger.entries` must never grow one: a stored balance would be a second
+    definition a concurrent write could make disagree. ADR 0009."""
     stored = {column.name for column in Entry.__table__.columns}
 
     assert not {name for name in stored if "balance" in name}

@@ -1,13 +1,7 @@
 """The database boundary, asserted rather than assumed.
 
-`sql/02-schemas.sql` deliberately grants nothing between schemas. That is the
-only thing stopping this service from growing a convenient join into
-`auth.users` or `market.markets`, and a comment is not enforcement. These tests
-fail loudly if somebody adds a grant to make something work.
-
-This service is the one where that matters most. It is the only one that holds
-money, and it is the one every other service has the most reason to want to
-read directly.
+`sql/02-schemas.sql` grants nothing between schemas, and these fail if
+somebody adds a grant to make a join work. ADR 0003, ADR 0006.
 """
 
 from __future__ import annotations
@@ -58,12 +52,8 @@ async def test_it_cannot_read_the_market_schema(session: AsyncSession) -> None:
 async def test_no_other_role_holds_any_privilege_on_this_schema(
     session: AsyncSession,
 ) -> None:
-    """Nobody else reads the ledger, including the services that will call it.
-
-    A trading service composing a quote does it over HTTP, against the balance
-    this service derives. A grant added here to make that cheaper would make
-    two services responsible for one invariant.
-    """
+    """Nobody else reads the ledger: a grant to make a caller cheaper would
+    make two services responsible for one invariant."""
     rows = (
         await session.execute(
             text(
@@ -86,11 +76,8 @@ async def test_it_cannot_create_tables_in_public(session: AsyncSession) -> None:
 async def test_the_audit_grant_is_exactly_insert(session: AsyncSession) -> None:
     """The one deliberate exception, and its exact shape. ADR 0006.
 
-    This service holds INSERT on `audit.admin_actions` and nothing else, so it
-    can record an admin action in the same transaction as the action — [3.4]
-    #12's settlement is the one that will — without being able to read what any
-    other service recorded. The same assertion guards the market service, and
-    widening either turns both red.
+    INSERT on `audit.admin_actions` and nothing else, so this service can log
+    an admin action in its own transaction without reading anyone else's.
     """
     privileges = (
         await session.execute(

@@ -1,13 +1,8 @@
-"""`ledger.entries` cannot be changed or removed. [F-1] #41
+"""`ledger.entries` cannot be changed or removed. [F-1] #41, ADR 0009.
 
-The API surface is the absence of any function that mutates an entry. This is
-the enforcement: a statement-level trigger, installed with the table by an
-after_create DDL event in `model/entities.py`, that refuses UPDATE, DELETE and
-TRUNCATE — including from the role that owns the table.
-
-Every test here writes raw SQL on purpose. There is no ORM path to reach for,
-which is the point, so the only way to prove the database refuses is to ask the
-database directly.
+The statement-level trigger that ships with the table refuses UPDATE, DELETE
+and TRUNCATE, even from the owning role. Raw SQL on purpose: there is no ORM
+path to reach for, so the database is asked directly.
 """
 
 from __future__ import annotations
@@ -26,14 +21,8 @@ from service import grants
 
 
 class _Row(NamedTuple):
-    """One entry, as plain values rather than as an ORM object.
-
-    Every test below rolls the session back after the database refuses a
-    mutation, and a rollback expires every loaded instance. Reading an
-    attribute off one afterwards makes SQLAlchemy refresh it, which is IO in a
-    place asyncio cannot do it, so the test dies with MissingGreenlet instead
-    of asserting what it came to assert.
-    """
+    """One entry, as plain values: after the rollback, reading an expired ORM
+    object would refresh it and die with MissingGreenlet."""
 
     id: uuid.UUID
     transaction_id: uuid.UUID
@@ -42,12 +31,8 @@ class _Row(NamedTuple):
 
 
 async def _one_entry(session: AsyncSession, user_id: uuid.UUID) -> _Row:
-    """The user's side of their starting grant.
-
-    Filtered to the credit leg rather than taken with a bare `limit(1)`, which
-    would return whichever of the two legs Postgres felt like and make every
-    assertion about the amount a coin toss.
-    """
+    """The user's side of their starting grant: the credit leg, not whichever
+    leg a bare `limit(1)` returns."""
     await grants.ensure_granted(session, user_id)
     row = (
         await session.execute(
