@@ -32,7 +32,6 @@ export default function RegisterPage() {
     const validationErrors = validateRegister(form)
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors)
-      setServerError('')
       return
     }
 

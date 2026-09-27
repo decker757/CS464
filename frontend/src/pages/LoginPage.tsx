@@ -39,11 +39,7 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const validationErrors = validateLogin(form)
-    if (Object.keys(validationErrors).length > 0) {
-      setErrors(validationErrors)
-      setServerError('')
-      return
-    }
+    if (Object.keys(validationErrors).length > 0) { setErrors(validationErrors); return }
 
     setLoading(true)
     try {
