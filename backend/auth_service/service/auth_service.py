@@ -1,8 +1,6 @@
-"""Business rules for registration, login, session refresh and logout.
+"""Registration, login, session refresh and logout. [A-1] #29, [A-2] #30, [A-3] #31
 
-Everything here works on a session it is handed and never commits halfway
-through a use case, so a caller can compose steps in one transaction. HTTP is
-not mentioned in this file; failures are raised as domain errors.
+Works on the session it is handed and never commits halfway through a use case.
 """
 
 from __future__ import annotations
@@ -31,12 +29,7 @@ async def _find_by_identifier(session: AsyncSession, identifier: str) -> User | 
 
 
 async def _taken_fields(session: AsyncSession, username: str, email: str) -> list[str]:
-    """Return every field already registered, in form order.
-
-    Both are reported when both clash, so the form can mark them together
-    rather than sending the user round the loop twice. Uniqueness bounds this
-    to at most two rows.
-    """
+    """Return every field already registered, in form order: at most two rows."""
     wanted_username = username.lower()
     wanted_email = email.lower()
 
@@ -57,10 +50,10 @@ async def _taken_fields(session: AsyncSession, username: str, email: str) -> lis
 
 
 async def issue_tokens(session: AsyncSession, user: User) -> TokenPair:
-    """Mint an access token and persist a fresh refresh token.
+    """Mint an access token and add a fresh refresh token to the session.
 
-    The raw refresh token is returned inside the pair for the caller to put in
-    a cookie or the response body. Only its hash is stored.
+    The raw refresh token is returned in the pair; only its hash is stored.
+    Does not commit.
     """
     settings = get_settings()
     raw_refresh, refresh_hash = security.generate_refresh_token()
@@ -81,11 +74,10 @@ async def issue_tokens(session: AsyncSession, user: User) -> TokenPair:
 
 
 async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, TokenPair]:
-    """[A-1] #29. Create the account and open its first session.
+    """Create the account, open its first session, and commit. [A-1] #29
 
-    Deliberately does NOT grant starting credits. That is [B-1] #32, and this
-    service does not know that credits exist. The ledger mints the grant
-    itself on a user's first balance read; see the README for why.
+    Raises DuplicateUser. Grants no starting credits: this service does not
+    know credits exist, and the ledger mints the grant. ADR 0009.
     """
     if taken := await _taken_fields(session, data.username, data.email):
         raise DuplicateUser(taken)
@@ -98,16 +90,12 @@ async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, 
     session.add(user)
 
     try:
-        # Assigns user.id and surfaces a uniqueness race we lost to a concurrent
-        # registration, which the pre-check above cannot see.
+        # Assigns user.id, and surfaces a race the pre-check could not see.
         await session.flush()
     except IntegrityError as exc:
         await session.rollback()
-        # The winner of the race is committed and visible now, so the lookup
-        # that came back clear a moment ago can name the field this time. The
-        # error carries the constraint name too, but reading it would couple
-        # this to asyncpg and to the index names in model/entities.py.
-        # Still possibly empty, if the winning account was deleted in between.
+        # The winner is committed now, so the lookup can name the field. Not
+        # from the constraint name, which would couple this to asyncpg.
         raise DuplicateUser(await _taken_fields(session, data.username, data.email)) from exc
 
     pair = await issue_tokens(session, user)
@@ -116,7 +104,12 @@ async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, 
 
 
 async def authenticate(session: AsyncSession, identifier: str, password: str) -> User:
-    """[A-2] #30. Wrong password and unknown account are indistinguishable."""
+    """Return the user these credentials prove. [A-2] #30
+
+    Raises InvalidCredentials for a wrong password and an unknown account
+    alike, and AccountSuspended only after the password is proven. May rehash
+    `user.password_hash`, leaving that write pending for the caller to commit.
+    """
     user = await _find_by_identifier(session, identifier)
 
     if user is None:
@@ -127,8 +120,7 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
     if not security.verify_password(user.password_hash, password):
         raise InvalidCredentials
 
-    # Checked only after the password is proven, otherwise an attacker could
-    # enumerate suspended accounts without credentials.
+    # After the password, or suspended accounts could be enumerated.
     if user.is_suspended:
         raise AccountSuspended
 
@@ -139,18 +131,10 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
 
 
 async def _load_refresh(session: AsyncSession, raw: str) -> RefreshToken | None:
-    """The row for this token, locked, because both callers decide from it.
+    """Lock and return the row for this raw token, or None.
 
-    Locked, because `rotate_refresh_token` reads `revoked_at`, decides the
-    token is still live, and only then revokes it. Read unlocked, two requests
-    presenting the same token — the legitimate client and whoever copied its
-    cookie — both see it live and both leave with a fresh session, and the
-    replay that was supposed to cut every session for that user is never
-    noticed, because each request's write lands after the other's check. Under
-    READ COMMITTED the second blocks here and re-reads the row the first
-    committed, so it sees the revocation and is treated as the replay it is.
-
-    A token that does not exist locks nothing.
+    Locked because both callers write `revoked_at` from what they read; unlocked,
+    two concurrent refreshes of one token would both succeed. ADR 0015.
     """
     stmt = (
         select(RefreshToken)
@@ -161,12 +145,10 @@ async def _load_refresh(session: AsyncSession, raw: str) -> RefreshToken | None:
 
 
 async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, TokenPair]:
-    """[A-3] #31. Exchange a refresh token for a new pair, single use.
+    """Exchange a refresh token for a new pair, single use, and commit. [A-3] #31
 
-    Presenting an already-revoked token means the cookie leaked and is being
-    replayed, so every session for that user is killed. Single use holds under
-    concurrency too: `_load_refresh` locks the row, so two requests presenting
-    one token queue, and the second finds it revoked by the first.
+    Raises InvalidToken. A revoked token is a replay of a leaked cookie, so it
+    revokes every session for that user first. ADR 0002.
     """
     record = await _load_refresh(session, raw)
     if record is None:
@@ -189,7 +171,7 @@ async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, T
 
 
 async def revoke_refresh_token(session: AsyncSession, raw: str) -> None:
-    """[A-3] #31. Logout. Silent when the token is unknown or already dead."""
+    """Revoke a refresh token and commit; silent if unknown or dead. [A-3] #31"""
     record = await _load_refresh(session, raw)
     if record is not None and record.revoked_at is None:
         record.revoked_at = datetime.now(UTC)
@@ -197,6 +179,7 @@ async def revoke_refresh_token(session: AsyncSession, raw: str) -> None:
 
 
 async def revoke_all_for_user(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """Revoke every live refresh token the user holds. Does not commit."""
     stmt = select(RefreshToken).where(
         RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None)
     )
