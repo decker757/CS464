@@ -151,6 +151,19 @@ describe('MarketDetailPage', () => {
     expect(banner.querySelector('strong')).toHaveTextContent('Yes')
   })
 
+  // #12 adds a `settled` status the frontend does not know yet; the page must
+  // still render rather than go blank on an unknown value.
+  it('shows a market whose status the page does not know yet', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+        HttpResponse.json({ ...baseMarket, status: 'settled' }),
+      ),
+    )
+    renderPage()
+    expect(await screen.findByText(baseMarket.question)).toBeInTheDocument()
+    expect(screen.getByText('settled')).toBeInTheDocument()
+  })
+
   it('shows resolution criteria and sources', async () => {
     renderPage()
     await screen.findByText('Resolves YES if the MAS core inflation print is strictly below 2.0%.')
