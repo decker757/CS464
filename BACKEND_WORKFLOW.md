@@ -30,17 +30,19 @@ and the one to believe if the two ever drift.
 - Five services: `auth_service`, `market_service`, `audit_service`,
   `ledger_service`, `realtime_service`. Auth, market and ledger each own a schema
   and connect as their own login role. `audit_service` has a login role and owns
-  no schema: `audit` belongs to the superuser, and `audit_svc` only reads it
-  (ADR 0006). `realtime_service` has no role, no schema and no `DATABASE_URL`
-  (ADR 0010).
+  no schema: `audit` belongs to the superuser, and `audit_svc` holds SELECT and
+  INSERT on it — INSERT only so its own suite can seed rows (ADR 0006,
+  `sql/02-schemas.sql`). `realtime_service` has no role, no schema and no
+  `DATABASE_URL` (ADR 0010).
 - `backend/shared/` — config, paging, roles, security, testing. Narrow by ADR 0012.
 - pytest, `asyncio_mode = auto`, tests run against real Postgres, never SQLite
 - Migrations: hand-written idempotent SQL in `sql/migrations/`. No Alembic yet (#75)
 - Frontend is separate: npm, Vite, React 19, TS. Not mine.
 
 **Read the ADRs before any structural decision.** They exist and they're binding.
-ADR 0005 (where `q` and pricing live) and ADR 0012 (what may enter `shared/`) are
-the two that govern my work.
+ADR 0012 (what may enter `shared/`) and ADR 0010 are the two that govern my
+work: why the engine stays in `ledger_service` is ADR 0010 and ADR 0012's
+amendment, as CLAUDE.md says — not ADR 0005, whose extraction list is the trap.
 
 ### Service layout
 
@@ -48,13 +50,18 @@ the two that govern my work.
 backend/<name>_service/
   controller/   # routes
   service/      # orchestration
-  core/         # errors, and the seams onto shared/ (ADR 0012)
+  core/         # pure logic (ledger: lmsr.py, pricing.py; market: closing.py,
+                # clock.py), errors, and the seams onto shared/ (ADR 0012).
+                # No network clients: see "The terms client lives in
+                # `service/`, not `core/`"
   model/        # entities
   main.py       # only file allowed to see everything
 unit_test/
-  core/  model/        # run without a database (D-031, CLAUDE.md)
-  service/  controller/ # need Postgres; realtime_service's need Redis instead (CLAUDE.md "Running things")
+  core/  model/        # run without a database ("The terms client lives in `service/`, not `core/`", CLAUDE.md)
+  service/  controller/ # need Postgres (CLAUDE.md "Running things")
   test_import_boundary.py
+# realtime_service is the exception: its whole suite, core/ and model/ included,
+# needs REDIS_URL set, because its conftest raises at import without it.
 ```
 
 Import direction is `controller → service → core/model`. Never upward. No test
@@ -73,13 +80,17 @@ enforces only that no service imports another. See "The terms client lives in
 4. **Every transaction's legs sum to zero.** Globally the ledger sums to zero.
 5. **Money is `Decimal`, `Numeric(18,4)`, and rounds directionally.** No floats in
    the money path, ever. The ledger's amounts and the public market projection
-   cross the API as decimal strings, not JSON numbers (ADR 0009). `MarketOut`
-   deliberately sends JSON numbers: see "Two schemas: `PublicMarketOut` beside an
-   unchanged `MarketOut`".
+   cross the API as decimal strings, not JSON numbers ("`liquidity_b` serialises
+   as a decimal string, never a float" and "Two schemas: `PublicMarketOut` beside
+   an unchanged `MarketOut`" in DECISIONS.md). `MarketOut` deliberately sends
+   JSON numbers, for the reason the second of those gives.
    - Rounding a cost: "`quantize_cost` takes an unsigned magnitude; the caller
      applies the sign" in DECISIONS.md.
-   - `ROUND_HALF_UP` at scale 4 is for displayed prices only: "The price read exists
-     once, and the price quantizer is in `core/pricing.py`".
+   - `ROUND_HALF_UP` at scale 4 is not display-only. `posting._quantize` applies it
+     to every ledger leg, so a retry matches its stored fingerprint — CLAUDE.md's
+     "Reading a balance writes, once per user, ever" says what breaks otherwise.
+     Displayed prices use it too: "The price read exists once, and the price
+     quantizer is in `core/pricing.py`".
    - Absolute values: "An absolute value on money is `copy_abs()`, never `abs()`".
 6. **The ledger is append-only, enforced by a database trigger.** Don't try to work
    around it.
@@ -95,15 +106,16 @@ enforces only that no service imports another. See "The terms client lives in
 ## Open questions — stop and ask, don't guess
 
 - `posting.post()` calls `session.commit()` internally. Settled for a caller with
-  nothing to write afterwards — D-032: order every write through
+  nothing to write afterwards — "The book's writes share `posting.post`'s
+  commit, and nothing may follow it": order every write through
   `session.begin_nested()` and call `post()` last. Still open for [T-2] #22,
   whose `state_version` bump and `q` update may not fit that shape.
 - Service-to-service auth for ledger writes doesn't exist. A trader's bearer token
   cannot authorize a ledger mutation — that's a self-mint hole.
 - Whether an under-subsidised market should be refused. The pool *is* funded —
   `books.ensure_open` posts `seed_subsidy` from the PLATFORM account on a
-  market's first touch ([F-7] #96, D-009) — but nothing compares that subsidy
-  against `b·ln(n)`, so a market can be opened whose pool goes negative under
+  market's first touch ([F-7] #96, "Seed subsidy is posted at book creation") —
+  but nothing compares that subsidy against `b·ln(n)`, so a market can be opened whose pool goes negative under
   ordinary trading. market_service's rule to make, not the ledger's.
 
 **`auth_service` and `realtime_service` are Ernest's — don't modify them without
@@ -143,7 +155,7 @@ name, a test that just covers a criterion.
 Use the format at the top of the file. Append only — never renumber, never delete.
 A decision that changes gets a new entry, and the old one is marked superseded by
 the new entry's title. The author never writes a number: a new entry stays
-`D-NEW` until its PR merges (see "What makes a test evidence").
+`D-NEW` until its PR merges. Never take the next number from the file.
 
 If a decision is big enough to constrain someone else's work or would be expensive
 to reverse, it needs an ADR, and **writing it is part of the ticket** — a new record
@@ -162,8 +174,7 @@ When a session ends with an unresolved question, add it to the **Open** section 
 the bottom rather than guessing.
 
 Commit log changes with the work they describe, not separately:
-`docs(<service>): record <title>`. There's no number, because the entry is
-`D-NEW` until merge.
+`docs(<service>): record <title>`.
 
 ---
 
@@ -269,8 +280,7 @@ For pricing (`#43`), additionally property tests:
 
 For anything touching money, additionally:
 - Rollback test: force a mid-operation failure and assert that zero ledger rows
-  were written. Where to count is covered by the "asserts after
-  `session.rollback()`" bullet below.
+  were written. Here the operation's own rollback is what's under test.
 - Concurrency test: assert no overdraft and that the ledger still sums to zero.
   What makes it a race is ADR 0015's, and the race-test bullet below.
 
@@ -279,10 +289,15 @@ logic there.
 
 ### What makes a test evidence
 
-- **A test that asserts after `session.rollback()` proves nothing.** The rollback
-  erases the writes the test is looking for. Under READ COMMITTED, a second
-  session can't see uncommitted writes either. Count in the request's own
-  session, before any rollback.
+- **A refusal test that asserts nothing was written must count before the test's
+  own `session.rollback()`.** A rollback the test runs between the refusal and
+  its counts erases any writes the implementation left pending, so the test
+  passes green over a write-then-raise bug. Under READ COMMITTED a second session
+  sees only committed writes. Count in the request's own session before any
+  rollback, and from a second session for committed ones. Source: @decker757's
+  review on #110, of `test_a_refused_gate_writes_nothing`. This is not the
+  rollback test above, which tests the operation's rollback, not one the test
+  adds.
 - **A validator test must feed the invalid value.**
 - **A race test is evidence only if it fails with its lock or re-check
   removed** (ADR 0015). Name the line you removed.
@@ -290,8 +305,6 @@ logic there.
   call is stalled.** It must fail with the release removed. A test that only
   shows the call succeeds proves nothing. For an example, see "The cold path
   holds no connection across the terms pull".
-- **A DECISIONS.md entry is `D-NEW` until its PR merges.** Never take the next
-  number from the file.
 
 ---
 
@@ -345,8 +358,8 @@ git add backend/ledger_service/unit_test/core/test_lmsr.py
 git commit -m "test(ledger): property tests for LMSR"
 ```
 
-The engine lives in `ledger_service/core/lmsr.py`, not in `shared/`. See ADR 0005
-and ADR 0012's amendment.
+The engine lives in `ledger_service/core/lmsr.py`, not in `shared/`. See ADR 0010
+and ADR 0012's amendment, as CLAUDE.md does.
 
 Format `type(scope): description`. Types: `feat`, `fix`, `test`, `refactor`,
 `chore`, `docs`.
