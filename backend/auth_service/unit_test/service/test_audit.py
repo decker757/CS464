@@ -17,7 +17,7 @@ from core.errors import CannotChangeOwnRole, UserNotFound
 from core.roles import UserRole
 from model.audit import AdminAction
 from model.entities import User
-from service import user_admin
+from service import audit, user_admin
 from service.audit import Actor
 
 _ENTRIES = text(
@@ -176,6 +176,20 @@ async def test_a_second_change_appends_rather_than_replaces(
         {"from": "admin", "to": "trader"},
         {"from": "trader", "to": "admin"},
     ]
+
+
+async def test_an_entry_is_not_committed_by_its_writer(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """ADR 0006: the entry exists only if the action's own commit says so."""
+    actor = _actor()
+
+    await audit.record(
+        session, actor=actor, action=AdminAction.USER_ROLE_CHANGED, target_type="user"
+    )
+    await session.rollback()
+
+    assert await _entries(audit_reader, actor) == []
 
 
 # --- the grant this depends on --------------------------------------------
