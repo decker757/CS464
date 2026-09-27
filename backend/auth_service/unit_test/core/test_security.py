@@ -6,7 +6,7 @@ The verifier's own rules are tested once, in `shared/unit_test/test_security.py`
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -52,6 +52,29 @@ def test_access_token_round_trip(role: UserRole) -> None:
     assert claims.username == "ernest_t"
     assert claims.role is role
     assert claims.expires_at > datetime.now(UTC)
+
+
+def test_a_token_from_another_issuer_is_rejected() -> None:
+    """Covers a token minted for a different system that shares our secret.
+
+    Not a copy of the shared test: it proves this service's seam passes the
+    issuer at all, which the round trip above cannot.
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "sub": str(uuid.uuid4()),
+            "username": "ernest_t",
+            "iss": "somebody-else",
+            "iat": now,
+            "exp": now + timedelta(minutes=15),
+        },
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+
+    assert security.decode_access_token(token) is None
 
 
 def test_the_role_travels_as_a_plain_string_claim() -> None:
