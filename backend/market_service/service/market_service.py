@@ -437,14 +437,15 @@ async def propose_outcome(
     on purpose, because here that is the stricter direction. Do not "fix" it
     to derive. ADR 0013.
     """
-    now = now or datetime.now(UTC)
-
     # Locked: a double-click must not log two proposals. ADR 0015.
     market = await get(session, actor.id, market_id, for_update=True)
 
     _refuse_if_resolving(market)
     if market.status is not MarketStatus.CLOSED:
         raise MarketNotClosed
+
+    # After the lock, for the reason `publish` gives. ADR 0015.
+    now = now or datetime.now(UTC)
 
     problems = problems_blocking_proposal(market, proposal)
     if problems:
@@ -516,11 +517,12 @@ async def approve_outcome(
     Sets APPROVED and the approver's id, name and time; the proposal, the
     terms and `closed_at` stay as they were. There is no un-approve.
     """
-    now = now or datetime.now(UTC)
-
     market = await _proposal_to_decide(
         session, actor, market_id, approval.proposal_id
     )
+
+    # After the lock, for the reason `publish` gives. ADR 0015.
+    now = now or datetime.now(UTC)
 
     market.status = MarketStatus.APPROVED
     market.approved_by_id = actor.id
@@ -552,11 +554,12 @@ async def reject_outcome(
     untouched. The audit entry is the only record of what was rejected, by
     whom and why.
     """
-    now = now or datetime.now(UTC)
-
     market = await _proposal_to_decide(
         session, actor, market_id, rejection.proposal_id
     )
+
+    # After the lock, for the reason `publish` gives. ADR 0015.
+    now = now or datetime.now(UTC)
 
     problems = problems_blocking_rejection(rejection)
     if problems:
