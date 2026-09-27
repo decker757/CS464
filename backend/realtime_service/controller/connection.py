@@ -24,23 +24,6 @@ class Connection:
         self._failure: RealtimeError | None = None
         self._failed = asyncio.Event()
 
-    # -- Subscriber -------------------------------------------------------
-
-    def enqueue(self, frame: dict[str, Any]) -> None:
-        """Take a frame for delivery. Never blocks, never raises.
-
-        It runs inside the hub's fan-out loop. Acknowledgements go through here
-        too, so a `subscribed` reply cannot overtake a price already queued.
-        """
-        if self._failed.is_set():
-            return
-
-        try:
-            self._queue.put_nowait(frame)
-        except asyncio.QueueFull:
-            # Recorded, not raised: the caller is the fan-out.
-            self.fail(SlowConsumer())
-
     # -- lifecycle --------------------------------------------------------
 
     def fail(self, error: RealtimeError) -> None:
@@ -66,6 +49,23 @@ class Connection:
         while True:
             frame = await self._queue.get()
             await self._websocket.send_json(frame)
+
+    # -- Subscriber -------------------------------------------------------
+
+    def enqueue(self, frame: dict[str, Any]) -> None:
+        """Take a frame for delivery. Never blocks, never raises.
+
+        It runs inside the hub's fan-out loop. Acknowledgements go through here
+        too, so a `subscribed` reply cannot overtake a price already queued.
+        """
+        if self._failed.is_set():
+            return
+
+        try:
+            self._queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            # Recorded, not raised: the caller is the fan-out.
+            self.fail(SlowConsumer())
 
     # -- introspection, for tests -----------------------------------------
 
