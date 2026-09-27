@@ -50,10 +50,8 @@ def test_the_cursor_is_opaque() -> None:
     ],
 )
 def test_anything_we_did_not_issue_is_one_error(bad: str) -> None:
-    """Every failure mode collapses to MalformedCursor deliberately. The
-    difference between bad base64 and a bad UUID is not something a client can
-    act on, and describing it precisely only helps someone probing what the
-    value is made of."""
+    """Every failure is one MalformedCursor: a client cannot act on the
+    difference."""
     with pytest.raises(MalformedCursor):
         decode_cursor(bad)
 

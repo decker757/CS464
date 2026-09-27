@@ -1,34 +1,11 @@
 """The LMSR pricing engine. [F-3] #43
 
-`C(q) = b·ln(Σ e^(q_i/b))`, and the marginal prices that are its gradient.
-The engine is a pure function of `b` and `q` — no session, no clock, no
-configuration — so it is tested here without a database, in `unit_test/core/`
-where the fast suite lives.
+A pure function of `b` and `q`, so tested without a database. Decimal in,
+unquantized Decimal out (D-002).
 
-The module under test is `ledger_service/core/lmsr.py`. ADR 0005 puts the
-engine "wherever `q` lives", and `q` is ledger state; ADR 0012 anticipated it
-landing in `backend/shared/` instead, and it does not, because that package's
-bar is that *every* caller needs identical behaviour and a divergence between
-two copies would be a bug. There is one caller. The trading composite owns no
-schema and holds no cross-schema grant, so it cannot read `q` and therefore
-cannot evaluate this function — it calls the ledger instead. One caller fails
-the bar, so this is `core/`, not `shared/`.
-
-The numeric contract is Decimal in, **unquantized** Decimal out, and the
-caller quantizes to `Numeric(18, 4)` at the ledger write. Quantizing here
-would round a round trip into a profit, which is the one thing an automated
-market maker may never do.
-
-Why the assertions are approximate, given that the engine itself is not. It
-computes in `Decimal` throughout — `Decimal.exp()` and `Decimal.ln()` at 50
-significant digits, no float anywhere on any path — so its answers are exactly
-reproducible and an `==` would be a legitimate assertion against a value
-pinned by hand. The tolerance is not for the engine. It is for
-`_reference_cost` below, which is deliberately written in `float` so that the
-comparison is against a second implementation rather than against a restating
-of the first; 1e-9 is what a double can honestly support. Do not read a
-tolerance here as a claim that the engine is noisy, and do not "simplify" it
-to floats on the strength of one.
+The tolerance is for `_reference_cost`, a deliberately separate float
+implementation; the engine itself is exact Decimal. Do not read it as a claim
+that the engine is noisy, or "simplify" the engine to floats because of it.
 """
 
 from __future__ import annotations
@@ -43,20 +20,11 @@ import pytest
 from core.lmsr import cost, cost_to_trade, prices
 
 
-# A market's `b`. The repo's configured default, so the numbers in these tests
-# are the numbers a real market would produce.
+# The repo's default `b`, so these are the numbers a real market produces.
 B = Decimal("100")
 
-# Deterministic. A property test that picks fresh vectors on every run fails on
-# somebody else's machine and passes on the author's, which is worse than not
-# having one.
-#
-# Every test builds its own generator from this seed rather than sharing one
-# module-level instance, because a shared one is only deterministic for a whole
-# ordered run: under `-k`, `--lf` or `-n auto` a test starts at a different
-# position in the stream and exercises different vectors than CI did. That is
-# the same failure the seed is here to prevent, arriving by a different door —
-# and it arrives at the worst moment, when somebody is re-running one red test.
+# Deterministic, and each test builds its own generator from it: a shared one
+# draws different vectors under `-k`, `--lf` or `-n auto` than CI did.
 _SEED = 20260920
 
 
@@ -64,29 +32,9 @@ def _rng(stream: str) -> random.Random:
     """A fresh generator, seeded so the caller draws the same vectors every run
     and a different set from every other caller.
 
-    `stream` names the draw, and two properties follow. The first took two
-    passes to get right.
-
-    **Different callers must draw different markets.** The module-level
-    generator this replaced got that by accident — one ordered stream hands
-    each reader a disjoint slice — and lost reproducibility, which is why it
-    went. Seeding on `_SEED + index` restored reproducibility and kept the
-    accident only *within* one parametrize: every bare call and every
-    `index == 0` case rebuilt the same generator and drew the identical 50
-    markets, so six call sites across four theorems were checking all four
-    against one sample. Every test passed, and between them they covered
-    rather less than six times fifty vectors.
-
-    **`stream` is required.** A default is what let five of those six collide
-    without anybody choosing to, and it is invisible at the call site — the
-    collision could only be found by reading every caller at once. A new test
-    now has to name its stream, and naming it after the test is what makes a
-    collision something you can see.
-
-    A string rather than an int, because `random.Random` seeds from one
-    deterministically (SHA-512 over the encoded value, stable across runs and
-    platforms), and because arithmetic on stream ids is how adjacent integers
-    collided here in the first place.
+    `stream` is required and named after the test: with a default or integer
+    offsets, callers silently drew identical samples. A string seeds
+    deterministically across runs and platforms.
     """
     return random.Random(f"{_SEED}:{stream}")
 
@@ -99,12 +47,8 @@ def _d(values: Sequence[float | int | str]) -> list[Decimal]:
 
 
 def _reference_cost(q: Sequence[Decimal], b: Decimal) -> Decimal:
-    """`b·ln(Σ e^(q_i/b))`, written out by hand in log-sum-exp form.
-
-    Deliberately a second implementation rather than a call into the engine:
-    a test that computes the expected value the way the code does agrees with
-    the code about a wrong formula.
-    """
+    """`b·ln(Σ e^(q_i/b))` by hand, in float: a second implementation, since
+    one computed the engine's way would agree with a wrong formula."""
     scaled = [float(x) / float(b) for x in q]
     top = max(scaled)
     total = math.fsum(math.exp(v - top) for v in scaled)
@@ -171,11 +115,8 @@ def test_cost_increases_in_every_outcome(index: int) -> None:
 def test_a_share_of_every_outcome_costs_exactly_one_credit() -> None:
     """`C(q + k·1) = C(q) + k`, for any `k` and any `q`.
 
-    This is the invariant that makes the payout rule solvent: a complete set
-    of shares pays exactly 1 credit at resolution whichever outcome wins, so
-    it must cost exactly 1 credit to acquire. It is also exact in real
-    arithmetic — the `b·ln` cancels — so the tolerance here is float noise
-    only.
+    What makes the payout solvent: a complete set pays exactly 1 credit
+    whichever outcome wins, so it must cost exactly 1.
     """
     rng = _rng("a_share_of_every_outcome_costs_exactly_one_credit")
     for _ in range(50):
@@ -260,12 +201,8 @@ def test_buying_an_outcome_raises_its_price_and_lowers_the_others() -> None:
     [_d([0, 0]), _d([500, 0]), _d([0, 500]), _d([900, 20, 3])],
 )
 def test_every_price_is_strictly_between_zero_and_one(q: list[Decimal]) -> None:
-    """No outcome is ever free and none is ever a certainty. A price of exactly
-    0 is a share that pays 1 for nothing.
-
-    At `q/b = 5` the losing price is about 0.0067 and the winning one is
-    nowhere near 1, so both bounds are strict here. The next test covers the
-    saturated positions, where only the lower one still is.
+    """No outcome is ever free and none is ever a certainty, at unsaturated
+    positions. The next test covers saturation, where only `> 0` stays strict.
     """
     for price in prices(q, B):
         assert Decimal(0) < price < Decimal(1), f"{price} out of range for {q}"
@@ -273,30 +210,11 @@ def test_every_price_is_strictly_between_zero_and_one(q: list[Decimal]) -> None:
 
 @pytest.mark.parametrize("q", [_d([5000, 0]), _d([0, 5000]), _d([1000000, 0, 0])])
 def test_prices_never_leave_the_unit_interval(q: list[Decimal]) -> None:
-    """The bound that survives saturation, and it survives asymmetrically:
-    strictly above 0, but only weakly below 1. Both halves are facts about
-    `Decimal`, and they are facts about different limits of it.
+    """At saturation: strictly above 0, only weakly below 1 (D-006).
 
-    **Never exactly 0, because the exponent range is enormous.** A float
-    underflows `e^-10000` to 0.0 and would price the losing side at a flat
-    zero. `Decimal` reaches down to about 1e-999999, so `q = [1000000, 0, 0]`
-    at `b = 100` prices the losers near 1e-4343 — negligible, and not zero.
-    That is worth asserting strictly: a price of exactly 0 is a share that pays
-    out 1 credit for nothing.
-
-    **Sometimes exactly 1, because the precision is only 50 digits.** The
-    winning price there is `1 − 2e-4343`, and no context holding 50 significant
-    digits can represent that as anything but 1. Raising `_PRECISION` does not
-    help — it would need 4,343 of them. So `< 1` is unsatisfiable at this
-    spread and a test demanding it would be asking the implementer to fake a
-    number, which is what the weaker bound is for.
-
-    The upper bound is load-bearing in a way it was not when this file was
-    written: commit aead51a removed an explicit clamp, so nothing pins these
-    numbers except softmax normalisation — every weight is divided by a total
-    that includes it, and the largest weight is exactly `exp(0) == 1`. If a
-    price ever exceeds 1, the normalisation is what broke; re-adding the clamp
-    would hide that rather than fix it.
+    Decimal's exponent range keeps a losing price above zero; its 50-digit
+    precision rounds the winner to exactly 1. With no clamp, a price above 1
+    means the normalisation broke; do not re-add a clamp to hide it.
     """
     for price in prices(q, B):
         assert Decimal(0) < price <= Decimal(1), f"{price} out of range for {q}"
@@ -345,15 +263,8 @@ def test_a_trade_of_nothing_costs_nothing() -> None:
 
 
 def test_a_trade_can_cost_both_outcomes_at_once() -> None:
-    """A `Δ` with both signs in it: sell one outcome and buy another in a
-    single trade. [T-2] #22 makes one transactional write per trade, so a
-    position swap arrives here as one vector rather than as two calls, and
-    `q_i` can be driven down as well as up.
-
-    Nothing in the formula distinguishes this case — which is the point of
-    pinning it. Every other `delta` in this file is uniform or single-sided, so
-    without this test the first caller to swap a position would be the one
-    finding out, on the trade path, with money attached.
+    """A `Δ` with both signs: sell one outcome and buy another in one vector.
+    Every other `delta` here is uniform or single-sided.
     """
     q = _d([100, 100, 100])
     swap = _d([20, -20, 0])
@@ -372,19 +283,8 @@ def test_a_sub_tick_trade_is_priced_not_rounded() -> None:
     """A real trade can cost less than the ledger can store, and the engine
     hands back the real number anyway.
 
-    A saturated outcome is worth almost nothing, so buying it is almost free —
-    not as a defect but as the correct LMSR price. 100 shares of the losing
-    side at `q = [1560, 0]` cost 0.0000288, which `Numeric(18, 4)` cannot hold;
-    quantized `ROUND_HALF_UP` at the write it becomes 0.0000, and a real share
-    transfer is charged nothing. Widen the spread and the two costs cancel
-    outright and the engine returns an exact zero.
-
-    This test pins the engine's half of that, which is to stay exact and stay
-    out of it. Rounding up to a tick here would put a rounding into the round
-    trip; refusing the trade here would refuse it in a pure function that has
-    no request in front of it. The decision — minimum tick, round toward the
-    house, or refuse — is [T-2] #22's, and this test exists so that whoever
-    makes it sees the numbers rather than inheriting a zero by accident.
+    Rounding and refusing a sub-tick trade are the caller's
+    (`core/pricing.py::quantize_cost`, D-039, D-041); the engine stays exact.
     """
     tick = Decimal("0.0001")
 
@@ -416,15 +316,10 @@ def test_average_price_lies_between_the_price_before_and_after() -> None:
 
 
 def test_buying_then_selling_the_same_shares_never_yields_a_profit() -> None:
-    """The round trip. Buy `Δ`, sell `Δ` back immediately, and the trader must
-    not come out ahead — otherwise the loop is a money printer and the
-    platform account funds it.
+    """Buy `Δ`, sell it straight back, and the trader must not come out ahead.
 
-    In exact arithmetic the two legs are equal and the round trip is free; the
-    tolerance below admits float noise and nothing else. Note what this catches
-    that the formula tests above do not: an engine that quantized its own
-    output to four decimal places could round both legs in the trader's favour
-    and still satisfy every one of them.
+    Catches what the formula tests do not: an engine that quantized its own
+    output could round both legs in the trader's favour and pass them all.
     """
     rng = _rng("buying_then_selling_the_same_shares_never_yields_a_profit")
     for _ in range(100):
@@ -453,14 +348,8 @@ def test_buying_then_selling_the_same_shares_never_yields_a_profit() -> None:
 def test_cost_is_stable_when_q_over_b_reaches_ten_thousand(
     q_top: Decimal, b: Decimal
 ) -> None:
-    """`math.exp(710)` raises OverflowError, so a direct transcription of
-    `Σ e^(q_i/b)` dies somewhere above `q/b ≈ 709`. The engine must subtract
-    the maximum first — log-sum-exp — which makes the answer
-    `max(q) + b·ln(Σ e^((q_i − max q)/b))` and every exponent negative.
-
-    At these ratios the second term is indistinguishable from zero, so the cost
-    is the dominant `q` itself: a market where one outcome is a near-certainty
-    has a liability equal to the shares of it outstanding.
+    """A direct `Σ e^(q_i/b)` overflows above `q/b ≈ 709` (D-004). At these
+    ratios the cost is the dominant `q` itself.
     """
     result = cost([q_top, Decimal(0)], b)
 
@@ -494,12 +383,7 @@ def test_a_tiny_liquidity_parameter_does_not_blow_up() -> None:
 
 
 def test_the_engine_returns_decimals_never_floats() -> None:
-    """Invariant 5: no float in the money path — and here that is literal
-    rather than a statement about the boundary. The engine takes its logarithm
-    with `Decimal.ln()` and its exponential with `Decimal.exp()`, so there is
-    no double anywhere inside it to promote on the way out. Passing one in is
-    a caller error rather than a supported conversion; see
-    `test_a_float_q_is_a_caller_error`."""
+    """No float in the money path (D-002)."""
     q = _d([10, 20])
 
     assert isinstance(cost(q, B), Decimal)
@@ -508,11 +392,8 @@ def test_the_engine_returns_decimals_never_floats() -> None:
 
 
 def test_the_engine_does_not_quantize_its_answer() -> None:
-    """The caller quantizes, at the ledger write, `ROUND_HALF_UP`. If the
-    engine rounded to four places first, every consumer would compound two
-    roundings and the round trip above would become a rounding profit.
-    `b·ln(2)` at `b = 100` is 69.31471805599453, so an answer of 69.3147
-    exactly is the sign that this happened."""
+    """The caller quantizes (D-002). `b·ln(2)` at `b = 100` is
+    69.31471805599453, so exactly 69.3147 would mean the engine rounded."""
     result = cost(_d([0, 0]), B)
 
     assert result != result.quantize(Decimal("0.0001"))
@@ -520,12 +401,8 @@ def test_the_engine_does_not_quantize_its_answer() -> None:
 
 @pytest.mark.parametrize("bad_b", [Decimal(0), Decimal("-1"), Decimal("-0.0001")])
 def test_liquidity_must_be_positive(bad_b: Decimal) -> None:
-    """`b = 0` is a division by zero and a negative `b` inverts the market, so
-    that buying lowers the price. `ValueError` rather than one of this
-    service's own errors because these are preconditions on a pure function,
-    not domain errors: no request has been refused, a caller has passed
-    arithmetic that has no answer. Turning one into an HTTP status is the
-    trade path's job, where there is a request to refuse."""
+    """`b = 0` divides by zero and a negative `b` inverts the market.
+    `ValueError`, not a domain error: a precondition on a pure function."""
     with pytest.raises(ValueError):
         cost(_d([1, 1]), bad_b)
     with pytest.raises(ValueError):
@@ -548,21 +425,9 @@ def test_a_trade_must_name_every_outcome() -> None:
 
 
 def test_a_market_with_fewer_than_two_outcomes_is_refused() -> None:
-    """`ln(0)` is not a price, and a single outcome is not a market.
-
-    An empty vector reaches here only from a caller that built one wrongly, and
-    the honest answer is a ValueError rather than a `math domain error`
-    escaping from inside the engine. A one-outcome vector is the more
-    interesting refusal: the formula answers it quite happily, pricing the lone
-    outcome at `1/1 = 1`, and a share that costs 1 credit and pays 1 credit is
-    a market with nothing to be right or wrong about.
-
-    `market_service/core/opening_prices.py` and `realtime_service`'s
-    `PriceEvent` both already refuse it, at creation and on the wire. The
-    engine is the copy those two defer to, so it must not be the one copy that
-    lets it through — a `PriceEvent` built from a one-outcome market would fail
-    the relay's own `min_length=2` and be logged and dropped, which refuses it
-    in the place least able to say why.
+    """An empty vector has no price, and one outcome priced at 1 is not a
+    market. market_service and `PriceEvent` refuse it too; the engine must not
+    be the copy that lets it through.
     """
     for refused in ([], _d([42])):
         with pytest.raises(ValueError):
@@ -572,18 +437,9 @@ def test_a_market_with_fewer_than_two_outcomes_is_refused() -> None:
 
 
 def test_a_float_q_is_a_caller_error() -> None:
-    """"Decimal in" is the contract, and the engine does not quietly coerce.
-
-    `cost([10, 0], 100)` is the most natural first call anyone makes and it is
-    wrong: `q_i / b` becomes float division, and the failure surfaces from
-    inside `_log_sum_exp` as an `AttributeError` on a float, which reads like a
-    bug in the engine rather than a cast the caller forgot. This test does not
-    endorse that error — it pins the behaviour so the trading composite's
-    author finds it here, in a named test, rather than at a trade.
-
-    Coercing instead would be worse: `Decimal(0.1)` is not `Decimal("0.1")`,
-    and a money path that silently accepts binary floating point is how a
-    balance ends up off by a fraction of a tick with nothing to point at.
+    """"Decimal in" is the contract, and the engine does not quietly coerce:
+    `Decimal(0.1)` is not `Decimal("0.1")`. The error type is incidental; the
+    test pins that a float is refused.
     """
     with pytest.raises((TypeError, AttributeError)):
         cost([10, 0], 100)

@@ -115,18 +115,8 @@ def _example(model: type, field: str) -> Decimal:
 def test_the_preview_examples_are_a_trade_that_could_happen() -> None:
     """`average_price` is `abs(total) / quantity`, at most 1, above the price.
 
-    The examples are what `/docs` shows the frontend, and an example that is
-    not the quotient its own description defines teaches the wrong formula.
-
-    **`<= 1`, not `< 1`, and the field itself has no floor above zero.** An
-    ordinary trade averages inside (0, 1) because LMSR prices do — but this
-    is derived from a total already rounded to a tick, so the smallest buy
-    is charged a whole tick and divides out to exactly 1.0000, and a large
-    buy in a saturated outcome can cost one tick and divide down to 0.0000.
-    What is asserted here is the range a documented *example* should sit in,
-    which is tighter than the field's. The total is negative, so it is a
-    buy, and a buy pushes the price up as it fills: its average is strictly
-    above the price it started from, which is `OutcomePriceOut`'s example.
+    The examples are what `/docs` shows the frontend, so they must be a
+    consistent buy: the average above the price the buy started from.
     """
     from model.schemas import OutcomePriceOut, PreviewOut  # noqa: PLC0415
 
@@ -138,10 +128,8 @@ def test_the_preview_examples_are_a_trade_that_could_happen() -> None:
     assert (total.copy_abs() / quantity).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     ) == average
-    # `<=`, not `<`. The smallest buy there is costs a fraction of a tick
-    # and is charged the whole one (D-039), which divides out to exactly
-    # 1.0000 in an ordinary market — so an average of 1 is a real quote,
-    # not a bad example. D-044 has the skewed case that reads higher.
+    # `<=`: a sub-tick buy is charged a whole tick (D-039) and can average
+    # exactly 1.0000.
     assert Decimal(0) < average <= Decimal(1)
     assert total < 0, "the example is meant to be a buy"
     assert average > price, "a buy averages above the price it started from"
@@ -149,12 +137,8 @@ def test_the_preview_examples_are_a_trade_that_could_happen() -> None:
 
 @pytest.mark.parametrize("price", ["-0.0001", "1.0001"])
 def test_an_outcome_price_outside_zero_to_one_is_refused(price: str) -> None:
-    """The bounds `realtime_service`'s `OutcomePrice` puts on the same field.
-
-    Field-for-field parity is the promise that lets one client renderer
-    serve the snapshot, the price frame and this preview, and `price` is the
-    one field carrying an invariant. A pricing bug producing `1.0001` is
-    refused on the socket; without these it ships here.
+    """The bounds `realtime_service`'s `OutcomePrice` puts on the same field:
+    a pricing bug producing `1.0001` is refused there, so it must be here.
     """
     from model.schemas import OutcomePriceOut  # noqa: PLC0415
 
@@ -173,13 +157,9 @@ def test_an_outcome_price_at_or_inside_the_bounds_is_accepted(price: str) -> Non
 
 
 def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
-    """The same arithmetic on `docs/api/ledger-service.md`'s example.
-
-    Two copies of one contract, and the review found both wrong, so both are
-    checked. The frontend reads the markdown as often as it reads `/docs`.
-    That example carries its prices, so it is held to the stronger rule: on
-    a buy, the average price sits strictly between the traded outcome's price
-    before and after, and each price list sums to 1 within rounding.
+    """The same arithmetic on `docs/api/ledger-service.md`'s example, which the
+    frontend reads as often as `/docs`. It carries its prices, so it is also
+    regenerated from the engine and compared.
     """
     doc = (Path(__file__).resolve().parents[4] / "docs/api/ledger-service.md").read_text(
         encoding="utf-8"
@@ -197,10 +177,8 @@ def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
     assert (total.copy_abs() / quantity).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     ) == average
-    # `<=`, not `<`. The smallest buy there is costs a fraction of a tick
-    # and is charged the whole one (D-039), which divides out to exactly
-    # 1.0000 in an ordinary market — so an average of 1 is a real quote,
-    # not a bad example. D-044 has the skewed case that reads higher.
+    # `<=`: a sub-tick buy is charged a whole tick (D-039) and can average
+    # exactly 1.0000.
     assert Decimal(0) < average <= Decimal(1)
 
     def listed(name: str) -> list[Decimal]:
@@ -217,12 +195,8 @@ def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
         f"got {average}"
     )
 
-    # And the figures are a trade the engine actually produces, which the
-    # checks above cannot show. They hold for any internally consistent set:
-    # rewrite `post_trade_prices` to 0.9900 / 0.0100 and every one of them
-    # still passes, though those endpoints imply a cost near 9.13 rather than
-    # the documented 7.32. The example is generated from this book, so the
-    # test regenerates it and compares.
+    # The checks above hold for any consistent set of figures, so regenerate
+    # the example from its book and compare.
     from core.lmsr import cost_to_trade, prices  # noqa: PLC0415
     from core.pricing import (  # noqa: PLC0415
         Side,
