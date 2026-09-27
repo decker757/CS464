@@ -1,31 +1,10 @@
-"""When is a market complete enough to move on?
+"""Whether a market, a proposed outcome or a reason is complete enough to act on.
 
-Pure functions with no session, no HTTP and no clock of their own.
-`problems_blocking_submission` asks whether the terms are ready to leave DRAFT,
-and `problems_blocking_proposal` asks whether a proposed outcome and its
-evidence are ready to leave CLOSED ([3.1] #9). They share this module because
-they share a shape and a caller's contract — a list of problems addressed to
-form fields, every one of them, so the administrator fixes them in one pass —
-and because they share the URL check.
-
-Two smaller rules follow them, about the free-text reason an administrator
-gives for stopping a market early ([2.3] #7) and for rejecting a proposal
-([3.2] #10). They take the request rather than the market, and share one
-private check, because a reason is a reason wherever it is typed.
-
-The first was written this way for three reasons:
-
-- [1.3] #3 has to answer the same question at publish time ("publish blocked
-  unless all required fields are present") and [1.4] #4 again when it decides
-  what may still be edited. Neither should re-derive these rules.
-- Injecting `now` is what makes "must be in the future" testable without
-  sleeping or freezing the system clock.
-- It reports every problem rather than the first, so the form can mark all the
-  offending fields at once instead of making the admin find them one save at a
-  time.
-
-Nothing here runs on an autosave. A draft is a scratchpad and is allowed to
-break every rule below.
+Pure functions: no session, no HTTP, and `now` is injected. Each returns every
+problem, addressed to a form field, so the administrator fixes them in one
+pass. Publishing re-runs the submission rules rather than restating them (ADR
+0004, ADR 0008). Nothing here runs on an autosave; a draft may break every rule.
+[1.1] #1, [2.3] #7, [3.1] #9, [3.2] #10.
 """
 
 from __future__ import annotations
@@ -44,51 +23,24 @@ from model.schemas import (
     OutcomeRejectionRequest,
 )
 
-# A market with one outcome is not a market. Two is binary, more is
-# categorical, and [1.2] #2's max platform loss of b·ln(n) needs n ≥ 2 to mean
-# anything. This is the floor; the ceiling is MAX_OUTCOMES in model/schemas.py,
-# where it is enforced as a shape constraint.
+# Below two outcomes it is not a market, and b·ln(n) means nothing. The
+# ceiling, MAX_OUTCOMES, is a shape rule in model/schemas.py.
 MIN_OUTCOMES = 2
 
-# Enough to rule out "test" and "asdf" reaching a trader, and low enough not to
-# argue with a legitimately terse question.
+# Every floor below rules out "test", "x" or a one-word note reaching a trader
+# or the log. They are separate constants that agree today: different rules
+# about different fields, so raising one must not raise the others. ADR 0014,
+# ADR 0016.
 MIN_QUESTION_LENGTH = 10
 MIN_CRITERIA_LENGTH = 10
+MIN_EVIDENCE_NOTE_LENGTH = 10  # [3.1] #9
+MIN_CLOSE_REASON_LENGTH = 10  # [2.3] #7
+MIN_REJECTION_REASON_LENGTH = 10  # [3.2] #10
 
-# [3.1] #9. The same floor, for the same reason: a one-word note satisfies
-# "evidence was given" and documents nothing, and documenting the decision is
-# the entire point of the story. An administrator with nothing to add can give
-# a URL instead and leave this empty.
-MIN_EVIDENCE_NOTE_LENGTH = 10
-
-# [2.3] #7. And again for the reason an administrator gives for stopping a
-# market early, where there is no URL to fall back on: this text is the whole
-# of the explanation, and "x" is not one.
-#
-# Its own constant rather than a share of the one above, exactly as
-# MIN_QUESTION_LENGTH and MIN_CRITERIA_LENGTH are of each other. They are
-# different rules about different fields that happen to agree on a number
-# today, and folding them together would make raising one raise all of them.
-MIN_CLOSE_REASON_LENGTH = 10
-
-# [3.2] #10. And once more for the reason a second administrator gives for
-# sending a proposed outcome back. The rejection clears the proposal from the
-# market, so this text and the audit entry's copy of what it cleared are the
-# whole of the record, and the proposer is owed more than "no".
-#
-# Its own constant for the reason the one above gives, though the field has the
-# same name: a close and a rejection are different decisions, and a reason to
-# raise the floor on one is not a reason to raise it on the other.
-MIN_REJECTION_REASON_LENGTH = 10
-
-# Reuses pydantic's parser rather than a hand-rolled regex, and it already
-# restricts the scheme to http and https.
+# pydantic's parser, which already restricts the scheme to http and https.
 _URL = TypeAdapter(HttpUrl)
 
-# Said to the administrator about a resolution source and about a proposal's
-# evidence URL alike. One string, because the two are the same complaint about
-# the same kind of value, and two copies would drift into being worded
-# differently for no reason a reader could act on.
+# One wording for a resolution source and an evidence URL: the same complaint.
 _UNREACHABLE_URL = "Enter a full http or https address a trader can open."
 
 
@@ -172,18 +124,11 @@ def _outcome_problems(market: Market) -> list[ValidationProblem]:
 def _future_problems(
     field: str, moment: datetime | None, now: datetime, *, missing: str, past: str
 ) -> list[ValidationProblem]:
-    """Required, and after `now`. The shape both timestamps share.
+    """Required, and after `now`.
 
-    Takes an already-UTC value rather than converting one. The caller has to
-    normalise both timestamps anyway for the ordering check below, and a second
-    `as_utc` here would be a second place that decides what a naive value
-    means — which is the naive-versus-aware split that has already caused bugs
-    in this repository.
-
-    The two messages stay arguments rather than being generated from `field`,
-    because "Close time must be in the future" and "Resolution time must be in
-    the future" are what the admin reads next to the offending input, and a
-    message assembled from a column name reads like one.
+    Takes an already-UTC value, so the caller is the one place that decides
+    what a naive timestamp means. The messages are arguments because the admin
+    reads them beside the input.
     """
     if moment is None:
         return [ValidationProblem(field, missing)]
@@ -212,9 +157,7 @@ def _timing_problems(market: Market, now: datetime) -> list[ValidationProblem]:
         past="Resolution time must be in the future.",
     )
 
-    # Reported separately from the two checks above rather than inferred from
-    # them. All three can be wrong at once, and each names a different field
-    # the admin has to go and fix.
+    # Reported separately: all three can be wrong at once.
     if close is not None and resolve is not None and close >= resolve:
         problems.append(
             ValidationProblem(
@@ -281,12 +224,7 @@ def _resolution_problems(market: Market) -> list[ValidationProblem]:
 def _positive_problems(
     field: str, value: Decimal | None, *, missing: str, nonpositive: str
 ) -> list[ValidationProblem]:
-    """Required, and greater than zero. The shape both pricing columns share.
-
-    Like `_future_problems`, the messages are arguments: each one explains what
-    that particular number does to the market, which is the part an admin
-    needs and the part a generated string cannot supply.
-    """
+    """Required, and greater than zero. Messages are arguments, as in `_future_problems`."""
     if value is None:
         return [ValidationProblem(field, missing)]
     if value <= 0:
@@ -295,19 +233,12 @@ def _positive_problems(
 
 
 def _liquidity_problems(market: Market) -> list[ValidationProblem]:
-    """[1.2] #2. A market cannot go live without knowing how it is priced.
+    """A market cannot go live without knowing how it is priced. [1.2] #2.
 
-    Note what is deliberately NOT checked: whether the subsidy actually covers
-    `b*ln(n)`. An administrator may knowingly seed a market for less than its
-    worst case, and the response tells them the number every time they save, so
-    this is an informed choice rather than an accident. [2.2] #6 flags the
-    related but different quantity — realised exposure once traders hold shares
-    — at the point where it can actually be acted on.
-
-    The `<= 0` branches are unreachable through the API, because
-    `MarketDraftRequest` refuses those with a 422 before a row is written. They
-    are here because this function is the single definition of "ready" that
-    [1.3] #3 and [1.4] #4 also call, and it takes an entity, not a request.
+    Deliberately does not check that the subsidy covers b·ln(n): an admin may
+    knowingly under-seed, and sees that number on every save. The `<= 0`
+    branches are unreachable through the API and kept because this checks an
+    entity, not a request.
     """
     return _positive_problems(
         "liquidity_b",
@@ -331,16 +262,8 @@ def problems_blocking_proposal(
 ) -> list[ValidationProblem]:
     """Every reason this outcome cannot be proposed for `market`. Empty means it can.
 
-    Deliberately does not check the market's status, which is the other half of
-    the ticket's first acceptance criterion. That is a fact about the market
-    rather than about the proposal, it has its own 409 with its own remedy, and
-    an administrator whose market has not closed yet is not being told to fix a
-    field. `service/market_service.py::propose_outcome` gates on the status
-    before it calls this.
-
-    Nor does it take a clock. Nothing here is time-dependent: the market's own
-    close time is what decided whether a proposal is allowed at all, and it was
-    already checked.
+    Does not check the market's status: that is `propose_outcome`'s 409, not a
+    field to fix. Takes no clock, because nothing here depends on time.
     """
     return _winner_problems(market, proposal) + _evidence_problems(proposal)
 
@@ -350,15 +273,9 @@ def _winner_problems(
 ) -> list[ValidationProblem]:
     """The proposed winner has to be one of this market's own outcomes.
 
-    Checked here rather than left to a foreign key, because a foreign key
-    cannot express it: `market_outcomes.id` is unique across every market, so
-    an FK would accept another market's "Yes" without complaint. See the note
-    on `Market.proposed_outcome_id`.
-
-    Unreachable from a form that renders the market's outcomes as radio
-    buttons, which is the only way [FE][3.1] #52 will call this. It is here for
-    the request that was not built that way — a copied id, a stale tab, a
-    script — because the column it guards is what [3.4] #12 pays out against.
+    A foreign key cannot express this (ADR 0013). The form cannot send another
+    market's outcome; a copied id, a stale tab or a script can, and [3.4] #12
+    pays out against this column.
     """
     if any(outcome.id == proposal.winning_outcome_id for outcome in market.outcomes):
         return []
@@ -371,14 +288,10 @@ def _winner_problems(
 
 
 def _evidence_problems(proposal: OutcomeProposalRequest) -> list[ValidationProblem]:
-    """A URL, or a note, or both — and whichever is given has to be usable.
+    """A URL, or a note, or both, and whichever is given has to be usable.
 
-    The same shape as `_resolution_problems` above, for the same reason: a
-    value that was supplied and is unusable gets its own problem naming the
-    field it came from, and the "at least one" rule is reported separately, on
-    the pair. An administrator who typed a broken URL and nothing else sees
-    both, which is what tells them that fixing the URL is enough and they do
-    not also have to write a note.
+    An unusable value and the "at least one" rule are reported separately, so
+    an admin with only a broken URL learns that fixing it is enough.
     """
     problems: list[ValidationProblem] = []
     url = (proposal.evidence_url or "").strip()
@@ -420,19 +333,8 @@ def _evidence_problems(proposal: OutcomeProposalRequest) -> list[ValidationProbl
 def problems_blocking_close(request: MarketCloseRequest) -> list[ValidationProblem]:
     """Every reason this market cannot be closed early. Empty means it can.
 
-    Deliberately does not check the market's status, for the reason
-    `problems_blocking_proposal` gives: that is a fact about the market rather
-    than about the request, it has its own 409 with its own remedy, and an
-    administrator whose market has already stopped is not being told to fix a
-    field. `service/market_service.py::close_early` gates on the state before
-    it calls this.
-
-    Takes the request rather than the bare string, so that this reads like the
-    other two rules in this module and a caller cannot pass it the wrong string.
-
-    Only ever one problem, unlike the other two, because there is only one
-    field. The list is the shape the envelope is built from, not a prediction
-    that there will be more.
+    Checks only the reason; the market's state is `close_early`'s 409. Takes
+    the request, not the string, so a caller cannot pass the wrong string.
     """
     return _reason_problems(
         request.reason,
@@ -447,14 +349,8 @@ def problems_blocking_rejection(
 ) -> list[ValidationProblem]:
     """Every reason this proposal cannot be rejected. Empty means it can.
 
-    The same rule as `problems_blocking_close`, about a different decision, and
-    it leaves the same things out for the same reasons. It does not check the
-    market's status, and it does not check who is asking: whether there is a
-    proposal to reject, and whether this administrator may reject it, are facts
-    about the market and the caller with their own 409 and 403.
-    `service/market_service.py::reject_outcome` settles both before it calls
-    this, so a proposer sending "x" is told they may not decide rather than
-    that their reason is too short.
+    Checks only the reason. State and identity are `reject_outcome`'s 409 and
+    403, and are checked first. ADR 0016.
     """
     return _reason_problems(
         request.reason,
@@ -466,14 +362,9 @@ def problems_blocking_rejection(
 def _reason_problems(
     raw: str, *, minimum: int, record_of: str
 ) -> list[ValidationProblem]:
-    """The one check behind both reason rules above.
+    """The check behind both reason rules: trimmed, not blank, at least `minimum`.
 
-    Shared because the two rules are the same check today — trimmed, not blank,
-    at least a floor — and a second copy would be a second place for "blank"
-    to start meaning something different. The floor is an argument rather than
-    a constant here, so the two rules still move independently. Addressed to
-    `reason` because that is the field on both requests; a third caller whose
-    field is named otherwise is a sign this has stopped being the same rule.
+    The floor is an argument so the two rules still move independently.
     """
     reason = raw.strip()
 

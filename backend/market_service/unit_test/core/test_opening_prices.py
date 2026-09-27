@@ -1,10 +1,4 @@
-"""The q = 0 pricing arithmetic. [1.2] #2.
-
-Pure functions, so these are plain assertions about numbers. The boundary this
-file also defends: `core/opening_prices.py` must stay the degenerate case and
-must not
-grow into a second copy of the engine that ADR 0005 puts on the trading side.
-"""
+"""The q = 0 pricing arithmetic, and the guard that it never grows an engine. [1.2] #2."""
 
 from __future__ import annotations
 
@@ -33,11 +27,7 @@ def test_the_worst_case_is_b_times_the_log_of_the_outcome_count(
 
 
 def test_a_binary_market_at_b_of_one_hundred_loses_at_most_about_seventy() -> None:
-    """Pinned to a concrete number, because this is the one an admin reads.
-
-    If a refactor changes it, the form starts advertising a different worst
-    case and the test should say so rather than tracking the code.
-    """
+    """Pinned to a concrete number, because this is the one an admin reads."""
     assert opening_prices.max_platform_loss(Decimal("100"), 2) == pytest.approx(69.31471805599453)
 
 
@@ -58,12 +48,7 @@ def test_every_outcome_opens_at_one_over_n(count: int) -> None:
 
 @pytest.mark.parametrize("count", [2, 3, 7])
 def test_the_opening_prices_sum_to_one(count: int) -> None:
-    """Prices are probabilities, so they have to add up.
-
-    This is why `uniform_initial_price` does not round: three outcomes at
-    0.3333 sum to 0.9999 and read as a bug in the maths rather than a display
-    choice. Rounding is the browser's job.
-    """
+    """Prices are probabilities, so they must add up; hence no rounding."""
     price = opening_prices.uniform_initial_price(count)
 
     assert price is not None
@@ -73,24 +58,16 @@ def test_the_opening_prices_sum_to_one(count: int) -> None:
 # --- too small to price ---------------------------------------------------
 @pytest.mark.parametrize("count", [0, 1])
 def test_neither_number_exists_below_two_outcomes(count: int) -> None:
-    """The ordinary state of a form the admin just opened.
-
-    One outcome is arithmetically fine — ln(1) is 0 and 1/1 is 1 — and says
-    that the platform cannot lose and the result is certain. Both are useless,
-    so they are reported as absent.
-    """
+    """The ordinary state of a new form. ln(1) = 0 and 1/1 = 1 are true and useless."""
     assert opening_prices.max_platform_loss(Decimal("100"), count) is None
     assert opening_prices.uniform_initial_price(count) is None
 
 
 # --- boundary -------------------------------------------------------------
 def test_this_module_does_not_grow_a_cost_function() -> None:
-    """ADR 0005: the engine lives with `q`, on the trading side, not here.
+    """Guard: the engine lives with `q` on the ledger, not here. ADR 0005.
 
-    This service never learns the share quantity vector, so anything here that
-    accepted one would be a second implementation of a formula that has to
-    agree with the real one to the last floating-point step. Two definitions of
-    a price mean a trader quoted one number and charged another.
+    A second copy would quote a trader one price and charge another.
     """
     defined_here = {
         name

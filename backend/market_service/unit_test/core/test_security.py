@@ -20,21 +20,14 @@ from unit_test.conftest import mint_token
 
 
 def test_there_is_no_way_to_mint_a_token_from_this_service() -> None:
-    """Architectural guard, not a cryptographic one.
-
-    Under HS256 this service holds a secret that would let it sign. The
-    restriction is that it has no code to do so, and this test is what keeps a
-    convenience helper from quietly appearing. ADR 0002 records the real fix.
-    """
+    """Architectural guard, not a cryptographic one: under HS256 this service
+    could sign, and must have no code that does. ADR 0002."""
     exported = dir(security)
 
     assert not [name for name in exported if "create" in name or "encode" in name]
 
-    # `core.security` is a five-line wrapper since [F-6] #76, so the check above
-    # now inspects almost nothing: the verifier itself lives in
-    # `backend/shared/security.py`, and a `create_access_token` added there
-    # would reach this service without changing anything `dir()` can see. Scan
-    # both trees for the encode call itself.
+    # The verifier lives in `shared/`, where `dir()` above cannot see a new
+    # encoder, so scan both trees for the call itself.
     service_root = pathlib.Path(__file__).resolve().parents[2]
     shared_root = service_root.parent / "shared"
 

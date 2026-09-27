@@ -1,8 +1,6 @@
-"""The rules that decide whether a market may leave DRAFT. No database, no HTTP.
+"""The rules that decide whether a market, a close or a rejection may go ahead.
 
-These are the acceptance criteria of [1.1] #1 stated once, in the layer that
-owns them, so [1.3] #3 and [1.4] #4 can reuse the same function rather than
-re-deriving it against a route.
+[1.1] #1, [2.3] #7, [3.2] #10. No database, no HTTP.
 """
 
 from __future__ import annotations
@@ -150,10 +148,7 @@ def test_equal_times_are_refused() -> None:
 
 
 def test_naive_timestamps_do_not_crash_the_comparison() -> None:
-    """Defence in depth. The request schema rejects naive datetimes, so this
-    should be unreachable, but comparing a naive datetime to an aware one
-    raises TypeError, and a 500 on the submit button is a far worse failure
-    than an assumption written down."""
+    """Unreachable through the API, but a TypeError here would be a 500 on submit."""
     market = _market(
         close_time=datetime(2027, 1, 1, 0, 0, 0),
         resolution_time=datetime(2027, 2, 1, 0, 0, 0),
@@ -163,8 +158,7 @@ def test_naive_timestamps_do_not_crash_the_comparison() -> None:
 
 
 def test_a_naive_timestamp_is_read_as_utc_not_as_local_time() -> None:
-    """Pins down which assumption _as_utc makes, so a future reader does not
-    have to guess and does not quietly change it."""
+    """Pins which assumption `as_utc` makes, so nobody changes it quietly."""
     market = _market(
         close_time=datetime(2026, 9, 13, 11, 59, 0),   # one minute before NOW, in UTC
         resolution_time=datetime(2027, 1, 1, 0, 0, 0),
@@ -231,25 +225,14 @@ def test_the_seed_subsidy_is_required() -> None:
 
 @pytest.mark.parametrize("b", [Decimal("0"), Decimal("-1")])
 def test_a_non_positive_liquidity_is_a_problem(b: Decimal) -> None:
-    """Unreachable through the API, where the request schema refuses it first.
-
-    Asserted anyway because this function is the single definition of "ready"
-    that [1.3] #3 and [1.4] #4 also call, and it is handed an entity rather
-    than a request.
-    """
+    """Unreachable through the API, but this checks an entity, not a request."""
     assert "liquidity_b" in _fields(_market(liquidity_b=b))
 
 
 def test_a_subsidy_below_the_worst_case_does_not_block_submission() -> None:
-    """The deliberate omission, and the reason it is a test rather than a gap.
+    """The deliberate omission: underfunding is an informed choice, not a problem.
 
-    b = 100 across two outcomes can lose about 69.31, and this market seeds 1.
-    The admin is told the number on every save — MarketOut.max_platform_loss —
-    so underfunding is an informed choice rather than an accident, and these
-    are mock credits. [2.2] #6 flags the related but different quantity,
-    realised exposure once traders hold shares, where it can be acted on.
-
-    If this ever should block, the rule belongs in _liquidity_problems and this
+    If it should ever block, the rule goes in `_liquidity_problems` and this
     test inverts.
     """
     underfunded = _market(liquidity_b=Decimal("100"), seed_subsidy=Decimal("1"))
@@ -258,9 +241,7 @@ def test_a_subsidy_below_the_worst_case_does_not_block_submission() -> None:
 
 
 # --- the reason for an early close [2.3] #7 -------------------------------
-# A pure rule over one string: no market, no clock and no database, which is
-# why the boundaries live here rather than in test_closing_early.py. That suite
-# asserts the gate calls this at all.
+# The boundaries of the pure rule; test_closing_early.py asserts the gate calls it.
 def _close(reason: str) -> list:
     from unit_test.conftest import close_request  # noqa: PLC0415
 
@@ -273,14 +254,12 @@ def test_a_full_reason_has_no_problems() -> None:
 
 @pytest.mark.parametrize("reason", ["", "   ", "\n\t "])
 def test_a_blank_reason_is_refused(reason: str) -> None:
-    """Whitespace is not an explanation, and `reason` is required precisely
-    because the audit entry is the only place the explanation will exist."""
+    """Whitespace is not an explanation, and the log is its only copy."""
     assert [p.field for p in _close(reason)] == ["reason"]
 
 
 def test_a_too_short_reason_is_refused() -> None:
-    """The same argument MIN_EVIDENCE_NOTE_LENGTH makes: "broken" satisfies
-    "a reason was given" and documents nothing."""
+    """"broken" satisfies "a reason was given" and documents nothing."""
     assert [p.field for p in _close("broken")] == ["reason"]
 
 
@@ -290,21 +269,17 @@ def test_the_floor_is_counted_after_stripping() -> None:
 
 
 def test_the_boundary_is_not_strict() -> None:
-    """Exactly at the floor is enough. A rule stated as "at least ten" that
-    refused ten would say so in a message nobody could act on."""
+    """Exactly at the floor is enough: the message says "at least"."""
     assert _close("x" * MIN_CLOSE_REASON_LENGTH) == []
 
 
 def test_only_one_problem_is_ever_reported() -> None:
-    """There is one field, so a blank reason is blank rather than also short.
-    Two problems on one input would paint the same message twice."""
+    """One field, so a blank reason is blank rather than also short."""
     assert len(_close("")) == 1
 
 
 # --- the reason for a rejection [3.2] #10 ---------------------------------
-# The same pure rule over one string, with its own floor. It agrees with the
-# early close's on a number today and is a different rule: neither should move
-# because the other did. test_approving.py asserts the gate calls this at all.
+# The same rule with its own floor; test_approving.py asserts the gate calls it.
 def _rejection(reason: str) -> list:
     from unit_test.conftest import rejection_request  # noqa: PLC0415
 
@@ -317,14 +292,12 @@ def test_a_full_rejection_reason_has_no_problems() -> None:
 
 @pytest.mark.parametrize("reason", ["", "   ", "\n\t "])
 def test_a_blank_rejection_reason_is_refused(reason: str) -> None:
-    """The audit entry is the only place the explanation will exist, and the
-    proposal it explains is cleared from the market in the same transaction."""
+    """The log is the explanation's only copy."""
     assert [p.field for p in _rejection(reason)] == ["reason"]
 
 
 def test_a_too_short_rejection_reason_is_refused() -> None:
-    """"wrong" satisfies "a reason was given" and tells the proposer nothing
-    about what to propose instead."""
+    """"wrong" tells the proposer nothing about what to propose instead."""
     assert [p.field for p in _rejection("wrong")] == ["reason"]
 
 

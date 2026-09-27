@@ -52,11 +52,9 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """One session and one transaction per request.
+    """One session and one transaction per request; rolls back if the request raises.
 
-    Committing is the service layer's job. This only guarantees that a request
-    which raises leaves nothing half-written, which is what keeps a rejected
-    submission from persisting the edits that came with it.
+    Committing is the service layer's job.
     """
     async with get_session_factory()() as session:
         try:
@@ -67,16 +65,10 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def create_all() -> None:
-    """Development and test convenience.
+    """Create this service's tables if missing. Never alters one; [F-5] #75 is Alembic.
 
-    Callers must have imported the entity module first so the mappers are
-    registered on `Base`. `main.py` does that; core must not reach up into
-    `model` to do it itself.
-
-    Two services now share one database, so this is on borrowed time: each one
-    only ever touches its own schema, which keeps them from racing today, but
-    the moment a column changes on a table holding data worth keeping, this has
-    to become Alembic. Same note as the auth service's README.
+    Callers must import the entity module first so the mappers are registered
+    on `Base`; `core` must not reach up into `model` to do it.
     """
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -1,16 +1,8 @@
 """Access-token verification, bound to this service's settings. [F-6] #76
 
-The rule itself is in `shared/security.py`, which four services held identical
-copies of before #76. What stays here is the binding: the shared verifier takes
-its secret, algorithm and issuer as arguments so that nothing in `shared/`
-imports a service's `core.config`, and this is where this service supplies its
-own.
-
-There is still no minting path reachable from this service, which is the
-property `unit_test/core/test_security.py` asserts. Under HS256 the secret used
-to verify would also sign, so the restriction is architectural rather than
-cryptographic — ADR 0002 records that, and the fix is RS256 with a published
-public key.
+The rule is `shared/security.py`; this supplies the secret, algorithm and
+issuer. This service has no minting path, which `unit_test/core/test_security.py`
+asserts. ADR 0002, ADR 0012.
 """
 
 from __future__ import annotations

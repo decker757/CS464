@@ -1,8 +1,4 @@
-"""Composition root for the market service.
-
-Wires configuration, the database and the routes together. This is the only
-place that decides which concrete implementations run.
-"""
+"""Composition root: wires configuration, the database, the routes and the sweeper."""
 
 from __future__ import annotations
 
@@ -31,19 +27,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Safe while this service owns the market schema alone. Move to Alembic
-    # before the first column change against data worth keeping.
+    # Creates missing tables only; a new column needs a hand-applied migration.
     await create_all()
 
-    # [F-4] #44. The only background work this service does. It is started here
-    # rather than anywhere nearer the sweep because this is the composition
-    # root: `service/sweeper.py` is handed a session factory and an interval
-    # and decides nothing about where either came from, which is what lets a
-    # test drive it against its own factory without a running application.
-    #
-    # Not load-bearing. The task failing to start, or being switched off, makes
-    # the status column stale; it cannot make a closed market tradeable. See
-    # `service/closing.py`.
+    # [F-4] #44. Started here, the composition root, so the sweeper is handed
+    # its session factory and a test can drive it without the app. Switching
+    # it off makes statuses stale, never a closed market tradeable. ADR 0011.
     settings = get_settings()
     sweeper: asyncio.Task[None] | None = None
     if settings.close_sweep_enabled:
@@ -64,9 +53,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # Cancelled and awaited before the engine goes, in that order. Disposing
-        # first would pull the pool out from under a sweep still in flight and
-        # turn an ordinary shutdown into a stack trace.
+        # Stop the sweeper before disposing the engine, or a sweep in flight
+        # loses its pool and shutdown ends in a stack trace.
         if sweeper is not None:
             sweeper.cancel()
             with suppress(asyncio.CancelledError):

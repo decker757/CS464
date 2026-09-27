@@ -20,8 +20,7 @@ from model.entities import Market, MarketStatus
 from model.schemas import MarketDraftRequest
 from service import market_service
 
-# The suite's one actor factory and one market builder. Aliased because every
-# helper below already takes an `actor` argument, which would shadow the name.
+# Aliased so the names do not shadow an `actor` argument.
 from unit_test.conftest import actor as _actor
 from unit_test.conftest import draft_request as _request
 
@@ -40,11 +39,7 @@ async def test_the_first_save_creates_one_market(session: AsyncSession) -> None:
 
 
 async def test_repeated_autosaves_update_one_market(session: AsyncSession) -> None:
-    """The whole reason draft_key exists.
-
-    A three-second idle timer on an open form fires dozens of times. Without
-    the key this would be dozens of abandoned drafts.
-    """
+    """The whole reason draft_key exists. ADR 0004."""
     creator = _actor()
     key = uuid.uuid4()
 
@@ -85,8 +80,7 @@ async def test_a_draft_may_be_almost_empty(session: AsyncSession) -> None:
 
 
 async def test_a_draft_reports_what_would_block_submission(session: AsyncSession) -> None:
-    """So the form can show the admin how far off they are, with no extra call
-    and without duplicating the rules in the browser."""
+    """So the form need not restate the rules in the browser."""
     _, problems, _ = await market_service.save(
         session, _actor(), _request(close_time=None, resolution_sources=[])
     )
@@ -131,12 +125,7 @@ async def test_outcomes_are_replaced_wholesale_and_keep_their_order(
 async def test_two_blank_outcomes_do_not_break_the_autosave(
     session: AsyncSession,
 ) -> None:
-    """Why there is no unique index on lower(label).
-
-    A half-typed form routinely holds two empty rows. A database constraint
-    here would make autosave start failing exactly when the admin is
-    mid-thought; label uniqueness is a submission rule instead.
-    """
+    """Why there is no unique index on lower(label). ADR 0004."""
     market, _, _ = await market_service.save(
         session, _actor(), _request(outcomes=[{"label": ""}, {"label": ""}])
     )
@@ -170,9 +159,7 @@ async def test_an_incomplete_market_is_refused_with_every_reason(
 
 
 async def test_a_refused_submission_writes_nothing(session: AsyncSession) -> None:
-    """All-or-nothing. A 422 that had also written half the change would be a
-    worse contract than one that is simply atomic; the next autosave three
-    seconds later is what keeps the edits from being lost."""
+    """All-or-nothing; the next autosave keeps the edits. ADR 0004."""
     with pytest.raises(DraftIncomplete):
         await market_service.save(
             session, _actor(), _request(status="submitted", close_time=None)
@@ -261,15 +248,10 @@ async def test_submission_is_judged_against_the_clock_it_is_given(
 async def test_losing_an_insert_race_still_saves(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two autosaves for one form in flight at once, when the first is slow.
+    """Two first autosaves race; the loser retries onto the winner's row, not a 500.
 
-    Both look for an existing row and both see none, so the second insert
-    violates the unique constraint. The loser retries against the row the
-    winner created rather than 500ing on a request that is entirely valid.
-
-    The race is forced rather than raced: the lookup is blinded exactly once,
-    which puts this pass in the loser's position deterministically instead of
-    depending on scheduling.
+    Forced rather than raced: the lookup is blinded once, which puts this pass
+    in the loser's position deterministically.
     """
     creator, key = _actor(), uuid.uuid4()
     await market_service.save(session, creator, _request(draft_key=key, question="Winner"))
@@ -304,8 +286,7 @@ async def test_a_creator_can_read_their_own_market(session: AsyncSession) -> Non
 
 
 async def test_another_administrator_cannot_read_it(session: AsyncSession) -> None:
-    """[1.1] #1: a draft is visible to its creator and to nobody else,
-    including other administrators."""
+    """[1.1] #1: a draft is visible to its creator only, not other admins."""
     market, _, _ = await market_service.save(session, _actor(), _request())
 
     with pytest.raises(MarketNotFound):
@@ -349,8 +330,7 @@ async def test_the_list_is_empty_for_an_administrator_with_no_markets(
 async def test_an_omitted_liquidity_takes_the_configured_default(
     session: AsyncSession,
 ) -> None:
-    """"b defaults to a configured value", so a market is priceable from the
-    first save and the form can show a worst case immediately."""
+    """[1.2] #2: "b defaults to a configured value", so a draft is priceable at once."""
     market, _, _ = await market_service.save(session, _actor(), _request())
 
     assert market.liquidity_b == get_settings().default_liquidity_b
@@ -369,11 +349,7 @@ async def test_an_explicit_liquidity_overrides_the_default(
 async def test_the_liquidity_can_be_changed_by_a_later_autosave(
     session: AsyncSession,
 ) -> None:
-    """The admin raises b, sees the larger worst case, and puts it back.
-
-    Last-write-wins on the whole document, the same as every other term, so
-    reverting has to work as well as setting.
-    """
+    """The admin raises b, sees the larger worst case, and puts it back."""
     creator, key = _actor(), uuid.uuid4()
 
     await market_service.save(
@@ -389,8 +365,7 @@ async def test_the_liquidity_can_be_changed_by_a_later_autosave(
 async def test_an_omitted_subsidy_stays_null_rather_than_taking_a_default(
     session: AsyncSession,
 ) -> None:
-    """There is no sensible platform-wide answer to how much this particular
-    market is worth underwriting, so absence is left for the admin to fill."""
+    """No platform-wide subsidy fits every market, so the admin must fill it."""
     market, problems, _ = await market_service.save(
         session, _actor(), _request(seed_subsidy=None)
     )
@@ -402,12 +377,7 @@ async def test_an_omitted_subsidy_stays_null_rather_than_taking_a_default(
 async def test_a_market_seeded_below_its_worst_case_still_submits(
     session: AsyncSession,
 ) -> None:
-    """b = 100 over two outcomes risks about 69.31; this seeds 1.
-
-    Deliberate, and recorded in service/validation._liquidity_problems: the
-    worst case is reported on every save, so underfunding is a choice the admin
-    makes with the number in front of them.
-    """
+    """b = 100 over two outcomes risks about 69.31; this seeds 1, deliberately."""
     market, problems, _ = await market_service.save(
         session,
         _actor(),

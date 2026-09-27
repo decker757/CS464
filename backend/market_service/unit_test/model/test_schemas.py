@@ -1,11 +1,7 @@
 """Request and response contracts. Pure validation, no database.
 
-These are the rules Michelle's form sees as 422s, so they are worth asserting
-directly rather than only through a route.
-
-The line this file defends: shape is validated here, completeness is not. A
-draft that breaks every business rule must still parse, or the autosave cannot
-save a half-typed form.
+Shape is validated here and completeness is not: a draft that breaks every
+business rule must still parse, or the autosave cannot save a half-typed form.
 """
 
 from __future__ import annotations
@@ -48,11 +44,8 @@ def test_an_almost_empty_draft_parses() -> None:
 
 
 def test_a_draft_may_break_every_business_rule_and_still_parse() -> None:
-    """Close after resolution, both in the past, one blank outcome.
-
-    All of these are submission failures and none of them is a parse failure,
-    because the admin is mid-thought and the timer fired.
-    """
+    """Close after resolution, both in the past, one blank outcome: all submission
+    failures, none a parse failure."""
     parsed = MarketDraftRequest(
         **_payload(
             question="?",
@@ -80,12 +73,7 @@ def test_a_non_uuid_draft_key_is_refused() -> None:
 
 @pytest.mark.parametrize("field", ["close_time", "resolution_time"])
 def test_a_timestamp_without_an_offset_is_refused(field: str) -> None:
-    """The most expensive small bug available here.
-
-    Assuming UTC for a naive timestamp puts a Singapore admin's close time
-    eight hours out, and a market that closes at the wrong hour settles on the
-    wrong facts. Better a 422 the frontend can fix than a silent guess.
-    """
+    """A guessed UTC would put a Singapore admin's close time eight hours out. ADR 0004."""
     with pytest.raises(ValidationError):
         MarketDraftRequest(**_payload(**{field: "2027-01-01T00:00:00"}))
 
@@ -121,8 +109,7 @@ def test_both_statuses_are_accepted_on_the_way_in(status: str) -> None:
     ["open", "closed", "pending_resolution", "approved", "resolved", "published"],
 )
 def test_a_status_this_ticket_does_not_own_is_refused(status: str) -> None:
-    """OPEN arrives with [1.3] #3 and the rest with epic 3. Accepting one now
-    would let a market skip the publish step entirely."""
+    """Accepting any of these would let a save skip the publish step. ADR 0008."""
     with pytest.raises(ValidationError):
         MarketDraftRequest(**_payload(status=status))
 
@@ -166,8 +153,7 @@ class _FakeMarket:
         self.submitted_at = None
         self.published_at = None
         self.closed_at = None
-        # [3.1] #9. Null together, which is every market that has not had an
-        # outcome proposed for it — the state this stand-in is in.
+        # No proposal and no approval yet.
         self.proposal_id = None
         self.proposed_outcome_id = None
         self.proposed_by_id = None
@@ -175,19 +161,13 @@ class _FakeMarket:
         self.proposed_at = None
         self.proposal_evidence_url = None
         self.proposal_evidence_note = None
-        # [3.2] #10. Null together unless a second administrator has approved
-        # the proposal, which this stand-in has not got.
         self.approved_by_id = None
         self.approved_by_username = None
         self.approved_at = None
 
 
 def test_naive_timestamps_are_stamped_as_utc_on_the_way_out() -> None:
-    """Guards the contract that every timestamp we emit ends in Z.
-
-    Without it one market serialises with an offset and another without, and
-    the frontend has to special-case which.
-    """
+    """Guards the contract that every timestamp we emit carries an offset."""
     out = MarketOut.model_validate(_FakeMarket())
 
     assert out.close_time is not None and out.close_time.tzinfo is not None
@@ -207,12 +187,7 @@ def test_an_aware_timestamp_is_left_alone() -> None:
 # --- [1.2] #2 pricing -----------------------------------------------------
 @pytest.mark.parametrize("bad", [0, -1, "-0.5"])
 def test_a_non_positive_liquidity_is_refused(bad: object) -> None:
-    """Shape, not completeness, so it is a 422 even on an autosave.
-
-    Absence is fine at any point — the admin has not got there yet — but a
-    market priced at b = 0 has no liquidity, and a negative b is not a
-    half-finished thought. Neither is a state the form should ever hold.
-    """
+    """Shape, not completeness, so a 422 even on an autosave; absence is still fine."""
     with pytest.raises(ValidationError):
         MarketDraftRequest(**_payload(liquidity_b=bad))
 
@@ -241,8 +216,7 @@ def test_doubling_the_liquidity_doubles_the_worst_case() -> None:
 
 @pytest.mark.parametrize("count", [2, 3, 10])
 def test_every_outcome_opens_at_the_same_price(count: int) -> None:
-    """[1.2] #2's third criterion. Before anyone trades no outcome is more
-    likely than another, so the prices are uniform and sum to one."""
+    """[1.2] #2's third criterion: uniform prices that sum to one."""
     out = MarketOut.model_validate(_FakeMarket(outcomes=count))
 
     prices = [o.initial_price for o in out.outcomes]
@@ -253,12 +227,7 @@ def test_every_outcome_opens_at_the_same_price(count: int) -> None:
 
 @pytest.mark.parametrize("count", [0, 1])
 def test_a_market_too_small_to_price_reports_no_prices(count: int) -> None:
-    """The ordinary state of a form someone just opened.
-
-    One outcome would advertise a certainty at 100% and a platform that cannot
-    lose. Both are arithmetically true and useless, so they are reported as
-    absent rather than shown.
-    """
+    """The ordinary state of a form someone just opened."""
     out = MarketOut.model_validate(_FakeMarket(outcomes=count))
 
     assert out.max_platform_loss is None
@@ -273,13 +242,8 @@ def test_max_platform_loss_is_absent_until_b_is_known() -> None:
 
 
 def test_the_pricing_numbers_serialise_as_numbers_not_strings() -> None:
-    """The form is meant to compare `seed_subsidy` against `max_platform_loss`.
-
-    Pydantic renders a Decimal as a JSON string, which would put "250" beside
-    69.31 and make `subsidy + x` string concatenation in a browser. It would
-    also vary: "100" straight from a save, "100.0000" once the same row came
-    back from a Numeric(18, 4) column. Exactness stays in the database.
-    """
+    """Guard: the form compares `seed_subsidy` with `max_platform_loss`, and a
+    Decimal would reach the browser as a string. D-021."""
     payload = json.loads(
         MarketOut.model_validate(_FakeMarket(outcomes=2)).model_dump_json()
     )
@@ -293,16 +257,14 @@ def test_the_pricing_numbers_serialise_as_numbers_not_strings() -> None:
 # --- pricing bounds, mirroring Numeric(18, 4) -----------------------------
 @pytest.mark.parametrize("field", ["liquidity_b", "seed_subsidy"])
 def test_a_value_too_large_for_the_column_is_refused(field: str) -> None:
-    """Otherwise Postgres raises `numeric field overflow` and the driver error
-    escapes as a 500 on a number the admin typed into a form."""
+    """Otherwise Postgres overflows and the admin gets a 500."""
     with pytest.raises(ValidationError):
         MarketDraftRequest(**_payload(**{field: MAX_PRICING_VALUE + 1}))
 
 
 @pytest.mark.parametrize("field", ["liquidity_b", "seed_subsidy"])
 def test_the_largest_storable_value_is_accepted(field: str) -> None:
-    """The bound is the column's, not an opinion about a sensible liquidity, so
-    the value one step inside it has to pass."""
+    """The bound is the column's, so the largest value it holds must pass."""
     parsed = MarketDraftRequest(**_payload(**{field: MAX_PRICING_VALUE}))
 
     assert getattr(parsed, field) == MAX_PRICING_VALUE
@@ -310,13 +272,7 @@ def test_the_largest_storable_value_is_accepted(field: str) -> None:
 
 @pytest.mark.parametrize("field", ["liquidity_b", "seed_subsidy"])
 def test_a_fifth_decimal_place_is_refused_rather_than_rounded(field: str) -> None:
-    """`0.00001` passes `gt=0`, and Numeric(18, 4) then rounds it to `0.0000`.
-
-    The market reloads violating the `b > 0` rule its own validator enforces,
-    while the save response reports the value as sent, because that is the
-    in-memory object rather than the column. Refusing beats storing a number
-    the admin did not ask for and then reporting a different one.
-    """
+    """`0.00001` passes `gt=0` and would be stored as `0.0000`, breaking `b > 0`."""
     with pytest.raises(ValidationError):
         MarketDraftRequest(**_payload(**{field: "0.00001"}))
 
@@ -330,12 +286,7 @@ def test_four_decimal_places_are_kept(field: str) -> None:
 
 # --- blank rows are not outcomes ------------------------------------------
 def test_an_unnamed_row_is_not_counted_or_priced() -> None:
-    """The normal state of a form mid-edit, and it must not move the numbers.
-
-    Counting the blanks would advertise b*ln(4) and 0.25 apiece for a market
-    that `service/validation.py` will accept as b*ln(2) and 0.5, so the admin
-    would be shown a worst case they are not going to get.
-    """
+    """Blank rows mid-edit must not move the numbers the admin is shown."""
     out = MarketOut.model_validate(_FakeMarket(labels=["Yes", "No", "", "   "]))
 
     assert out.max_platform_loss == pytest.approx(69.31471805599453)
@@ -362,11 +313,8 @@ def test_one_named_outcome_beside_a_blank_is_still_too_few() -> None:
 
 
 # --- [3.1] #9 the proposal request ----------------------------------------
-# The line this file defends, from the other side. `MarketDraftRequest` above
-# accepts an almost-empty body because an autosave writes it; this one has no
-# autosave behind it, so a missing winner is a 422 here rather than a rule
-# somewhere else. What is still NOT here is completeness — "a URL or a note" is
-# service/validation.py's, so that one refusal carries one envelope.
+# No autosave behind it, so a missing winner is a 422 here; "a URL or a note"
+# is still service/validation.py's. ADR 0013.
 def test_a_proposal_needs_a_winner() -> None:
     with pytest.raises(ValidationError):
         OutcomeProposalRequest(evidence_note="MAS published 1.8% for December.")
@@ -378,9 +326,7 @@ def test_a_winner_that_is_not_a_uuid_is_refused() -> None:
 
 
 def test_a_proposal_with_no_evidence_still_parses() -> None:
-    """Shape, not completeness. Refusing it here would return FastAPI's 422
-    envelope for one of the propose form's rules and this service's for the
-    rest, leaving Michelle to render two error shapes for one button."""
+    """Shape, not completeness, so the form gets one error envelope. ADR 0013."""
     parsed = OutcomeProposalRequest(winning_outcome_id=uuid.uuid4())
 
     assert parsed.evidence_url is None
@@ -397,8 +343,7 @@ def test_an_over_long_note_is_refused() -> None:
 
 
 def test_an_over_long_url_is_refused() -> None:
-    """Mirrors the column, which is varchar(2048) — the practical ceiling
-    browsers and proxies agree on."""
+    """Mirrors the varchar(2048) column."""
     with pytest.raises(ValidationError):
         OutcomeProposalRequest(
             winning_outcome_id=uuid.uuid4(),
@@ -407,10 +352,8 @@ def test_an_over_long_url_is_refused() -> None:
 
 
 # --- [3.2] #10 the rejection request --------------------------------------
-# The early close's shape again: the key is required, because a rejection with
-# no reason at all is a malformed request rather than a half-typed one, but a
-# blank reason still parses, so the one refusal a rejecter can fix by typing
-# comes back in this service's envelope from service/validation.py.
+# The key is required; a blank reason still parses, and is refused in this
+# service's envelope by service/validation.py. ADR 0016.
 def test_a_rejection_needs_a_reason() -> None:
     with pytest.raises(ValidationError):
         OutcomeRejectionRequest(proposal_id=uuid.uuid4())  # type: ignore[call-arg]
@@ -429,17 +372,15 @@ def test_an_over_long_rejection_reason_is_refused() -> None:
         )
 
 
-# [3.2] #10. Both decisions name the proposal they were made about, and neither
-# may leave it out: an optional precondition is one a client forgets, and the
-# request it lets through is the stale one it exists to refuse. ADR 0016.
+# [3.2] #10. Both decisions must name the proposal: an optional precondition
+# is one a client forgets. ADR 0016.
 def test_a_rejection_needs_a_proposal_id() -> None:
     with pytest.raises(ValidationError):
         OutcomeRejectionRequest(reason="A reason long enough to pass.")  # type: ignore[call-arg]
 
 
 def test_a_null_proposal_id_is_a_value_not_an_absence() -> None:
-    """Required and nullable. The key must be sent; null is what a reviewer
-    quotes for a proposal made before proposal ids existed, which has none."""
+    """Required and nullable: null is quoted for a proposal made before ids existed."""
     assert OutcomeApprovalRequest(proposal_id=None).proposal_id is None
     assert (
         OutcomeRejectionRequest(proposal_id=None, reason="A reason long enough.")
@@ -459,9 +400,7 @@ def test_a_proposal_id_that_is_not_a_uuid_is_refused() -> None:
 
 
 def test_an_approval_carries_nothing_but_which_proposal() -> None:
-    """No winner, no evidence and no note: an approver agrees with what is on
-    the row, and a field that could change it is a field that could approve
-    something other than what was reviewed."""
+    """Guard: any other field could approve something other than what was reviewed."""
     assert set(OutcomeApprovalRequest.model_fields) == {"proposal_id"}
 
 
@@ -473,8 +412,7 @@ def test_the_proposal_id_is_null_on_the_way_out_until_a_proposal() -> None:
 
 
 def test_the_approval_fields_are_null_on_the_way_out() -> None:
-    """Present on every market and null until an approval, so the frontend
-    reads one shape whatever state the market is in."""
+    """Present and null until an approval, so the frontend reads one shape."""
     payload = json.loads(MarketOut.model_validate(_FakeMarket()).model_dump_json())
 
     assert payload["approved_by_id"] is None

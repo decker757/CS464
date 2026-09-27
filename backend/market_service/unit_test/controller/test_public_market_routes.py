@@ -1,22 +1,8 @@
 """Status codes, the error envelope and the response shape. [BE][X] #62.
 
-The trader-facing counterpart to `test_market_routes.py`. Business rules are
-asserted in `unit_test/service/test_browsing.py` and pure shape in
-`unit_test/model/test_public_schemas.py`; what belongs here is everything a
-caller parses — the codes, the envelope, the query parameters, and the fields
-surviving a round trip through Postgres.
-
-That last one is not a duplicate of the model suite. `Numeric(18, 4)` hands
-back `Decimal("100.0000")` where a hand-built stand-in has `Decimal("100")`,
-and the whole point of the decimal-string rule is that the value the ledger
-reads is the value the column holds. The model test proves the schema is
-right; this proves the stack is.
-
-**There are two callers of these routes**, which is unusual for this
-repository and shapes several tests below. Michelle's browse and detail pages
-are one. The ledger is the other: ADR 0005 says `b` and the subsidy cross to
-the trading side once, as an immutable snapshot, and this endpoint is where
-they cross. A field that is merely nice for a page is load-bearing for a price.
+Everything a caller parses, through the real stack including Postgres. Two
+callers read these routes: the browse and detail pages, and the ledger, which
+prices from `b` and the subsidy here (D-008, D-016).
 """
 
 from __future__ import annotations
@@ -47,26 +33,14 @@ def _detail(market_id: object) -> str:
 
 
 async def _published(session: AsyncSession, **overrides: object):
-    """A market a trader can see, with `liquidity_b` pinned.
-
-    `market_terms` deliberately omits `liquidity_b` so that every other suite
-    exercises the configured default. Here the value is the subject, so it is
-    stated rather than inherited from `core/config.py`, where an operator
-    changing a default would otherwise turn these assertions red.
-    """
+    """A market a trader can see, with `liquidity_b` pinned rather than defaulted."""
     return await published_market(
         session, actor(), liquidity_b=Decimal("100"), **overrides
     )
 
 
 async def _stopped_an_hour_ago(session: AsyncSession):
-    """A published market whose close time has passed, sweep not yet run.
-
-    Built the long way round because `publish` re-runs every submission rule
-    against the clock at publish time (ADR 0008), so a market cannot be
-    published already closed. The column is moved afterwards, exactly as
-    `test_browsing.py::_stopped_but_unswept` does it.
-    """
+    """A published market whose close time passed an hour ago, sweep not yet run."""
     market = await _published(session)
     market_id = market.id
     market.close_time = datetime.now(UTC) - timedelta(hours=1)
@@ -79,13 +53,7 @@ async def _stopped_an_hour_ago(session: AsyncSession):
 async def test_a_trader_may_browse(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """[X-1] #34 is a trader story, and every existing `/markets` route answers
-    a trader with `403 not_an_administrator`.
-
-    So this is the first read in the service that a non-administrator is
-    allowed to make, and it is the whole reason #62 is a separate router
-    rather than a widened guard on the existing one.
-    """
+    """[X-1] #34 is a trader story; every `/markets` route refuses a trader. D-018."""
     await _published(session)
 
     response = await client.get(_LIST, headers=trader_headers)
@@ -96,8 +64,7 @@ async def test_a_trader_may_browse(
 async def test_a_trader_may_read_one_market_by_its_id(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """[X-3] #36. The admin detail route answers a stranger `404` by design;
-    this one is the read that does not."""
+    """[X-3] #36: unlike the admin detail route, this one serves a stranger."""
     market = await _published(session)
 
     response = await client.get(_detail(market.id), headers=trader_headers)
@@ -109,10 +76,7 @@ async def test_a_trader_may_read_one_market_by_its_id(
 async def test_an_administrator_may_also_browse(
     client: AsyncClient, session: AsyncSession, admin_headers: dict[str, str]
 ) -> None:
-    """An administrator is a user. Guarding this on the trader role rather than
-    on "any valid token" would give the three people running the platform a
-    worse view of it than everybody else, and would make #62's response
-    untestable from the admin console."""
+    """Guard: any valid token, not the trader role. D-018 and ADR 0011's amendment cite it."""
     await _published(session)
 
     assert (await client.get(_LIST, headers=admin_headers)).status_code == 200
@@ -126,22 +90,8 @@ async def test_the_pricing_numbers_are_decimal_strings_through_the_real_stack(
     trader_headers: dict[str, str],
     field: str,
 ) -> None:
-    """The ledger reads `b` from here before it can price anything.
-
-    A JSON number is an IEEE double by the time any client has parsed it, and
-    `b` is the denominator of `C(q) = b·ln(Σ e^(q_i/b))`. Shipping it as one
-    puts a rounding error under every cost preview ([T-1] #21), every trade
-    ([T-2] #22) and every price on the websocket.
-
-    Asserted through Postgres rather than only on the model because the column
-    is `Numeric(18, 4)`: the driver returns `Decimal("100.0000")` where the
-    request sent `Decimal("100")`, and it is the stored value the ledger has
-    to be able to reconstruct exactly.
-
-    `MarketOut` still sends both as floats for Michelle's create form, and
-    `test_the_administrators_market_out_still_serialises_them_as_floats`
-    holds it there. Two consumers, two schemas.
-    """
+    """The ledger prices from these, so they are exact strings (D-016), checked
+    through Postgres because the stored `Numeric(18, 4)` is what must survive."""
     market = await _published(session)
 
     payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
@@ -156,15 +106,7 @@ async def test_the_pricing_numbers_are_decimal_strings_through_the_real_stack(
 async def test_the_detail_carries_every_outcome_with_its_id_and_position(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The other half of what the ledger needs to open a book.
-
-    `q` is one quantity per outcome, and the `price` frame in
-    `docs/api/realtime-service.md` names each one by `outcome_id` and orders
-    them by `position` — so both have to be snapshotted when the ledger first
-    prices this market, and this is the only place it can read them. Every
-    outcome, not only the two a binary market happens to have: the schema
-    allows up to ten.
-    """
+    """The ledger opens its book from these: every outcome's id and position."""
     market = await _published(session)
 
     payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
@@ -180,14 +122,7 @@ async def test_the_detail_carries_every_outcome_with_its_id_and_position(
 async def test_the_detail_carries_the_question_outcomes_status_and_close_time(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """[X-3] #36: "The page shows the market question, outcomes, current
-    YES/NO prices, status, closing time, and named resolution source."
-
-    Every part of that except the prices, which are not this service's to
-    serve — `q` lives with the ledger (ADR 0005) and the authoritative read is
-    the snapshot endpoint specified in `docs/api/realtime-service.md`, landing
-    with [F-3] #43 and [T-2] #22.
-    """
+    """[X-3] #36's detail page, less the prices, which are the ledger's. ADR 0005."""
     market = await _published(
         session,
         resolution_sources=[{"url": SOURCE_URL, "label": "MAS official statistics"}],
@@ -206,13 +141,7 @@ async def test_the_detail_carries_the_question_outcomes_status_and_close_time(
 async def test_a_market_card_carries_what_the_browse_page_renders(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """[X-1] #34's first criterion, minus the prices, for the list projection.
-
-    Separate from the detail because the list is a narrower shape on purpose —
-    `MarketSummaryOut` already establishes that pattern for the administrator's
-    list — and a card that had to fetch the detail of every row to render a
-    closing time would make the browse page N+1 requests.
-    """
+    """[X-1] #34's card, less the prices, without a detail fetch per row."""
     await _published(session)
 
     payload = (await client.get(_LIST, headers=trader_headers)).json()
@@ -227,12 +156,7 @@ async def test_a_market_card_carries_what_the_browse_page_renders(
 async def test_timestamps_come_back_with_an_offset(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The guard every other response in this service already has.
-
-    [X-1] #34 renders a countdown from `close_time`. A naive timestamp parsed
-    in a Singapore browser is eight hours of countdown, on the field that
-    decides whether trading is still open.
-    """
+    """[X-1] #34 counts down from `close_time`; a naive one is eight hours off."""
     market = await _published(session)
 
     payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
@@ -245,14 +169,7 @@ async def test_timestamps_come_back_with_an_offset(
 async def test_an_unpublished_market_is_404_with_the_service_envelope(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """[1.1] #1: a draft is visible to nobody but its creator.
-
-    The envelope is asserted, not only the status. A route that does not exist
-    is also a 404, so `assert response.status_code == 404` alone is a test that
-    passes before the endpoint is written and proves nothing afterwards.
-    `{"error": {"code": ...}}` is this service's shape; FastAPI's own 404 is
-    `{"detail": "Not Found"}`.
-    """
+    """[1.1] #1. The envelope is asserted, because a missing route is a 404 too."""
     market, _, _ = await market_service.save(session, actor(), draft_request())
 
     response = await client.get(_detail(market.id), headers=trader_headers)
@@ -264,8 +181,7 @@ async def test_an_unpublished_market_is_404_with_the_service_envelope(
 async def test_an_unknown_id_is_404_with_the_service_envelope(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
-    """The same answer as an unpublished market, so the two cannot be told
-    apart from outside — which is what makes the rule above hold."""
+    """The same answer as an unpublished market, so the two look alike."""
     response = await client.get(_detail(uuid.uuid4()), headers=trader_headers)
 
     assert response.status_code == 404
@@ -275,9 +191,7 @@ async def test_an_unknown_id_is_404_with_the_service_envelope(
 async def test_a_malformed_id_is_422_not_500(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
-    """A path parameter typed as `uuid.UUID` is FastAPI's 422 before the
-    service sees it. Without the annotation it reaches the driver and comes
-    back as a 500 on a link somebody mistyped."""
+    """Untyped, a mistyped link would reach the driver and 500."""
     response = await client.get(_detail("not-a-uuid"), headers=trader_headers)
 
     assert response.status_code == 422
@@ -287,23 +201,8 @@ async def test_a_malformed_id_is_422_not_500(
 async def test_a_nul_in_the_search_term_is_422_not_500(
     client: AsyncClient, trader_headers: dict[str, str], q: str
 ) -> None:
-    """Postgres cannot compare a NUL, so the driver raises before any row is read.
-
-    `text` is UTF-8 and 0x00 is not a legal byte in it, so asyncpg answers a
-    bound parameter containing one with `CharacterNotInRepertoireError`. That
-    is a `DBAPIError`, not one of `core/errors.py`'s, so
-    `register_error_handlers` has nothing for it and the request ends as a
-    500 — on a public route any logged-in user can reach, from a query string
-    they can type.
-
-    Neither existing guard catches it. `max_length` is about length, and the
-    `.strip()` in `service/browsing.py` removes whitespace, which NUL is not.
-    So it survives both and reaches the driver, which is why the parameter
-    carries a `pattern` as well.
-
-    Asserted at all three positions because a guard written as a prefix or
-    suffix check would pass one of them and fail the others.
-    """
+    """A NUL reaching asyncpg is an unhandled DBAPIError and a 500. All three
+    positions, so a prefix- or suffix-only guard fails."""
     response = await client.get(_LIST, params={"q": q}, headers=trader_headers)
 
     assert response.status_code == 422, (
@@ -315,14 +214,7 @@ async def test_a_nul_in_the_search_term_is_422_not_500(
 async def test_an_ordinary_search_term_is_not_caught_by_the_nul_guard(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """The other half, and the one that fails if the pattern is over-tightened.
-
-    A guard spelled `^[a-zA-Z0-9 ]*$` would also stop the 500 and would
-    additionally refuse every question mark, per cent sign and accented
-    character a trader might reasonably search for — silently, as a 422 on a
-    search that should have returned rows. The rule is "not a NUL", not "only
-    the characters I thought of".
-    """
+    """Fails if the NUL pattern is over-tightened: the rule is "not a NUL"."""
     wanted = await _published(
         session, question="Will Singapore core inflation be below 2% in December 2026?"
     )
@@ -339,13 +231,7 @@ async def test_an_ordinary_search_term_is_not_caught_by_the_nul_guard(
 async def test_an_unknown_status_filter_is_422_not_500(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
-    """[X-2] #35's filter is a closed set, and typing the parameter is what
-    makes /docs list the values Michelle may send.
-
-    Untyped, `?status=nonsense` is either a silent empty list — which looks
-    like "no markets match" and is indistinguishable from a working filter —
-    or a driver error surfacing as a 500.
-    """
+    """[X-2] #35's filter is a closed set; untyped, this is a silent `[]` or a 500."""
     response = await client.get(
         _LIST, params={"status": "nonsense"}, headers=trader_headers
     )
@@ -357,13 +243,7 @@ async def test_an_unknown_status_filter_is_422_not_500(
 async def test_the_status_filter_is_a_query_parameter(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """[X-2] #35: "Users can filter markets by status."
-
-    The wiring only. That the filter selects the right rows is
-    `test_browsing.py`'s job; what is asserted here is that the parameter
-    exists, is named `status`, and reaches the service — which a route that
-    accepted and ignored it would fail.
-    """
+    """[X-2] #35: the wiring only; the rows are `test_browsing.py`'s job."""
     await _published(session)
     closed = await closed_market(session, actor())
 
@@ -397,13 +277,7 @@ async def test_the_search_term_is_a_query_parameter(
 async def test_an_empty_result_is_200_with_an_empty_list(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """[X-1] #34: "An appropriate empty state is shown when no markets match
-    the selected view."
-
-    A 404 here would have the browse page render an error where it should
-    render "nothing matches", and a frontend cannot tell that 404 from the one
-    the detail route returns for a market that does not exist.
-    """
+    """[X-1] #34's empty state needs a 200, not a 404."""
     await _published(session)
 
     response = await client.get(
@@ -418,16 +292,7 @@ async def test_an_empty_result_is_200_with_an_empty_list(
 async def test_a_market_past_its_close_time_is_reported_closed(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
-    """ADR 0011, end to end: the column still says `open` and the response must
-    not.
-
-    The sweeper is deliberately not run here. This is the state every market
-    passes through for a few seconds, and on a browse page it is the difference
-    between a buy button and a closed badge. The argument for deriving it in
-    the response rather than leaving it to the frontend is in
-    `test_browsing.py`; what this asserts is that the derivation survives the
-    route.
-    """
+    """ADR 0011 end to end: the column says `open`, the response must not."""
     market = await _published(session)
     market.close_time = datetime.now(UTC) - timedelta(seconds=1)
     await session.commit()
@@ -445,13 +310,7 @@ async def test_the_response_does_not_carry_internal_fields(
     trader_headers: dict[str, str],
     field: str,
 ) -> None:
-    """Asserted at the route as well as on the schema, because this is the one
-    that fails if somebody points the public router at `MarketOut`.
-
-    That is a plausible shortcut — `MarketOut` already carries every field
-    these pages need — and it would ship `creator_id` and `draft_key` to every
-    trader without any model test noticing.
-    """
+    """Fails if the public router is pointed at `MarketOut`, a plausible shortcut. D-019."""
     market = await _published(session)
 
     payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
@@ -466,24 +325,10 @@ async def test_the_derived_status_reaches_the_wire_not_just_the_route(
     trader_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D-025 said one clock per request. This asserts it reaches the client.
+    """D-025's one clock must reach the client, surviving FastAPI's re-validation.
 
-    The clock is moved back two hours, so a market that closed one hour ago
-    was still trading at the instant this request claims to be reading. The
-    route therefore builds `open`, and `open` is what the client must be
-    handed.
-
-    What went wrong is not the threading — that part was right. FastAPI
-    re-validates the returned object against `response_model`, and that second
-    pass carries no `context`. `_now_from` returns `None`, and because
-    `_derive_status` is `mode="after"` it mutates the already-correct instance
-    in place, recomputing against the real `datetime.now(UTC)` at
-    serialisation time. The value the route computed is overwritten on its way
-    out.
-
-    So the assertion has to be on `response.json()`. Reading the object the
-    route returned would pass against the bug, which is exactly how it
-    survived a round of review and three docstrings saying it was fixed.
+    With the clock two hours back, the market was still trading, so `open`.
+    Asserted on `response.json()`: the returned object hid the bug. D-027.
     """
     import controller.public_routes as routes  # noqa: PLC0415
 
@@ -507,13 +352,7 @@ async def test_the_browse_list_derived_status_reaches_the_wire_too(
     trader_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The list half of the same bug, and it is worse here.
-
-    `PublicMarketListResponse` wraps the already-validated summaries, and
-    wrapping alone re-runs the validator — no route and no framework needed.
-    So the list payload is recomputed twice: once when the response model is
-    built and again when FastAPI re-validates it.
-    """
+    """The list half, where wrapping in the list response alone re-validates."""
     import controller.public_routes as routes  # noqa: PLC0415
 
     await _stopped_an_hour_ago(session)

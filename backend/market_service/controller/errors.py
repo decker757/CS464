@@ -13,17 +13,11 @@ from core.errors import IncompleteError, MarketError
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(MarketError)
     async def _handle(_: Request, exc: MarketError) -> JSONResponse:
-        # The same envelope the auth service uses, so the frontend parses one
-        # shape across both services.
+        # The same envelope the auth service uses.
         error: dict[str, object] = {"code": exc.code, "message": exc.message}
 
-        # The only addition: a refusal addressed to form fields lists every
-        # offending one, so the form can mark them all at once. Additive, so a
-        # client that ignores it still reads the envelope.
-        #
-        # Keyed on the base class rather than on each error, so [3.1] #9's
-        # refused proposal gets the same shape as [1.1] #1's refused submission
-        # without this file learning a second name.
+        # A refusal by form field lists every offending field. Keyed on the
+        # base class, so a new `IncompleteError` needs no change here.
         if isinstance(exc, IncompleteError):
             error["details"] = [
                 {"field": problem.field, "message": problem.message}
