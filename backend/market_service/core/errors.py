@@ -41,7 +41,10 @@ class MarketNotFound(MarketError):
     """Either it does not exist, or the caller may not see it.
 
     One error for both: a 403 would confirm that someone else's draft exists,
-    which [1.1] #1 forbids.
+    which [1.1] #1 forbids. That holds for every creator-scoped read. The
+    unscoped writes (`close_early` and the two decisions, through `get_any`)
+    deliberately answer another administrator's unpublished market with a 409
+    instead. ADR 0016.
     """
 
     status_code = 404

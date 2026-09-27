@@ -56,7 +56,9 @@ which any administrator may call on any open market
 `POST /markets/{id}/approve-outcome` and `/reject-outcome`, which any
 administrator **except the one who proposed** may call
 ([ADR 0016](../adr/0016-deciding-a-proposal.md)). In each case the audit entry
-names who acted.
+names who acted. Those three answer another administrator's draft or submitted
+market with a `409`, not a `404`: the id is confirmed to exist, and nothing in
+it is shown. ADR 0016.
 
 ## The six statuses
 
@@ -434,7 +436,7 @@ seconds *after* `close_time`.
 | Status | `code` | Meaning | What the admin should do |
 | --- | --- | --- | --- |
 | 404 | `market_not_found` | no such market | nothing; it is not there |
-| 409 | `market_not_open` | still a draft or submitted | nothing to stop; publish it or leave it |
+| 409 | `market_not_open` | still a draft or submitted — yours or another administrator's | nothing to stop; publish it or leave it |
 | 409 | `market_closed` | it has already stopped | reload; hide the control |
 | 409 | `market_pending_resolution` | stopped, and an outcome is proposed | reload; show whose proposal is waiting |
 | 409 | `market_already_approved` | stopped, and its outcome is approved | reload; hide the control |
@@ -673,7 +675,7 @@ criterion. `approved_by_id` never equals `proposed_by_id`. The three
 | --- | --- | --- | --- |
 | 403 | `second_administrator_required` | you proposed this outcome | nothing; a different administrator has to decide it |
 | 404 | `market_not_found` | no such market | nothing; it is not there |
-| 409 | `market_not_pending_resolution` | no proposal is waiting — draft, submitted, open, or closed with none | reload; hide the control |
+| 409 | `market_not_pending_resolution` | no proposal is waiting — draft, submitted (yours or another administrator's), open, or closed with none | reload; hide the control |
 | 409 | `market_already_approved` | somebody has already approved it | reload; show who and when |
 | 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
 
@@ -760,7 +762,7 @@ Nothing on the market says a proposal was ever rejected; the audit log does.
 | --- | --- | --- | --- |
 | 403 | `second_administrator_required` | you proposed this outcome | nothing; a different administrator has to decide it |
 | 404 | `market_not_found` | no such market | nothing; it is not there |
-| 409 | `market_not_pending_resolution` | no proposal is waiting — including one somebody else has just rejected | reload; hide the control |
+| 409 | `market_not_pending_resolution` | no proposal is waiting — including one somebody else has just rejected, and another administrator's draft or submitted market | reload; hide the control |
 | 409 | `market_already_approved` | it has already been approved, so it is too late to reject | reload; show who approved it |
 | 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
 | 422 | `rejection_incomplete` | the reason is missing or too short | fix `reason` and resend |
@@ -1037,9 +1039,9 @@ it still reads `code` and `message`:
 | 409 | `market_already_open` | a publish or a save arrived for an already-published market |
 | 409 | `market_closed` | a publish, save or early close arrived for a market past its closing time |
 | 409 | `market_not_closed` | an outcome was proposed for a market that is still running |
-| 409 | `market_not_open` | an early close arrived for a market that is not published |
+| 409 | `market_not_open` | an early close arrived for a market that is not published, whoever created it |
 | 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one |
-| 409 | `market_not_pending_resolution` | an approval or rejection arrived for a market with no proposal waiting |
+| 409 | `market_not_pending_resolution` | an approval or rejection arrived for a market with no proposal waiting, whoever created it |
 | 409 | `market_already_approved` | anything but a read arrived for a market whose outcome is approved |
 | 409 | `proposal_superseded` | an approval or rejection quoted a `proposal_id` that is no longer the proposal waiting |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
