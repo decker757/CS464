@@ -280,7 +280,13 @@ describe('CreateMarketPage', () => {
   })
 
   // Another session moved the market past draft; the form must stop saving and lock.
-  it.each(['market_not_editable', 'market_already_open', 'market_closed'])(
+  it.each([
+    'market_not_editable',
+    'market_already_open',
+    'market_closed',
+    'market_pending_resolution',
+    'market_already_approved',
+  ])(
     'locks the form when autosave is refused with %s',
     async (code) => {
       server.use(
