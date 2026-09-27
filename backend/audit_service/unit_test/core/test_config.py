@@ -20,15 +20,10 @@ def _settings(**overrides: object) -> Settings:
 def test_the_required_settings_have_no_default(
     missing: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same rule as the other two services, for the same two reasons.
+    """A default would be a credential, or a published signing key, in the repo.
 
-    A default database URL is a credential in the repository, and a default
-    signing key is a published key that would let anybody mint themselves an
-    admin token and read the whole log.
-
-    The environment has to be emptied rather than the arguments omitted:
-    pydantic-settings reads os.environ regardless of what the caller passes,
-    and conftest has both of these set.
+    The variable is deleted from the environment because pydantic-settings
+    reads os.environ whatever the caller passes, and conftest sets both.
     """
     monkeypatch.setenv(
         "DATABASE_URL", "postgresql+asyncpg://audit_svc:x@localhost:5432/cs464"
@@ -48,12 +43,8 @@ def test_a_short_jwt_secret_is_refused() -> None:
 def test_cors_origins_parses_a_comma_separated_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The form docker-compose and the deploy pipeline actually supply.
-
-    Without NoDecode on the field, pydantic-settings JSON-parses this before
-    any validator runs and the container never starts. Both sibling services
-    were bitten by exactly that, which is why it is asserted here too.
-    """
+    """The form docker-compose supplies. Without NoDecode on the field,
+    pydantic-settings JSON-parses it first and the container never starts."""
     monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
 
     assert Settings().cors_origins == [
@@ -85,11 +76,7 @@ def test_a_page_size_of_zero_is_refused(field: str) -> None:
 
 
 def test_settings_carry_nothing_that_would_let_this_service_write() -> None:
-    """Boundary guard.
-
-    This service reads. A signing key, a credit balance or a market knob
-    appearing here would mean it had grown a second job.
-    """
+    """Boundary guard: a credit or market setting here means a second job."""
     fields = set(Settings.model_fields)
 
     assert not {
