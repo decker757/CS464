@@ -1,9 +1,6 @@
-"""HTTP routes for the auth service.
+"""HTTP routes for a user's own session. [A-1] #29, [A-2] #30, [A-3] #31
 
-Thin by design: parse, delegate to the service layer, attach cookies. No
-business rule lives here, and no route builds an error response by hand.
-Domain errors raised below the controller are turned into JSON by
-`errors.register_error_handlers`.
+Parse, delegate, attach cookies. Domain errors become JSON in `errors.py`.
 """
 
 from __future__ import annotations
@@ -83,9 +80,8 @@ async def refresh(request: Request, session: DbSession, response: Response) -> A
     description="[A-3] #31. Revokes the refresh token and clears both cookies.",
 )
 async def logout(request: Request, session: DbSession, response: Response) -> MessageResponse:
-    # Deliberately unauthenticated. Logging out must still work when the access
-    # token has already expired, and it always reports success so a caller
-    # cannot probe which refresh tokens are live.
+    # Unauthenticated, so it works with an expired access token, and always
+    # successful, so it reveals nothing about which refresh tokens are live.
     raw = transport.extract_refresh_token(request)
     if raw is not None:
         await auth_service.revoke_refresh_token(session, raw)

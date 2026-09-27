@@ -19,11 +19,10 @@ DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 
 async def get_current_user(request: Request, session: DbSession) -> User:
-    """[A-3] #31. Guards this service's own protected routes.
+    """Return the caller's row, loaded from the access token's subject. [A-3] #31
 
-    Scoped to /auth/me. Other services do NOT import this; they verify the JWT
-    signature themselves and never need our database. Sharing the verification
-    helper is a separate deliverable, not part of this service.
+    Raises InvalidToken, or AccountSuspended. Other services verify the token
+    themselves and never read this database.
     """
     token = transport.extract_access_token(request)
     if token is None:
@@ -47,18 +46,10 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 async def require_admin(user: CurrentUser) -> User:
-    """Guard every administrative route. [4.4] #16.
+    """Return the caller if their row says admin. [4.4] #16
 
-    Note what this does NOT share with `market_service`'s guard of the same
-    name. That service reads the role out of the signed token, because it holds
-    no copy of the user table and cannot look one up; ADR 0003 records the
-    consequence, that a demotion there takes up to one access-token lifetime to
-    bite.
-
-    This service owns the row. `get_current_user` has already loaded it, so the
-    role checked here is the live one and a demotion binds these routes on the
-    very next request. The token is used to say who the caller is, never what
-    they may do.
+    Raises NotAnAdministrator. Reads the live row, not the token's claim, so a
+    demotion binds here on the next request. ADR 0007.
     """
     if user.role is not UserRole.ADMIN:
         raise NotAnAdministrator
@@ -69,12 +60,10 @@ CurrentAdmin = Annotated[User, Depends(require_admin)]
 
 
 async def get_actor(user: CurrentAdmin) -> Actor:
-    """Narrow the caller to what the service layer is allowed to know.
+    """Return the admin caller as the `Actor` the audit log names. [4.3] #15
 
-    The audit log has to name who acted, and `service/audit.py` takes an
-    `Actor` rather than a `User` so that it stays identical to the market
-    service's copy and so that nothing below the controller depends on how the
-    caller was identified. [4.3] #15.
+    An `Actor`, not a `User`, so `service/audit.py` stays identical to the
+    market service's copy.
     """
     return Actor(id=user.id, username=user.username, role=user.role.value)
 
