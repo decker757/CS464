@@ -102,11 +102,11 @@ def decode_access_token(token: str) -> TokenClaims | None:
 # --------------------------------------------------------------------------
 # Logout revokes the refresh token, since an access token cannot be revoked
 # (ADR 0002). Only its SHA-256 is stored, so a leaked table resumes nothing.
+def hash_refresh_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def generate_refresh_token() -> tuple[str, str]:
     """Return (raw_token_for_the_client, hash_to_store)."""
     raw = secrets.token_urlsafe(48)
     return raw, hash_refresh_token(raw)
-
-
-def hash_refresh_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
