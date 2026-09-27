@@ -83,6 +83,7 @@ import redis.asyncio as redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import has_pending_writes
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientSharesHeld,
@@ -341,7 +342,7 @@ async def execute(
     # loaded nothing, nothing is pending and no lock is held yet, and a miss
     # is trusted for nothing below. #115 carries the release inside the gate
     # itself, for every caller.
-    assert not (session.new or session.dirty or session.deleted), (
+    assert not has_pending_writes(session), (
         "trading.execute() rolls back before the gate: nothing may be "
         "pending on the session when it is called"
     )
