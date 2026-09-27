@@ -3276,47 +3276,6 @@ the gate. Recorded in #127 from the comment at
 
 ---
 
-### D-NEW — The refresh path locks the user row before the token
-
-**Date:** 2026-09-27 · **Ticket:** #137 · **Status:** active
-
-**Decision.** `rotate_refresh_token` looks up the token's owner without a lock,
-then locks the owner's row in `auth.users` (`_lock_user`), then the token's
-row. The rotation and the replay take the same two locks in the same order.
-
-**Why.** A replay revokes every live token the user holds. It finds them with
-a SELECT, and a SELECT cannot see a token another request has inserted but not
-yet committed. So a replay that ran while the attacker's rotation was midway
-through missed the attacker's new token, and that session survived. Adding
-`FOR UPDATE` to that SELECT does not help: it only locks rows it can already
-see, and the new token is not one of them. Both requests have to wait on
-something they share, and the only thing they share is the user.
-
-The user row goes first on the rotation too, not just on the replay. Locking
-it only on the replay deadlocks: the rotation holds the old token and, when it
-inserts the new one, its foreign key takes a `KEY SHARE` on the user row. That
-waits for the replay's user lock, while the replay waits for the rotation's
-token so it can revoke it. One order everywhere, the wider lock first. ADR 0015.
-
-The owner lookup is unlocked because a token's owner never changes. It selects
-only the `user_id` column, so no token object lands in the session before its
-row is locked. The token lock re-reads its row (`populate_existing`) anyway,
-because locking the user loads all of the user's tokens through the
-`refresh_tokens` relationship, and a logout may have revoked this one in
-between.
-
-**Rejected.** Locking the token rows in `revoke_all_for_user` (sees nothing it
-did not already see). Locking the user on the replay path only (deadlocks, as
-above). `SERIALIZABLE` isolation, for the reasons ADR 0015 gives.
-
-**Notes.** `revoke_all_for_user` now requires its caller to hold the user's row
-lock. [4.2] #14's suspend must take it too before it revokes a user's sessions,
-or a rotation committing at the same moment keeps its new token. Logout locks
-only its own token and waits on nothing else, so it cannot join a deadlock
-with the rotation.
-
----
-
 ### D-NEW — A sell releases cost basis at average cost: the remaining basis is rounded half-up and the released basis is the difference
 
 **Date:** 2026-09-25 · **Ticket:** #23 · **Status:** active
