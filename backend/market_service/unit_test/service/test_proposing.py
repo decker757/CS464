@@ -1,8 +1,10 @@
 """Proposing an outcome, driven through the service layer without HTTP. [3.1] #9.
 
 Every market is closed the way production closes one, by the clock and the
-sweep, because the first criterion is about the CLOSED boundary. HTTP answers
-are in unit_test/controller, audit entries in test_audit.py.
+sweep, because the first criterion is about the CLOSED boundary. The one
+exception is the race test at the bottom, which closes its market by hand; its
+comment says why. HTTP answers are in unit_test/controller, audit entries in
+test_audit.py.
 """
 
 from __future__ import annotations

@@ -58,13 +58,15 @@ default rather than a nervous one.
 > 0013), so with `CLOSE_SWEEP_ENABLED=false` on **every** replica no market
 > ever reaches CLOSED by the clock, and `propose_outcome` refuses every one of
 > them with `market_not_closed`, indefinitely. The resolution epic stops
-> behind the switch.
+> behind the switch for every market the clock closed; one closed early by an
+> administrator (ADR 0014) is CLOSED already and is unaffected.
 >
 > It is still the safe direction, which is why this is written down rather
 > than derived: the error refuses a proposal and never lets a trade or a
 > proposal through that should not be. It is also fully recoverable —
-> re-enable the sweep on any one replica and its first pass closes the whole
-> backlog, oldest first. `close_early` cannot stand in for it: it refuses a
+> re-enable the sweep on any one replica and its first ticks close the whole
+> backlog, oldest first, up to `MAX_DRAIN_BATCHES` (50) batches of
+> `CLOSE_SWEEP_BATCH` (100 by default) per tick. `close_early` cannot stand in for it: it refuses a
 > market whose `close_time` has passed (ADR 0014), which is every market
 > stuck here. One replica with the sweep off is harmless while another runs
 > it; the switch exists for that, not for turning the sweep off everywhere.

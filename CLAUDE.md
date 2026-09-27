@@ -153,8 +153,8 @@ interval makes that window zero; deriving the answer does. The sweeper falling
 behind, or being switched off with `CLOSE_SWEEP_ENABLED`, makes a dashboard
 count stale and cannot let a trade through. Same shape as the ledger's derived
 balances, and the same reason. ADR 0011. Off on *every* replica, it also means
-no market reaches CLOSED, so no outcome can be proposed until one replica runs
-it again. Safe and recoverable, but leave it on somewhere.
+no market the clock closed reaches CLOSED, so none of them can be proposed for
+until one replica runs it again. Safe and recoverable, but leave it on somewhere.
 
 One reader deliberately does the opposite, and it is not an inconsistency.
 Proposing an outcome ([3.1] #9) gates on `status == CLOSED`, so for up to one
