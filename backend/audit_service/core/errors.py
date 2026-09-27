@@ -1,9 +1,4 @@
-"""Domain errors.
-
-Plain exceptions with no framework imports, so the service layer can raise them
-without knowing HTTP exists. `controller/errors.py` owns the mapping from these
-to status codes.
-"""
+"""Domain errors, free of HTTP. `controller/errors.py` maps them to responses."""
 
 from __future__ import annotations
 
@@ -25,12 +20,9 @@ class NotAuthenticated(AuditError):
 
 
 class NotAnAdministrator(AuditError):
-    """Authenticated, but not carrying the admin role.
+    """Authenticated, but not an admin.
 
-    The log records what administrators did to other people's accounts and
-    markets, so reading it is itself an administrator's privilege. Kept
-    distinct from 401 for the same reason as the market service: 401 means the
-    session is gone and retrying after a login helps, 403 means it never will.
+    403, not 401: a fresh login helps with a 401 and never with this.
     """
 
     status_code = 403
@@ -41,9 +33,8 @@ class NotAnAdministrator(AuditError):
 class MalformedCursor(AuditError):
     """The `cursor` parameter did not come from a previous response.
 
-    Its contents are this service's business, so a client should only ever
-    echo back what `next_cursor` gave it. Saying so explicitly beats silently
-    restarting from the newest page, which would loop forever.
+    Refused rather than restarting from the newest page, which would loop a
+    client forever.
     """
 
     status_code = 400

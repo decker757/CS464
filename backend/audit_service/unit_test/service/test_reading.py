@@ -1,8 +1,4 @@
-"""Reading the log, driven through the service layer without HTTP. [4.3] #15
-
-The filtering and ordering rules live here. Status codes and query-string
-parsing are the controller's, and are tested there.
-"""
+"""Reading the log through the service layer, without HTTP. [4.3] #15"""
 
 from __future__ import annotations
 
@@ -33,8 +29,7 @@ async def test_it_returns_the_actors_entries(
 async def test_it_excludes_other_actors(
     session: AsyncSession, actor_id: uuid.UUID, seed
 ) -> None:
-    """[4.3] #15's third criterion. Also the reason every test here scopes by
-    actor: the table still holds every row this suite has ever written."""
+    """[4.3] #15's third criterion."""
     other = uuid.uuid4()
     await seed(actor_id, 2)
     await seed(other, 5)
@@ -65,11 +60,7 @@ async def test_it_filters_by_action_type(
 async def test_action_type_matches_exactly_rather_than_by_prefix(
     session: AsyncSession, actor_id: uuid.UUID, seed
 ) -> None:
-    """`market.submitted` and `market.submitted.reverted` are different actions.
-
-    A prefix match would silently fold a future action type into an existing
-    filter, and an audit reader would never know the difference.
-    """
+    """`market.submitted` and `market.submitted.reverted` are different actions."""
     await seed(actor_id, 1, action_type="market.submitted")
     await seed(actor_id, 1, action_type="market.submitted.reverted")
 
@@ -127,9 +118,8 @@ async def test_entries_come_back_newest_first(
 async def test_ties_on_the_timestamp_are_broken_by_id(
     session: AsyncSession, actor_id: uuid.UUID, seed
 ) -> None:
-    """Two services can append in the same microsecond, and two rows written in
-    one transaction usually do. Without a tiebreak the order is whatever
-    Postgres feels like, and a cursor cannot survive that."""
+    """Rows in one transaction share a timestamp; without a tiebreak the order
+    is unstable and a cursor cannot survive it."""
     same_instant = datetime.now(UTC)
     for _ in range(5):
         await seed(actor_id, 1, first_at=same_instant)
@@ -165,8 +155,7 @@ async def test_a_full_page_offers_a_cursor(
 async def test_the_last_page_offers_none(
     session: AsyncSession, actor_id: uuid.UUID, seed
 ) -> None:
-    """`limit + 1` is fetched and the extra dropped, so this is exact rather
-    than a guess that costs a COUNT over a table that only grows."""
+    """Exact when the page is exactly full, thanks to the `limit + 1` fetch."""
     await seed(actor_id, 3)
 
     page = await audit_service.list_actions(
@@ -221,13 +210,7 @@ async def test_a_cursor_carries_the_filter_over(
 async def test_entries_appended_mid_read_do_not_shift_the_pages(
     session: AsyncSession, actor_id: uuid.UUID, seed
 ) -> None:
-    """The whole argument for keyset over OFFSET.
-
-    An audit log only grows at the end it is read from. With OFFSET, four rows
-    appended between page one and page two push the window down by four, so the
-    reader sees rows they have already seen and silently skips the ones behind
-    them. A cursor names the last row rather than a count, so it cannot move.
-    """
+    """The whole argument for keyset over OFFSET: new rows cannot shift a cursor."""
     old = datetime.now(UTC) - timedelta(hours=1)
     rows = await seed(actor_id, 6, first_at=old)
 
@@ -235,8 +218,7 @@ async def test_entries_appended_mid_read_do_not_shift_the_pages(
         session, filters=ActionFilter(actor_id=actor_id), limit=3
     )
 
-    # Four more actions happen while the administrator reads page one. They are
-    # newer, so under OFFSET they would occupy page one and push everything down.
+    # Newer rows arrive between pages; under OFFSET they would shift page two.
     await seed(actor_id, 4)
 
     second = await audit_service.list_actions(
@@ -253,7 +235,6 @@ async def test_entries_appended_mid_read_do_not_shift_the_pages(
 async def test_a_cursor_this_service_did_not_issue_is_refused(
     session: AsyncSession,
 ) -> None:
-    """Rejected rather than ignored. Restarting from the newest page would
-    leave a client paging forever without ever noticing."""
+    """Rejected rather than restarting from the newest page."""
     with pytest.raises(MalformedCursor):
         await audit_service.list_actions(session, limit=10, cursor="not-a-cursor")

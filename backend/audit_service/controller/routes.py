@@ -1,14 +1,7 @@
-"""HTTP routes for the audit service.
+"""HTTP routes for the audit service: one route, and it reads. [4.3] #15
 
-One route, and it reads. There is deliberately no POST, PATCH or DELETE here:
-[4.3] #15's second acceptance criterion is that the log is append-only with no
-edit or delete path exposed, and an entry is appended by the service that
-performed the action, inside that action's own transaction.
-
-That is not enforced by this file being short. `audit_svc` holds no UPDATE or
-DELETE grant, and a statement-level trigger in sql/02-schemas.sql refuses both
-even for the table's owner, so a route added here in a hurry would fail against
-the database rather than quietly working.
+No write route by design. Writers append in their own transaction, and the
+grants and trigger refuse any edit even if a route tried. ADR 0006.
 """
 
 from __future__ import annotations
@@ -77,9 +70,8 @@ async def list_actions(
     ] = None,
 ) -> AdminActionListResponse:
     settings = get_settings()
-    # Clamped rather than rejected. A caller asking for more than the ceiling
-    # wants as much as it can get, and a 422 on `limit=1000` would be a worse
-    # answer than the 200 rows the server is willing to serve.
+    # Clamped, not refused: a caller asking for more than the ceiling wants as
+    # much as it can get.
     page_size = min(limit or settings.default_page_size, settings.max_page_size)
 
     page = await audit_service.list_actions(

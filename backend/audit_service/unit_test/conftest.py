@@ -1,25 +1,9 @@
 """Shared fixtures.
 
-Tests run against Postgres, not SQLite, as `audit_svc` under the same grants
-the service uses in production. That matters more here than in the other two
-suites: this service's central claim is about what the database refuses, and a
-different engine refuses different things.
-
-Start the database with `docker compose up -d db` from the repo root. The suite
-uses the separate `cs464_test` database created by `sql/00-init.sh`.
-
-One thing this suite cannot do, and should not be able to: clean up after
-itself. `audit.admin_actions` is append-only, no role holds DELETE or TRUNCATE,
-and a statement-level trigger refuses both even for the table's owner. So rows
-written by every previous run are still there, and every test below scopes
-itself to an actor id nothing else has used. That is what reading a real audit
-log looks like, and a suite that could truncate the table would be a suite
-running against weaker grants than production.
-
-Tokens here are minted with PyJWT directly rather than by importing anything
-from the auth service, for the same reason as the market service's suite: this
-service has no minting code and never will, so a test that signs its own token
-exercises the same path a real request takes.
+Runs against Postgres as `audit_svc` under production grants (`docker compose
+up -d db`). The suite cannot clean up: nothing holds DELETE or TRUNCATE, so
+every test scopes itself to a fresh actor id. ADR 0006. Tokens are signed with
+PyJWT here because this service has no minting code.
 """
 
 from __future__ import annotations
@@ -31,9 +15,7 @@ import uuid
 from shared.testing import load_repo_env
 
 
-# Before any project module is imported. `get_settings` is lru_cached, so the
-# first call wins, and importing main.py triggers it. [F-6] #76 moved the
-# reader itself to `shared/testing.py`; it was identical in all five suites.
+# Before any project module is imported: `get_settings` is cached on first call.
 load_repo_env()
 
 _test_db = os.environ.get("AUDIT_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
@@ -46,11 +28,10 @@ if not _test_db:
         "Start the database first with:  docker compose up -d db"
     )
 
-# Set before any project module is imported: core.config.get_settings is cached
-# on first call, and importing main.py triggers it.
+# Before any project module is imported: `get_settings` is cached on first
+# call, so a later assignment would never be read.
 os.environ["DATABASE_URL"] = _test_db
-# Fresh per run. Nothing signed here outlives the process, and no key-shaped
-# string needs to sit in the repository.
+# Fresh per run, so no key-shaped string sits in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 
 from datetime import UTC, datetime, timedelta  # noqa: E402
@@ -88,8 +69,7 @@ def mint_token(
 ) -> str:
     """Sign a token the way the auth service does, for tests only.
 
-    The overridable issuer and secret are what let a test prove this service
-    rejects a token from a system it does not trust.
+    `issuer` and `secret` let a test sign as a system this service must not trust.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -116,9 +96,8 @@ def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str
 async def reachable_database():
     """Fail with instructions rather than a driver traceback.
 
-    Deliberately not autouse, and deliberately not a schema rebuild. There is
-    nothing to create — sql/02-schemas.sql owns this table — and nothing to
-    drop. The pure unit tests under core/ and model/ never reach Postgres.
+    No schema rebuild: sql/02-schemas.sql owns the table. Not autouse, so the
+    pure tests never reach Postgres.
     """
     engine = get_engine()
     try:
@@ -143,9 +122,7 @@ async def session(reachable_database):
 async def client(reachable_database):
     """An HTTP client bound to the app, for controller-layer tests.
 
-    `create_app` is imported here rather than at module scope so that running
-    only the pure layers never constructs the application, in keeping with the
-    rule that nothing below the controller knows HTTP exists.
+    `create_app` is imported here so the pure layers never build the app.
     """
     from main import create_app  # noqa: PLC0415
 
@@ -180,13 +157,8 @@ def actor_id() -> uuid.UUID:
 def seed(session: AsyncSession):
     """Append entries the way a real writer would, and return them newest first.
 
-    This is the only place in the suite that writes. `audit_svc` holds INSERT
-    for exactly this reason — so the reader's own tests can arrange a fixture
-    without a second role's credentials — and no route reaches it.
-
-    Timestamps are spaced a second apart and supplied explicitly, because the
-    ordering and the keyset cursor are both under test and rows written in one
-    transaction otherwise share a timestamp.
+    The only write in the suite; `audit_svc` holds INSERT for this alone.
+    Timestamps are a second apart so ordering and cursors are deterministic.
     """
 
     async def _seed(

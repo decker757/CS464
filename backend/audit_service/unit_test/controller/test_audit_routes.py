@@ -1,9 +1,4 @@
-"""The HTTP surface. [4.3] #15
-
-Status codes, query-string parsing, response shape and the guard. The filtering
-and ordering rules themselves are business rules and are tested in
-unit_test/service/test_reading.py, without HTTP.
-"""
+"""The HTTP surface: status codes, query parsing, response shape, the guard. [4.3] #15"""
 
 from __future__ import annotations
 
@@ -30,12 +25,7 @@ async def test_an_anonymous_request_is_refused(client: AsyncClient) -> None:
 
 
 async def test_a_trader_is_refused(client: AsyncClient, trader_headers) -> None:
-    """403, not 401.
-
-    The log names accounts and quotes the reasons admins gave for acting on
-    them. A trader's session is perfectly valid and will never be allowed in,
-    and the two codes tell the frontend which of those it is looking at.
-    """
+    """403, not 401: the session is valid and will never be allowed in."""
     response = await client.get(_ACTIONS, headers=trader_headers)
 
     assert response.status_code == 403
@@ -63,15 +53,9 @@ async def test_a_token_from_another_issuer_is_refused(client: AsyncClient) -> No
 async def test_a_role_this_build_does_not_know_is_treated_as_a_trader(
     client: AsyncClient, role: str | None
 ) -> None:
-    """Fail closed, and fail as 403 rather than 401.
-
-    [4.4] #16 adds MARKET_CREATOR, RESOLVER and SUPER_ADMIN. During that
-    rollout this service will see tokens carrying roles it has never heard of.
-    A correctly signed token is not grounds for rejecting the session, and an
-    unrecognised role is not grounds for granting authority, so it lands on the
-    least privileged role and gets a 403. Signed here by hand because
-    mint_token will not build a role that is not in the enum.
-    """
+    """Fail closed, as 403 rather than 401: a valid signature keeps the
+    session, an unknown role grants nothing. Signed by hand because mint_token
+    only builds roles in the enum."""
     settings = get_settings()
     now = datetime.now(UTC)
     claims: dict[str, object] = {
@@ -128,8 +112,7 @@ async def test_it_returns_a_page(
 async def test_every_timestamp_carries_an_offset(
     client: AsyncClient, admin_headers, actor_id: uuid.UUID, seed
 ) -> None:
-    """Otherwise one entry serialises with a trailing Z and another without,
-    and the frontend has to special-case which."""
+    """So the frontend never has to special-case a naive timestamp."""
     await seed(actor_id, 1)
 
     response = await client.get(
@@ -158,8 +141,7 @@ async def test_the_context_comes_back_as_an_object(
 async def test_a_reason_is_returned_when_one_was_given(
     client: AsyncClient, admin_headers, actor_id: uuid.UUID, seed
 ) -> None:
-    """[4.3] #15's first criterion. Null for the action types that do not ask
-    for one; [2.3] #7 and [4.2] #14 are the ones that will."""
+    """[4.3] #15's first criterion."""
     await seed(actor_id, 1, reason="Duplicate of an existing market.")
 
     response = await client.get(
@@ -233,9 +215,7 @@ async def test_a_page_offers_a_cursor_and_the_next_page_uses_it(
 async def test_a_limit_above_the_ceiling_is_clamped_rather_than_refused(
     client: AsyncClient, admin_headers, actor_id: uuid.UUID, seed, monkeypatch
 ) -> None:
-    """A caller asking for more than the server will serve wants as much as it
-    can get. A 422 on `limit=1000` would be a worse answer than the page the
-    server is willing to return."""
+    """A caller asking for more than the ceiling wants as much as it can get."""
     get_settings.cache_clear()
     monkeypatch.setenv("MAX_PAGE_SIZE", "3")
     await seed(actor_id, 5)
@@ -252,8 +232,7 @@ async def test_a_limit_above_the_ceiling_is_clamped_rather_than_refused(
 
 
 async def test_a_limit_of_zero_is_refused(client: AsyncClient, admin_headers) -> None:
-    """Unlike an oversized limit, this one cannot be satisfied at all: a page of
-    nothing makes no progress and no cursor can advance past it."""
+    """A page of nothing makes no progress, so it cannot be clamped."""
     response = await client.get(
         _ACTIONS, headers=admin_headers, params={"limit": 0}
     )
@@ -275,13 +254,7 @@ async def test_a_forged_cursor_is_a_400(client: AsyncClient, admin_headers) -> N
 async def test_there_is_no_write_route(
     client: AsyncClient, admin_headers, method: str
 ) -> None:
-    """[4.3] #15's second criterion, at the API surface.
-
-    Entries are appended by the service performing the action, inside that
-    action's transaction. Nothing reaches this table over HTTP — and a route
-    added here in a hurry would still fail, because audit_svc holds no UPDATE
-    or DELETE grant and a trigger refuses both even for the table's owner.
-    """
+    """[4.3] #15's second criterion, at the API surface. ADR 0006."""
     response = await getattr(client, method)(_ACTIONS, headers=admin_headers)
 
     assert response.status_code == 405

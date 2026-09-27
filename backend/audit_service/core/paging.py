@@ -1,26 +1,9 @@
-"""Keyset cursors for the audit feed.
+"""Keyset cursors for the audit feed. [4.3] #15
 
-The cursor format itself is in `shared/paging.py`, which this service and its
-sibling held near-identical copies of before [F-6] #76. What stays here is this
-service's error vocabulary: `shared.paging.decode_cursor` returns None for a
-value it did not issue, and this is where that becomes a `MalformedCursor` the
-controller turns into a 400.
-
-**Why keyset and not OFFSET.** This table is ordered newest first and only ever
-grows at that end. A reader taking page 1, then page 2 with OFFSET 50, sees any
-row appended in between push the window down, so the last row of page 1
-reappears as the first row of page 2. For an ordinary list that is cosmetic; for
-audit log it means paging through the history can show a record twice and
-skip the one behind it.
-
-A cursor instead names a position — "everything strictly older than
-(occurred_at, id)" — so pages stay stable no matter what is appended while the
-reader works through them. It is also the query the indexes in
-sql/02-schemas.sql are built for: an index seek to the cursor, then a scan,
-rather than counting and discarding OFFSET rows on every page.
-
-`occurred_at` is not unique, which is why the id is in the cursor at all. See
-`shared/paging.py` for the cases that makes concrete.
+The format is in `shared/paging.py` (ADR 0012); this turns its None into
+MalformedCursor. Keyset, not OFFSET: rows appended at the newest end shift an
+OFFSET window, so a reader would see one row twice and skip another. The id is
+in the cursor because `occurred_at` is not unique.
 """
 
 from __future__ import annotations
@@ -35,12 +18,10 @@ encode_cursor = _shared.encode_cursor
 
 
 def decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
-    """Read a cursor this service issued, or raise MalformedCursor.
+    """Return the (occurred_at, id) position a cursor names.
 
-    Every failure mode collapses to one error deliberately: the difference
-    between bad base64, a missing separator and an unparseable UUID is not
-    something a client can act on differently, and describing it precisely only
-    helps someone probing what the value is made of.
+    Raises MalformedCursor for every kind of bad value alike: a client cannot
+    act on the difference, and naming it only helps someone probing the format.
     """
     position = _shared.decode_cursor(cursor)
     if position is None:

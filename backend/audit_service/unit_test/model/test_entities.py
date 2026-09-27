@@ -1,15 +1,7 @@
 """The read model against the table it describes. [4.3] #15
 
-This service does not own `audit.admin_actions`. `sql/02-schemas.sql` creates
-it, and `model/entities.py` is a hand-written description of somebody else's
-table with no `create_all` to reconcile the two. Nothing but this file stops
-them drifting until [F-5] #75 brings Alembic.
-
-Drift is not hypothetical here. A column added to the SQL for a new action type
-would be invisible to every query this service runs, and a column renamed in
-the SQL would fail every one of them at runtime with `column ... does not
-exist` — the same failure mode the repository README already warns about for
-`create_all`, arriving from the opposite direction.
+`model/entities.py` hand-describes a table sql/02-schemas.sql owns, and only
+this file stops the two drifting until [F-5] #75.
 """
 
 from __future__ import annotations
@@ -53,13 +45,7 @@ async def test_the_model_invents_no_column_the_table_lacks(
 async def test_the_model_agrees_about_what_may_be_null(
     session: AsyncSession,
 ) -> None:
-    """The nullability is a design decision, not an accident.
-
-    Only the fields a writer always knows are NOT NULL, because the audit
-    INSERT commits with the action it records: a column this table can reject
-    on is a way for the log to abort a legitimate admin action. If the SQL and
-    the model disagree, one of them has changed without the other.
-    """
+    """Only what a writer always knows is NOT NULL. ADR 0006."""
     nullable_in_database = {
         row.column_name
         for row in (await session.execute(_COLUMNS)).mappings()
@@ -73,14 +59,20 @@ async def test_the_model_agrees_about_what_may_be_null(
 
 
 @pytest.mark.parametrize(
-    "column", ["occurred_at", "actor_id", "actor_username", "actor_role", "action_type"]
+    "column",
+    [
+        "occurred_at",
+        "actor_id",
+        "actor_username",
+        "actor_role",
+        "action_type",
+        "target_type",
+    ],
 )
 async def test_the_fields_the_story_requires_are_mandatory(
     session: AsyncSession, column: str
 ) -> None:
-    """[4.3] #15's first criterion: actor, action type, target and timestamp on
-    every entry. An entry that could omit the actor would be an entry that
-    fails the one thing the log exists for."""
+    """[4.3] #15's first criterion: actor, action type, target and timestamp on every entry."""
     is_nullable = {
         row.column_name: row.is_nullable
         for row in (await session.execute(_COLUMNS)).mappings()

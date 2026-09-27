@@ -1,8 +1,7 @@
 """Keyset cursors. No database, no HTTP.
 
-Worth testing directly rather than only through a page of results: a cursor bug
-shows up as rows quietly missing from a page, which is the failure mode an
-audit log can least afford and an end-to-end test is least likely to notice.
+Tested directly because a cursor bug shows up as rows quietly missing from a
+page, which an end-to-end test is least likely to notice.
 """
 
 from __future__ import annotations
@@ -25,11 +24,7 @@ def test_a_cursor_round_trips() -> None:
 
 
 def test_microseconds_survive() -> None:
-    """Two entries a microsecond apart are two positions, not one.
-
-    Truncating here would make the cursor ambiguous between them, which is how
-    a paged read starts repeating or skipping a row.
-    """
+    """Two entries a microsecond apart are two positions, not one."""
     first = datetime(2026, 9, 15, 10, 47, 30, 1, tzinfo=UTC)
     second = first + timedelta(microseconds=1)
     row_id = uuid.uuid4()
@@ -70,19 +65,13 @@ def test_a_cursor_is_url_safe() -> None:
     ],
 )
 def test_anything_this_service_did_not_issue_is_refused(bad: str) -> None:
-    """Every failure collapses to one error on purpose.
-
-    The difference between bad base64, a missing separator and an unparseable
-    UUID is not something a client can act on differently, and describing it
-    precisely only helps someone working out what the value is made of.
-    """
+    """Every kind of bad value collapses to one error on purpose."""
     with pytest.raises(MalformedCursor):
         decode_cursor(bad)
 
 
 def test_a_naive_timestamp_in_a_cursor_is_read_as_utc() -> None:
-    """Defensive. A naive value would reach the query and raise there, where it
-    would surface as a 500 rather than as the 400 this is."""
+    """A naive value would otherwise raise in the query, as a 500."""
     raw = f"2026-09-15T10:47:30|{uuid.uuid4()}"
     cursor = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
