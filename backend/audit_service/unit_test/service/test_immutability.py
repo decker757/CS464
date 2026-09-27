@@ -17,6 +17,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import SCHEMA
 
 
+async def _has_privilege(session: AsyncSession, role: str, privilege: str) -> bool:
+    """Ask Postgres whether `role` holds `privilege` on the audit table.
+
+    `has_table_privilege`, because `information_schema.table_privileges` shows
+    only the connected role's own grants and would miss one given to market_svc.
+    """
+    result = await session.execute(
+        text("SELECT has_table_privilege(:role, 'audit.admin_actions', :privilege)"),
+        {"role": role, "privilege": privilege},
+    )
+    return result.scalar_one()
+
+
 async def test_this_service_reads_the_audit_schema(session: AsyncSession) -> None:
     assert SCHEMA == "audit"
 
@@ -70,17 +83,8 @@ async def test_it_holds_exactly_select_and_insert(session: AsyncSession) -> None
 async def test_no_service_role_can_change_an_entry(
     session: AsyncSession, role: str, privilege: str
 ) -> None:
-    """Over every service role, not just this one.
-
-    `has_table_privilege`, because `information_schema.table_privileges` shows
-    only the connected role's own grants and would miss one given to market_svc.
-    """
-    granted = (
-        await session.execute(
-            text("SELECT has_table_privilege(:role, 'audit.admin_actions', :privilege)"),
-            {"role": role, "privilege": privilege},
-        )
-    ).scalar_one()
+    """Over every service role, not just this one."""
+    granted = await _has_privilege(session, role, privilege)
 
     assert granted is False
 
@@ -88,12 +92,7 @@ async def test_no_service_role_can_change_an_entry(
 async def test_every_service_role_can_append(session: AsyncSession) -> None:
     """A writer without INSERT would fail every admin action it logs."""
     for role in ("auth_svc", "ledger_svc", "market_svc"):
-        granted = (
-            await session.execute(
-                text("SELECT has_table_privilege(:role, 'audit.admin_actions', 'INSERT')"),
-                {"role": role},
-            )
-        ).scalar_one()
+        granted = await _has_privilege(session, role, "INSERT")
 
         assert granted is True, f"{role} cannot append to the audit log"
 
@@ -101,12 +100,7 @@ async def test_every_service_role_can_append(session: AsyncSession) -> None:
 async def test_no_writer_can_read_the_log(session: AsyncSession) -> None:
     """INSERT without SELECT, so no service reads another's actions. ADR 0006."""
     for role in ("auth_svc", "ledger_svc", "market_svc"):
-        granted = (
-            await session.execute(
-                text("SELECT has_table_privilege(:role, 'audit.admin_actions', 'SELECT')"),
-                {"role": role},
-            )
-        ).scalar_one()
+        granted = await _has_privilege(session, role, "SELECT")
 
         assert granted is False, f"{role} can read the audit log"
 
