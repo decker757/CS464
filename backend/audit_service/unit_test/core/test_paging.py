@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -17,31 +17,16 @@ from core.paging import decode_cursor, encode_cursor
 
 
 def test_a_cursor_round_trips() -> None:
-    when = datetime(2026, 9, 15, 10, 47, 30, 123456, tzinfo=UTC)
+    """Exactly, microseconds and offset included, or a page repeats or skips a row.
+
+    A non-UTC offset, because a naive value decodes as UTC: an encoder that
+    dropped the offset would still pass with a UTC timestamp.
+    """
+    singapore = timezone(timedelta(hours=8))
+    when = datetime(2026, 9, 15, 10, 47, 30, 123456, tzinfo=singapore)
     row_id = uuid.uuid4()
 
     assert decode_cursor(encode_cursor(when, row_id)) == (when, row_id)
-
-
-def test_microseconds_survive() -> None:
-    """Two entries a microsecond apart are two positions, not one."""
-    first = datetime(2026, 9, 15, 10, 47, 30, 1, tzinfo=UTC)
-    second = first + timedelta(microseconds=1)
-    row_id = uuid.uuid4()
-
-    assert decode_cursor(encode_cursor(first, row_id))[0] != decode_cursor(
-        encode_cursor(second, row_id)
-    )[0]
-
-
-def test_the_offset_is_preserved() -> None:
-    """A cursor read back as the wrong instant would page from the wrong place."""
-    when = datetime(2026, 9, 15, 10, 47, 30, tzinfo=UTC)
-
-    decoded, _ = decode_cursor(encode_cursor(when, uuid.uuid4()))
-
-    assert decoded == when
-    assert decoded.tzinfo is not None
 
 
 def test_a_cursor_is_url_safe() -> None:

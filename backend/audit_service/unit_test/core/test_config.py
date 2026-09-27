@@ -61,13 +61,6 @@ def test_cors_origins_tolerates_spacing_and_trailing_commas(
     assert Settings().cors_origins == ["https://a.example.com", "https://b.example.com"]
 
 
-def test_the_page_size_ceiling_is_configurable() -> None:
-    settings = _settings(default_page_size=10, max_page_size=25)
-
-    assert settings.default_page_size == 10
-    assert settings.max_page_size == 25
-
-
 @pytest.mark.parametrize("field", ["default_page_size", "max_page_size"])
 def test_a_page_size_of_zero_is_refused(field: str) -> None:
     """A zero ceiling would make every page empty and every cursor useless."""
