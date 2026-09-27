@@ -27,6 +27,7 @@ DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
                         cited by number from code comments (D-001, D-016, ...)
 scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
+.claude/skills/         shared Claude skills; /pr-review lives here
 ```
 
 One more service is coming: the stateless trading composite (the [T-*] epic).
@@ -440,6 +441,42 @@ service holds no user table and authorises entirely from the `role` claim in a
 signed token, so it never learns that an account was suspended or deleted until
 that token expires. See `docs/adr/0003-market-service-boundary.md`.
 
+## Code style, tests and review
+
+How code is written — naming, file layout, reuse, comments — is in
+`backend/CLAUDE.md` and `frontend/CLAUDE.md`. Claude loads each one when it
+works in that folder. Three rules hold on both sides:
+
+**Search before you write.** Look for an existing function that does the job
+and reuse or extend it. When a PR would add the second copy of some logic, the
+extraction is part of that PR. Do not build abstractions for callers that do
+not exist yet.
+
+**Tests earn their place.** Every test traces to one of: an acceptance
+criterion, a Definition of Done item, an invariant written down in this file
+or an ADR, or a real bug it stops coming back. A test is *decorative*, and is
+deleted rather than kept, when it would still pass with the feature broken.
+The usual shapes:
+
+- asserts what the framework or type system already guarantees (a pydantic
+  field exists, a missing required field is 422, a dataclass is frozen)
+- asserts a mock returned what the test told it to return
+- asserts a constant equals its own literal
+- repeats another test with different data that takes no different branch
+- asserts the text of a comment, docstring or log line
+- checks that something renders, or that a function "does not raise", without
+  checking what it produced
+
+The check: undo the line of the feature the test is about. If the test stays
+green, it tests nothing. A guard test named in this file or an ADR —
+`test_the_audit_grant_is_exactly_insert`, the "no credits in auth" tests, the
+socket origin test — looks trivial on purpose and is not decorative.
+
+**Review against the ticket.** `/pr-review <PR#>` (`.claude/skills/pr-review/`)
+checks a PR against its issue's acceptance criteria and Definition of Done,
+these conventions, and the test rule above. Run it on your own branch before
+asking a person to review.
+
 ## Frontend and backend split
 
 Most user stories are full stack. The story issue belongs to whoever owns the
@@ -456,6 +493,31 @@ from `dev`, name it `<issue>-<slug>`, open a pull request into `dev`.
 
 Use `Refs #N`, not `Closes #N`, when a ticket has open sub-issues. Auto-closing
 a parent whose frontend half is unbuilt hides work.
+
+**Commits are split by layer**, bottom up, so a reviewer can follow the
+reasoning one step at a time: `model` → `core` → `service` → `controller`, and
+tests in their own commit. Format `type(scope): what changed`, with types
+`feat`, `fix`, `test`, `refactor`, `docs`, `chore`.
+
+**A big ticket is a stack of small PRs, not one big one.** Each PR does one
+thing (one layer, one behaviour, or one mechanical refactor), passes CI on its
+own, and says `Stacked on #N` at the top of its body. The first targets `dev`;
+each later one targets the branch below it. Name the parts
+`<issue>-<slug>-1-model`, `<issue>-<slug>-2-service`, and so on.
+
+When the bottom PR merges, GitHub retargets the next one to `dev` — but if it
+was **squash**-merged, the next branch still carries the old commits and
+collides on every file (see "A squash merge kills the branch" above). Either
+merge the bottom of a stack with a merge commit, or move the rest across:
+
+```bash
+git fetch origin
+git rebase --onto origin/dev <old-tip-of-the-merged-branch> <next-branch>
+git push --force-with-lease
+```
+
+A refactor never shares a PR with a behaviour change. A refactor PR changes no
+test assertions; if one has to change, the refactor changed behaviour.
 
 ## Decisions already made
 
