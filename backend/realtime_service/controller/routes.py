@@ -143,13 +143,13 @@ def _ending(done: set[asyncio.Task[Any]]) -> tuple[int, str] | None:
     disconnect, and a disconnect needs no close frame. Do not fold this into one
     loop with early returns; `test_ending.py` shows the race that brings back.
     """
-    failures = [
-        exc
-        for task in done
-        if not task.cancelled()
-        for exc in (task.exception(),)
-        if exc is not None
-    ]
+    failures: list[BaseException] = []
+    for task in done:
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is not None:
+            failures.append(exc)
 
     for exc in failures:
         if isinstance(exc, RealtimeError):
@@ -160,7 +160,9 @@ def _ending(done: set[asyncio.Task[Any]]) -> tuple[int, str] | None:
             logger.error("unexpected failure on a price socket", exc_info=exc)
             return _INTERNAL_ERROR
 
-    return None if failures else (1000, "")
+    if failures:  # only disconnects left: nobody to send a close frame to
+        return None
+    return 1000, ""
 
 
 async def _serve(
