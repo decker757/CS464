@@ -1,16 +1,7 @@
 """Async engine, session factory, and the FastAPI session dependency.
 
-Two things are missing here on purpose, and both follow from what this service
-is allowed to do.
-
-There is no `create_all`. `audit.admin_actions` is created by
-`sql/02-schemas.sql` and owned by the superuser, so this service has no CREATE
-on its own schema and could not make the table even if it tried. That is the
-point: the log is shared infrastructure that several services append to, and
-the service that reads it should not be the one that defines it.
-
-There is no write path either. `service/` issues SELECTs and nothing else. The
-role holds INSERT so the suite can seed rows, but no route reaches it.
+No `create_all`: the superuser owns the table (ADR 0006). No write path either;
+the role holds INSERT only so the suite can seed rows.
 """
 
 from __future__ import annotations
@@ -28,8 +19,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from core.config import get_settings
 
-# Named explicitly rather than left to search_path, so a connection that
-# arrives without one still resolves to the right table.
+# Explicit, so a connection without a search_path still finds the table.
 SCHEMA = "audit"
 
 
@@ -47,8 +37,7 @@ def get_engine() -> AsyncEngine:
         _engine = create_async_engine(
             get_settings().database_url,
             pool_size=10,
-            # Recycles a connection Postgres closed under us rather than
-            # handing a dead one to a request.
+            # Replace a connection Postgres closed rather than hand it out.
             pool_pre_ping=True,
         )
     return _engine
@@ -64,10 +53,9 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """One session per request.
+    """Yield one session per request, rolled back if the request raises.
 
-    Nothing here commits, because nothing here writes. The rollback on the way
-    out is what returns the connection cleanly when a query raises.
+    Never commits; nothing here writes.
     """
     async with get_session_factory()() as session:
         try:
