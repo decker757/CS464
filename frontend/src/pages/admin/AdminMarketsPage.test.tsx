@@ -113,4 +113,17 @@ describe('AdminMarketsPage', () => {
     renderPage()
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
   })
+
+  it('does not show a future closing date on a market closed early', async () => {
+    // An admin can close a market before its close_time, and close_time stays
+    // in the future — so the row must go by the status, not only the clock.
+    mockList([
+      { id: 'g7', draft_key: 'k7', status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+    ])
+    renderPage()
+    await screen.findByText('Closed early by an admin?')
+    expect(screen.queryByText(/closes/i)).not.toBeInTheDocument()
+    // A past close_time also renders "Closed" in the status badge, so two elements match.
+    expect(screen.getAllByText('Closed').length).toBeGreaterThanOrEqual(1)
+  })
 })
