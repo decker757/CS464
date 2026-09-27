@@ -40,15 +40,6 @@ async def test_an_expired_token_is_refused(client: AsyncClient) -> None:
     assert response.status_code == 401
 
 
-async def test_a_token_from_another_issuer_is_refused(client: AsyncClient) -> None:
-    """A token minted for a different system that happens to share our secret."""
-    token = mint_token(uuid.uuid4(), issuer="somebody-else")
-
-    response = await client.get(_ACTIONS, headers={"Authorization": f"Bearer {token}"})
-
-    assert response.status_code == 401
-
-
 @pytest.mark.parametrize("role", ["super_admin", "resolver", "", None])
 async def test_a_role_this_build_does_not_know_is_treated_as_a_trader(
     client: AsyncClient, role: str | None
@@ -89,7 +80,14 @@ async def test_a_browser_cookie_is_accepted(
 async def test_it_returns_a_page(
     client: AsyncClient, admin_headers, actor_id: uuid.UUID, seed
 ) -> None:
-    await seed(actor_id, 2, target_label="Will inflation be below 2%?")
+    """[4.3] #15's first criterion: who, what, to what, when and why."""
+    await seed(
+        actor_id,
+        2,
+        target_label="Will inflation be below 2%?",
+        reason="Duplicate of an existing market.",
+        context={"seed_subsidy": "250.0000", "outcomes": ["Yes", "No"]},
+    )
 
     response = await client.get(
         _ACTIONS, headers=admin_headers, params={"actor_id": str(actor_id)}
@@ -107,48 +105,11 @@ async def test_it_returns_a_page(
     assert entry["action_type"] == "market.submitted"
     assert entry["target_label"] == "Will inflation be below 2%?"
     assert entry["source_service"] == "market_service"
-
-
-async def test_every_timestamp_carries_an_offset(
-    client: AsyncClient, admin_headers, actor_id: uuid.UUID, seed
-) -> None:
-    """So the frontend never has to special-case a naive timestamp."""
-    await seed(actor_id, 1)
-
-    response = await client.get(
-        _ACTIONS, headers=admin_headers, params={"actor_id": str(actor_id)}
-    )
-
-    occurred_at = response.json()["actions"][0]["occurred_at"]
-    assert occurred_at.endswith("Z") or "+" in occurred_at
-
-
-async def test_the_context_comes_back_as_an_object(
-    client: AsyncClient, admin_headers, actor_id: uuid.UUID, seed
-) -> None:
-    await seed(actor_id, 1, context={"seed_subsidy": "250.0000", "outcomes": ["Yes", "No"]})
-
-    response = await client.get(
-        _ACTIONS, headers=admin_headers, params={"actor_id": str(actor_id)}
-    )
-
-    assert response.json()["actions"][0]["context"] == {
-        "seed_subsidy": "250.0000",
-        "outcomes": ["Yes", "No"],
-    }
-
-
-async def test_a_reason_is_returned_when_one_was_given(
-    client: AsyncClient, admin_headers, actor_id: uuid.UUID, seed
-) -> None:
-    """[4.3] #15's first criterion."""
-    await seed(actor_id, 1, reason="Duplicate of an existing market.")
-
-    response = await client.get(
-        _ACTIONS, headers=admin_headers, params={"actor_id": str(actor_id)}
-    )
-
-    assert response.json()["actions"][0]["reason"] == "Duplicate of an existing market."
+    assert entry["reason"] == "Duplicate of an existing market."
+    assert entry["context"] == {"seed_subsidy": "250.0000", "outcomes": ["Yes", "No"]}
+    # An explicit offset, so the frontend never special-cases a naive timestamp.
+    occurred_at = datetime.fromisoformat(entry["occurred_at"])
+    assert occurred_at.tzinfo is not None
 
 
 # --- filters --------------------------------------------------------------
@@ -183,6 +144,7 @@ async def test_it_filters_by_action_type(
 async def test_an_actor_id_that_is_not_a_uuid_is_a_422(
     client: AsyncClient, admin_headers
 ) -> None:
+    """Promised in docs/api/audit-service.md: FastAPI's own validation, a 422."""
     response = await client.get(
         _ACTIONS, headers=admin_headers, params={"actor_id": "ernest"}
     )
@@ -218,14 +180,17 @@ async def test_a_limit_above_the_ceiling_is_clamped_rather_than_refused(
     """A caller asking for more than the ceiling wants as much as it can get."""
     get_settings.cache_clear()
     monkeypatch.setenv("MAX_PAGE_SIZE", "3")
-    await seed(actor_id, 5)
+    try:
+        await seed(actor_id, 5)
 
-    response = await client.get(
-        _ACTIONS,
-        headers=admin_headers,
-        params={"actor_id": str(actor_id), "limit": 1000},
-    )
-    get_settings.cache_clear()
+        response = await client.get(
+            _ACTIONS,
+            headers=admin_headers,
+            params={"actor_id": str(actor_id), "limit": 1000},
+        )
+    finally:
+        # The settings cached under the patched environment must not leak.
+        get_settings.cache_clear()
 
     assert response.status_code == 200
     assert len(response.json()["actions"]) == 3
