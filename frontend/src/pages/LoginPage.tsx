@@ -69,7 +69,7 @@ export default function LoginPage() {
       title="Log in to your account"
       subtitle="Enter your username or email and password to continue."
       error={serverError}
-      footer={<>Don't have an account? <AuthFooterLink href="/register">Register</AuthFooterLink></>}
+      footer={<>Don't have an account? <AuthFooterLink to="/register">Register</AuthFooterLink></>}
     >
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-1">
         <Field id="identifier" label="Username or Email" error={errors.identifier}>

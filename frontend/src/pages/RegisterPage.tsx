@@ -58,7 +58,7 @@ export default function RegisterPage() {
       title="Create your account"
       subtitle="Join PredictSMU and start trading with mock credits."
       error={serverError}
-      footer={<>Already have an account? <AuthFooterLink href="/login">Log in</AuthFooterLink></>}
+      footer={<>Already have an account? <AuthFooterLink to="/login">Log in</AuthFooterLink></>}
     >
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-1">
         <Field id="username" label="Username" error={errors.username}>

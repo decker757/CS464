@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
 import { server } from '../test/server'
@@ -26,6 +26,43 @@ function renderLoginPage() {
     </AuthContext.Provider>,
   )
 }
+
+// The page inside a router with stub pages at the places its links go. jsdom
+// does not follow a plain <a href>, so a stub appears only if the router
+// handled the click, which is the point: a full page load drops app state.
+function renderLoginPageWithRoutes() {
+  return render(
+    <AuthContext.Provider value={{ user: null, login: mockLogin, logout: vi.fn() }}>
+      <MemoryRouter initialEntries={['/login']}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<p>register page</p>} />
+          <Route path="/" element={<p>landing page</p>} />
+        </Routes>
+      </MemoryRouter>
+    </AuthContext.Provider>,
+  )
+}
+
+describe('LoginPage — links', () => {
+  it('goes to the register page through the router', async () => {
+    const user = userEvent.setup()
+    renderLoginPageWithRoutes()
+
+    await user.click(screen.getByRole('link', { name: 'Register' }))
+
+    expect(screen.getByText('register page')).toBeInTheDocument()
+  })
+
+  it('goes back to the landing page through the router', async () => {
+    const user = userEvent.setup()
+    renderLoginPageWithRoutes()
+
+    await user.click(screen.getByRole('link', { name: /back to home/i }))
+
+    expect(screen.getByText('landing page')).toBeInTheDocument()
+  })
+})
 
 describe('LoginPage — client-side validation', () => {
   it('shows exactly 2 field errors when both fields are empty', async () => {
