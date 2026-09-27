@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import get_session_factory
 from core.errors import CannotChangeOwnRole, LastAdministrator, UserNotFound
 from core.roles import UserRole
 from model.entities import User
@@ -20,6 +22,47 @@ from service.audit import Actor
 
 def _actor(user_id: uuid.UUID | None = None) -> Actor:
     return Actor(id=user_id or uuid.uuid4(), username="ernest_t", role="admin")
+
+
+def _admin(username: str, *, suspended: bool = False) -> User:
+    """An administrator row with a placeholder hash; nothing here logs in."""
+    return User(
+        username=username,
+        email=f"{username}@example.com",
+        password_hash="x",
+        role=UserRole.ADMIN,
+        is_suspended=suspended,
+    )
+
+
+async def _reloaded(session: AsyncSession, user_id: uuid.UUID) -> User | None:
+    """The user as committed, not as this session last saw them."""
+    session.expunge_all()
+    return await session.get(User, user_id)
+
+
+async def _demote_each_other(first: uuid.UUID, second: uuid.UUID) -> list[str]:
+    """Two administrators demote each other in two concurrent transactions.
+
+    Returns each side's outcome, "applied" or "refused".
+    """
+    factory = get_session_factory()
+
+    async def demote(actor_id: uuid.UUID, target_id: uuid.UUID) -> str:
+        async with factory() as own_session:
+            try:
+                await user_admin.change_role(
+                    own_session,
+                    actor=_actor(actor_id),
+                    target_id=target_id,
+                    role=UserRole.TRADER,
+                )
+            except LastAdministrator:
+                return "refused"
+            return "applied"
+
+    outcomes = await asyncio.gather(demote(first, second), demote(second, first))
+    return list(outcomes)
 
 
 # --- the change itself ----------------------------------------------------
@@ -54,8 +97,7 @@ async def test_the_change_survives_the_transaction(
         session, actor=_actor(), target_id=registered_user.id, role=UserRole.ADMIN
     )
 
-    session.expunge_all()
-    reloaded = await session.get(User, registered_user.id)
+    reloaded = await _reloaded(session, registered_user.id)
 
     assert reloaded is not None
     assert reloaded.role is UserRole.ADMIN
@@ -106,8 +148,7 @@ async def test_a_refused_self_change_leaves_the_role_alone(
             role=UserRole.TRADER,
         )
 
-    session.expunge_all()
-    reloaded = await session.get(User, registered_user.id)
+    reloaded = await _reloaded(session, registered_user.id)
     assert reloaded is not None
     assert reloaded.role is UserRole.ADMIN
 
@@ -155,8 +196,7 @@ async def test_promoting_twice_is_the_same_as_promoting_once(
             session, actor=_actor(), target_id=registered_user.id, role=UserRole.ADMIN
         )
 
-    session.expunge_all()
-    reloaded = await session.get(User, registered_user.id)
+    reloaded = await _reloaded(session, registered_user.id)
     assert reloaded is not None
     assert reloaded.role is UserRole.ADMIN
 
@@ -179,13 +219,7 @@ async def test_an_administrator_can_be_demoted_while_another_remains(
     session: AsyncSession, registered_user: User
 ) -> None:
     """The guard is about the last one, not about demotion in general."""
-    other = User(
-        username="admin_two",
-        email="admin.two@example.com",
-        password_hash="x",
-        role=UserRole.ADMIN,
-    )
-    session.add(other)
+    session.add(_admin("admin_two"))
     registered_user.role = UserRole.ADMIN
     await session.commit()
 
@@ -203,39 +237,12 @@ async def test_two_administrators_demoting_each_other_leaves_one(
 
     Asserts the outcome, not the mechanism: exactly one wins, either one.
     """
-    import asyncio  # noqa: PLC0415
-
-    from core.database import get_session_factory  # noqa: PLC0415
-
-    other = User(
-        username="admin_two",
-        email="admin.two@example.com",
-        password_hash="x",
-        role=UserRole.ADMIN,
-    )
+    other = _admin("admin_two")
     session.add(other)
     registered_user.role = UserRole.ADMIN
     await session.commit()
 
-    first, second = registered_user.id, other.id
-    factory = get_session_factory()
-
-    async def demote(actor_id: uuid.UUID, target_id: uuid.UUID) -> str:
-        async with factory() as own_session:
-            try:
-                await user_admin.change_role(
-                    own_session,
-                    actor=_actor(actor_id),
-                    target_id=target_id,
-                    role=UserRole.TRADER,
-                )
-            except LastAdministrator:
-                return "refused"
-            return "applied"
-
-    outcomes = await asyncio.gather(
-        demote(first, second), demote(second, first)
-    )
+    outcomes = await _demote_each_other(registered_user.id, other.id)
 
     assert sorted(outcomes) == ["applied", "refused"]
 
@@ -252,12 +259,7 @@ async def test_a_demotion_already_applied_concurrently_is_not_logged_twice(
     session: AsyncSession, registered_user: User
 ) -> None:
     """The second of two demotions finds a trader and writes nothing."""
-    target = User(
-        username="admin_three",
-        email="admin.three@example.com",
-        password_hash="x",
-        role=UserRole.ADMIN,
-    )
+    target = _admin("admin_three")
     session.add(target)
     registered_user.role = UserRole.ADMIN
     await session.commit()
@@ -293,14 +295,7 @@ async def test_a_suspended_administrator_does_not_count_toward_the_last_one(
     session: AsyncSession, registered_user: User
 ) -> None:
     """The guard counts who can act, not who the column calls admin. ADR 0007."""
-    suspended = User(
-        username="admin_ghost",
-        email="admin.ghost@example.com",
-        password_hash="x",
-        role=UserRole.ADMIN,
-        is_suspended=True,
-    )
-    session.add(suspended)
+    session.add(_admin("admin_ghost", suspended=True))
     registered_user.role = UserRole.ADMIN
     await session.commit()
 
@@ -314,13 +309,7 @@ async def test_a_suspended_administrator_can_still_be_demoted(
     session: AsyncSession, registered_user: User
 ) -> None:
     """Excluded from the count, but still a legal target. ADR 0007."""
-    suspended = User(
-        username="admin_ghost",
-        email="admin.ghost@example.com",
-        password_hash="x",
-        role=UserRole.ADMIN,
-        is_suspended=True,
-    )
+    suspended = _admin("admin_ghost", suspended=True)
     session.add(suspended)
     registered_user.role = UserRole.ADMIN
     await session.commit()
@@ -337,44 +326,12 @@ async def test_a_suspended_administrator_does_not_save_a_mutual_demotion(
     session: AsyncSession, registered_user: User
 ) -> None:
     """The race again, with a suspended administrator who must not count."""
-    import asyncio  # noqa: PLC0415
-
-    from core.database import get_session_factory  # noqa: PLC0415
-
-    ghost = User(
-        username="admin_ghost",
-        email="admin.ghost@example.com",
-        password_hash="x",
-        role=UserRole.ADMIN,
-        is_suspended=True,
-    )
-    other = User(
-        username="admin_two",
-        email="admin.two@example.com",
-        password_hash="x",
-        role=UserRole.ADMIN,
-    )
-    session.add_all([ghost, other])
+    other = _admin("admin_two")
+    session.add_all([_admin("admin_ghost", suspended=True), other])
     registered_user.role = UserRole.ADMIN
     await session.commit()
 
-    first, second = registered_user.id, other.id
-    factory = get_session_factory()
-
-    async def demote(actor_id: uuid.UUID, target_id: uuid.UUID) -> str:
-        async with factory() as own_session:
-            try:
-                await user_admin.change_role(
-                    own_session,
-                    actor=_actor(actor_id),
-                    target_id=target_id,
-                    role=UserRole.TRADER,
-                )
-            except LastAdministrator:
-                return "refused"
-            return "applied"
-
-    outcomes = await asyncio.gather(demote(first, second), demote(second, first))
+    outcomes = await _demote_each_other(registered_user.id, other.id)
     assert sorted(outcomes) == ["applied", "refused"]
 
     session.expunge_all()

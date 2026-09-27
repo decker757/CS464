@@ -18,12 +18,16 @@ from service import auth_service
 from unit_test.conftest import VALID_PASSWORD
 
 
+async def _account_count(session: AsyncSession) -> int:
+    return (await session.execute(select(func.count()).select_from(User))).scalar_one()
+
+
 async def test_register_creates_exactly_one_account(
     session: AsyncSession, register_request: RegisterRequest
 ) -> None:
     user, _ = await auth_service.register(session, register_request)
 
-    count = (await session.execute(select(func.count()).select_from(User))).scalar_one()
+    count = await _account_count(session)
     assert count == 1
     assert user.username == "ernest_t"
 
@@ -147,7 +151,7 @@ async def test_a_retry_leaves_exactly_one_account(
     with pytest.raises(DuplicateUser):
         await auth_service.register(session, register_request)
 
-    count = (await session.execute(select(func.count()).select_from(User))).scalar_one()
+    count = await _account_count(session)
     assert count == 1
 
 
