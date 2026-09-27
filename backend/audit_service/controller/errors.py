@@ -1,8 +1,4 @@
-"""The one place a domain error becomes an HTTP response.
-
-Keeping this mapping in a single handler is what lets the routes stay free of
-status codes and lets the service layer raise plain exceptions.
-"""
+"""The one place a domain error becomes an HTTP response."""
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse

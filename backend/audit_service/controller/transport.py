@@ -1,11 +1,7 @@
-"""How the access token reaches this service.
+"""Where the access token is read from. ADR 0002.
 
-Read-only by design. Unlike the auth service's transport, there is no
-set_auth_cookies here: this service consumes a session it did not create and
-has no business issuing one.
-
-The precedence rule is copied deliberately, not shared. It is part of ADR
-0002's contract and both services have to agree on it.
+Read-only: this service never issues a session. Copied from the other services
+on purpose, not shared. ADR 0012.
 """
 
 from __future__ import annotations
@@ -18,11 +14,10 @@ _BEARER_PREFIX = "bearer "
 
 
 def extract_access_token(request: Request) -> str | None:
-    """Authorization header wins over the cookie.
+    """Return the access token from the Authorization header, else the cookie.
 
-    An explicitly attached credential should beat one the browser sent
-    ambiently, so a service call carrying its own token is never silently
-    reinterpreted as whoever happens to be logged in.
+    ADR 0002: the header wins. A bearer header with an empty token returns
+    None without falling back to the cookie.
     """
     header = request.headers.get("Authorization", "")
     if header.lower().startswith(_BEARER_PREFIX):

@@ -1,8 +1,4 @@
-"""Composition root for the audit service.
-
-Wires configuration, the database and the routes together. This is the only
-place that decides which concrete implementations run.
-"""
+"""Composition root for the audit service: config, database and routes. [4.3] #15"""
 
 from __future__ import annotations
 
@@ -18,12 +14,8 @@ from controller.routes import router as audit_router
 from core.config import get_settings
 from core.database import dispose_engine
 
-# Note what is missing, if you are comparing this with the other two services:
-# no `from model import entities` and no `create_all` in the lifespan below.
-# Both exist there to register the mappers before DDL is issued, and this
-# service issues none — `audit.admin_actions` is created by sql/02-schemas.sql
-# and owned by the superuser. The mapper is registered by the service layer
-# that queries it, which is the only thing that needs it.
+# No `create_all` and no `model.entities` import, unlike the other services:
+# sql/02-schemas.sql creates the table and the superuser owns it. ADR 0006.
 
 logging.basicConfig(level=logging.INFO)
 
@@ -49,8 +41,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # allow_credentials with an exact origin list, never "*", or the browser
-    # silently drops the auth cookie it needs to send here.
+    # ADR 0002: credentialed CORS needs an exact origin list, never "*".
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
