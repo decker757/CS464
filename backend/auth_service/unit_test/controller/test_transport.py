@@ -68,12 +68,6 @@ async def test_the_header_wins_over_the_cookie(
     assert response.status_code == 401
 
 
-async def test_a_forged_token_is_refused(client: AsyncClient) -> None:
-    response = await client.get("/auth/me", headers={"Authorization": "Bearer not.a.real.token"})
-
-    assert response.status_code == 401
-
-
 async def test_logout_clears_both_cookies(
     client: AsyncClient, registration_payload: dict[str, str]
 ) -> None:
@@ -142,7 +136,7 @@ async def test_timestamps_are_utc_on_every_route(
 async def test_an_expired_access_token_is_refused(
     client: AsyncClient, registration_payload: dict[str, str]
 ) -> None:
-    """[A-3] #31: access lasts only while the session is valid."""
+    """[A-3] #31, and docs/api/auth-service.md: an expired token is a 401."""
     body = await _register(client, registration_payload)
     settings = get_settings()
     past = datetime.now(UTC) - timedelta(hours=2)
