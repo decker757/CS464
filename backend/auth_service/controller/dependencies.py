@@ -7,8 +7,8 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import security
 from controller import transport
+from core import security
 from core.database import get_session
 from core.errors import AccountSuspended, InvalidToken, NotAnAdministrator
 from core.roles import UserRole
