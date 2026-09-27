@@ -50,3 +50,14 @@ def test_a_valid_token_yields_its_claims(role: UserRole) -> None:
     assert claims.username == "ihsan"
     assert claims.role is role
     assert claims.is_admin is (role is UserRole.ADMIN)
+
+
+def test_a_token_from_another_issuer_is_rejected() -> None:
+    """Covers a token minted for a different system that shares our secret.
+
+    Not a copy of the shared test: it proves this service's seam passes the
+    issuer at all, which the valid-token test above cannot.
+    """
+    token = mint_token(uuid.uuid4(), issuer="somebody-else")
+
+    assert security.decode_access_token(token) is None
