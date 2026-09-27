@@ -26,6 +26,9 @@ src/api/          the axios instance, one file per backend service
                   functions, and error parsing (errors.ts)
 src/components/ui/  the shared building blocks: Button, TextInput, Field,
                   Card, Badge, Logo, icons. Look here before styling anything
+src/components/layout/  page frames used by more than one page: TopBar,
+                  AppLayout. A frame for one feature lives with that
+                  feature, like components/auth/AuthLayout
 src/components/   reusable pieces; feature-specific ones in a subfolder
                   (components/auth/, components/landing/)
 src/pages/        one per route; composes components and owns page state
