@@ -1,7 +1,8 @@
 """Appending to the shared audit log, as every writing service does. [4.3] #15
 
-One copy because every writer must behave identically, and a drifted copy would
-fail silently. ADR 0006 and its #135 amendment. Three details are load-bearing:
+One copy because every writer must behave identically, and a copy that drifted
+into committing would break atomicity silently. ADR 0006 and its #135
+amendment. Three details are load-bearing:
 
 - `record` inserts on the caller's session and never commits, so the entry and
   the admin action it describes commit together or not at all. That is the
@@ -14,6 +15,9 @@ fail silently. ADR 0006 and its #135 amendment. Three details are load-bearing:
 
 What differs by design stays in each service: its `AdminAction` vocabulary in
 `model/audit.py`, and the `source_service` it reports in `core/audit.py`.
+
+The only module here that needs SQLAlchemy. The realtime service has none in
+its image (ADR 0010) and must never import this.
 """
 
 from __future__ import annotations
