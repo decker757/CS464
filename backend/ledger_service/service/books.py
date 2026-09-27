@@ -34,6 +34,33 @@ MIN_OUTCOMES = 2
 _KEY_PREFIX = "market-open"
 
 
+def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
+    """Refuse an outcome list that could be stored but never priced. ADR 0017.
+
+    A rule about writing an immutable book (ADR 0005), unreachable through a
+    correct market_service. Fewer than two outcomes cannot be traded against.
+    A repeated id or position would fail a unique constraint inside the
+    savepoint and be mistaken for a lost first-touch race: a 500, not a 503.
+    """
+    if len(outcomes) < MIN_OUTCOMES:
+        raise MarketTermsUnavailable
+    # Non-negative: the column has no CHECK, but `model/schemas.py` declares
+    # `ge=0`, so a negative one would commit and then fail serialisation on
+    # every later read of that book, a permanent 500.
+    if any(o.position < 0 for o in outcomes):
+        raise MarketTermsUnavailable
+    if len({o.outcome_id for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable
+    if len({o.position for o in outcomes}) != len(outcomes):
+        raise MarketTermsUnavailable
+
+
+async def find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
+    """This market's book, or None. Unlocked."""
+    stmt = select(MarketBook).where(MarketBook.market_id == market_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 def market_open_key(market_id: uuid.UUID) -> str:
     return f"{_KEY_PREFIX}:{market_id}"
 
@@ -151,30 +178,3 @@ async def ensure_open(
     )
 
     return book
-
-
-async def find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
-    """This market's book, or None. Unlocked."""
-    stmt = select(MarketBook).where(MarketBook.market_id == market_id)
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
-    """Refuse an outcome list that could be stored but never priced. ADR 0017.
-
-    A rule about writing an immutable book (ADR 0005), unreachable through a
-    correct market_service. Fewer than two outcomes cannot be traded against.
-    A repeated id or position would fail a unique constraint inside the
-    savepoint and be mistaken for a lost first-touch race: a 500, not a 503.
-    """
-    if len(outcomes) < MIN_OUTCOMES:
-        raise MarketTermsUnavailable
-    # Non-negative: the column has no CHECK, but `model/schemas.py` declares
-    # `ge=0`, so a negative one would commit and then fail serialisation on
-    # every later read of that book, a permanent 500.
-    if any(o.position < 0 for o in outcomes):
-        raise MarketTermsUnavailable
-    if len({o.outcome_id for o in outcomes}) != len(outcomes):
-        raise MarketTermsUnavailable
-    if len({o.position for o in outcomes}) != len(outcomes):
-        raise MarketTermsUnavailable

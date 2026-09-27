@@ -49,6 +49,44 @@ class EntryPage:
         return self.next_cursor is not None
 
 
+def _ordered_query(account_id: uuid.UUID) -> Select[tuple[Entry]]:
+    """Newest first, tie broken by id, matching `ix_ledger_entries_account_feed`.
+
+    Both legs of a movement share a timestamp, so without the id a page
+    boundary could drop one side of a trade.
+    """
+    return (
+        select(Entry)
+        .where(Entry.account_id == account_id)
+        .order_by(Entry.created_at.desc(), Entry.id.desc())
+    )
+
+
+async def _with_running_balance(
+    session: AsyncSession, account_id: uuid.UUID, entries: list[Entry]
+) -> list[HistoryRow]:
+    """Pair each entry with what the account held once it had landed.
+
+    One aggregate anchored at the page's newest row, then subtraction walking
+    back. The anchor keeps a page's figures fixed while entries are appended.
+    """
+    if not entries:
+        return []
+
+    newest = entries[0]
+    running = await accounts.balance_of(
+        session, account_id, as_at=(newest.created_at, newest.id)
+    )
+
+    rows: list[HistoryRow] = []
+    for entry in entries:
+        rows.append(HistoryRow(entry=entry, balance_after=running))
+        # Walking back in time: undo this entry to get the next one's balance.
+        running -= entry.amount
+
+    return rows
+
+
 async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
     """What this user holds right now, derived from their entries. [B-2] #33."""
     # Mints the starting grant if this is the user's first read. [B-1] #32.
@@ -95,42 +133,4 @@ async def history_for_user(
     return EntryPage(
         rows=await _with_running_balance(session, account.id, page),
         next_cursor=next_cursor,
-    )
-
-
-async def _with_running_balance(
-    session: AsyncSession, account_id: uuid.UUID, entries: list[Entry]
-) -> list[HistoryRow]:
-    """Pair each entry with what the account held once it had landed.
-
-    One aggregate anchored at the page's newest row, then subtraction walking
-    back. The anchor keeps a page's figures fixed while entries are appended.
-    """
-    if not entries:
-        return []
-
-    newest = entries[0]
-    running = await accounts.balance_of(
-        session, account_id, as_at=(newest.created_at, newest.id)
-    )
-
-    rows: list[HistoryRow] = []
-    for entry in entries:
-        rows.append(HistoryRow(entry=entry, balance_after=running))
-        # Walking back in time: undo this entry to get the next one's balance.
-        running -= entry.amount
-
-    return rows
-
-
-def _ordered_query(account_id: uuid.UUID) -> Select[tuple[Entry]]:
-    """Newest first, tie broken by id, matching `ix_ledger_entries_account_feed`.
-
-    Both legs of a movement share a timestamp, so without the id a page
-    boundary could drop one side of a trade.
-    """
-    return (
-        select(Entry)
-        .where(Entry.account_id == account_id)
-        .order_by(Entry.created_at.desc(), Entry.id.desc())
     )
