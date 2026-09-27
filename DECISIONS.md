@@ -2149,6 +2149,28 @@ because `autoflush=False` and `accounts.lock` issues only SELECTs — but it is 
 detection, not a proof. A future caller that flushes before calling `post` sits
 outside it, and the entry above is still the rule that protects that caller.
 
+*Amended 2026-09-27 in #139: a flushing caller no longer sits outside it.* A
+flushed row leaves `session.new` and a replay's commit still lands it, and
+`accounts.ensure` — which every caller uses — flushes inside a SAVEPOINT it
+releases. `core/database.py::has_pending_writes` now also reports a
+`session.info` flag that an `after_flush` listener sets and the end of the
+outermost transaction clears. It still sees ORM writes only, not a Core
+`insert()` executed directly, so it remains a detection and the entry above is
+still the rule. It errs toward True: a flush rolled back to a SAVEPOINT counts
+until the transaction ends, which fails closed where this is the alarm. In the
+ledger that rollback follows only a *failed* flush (`accounts.ensure`,
+`books.ensure_open`, `posting.post`), and a failed flush sets nothing.
+
+That reopens the first bullet above, whose "persistent rather than pending" is
+now a flush the check counts. It still holds, for a different reason: two first
+reads racing on one new account cannot both flush it. The second INSERT waits
+on the first's uncommitted row and fails once that commits, so the request that
+flushed is always the one that writes, and the one that replays flushed
+nothing. The pool account on a lost first-touch race is the same shape. The
+tests under "Neither existing caller changes behaviour" still pass unchanged.
+`books.ensure_open`'s entry assertion shares the function, so it now refuses a
+caller that flushed first too — which its rollback would otherwise discard.
+
 Whether the caller had pending work is recorded on entry to `post`, not asked at
 each branch. The second branch is reached after the SAVEPOINT has flushed the
 caller's writes and rolled them back, which expires them, so the session looks
