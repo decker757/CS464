@@ -1,21 +1,8 @@
-"""The write path. [F-1] #41
+"""The write path: `post` moves credits. [F-1] #41, ADR 0009.
 
-One function, `post`, and everything the issue asks for is in it: matching
-debit and credit rows, an idempotency key, and enough serialization that
-concurrent trades cannot overdraw an account.
-
-HTTP is not mentioned here, and there is no route that reaches this function
-yet. [T-2] #22 is the ticket with a caller — a trading service that prices a
-trade and then issues one transactional write — and it is also the ticket that
-has to decide how such a caller authenticates, because a trader's own token
-reaching a write endpoint would let anyone post themselves credits. That
-decision belongs with the caller. What lands here is the primitive, the rules,
-and the tests that hold them, so the endpoint is a route rather than a second
-opinion about what a transaction is.
-
-Its first real caller is already in this repository: `service/grants.py` mints
-the starting grant through exactly this path, so the idempotency and the
-double entry are exercised end to end rather than only in the suite.
+Every movement is legs that sum to zero, keyed for idempotency and
+fingerprinted so a reused key is told apart from a retry, and serialised on
+account row locks so concurrent trades cannot overdraw an account.
 """
 
 from __future__ import annotations
@@ -47,13 +34,9 @@ from model.entities import (
 )
 from service import accounts
 
-# The unit every amount is rounded to before it is compared, checked or
-# hashed. Numeric(18, 4) rounds on the way in regardless, and a check performed
-# against an unrounded value is a check against a number the database is about
-# to change: 0.00005 would pass a "the legs balance" test in Python and arrive
-# in Postgres as 0.0001, one hundredth of a cent that no later sum can account
-# for. Same trap `model/schemas.py` in the market service documents for its
-# pricing columns.
+# Every amount is rounded to the column's scale before it is compared,
+# checked or hashed. A check on an unrounded value checks a number Postgres is
+# about to change: 0.00005 balances in Python and lands as 0.0001.
 _QUANTUM = Decimal(1).scaleb(-AMOUNT_SCALE)
 
 ZERO = Decimal(0)
@@ -80,39 +63,19 @@ async def post(
     context: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> Transaction:
-    """Record one movement of credits, or return the one this key already named.
+    """Record one movement of credits, or replay the one this key already named.
 
-    Committed by the time it returns, like every other write in this
-    repository's service layers.
+    Commits before it returns, on every path, so a caller may write nothing
+    after it (D-032). Raises `UnbalancedTransaction`, `IdempotencyKeyReused`,
+    `InsufficientFunds`, and `PendingWritesOnReplay` when a replay would
+    commit the caller's pending writes.
 
-    The order below is the design:
+    The order is the design: round, refuse unbalanced legs, lock every account
+    ascending by id (ADR 0009), then look the key up and check overdrafts under
+    that lock. Looked up before the lock, a retry racing its original is
+    refused as an overdraft for a trade that succeeded (ADR 0015).
 
-    1. **Round first.** Everything after this compares stored values.
-    2. **Refuse legs that do not sum to zero.** Credits move; they are not
-       created. A caller whose legs do not balance has a bug, and letting it
-       through would make the ledger unable to prove anything about itself.
-    3. **Lock every account named, ascending by id**, before reading anything
-       that decides what happens next. This is the step that makes both of
-       the checks below meaningful: without it, two concurrent buys both read
-       the same balance and both pass.
-    4. **Replay an existing key**, looked up under that lock. Identical
-       request, identical answer, nothing written. A different request under
-       the same key is refused rather than answered with somebody else's
-       transaction.
-
-       Under the lock and not before it, and the order matters. A retry that
-       races the request it is retrying — a client resending a trade whose
-       response was lost while the original is still in flight — finds no
-       transaction either way until the original commits. Looked up before
-       the lock, the retry then waits at the lock for the original, and judges
-       its overdraft against a balance the original has just reduced: a trade
-       that has in fact succeeded is answered `InsufficientFunds`. Looked up
-       after, it finds the committed transaction and is answered with it.
-    5. **Check for overdrafts against the balance derived under that lock.**
-    6. **Write the transaction and its entries, and commit.**
-
-    `now` is injectable so a test can assert on a timestamp without freezing
-    the system clock, the same as `service/validation.py` in the market service.
+    `now` is injectable so a test can assert on a timestamp.
     """
     now = now or datetime.now(UTC)
     legs = [Leg(account=leg.account, amount=_quantize(leg.amount)) for leg in legs]
@@ -120,30 +83,24 @@ async def post(
     _require_balanced(legs)
     fingerprint = _fingerprint(kind, legs)
 
-    # "`posting.post` refuses to replay into a dirty session", on both of the
-    # branches below that replay. Recorded here rather than asked at each
-    # one, because the second is reached after the SAVEPOINT's flush and
-    # rollback, which expire the caller's pending writes — by then the
-    # session looks clean whatever the caller was holding.
+    # Recorded on entry, not asked at each replay branch: the second is reached
+    # after the SAVEPOINT's rollback has expired the caller's writes, so the
+    # session looks clean there. DECISIONS.md, "`posting.post` refuses to
+    # replay into a dirty session".
     caller_pending = bool(session.new or session.dirty or session.deleted)
 
     await accounts.lock(session, [leg.account.id for leg in legs])
 
     existing = await find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
-        # This commit is about to flush the whole session, so a caller
-        # holding pending writes would have them committed alongside a
-        # transaction that wrote no entries of its own — [T-2] #22's trade
-        # path is the first caller that can reach this with `q`,
-        # `state_version` and a position still pending. Raised before the
-        # commit, not rolled back after it: there is no way to discard only
-        # the caller's writes once this point is reached.
+        # The commit below would flush the caller's pending writes (a trade's
+        # `q` and position) beside a transaction that wrote nothing. Raised
+        # before it: nothing can discard only the caller's writes.
         if caller_pending:
             raise PendingWritesOnReplay
 
-        # Committed although nothing was written, because the locks above are
-        # held until this transaction ends and a replay should not hold them
-        # for the rest of the caller's request.
+        # Committed although nothing was written, to release the account
+        # locks rather than hold them for the rest of the request. ADR 0015.
         transaction = _replay(existing, fingerprint)
         await session.commit()
         return transaction
@@ -162,9 +119,9 @@ async def post(
         async with session.begin_nested():
             session.add(transaction)
             session.add_all(
-                # created_at copied from the transaction rather than defaulted
-                # per row, so both halves of one movement carry the identical
-                # timestamp and a history page cannot split them.
+                # created_at copied from the transaction, not defaulted per
+                # row, so both legs share one timestamp and a history page
+                # cannot split them.
                 Entry(
                     transaction=transaction,
                     account_id=leg.account.id,
@@ -175,19 +132,14 @@ async def post(
             )
             await session.flush()
     except IntegrityError:
-        # Two callers raced on one key and the lock above did not queue them,
-        # which it does whenever their legs share even one account — so their
-        # legs named none in common, and this is a key reused for different
-        # money. Looked up again so `_replay` can say exactly that, with a
-        # savepoint so the caller's earlier work survives, the same shape as
-        # the insert race in `market_service.save`.
+        # A race on one key that the account locks did not queue, so the legs
+        # share no account: a key reused for different money. Re-read so
+        # `_replay` refuses it; the savepoint keeps the caller's earlier work.
         existing = await find_by_idempotency_key(session, idempotency_key)
         if existing is None:
             raise
-        # The same refusal as the branch above. The savepoint's rollback has
-        # discarded the caller's writes rather than committing them, but the
-        # caller still gets back somebody else's transaction as though its
-        # own had landed, holding entities that rollback has expired.
+        # Same refusal: the rollback discarded the caller's writes, but it
+        # would still get another request's transaction back as its own.
         if caller_pending:
             raise PendingWritesOnReplay
         transaction = _replay(existing, fingerprint)
@@ -199,26 +151,18 @@ async def post(
 async def find_by_idempotency_key(
     session: AsyncSession, idempotency_key: str
 ) -> Transaction | None:
-    """The transaction this key already named, if there is one.
+    """The transaction this key already named, or None.
 
-    Public because one caller needs to ask whether a movement has happened
-    without describing the movement it would otherwise make. `post` cannot
-    answer that: it takes the legs first and compares them, so asking it costs
-    a fingerprint over amounts the caller may no longer be able to reproduce.
-    `service/grants.py` is that caller, and its docstring has the case.
+    Public for `grants.ensure_granted`, which must ask whether a movement
+    happened without building its legs; its docstring has the case.
     """
     stmt = select(Transaction).where(Transaction.idempotency_key == idempotency_key)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
 def _replay(existing: Transaction, fingerprint: str) -> Transaction:
-    """Hand back the transaction this key already named, if it is the same one.
-
-    The fingerprint is what separates a retry from a mistake. A caller that
-    resends an identical request wants the original answer and gets it. A
-    caller that reuses a key for different money is told so, because the
-    alternative is reporting that their new trade succeeded and showing them an
-    old one as evidence.
+    """The existing transaction if the fingerprint matches, else raise
+    `IdempotencyKeyReused`: a retry replays, a reused key is refused (ADR 0009).
     """
     if existing.request_fingerprint != fingerprint:
         raise IdempotencyKeyReused
@@ -226,11 +170,8 @@ def _replay(existing: Transaction, fingerprint: str) -> Transaction:
 
 
 def _require_balanced(legs: list[Leg]) -> None:
-    """Every transaction's entries sum to zero. The invariant, enforced once.
-
-    Two legs at minimum, because one leg that sums to zero is an amount of
-    zero, which `ck_entries_amount_nonzero` refuses anyway and which says
-    nothing when it appears on somebody's statement.
+    """Refuse legs that do not sum to zero, fewer than two legs, or a zero leg
+    (which `ck_entries_amount_nonzero` refuses anyway). ADR 0009.
     """
     if len(legs) < 2 or any(leg.amount == ZERO for leg in legs):
         raise UnbalancedTransaction
@@ -239,26 +180,12 @@ def _require_balanced(legs: list[Leg]) -> None:
 
 
 async def _refuse_overdrafts(session: AsyncSession, legs: list[Leg]) -> None:
-    """No USER account may end below zero. [T-2] #22.
+    """Raise `InsufficientFunds` if any USER account would end below zero.
 
-    Netted per account before the check, so a transaction that debits and
-    credits the same account is judged on what it actually does to it.
-
-    Only accounts losing credits are read. An account that only gains cannot
-    be overdrawn by this transaction, and a balance query per leg would double
-    the work of every trade for an answer nobody uses.
-
-    **The check is an allowlist on USER, not a denylist of exempt kinds**, and
-    that is why [F-7] #96 added MARKET_POOL without touching this function. A
-    pool is meant to go negative: LMSR pays out up to `b*ln(n)` more than it
-    collects, so a market whose subsidy is exhausted is a market working as
-    designed, and `test_an_unfunded_pool_is_allowed_to_go_negative` pins it.
-    PLATFORM is the same shape — its balance is minus the credits in
-    circulation, so the house being negative is the ledger working.
-
-    Only a USER account holds money somebody could spend twice, which is the
-    rule; the exempt list is whatever is left over from it. Adding a kind here
-    means deciding it holds spendable money, not remembering to exempt it.
+    Netted per account, and only accounts losing credits are read. An
+    allowlist on USER, not a list of exempt kinds: PLATFORM and MARKET_POOL
+    are meant to go negative (ADR 0009, D-009). Adding a kind here means
+    deciding it holds spendable money.
     """
     for account, delta in _net_by_account(legs).values():
         if delta >= ZERO or account.kind is not AccountKind.USER:
@@ -270,12 +197,8 @@ async def _refuse_overdrafts(session: AsyncSession, legs: list[Leg]) -> None:
 
 
 def _net_by_account(legs: list[Leg]) -> dict[uuid.UUID, tuple[Account, Decimal]]:
-    """Keyed on the account id rather than the object.
-
-    One session hands out one object per row, so keying on identity would
-    usually work. It would stop working the day a caller assembles its legs
-    from two queries, and it would stop working silently, by checking one half
-    of an account's movement against a balance and ignoring the other.
+    """Each account's net movement, keyed on the account id, not the object:
+    legs assembled from two queries would otherwise be netted in halves.
     """
     netted: dict[uuid.UUID, tuple[Account, Decimal]] = {}
     for leg in legs:
@@ -287,10 +210,8 @@ def _net_by_account(legs: list[Leg]) -> dict[uuid.UUID, tuple[Account, Decimal]]
 def _fingerprint(kind: TransactionKind, legs: list[Leg]) -> str:
     """A stable hash of what this transaction does.
 
-    Sorted by account id so that the same movement described in a different leg
-    order hashes the same — a retry should not depend on a caller building its
-    list identically twice. The amounts are already quantized, so two Decimals
-    that Postgres would store as one value hash as one value.
+    Sorted by account id so leg order does not matter to a retry. Amounts are
+    already quantized, so values Postgres stores as one hash as one.
     """
     parts = sorted(f"{leg.account.id}:{leg.amount}" for leg in legs)
     raw = "|".join([kind.value, *parts])
@@ -298,11 +219,7 @@ def _fingerprint(kind: TransactionKind, legs: list[Leg]) -> str:
 
 
 def _quantize(amount: Decimal) -> Decimal:
-    """Round the way the column will, not the way Python prefers.
-
-    Decimal's default is banker's rounding and Postgres numeric rounds ties
-    away from zero. The difference is a hundredth of a cent on a value nobody
-    should be sending anyway, but it would land in the fingerprint, so a retry
-    that rounded one way would not match a transaction stored the other.
+    """Round half up, as Postgres numeric does, not banker's rounding: a
+    retry rounded the other way would not match the stored fingerprint.
     """
     return amount.quantize(_QUANTUM, rounding=ROUND_HALF_UP)

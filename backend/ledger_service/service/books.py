@@ -1,32 +1,11 @@
 """Opening a market's book, and funding its pool. [F-7] #96, D-008, D-009, D-010.
 
-The ledger has never heard of a market. ADR 0005 has `b` and the subsidy
-crossing at publish as an immutable snapshot, and that handoff was never
-built. D-008 resolves it as a lazy pull on first touch, the same shape as the
-signup grant in `service/grants.py`: the first request that needs a market's
-book finds none, reads the terms from market_service's public detail
-endpoint, and creates the book — no event, no outbox, and no window in which
-the state is observably wrong, because the read that would observe the window
-is the read that closes it.
-
-**The commit boundary.** `posting.post` commits internally, and nothing here
-commits before it. `accounts.ensure` and the book/outcomes insert below each
-use `session.begin_nested()` — a SAVEPOINT within the still-open outer
-transaction — so nothing they write is durable on its own. The one
-`session.commit()` in this whole path is the one already inside `posting.post`,
-called last, and it commits everything pending in the transaction at once: the
-pool account, the book, its outcomes, and the funding transaction's entries,
-together. Raise before reaching it — `MarketNotPublished`,
-`MarketTermsUnavailable`, or an uncaught `IntegrityError` — and nothing in this
-function has been committed, which is what `test_a_refused_market_leaves_nothing_behind`
-and `test_an_unreachable_market_service_leaves_nothing_behind` pin. Nothing in
-`service/posting.py` changed to make this work; the ordering is the answer.
-
-The first-touch race (D-010) is handled the level it has to be: two concurrent
-callers both find no book and both attempt to insert one, and the primary key
-on `market_id` turns the loser's attempt into an `IntegrityError`, caught here,
-after which the loser re-reads the row the winner committed and carries on
-with it rather than with the object it built in memory.
+The first request that needs a book finds none, reads the terms from
+market_service, and creates it: a lazy pull on first touch (D-008). Every write
+before `posting.post` sits in a SAVEPOINT, and `post`'s commit is the only one,
+so the pool account, book, outcomes and funding land together or not at all
+(D-032). A concurrent first touch loses on the `market_id` primary key and
+re-reads the winner's book (D-010).
 """
 
 from __future__ import annotations
@@ -45,19 +24,13 @@ from service import accounts, market_terms, posting
 from service.market_terms import OutcomeTerms
 from service.posting import Leg
 
-# The fewest outcomes a market can be priced with. Public because
-# `service/book_prices.py` holds the same floor on the way out: a book
-# that already exists with fewer rows is as unpriceable as terms that
-# arrive with fewer. Two, the same floor
-# `market_service/service/validation.py::MIN_OUTCOMES` enforces at submission
-# — restated rather than imported, because `unit_test/test_import_boundary.py`
-# fails any `import market_service` from this service and is right to: that
-# import resolves under pytest and is an ImportError in the container.
+# The fewest outcomes a market can be priced with; `service/book_prices.py`
+# holds the same floor on the way out. Restated from market_service's
+# `validation.MIN_OUTCOMES`, not imported: `test_import_boundary.py` forbids
+# that import, which resolves under pytest and fails in the container.
 MIN_OUTCOMES = 2
 
-# Namespaced like every other idempotency key this system generates, so that
-# `market-open:<market_id>` cannot collide with `signup-grant:<user_id>` even
-# on the (never observed) day a market id and a user id are byte-identical.
+# Namespaced so it cannot collide with `signup-grant:<user_id>`.
 _KEY_PREFIX = "market-open"
 
 
@@ -74,28 +47,18 @@ async def ensure_open(
 ) -> MarketBook:
     """This market's book, opening and funding it first if nobody has yet.
 
-    The fast path is the whole point: an existing book is a plain read, with
-    no HTTP call and no idempotency lookup, so a market that has already been
-    touched once trades without depending on market_service being reachable
-    at all.
+    An existing book is a plain read with no HTTP call, so a touched market
+    trades without market_service. `access_token` is the caller's own,
+    forwarded and never minted (D-018). The cold path commits, and raises
+    `MarketNotPublished`, `MarketTermsUnavailable` or what `market_terms.fetch`
+    raises.
 
-    `access_token` is the caller's own — forwarded to market_service exactly
-    as D-018's Notes describe, and never minted here.
-
-    **Call this with nothing pending on the session.** The cold path below
-    rolls back before it reaches out to market_service, so a queued write
-    would be discarded rather than carried into the book's transaction. Every
-    caller today reaches here from a read that found no book, which is the
-    only shape this function was ever given.
+    **Call this with nothing pending on the session**: the cold path rolls
+    back before the terms pull (D-043).
     """
-    # The precondition above, enforced rather than described. The rollback
-    # below is unconditional on the cold path of a function that takes the
-    # *caller's* session, so a queued write would be discarded silently —
-    # and worse for [T-2] #22, a `with_for_update()` taken before this call
-    # would be released mid-request, which is exactly what ADR 0015 forbids.
-    # Every caller today arrives from a read, so this never fires; it is here
-    # so that the day one does not, it fails loudly at the call site instead
-    # of quietly at the lock.
+    # Enforced, not just documented: the rollback would discard a pending
+    # write silently, and release a lock taken before this call mid-request,
+    # which ADR 0015 forbids.
     assert not (session.new or session.dirty or session.deleted), (
         "ensure_open() rolls back on the cold path: call it with nothing "
         "pending on the session, or hoist the terms fetch out of it"
@@ -105,14 +68,8 @@ async def ensure_open(
     if book is not None:
         return book
 
-    # The read above found nothing and wrote nothing, and SQLAlchemy autobegan
-    # a transaction to run it — so without this the connection it holds stays
-    # checked out of the pool for the whole of the call below, which is bounded
-    # only by `market_terms`' 5s timeout. `pool_size` is 10: roughly twenty
-    # concurrent first touches, or one slow market_service, and every other
-    # route on this service waits for a connection too. Rolling back discards
-    # nothing (see the docstring) and the statements after the call open a
-    # fresh transaction on a connection taken back from the pool then.
+    # D-043: release the connection the empty read checked out, so the terms
+    # pull (up to 5s) holds none. Nothing is lost: the read wrote nothing.
     await session.rollback()
 
     terms = await market_terms.fetch(
@@ -121,55 +78,27 @@ async def ensure_open(
     if terms.published_at is None:
         raise MarketNotPublished
 
-    # ADR 0017: refused here, before `MarketBook` is constructed, rather than
-    # by `service/market_terms.py::_parse`. Both columns below are
-    # `nullable=False`, so a null reaching the insert would raise
-    # `IntegrityError` inside the savepoint below, where the `except
-    # IntegrityError` is watching for a lost first-touch race (D-010) — it
-    # would re-raise correctly, because `find` finds no committed book, but
-    # the caller would get a 500 describing nothing while the race handler
-    # quietly catches two unrelated things.
+    # ADR 0017: refused before the insert. A null would raise `IntegrityError`
+    # inside the savepoint, where the handler means only a lost first-touch
+    # race (D-010), and end as a 500 instead of this 503.
     if terms.liquidity_b is None or terms.seed_subsidy is None:
         raise MarketTermsUnavailable
-    # Not just null. `C(q) = b·ln(Σ e^(q_i/b))` divides by `b`, and
-    # `core/lmsr.py::_require_positive_b` refuses a non-positive one with a
-    # bare `ValueError` — not a `LedgerError`, so it reaches the client as an
-    # unmapped 500. The book is immutable under ADR 0005 and this value is
-    # read once, so a `b` of `0` written here is every price for that market,
-    # forever, and no later read corrects it. A negative subsidy is the same
-    # argument on the other column: it would fund the pool by taking credits
-    # out of it — and nothing downstream catches that: `_refuse_overdrafts`
-    # skips every non-USER account, so a negative pool is not refused, it is
-    # simply wrong until settlement fails to balance.
-    # market_service refuses both at submission
-    # (`_liquidity_problems`, "The seed subsidy must be greater than zero");
-    # this is the copy that matters, because it is the one standing in front
-    # of the write.
-    #
-    # `<= 0` on the subsidy, not `< 0`. A zero subsidy is not merely odd: it
-    # builds two legs of zero, and `posting.post` refuses those as
-    # `UnbalancedTransaction` — a 422 blaming the request for terms the
-    # upstream got wrong. Refused here it is the 503 the contract promises.
-    #
-    # `is_finite()` as well as `> 0`, because `Decimal` takes `"Infinity"`
-    # and `"NaN"` off the wire as readily as `"100"` and they slip a bare
-    # comparison in opposite ways. `Decimal("Infinity") <= 0` is simply
-    # `False`; `numeric(18, 4)` then refuses to store it, so the old
-    # behaviour was a `DataError` on first touch — not an `IntegrityError`,
-    # so it escaped the lost-race handler below as an unmapped 500.
-    # `Decimal("NaN") <= 0` *raises*, and `numeric(18, 4)` stores NaN
-    # perfectly happily, which makes NaN the only unpriceable `b` that can
-    # actually end up in a row — and the book is immutable.
+    # Finite first: `Decimal` takes "Infinity" and "NaN" off the wire.
+    # Infinity passes `<= 0` and then fails the column as an unmapped
+    # `DataError`; NaN makes `<= 0` raise, and `numeric` would store it.
     if not (terms.liquidity_b.is_finite() and terms.seed_subsidy.is_finite()):
         raise MarketTermsUnavailable
+    # The book is immutable (ADR 0005), so a bad `b` is a bare `ValueError`
+    # from `core/lmsr.py` on every price, forever. A zero subsidy builds zero
+    # legs `post` refuses as a 422; a negative one drains the pool, and no
+    # overdraft check covers a pool. market_service checks both at submission;
+    # this copy guards the write.
     if terms.liquidity_b <= 0 or terms.seed_subsidy <= 0:
         raise MarketTermsUnavailable
     _refuse_unpriceable(terms.outcomes)
 
-    # D-028: keyed on the market id, so the insert race below and this one
-    # fail the same way for the same reason. `accounts.ensure` recovers from
-    # its own race internally; by the time it returns here, every racing
-    # caller holds the one pool account that exists for this market.
+    # D-028: keyed on the market id, so every racing caller ends up holding
+    # the one pool account for this market.
     pool = await accounts.ensure(session, AccountKind.MARKET_POOL, market_id)
 
     now = datetime.now(UTC)
@@ -198,10 +127,8 @@ async def ensure_open(
             )
             await session.flush()
     except IntegrityError:
-        # D-010. The loser re-reads rather than keeps the object it built:
-        # that object was never committed, so its pool_account_id would name
-        # an account the caller could go on to use while nothing else agrees
-        # it exists.
+        # D-010. The loser re-reads rather than keep the uncommitted object
+        # it built.
         existing = await find(session, market_id)
         if existing is None:
             raise
@@ -209,9 +136,8 @@ async def ensure_open(
 
     platform = await accounts.ensure_platform(session)
 
-    # D-009. Idempotent on market_open_key: the winner's funding transaction
-    # replays for every loser and for every later touch, so a market is
-    # funded exactly once regardless of how many callers raced to open it.
+    # D-009. Idempotent on `market_open_key`, so racing callers replay the
+    # winner's funding and a market is funded once.
     await posting.post(
         session,
         idempotency_key=market_open_key(market_id),
@@ -228,54 +154,24 @@ async def ensure_open(
 
 
 async def find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
-    """This market's book, or None. Unlocked.
-
-    Public because `service/market_status.py` needs the same lookup to
-    decide which of the two 404s it owes the caller, and a second copy of
-    one `select` is a second place to change when how a book is located
-    changes.
-    """
+    """This market's book, or None. Unlocked."""
     stmt = select(MarketBook).where(MarketBook.market_id == market_id)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
 def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
-    """Terms that could be stored but never priced. Same defence as null `b`.
+    """Refuse an outcome list that could be stored but never priced. ADR 0017.
 
-    Moved here from `service/market_terms.py::_parse` by ADR 0017: these are
-    rules about *writing a book*, not about reading terms, and enforcing them
-    on a read would mean a market_service that began returning an unpriceable
-    outcome list starts refusing trades on books that have priced correctly
-    for weeks, against outcomes this service read once at first touch and
-    never rereads.
-
-    Three ways a well-formed outcome list is still unusable, and none of them
-    is reachable from a correct market service — `publish` re-runs every
-    submission rule, which requires between two and ten named outcomes with
-    server-assigned positions. They are refused for the reason the null-terms
-    check above is: the book is written once and is immutable under ADR 0005,
-    so a bad one is not something a later read corrects.
-
-    **Fewer than two outcomes.** `C(q) = b·ln(Σ e^(q_i/b))` over one outcome
-    prices it at 1.0 and over none is a sum with no terms. Either way the
-    market opens, funds its pool, and quotes a price nobody can trade against.
-
-    **A repeated outcome id or position.** Both are unique constraints on
-    `market_outcomes`, so these reach the database and fail there — inside
-    this function's caller's savepoint, where the `except IntegrityError` is
-    watching for a *lost first-touch race*. It re-raises correctly, because
-    `find` finds no committed book, but the request ends as a 500 on a
-    condition that is the upstream being wrong. Caught here it is the 503 the
-    contract promises, and the race handler keeps meaning only what it says.
+    A rule about writing an immutable book (ADR 0005), unreachable through a
+    correct market_service. Fewer than two outcomes cannot be traded against.
+    A repeated id or position would fail a unique constraint inside the
+    savepoint and be mistaken for a lost first-touch race: a 500, not a 503.
     """
     if len(outcomes) < MIN_OUTCOMES:
         raise MarketTermsUnavailable
-    # Non-negative, because `position` is how a client orders the outcomes and
-    # `model/schemas.py` declares it `ge=0` on the way back out. The column is
-    # a plain `Integer` with no CHECK, so a negative one commits happily into
-    # an immutable book and then fails *serialisation* on every later preview
-    # and snapshot — a pydantic `ValidationError`, which is not a
-    # `LedgerError`, so an unmapped 500 for that market permanently.
+    # Non-negative: the column has no CHECK, but `model/schemas.py` declares
+    # `ge=0`, so a negative one would commit and then fail serialisation on
+    # every later read of that book, a permanent 500.
     if any(o.position < 0 for o in outcomes):
         raise MarketTermsUnavailable
     if len({o.outcome_id for o in outcomes}) != len(outcomes):

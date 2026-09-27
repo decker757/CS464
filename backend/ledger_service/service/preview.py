@@ -1,56 +1,11 @@
 """What a trade will cost, before anybody commits to it. [T-1] #21.
 
-`quote()` is a read with one narrow exception: on a market nobody has touched
-yet, it is the caller D-008 and D-037 were written for, and it opens and funds
-that market's book before it can price anything. Every request after the first
-is a single indexed read that writes nothing (D-036).
+A read, except that on a market nobody has touched it opens and funds the book
+first (D-037). After that it is one unlocked read (D-013, D-036), shared with
+the snapshot through `service/book_prices.py`.
 
-**The order, because the criteria pin it.**
-
-1. `outcome_id`, `side` and `quantity` are already validated by the time this
-   is called — the controller parses them off the query string before this
-   function is reached, so nothing here touches the database or the network
-   on a malformed request.
-2. One statement joins `market_books` to `market_outcomes` (D-013), reading
-   `q`, `b` and `state_version` together, with no lock (D-012, D-036). It is
-   `service/book_prices.py`'s, shared with the snapshot, as is step 3.
-3. If it returns nothing, `service.books.ensure_open` opens the book — which
-   releases this read's transaction before it calls market_service (D-043,
-   "The cold path holds no connection across the terms pull") and takes the
-   handoff's own locks internally — and the read runs again. A second empty
-   read is `MarketBookIncomplete` (500), raised by `book_prices`.
-4. `outcome_id` is checked against the book once it exists. A bad one is
-   `UnknownOutcome` (422), and the book stays: it was real and published, and
-   the write is a market's first touch either way (D-037's Notes).
-5. A sell larger than that outcome's `q` is `InsufficientSharesOutstanding`
-   (409) — the no-shorting rule against shares outstanding, not a per-user
-   holding, which is [T-3] #23's under its own lock (D-012).
-6. `core/lmsr.py::cost_to_trade` prices the trade. `core/pricing.py`
-   quantizes the unsigned magnitude by side, and the sign is applied here:
-   negative on a buy, positive on a sell. A resulting `q` or a magnitude
-   above what `Numeric(18, 4)` can store is `QuantityTooLarge` (422) rather
-   than a quote [T-2] #22 could not persist (D-040), and both are checked
-   before anything is quantized. A total that quantizes to `0.0000` is
-   refused by `quantize_cost` itself — `ProceedsBelowTick` on a sell,
-   `CostBelowTick` on a buy — rather than quoted as real shares for nothing
-   (D-041).
-7. `average_price` is the quantized magnitude over `quantity`, through
-   `core/pricing.py::quantize_price` — display, not money. Run inside
-   `core/lmsr.py`'s pinned decimal context, the same one every other division
-   in this service's pricing path uses, so an ambient trap or precision never
-   reaches this one division.
-8. `prices` and `post_trade_prices` are every outcome, through the same
-   `core/pricing.py::quantize_price`, ordered by position.
-
-Nothing here checks whether the market is still open, and since [F-8] #109
-that is a decision rather than an absence. The book carries no status and
-`close_time` is not snapshotted (ADR 0014 leaves it in the future on an early
-close even), so the answer can only come from market_service —
-`service/market_status.py::ensure_trading` is the one place that asks, and
-ADR 0017 keeps it off this path on purpose: a preview is arithmetic, it moves
-no money, and putting an HTTP call on a route that fires on every keystroke
-would buy nothing a closed market's refused trade does not already buy.
-[T-2] #22 is the caller that gates.
+It never asks whether the market is open: a preview moves no money and fires
+on every keystroke, so the gate is the trade's alone (ADR 0017).
 """
 
 from __future__ import annotations
@@ -107,24 +62,21 @@ async def quote(
 ) -> Quote:
     """Price one trade against this market's current state.
 
-    `access_token` is the caller's own, forwarded to `books.ensure_open`
-    unchanged — this function mints nothing and never sees a raw HTTP
-    response itself; that belongs to `service/market_terms.py`, reached
-    through the cold path.
+    Raises `UnknownOutcome`; `InsufficientSharesOutstanding` for a sell above
+    the outcome's `q` (the caller's own holding is the trade's check); and
+    `QuantityTooLarge` for a cost or `q` beyond `Numeric(18, 4)` (D-040).
+    `quantize_cost` refuses a total below one tick (D-041). On a cold market
+    it opens the book, forwarding `access_token` unchanged.
     """
-    # Coerced before the `is` comparisons below. `Side` is a `StrEnum`, so
-    # `"sell" is Side.SELL` is False and a raw string would fall through every
-    # one of them as a buy.
+    # Coerced before the `is` comparisons below: `"sell" is Side.SELL` is
+    # False, so a raw string would fall through every one of them as a buy.
     side = Side(side)
     rows = await book_prices.read_or_open(
         session, market_id, access_token=access_token, transport=transport
     )
 
-    # `read_or_open` has already refused a book this service cannot price —
-    # fewer rows than `MIN_OUTCOMES`, or a `b` the engine cannot use — so
-    # everything below is arithmetic on a book known to be priceable. That
-    # guard lives there rather than here because the snapshot reads through
-    # the same function and needs the same answer.
+    # `read_or_open` has refused an unpriceable book, so this is arithmetic
+    # on a priceable one.
     state_version = rows[0].state_version
     b = rows[0].liquidity_b
     ids = [row.outcome_id for row in rows]
@@ -144,10 +96,9 @@ async def quote(
     with _engine_context():
         after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
 
-    # D-040, both halves: [T-2] #22 writes the cost *and* the resulting `q`
-    # into `Numeric(18, 4)`, and a quote for either one it cannot store is a
-    # quote it cannot honour. Checked before quantizing, because quantizing a
-    # value wider than the ambient 28 digits raises `InvalidOperation`.
+    # D-040: the trade stores both the cost and the new `q` in
+    # `Numeric(18, 4)`. Checked before quantizing, which raises
+    # `InvalidOperation` past the ambient 28 digits.
     if after_q[index] > MAX_MAGNITUDE:
         raise QuantityTooLarge
 
@@ -160,12 +111,9 @@ async def quote(
 
     magnitude = quantize_cost(raw, side=side)
     total = -magnitude if side is Side.BUY else magnitude
-    # `quantize_price`, not a third hand-rolled copy of it: an average
-    # price is a price, and `core/pricing.py` owns that rounding rule for
-    # every price this service publishes. The division stays inside the
-    # engine's pinned context so an ambient trap or precision cannot reach
-    # it; the rounding after it is the same half-up at scale 4 the
-    # snapshot and the preview's own `prices` take.
+    # An average price is a price, so `quantize_price` rounds it (D-052). The
+    # division runs in the engine's pinned context, out of reach of an
+    # ambient trap or precision.
     with _engine_context():
         average_price = quantize_price(magnitude / quantity)
 
