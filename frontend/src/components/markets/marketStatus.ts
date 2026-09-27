@@ -1,12 +1,13 @@
 import type { PublicMarketSummary } from '../../api/marketApi'
+import type { Tone } from '../ui/Badge'
 
 export type MarketStatus = PublicMarketSummary['status']
 
-export const STATUS_CONFIG: Record<MarketStatus, { label: string; color: string; bg: string; border: string }> = {
-  open:               { label: 'Open',    color: '#16a34a', bg: 'rgba(22,163,74,0.1)',   border: 'rgba(22,163,74,0.25)' },
-  closed:             { label: 'Closed',  color: '#6b7280', bg: 'rgba(107,114,128,0.1)', border: 'rgba(107,114,128,0.25)' },
-  pending_resolution: { label: 'Pending', color: '#d97706', bg: 'rgba(217,119,6,0.1)',   border: 'rgba(217,119,6,0.25)' },
-  approved:           { label: 'Settled', color: '#2563eb', bg: 'rgba(37,99,235,0.1)',   border: 'rgba(37,99,235,0.25)' },
+export const STATUS_CONFIG: Record<MarketStatus, { label: string; tone: Tone }> = {
+  open:               { label: 'Open',    tone: 'success' },
+  closed:             { label: 'Closed',  tone: 'neutral' },
+  pending_resolution: { label: 'Pending', tone: 'warning' },
+  approved:           { label: 'Settled', tone: 'info' },
 }
 
 // Trading has stopped once the status leaves "open" OR the close time passes.
