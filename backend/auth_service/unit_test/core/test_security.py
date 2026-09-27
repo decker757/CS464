@@ -1,4 +1,4 @@
-"""Password hashing and token handling."""
+"""Password hashing and token handling. No database, no HTTP."""
 
 from __future__ import annotations
 
@@ -52,11 +52,7 @@ def test_access_token_round_trip(role: UserRole) -> None:
 
 
 def test_the_role_travels_as_a_plain_string_claim() -> None:
-    """The market service reads this claim without importing anything of ours.
-
-    Asserted on the wire format rather than through decode, because a change
-    here silently breaks a different service's authorisation.
-    """
+    """Asserted on the wire, since other services read this claim. ADR 0003."""
     token = security.create_access_token(uuid.uuid4(), "ernest_t", UserRole.ADMIN)
 
     payload = jwt.decode(

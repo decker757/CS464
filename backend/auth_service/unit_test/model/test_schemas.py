@@ -1,8 +1,4 @@
-"""Request and response contracts. Pure validation, no database.
-
-These are the rules the frontend sees as 422s, so they are worth asserting
-directly rather than only through a route.
-"""
+"""Request and response contracts: the rules the frontend sees as 422s. No database."""
 
 from __future__ import annotations
 
@@ -56,11 +52,7 @@ def test_valid_usernames_are_accepted(username: str) -> None:
 
 @pytest.mark.parametrize("username", [" ab", "ab ", "  ab  "])
 def test_username_length_is_counted_after_the_trim(username: str) -> None:
-    """`" ab"` is three characters as sent and two as stored. #89
-
-    The limit is on the name that gets stored, so a space must not be what
-    carries a two-character name past it.
-    """
+    """`" ab"` is three characters as sent and two as stored. #89"""
     with pytest.raises(ValidationError):
         RegisterRequest(**_payload(username=username))
 
@@ -70,10 +62,9 @@ def test_username_length_is_counted_after_the_trim(username: str) -> None:
     [(" ernest_t ", "ernest_t"), (" " + "x" * 32, "x" * 32)],
 )
 def test_surrounding_spaces_are_trimmed_not_refused(raw: str, stored: str) -> None:
-    """Autofill adds a trailing space nobody can see, so it is trimmed. #89
+    """Autofill adds an invisible trailing space. #89
 
-    The second case is 33 characters as sent and a legal 32 once trimmed,
-    which the length rule refused while it ran before the trim.
+    The second case is 33 characters as sent and a legal 32 once trimmed.
     """
     assert RegisterRequest(**_payload(username=raw)).username == stored
 

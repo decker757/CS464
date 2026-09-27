@@ -1,8 +1,6 @@
-"""Settings parsing.
+"""Settings parsing, through the environment as the container reads it.
 
-These exercise the environment-variable path rather than the defaults. A
-misparsed setting crashes the container at import time, which no request-level
-test can catch, so the parsing itself needs direct coverage.
+A misparsed setting crashes the container at import, where no route test sees it.
 """
 
 from __future__ import annotations

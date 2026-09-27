@@ -1,13 +1,6 @@
-"""The rules for changing somebody else's role. [4.4] #16
+"""The rules for changing somebody else's role, without HTTP. [4.4] #16
 
-Asserted here, without HTTP, because they are business rules. What the
-controller is responsible for — the status code each of these maps to, and the
-shape of the response — is asserted in unit_test/controller.
-
-What is deliberately NOT tested here is "only an administrator may call this".
-That guard lives in `controller/dependencies.require_admin`, for the same
-reason the market service puts its there: it is the one layer that knows how a
-caller was identified.
+"Only an administrator may call this" is the controller's guard, tested there.
 """
 
 from __future__ import annotations
@@ -71,12 +64,7 @@ async def test_the_change_survives_the_transaction(
 async def test_the_new_role_reaches_the_next_access_token(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The point of the whole exercise. [1.1] #1's guard reads this claim.
-
-    The market service cannot look a role up — it holds no grant on auth.users
-    — so a promotion that did not reach the token would be a promotion that
-    never reached the service it was for.
-    """
+    """Other services learn the role only from the token. ADR 0003."""
     from core import security  # noqa: PLC0415
 
     await user_admin.change_role(
@@ -94,11 +82,7 @@ async def test_the_new_role_reaches_the_next_access_token(
 async def test_an_administrator_cannot_change_their_own_role(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The invariant. See CannotChangeOwnRole and ADR 0007.
-
-    Not a courtesy against a self-footgun: it is the only thing standing
-    between this endpoint and a database with no administrator in it.
-    """
+    """One of the two rules that keep an administrator in the database. ADR 0007."""
     with pytest.raises(CannotChangeOwnRole):
         await user_admin.change_role(
             session,
@@ -131,11 +115,7 @@ async def test_a_refused_self_change_leaves_the_role_alone(
 async def test_the_last_administrator_cannot_be_demoted(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The invariant stated as the property it exists for.
-
-    With one administrator, the only caller entitled to demote anybody is the
-    only person they may not target. The set cannot reach zero.
-    """
+    """With one administrator, the only caller may not target themselves."""
     registered_user.role = UserRole.ADMIN
     await session.commit()
 
@@ -159,11 +139,7 @@ async def test_an_unknown_target_is_refused(session: AsyncSession) -> None:
 async def test_asking_for_the_role_already_held_succeeds(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """A repeated request is the same outcome, not an error.
-
-    PATCH carries the role the user should end up with rather than a delta, so
-    a double-submitted form is not a bug report.
-    """
+    """PATCH names the end state, so a repeat is the same outcome, not an error."""
     updated = await user_admin.change_role(
         session, actor=_actor(), target_id=registered_user.id, role=UserRole.TRADER
     )
@@ -189,12 +165,7 @@ async def test_promoting_twice_is_the_same_as_promoting_once(
 async def test_the_only_administrator_cannot_be_demoted_by_anyone(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The self-change rule is not enough on its own, and this is the gap.
-
-    It stops the only administrator demoting *themselves*. It says nothing
-    about somebody else demoting them, which is reachable the moment two
-    administrators act at the same instant — see the concurrency test below.
-    """
+    """The gap the self-change rule leaves, reachable by a race. ADR 0007."""
     registered_user.role = UserRole.ADMIN
     await session.commit()
 
@@ -228,13 +199,9 @@ async def test_an_administrator_can_be_demoted_while_another_remains(
 async def test_two_administrators_demoting_each_other_leaves_one(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The race the self-change rule cannot see, run for real.
+    """The race the self-change rule cannot see, run for real. ADR 0007.
 
-    Each request targets somebody other than itself, so each passes that check.
-    Without the row lock on the demotion path both commit and the database is
-    left with no administrator at all — unreachable by any route, recoverable
-    only by hand. This asserts the outcome, not the mechanism: exactly one of
-    the two wins, and which one is not fixed.
+    Asserts the outcome, not the mechanism: exactly one wins, either one.
     """
     import asyncio  # noqa: PLC0415
 
@@ -284,12 +251,7 @@ async def test_two_administrators_demoting_each_other_leaves_one(
 async def test_a_demotion_already_applied_concurrently_is_not_logged_twice(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """Two administrators demoting the same third person, one moment apart.
-
-    The second request finds the target already a trader and becomes the
-    idempotent case: no write, and no second entry claiming a change from a
-    role the user no longer held.
-    """
+    """The second of two demotions finds a trader and writes nothing."""
     target = User(
         username="admin_three",
         email="admin.three@example.com",
@@ -314,14 +276,7 @@ async def test_a_demotion_already_applied_concurrently_is_not_logged_twice(
 async def test_a_suspended_user_can_still_have_their_role_changed(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """Deliberate, and worth stating rather than leaving to be discovered.
-
-    Suspension and role are independent: [4.2] #14 stops somebody signing in,
-    this decides what they may do once they can. Demoting a suspended
-    administrator is exactly what an administrator would want to do on the way
-    to cleaning up a compromised account, and refusing it would make the two
-    stories fight each other.
-    """
+    """Suspension and role are independent axes, deliberately."""
     registered_user.is_suspended = True
     await session.commit()
 
@@ -337,15 +292,7 @@ async def test_a_suspended_user_can_still_have_their_role_changed(
 async def test_a_suspended_administrator_does_not_count_toward_the_last_one(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The guard has to count who can act, not who the column calls privileged.
-
-    A suspended administrator cannot authenticate — `authenticate` and
-    `get_current_user` both refuse the account before the role is consulted —
-    so they cannot call the route that would undo a demotion. Counting them
-    makes the set look survivable when it is already empty, and the demotion
-    is then allowed to produce a database nothing but a manual UPDATE can
-    rescue.
-    """
+    """The guard counts who can act, not who the column calls admin. ADR 0007."""
     suspended = User(
         username="admin_ghost",
         email="admin.ghost@example.com",
@@ -366,12 +313,7 @@ async def test_a_suspended_administrator_does_not_count_toward_the_last_one(
 async def test_a_suspended_administrator_can_still_be_demoted(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The other half of the same rule, and the one easy to break while fixing it.
-
-    Excluding suspended administrators from the locked set must not also
-    exclude them from being acted on. Stripping the role from a suspended
-    account is the obvious thing to want on the way to cleaning one up.
-    """
+    """Excluded from the count, but still a legal target. ADR 0007."""
     suspended = User(
         username="admin_ghost",
         email="admin.ghost@example.com",
@@ -394,12 +336,7 @@ async def test_a_suspended_administrator_can_still_be_demoted(
 async def test_a_suspended_administrator_does_not_save_a_mutual_demotion(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """The race again, with a suspended administrator standing by.
-
-    Two active administrators demote each other while a third sits suspended.
-    If the guard counts the suspended one, both demotions look safe and both
-    commit, leaving a database whose only administrator cannot log in.
-    """
+    """The race again, with a suspended administrator who must not count."""
     import asyncio  # noqa: PLC0415
 
     from core.database import get_session_factory  # noqa: PLC0415

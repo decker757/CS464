@@ -1,7 +1,4 @@
-"""Cookies for the browser, bearer tokens for services.
-
-The decision and its rejected alternatives: docs/adr/0002-auth-token-transport.md
-"""
+"""Cookies for the browser, bearer tokens for services. ADR 0002."""
 
 from __future__ import annotations
 
@@ -31,8 +28,7 @@ async def test_register_sets_both_cookies_with_safe_attributes(
     assert "HttpOnly" in access and "HttpOnly" in refresh
     assert "SameSite=lax" in access
     assert "Path=/;" in access
-    # Scoped to /auth so it never rides along on ordinary API calls, but still
-    # reaches /auth/logout, which is what revokes it.
+    # Scoped to /auth, but still reaching /auth/logout, which revokes it.
     assert "Path=/auth" in refresh
 
 
@@ -135,8 +131,7 @@ async def test_logging_in_again_after_logout_restores_access(
 async def test_timestamps_are_utc_on_every_route(
     client: AsyncClient, registration_payload: dict[str, str]
 ) -> None:
-    """Register serialises an in-memory datetime, /auth/me one read back from
-    the driver. Both must match or the frontend has to branch."""
+    """Register serialises an in-memory datetime, /auth/me a driver's one."""
     registered = await _register(client, registration_payload)
     fetched = await client.get("/auth/me")
 
@@ -147,10 +142,7 @@ async def test_timestamps_are_utc_on_every_route(
 async def test_an_expired_access_token_is_refused(
     client: AsyncClient, registration_payload: dict[str, str]
 ) -> None:
-    """[A-3] #31: a refresh preserves access ONLY while the session is valid.
-
-    Minted with a past expiry rather than waiting out the real 15-minute TTL.
-    """
+    """[A-3] #31: access lasts only while the session is valid."""
     body = await _register(client, registration_payload)
     settings = get_settings()
     past = datetime.now(UTC) - timedelta(hours=2)
@@ -176,15 +168,10 @@ async def test_an_expired_access_token_is_refused(
 async def test_logout_does_not_revoke_an_already_issued_access_token(
     client: AsyncClient, registration_payload: dict[str, str]
 ) -> None:
-    """Pins a KNOWN LIMITATION rather than asserting desired behaviour.
+    """Pins a known limitation: a JWT cannot be withdrawn before it expires.
 
-    [A-3] #31 says logout invalidates the session. A signed JWT cannot be
-    withdrawn before it expires, so a caller who kept the bearer token keeps
-    access for up to one access-token lifetime. Browsers are unaffected: their
-    cookie is cleared. The 15-minute TTL is what bounds the window.
-
-    If this test ever starts failing, someone added a revocation denylist and
-    should delete it. See docs/adr/0002-auth-token-transport.md.
+    If this starts failing, someone added a revocation denylist and should
+    delete this test. ADR 0002.
     """
     body = await _register(client, registration_payload)
     stolen = body["tokens"]["access_token"]

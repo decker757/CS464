@@ -1,7 +1,6 @@
-"""[A-1] #29 registration rules, asserted against the service layer.
+"""[A-1] #29 registration rules, against the service layer.
 
-Starting credits are [B-1] #32 and belong to the ledger. A guard below keeps
-this service out of that domain.
+Starting credits belong to the ledger ([B-1] #32); a guard below keeps them out.
 """
 
 from __future__ import annotations
@@ -92,12 +91,9 @@ async def test_a_lost_race_still_names_the_clashing_field(
     registration_payload: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The insert, not the pre-check, catches a concurrent registration.
+    """A lost race, simulated by forcing the pre-check to miss once.
 
-    The pre-check is forced to miss once, which is exactly what losing the race
-    looks like: the winning row is not visible when we look, and the unique
-    index refuses the insert a moment later. The frontend still gets a field,
-    so `details` is present on every duplicate rather than usually present.
+    The unique index refuses the insert, and the error still names the field.
     """
     real_taken_fields = auth_service._taken_fields
     calls = {"n": 0}
@@ -160,22 +156,14 @@ async def test_a_new_account_starts_unsuspended(registered_user: User) -> None:
 
 
 async def test_a_new_account_starts_as_a_trader(registered_user: User) -> None:
-    """Registration never grants authority. Promotion is a deliberate UPDATE.
-
-    Guards the obvious catastrophe in [1.1] #1: if the column defaulted the
-    other way, anyone who signed up could create markets.
-    """
+    """Registration never grants authority, or anyone could create markets."""
     assert registered_user.role is UserRole.TRADER
 
 
 async def test_the_issued_token_carries_the_role_on_the_row(
     session: AsyncSession, registered_user: User
 ) -> None:
-    """A promoted user's next token must reflect the promotion.
-
-    The market service has no other way to learn it, so a token minted from a
-    stale in-memory role would leave an admin locked out of their own markets.
-    """
+    """A promoted user's next token carries the promotion. ADR 0003."""
     registered_user.role = UserRole.ADMIN
     await session.flush()
 
@@ -187,11 +175,7 @@ async def test_the_issued_token_carries_the_role_on_the_row(
 
 
 def test_register_takes_no_ledger_dependency() -> None:
-    """Boundary guard for [B-1] #32.
-
-    If a credit or ledger argument ever reappears on this signature, the ledger
-    domain has leaked back into the auth service.
-    """
+    """Boundary guard for [B-1] #32: no credit argument on this signature."""
     import inspect
 
     params = set(inspect.signature(auth_service.register).parameters)
