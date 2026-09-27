@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -24,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import bearer
 from unit_test.controller.test_trade_routes import (  # noqa: F401 - fixture
+    _FIELDS,
     _Market,
     _path,
     _Terms,
@@ -91,18 +91,17 @@ def _prose(section: str) -> list[str]:
 # =========================================================================
 # The side
 # =========================================================================
-async def test_the_route_accepts_a_sell_and_the_balance_rises(
+async def test_the_route_accepts_a_sell(
     trade_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Replaces #22's `test_the_route_refuses_a_sell`. A sell is executed as a
-    sell: `201`, `side: "sell"`, a positive `total`, and the balance rises by
-    it."""
-    client, recorder = trade_client
+    """Replaces #22's `test_the_route_refuses_a_sell`. The status and the
+    response shape only: what a sell pays and what it does to the balance are
+    `unit_test/service/test_sell.py`'s."""
+    client, _ = trade_client
     market = _Market()
     _Terms().install(monkeypatch, market)
     headers = bearer(uuid.uuid4())
     await _bought(client, market, headers)
-    before = Decimal((await client.get("/ledger/balances/me", headers=headers)).json()["balance"])
 
     response = await client.post(
         _path(market.market_id),
@@ -112,11 +111,8 @@ async def test_the_route_accepts_a_sell_and_the_balance_rises(
 
     assert response.status_code == 201, response.text
     body = response.json()
+    assert set(body) == _FIELDS
     assert body["side"] == "sell"
-    assert body["total"] == "5.8905"
-    after = Decimal((await client.get("/ledger/balances/me", headers=headers)).json()["balance"])
-    assert after == before + Decimal("5.8905")
-    assert len(recorder.calls) == 2
 
 
 @pytest.mark.parametrize("side", ["short", "Sell", "BUY", ""])
