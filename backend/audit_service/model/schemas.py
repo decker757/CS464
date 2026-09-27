@@ -1,12 +1,6 @@
-"""Request and response contracts.
+"""Response contracts, published at /docs for the admin console. [4.3] #15
 
-These generate the OpenAPI schema at /docs, which is the contract the admin
-console codes against.
-
-Everything here is read-only. There is no request model that writes an audit
-entry, because this service has no write route: an entry is appended by the
-service performing the action, in the same transaction as the action itself.
-See docs/adr/0006-audit-log-write-path.md.
+Read-only: there is no write route, so no request model. ADR 0006.
 """
 
 from __future__ import annotations
@@ -79,12 +73,7 @@ class AdminActionOut(BaseModel):
     @field_validator("occurred_at")
     @classmethod
     def _always_utc(cls, v: datetime) -> datetime:
-        """Guarantee an explicit offset on the way out.
-
-        Same guard as the other two services. A driver handing back a naive
-        datetime would make one entry serialise with a trailing Z and another
-        without, leaving the frontend to special-case which.
-        """
+        """Give a naive datetime UTC, so every entry serialises with an offset."""
         return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
 
