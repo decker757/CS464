@@ -83,10 +83,9 @@ class AccountKind(StrEnum):
 class TransactionKind(StrEnum):
     """Why credits moved.
 
-    SIGNUP_GRANT is the only member today because it is the only movement any
-    shipped code performs. TRADE_BUY, TRADE_SELL and SETTLEMENT arrive with
-    [T-2] #22, [T-3] #23 and [3.4] #12, and are Python-only additions for the
-    same reason as `AccountKind`.
+    SIGNUP_GRANT is the oldest member. TRADE_BUY and TRADE_SELL arrived with
+    [T-2] #22 and [T-3] #23, and SETTLEMENT arrives with [3.4] #12. Each is a
+    Python-only addition for the same reason as `AccountKind`.
     """
 
     SIGNUP_GRANT = "signup_grant"
@@ -100,6 +99,10 @@ class TransactionKind(StrEnum):
     # addition like the two above: the column is a non-native `Enum`, so this
     # needs no migration against a database that already has the table.
     TRADE_BUY = "trade_buy"
+
+    # MARKET_POOL -> USER, posted once per sell. [T-3] #23. Non-native like the
+    # rest, so it needs no migration either.
+    TRADE_SELL = "trade_sell"
 
 
 _ACCOUNT_KIND_COLUMN = Enum(
@@ -452,7 +455,7 @@ class MarketOutcome(Base):
 
 
 class Position(Base):
-    """A trader's net holding in one outcome of one market. [T-2] #22.
+    """A trader's net holding in one outcome of one market. [T-2] #22, [T-3] #23.
 
     Primary key is the triple `(user_id, market_id, outcome_id)` rather than a
     surrogate id — the same argument `MarketOutcome`'s pair makes: nothing
@@ -460,14 +463,18 @@ class Position(Base):
     them by the triple.
 
     **This table is not append-only, and must not carry `ledger.entries`'
-    trigger.** It is a rollup, UPDATEd on every second buy into the same
+    trigger.** It is a rollup, UPDATEd on every later buy or sell in the same
     outcome, and reconstructible from the entries — which stay the record.
     `cost_basis` is stored and the average entry price is derived at read
     time ("`cost_basis` is stored; average entry price is derived"), the same
     reason there is no `balance_after` column on `Entry`.
 
-    `#22 only ever adds to a position` — a partial sell's effect on
-    `cost_basis` is [T-3] #23's to decide, not this ticket's.
+    A buy adds to the row; a sell ([T-3] #23) takes the shares out and
+    releases basis at average cost ("A sell releases cost basis at average
+    cost"), and a row sold to zero stays at `0.0000/0.0000` ("A position sold
+    to zero keeps its row"). `service/trading.py` is the only writer, under
+    the book row's lock; `unit_test/test_position_writers.py` fails if that
+    changes.
     """
 
     __tablename__ = "positions"

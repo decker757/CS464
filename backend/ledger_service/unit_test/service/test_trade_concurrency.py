@@ -36,6 +36,7 @@ from unit_test.trade_fixtures import (
     pool_balance,
     position_of,
     q_of,
+    retry_on_quote_stale,
     session_factory,
     trading,
     transaction_count,
@@ -400,22 +401,19 @@ async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
         async with factory() as own:
             await own.connection()
             await start.wait()
-            version = 0
-            # Bounded, so a path that refuses forever is a failure with a
-            # name rather than a suite that spins.
-            for _ in range(len(users) * 4):
-                try:
-                    return await buy(
-                        own,
-                        upstream,
-                        user_id=user_id,
-                        state_version=version,
-                        client_key=f"key-{user_id}",
-                    )
-                except errors().QuoteStale as stale:
-                    await own.rollback()
-                    version = stale.current
-            raise AssertionError(f"{user_id} never filled")
+
+            async def buy_at(version: int):
+                return await buy(
+                    own,
+                    upstream,
+                    user_id=user_id,
+                    state_version=version,
+                    client_key=f"key-{user_id}",
+                )
+
+            return await retry_on_quote_stale(
+                own, buy_at, version=0, retries=len(users) * 4
+            )
 
     async with asyncio.timeout(TIMEOUT):
         results = await asyncio.gather(*(attempt(u) for u in users))

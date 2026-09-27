@@ -31,6 +31,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
 from core.errors import CostBelowTick, ProceedsBelowTick
+from core.lmsr import _engine_context
 
 # `Numeric(18, 4)`'s shape, restated rather than imported from
 # `model/entities.py::AMOUNT_SCALE`. `model` imports `core.database`, so a
@@ -123,3 +124,29 @@ def quantize_cost(magnitude: Decimal, *, side: Side | str) -> Decimal:
     if quantized == 0:
         raise CostBelowTick if side is Side.BUY else ProceedsBelowTick
     return quantized
+
+
+def release_basis(
+    basis: Decimal, held: Decimal, quantity: Decimal
+) -> tuple[Decimal, Decimal]:
+    """A sell's `(released, remaining)` cost basis, at scale 4. [T-3] #23
+
+    The remaining basis is `basis * (held - quantity) / held`, computed at the
+    engine's precision and rounded half-up; the released basis is the rest, so
+    the two always sum to `basis`, and a full exit leaves exactly zero. Why
+    each of those: "A sell releases cost basis at average cost" in DECISIONS.md.
+
+    Raises `ValueError` unless `0 < quantity <= held`. The holding check
+    refuses a larger sell long before this is reached.
+    """
+    if not 0 < quantity <= held:
+        raise ValueError(f"quantity must be in (0, {held}], got {quantity}")
+    if quantity == held:
+        return basis, Decimal(0).quantize(QUANTUM)
+
+    with _engine_context():
+        remaining = (basis * (held - quantity) / held).quantize(
+            QUANTUM, rounding=ROUND_HALF_UP
+        )
+        released = basis - remaining
+    return released, remaining

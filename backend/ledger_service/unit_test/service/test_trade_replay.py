@@ -18,11 +18,10 @@ reaches. The under-lock re-check runs the same helper and is driven from
 refused_not_replayed`, which builds the window where that one is the only
 lookup a request meets.
 
-**`side` is compared and is not exercised here.** The route is buy-only until
-[T-3] #23, so there is no second value to send, and the ruling on this ticket
-is that sell behaviour is not tested on the service function. The stored
-`context["side"]` is pinned in `test_trade.py`; the comparison's `side` arm
-gets its test when #23 widens the route.
+**`side` is compared and is not exercised here.** Every retry in this file is
+a buy, and the stored `context["side"]` is pinned in `test_trade.py`. The
+comparison's `side` arm is exercised by [T-3] #23, in
+`test_sell_replay.py::test_a_buy_key_resent_as_a_sell_is_idempotency_key_reused`.
 
 **`state_version` is deliberately not compared**, and there is a test for
 that. A client that lost its response re-previews before retrying, so the

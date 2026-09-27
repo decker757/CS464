@@ -514,32 +514,6 @@ async def test_a_quantity_with_five_decimal_places_is_refused(
     assert response.status_code == 422
 
 
-async def test_the_route_refuses_a_sell(
-    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Buy only, until [T-3] #23.
-
-    A sell needs the per-user holdings check read under the book lock, and
-    there are no positions to check against until this ticket has written
-    some. A sell route without that check is a route for selling shares you do
-    not hold. The service function underneath already takes a `Side` and is
-    generic — that is deliberate, and it is why this refusal lives at the
-    route rather than in the money path.
-    """
-    client, _ = trade_client
-    market = _Market()
-    await _warm(session, market)
-    _Terms().install(monkeypatch, market)
-
-    response = await client.post(
-        _path(market.market_id),
-        json=_body(market, side="sell"),
-        headers=bearer(uuid.uuid4()),
-    )
-
-    assert response.status_code == 422
-
-
 # =========================================================================
 # The refusals that carry a code
 # =========================================================================
