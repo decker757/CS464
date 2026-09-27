@@ -30,15 +30,6 @@ _BACKOFF_INITIAL_SECONDS = 0.5
 _BACKOFF_MAX_SECONDS = 10.0
 
 
-async def publish(client: redis.Redis, event: PriceEvent) -> None:
-    """Put one price event on the channel.
-
-    A producer calls this only after its trade commits, and a failure here
-    must never fail the trade. ADR 0010.
-    """
-    await client.publish(PRICE_CHANNEL, event.model_dump_json())
-
-
 class PriceBus:
     """Subscribes to the channel and drives the hub until it is cancelled."""
 
@@ -57,31 +48,49 @@ class PriceBus:
         """
         return self._connected
 
-    async def run(self) -> None:
-        """Consume the channel forever, reconnecting with backoff.
+    @staticmethod
+    def _decode(raw: Any) -> PriceEvent | None:
+        """Validate a message onto `PriceEvent`, or log a warning and drop it.
 
-        Returns only on cancellation; every other failure is retried.
+        A warning, because a producer bug shows up only as prices that stop
+        updating, and this line is what names the service at fault.
         """
-        backoff = _BACKOFF_INITIAL_SECONDS
+        if not isinstance(raw, str):
+            logger.warning("ignoring non-text message on %s", PRICE_CHANNEL)
+            return None
 
-        while True:
-            try:
-                subscribed = await self._consume()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                subscribed = False
-                logger.exception("price bus disconnected; retrying in %.1fs", backoff)
+        try:
+            return PriceEvent.model_validate_json(raw)
+        except ValidationError as exc:
+            logger.warning("ignoring malformed price event: %s", exc)
+            return None
 
-            # Sleep out here, after `_consume` has closed its client; sleeping
-            # in the except branch would hold a dead connection open for the
-            # whole backoff. A connection that came up resets the backoff, so
-            # only an unreachable Redis is backed off from.
-            if subscribed:
-                backoff = _BACKOFF_INITIAL_SECONDS
+    def _dispatch(self, raw: Any) -> None:
+        """Decode one message and fan it out, or log why it went nowhere.
 
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, _BACKOFF_MAX_SECONDS)
+        Must not raise: it runs inside `listen`, and an exception escaping
+        would tear down the subscription for every client.
+        """
+        event = self._decode(raw)
+        if event is None:
+            return
+
+        if not self._gate.accept(event.market_id, event.state_version):
+            # Debug, not warning: a duplicate is a producer retrying.
+            logger.debug(
+                "dropped stale event for market %s at version %s",
+                event.market_id,
+                event.state_version,
+            )
+            return
+
+        delivered = self._hub.broadcast(event.market_id, event.frame())
+        logger.debug(
+            "market %s version %s delivered to %d subscriber(s)",
+            event.market_id,
+            event.state_version,
+            delivered,
+        )
 
     async def _consume(self) -> bool:
         """One connection, from subscribe until it ends.
@@ -112,46 +121,37 @@ class PriceBus:
 
         return subscribed
 
-    def _dispatch(self, raw: Any) -> None:
-        """Decode one message and fan it out, or log why it went nowhere.
+    async def run(self) -> None:
+        """Consume the channel forever, reconnecting with backoff.
 
-        Must not raise: it runs inside `listen`, and an exception escaping
-        would tear down the subscription for every client.
+        Returns only on cancellation; every other failure is retried.
         """
-        event = self._decode(raw)
-        if event is None:
-            return
+        backoff = _BACKOFF_INITIAL_SECONDS
 
-        if not self._gate.accept(event.market_id, event.state_version):
-            # Debug, not warning: a duplicate is a producer retrying.
-            logger.debug(
-                "dropped stale event for market %s at version %s",
-                event.market_id,
-                event.state_version,
-            )
-            return
+        while True:
+            try:
+                subscribed = await self._consume()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                subscribed = False
+                logger.exception("price bus disconnected; retrying in %.1fs", backoff)
 
-        delivered = self._hub.broadcast(event.market_id, event.frame())
-        logger.debug(
-            "market %s version %s delivered to %d subscriber(s)",
-            event.market_id,
-            event.state_version,
-            delivered,
-        )
+            # Sleep out here, after `_consume` has closed its client; sleeping
+            # in the except branch would hold a dead connection open for the
+            # whole backoff. A connection that came up resets the backoff, so
+            # only an unreachable Redis is backed off from.
+            if subscribed:
+                backoff = _BACKOFF_INITIAL_SECONDS
 
-    @staticmethod
-    def _decode(raw: Any) -> PriceEvent | None:
-        """Validate a message onto `PriceEvent`, or log a warning and drop it.
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _BACKOFF_MAX_SECONDS)
 
-        A warning, because a producer bug shows up only as prices that stop
-        updating, and this line is what names the service at fault.
-        """
-        if not isinstance(raw, str):
-            logger.warning("ignoring non-text message on %s", PRICE_CHANNEL)
-            return None
 
-        try:
-            return PriceEvent.model_validate_json(raw)
-        except ValidationError as exc:
-            logger.warning("ignoring malformed price event: %s", exc)
-            return None
+async def publish(client: redis.Redis, event: PriceEvent) -> None:
+    """Put one price event on the channel.
+
+    A producer calls this only after its trade commits, and a failure here
+    must never fail the trade. ADR 0010.
+    """
+    await client.publish(PRICE_CHANNEL, event.model_dump_json())

@@ -52,6 +52,28 @@ class Hub:
         self._by_market: dict[uuid.UUID, set[Subscriber]] = {}
         self._by_subscriber: dict[Subscriber, set[uuid.UUID]] = {}
 
+    # -- introspection ----------------------------------------------------
+
+    def subscriber_count(self, market_id: uuid.UUID) -> int:
+        """How many subscribers this market has."""
+        return len(self._by_market.get(market_id, ()))
+
+    def is_subscribed(self, subscriber: Subscriber, market_id: uuid.UUID) -> bool:
+        """Whether this connection is already watching this market."""
+        return market_id in self._by_subscriber.get(subscriber, ())
+
+    def subscription_count(self, subscriber: Subscriber) -> int:
+        """How many markets this connection is watching.
+
+        Asked of the hub rather than counted on the connection, so there is one answer.
+        """
+        return len(self._by_subscriber.get(subscriber, ()))
+
+    @property
+    def connection_count(self) -> int:
+        """Subscribers holding at least one subscription; not the open sockets."""
+        return len(self._by_subscriber)
+
     # -- membership -------------------------------------------------------
 
     def subscribe(self, subscriber: Subscriber, market_id: uuid.UUID) -> None:
@@ -101,28 +123,6 @@ class Hub:
         for subscriber in list(watchers):
             subscriber.enqueue(frame)
         return len(watchers)
-
-    # -- introspection ----------------------------------------------------
-
-    def subscriber_count(self, market_id: uuid.UUID) -> int:
-        """How many subscribers this market has."""
-        return len(self._by_market.get(market_id, ()))
-
-    def is_subscribed(self, subscriber: Subscriber, market_id: uuid.UUID) -> bool:
-        """Whether this connection is already watching this market."""
-        return market_id in self._by_subscriber.get(subscriber, ())
-
-    def subscription_count(self, subscriber: Subscriber) -> int:
-        """How many markets this connection is watching.
-
-        Asked of the hub rather than counted on the connection, so there is one answer.
-        """
-        return len(self._by_subscriber.get(subscriber, ()))
-
-    @property
-    def connection_count(self) -> int:
-        """Subscribers holding at least one subscription; not the open sockets."""
-        return len(self._by_subscriber)
 
 
 _hub: Hub | None = None

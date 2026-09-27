@@ -4,6 +4,8 @@ The ones every service shares (JWT, cookie name, CORS) are in
 `shared.config.ServiceSettings`. [F-6] #76
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
 
 from pydantic import Field

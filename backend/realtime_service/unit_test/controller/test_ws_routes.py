@@ -22,8 +22,9 @@ from core.errors import (
     SessionExpired,
     UnknownAction,
 )
+from service.bus import PRICE_CHANNEL
 from service.subscriptions import get_hub
-from unit_test.conftest import REDIS_UNREACHABLE, bearer, mint_token
+from unit_test.conftest import REDIS_UNREACHABLE, bearer, make_event, mint_token
 
 _ALLOWED_ORIGIN = "http://localhost:5173"
 
@@ -51,9 +52,7 @@ def connected_client(client, redis_url: str):
 
 
 def _publish(publisher, market_id: uuid.UUID, version: int = 1) -> None:
-    from unit_test.conftest import make_event
-
-    publisher.publish("market.price", make_event(market_id, version).model_dump_json())
+    publisher.publish(PRICE_CHANNEL, make_event(market_id, version).model_dump_json())
 
 
 def _subscribe(websocket, market_id: uuid.UUID) -> dict:
