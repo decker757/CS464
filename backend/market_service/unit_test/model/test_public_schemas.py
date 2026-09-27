@@ -15,13 +15,7 @@ from typing import Any
 import pytest
 
 from model.entities import MarketCard, MarketStatus, displayed_status
-
-
-def _schemas() -> Any:
-    """The schemas module, imported inside each test."""
-    import model.schemas as schemas  # noqa: PLC0415
-
-    return schemas
+from model.schemas import PublicMarketOut, PublicMarketSummaryOut
 
 
 class _FakeOutcome:
@@ -122,7 +116,7 @@ def _card(**kwargs: object) -> MarketCard:
 
 
 def _detail_json(**kwargs: object) -> dict[str, Any]:
-    model = _schemas().PublicMarketOut.model_validate(_FakePublishedMarket(**kwargs))
+    model = PublicMarketOut.model_validate(_FakePublishedMarket(**kwargs))
     return json.loads(model.model_dump_json())
 
 
@@ -233,7 +227,7 @@ def test_a_resolving_status_is_reported_as_it_stands(status: MarketStatus) -> No
 # --- the list projection --------------------------------------------------
 def test_a_market_card_carries_the_question_status_and_closing_time() -> None:
     """[X-1] #34's card, less the prices, which come from the ledger. ADR 0005."""
-    model = _schemas().PublicMarketSummaryOut.model_validate(_card())
+    model = PublicMarketSummaryOut.model_validate(_card())
     payload = json.loads(model.model_dump_json())
 
     assert payload["question"]
@@ -245,8 +239,8 @@ def test_the_summary_derives_its_status_the_same_way_the_detail_does() -> None:
     """One rule, two projections, and they must not disagree."""
     stopped = dict(closes_in=timedelta(seconds=-1))
 
-    summary = _schemas().PublicMarketSummaryOut.model_validate(_card(**stopped))
-    detail = _schemas().PublicMarketOut.model_validate(
+    summary = PublicMarketSummaryOut.model_validate(_card(**stopped))
+    detail = PublicMarketOut.model_validate(
         _FakePublishedMarket(**stopped)
     )
 
@@ -256,7 +250,7 @@ def test_the_summary_derives_its_status_the_same_way_the_detail_does() -> None:
 # --- timestamps -----------------------------------------------------------
 def test_timestamps_carry_an_offset() -> None:
     """The `_UtcTimestamps` guard; [X-1] #34 counts down from `close_time`."""
-    model = _schemas().PublicMarketOut.model_validate(_FakePublishedMarket())
+    model = PublicMarketOut.model_validate(_FakePublishedMarket())
 
     assert model.close_time is not None and model.close_time.tzinfo is not None
     assert model.resolution_time is not None

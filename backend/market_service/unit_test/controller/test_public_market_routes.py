@@ -21,6 +21,7 @@ from unit_test.conftest import (
     actor,
     closed_market,
     draft_request,
+    overdue_market,
     published_market,
 )
 from service import market_service
@@ -37,16 +38,6 @@ async def _published(session: AsyncSession, **overrides: object):
     return await published_market(
         session, actor(), liquidity_b=Decimal("100"), **overrides
     )
-
-
-async def _stopped_an_hour_ago(session: AsyncSession):
-    """A published market whose close time passed an hour ago, sweep not yet run."""
-    market = await _published(session)
-    market_id = market.id
-    market.close_time = datetime.now(UTC) - timedelta(hours=1)
-    await session.commit()
-    session.expire_all()
-    return await market_service.get_any(session, market_id)
 
 
 # --- who may call these ---------------------------------------------------
@@ -293,9 +284,7 @@ async def test_a_market_past_its_close_time_is_reported_closed(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
     """ADR 0011 end to end: the column says `open`, the response must not."""
-    market = await _published(session)
-    market.close_time = datetime.now(UTC) - timedelta(seconds=1)
-    await session.commit()
+    market = await overdue_market(session, actor(), liquidity_b=Decimal("100"))
 
     payload = (await client.get(_detail(market.id), headers=trader_headers)).json()
 
@@ -332,7 +321,9 @@ async def test_the_derived_status_reaches_the_wire_not_just_the_route(
     """
     import controller.public_routes as routes  # noqa: PLC0415
 
-    market = await _stopped_an_hour_ago(session)
+    market = await overdue_market(
+        session, actor(), overdue_by=timedelta(hours=1), liquidity_b=Decimal("100")
+    )
 
     class _TwoHoursAgo:
         @staticmethod
@@ -355,7 +346,9 @@ async def test_the_browse_list_derived_status_reaches_the_wire_too(
     """The list half, where wrapping in the list response alone re-validates."""
     import controller.public_routes as routes  # noqa: PLC0415
 
-    await _stopped_an_hour_ago(session)
+    await overdue_market(
+        session, actor(), overdue_by=timedelta(hours=1), liquidity_b=Decimal("100")
+    )
 
     class _TwoHoursAgo:
         @staticmethod

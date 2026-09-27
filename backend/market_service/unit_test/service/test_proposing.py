@@ -22,13 +22,13 @@ from core.errors import (
 )
 from model.entities import Market, MarketStatus
 from service import market_service
-from service.audit import Actor
 
 # Aliased so the names do not shadow an `actor` argument.
 from unit_test.conftest import (
     EVIDENCE_NOTE,
     EVIDENCE_URL,
     closed_market,
+    overdue_market,
     published_market,
 )
 from unit_test.conftest import actor as _actor
@@ -40,14 +40,6 @@ _PROPOSED_ENTRIES = text(
     "SELECT id FROM audit.admin_actions "
     "WHERE actor_id = :actor AND action_type = 'market.outcome_proposed'"
 )
-
-
-async def _overdue(session: AsyncSession, actor: Actor, **overrides: object) -> Market:
-    """A published market past its close time, not yet swept: `status` still says `open`."""
-    market = await published_market(session, actor, **overrides)
-    market.close_time = datetime.now(UTC) - timedelta(seconds=1)
-    await session.commit()
-    return market
 
 
 def _winner(market: Market) -> uuid.UUID:
@@ -170,7 +162,7 @@ async def test_a_market_past_its_close_time_but_unswept_is_refused(
     """Guard: this gate reads the status, so it waits for the sweep. The safe
     direction; do not "fix" it to derive. ADR 0013."""
     actor = _actor()
-    market = await _overdue(session, actor)
+    market = await overdue_market(session, actor)
     assert market.status is MarketStatus.OPEN
 
     with pytest.raises(MarketNotClosed):

@@ -27,7 +27,12 @@ from service import closing, market_service
 from service.audit import Actor
 
 # Aliased so the names do not shadow an `actor` argument.
-from unit_test.conftest import CLOSE_REASON, closed_market, published_market
+from unit_test.conftest import (
+    CLOSE_REASON,
+    closed_market,
+    overdue_market,
+    published_market,
+)
 from unit_test.conftest import actor as _actor
 from unit_test.conftest import close_request as _close
 from unit_test.conftest import draft_request as _request
@@ -140,9 +145,7 @@ async def test_a_market_the_clock_already_closed_cannot_be_closed_by_hand(
     """The sweep has not run and `status` reads `open`, but the clock has stopped
     trading: `market_closed`, as one sweep later. ADR 0014."""
     actor = _actor()
-    market = await _open_market(session, actor)
-    market.close_time = datetime.now(UTC) - timedelta(seconds=1)
-    await session.commit()
+    market = await overdue_market(session, actor)
 
     assert market.status is MarketStatus.OPEN
 

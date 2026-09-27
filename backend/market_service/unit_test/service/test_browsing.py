@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from types import ModuleType
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,23 +17,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.errors import MarketNotFound
 from model.entities import Market, MarketStatus
 from core.database import get_session_factory
-from service import market_service
+from service import browsing, market_service
 from service.audit import Actor
 from unit_test.conftest import (
     actor,
     approval_request,
     closed_market,
     draft_request,
+    overdue_market,
     proposed_market,
     published_market,
 )
-
-
-def _browsing() -> ModuleType:
-    """The browsing module, imported inside each test."""
-    from service import browsing  # noqa: PLC0415
-
-    return browsing
 
 
 def _closing_says_open(market: Market) -> bool:
@@ -61,22 +54,6 @@ async def _open_market(
     )
 
 
-async def _stopped_but_unswept(session: AsyncSession, creator: Actor) -> Market:
-    """A market past its close time with CLOSED not yet written: ADR 0011's gap.
-
-    `closed_market` would run the sweep; this stops just before it.
-    """
-    market = await published_market(session, creator)
-    market_id = market.id
-    market.close_time = datetime.now(UTC) - timedelta(seconds=1)
-    await session.commit()
-    session.expire_all()
-
-    market = await market_service.get(session, creator.id, market_id)
-    assert market.status is MarketStatus.OPEN, "the sweep must not have run yet"
-    return market
-
-
 async def _approved_market(session: AsyncSession, creator: Actor) -> Market:
     """An approved market, standing in for "settled" until [3.4] #12."""
     market = await proposed_market(session, creator)
@@ -99,7 +76,7 @@ async def test_the_default_view_shows_open_markets_ordered_by_soonest_close(
     soonest = await _open_market(session, timedelta(days=1))
     latest = await _open_market(session, timedelta(days=90))
 
-    listed = await _browsing().browse(session)
+    listed = await browsing.browse(session)
 
     assert _ids(listed) == [soonest.id, middle.id, latest.id]
 
@@ -115,7 +92,7 @@ async def test_open_closed_and_pending_markets_are_distinguishable(
     pending_id = (await proposed_market(session, actor())).id
     approved_id = (await _approved_market(session, actor())).id
 
-    listed = {card.id: card for card in await _browsing().browse(session)}
+    listed = {card.id: card for card in await browsing.browse(session)}
 
     assert listed[open_id].status is MarketStatus.OPEN
     assert listed[closed_id].status is MarketStatus.CLOSED
@@ -129,7 +106,7 @@ async def test_a_view_that_matches_nothing_is_an_empty_list_not_an_error(
     """[X-1] #34's empty state needs `[]`, not an error."""
     await _open_market(session)
 
-    assert await _browsing().browse(session, query="nothing matches this") == []
+    assert await browsing.browse(session, query="nothing matches this") == []
 
 
 # --- [X-2] #35: search and filter -----------------------------------------
@@ -146,7 +123,7 @@ async def test_markets_can_be_searched_by_words_from_the_question(
         question="Will the MRT Cross Island Line open before June 2027?",
     )
 
-    assert _ids(await _browsing().browse(session, query="inflation")) == [inflation.id]
+    assert _ids(await browsing.browse(session, query="inflation")) == [inflation.id]
 
 
 async def test_the_question_search_ignores_case(session: AsyncSession) -> None:
@@ -156,7 +133,7 @@ async def test_the_question_search_ignores_case(session: AsyncSession) -> None:
         question="Will Singapore core inflation be below 2% in December 2026?",
     )
 
-    assert _ids(await _browsing().browse(session, query="INFLATION")) == [market.id]
+    assert _ids(await browsing.browse(session, query="INFLATION")) == [market.id]
 
 
 async def test_markets_can_be_filtered_by_status(session: AsyncSession) -> None:
@@ -165,10 +142,10 @@ async def test_markets_can_be_filtered_by_status(session: AsyncSession) -> None:
     open_id = (await _open_market(session)).id
     closed_id = (await closed_market(session, actor())).id
 
-    assert _ids(await _browsing().browse(session, status=MarketStatus.CLOSED)) == [
+    assert _ids(await browsing.browse(session, status=MarketStatus.CLOSED)) == [
         closed_id
     ]
-    assert _ids(await _browsing().browse(session, status=MarketStatus.OPEN)) == [
+    assert _ids(await browsing.browse(session, status=MarketStatus.OPEN)) == [
         open_id
     ]
 
@@ -185,7 +162,7 @@ async def test_search_and_a_status_filter_can_be_used_together(
         session, actor(), question="Will the MRT Cross Island Line open in 2027?"
     )
 
-    listed = await _browsing().browse(
+    listed = await browsing.browse(
         session, status=MarketStatus.CLOSED, query="inflation"
     )
 
@@ -214,16 +191,16 @@ async def test_the_question_search_treats_like_wildcards_as_text(
 
     # `%` is any run of characters. Unescaped this matches every question with
     # a 2 in it, which is all four.
-    assert _ids(await _browsing().browse(session, query="2%")) == [percent.id]
+    assert _ids(await browsing.browse(session, query="2%")) == [percent.id]
 
     # `_` is exactly one character. Unescaped this matches every question that
     # is not empty, which is again all four.
-    assert _ids(await _browsing().browse(session, query="_")) == [underscored.id]
+    assert _ids(await browsing.browse(session, query="_")) == [underscored.id]
 
     # The escape character itself. Left as-is it becomes a dangling escape in
     # the pattern — `\T` is not a valid sequence — so this one does not return
     # the wrong rows, it raises.
-    assert _ids(await _browsing().browse(session, query="C:\\Temp")) == [
+    assert _ids(await browsing.browse(session, query="C:\\Temp")) == [
         backslashed.id
     ]
 
@@ -235,7 +212,7 @@ async def test_the_detail_read_is_not_scoped_to_the_creator(
     """[X-3] #36: a published market belongs to every trader; no actor at all."""
     market = await published_market(session, actor())
 
-    assert (await _browsing().get_published(session, market.id)).id == market.id
+    assert (await browsing.get_published(session, market.id)).id == market.id
 
 
 async def test_the_detail_read_refuses_a_draft(session: AsyncSession) -> None:
@@ -243,7 +220,7 @@ async def test_the_detail_read_refuses_a_draft(session: AsyncSession) -> None:
     market, _, _ = await market_service.save(session, actor(), draft_request())
 
     with pytest.raises(MarketNotFound):
-        await _browsing().get_published(session, market.id)
+        await browsing.get_published(session, market.id)
 
 
 async def test_the_detail_read_refuses_a_submitted_market(
@@ -256,14 +233,14 @@ async def test_the_detail_read_refuses_a_submitted_market(
     )
 
     with pytest.raises(MarketNotFound):
-        await _browsing().get_published(session, market.id)
+        await browsing.get_published(session, market.id)
 
 
 async def test_an_unknown_market_is_refused(session: AsyncSession) -> None:
     """The same error for a market that never existed, so the two are
     indistinguishable from outside."""
     with pytest.raises(MarketNotFound):
-        await _browsing().get_published(session, uuid.uuid4())
+        await browsing.get_published(session, uuid.uuid4())
 
 
 async def test_an_approved_market_carries_its_winning_outcome(
@@ -272,7 +249,7 @@ async def test_an_approved_market_carries_its_winning_outcome(
     """[X-3] #36: the winner, by id into the market's own `outcomes`."""
     market = await _approved_market(session, actor())
 
-    detail = await _browsing().get_published(session, market.id)
+    detail = await browsing.get_published(session, market.id)
 
     assert detail.proposed_outcome_id is not None
     assert detail.proposed_outcome_id in {outcome.id for outcome in detail.outcomes}
@@ -284,7 +261,7 @@ async def test_a_draft_is_never_listed(session: AsyncSession) -> None:
     await market_service.save(session, actor(), draft_request())
     visible = await _open_market(session)
 
-    assert _ids(await _browsing().browse(session)) == [visible.id]
+    assert _ids(await browsing.browse(session)) == [visible.id]
 
 
 async def test_a_submitted_market_is_never_listed(session: AsyncSession) -> None:
@@ -292,7 +269,7 @@ async def test_a_submitted_market_is_never_listed(session: AsyncSession) -> None
     await market_service.save(session, actor(), draft_request(status="submitted"))
     visible = await _open_market(session)
 
-    assert _ids(await _browsing().browse(session)) == [visible.id]
+    assert _ids(await browsing.browse(session)) == [visible.id]
 
 
 async def test_a_draft_is_not_a_status_a_trader_may_filter_on(
@@ -301,7 +278,7 @@ async def test_a_draft_is_not_a_status_a_trader_may_filter_on(
     """[X-2] #35's filter must apply beside the visibility rule, not instead of it."""
     await market_service.save(session, actor(), draft_request())
 
-    assert await _browsing().browse(session, status=MarketStatus.DRAFT) == []
+    assert await browsing.browse(session, status=MarketStatus.DRAFT) == []
 
 
 # --- ADR 0011: the clock closes a market, not the sweeper -----------------
@@ -309,10 +286,10 @@ async def test_a_market_past_its_close_time_is_not_listed_as_open(
     session: AsyncSession,
 ) -> None:
     """ADR 0011: filtered on the column, a stopped market would list as tradeable."""
-    stopped = await _stopped_but_unswept(session, actor())
+    stopped = await overdue_market(session, actor())
     still_open = await _open_market(session)
 
-    listed = await _browsing().browse(session, status=MarketStatus.OPEN)
+    listed = await browsing.browse(session, status=MarketStatus.OPEN)
 
     assert _ids(listed) == [still_open.id]
     assert stopped.id not in _ids(listed)
@@ -323,10 +300,10 @@ async def test_a_market_past_its_close_time_reads_as_closed_before_the_sweep(
 ) -> None:
     """The other side: not merely absent from `open`, but present under `closed`,
     or it vanishes from every filter. ADR 0011's amendment, D-022."""
-    stopped = await _stopped_but_unswept(session, actor())
+    stopped = await overdue_market(session, actor())
     await _open_market(session)
 
-    listed = await _browsing().browse(session, status=MarketStatus.CLOSED)
+    listed = await browsing.browse(session, status=MarketStatus.CLOSED)
 
     assert _ids(listed) == [stopped.id]
 
@@ -342,8 +319,8 @@ async def test_the_injected_clock_reaches_the_sql_filter_not_only_the_derivation
     market = await _open_market(session, timedelta(hours=1))
     later = datetime.now(UTC) + timedelta(hours=2)
 
-    as_open = await _browsing().browse(session, status=MarketStatus.OPEN, now=later)
-    as_closed = await _browsing().browse(session, status=MarketStatus.CLOSED, now=later)
+    as_open = await browsing.browse(session, status=MarketStatus.OPEN, now=later)
+    as_closed = await browsing.browse(session, status=MarketStatus.CLOSED, now=later)
 
     assert market.id not in _ids(as_open), (
         "the SQL filter ignored the clock it was handed and asked Postgres "
@@ -360,7 +337,7 @@ async def test_the_counts_read_the_clock_they_are_handed(
     await _open_market(session, timedelta(hours=1))
     later = datetime.now(UTC) + timedelta(hours=2)
 
-    counts = await _browsing().count_by_status(session, now=later)
+    counts = await browsing.count_by_status(session, now=later)
 
     assert counts[MarketStatus.OPEN] == 0
     assert counts[MarketStatus.CLOSED] == 1
@@ -370,10 +347,10 @@ async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_op
     session: AsyncSession,
 ) -> None:
     """The unfiltered view derives too: the stopped market stays, behind the open one."""
-    stopped = await _stopped_but_unswept(session, actor())
+    stopped = await overdue_market(session, actor())
     still_open = await _open_market(session)
 
-    listed = await _browsing().browse(session)
+    listed = await browsing.browse(session)
     ids = _ids(listed)
 
     assert stopped.id in ids
@@ -391,9 +368,9 @@ async def test_the_detail_of_an_unswept_market_is_not_open_for_trading(
     """
     from model.entities import TRADER_FACING_STATUS  # noqa: PLC0415
 
-    stopped = await _stopped_but_unswept(session, actor())
+    stopped = await overdue_market(session, actor())
 
-    detail = await _browsing().get_published(session, stopped.id)
+    detail = await browsing.get_published(session, stopped.id)
 
     assert getattr(detail, TRADER_FACING_STATUS) is MarketStatus.CLOSED, (
         "the detail read must hand the projection the derived status; the "
@@ -410,7 +387,7 @@ async def test_counts_are_reported_per_status(session: AsyncSession) -> None:
     await closed_market(session, actor())
     await proposed_market(session, actor())
 
-    counts = await _browsing().count_by_status(session)
+    counts = await browsing.count_by_status(session)
 
     assert counts[MarketStatus.OPEN] == 2
     assert counts[MarketStatus.CLOSED] == 1
@@ -421,10 +398,10 @@ async def test_the_counts_derive_from_the_clock_not_the_status_column(
     session: AsyncSession,
 ) -> None:
     """Counts derive like the list, or "2 open" sits above a list of one."""
-    await _stopped_but_unswept(session, actor())
+    await overdue_market(session, actor())
     await _open_market(session)
 
-    counts = await _browsing().count_by_status(session)
+    counts = await browsing.count_by_status(session)
 
     assert counts[MarketStatus.OPEN] == 1
     assert counts[MarketStatus.CLOSED] == 1
@@ -439,7 +416,7 @@ async def test_the_counts_exclude_what_a_trader_cannot_see(
     await market_service.save(session, creator, draft_request(status="submitted"))
     await _open_market(session)
 
-    counts = await _browsing().count_by_status(session)
+    counts = await browsing.count_by_status(session)
 
     assert counts.get(MarketStatus.DRAFT, 0) == 0
     assert counts.get(MarketStatus.SUBMITTED, 0) == 0
@@ -468,10 +445,10 @@ async def test_browsing_does_not_empty_the_outcomes_of_a_later_detail_read(
     async with factory() as fresh:
         # Held on purpose: the identity map is weak, so dropping the list would
         # let a poisoned instance be collected and the test assert nothing.
-        listed = await _browsing().browse(fresh)
+        listed = await browsing.browse(fresh)
         assert listed, "the browse must return the market for this to mean anything"
 
-        detail = await _browsing().get_published(fresh, market_id)
+        detail = await browsing.get_published(fresh, market_id)
 
         assert len(detail.outcomes) == expected_outcomes
         assert len(detail.resolution_sources) == expected_sources
@@ -488,11 +465,11 @@ async def test_the_detail_read_stamps_the_derived_status_without_dirtying_the_ro
     """
     from model.entities import TRADER_FACING_STATUS  # noqa: PLC0415
 
-    stopped = await _stopped_but_unswept(session, actor())
+    stopped = await overdue_market(session, actor())
     market_id = stopped.id
     session.expire_all()
 
-    market = await _browsing().get_published(session, market_id)
+    market = await browsing.get_published(session, market_id)
 
     assert getattr(market, TRADER_FACING_STATUS) is MarketStatus.CLOSED
     assert market.status is MarketStatus.OPEN, (
@@ -509,10 +486,10 @@ async def test_the_browse_card_carries_the_derived_status_not_the_column(
     session: AsyncSession,
 ) -> None:
     """The list half: a card carries only the derived status. D-027."""
-    stopped = await _stopped_but_unswept(session, actor())
+    stopped = await overdue_market(session, actor())
     stopped_id = stopped.id
 
-    listed = {card.id: card for card in await _browsing().browse(session)}
+    listed = {card.id: card for card in await browsing.browse(session)}
 
     assert listed[stopped_id].status is MarketStatus.CLOSED
     assert not hasattr(listed[stopped_id], "raw_status")

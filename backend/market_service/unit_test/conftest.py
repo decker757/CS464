@@ -57,7 +57,7 @@ from core.database import (  # noqa: E402
     get_session_factory,
 )
 from core.roles import UserRole  # noqa: E402
-from model.entities import Market  # noqa: E402
+from model.entities import Market, MarketStatus  # noqa: E402
 from model.schemas import (  # noqa: E402
     MarketCloseRequest,
     MarketDraftRequest,
@@ -275,6 +275,30 @@ async def published_market(session, actor: Actor, **overrides: object) -> Market
     return market
 
 
+async def overdue_market(
+    session,
+    actor: Actor,
+    *,
+    overdue_by: timedelta = timedelta(seconds=1),
+    **overrides: object,
+) -> Market:
+    """The same market once its close time has passed, before any sweep has run.
+
+    ADR 0011's gap: trading has stopped, but `status` still reads `open`.
+    `publish` refuses a market already past its close, so the close time is
+    moved afterwards. Returns the market reloaded from the database.
+    """
+    market = await published_market(session, actor, **overrides)
+    market_id = market.id
+    market.close_time = datetime.now(UTC) - overdue_by
+    await session.commit()
+    session.expire_all()
+
+    market = await market_service.get(session, actor.id, market_id)
+    assert market.status is MarketStatus.OPEN, "the sweep must not have run yet"
+    return market
+
+
 async def closed_market(session, actor: Actor, **overrides: object) -> Market:
     """The same market, after its closing time passed and the sweep ran.
 
@@ -282,11 +306,7 @@ async def closed_market(session, actor: Actor, **overrides: object) -> Market:
     writing `status` (ADR 0011). Expires the session, because the sweep's bulk
     UPDATE bypasses the identity map: read from the returned market only.
     """
-    market = await published_market(session, actor, **overrides)
-    market_id = market.id
-
-    market.close_time = datetime.now(UTC) - timedelta(seconds=1)
-    await session.commit()
+    market_id = (await overdue_market(session, actor, **overrides)).id
 
     swept = await closing.close_due_markets(session, limit=10)
     assert market_id in swept
