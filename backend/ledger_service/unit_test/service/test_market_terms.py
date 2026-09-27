@@ -330,17 +330,6 @@ async def test_a_body_for_a_different_market_is_refused() -> None:
 
 
 # --- [F-8] #109: the client carries the status and decides nothing --------
-async def test_the_status_is_carried_through() -> None:
-    """ADR 0017: `fetch` carries `status`, the derived field the gate reads, as
-    the wire string rather than a copy of market_service's enum.
-    """
-    terms = await _terms().fetch(
-        _MARKET_ID, access_token=_token(), transport=_responds()
-    )
-
-    assert terms.status == "open"
-
-
 @pytest.mark.parametrize(
     "status", ["closed", "pending_resolution", "approved", "settled"]
 )

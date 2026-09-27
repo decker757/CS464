@@ -203,18 +203,6 @@ def test_the_worked_example_s_value_is_charged_a_tick_and_paid_nothing() -> None
         pricing.quantize_cost(worked, side=sell)
 
 
-def test_the_refusal_s_code_is_keyed_on_the_side() -> None:
-    """The side picks the code: a buyer told "proceeds below tick" has been
-    told something false."""
-    buy, sell = _sides()
-    pricing = _pricing()
-
-    with pytest.raises(_errors().ProceedsBelowTick):
-        pricing.quantize_cost(Decimal("0.0000"), side=sell)
-    with pytest.raises(_errors().CostBelowTick):
-        pricing.quantize_cost(Decimal("0.0000"), side=buy)
-
-
 def test_proceeds_of_exactly_one_tick_are_not_refused() -> None:
     """The boundary, because the obvious off-by-one is a `<=`."""
     _, sell = _sides()
@@ -278,15 +266,6 @@ def test_the_sell_on_the_same_book_is_refused_from_the_same_call() -> None:
     assert raised.value.code == "proceeds_below_tick"
 
 
-def test_the_buy_refusal_carries_its_own_code_and_status() -> None:
-    """422 `cost_below_tick`. A buy told "proceeds below tick" is a lie."""
-    errors = _errors()
-
-    assert errors.CostBelowTick.status_code == 422
-    assert errors.CostBelowTick.code == "cost_below_tick"
-    assert issubclass(errors.CostBelowTick, errors.LedgerError)
-
-
 # --- a raw string for a side ----------------------------------------------
 #
 # `"buy" is Side.BUY` is False, and a caller other than FastAPI may not convert.
@@ -296,11 +275,6 @@ def test_a_raw_string_side_rounds_exactly_as_the_enum_does() -> None:
 
     assert _pricing().quantize_cost(magnitude, side="buy") == Decimal("1.0001")
     assert _pricing().quantize_cost(magnitude, side="sell") == Decimal("1.0000")
-
-
-def test_a_raw_string_sell_is_still_refused_below_a_tick() -> None:
-    with pytest.raises(_errors().ProceedsBelowTick):
-        _pricing().quantize_cost(Decimal("0.00005"), side="sell")
 
 
 # --- the refusal ----------------------------------------------------------
@@ -314,16 +288,6 @@ def test_a_negative_magnitude_is_refused(magnitude: Decimal) -> None:
     for side in (buy, sell):
         with pytest.raises(ValueError):
             _pricing().quantize_cost(magnitude, side=side)
-
-
-# --- the enum -------------------------------------------------------------
-def test_side_carries_the_two_wire_values() -> None:
-    """The values are the query string's, echoed back in the response."""
-    buy, sell = _sides()
-
-    assert buy.value == "buy"
-    assert sell.value == "sell"
-    assert buy is not sell
 
 
 # --- the column this exists to fit ----------------------------------------

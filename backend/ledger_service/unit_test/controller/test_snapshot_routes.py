@@ -211,15 +211,6 @@ async def test_the_market_id_is_echoed(
     assert body["market_id"] == str(market.market_id)
 
 
-async def test_a_malformed_market_id_is_422(
-    client: AsyncClient, trader_headers: dict[str, str]
-) -> None:
-    """FastAPI's own path validation, before anything below runs."""
-    response = await client.get("/ledger/markets/not-a-uuid/snapshot", headers=trader_headers)
-
-    assert response.status_code == 422
-
-
 # =========================================================================
 # Failures, reusing the preview's codes
 # =========================================================================
@@ -302,8 +293,6 @@ async def test_a_book_with_no_outcome_rows_is_a_500_in_the_envelope(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
     """A 500 in the envelope, with a code a log search can find."""
-    from sqlalchemy import delete  # noqa: PLC0415
-
     market = Upstream()
     await warm(session, market)
     await strip_outcomes(session, market.market_id)

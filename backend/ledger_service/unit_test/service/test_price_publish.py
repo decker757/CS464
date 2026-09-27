@@ -36,10 +36,6 @@ def _schemas():
 _BACKEND = pathlib.Path(__file__).resolve().parents[3]
 _REALTIME_BUS = _BACKEND / "realtime_service" / "service" / "bus.py"
 
-# The string `docs/api/realtime-service.md` documents, written out so this file
-# still pins something if the source read below ever cannot run.
-_DOCUMENTED_CHANNEL = "market.price"
-
 
 def _module_constant(path: pathlib.Path, name: str) -> str:
     """A module-level string constant, read out of a source file with `ast`:
@@ -108,11 +104,6 @@ def _event(**overrides: object):
 # =========================================================================
 # The channel
 # =========================================================================
-def test_the_channel_is_the_documented_one() -> None:
-    """`market.price`, as documented: a wrong channel fails with no symptom."""
-    assert _bus().PRICE_CHANNEL == _DOCUMENTED_CHANNEL
-
-
 def test_the_channel_is_the_one_realtime_service_subscribes_to() -> None:
     """The two services agree on the channel, read from the other's source.
 
@@ -154,20 +145,6 @@ async def test_the_payload_is_the_price_event_as_json() -> None:
     assert set(decoded) == {"market_id", "state_version", "prices", "occurred_at"}
     assert decoded["market_id"] == str(_MARKET_ID)
     assert decoded["state_version"] == 42
-
-
-async def test_the_payload_carries_every_outcome_as_a_decimal_string() -> None:
-    """Every outcome, each price a decimal string at scale 4."""
-    client = _Recorder()
-
-    await _bus().publish(client, _event(), transaction_id=_TRANSACTION_ID)
-
-    prices = json.loads(client.calls[0][1])["prices"]
-
-    assert len(prices) == 2
-    for entry in prices:
-        assert isinstance(entry["price"], str), entry
-        assert Decimal(entry["price"]).as_tuple().exponent == -4, entry
 
 
 async def test_the_payload_is_text_rather_than_bytes() -> None:

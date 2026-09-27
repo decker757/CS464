@@ -129,23 +129,6 @@ def test_a_share_of_every_outcome_costs_exactly_one_credit() -> None:
 # --- marginal prices ----------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "q",
-    [
-        _d([0, 0]),
-        _d([250, 10]),
-        _d([0, 0, 0, 0]),
-        _d([99.9999, 100.0001, 3]),
-    ],
-)
-def test_prices_sum_to_one(q: list[Decimal]) -> None:
-    """The property that makes a price a probability. It is also what the
-    frontend renders: `docs/api/realtime-service.md` sends every outcome's
-    price in one frame precisely so a client never shows a set that does not
-    add up."""
-    _assert_close(sum(prices(q, B), Decimal(0)), Decimal(1))
-
-
 def test_prices_sum_to_one_for_arbitrary_positions() -> None:
     rng = _rng("prices_sum_to_one_for_arbitrary_positions")
     for _ in range(200):

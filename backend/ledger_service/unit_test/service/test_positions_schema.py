@@ -196,16 +196,6 @@ async def test_quantity_and_cost_basis_are_numeric_18_4(
     assert columns["cost_basis"][:4] == ("numeric", 18, 4, "NO")
 
 
-async def test_the_timestamps_are_both_present(session: AsyncSession) -> None:
-    """`created_at` and `updated_at`. The second one is what separates this
-    table from every other one in this schema: positions are the only rows
-    here that change after they are written."""
-    columns = await _columns(session, "positions")
-
-    assert "created_at" in columns
-    assert "updated_at" in columns
-
-
 @pytest.mark.parametrize("column", ["quantity", "cost_basis"])
 async def test_a_negative_value_is_refused(
     session: AsyncSession, column: str

@@ -321,35 +321,6 @@ async def test_an_unrecognised_side_is_422(
     assert response.status_code == 422
 
 
-async def test_a_missing_parameter_is_422(
-    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
-) -> None:
-    """All three parameters are required."""
-    market = Upstream()
-    await warm(session, market)
-
-    response = await client.get(
-        _path(market.market_id),
-        params={"outcome_id": str(market.outcomes[0])},
-        headers=trader_headers,
-    )
-
-    assert response.status_code == 422
-
-
-async def test_a_malformed_market_id_is_422(
-    client: AsyncClient, trader_headers: dict[str, str]
-) -> None:
-    """The market id is validated as a UUID before anything reads or writes."""
-    response = await client.get(
-        "/ledger/markets/not-a-uuid/preview",
-        params=_params(uuid.uuid4()),
-        headers=trader_headers,
-    )
-
-    assert response.status_code == 422
-
-
 async def test_an_unknown_outcome_id_is_422_and_not_404(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:

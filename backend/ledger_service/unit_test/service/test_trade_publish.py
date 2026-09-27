@@ -193,28 +193,12 @@ async def test_the_publish_happens_after_the_transaction_has_committed(
 # =========================================================================
 # A publish that fails
 # =========================================================================
-async def test_a_publish_that_fails_does_not_fail_the_trade(
-    session: AsyncSession,
-) -> None:
-    """A failed publish does not fail a trade that has already committed
-    (ADR 0010, D-049)."""
-    upstream = Upstream()
-    user_id = uuid.uuid4()
-    await warm(session, upstream)
-    await fund(session, user_id)
-
-    recorder = Recorder(raises=ConnectionError("redis is unreachable"))
-    trade = await buy(session, upstream, user_id=user_id, redis_client=recorder)
-
-    assert trade.state_version == 1
-    assert len(recorder.calls) == 1
-
-
 async def test_a_trade_whose_publish_failed_is_still_fully_written(
     session: AsyncSession,
 ) -> None:
-    """After a publish that threw, everything the trade wrote is committed and
-    correct, which catches a "publish, then commit" hidden behind a swallow.
+    """A publish was attempted and threw, and everything the trade wrote is
+    still committed and correct, which catches a "publish, then commit"
+    hidden behind a swallow.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -224,6 +208,7 @@ async def test_a_trade_whose_publish_failed_is_still_fully_written(
     recorder = Recorder(raises=ConnectionError("redis is unreachable"))
     trade = await buy(session, upstream, user_id=user_id, redis_client=recorder)
 
+    assert len(recorder.calls) == 1, "the trade never attempted its publish"
     async with session_factory()() as other:
         assert await q_of(other, upstream.market_id) == [Q[0] + QUANTITY, Q[1]]
         assert (await book_row(other, upstream.market_id)).state_version == 1

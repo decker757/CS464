@@ -130,6 +130,25 @@ async def test_a_replay_with_a_pending_insert_is_refused(
         await _replay(session, user, platform)
 
 
+async def test_a_replay_with_a_pending_delete_is_refused(
+    session: AsyncSession,
+) -> None:
+    """`session.deleted` counts as well: the replay's commit would carry out a
+    delete the caller had not finished deciding on."""
+    user, platform = await _seed(session)
+
+    ents = entities()
+    spare = ents.Account(kind=ents.AccountKind.USER, owner_id=uuid.uuid4())
+    session.add(spare)
+    await session.commit()
+    await session.delete(spare)
+    assert session.deleted
+    assert not (session.new or session.dirty)
+
+    with pytest.raises(errors().PendingWritesOnReplay):
+        await _replay(session, user, platform)
+
+
 async def test_a_replay_with_a_pending_update_is_refused(
     session: AsyncSession,
 ) -> None:
