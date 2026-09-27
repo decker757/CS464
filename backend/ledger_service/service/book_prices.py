@@ -65,10 +65,9 @@ def refuse_unpriceable(outcome_count: int, b: Decimal | None) -> None:
     if outcome_count < books.MIN_OUTCOMES:
         raise MarketBookIncomplete
 
-    # `books.ensure_open` guards new books, not rows already stored. NaN is
-    # the one unpriceable `b` `numeric` will store, and `NaN <= 0` raises, so
-    # finiteness is checked first.
-    if b is None or not b.is_finite() or b <= 0:
+    # The same rule `books.ensure_open` applies to new books, for rows already
+    # stored.
+    if b is None or not books.is_positive_finite(b):
         raise MarketBookIncomplete
 
 

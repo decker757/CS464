@@ -65,6 +65,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
+def has_pending_writes(session: AsyncSession) -> bool:
+    """True if the session holds adds, changes or deletes not yet flushed."""
+    return bool(session.new or session.dirty or session.deleted)
+
+
 async def create_all() -> None:
     """Create this service's tables, and with them the append-only trigger on
     `ledger.entries` (an `after_create` event, ADR 0009).
