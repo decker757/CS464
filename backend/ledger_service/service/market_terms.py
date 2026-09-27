@@ -53,60 +53,19 @@ class MarketTerms:
     outcomes: list[OutcomeTerms]
 
 
-async def fetch(
-    market_id: uuid.UUID,
-    *,
-    access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> MarketTerms:
-    """The market's terms, or the error D-030 and ADR 0017 map a failure to.
+def _to_decimal(value: object) -> Decimal | None:
+    """A JSON string or number to `Decimal`, exactly. Never via `float`.
 
-    | upstream | raised | status |
-    | --- | --- | --- |
-    | connect error, timeout, 5xx | `MarketTermsUnavailable` | 503 |
-    | a 200 that is not this market | `MarketTermsUnavailable` | 503 |
-    | 404 | `MarketNotFound` | 404 |
-    | 401 | `NotAuthenticated` | 401 |
-
-    Carries what it reads and decides nothing on it (ADR 0017): null or
-    unpriceable terms and a status that is not open are all handed back.
+    `bool` is refused explicitly: it subclasses `int`, so JSON `true` would
+    silently become `b = 1` in an immutable book. A `float` here means
+    `parse_float=Decimal` was dropped, a loss D-033 says cannot be detected
+    afterwards, so it is refused too.
     """
-    settings = get_settings()
-
-    # A client per call pays a fresh handshake on every trade (D-047's note).
-    # Known cost: the fix, one lifespan-held client, is #114, because it moves
-    # the seam this module's and `test_market_status.py`'s tests drive.
-    async with httpx.AsyncClient(
-        base_url=settings.market_service_url,
-        transport=transport,
-        timeout=_TIMEOUT,
-    ) as client:
-        try:
-            response = await client.get(
-                f"/public/markets/{market_id}",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        # `RequestError`, not `TransportError`, which misses
-        # `httpx.DecodingError` (a lying `Content-Encoding`). Everything under
-        # `RequestError` means the dependency failed: a 503.
-        except httpx.RequestError as exc:
-            raise MarketTermsUnavailable from exc
-
-    if response.status_code == 404:
-        raise MarketNotFound
-    if response.status_code == 401:
-        raise NotAuthenticated
-    if response.status_code >= 400:
-        raise MarketTermsUnavailable
-
-    try:
-        # D-033: a bare JSON number goes from its text straight to `Decimal`,
-        # never through a float.
-        body = json.loads(response.content, parse_float=Decimal)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise MarketTermsUnavailable from exc
-
-    return _parse(market_id, body)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
+        raise TypeError(f"{type(value).__name__} is not a decimal value")
+    return Decimal(value)
 
 
 def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
@@ -170,16 +129,57 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         raise MarketTermsUnavailable from exc
 
 
-def _to_decimal(value: object) -> Decimal | None:
-    """A JSON string or number to `Decimal`, exactly. Never via `float`.
+async def fetch(
+    market_id: uuid.UUID,
+    *,
+    access_token: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> MarketTerms:
+    """The market's terms, or the error D-030 and ADR 0017 map a failure to.
 
-    `bool` is refused explicitly: it subclasses `int`, so JSON `true` would
-    silently become `b = 1` in an immutable book. A `float` here means
-    `parse_float=Decimal` was dropped, a loss D-033 says cannot be detected
-    afterwards, so it is refused too.
+    | upstream | raised | status |
+    | --- | --- | --- |
+    | connect error, timeout, 5xx | `MarketTermsUnavailable` | 503 |
+    | a 200 that is not this market | `MarketTermsUnavailable` | 503 |
+    | 404 | `MarketNotFound` | 404 |
+    | 401 | `NotAuthenticated` | 401 |
+
+    Carries what it reads and decides nothing on it (ADR 0017): null or
+    unpriceable terms and a status that is not open are all handed back.
     """
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
-        raise TypeError(f"{type(value).__name__} is not a decimal value")
-    return Decimal(value)
+    settings = get_settings()
+
+    # A client per call pays a fresh handshake on every trade (D-047's note).
+    # Known cost: the fix, one lifespan-held client, is #114, because it moves
+    # the seam this module's and `test_market_status.py`'s tests drive.
+    async with httpx.AsyncClient(
+        base_url=settings.market_service_url,
+        transport=transport,
+        timeout=_TIMEOUT,
+    ) as client:
+        try:
+            response = await client.get(
+                f"/public/markets/{market_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        # `RequestError`, not `TransportError`, which misses
+        # `httpx.DecodingError` (a lying `Content-Encoding`). Everything under
+        # `RequestError` means the dependency failed: a 503.
+        except httpx.RequestError as exc:
+            raise MarketTermsUnavailable from exc
+
+    if response.status_code == 404:
+        raise MarketNotFound
+    if response.status_code == 401:
+        raise NotAuthenticated
+    if response.status_code >= 400:
+        raise MarketTermsUnavailable
+
+    try:
+        # D-033: a bare JSON number goes from its text straight to `Decimal`,
+        # never through a float.
+        body = json.loads(response.content, parse_float=Decimal)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise MarketTermsUnavailable from exc
+
+    return _parse(market_id, body)

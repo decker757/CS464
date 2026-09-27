@@ -36,6 +36,42 @@ class PricedOutcome:
     price: Decimal
 
 
+async def _read(session: AsyncSession, market_id: uuid.UUID) -> Sequence[Row]:
+    stmt = (
+        select(
+            MarketBook.state_version,
+            MarketBook.liquidity_b,
+            MarketBook.state_changed_at,
+            MarketOutcome.outcome_id,
+            MarketOutcome.position,
+            MarketOutcome.q,
+        )
+        .join(MarketOutcome, MarketOutcome.market_id == MarketBook.market_id)
+        .where(MarketBook.market_id == market_id)
+        .order_by(MarketOutcome.position)
+    )
+    return (await session.execute(stmt)).all()
+
+
+def refuse_unpriceable(outcome_count: int, b: Decimal | None) -> None:
+    """Raise `MarketBookIncomplete` for a book the engine cannot price.
+
+    The one copy of this guard: the trade path's locked read calls it too, so
+    the trade and the preview refuse the same books. Takes a count and `b`
+    because the two callers read different shapes.
+    """
+    # Fewer than two, not zero: `core/lmsr.py` raises a bare `ValueError` on
+    # one outcome, an unmapped 500.
+    if outcome_count < books.MIN_OUTCOMES:
+        raise MarketBookIncomplete
+
+    # `books.ensure_open` guards new books, not rows already stored. NaN is
+    # the one unpriceable `b` `numeric` will store, and `NaN <= 0` raises, so
+    # finiteness is checked first.
+    if b is None or not b.is_finite() or b <= 0:
+        raise MarketBookIncomplete
+
+
 async def read_or_open(
     session: AsyncSession,
     market_id: uuid.UUID,
@@ -67,25 +103,6 @@ async def read_or_open(
     return rows
 
 
-def refuse_unpriceable(outcome_count: int, b: Decimal | None) -> None:
-    """Raise `MarketBookIncomplete` for a book the engine cannot price.
-
-    The one copy of this guard: the trade path's locked read calls it too, so
-    the trade and the preview refuse the same books. Takes a count and `b`
-    because the two callers read different shapes.
-    """
-    # Fewer than two, not zero: `core/lmsr.py` raises a bare `ValueError` on
-    # one outcome, an unmapped 500.
-    if outcome_count < books.MIN_OUTCOMES:
-        raise MarketBookIncomplete
-
-    # `books.ensure_open` guards new books, not rows already stored. NaN is
-    # the one unpriceable `b` `numeric` will store, and `NaN <= 0` raises, so
-    # finiteness is checked first.
-    if b is None or not b.is_finite() or b <= 0:
-        raise MarketBookIncomplete
-
-
 def priced(rows: Sequence[Row], raw: list[Decimal]) -> list[PricedOutcome]:
     """Zips `raw` back onto the ids and positions `read_or_open` ordered,
     each quantized by `core/pricing.py::quantize_price`."""
@@ -99,20 +116,3 @@ def priced(rows: Sequence[Row], raw: list[Decimal]) -> list[PricedOutcome]:
         # silently dropped outcome renders prices that do not sum to one.
         for row, price in zip(rows, raw, strict=True)
     ]
-
-
-async def _read(session: AsyncSession, market_id: uuid.UUID) -> Sequence[Row]:
-    stmt = (
-        select(
-            MarketBook.state_version,
-            MarketBook.liquidity_b,
-            MarketBook.state_changed_at,
-            MarketOutcome.outcome_id,
-            MarketOutcome.position,
-            MarketOutcome.q,
-        )
-        .join(MarketOutcome, MarketOutcome.market_id == MarketBook.market_id)
-        .where(MarketBook.market_id == market_id)
-        .order_by(MarketOutcome.position)
-    )
-    return (await session.execute(stmt)).all()
