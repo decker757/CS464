@@ -9,6 +9,8 @@ import MarketsPage from './pages/MarketsPage'
 import RegisterPage from './pages/RegisterPage'
 import AdminMarketsPage from './pages/admin/AdminMarketsPage'
 import CreateMarketPage from './pages/admin/CreateMarketPage'
+import DecideOutcomePage from './pages/admin/DecideOutcomePage'
+import ProposalsPage from './pages/admin/ProposalsPage'
 import ProposeOutcomePage from './pages/admin/ProposeOutcomePage'
 
 export default function App() {
@@ -24,6 +26,8 @@ export default function App() {
           <Route path="/admin/markets" element={<ProtectedRoute requireAdmin><AdminMarketsPage /></ProtectedRoute>} />
           <Route path="/admin/markets/new" element={<ProtectedRoute requireAdmin><CreateMarketPage /></ProtectedRoute>} />
           <Route path="/admin/markets/:id/propose-outcome" element={<ProtectedRoute requireAdmin><ProposeOutcomePage /></ProtectedRoute>} />
+          <Route path="/admin/proposals" element={<ProtectedRoute requireAdmin><ProposalsPage /></ProtectedRoute>} />
+          <Route path="/admin/markets/:id/decide-outcome" element={<ProtectedRoute requireAdmin><DecideOutcomePage /></ProtectedRoute>} />
           {/* /portfolio — added as built */}
         </Routes>
       </AuthProvider>

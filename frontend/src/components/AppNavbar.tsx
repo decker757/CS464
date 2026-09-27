@@ -33,6 +33,9 @@ export default function AppNavbar() {
               <Link to="/admin/markets" className="text-sm text-white/75 hover:text-white">
                 All Markets
               </Link>
+              <Link to="/admin/proposals" className="text-sm text-white/75 hover:text-white">
+                Proposals
+              </Link>
               <Link to="/admin/markets/new" className={buttonClass('outlineGoldOnNavy', 'sm')}>
                 + New Market
               </Link>
