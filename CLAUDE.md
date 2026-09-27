@@ -62,6 +62,10 @@ cd backend/auth_service       # or market_service, audit_service, ledger_service
 
 cd backend/realtime_service   # the exception: no database, wants Redis
 .venv/bin/pytest              # needs `docker compose up -d redis`
+
+cd backend/shared             # the token verifier, tested once, where it lives
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # once
+.venv/bin/pytest              # no database, no Redis, no .env
 ```
 
 ## Things that will waste your time if you do not know them
