@@ -63,6 +63,27 @@ function mockGetMarket(market: Record<string, unknown>) {
   server.use(http.get(`${MARKET_BASE}/public/markets/mkt-1`, () => HttpResponse.json(market)))
 }
 
+// approve-outcome and reject-outcome return the admin MarketOut shape, not
+// PublicMarketOut — it carries approved_by_* and proposed_by_*, which the
+// public read never does (market-service.md's "Two schemas" section).
+function approvedMarketOut(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'mkt-1',
+    status: 'approved',
+    proposal_id: 'prop-1',
+    proposed_outcome_id: 'o-yes',
+    proposed_by_id: 'admin-2',
+    proposed_by_username: 'ernest_t',
+    proposed_at: '2026-01-01T00:00:00Z',
+    proposal_evidence_url: 'https://example.com',
+    proposal_evidence_note: 'A note.',
+    approved_by_id: 'admin-1',
+    approved_by_username: 'admin1',
+    approved_at: '2026-01-02T00:00:00Z',
+    ...overrides,
+  }
+}
+
 function mockAuditActions(actions: Record<string, unknown>[]) {
   server.use(
     http.get(`${AUDIT_BASE}/audit/actions`, () =>
@@ -107,14 +128,14 @@ describe('DecideOutcomePage', () => {
     expect(screen.getByText(/you proposed this outcome/i)).toBeInTheDocument()
   })
 
-  it('approves and navigates to the proposals list', async () => {
+  it('approves and shows both the proposer and approver identities', async () => {
     mockGetMarket(publicMarket())
     mockAuditActions([proposedAction()])
     let sentBody: unknown = null
     server.use(
       http.post(`${MARKET_BASE}/markets/mkt-1/approve-outcome`, async ({ request }) => {
         sentBody = await request.json()
-        return HttpResponse.json(publicMarket({ status: 'approved' }))
+        return HttpResponse.json(approvedMarketOut())
       }),
     )
     const actor = userEvent.setup()
@@ -123,7 +144,9 @@ describe('DecideOutcomePage', () => {
 
     await actor.click(screen.getByRole('button', { name: /^approve$/i }))
 
-    expect(await screen.findByText('proposals list')).toBeInTheDocument()
+    expect(await screen.findByText('Proposal Approved')).toBeInTheDocument()
+    expect(screen.getByText('Proposed by').nextElementSibling).toHaveTextContent(/ernest_t/)
+    expect(screen.getByText('Approved by').nextElementSibling).toHaveTextContent(/admin1/)
     expect(sentBody).toEqual({ proposal_id: 'prop-1' })
   })
 
@@ -134,7 +157,20 @@ describe('DecideOutcomePage', () => {
     server.use(
       http.post(`${MARKET_BASE}/markets/mkt-1/reject-outcome`, async ({ request }) => {
         sentBody = await request.json()
-        return HttpResponse.json(publicMarket({ status: 'closed' }))
+        return HttpResponse.json({
+          id: 'mkt-1',
+          status: 'closed',
+          proposal_id: null,
+          proposed_outcome_id: null,
+          proposed_by_id: null,
+          proposed_by_username: null,
+          proposed_at: null,
+          proposal_evidence_url: null,
+          proposal_evidence_note: null,
+          approved_by_id: null,
+          approved_by_username: null,
+          approved_at: null,
+        })
       }),
     )
     const actor = userEvent.setup()

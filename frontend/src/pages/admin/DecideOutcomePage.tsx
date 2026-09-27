@@ -35,6 +35,10 @@ export default function DecideOutcomePage() {
   const [proposal, setProposal] = useState<PendingProposal | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
+  // Set on a successful approval, so the page can show both identities
+  // (market-service.md's approval-screen notes, point 6) instead of
+  // navigating away with nothing to show for it.
+  const [approved, setApproved] = useState<{ approvedByUsername: string; approvedAt: string } | null>(null)
 
   const [approving, setApproving] = useState(false)
   const [rejecting, setRejecting] = useState(false)
@@ -64,8 +68,12 @@ export default function DecideOutcomePage() {
     setApproving(true)
     setFormError('')
     try {
-      await approveOutcome(id, proposal.proposalId)
-      navigate('/admin/proposals')
+      const approvedMarket = await approveOutcome(id, proposal.proposalId)
+      setApproved({
+        approvedByUsername: approvedMarket.approved_by_username ?? '',
+        approvedAt: approvedMarket.approved_at ?? '',
+      })
+      setApproving(false)
     } catch (err) {
       const code = errorCode(err)
       setFormError((code && CODE_MESSAGES[code]) || 'Approval failed. Please try again.')
@@ -111,6 +119,31 @@ export default function DecideOutcomePage() {
       <AppLayout width="max-w-[700px]">
         <BackLink to="/admin/proposals" label="Proposals" className="mb-4 block" />
         <p className="text-sm text-muted">This market has no proposal waiting on a decision.</p>
+      </AppLayout>
+    )
+  }
+
+  if (approved) {
+    return (
+      <AppLayout width="max-w-[700px]">
+        <BackLink to="/admin/proposals" label="Proposals" className="mb-1.5 block" />
+        <PageTitle className="mb-8">Proposal Approved</PageTitle>
+        <SectionCard title={market.question}>
+          <dl className="flex flex-col gap-3 text-[14px]">
+            <div>
+              <dt className="text-xs font-semibold text-subtle uppercase">Winner</dt>
+              <dd className="text-smu-navy">{proposal.winningOutcome}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-subtle uppercase">Proposed by</dt>
+              <dd className="text-smu-navy">{proposal.proposedByUsername} on {new Date(proposal.proposedAt).toLocaleString('en-SG')}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-subtle uppercase">Approved by</dt>
+              <dd className="text-smu-navy">{approved.approvedByUsername} on {new Date(approved.approvedAt).toLocaleString('en-SG')}</dd>
+            </div>
+          </dl>
+        </SectionCard>
       </AppLayout>
     )
   }
