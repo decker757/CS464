@@ -19,74 +19,33 @@ from controller.routes import router as ledger_router
 from core.config import get_settings
 from core.database import create_all, dispose_engine
 
-# Imported for its side effect: registering the mappers on Base before
-# create_all runs. Do not rely on another module pulling it in transitively.
-# It also attaches the append-only trigger to `ledger.entries` as an
-# after_create DDL event, so the guarantee ships with the table.
+# Imported for its side effect: registering the mappers on Base, and the
+# append-only trigger on `ledger.entries`, before create_all runs. Do not rely
+# on another module pulling it in transitively.
 from model import entities  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
 
-# Seconds, for connect and for every read and write on the price bus. The same
-# budget `service/market_terms.py::_TIMEOUT` gives the other outbound call on
-# the trade path; see the lifespan below for why it is stated at all.
+# Seconds, for connect and every read and write on the price bus (D-051).
+# Without it a Redis that never answers makes the publish wait instead of
+# raise, hanging a committed trade. Equals redis-py 8.1's default; stated so a
+# version change cannot make it None.
 _REDIS_TIMEOUT_SECONDS = 5.0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Safe while this service owns the ledger schema alone. Move to Alembic
-    # before the first column change against data worth keeping — which for
-    # this service means "before anybody has traded".
-
-    # One Redis client for the process. [F-9] #112. Built here rather than per
-    # publish: a publish runs once per trade, so a client per call would be a
-    # DNS lookup, a TCP handshake and a pool teardown on the hot path, for a
-    # call whose entire purpose is to be cheap enough to fail silently.
-    #
-    # `from_url` does not connect — it builds a pool that dials lazily — so
-    # this does not block startup on Redis being *reachable*, deliberately: an
-    # unreachable bus costs one lost broadcast per trade, not a ledger that
-    # will not boot.
-    #
-    # It does parse, eagerly, and that is also deliberate. A `REDIS_URL` that
-    # is not a Redis URL — `http://redis:6379`, a typo in the scheme — raises
-    # `ValueError` here and the ledger refuses to start. Unreachable and
-    # mistyped are different failures: the first is an outage that ends, and
-    # swallowing it costs broadcasts while it lasts; the second is a
-    # configuration error that never ends, and swallowing it would kill every
-    # broadcast forever with nothing in the logs of a healthy-looking service
-    # to debug against. Failing at boot is how a typo gets found. Recorded as
-    # "A mistyped `REDIS_URL` stops the ledger booting; an unreachable one
-    # does not" in DECISIONS.md.
-    #
-    # Both socket timeouts are stated, for D-030's reason and at
-    # `service/market_terms.py::_TIMEOUT`'s value: the publish runs after
-    # [T-2] #22's commit, with the request's session still open, and a Redis
-    # that accepts the connection and then never answers must not hold that
-    # open for as long as the socket survives. Without a timeout the publish
-    # does not raise, it waits, so `service/bus.py`'s `except Exception`
-    # never fires and the swallow rule protects nothing.
-    #
-    # Like `_TIMEOUT`, these restate the library's own defaults — redis-py
-    # 8.1.0 sets both to five seconds — so they change no behaviour today.
-    # They are here because older redis-py left both at None, and a pin moved
-    # in either direction should not silently decide how long a committed
-    # trade can hang. `test_a_redis_that_never_answers_costs_a_bounded_wait_
-    # and_no_exception` fails if the effective timeout ever becomes None.
-    # `try` from here, not from the `yield`: the two failures this guards
-    # against are `redis.from_url` raising on a mistyped URL — the documented
-    # boot failure above, which happens *after* `create_all()` has opened the
-    # engine — and `aclose()` raising on shutdown, which would leave every
-    # asyncpg connection open behind it. Either one without this leaks the
-    # engine for the life of the process.
+    # Setup sits inside the `try`: `create_all()` opens the engine, and any
+    # failure after that (Postgres unreachable, a mistyped REDIS_URL) would
+    # otherwise leak its pool for the life of the process.
     try:
-        # Inside the `try`, not above it. `create_all()` opens the engine, so
-        # a failure here — Postgres unreachable, a missing grant — used to
-        # leak the pool it had just built, which is the same hole one
-        # statement earlier than the one the comment below describes.
+        # Safe while this service alone owns the ledger schema. Move to
+        # Alembic before the first column change against data worth keeping.
         await create_all()
 
+        # One client for the process (D-047). `from_url` dials lazily, so an
+        # unreachable Redis does not stop boot, but parses eagerly, so a
+        # mistyped REDIS_URL does (D-051).
         app.state.redis = redis.from_url(
             get_settings().redis_url,
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
@@ -94,12 +53,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         yield
     finally:
-        # Nested, because one `finally` does not protect two cleanups from
-        # each other: `aclose()` raising would have skipped the disposal just
-        # as surely as having no `finally` at all, which is the leak this was
-        # supposed to close. The engine is the one that must always go — a
-        # leaked Redis pool is a socket, a leaked engine is every asyncpg
-        # connection this process opened.
+        # Nested so a failing `aclose()` cannot skip the disposal: a leaked
+        # engine is every asyncpg connection this process opened.
         try:
             redis_client = getattr(app.state, "redis", None)
             if redis_client is not None:
