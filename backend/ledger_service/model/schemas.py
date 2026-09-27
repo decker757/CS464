@@ -24,7 +24,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
@@ -262,8 +262,8 @@ class TradeIn(BaseModel):
     default is `extra="ignore"`. `total` is in that refusal too, because it
     is the field a client would most plausibly echo back from a preview.
 
-    `side` is `Literal["buy", "sell"]`: anything else is a 422 here rather
-    than a refusal a layer down. The route converts it to `core.pricing.Side`.
+    `side` is `core.pricing.Side`: anything else is a 422 here rather than a
+    refusal a layer down, and the route passes the enum straight through.
 
     `state_version` is required, not optional with a default — an optional
     staleness field would let a client silently opt out of the only
@@ -273,7 +273,7 @@ class TradeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     outcome_id: uuid.UUID
-    side: Literal["buy", "sell"] = Field(
+    side: Side = Field(
         description="`buy` or `sell`; anything else is 422."
     )
     quantity: Decimal = Field(

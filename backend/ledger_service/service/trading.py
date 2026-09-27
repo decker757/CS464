@@ -317,7 +317,14 @@ async def execute(
     to a cold market's first touch — this function mints nothing. `idempotency_key`
     is the client's own string; the stored key is derived from it, `user_id`
     and `market_id` (`trade_key`), never stored as sent.
+
+    Raises `ValueError` on a `quantity` that is not positive, before anything
+    else: the route's `gt=0` is not the only caller this function can have,
+    and a negative sell would pass the holding check and be priced as a buy.
     """
+    if quantity <= 0:
+        raise ValueError(f"quantity must be positive, got {quantity}")
+
     key = trade_key(user_id, market_id, idempotency_key)
 
     # 1. The unlocked replay lookup, before anything else — no status check,

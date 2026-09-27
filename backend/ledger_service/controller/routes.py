@@ -14,7 +14,7 @@ hurry would fail against the database.
 [T-2] #22 answers ADR 0009's deferred service-auth question for exactly this
 shape of caller: the route takes no account, no amount and no leg — the
 request model is `extra="forbid"` over five fields, none of them money — so
-the debited account is `accounts.ensure(USER, claims.sub)` rather than
+the trader's account is `accounts.ensure(USER, claims.sub)` rather than
 anything in the body, and a trader's own token is safe to accept because
 there is nothing in the request for it to mint. See ADR 0009's amendment.
 
@@ -354,8 +354,10 @@ async def market_snapshot(
 _TRADE_DESCRIPTION = (
     "[T-2] #22, [T-3] #23. Buy or sell shares in an open market. This "
     "service's first write route: it takes no account, no amount and no "
-    "leg — the request model is `extra=\"forbid\"`, and the debited account is the caller's own, "
-    "read from the token's `sub` (ADR 0009's amendment).\n\n"
+    "leg — the request model is `extra=\"forbid\"`, and the trader's account is the caller's own, "
+    "read from the token's `sub` (ADR 0009's amendment). The other leg is "
+    "this market's pool: on a buy the trader is debited and the pool "
+    "credited, on a sell the reverse.\n\n"
     "**A retry answers before a status check runs.** The idempotency "
     "lookup is unlocked and first: a hit is compared against this request "
     "and replayed — no HTTP call to market_service, no lock — even on a "
@@ -438,7 +440,7 @@ async def execute_trade(
         market_id,
         user_id=user.user_id,
         outcome_id=body.outcome_id,
-        side=Side(body.side),
+        side=body.side,
         quantity=body.quantity,
         state_version=body.state_version,
         idempotency_key=body.idempotency_key,

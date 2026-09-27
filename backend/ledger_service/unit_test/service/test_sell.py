@@ -273,6 +273,27 @@ async def test_proceeds_below_a_tick_are_refused_and_write_nothing(
 # =========================================================================
 # The holding check
 # =========================================================================
+@pytest.mark.parametrize("quantity", [Decimal("0"), Decimal("-5")])
+async def test_the_service_refuses_a_quantity_that_is_not_positive(
+    session: AsyncSession, quantity: Decimal
+) -> None:
+    """PR #120's review: the route's `gt=0` was the only thing refusing this,
+    so a direct caller's sell of `-5` passed the holding check, was priced as
+    a buy of 5 and paid out as proceeds. `execute` refuses it itself, before
+    it reads or writes anything."""
+    upstream, user_id = await _holder(session)
+    before = await footprint(session, upstream.market_id)
+    recorder = Recorder()
+
+    with pytest.raises(ValueError):
+        await sell(
+            session, upstream, user_id=user_id, quantity=quantity, redis_client=recorder
+        )
+
+    await assert_wrote_nothing(session, upstream.market_id, before)
+    assert recorder.calls == []
+
+
 async def test_a_sell_larger_than_the_position_is_refused_with_held_and_requested(
     session: AsyncSession,
 ) -> None:
