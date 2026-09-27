@@ -133,6 +133,23 @@ describe('CreateMarketPage', () => {
     expect(screen.getByText('A seed subsidy is required.')).toBeInTheDocument()
   })
 
+  it('marks a text area invalid when a blocking hint names it', async () => {
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () =>
+        HttpResponse.json({
+          ...baseSaveResponse,
+          blocking_submission: [{ field: 'resolution_criteria', message: 'Resolution criteria are required.' }],
+        }),
+      ),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    expect(screen.getByLabelText('Resolution criteria *')).toBeValid()
+    touchForm()
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    expect(screen.getByLabelText('Resolution criteria *')).toBeInvalid()
+  })
+
   it('does not save a form nobody has touched', async () => {
     let calls = 0
     server.use(http.post(`${MARKET_BASE}/markets`, () => { calls++; return HttpResponse.json(baseSaveResponse) }))
