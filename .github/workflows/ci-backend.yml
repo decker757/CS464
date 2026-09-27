@@ -9,8 +9,8 @@ name: Backend CI
 # JOB, not the workflow — and note the job names now carry the matrix value,
 # so they read "test (auth_service, auth_svc)", "test (market_service,
 # market_svc)", "test (audit_service, audit_svc)", "test (ledger_service,
-# ledger_svc)" and "test (realtime_service, none)". Never mark `notify`
-# required; it only runs on failure.
+# ledger_svc)", "test (realtime_service, none)" and "test (shared)". Never
+# mark `notify` required; it only runs on failure.
 on:
   push:
     branches: [ "dev", "staging", "main" ]
@@ -184,8 +184,36 @@ jobs:
           PYTHONPATH: ..
         run: python -c "from main import create_app; create_app()"
 
+  # [F-6] #76. The shared package's own suite: the token verifier, tested once
+  # where it lives rather than once per service. No database, no Redis and no
+  # JWT_SECRET — the tests sign with a secret they generate themselves — so
+  # none of the matrix job's services or setup steps apply.
+  shared:
+    name: test (shared)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./backend/shared
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/shared/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Test
+        run: pytest
+
   notify:
-    needs: test
+    needs: [test, shared]
     if: failure()
     uses: ./.github/workflows/notify-failure.yml
     with:
