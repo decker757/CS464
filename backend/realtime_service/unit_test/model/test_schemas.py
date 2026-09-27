@@ -54,6 +54,7 @@ def test_the_frame_is_the_event_plus_a_type(market_id: uuid.UUID) -> None:
     assert frame["market_id"] == str(market_id)
     assert frame["state_version"] == 3
     assert set(frame["prices"][0]) == {"outcome_id", "position", "price"}
+    assert isinstance(frame["prices"][0]["outcome_id"], str)
 
 
 def test_an_unknown_field_is_refused(market_id: uuid.UUID) -> None:
