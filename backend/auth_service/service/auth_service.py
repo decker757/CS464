@@ -79,8 +79,9 @@ async def _lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
 async def _lock_refresh_token(session: AsyncSession, raw: str) -> RefreshToken | None:
     """Lock and return the row for this raw token, or None.
 
-    Locked because both callers write `revoked_at` from what they read; unlocked,
-    two concurrent refreshes of one token would both succeed. ADR 0015.
+    Locked because both callers write `revoked_at` from what they read, and a
+    logout takes only this lock: a refresh that waits on it must see the
+    logout's revocation, not issue a session from a logged-out token. ADR 0015.
     `populate_existing` because loading the user already put its tokens in the
     identity map, and a logout may have revoked this one since.
     """
