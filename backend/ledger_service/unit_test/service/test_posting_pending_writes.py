@@ -211,6 +211,50 @@ async def test_the_refusal_commits_nothing(session: AsyncSession) -> None:
         await assert_ledger_balances(other)
 
 
+async def test_a_replay_after_the_caller_flushed_is_refused_and_commits_nothing(
+    session: AsyncSession,
+) -> None:
+    """A write already flushed is out of `new`, `dirty` and `deleted`, and
+    `post`'s replay commit would still land it. `accounts.ensure` flushes
+    inside a SAVEPOINT it releases, the shape any caller of it has.
+    """
+    user, platform = await _seed(session)
+
+    ents = entities()
+    flushed_owner = uuid.uuid4()
+    await accounts_module().ensure(session, ents.AccountKind.USER, flushed_owner)
+    assert not (session.new or session.dirty or session.deleted), (
+        "the flushed account is still pending, so this is not the flushed case"
+    )
+
+    with pytest.raises(errors().PendingWritesOnReplay):
+        await _replay(session, user, platform)
+    await session.rollback()
+
+    async with session_factory()() as other:
+        found = await accounts_module().find(
+            other, ents.AccountKind.USER, flushed_owner
+        )
+        assert found is None, "the flushed write was committed by the replay"
+        assert await transaction_count(other, key=_KEY) == 1
+
+
+async def test_a_rolled_back_flush_no_longer_counts(session: AsyncSession) -> None:
+    """A flush counts only until its transaction ends: once rolled back there
+    is nothing left for a replay's commit to land.
+    """
+    from core.database import has_pending_writes  # noqa: PLC0415
+
+    ents = entities()
+    session.add(ents.Account(kind=ents.AccountKind.USER, owner_id=uuid.uuid4()))
+    await session.flush()
+    assert has_pending_writes(session)
+
+    await session.rollback()
+
+    assert not has_pending_writes(session)
+
+
 async def test_it_is_a_ledger_error_at_500(session: AsyncSession) -> None:
     """500, not 409: the service reporting a bug in itself. A `LedgerError`,
     so the response keeps the one error envelope."""

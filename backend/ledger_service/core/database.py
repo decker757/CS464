@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, SessionTransaction
 
 from core.config import get_settings
 
@@ -19,6 +19,11 @@ from core.config import get_settings
 # to search_path, so a connection without one cannot create these tables in
 # public.
 SCHEMA = "ledger"
+
+# A `session.info` flag, set by a successful flush and cleared when the
+# outermost transaction ends. A flushed row leaves `session.new`, but a
+# commit still lands it.
+_FLUSHED_KEY = "ledger.flushed_uncommitted"
 
 
 class Base(DeclarativeBase):
@@ -65,9 +70,35 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
+@event.listens_for(Session, "after_flush")
+def _remember_the_flush(session: Session, flush_context: object) -> None:
+    session.info[_FLUSHED_KEY] = True
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _forget_the_flush(session: Session, transaction: SessionTransaction) -> None:
+    # Only the outermost transaction: the inner one every flush opens, and a
+    # released SAVEPOINT, both end with their rows still uncommitted, and it
+    # is the commit or rollback that settles them.
+    if transaction.parent is None:
+        session.info.pop(_FLUSHED_KEY, None)
+
+
 def has_pending_writes(session: AsyncSession) -> bool:
-    """True if the session holds adds, changes or deletes not yet flushed."""
-    return bool(session.new or session.dirty or session.deleted)
+    """True if the session holds writes its transaction has not committed:
+    adds, changes or deletes not yet flushed, or any flush since it began.
+
+    Errs toward True: a flush later rolled back to a SAVEPOINT still counts
+    until the transaction ends, which fails closed where this is the alarm
+    (`PendingWritesOnReplay`). Sees ORM writes only, not a Core `insert()`
+    executed directly.
+    """
+    return bool(
+        session.new
+        or session.dirty
+        or session.deleted
+        or session.info.get(_FLUSHED_KEY)
+    )
 
 
 async def create_all() -> None:
