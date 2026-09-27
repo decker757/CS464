@@ -91,7 +91,7 @@ class Side(StrEnum):
 class TradeCost:
     """What one trade costs, and the `q` it leaves behind."""
 
-    after_q: list[Decimal]
+    after_q: tuple[Decimal, ...]
     magnitude: Decimal  # unsigned, rounded toward the pool
     total: Decimal  # signed for the trader: negative on a buy
 
@@ -147,7 +147,7 @@ def trade_cost_of(
     b: Decimal,
     *,
     index: int,
-    side: Side,
+    side: Side | str,
     quantity: Decimal,
 ) -> TradeCost:
     """Price `quantity` of outcome `index` at `q`, `b`.
@@ -158,7 +158,11 @@ def trade_cost_of(
     `QuantityTooLarge` past `Numeric(18, 4)` on the new `q` or the cost
     (D-040), and `CostBelowTick`/`ProceedsBelowTick` via `quantize_cost`
     (D-041).
+
+    `side` is coerced, as in `quantize_cost`: `"sell" is Side.SELL` is False,
+    so an unconverted string would be priced as a buy.
     """
+    side = Side(side)
     if side is Side.SELL and quantity > q[index]:
         raise InsufficientSharesOutstanding
 
@@ -166,7 +170,7 @@ def trade_cost_of(
     delta[index] = quantity if side is Side.BUY else -quantity
 
     with _engine_context():
-        after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
+        after_q = tuple(q_i + d_i for q_i, d_i in zip(q, delta))
 
     # D-040: checked before quantizing, which raises `InvalidOperation` past
     # the ambient 28 digits.

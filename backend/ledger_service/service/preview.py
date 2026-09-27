@@ -58,8 +58,6 @@ async def quote(
     market the first touch opens and funds the book and commits, forwarding
     `access_token` unchanged, so call it with nothing pending on the session.
     """
-    # Coerced before `trade_cost_of`'s `is` comparisons: `"sell" is Side.SELL`
-    # is False, so a raw string would fall through every one of them as a buy.
     side = Side(side)
     rows = await book_prices.read_or_open(
         session, market_id, access_token=access_token, transport=transport
