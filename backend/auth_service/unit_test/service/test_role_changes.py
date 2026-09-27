@@ -47,9 +47,14 @@ async def _demote_each_other(first: uuid.UUID, second: uuid.UUID) -> list[str]:
     Returns each side's outcome, "applied" or "refused".
     """
     factory = get_session_factory()
+    # Both sessions connect before either starts, so the lock decides the
+    # outcome and not which session opened its connection first. ADR 0015.
+    both_connected = asyncio.Barrier(2)
 
     async def demote(actor_id: uuid.UUID, target_id: uuid.UUID) -> str:
         async with factory() as own_session:
+            await own_session.connection()
+            await both_connected.wait()
             try:
                 await user_admin.change_role(
                     own_session,
