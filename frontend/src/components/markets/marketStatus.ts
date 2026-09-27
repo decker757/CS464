@@ -27,6 +27,8 @@ export function statusDisplay(status: string): { label: string; tone: Tone } {
 // Trading has stopped once the status leaves "open" OR the close time passes.
 // Checking only the clock misses an early close: an admin can close a market
 // before its close_time, and close_time stays in the future (market-service.md).
-export function tradingStopped(status: MarketStatus, closeTime: string, now = new Date()): boolean {
+// Takes MarketStatus | AdminMarketStatus: the admin's own markets can also be
+// draft or submitted, and neither is "open" either.
+export function tradingStopped(status: MarketStatus | AdminMarketStatus, closeTime: string, now = new Date()): boolean {
   return status !== 'open' || new Date(closeTime) <= now
 }
