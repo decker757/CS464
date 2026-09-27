@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
 import { server } from '../test/server'
@@ -224,6 +224,42 @@ describe('MarketDetailPage', () => {
 
       expect(await screen.findByText(baseMarket.question)).toBeInTheDocument()
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+  })
+
+  // [X-3] #36: the clock closes a market, not the status (ADR 0011), so the
+  // page locks trading at close_time even while the status still says open.
+  describe('at the close time', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('shows trading closed for an open market whose close time has passed', async () => {
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, close_time: '2025-08-09T12:00:00Z' }),
+        ),
+      )
+      renderPage()
+      expect(await screen.findByText(/trading is closed/i)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+    })
+
+    it('locks trading when the countdown reaches the close time', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const closeTime = new Date(Date.now() + 5000).toISOString()
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, close_time: closeTime }),
+        ),
+      )
+      renderPage()
+      expect(await screen.findByRole('button', { name: /buy yes/i })).toBeInTheDocument()
+
+      await act(() => vi.advanceTimersByTimeAsync(5000))
+
+      expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
     })
   })
 })
