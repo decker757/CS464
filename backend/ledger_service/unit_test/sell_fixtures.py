@@ -344,22 +344,28 @@ def assert_sell_rounding_is_load_bearing(
     )
 
 
+def exact_remaining_basis(basis: Decimal, held: Decimal, quantity: Decimal) -> Decimal:
+    """`basis × (held − quantity) / held` at the engine's precision, before
+    any rounding."""
+    with lmsr()._engine_context():
+        return basis * (held - quantity) / held
+
+
 def remaining_basis(basis: Decimal, held: Decimal, quantity: Decimal) -> Decimal:
     """The rule in "A sell releases cost basis at average cost", restated
     from the criterion rather than imported, so the path tests check the
     implementation against the sentence and not against itself."""
     if quantity == held:
         return Decimal("0.0000")
-    with lmsr()._engine_context():
-        exact = basis * (held - quantity) / held
-    return exact.quantize(QUANTUM, rounding=ROUND_HALF_UP)
+    return exact_remaining_basis(basis, held, quantity).quantize(
+        QUANTUM, rounding=ROUND_HALF_UP
+    )
 
 
 def assert_basis_rounding_is_load_bearing(
     basis: Decimal, held: Decimal, quantity: Decimal
 ) -> None:
-    with lmsr()._engine_context():
-        exact = basis * (held - quantity) / held
+    exact = exact_remaining_basis(basis, held, quantity)
     half_up = exact.quantize(QUANTUM, rounding=ROUND_HALF_UP)
     floor = exact.quantize(QUANTUM, rounding=ROUND_FLOOR)
     assert half_up != floor, (

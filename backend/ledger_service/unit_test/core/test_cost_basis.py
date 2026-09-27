@@ -12,27 +12,24 @@ exactly `0.0000`.
 
 **Every input is chosen so the rounding mode changes the answer.** The issue's
 worked example is the proof: half-up leaves `24.3503`, a floor would leave
-`24.3502`. `test_the_rounding_mode_is_observable_in_these_inputs` asserts that
-of every other case here, so an edit to a rounder number fails with a
-sentence rather than quietly turning the rest of this file into tautologies.
+`24.3502`. The parametrized property test asserts that of every other case
+before using it (`assert_basis_rounding_is_load_bearing`), so an edit to a
+rounder number fails with a sentence rather than quietly turning the rest of
+this file into tautologies.
 """
 
 from __future__ import annotations
 
-from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 
 import pytest
 
 from core.pricing import release_basis
-
-
-def _engine_context():
-    from core.lmsr import _engine_context  # noqa: PLC0415
-
-    return _engine_context()
-
-
-QUANTUM = Decimal("0.0001")
+from unit_test.sell_fixtures import (
+    assert_basis_rounding_is_load_bearing,
+    exact_remaining_basis,
+)
+from unit_test.trade_fixtures import QUANTUM
 
 # (basis, held, quantity), each one leaving a remainder where half-up and
 # floor disagree. The first is the issue's worked example; the rest are
@@ -43,25 +40,6 @@ AWKWARD = [
     (Decimal("22.0281"), Decimal("41.0000"), Decimal("10.0000")),
     (Decimal("15.6964"), Decimal("29.7777"), Decimal("13.3333")),
 ]
-
-
-def _exact_remaining(basis: Decimal, held: Decimal, quantity: Decimal) -> Decimal:
-    with _engine_context():
-        return basis * (held - quantity) / held
-
-
-# =========================================================================
-# The constants
-# =========================================================================
-def test_the_rounding_mode_is_observable_in_these_inputs() -> None:
-    """A test of the inputs, not of the code. If any of them leaves a
-    remainder exact at scale 4, half-up and floor agree and the tests below
-    stop distinguishing the two."""
-    for basis, held, quantity in AWKWARD:
-        exact = _exact_remaining(basis, held, quantity)
-        assert exact.quantize(QUANTUM, rounding=ROUND_HALF_UP) != exact.quantize(
-            QUANTUM, rounding=ROUND_FLOOR
-        ), f"{basis}/{held} selling {quantity} leaves {exact}, exact at scale 4"
 
 
 # =========================================================================
@@ -75,6 +53,7 @@ def test_the_worked_example_leaves_24_3503_half_up_not_24_3502() -> None:
     assert remaining == Decimal("24.3503")
     assert remaining != Decimal("24.3502"), "the remaining basis was floored"
     assert released == Decimal("5.4925")
+    assert remaining.as_tuple().exponent == released.as_tuple().exponent == -4
 
 
 def test_three_sells_of_one_release_3_3333_3_3333_3_3334_and_leave_zero() -> None:
@@ -105,10 +84,12 @@ def test_three_sells_of_one_release_3_3333_3_3333_3_3334_and_leave_zero() -> Non
 def test_released_plus_remaining_is_the_old_basis_on_every_sell(
     basis: Decimal, held: Decimal, quantity: Decimal
 ) -> None:
+    assert_basis_rounding_is_load_bearing(basis, held, quantity)
+
     released, remaining = release_basis(basis, held, quantity)
 
     assert released + remaining == basis
-    assert remaining == _exact_remaining(basis, held, quantity).quantize(
+    assert remaining == exact_remaining_basis(basis, held, quantity).quantize(
         QUANTUM, rounding=ROUND_HALF_UP
     )
 
@@ -151,15 +132,6 @@ def test_selling_all_but_a_tick_leaves_dust_at_an_average_of_one() -> None:
     assert released == Decimal("29.8427")
 
 
-def test_the_results_are_at_scale_4() -> None:
-    released, remaining = release_basis(
-        Decimal("29.8428"), Decimal("54.3333"), Decimal("10.0000")
-    )
-
-    assert released.as_tuple().exponent == -4
-    assert remaining.as_tuple().exponent == -4
-
-
 def test_the_product_is_computed_at_engine_precision() -> None:
     """`basis × remaining_quantity` can reach 36 significant digits, and a
     28-digit context would round the product before the quantize ran — the
@@ -178,7 +150,7 @@ def test_the_product_is_computed_at_engine_precision() -> None:
     held = Decimal("1099511627776.0000")
     quantity = Decimal("549755813888.0000")
 
-    exact = _exact_remaining(basis, held, quantity).quantize(
+    exact = exact_remaining_basis(basis, held, quantity).quantize(
         QUANTUM, rounding=ROUND_HALF_UP
     )
     with localcontext() as ambient:
