@@ -1,8 +1,13 @@
 """The token verifier, tested once, where it lives. [F-6] #76
 
 Every service's trust model is this one function, so its behaviour is asserted
-here directly and each service keeps only a test that its `core/security.py`
-seam wires its own settings in. No settings, no database, no HTTP.
+here directly. No settings, no database, no HTTP.
+
+Each service still tests its own `core/security.py` seam: a valid token signed
+with its settings decodes, and a foreign-issuer token is refused. The second is
+not a copy of the one here. A seam passing `issuer=None` makes PyJWT skip the
+issuer check, and only a test through that seam notices — unit-level in auth,
+market and audit, through a route in ledger and realtime.
 
 Minting is fine here and nowhere outside `unit_test/`: each service's minting
 guard scans `shared/` for `jwt.encode` and skips test paths. ADR 0002.
