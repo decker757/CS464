@@ -278,4 +278,66 @@ describe('CreateMarketPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/publish failed/i)
     expect(screen.getByRole('button', { name: /publish market/i })).toBeInTheDocument()
   })
+
+  // Another session moved the market past draft; the form must stop saving and lock.
+  it.each(['market_not_editable', 'market_already_open', 'market_closed'])(
+    'locks the form when autosave is refused with %s',
+    async (code) => {
+      server.use(
+        http.post(`${MARKET_BASE}/markets`, () =>
+          HttpResponse.json({ error: { code, message: 'refused' } }, { status: 409 }),
+        ),
+      )
+      vi.useFakeTimers()
+      renderPage()
+      touchForm()
+      await act(() => vi.advanceTimersByTimeAsync(3100))
+      expect(screen.getByLabelText('Question *')).toBeDisabled()
+      expect(screen.queryByRole('button', { name: /submit for review/i })).not.toBeInTheDocument()
+      expect(screen.queryByText('Save failed')).not.toBeInTheDocument()
+    },
+  )
+
+  it('offers Publish when autosave learns the market was already submitted', async () => {
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () =>
+        HttpResponse.json({ error: { code: 'market_not_editable', message: 'refused' } }, { status: 409 }),
+      ),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    touchForm()
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    expect(screen.getByRole('button', { name: /publish market/i })).toBeInTheDocument()
+  })
+
+  it('shows why publish was refused under the field it is about', async () => {
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, async ({ request }) => {
+        const body = await request.json() as { status: string }
+        return HttpResponse.json({
+          ...baseSaveResponse,
+          market: { ...baseSaveResponse.market, status: body.status },
+        })
+      }),
+      http.post(`${MARKET_BASE}/markets/:id/publish`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'draft_incomplete',
+              message: 'The market is not ready.',
+              details: [{ field: 'close_time', message: 'The close time has already passed.' }],
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+    const actor = userEvent.setup({ delay: null })
+    renderPage()
+    await actor.click(screen.getByRole('button', { name: /submit for review/i }))
+    await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+    const closeTimeField = (await screen.findByLabelText('Closes at *')).parentElement!
+    expect(within(closeTimeField).getByText('The close time has already passed.')).toBeInTheDocument()
+  })
 })

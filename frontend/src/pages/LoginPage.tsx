@@ -1,7 +1,6 @@
-import axios from 'axios'
 import { useState } from 'react'
-import api from '../api/axios'
-import { ApiError, FastApiError } from '../api/errors'
+import * as authApi from '../api/authApi'
+import { describeFormError } from '../api/errors'
 import AuthFooterLink from '../components/auth/AuthFooterLink'
 import AuthLayout from '../components/auth/AuthLayout'
 import Button from '../components/ui/Button'
@@ -9,14 +8,24 @@ import Field from '../components/ui/Field'
 import { Spinner } from '../components/ui/icons'
 import PasswordInput from '../components/ui/PasswordInput'
 import TextInput from '../components/ui/TextInput'
-import { User, useAuth } from '../context/AuthContext'
+import { useAuth } from '../context/AuthContext'
 
-interface LoginErrors { identifier?: string; password?: string }
+type LoginField = 'identifier' | 'password'
+type LoginErrors = Partial<Record<LoginField, string>>
+
+const LOGIN_FIELDS: readonly LoginField[] = ['identifier', 'password']
+
+function validateLogin(form: authApi.Credentials): LoginErrors {
+  const errors: LoginErrors = {}
+  if (!form.identifier.trim()) errors.identifier = 'Enter your username or email.'
+  if (!form.password) errors.password = 'Enter your password.'
+  return errors
+}
 
 export default function LoginPage() {
   const { login } = useAuth()
 
-  const [form, setForm] = useState({ identifier: '', password: '' })
+  const [form, setForm] = useState<authApi.Credentials>({ identifier: '', password: '' })
   const [errors, setErrors] = useState<LoginErrors>({})
   const [serverError, setServerError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -29,39 +38,21 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const e2: LoginErrors = {}
-    if (!form.identifier.trim()) e2.identifier = 'Enter your username or email.'
-    if (!form.password) e2.password = 'Enter your password.'
-    if (Object.keys(e2).length > 0) { setErrors(e2); return }
+    const validationErrors = validateLogin(form)
+    if (Object.keys(validationErrors).length > 0) { setErrors(validationErrors); return }
 
     setLoading(true)
     try {
-      const res = await api.post<{ user: User }>('/auth/login', form)
-      // No navigate() here. `login` sets `user`, and GuestOnly — which wraps
-      // this route in App.tsx — reads that and redirects to wherever the
-      // visitor was headed. It re-renders before an imperative call from here
-      // could land, so adding one back does not add a fallback; it adds a
-      // second authority that this guard then overwrites.
-      login(res.data.user)
+      // No navigate() here: GuestOnly sees `user` change and redirects. A
+      // second, imperative redirect from here would race it and lose.
+      login(await authApi.login(form))
     } catch (err: unknown) {
-      if (!axios.isAxiosError(err)) { setServerError('Something went wrong. Please try again.'); return }
-      const data = err.response?.data as (ApiError & FastApiError) | undefined
-      if (data?.detail?.length) {
-        // FastAPI 422: pydantic rejected a field
-        const first = data.detail[0]
-        const field = first.loc[first.loc.length - 1] as string
-        if (field === 'identifier' || field === 'password') {
-          setErrors({ [field]: first.msg })
-        } else {
-          setServerError(first.msg || 'Something went wrong. Please try again.')
-        }
-      } else if (data?.error?.code === 'invalid_credentials') {
-        setServerError('Incorrect username or password.')
-      } else if (data?.error?.message) {
-        setServerError(data.error.message)
-      } else {
-        setServerError('Something went wrong. Please try again.')
-      }
+      const { fieldErrors, formError } = describeFormError(err, {
+        fields: LOGIN_FIELDS,
+        codeMessages: { invalid_credentials: 'Incorrect username or password.' },
+      })
+      if (formError) setServerError(formError)
+      else setErrors(fieldErrors)
     } finally {
       setLoading(false)
     }

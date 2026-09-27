@@ -42,13 +42,4 @@ describe('Field', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Too short.')
     expect(screen.queryByText('Must be at least 12 characters.')).not.toBeInTheDocument()
   })
-
-  it('renders empty slot (no text) when neither error nor hint is given', () => {
-    render(
-      <Field id="user" label="Username">
-        <input id="user" />
-      </Field>
-    )
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  })
 })

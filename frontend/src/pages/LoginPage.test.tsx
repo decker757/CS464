@@ -113,4 +113,23 @@ describe('LoginPage — integration', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Please try again.')
   })
+
+  it('shows a 422 that names no form field above the form', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/login', () =>
+        HttpResponse.json(
+          { detail: [{ loc: ['body'], msg: 'The request body is not valid JSON.', type: 'json_invalid' }] },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    renderLoginPage()
+    await user.type(screen.getByLabelText('Username or Email'), 'alice')
+    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The request body is not valid JSON.')
+  })
 })

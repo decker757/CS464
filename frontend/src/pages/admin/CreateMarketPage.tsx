@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import axios from 'axios'
-import type { ApiError } from '../../api/errors'
+import { errorCode, errorDetails } from '../../api/errors'
 import {
   type BlockingHint,
   type SaveMarketResponse,
@@ -32,6 +31,25 @@ type FormState = {
   sources: SourceRow[]
   liquidityB: string
   seedSubsidy: string
+}
+
+// The column holds at most 99999999999999.9999, which is 1e14 as a JS number.
+const PRICE_LIMIT = 1e14
+
+const DEFAULT_OUTCOME_PLACEHOLDERS = ['Yes', 'No']
+
+// A save refused with one of these codes means the market already has this status.
+const STATUS_AFTER_DRAFT: Record<string, string> = {
+  market_not_editable: 'submitted',
+  market_already_open: 'open',
+  market_closed: 'closed',
+}
+
+const SAVE_STATUS_TEXT: Record<SaveStatus, { text: string; className: string } | null> = {
+  idle: null,
+  saving: { text: 'Saving…', className: 'text-subtle' },
+  saved: { text: 'Saved', className: 'text-success' },
+  error: { text: 'Save failed', className: 'text-danger' },
 }
 
 function createDefaultForm(): FormState {
@@ -69,9 +87,6 @@ function roundPrice(s: string): number | undefined {
   return Math.round(n * 10000) / 10000
 }
 
-// The column holds at most 99999999999999.9999, which is 1e14 as a JS number.
-const PRICE_LIMIT = 1e14
-
 // What is wrong with a pricing input, if anything. The server refuses the
 // whole save for a zero, negative or oversized value, so none of the other
 // edits would be saved either — catch it here and don't send the field.
@@ -108,15 +123,6 @@ function saveFields(f: FormState) {
 // is the k-th row that has one — not necessarily the k-th row on screen.
 function sentSources(f: FormState) {
   return f.sources.filter(s => s.url.trim())
-}
-
-const DEFAULT_OUTCOME_PLACEHOLDERS = ['Yes', 'No']
-
-const SAVE_STATUS_TEXT: Record<SaveStatus, { text: string; className: string } | null> = {
-  idle: null,
-  saving: { text: 'Saving…', className: 'text-subtle' },
-  saved: { text: 'Saved', className: 'text-success' },
-  error: { text: 'Save failed', className: 'text-danger' },
 }
 
 /** The red × that removes one row of a repeating list. */
@@ -180,13 +186,14 @@ export default function CreateMarketPage() {
       setSaveStatus('saved')
       return res
     } catch (err) {
-      if (axios.isAxiosError<ApiError>(err)) {
-        const code = err.response?.data?.error?.code
-        // These codes mean the market has moved past draft on another session.
-        // Update local status so the autosave interval stops and the form locks.
-        if (code === 'market_not_editable') { setMarketStatus('submitted'); setSaveStatus('idle'); return null }
-        if (code === 'market_already_open') { setMarketStatus('open');      setSaveStatus('idle'); return null }
-        if (code === 'market_closed')       { setMarketStatus('closed');    setSaveStatus('idle'); return null }
+      const code = errorCode(err)
+      const movedOnTo = code ? STATUS_AFTER_DRAFT[code] : undefined
+      if (movedOnTo) {
+        // Another session moved the market past draft: lock the form and let
+        // the autosave interval stop.
+        setMarketStatus(movedOnTo)
+        setSaveStatus('idle')
+        return null
       }
       setSaveStatus('error')
       throw err
@@ -224,10 +231,8 @@ export default function CreateMarketPage() {
       await publishMarket(marketId)
       navigate('/markets')
     } catch (err) {
-      if (axios.isAxiosError<ApiError>(err)) {
-        const details = err.response?.data?.error?.details
-        if (details?.length) setPublishDetails(details)
-      }
+      const details = errorDetails(err)
+      if (details.length) setPublishDetails(details)
       setPublishError('Publish failed. Please try again.')
       setPublishing(false)
     }
