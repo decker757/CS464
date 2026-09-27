@@ -24,7 +24,8 @@ import re
 _MARKERS = ("docker-compose.yml", ".git")
 
 # Every service directory under `backend/`. A new service (the trading
-# composite) is added here, or nothing stops the others importing it.
+# composite) is added here, or nothing stops the others importing it, and
+# its copied test_import_boundary.py must pass its own name, not a sibling's.
 _SERVICES = [
     "auth_service",
     "market_service",
