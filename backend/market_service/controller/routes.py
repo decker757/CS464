@@ -1,9 +1,7 @@
-"""HTTP routes for the market service.
+"""HTTP routes for administrators' markets.
 
-Thin by design: parse, delegate to the service layer, choose a status code. No
-business rule lives here, and no route builds an error response by hand. Domain
-errors raised below the controller are turned into JSON by
-`errors.register_error_handlers`.
+Thin: parse, delegate to the service layer, choose a status code. Domain errors
+become JSON in `errors.register_error_handlers`.
 """
 
 from __future__ import annotations
@@ -27,10 +25,8 @@ from model.schemas import (
 )
 from service import market_service
 
-# Every route below depends on CurrentAdmin, so a trader's valid token gets a
-# 403 rather than an empty list. There is no unauthenticated read here at all,
-# including after [1.3] #3: publishing sets the status traders browse on, and
-# the browse query itself is [BE][X] #62, which belongs to a different reader.
+# Every route here requires an administrator; traders read through
+# `controller/public_routes.py`.
 router = APIRouter(prefix="/markets", tags=["markets"])
 
 

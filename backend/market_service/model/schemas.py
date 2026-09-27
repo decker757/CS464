@@ -1,13 +1,8 @@
-"""Request and response contracts.
+"""Request and response contracts; they generate the OpenAPI schema at /docs.
 
-These generate the OpenAPI schema at /docs, which is the contract Michelle's
-form codes against for [FE][1.1] #45.
-
-The governing rule in this file: validation here is about SHAPE, not about
-completeness. A draft is allowed to be empty, half-typed and self-contradictory,
-because it is written by a three-second idle timer rather than by someone
-pressing save. Anything that asks "is this market ready" belongs in
-`service/validation.py` and runs only at submission.
+Validation here is about shape, never completeness: a draft written by the
+autosave may be empty or half-typed. "Is this market ready" belongs in
+`service/validation.py`. ADR 0004.
 """
 
 from __future__ import annotations
@@ -30,35 +25,21 @@ from pydantic import (
 from core.opening_prices import max_platform_loss, uniform_initial_price
 from model.entities import DECIDED_STATUSES, TRADER_FACING_STATUS, MarketStatus
 
-# Shape ceilings, not domain rules, so they live here rather than in config:
-# they do not vary between a laptop and production. The floor of two outcomes
-# IS a domain rule and lives in service/validation.py, because a draft is
-# allowed to sit below it.
+# Shape ceilings, not domain rules. The floor of two outcomes is a domain rule
+# and lives in service/validation.py, because a draft may sit below it.
 MAX_OUTCOMES = 10
 MAX_RESOLUTION_SOURCES = 10
 MAX_LABEL_LENGTH = 120
 MAX_QUESTION_LENGTH = 500
 MAX_URL_LENGTH = 2048
 
-# Every free-text field an administrator types into a textarea: `description`,
-# `resolution_criteria`, [3.1] #9's `evidence_note`, [2.3] #7's close `reason`
-# and [3.2] #10's rejection `reason`. All five land in unbounded `Text`
-# columns, so this is here to stop a request carrying a megabyte rather than to
-# have an opinion about how much explaining any of them needs — which is why
-# one number covers all of them. It was two bare literals until the third use
-# arrived.
+# Every free-text textarea field. They land in unbounded `Text` columns, so this
+# only stops a request carrying a megabyte; hence one number for all of them.
 MAX_PROSE_LENGTH = 5000
 
-# Mirrors Numeric(18, 4) on the pricing columns in model/entities.py: fourteen
-# digits before the point and four after. Both halves are load-bearing, and
-# neither is a domain opinion about a sensible liquidity — they are what the
-# column can hold.
-#
-# Without the ceiling, Postgres raises `numeric field overflow` and the driver
-# error escapes as a 500 on a value the admin typed. Without the scale, a fifth
-# decimal place is rounded away silently, so `0.00001` is accepted, stored as
-# `0.0000`, and reloads as a market that fails its own `b > 0` rule — while the
-# response reports the value as sent, because it is the in-memory object.
+# Mirrors Numeric(18, 4) on the pricing columns. Without the ceiling, Postgres
+# overflows and the admin gets a 500. Without the scale, `0.00001` is silently
+# stored as `0.0000`, a market that then fails its own `b > 0` rule.
 PRICING_DECIMAL_PLACES = 4
 MAX_PRICING_VALUE = Decimal("99999999999999.9999")
 
@@ -93,8 +74,6 @@ class MarketDraftRequest(BaseModel):
     hour is a market that settles on the wrong facts.
     """
 
-    # Chosen by the browser when the form opens, identical on every autosave
-    # for that form. This is what makes the endpoint idempotent.
     draft_key: uuid.UUID = Field(
         description=(
             "Client-generated identity for this form session. Generate one UUID "
@@ -103,13 +82,10 @@ class MarketDraftRequest(BaseModel):
         ),
     )
 
-    # Deliberately narrower than MarketStatus. `open` is a real member of that
-    # enum and this field must not accept it: publishing is POST
-    # /markets/{id}/publish, a request that carries no terms at all, precisely
-    # so that nothing can change a market and expose it to traders in one call.
-    # Typed as a Literal rather than guarded by a validator so that /docs shows
-    # Michelle the two values she may send, and so a third status arriving with
-    # [F-4] #44 does not silently become settable from the form. ADR 0008.
+    # Narrower than MarketStatus on purpose: `open` must not be accepted, or
+    # one request could change a market and publish it. A Literal, so /docs
+    # lists the two values and a new status is never settable by accident.
+    # ADR 0008.
     status: Literal[MarketStatus.DRAFT, MarketStatus.SUBMITTED] = Field(
         default=MarketStatus.DRAFT,
         description=(
@@ -157,13 +133,9 @@ class MarketDraftRequest(BaseModel):
         default_factory=list, max_length=MAX_RESOLUTION_SOURCES
     )
 
-    # [1.2] #2. Both optional here, like every other term, because a draft is
-    # allowed to be incomplete. Their absence is a submission rule and lives in
-    # service/validation.py.
-    #
-    # `gt=0` is shape rather than completeness, so it belongs here: a negative
-    # or zero `b` is not a half-finished thought, it is a value no stage of the
-    # form should ever hold. A market priced at b = 0 has no liquidity at all.
+    # [1.2] #2. Optional like every term; their absence is a submission rule.
+    # `gt=0` is shape, not completeness: no stage of the form should hold a
+    # zero or negative value.
     liquidity_b: Decimal | None = Field(
         default=None,
         gt=0,
@@ -275,17 +247,8 @@ class MarketCloseRequest(BaseModel):
     )
 
 
-# The field both decisions carry, declared once so the two cannot describe it
-# differently. It is a precondition rather than information: the decider is not
-# telling the service anything new, they are saying which proposal they read.
-#
-# Required, and nullable. The key must always be sent; its value is null only
-# for a proposal made before [3.2] #10 gave proposals ids, which reads back
-# with `proposal_id: null` and whose audit entry has no `proposal_id` at all.
-# That is safe because such a proposal is the only thing a null can match:
-# every proposal made since is minted an id, and a rejection returns the market
-# to CLOSED, so a market cannot be pending with a null id again. A stale null
-# quoted against a replacement is refused like any other stale id.
+# The precondition both decisions carry, described once. Required and nullable:
+# null matches only a proposal made before ids existed. ADR 0016.
 _PROPOSAL_ID_FIELD_DESCRIPTION = (
     "The `proposal_id` of the proposal the administrator reviewed, exactly as "
     "it was read — from `GET /markets/{id}`, or from the "
@@ -362,9 +325,7 @@ class OutcomeOut(BaseModel):
     position: int
     label: str
 
-    # Filled in by MarketOut, not computed here: an outcome on its own does not
-    # know how many siblings it has, and 1/n needs n. Null until there are at
-    # least two outcomes to price.
+    # Filled in by MarketOut, which knows n. Null below two named outcomes.
     initial_price: float | None = None
 
 
@@ -380,10 +341,7 @@ class ResolutionSourceOut(BaseModel):
 class _UtcTimestamps(BaseModel):
     """Guarantees every timestamp this service emits carries an explicit offset.
 
-    Same guard as the auth service's UserOut. A driver handing back a naive
-    datetime would otherwise make one market serialise with a trailing Z and
-    another without, leaving the frontend to special-case which. Shared by the
-    detail and list projections so the two cannot drift.
+    Twin of the auth service's UserOut guard.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -412,13 +370,9 @@ class MarketOut(_UtcTimestamps):
     resolution_criteria: str | None
     resolution_sources: list[ResolutionSourceOut]
 
-    # Floats on the way out, though they are Numeric in the database and
-    # Decimal on the way in. Pydantic serialises a Decimal as a JSON *string*,
-    # which would hand the form `"100"` from a fresh save and `"100.0000"` once
-    # the same row came back from Postgres, and would sit a string next to
-    # `max_platform_loss`, a number, while the form is meant to compare the two.
-    # `"250" + 10` is `"25010"` in a browser. Exactness is kept where it
-    # matters, in the column; the wire carries a number.
+    # Floats on the wire, deliberately: the form compares these with
+    # `max_platform_loss`, and `"250" + 10` is `"25010"` in a browser. The
+    # public projection sends strings instead. D-021.
     liquidity_b: float | None
     seed_subsidy: float | None
 
@@ -426,48 +380,27 @@ class MarketOut(_UtcTimestamps):
     updated_at: datetime
     submitted_at: datetime | None
 
-    # [1.3] #3. Null until the market is published, and never cleared. Read
-    # `status` to decide what a market is; read this to find out when it became
-    # that. The two are written in the same transaction and cannot disagree.
+    # [1.3] #3. Null until published, and never cleared.
     published_at: datetime | None
 
-    # [F-4] #44. When trading was recorded as having stopped.
-    #
-    # Unlike `published_at`, this one CAN lag the thing it describes, and a
-    # client must not read it as "trading stops here". `close_time` is when
-    # trading stopped; this is when the background sweeper wrote it down, a
-    # few seconds later. Render `close_time` to a trader and keep this for an
-    # administrator asking when a market was actually processed.
+    # [F-4] #44. When the sweep recorded the close, which lags `close_time`.
+    # Show traders `close_time`, not this. ADR 0011.
     closed_at: datetime | None
 
     # --- the proposed outcome. [3.1] #9 -------------------------------------
-    # All null together, or all set together. A non-null `proposed_at` is the
-    # cheapest test for "is there an outcome on this market", and it agrees
-    # with `status` being `pending_resolution` or `approved` by construction:
-    # the seven are written in the one transaction that sets the first, kept by
-    # the approval that sets the second, and nulled by [3.2] #10's rejection in
-    # the one transaction that sends the market back to `closed`.
-    #
-    # `proposal_id` is new for every proposal, and is what the approve and
-    # reject bodies must send back. Read it from the same response the reviewer
-    # is looking at, never from a later fetch, or the check it exists for
-    # passes against a proposal the reviewer has not seen. The one exception to
-    # "all set together": a proposal made before [3.2] #10 is pending with this
-    # null, and is decided by sending the null back.
-    #
-    # `proposed_outcome_id` names a member of this response's own `outcomes`
-    # array, so the frontend renders the winner's label by looking it up there
-    # rather than being sent the label twice. The label on the outcome is the
-    # only copy, which is what stops the two drifting.
+    # All null or all set, together with `pending_resolution` or `approved`,
+    # with one exception: a proposal pending since before
+    # sql/migrations/0006 has `proposal_id` null, and is decided by sending
+    # the null back. `proposal_id` is what approve and reject send back: read
+    # it from the response the reviewer is looking at, never a later fetch
+    # (ADR 0016).
+    # `proposed_outcome_id` names one of this response's own `outcomes`.
     proposal_id: uuid.UUID | None
     proposed_outcome_id: uuid.UUID | None
     proposed_by_id: uuid.UUID | None
 
-    # Snapshotted at proposal time, and the only name for this administrator
-    # that anybody will ever be able to render: this service cannot resolve an
-    # id against `auth.users` (ADR 0003), and only `audit_svc` may read the
-    # log. [3.2] #10 compares `proposed_by_id`, never this, because a username
-    # can be reissued.
+    # Snapshotted at proposal time. Compare `proposed_by_id`, never this; a
+    # username can be reissued. ADR 0013.
     proposed_by_username: str | None
     proposed_at: datetime | None
 
@@ -475,40 +408,23 @@ class MarketOut(_UtcTimestamps):
     proposal_evidence_note: str | None
 
     # --- the approval. [3.2] #10 --------------------------------------------
-    # All null unless `status == "approved"`, and set together in the one
-    # transaction that sets it. The seven proposal fields above stay filled in
-    # beside them, so an approved market answers "who proposed this" and "who
-    # agreed" in one response — the ticket's third acceptance criterion.
-    #
-    # `approved_by_id` never equals `proposed_by_id`; the service refuses the
-    # approval that would make it so. A rejection does not appear here at all:
-    # it sends the market back to `closed` and nulls every `proposed_*` field,
-    # and who rejected it is in the audit log.
+    # All null unless `approved`, beside the still-filled proposal fields.
+    # `approved_by_id` never equals `proposed_by_id`. A rejection leaves no
+    # trace here; it is in the audit log. ADR 0016.
     approved_by_id: uuid.UUID | None
     approved_by_username: str | None
     approved_at: datetime | None
 
     # --- derived, read-only -------------------------------------------------
-    # [1.2] #2's second and third acceptance criteria. Both are the q = 0 case
-    # of LMSR, which is arithmetic rather than the engine; see
-    # core/opening_prices.py and
-    # ADR 0005 for why the engine itself is not in this service.
-    #
-    # Derived on every read rather than stored, so they cannot drift from the
-    # `b` and outcome count they come from, and so they appear on all three
-    # routes without the controller or the service layer assembling them.
+    # [1.2] #2. The q = 0 prices from core/opening_prices.py, derived on every
+    # read so they cannot drift from `b` and the outcome count.
 
     @property
     def _named_outcomes(self) -> list[OutcomeOut]:
-        """The outcomes that actually exist yet.
+        """The outcomes the admin has named.
 
-        A blank row is a row the admin has added and not named, and it is the
-        normal state of a form mid-edit. Counting it would price a market that
-        `service/validation.py` will refuse, because MIN_OUTCOMES is checked
-        against named outcomes: two real outcomes beside two empty rows would
-        advertise b*ln(4) and 0.25 apiece for a market that submits as b*ln(2)
-        and 0.5. The number on screen has to be the number the admin is going
-        to get.
+        Blank rows are skipped, or two named outcomes beside two blank rows
+        would advertise b·ln(4) for a market that submits as b·ln(2).
         """
         return [o for o in self.outcomes if (o.label or "").strip()]
 
@@ -527,16 +443,7 @@ class MarketOut(_UtcTimestamps):
 
     @model_validator(mode="after")
     def _price_the_outcomes(self) -> MarketOut:
-        """Give every named outcome its opening price.
-
-        Uniform by definition: before anybody has traded, no outcome is more
-        likely than another, so each opens at 1/n. That is the whole of [1.2]
-        #2's third criterion, and it depends on the outcome count rather than
-        on `b`, which is why it appears as soon as a second outcome is named.
-
-        An unnamed row keeps a null price. It is not an outcome yet, and
-        quoting one would be quoting a thing that does not exist.
-        """
+        """Give every named outcome its opening price, 1/n. Unnamed rows stay null."""
         named = self._named_outcomes
         price = uniform_initial_price(len(named))
         for outcome in named:
@@ -581,36 +488,13 @@ class MarketListResponse(BaseModel):
 
 
 # --- the trader-facing projection. [BE][X] #62 -----------------------------
-# `PublicMarketOut` and `PublicMarketSummaryOut` beside `MarketOut` and
-# `MarketSummaryOut`, not a change to either. D-021: the create form needs
-# `liquidity_b` as a JSON number to compare against `max_platform_loss`, and
-# the ledger that reads this endpoint needs it exact — one schema cannot be
-# both, so this is a second pair rather than a flag on the first.
+# A second pair beside `MarketOut` and `MarketSummaryOut`, not a flag on them:
+# the ledger needs `liquidity_b` exact where the form needs a number (D-021).
+# `creator_id`, `draft_key` and `initial_price` are deliberately absent (D-019).
 #
-# Two things `MarketOut` carries are deliberately absent here. `creator_id`
-# and `draft_key` are neither a trader's business nor harmless (D-019):
-# `creator_id` invites exactly the "whose market is it" argument ADR 0016
-# keeps out of who may decide an outcome, and `draft_key` would let a client
-# address a market by the autosave's own idempotency key. And each outcome's
-# `initial_price` is gone too — it is the q=0 opening price, simply wrong
-# once a market has traded, with nothing on the response to say so.
-
-
-# The derivation used to live here, as a `model_validator`, and it could not
-# be made correct. `model_validate(entity, context={"now": ...})` is the only
-# way to hand a validator a value, and FastAPI re-validates whatever a route
-# returns against its `response_model` — a second pass that carries no
-# context. A `mode="after"` validator then recomputed against
-# `datetime.now(UTC)` and mutated the already-correct instance in place, so
-# the request's clock was discarded on the way to the wire. Wrapping a
-# validated summary in `PublicMarketListResponse` was enough to trigger it,
-# with no framework involved.
-#
-# `service/browsing.py` derives it instead, before either projection is
-# built: `browse` returns a `MarketCard` carrying the derived value as its
-# `status`, and `get_published` stamps `trader_facing_status` onto the entity.
-# These schemas now carry plain fields, which makes re-validation harmless
-# rather than merely survivable. D-025, D-027.
+# Do not derive `status` in a validator here. FastAPI re-validates the response
+# without the request's clock; `service/browsing.py` derives it before these
+# are built, and they carry plain fields. D-025, D-027.
 
 
 class PublicOutcomeOut(BaseModel):
@@ -640,10 +524,8 @@ class PublicMarketOut(_UtcTimestamps):
 
     id: uuid.UUID
 
-    # Read from the attribute `service/browsing.py::get_published` stamps,
-    # never from the mapped column beside it. An alias rather than a second
-    # field, so there is exactly one status on this schema and no way to ask
-    # for the administrator's one by accident. D-022, D-027.
+    # The derived status `get_published` stamps, never the stored column. One
+    # status on this schema, so the admin's cannot be read by accident. D-027.
     status: MarketStatus = Field(validation_alias=TRADER_FACING_STATUS)
 
     question: str | None
@@ -661,42 +543,18 @@ class PublicMarketOut(_UtcTimestamps):
 
     published_at: datetime | None
 
-    # [X-3] #36: "Settled markets display the winning outcome." APPROVED is as
-    # far as a market gets today; SETTLED arrives with [3.4] #12. The label is
-    # read from `outcomes` above rather than repeated here, which is what
-    # stops the two copies drifting — the same rule `MarketOut` follows for
-    # the administrator's view.
-    #
-    # **Null until a second administrator has agreed**, which is the whole of
-    # `_hide_an_undecided_proposal` below. The criterion says *settled*, and
-    # PENDING_RESOLUTION is not settled: it is one administrator's proposal
-    # with a second yet to rule on it, and ADR 0016 exists precisely because
-    # that ruling can go the other way.
+    # [X-3] #36. The winner, as an id into `outcomes`. Null until a second
+    # administrator has agreed. D-026.
     proposed_outcome_id: uuid.UUID | None
 
     @model_validator(mode="after")
     def _hide_an_undecided_proposal(self) -> PublicMarketOut:
-        """A proposed winner is not a decided one. [3.1] #9, [3.2] #10.
+        """Hide a proposed winner until it is decided. D-026.
 
-        Ungated, this ships one administrator's opinion to every trader as
-        "the winning outcome". ADR 0016 then lets a second administrator
-        reject it — the seven proposal columns are nulled and the proposer may
-        re-propose a different outcome — so everybody who loaded the page in
-        between saw a result the platform reversed, with no correction, no
-        notification, and before [3.3] #11's dispute window exists to contest
-        it.
-
-        Gated on the status rather than on `approved_at`, so this reads the
-        same way every other status rule in the service does, and so SETTLED
-        joins it by being added to `DECIDED_STATUSES` and nothing else.
-
-        `self.status` is the *derived* status since D-027 — the value
-        `service/browsing.py` stamped, not the stored column — and that is
-        safe rather than merely tolerable: the ADR 0011 derivation only ever
-        turns OPEN into CLOSED, so it can neither produce nor consume a
-        proposal status and the two rules cannot interact. If that ever stops
-        being true, this gate has to read the stored column explicitly, which
-        this projection deliberately does not carry.
+        A pending proposal can still be rejected (ADR 0016), and traders must
+        not be shown a result that is then reversed. `self.status` is the
+        derived status, which is safe because the derivation only turns OPEN
+        into CLOSED.
         """
         if self.status not in DECIDED_STATUSES:
             self.proposed_outcome_id = None

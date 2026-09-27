@@ -1,14 +1,7 @@
-"""Public HTTP routes for the trader-facing market read. [BE][X] #62.
+"""HTTP routes for the trader-facing market read. [BE][X] #62.
 
-Thin by design, like `controller/routes.py`: parse, delegate to
-`service/browsing.py`, choose a status code. The one thing worth stating here
-is who may call these — every route on `controller/routes.py` requires
-`CurrentAdmin`, and this router is the reason it does not have to widen that
-to serve a trader. These depend on `CurrentUser` instead: any valid access
-token, any role (D-018). Not admin-gated, and not anonymous — every other
-read in this backend authenticates a person from a signed token, and nothing
-in [X-1] #34, [X-2] #35 or [X-3] #36 says a trader's browse page should be
-the first exception.
+Thin, like `controller/routes.py`. Any valid access token of any role may call
+these; not admin-gated, and not anonymous. D-018.
 """
 
 from __future__ import annotations
@@ -30,28 +23,10 @@ from service import browsing
 
 router = APIRouter(prefix="/public/markets", tags=["public markets"])
 
-# The `status` filter's accepted values, which are not all of `MarketStatus`.
-#
-# Typing the parameter as the enum itself puts all six members into the
-# generated OpenAPI schema, so `/docs` advertises `draft` and `submitted` as
-# choices and FastAPI accepts them. `service/browsing.py::_visible` then
-# correctly refuses to show either, and the request comes back `200 []` — a
-# filter that a frontend renders as a tab and that is permanently, silently
-# empty. The route's own `responses={422: ...}` block and
-# `docs/api/market-service.md` both promise a 422 there instead.
-#
-# `PublicMarketStatus` rather than a `Literal` spelled out here, because a
-# hand-written list is a second copy of the visible-status set and
-# `service/browsing.py::_visible` is the first. When SETTLED lands ([3.4]
-# #12), adding it to one and not the other gives either a `422` on a status
-# that is visible or a `200 []` dead tab on one that is not — which is the
-# exact failure this parameter exists to prevent, arriving by a different
-# door. Both now read `model/entities.py`, where the set is defined once
-# beside the enum it narrows.
-#
-# FastAPI renders an enum into the generated OpenAPI schema the same way it
-# renders a `Literal`, so `/docs` still advertises exactly the four accepted
-# values and `draft` is still a `422` rather than a silent empty list.
+# The `status` filter's accepted values: only what a trader can see, so
+# `draft` is a 422 rather than a silently empty `200 []` tab. Not
+# `MarketStatus`, which would accept every member, and not a hand-written
+# Literal, which would be a second copy of `_visible`'s set.
 PublicStatusFilter = PublicMarketStatus
 
 
@@ -93,20 +68,9 @@ async def browse_markets(
         default=None,
         alias="q",
         max_length=MAX_QUESTION_LENGTH,
-        # No NUL, and this is the only character that needs saying. Postgres
-        # cannot store or compare one — `text` is UTF-8 and 0x00 is not a
-        # legal byte in it — so asyncpg raises `CharacterNotInRepertoireError`
-        # on the bound parameter, which is a `DBAPIError` rather than one of
-        # `core/errors.py`'s. `register_error_handlers` does not know it, so
-        # `?q=%00` is a 500 on a public route that any logged-in user can
-        # reach. `max_length` does not catch it and neither does `.strip()`,
-        # which removes whitespace and NUL is not whitespace.
-        #
-        # Refused here rather than stripped in `service/browsing.py`, because
-        # a search term this service cannot execute is a bad request and the
-        # route's own `responses={422: ...}` block already says so. Silently
-        # dropping the character would answer a question the trader did not
-        # ask.
+        # No NUL: Postgres text cannot hold one, and asyncpg's error would be
+        # a 500. Refused as a 422 rather than stripped, which would answer a
+        # question the trader did not ask.
         pattern=r"^[^\x00]*$",
         description=(
             "Case-insensitive containment search over the question. "
@@ -122,11 +86,7 @@ async def browse_markets(
         ),
     ),
 ) -> PublicMarketListResponse:
-    # One clock for the whole request. It is handed to the service layer,
-    # which both filters and derives with it, so the two cannot read
-    # different instants. Nothing is passed to the projection: the derived
-    # status arrives already computed on the `MarketCard`, which is what
-    # makes FastAPI's re-validation against `response_model` harmless.
+    # One clock for the request, so filtering and the displayed status agree.
     # D-025, D-027.
     now = datetime.now(UTC)
 

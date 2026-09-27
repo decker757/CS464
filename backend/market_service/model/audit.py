@@ -1,23 +1,13 @@
-"""The audit log, as a writer sees it. [4.3] #15
+"""The audit log, as a writer sees it. [4.3] #15, ADR 0006.
 
-`audit.admin_actions` is not this service's table. `sql/02-schemas.sql` creates
-it and the superuser owns it; `market_svc` holds INSERT on it and nothing else.
-It cannot SELECT the log, cannot UPDATE or DELETE a row, and cannot alter the
-table. See docs/adr/0006-audit-log-write-path.md.
+`audit.admin_actions` is not this service's table: `market_svc` holds INSERT on
+it and nothing else. Two details are load-bearing:
 
-Two details below are load-bearing rather than stylistic.
-
-**This table is deliberately NOT on `core.database.Base.metadata`.** Everything
-mapped there is created by `create_all` at startup and dropped and recreated by
-`unit_test/conftest.py` on every test. Either against this table would fail —
-there is no CREATE or DROP grant — and the service would die at boot. A
-standalone `Table` on its own `MetaData` gives the columns a name to insert
-against without enrolling them in anything that issues DDL.
-
-**The id is generated here rather than by the database.** A server-side default
-would have to be read back with RETURNING, and RETURNING is a read: it needs
-SELECT, which this role does not have and should not be given, because SELECT
-is what would let this service read another service's actions.
+- It must never join `core.database.Base.metadata`. `create_all` and the test
+  rebuild would issue DDL against it, which this role may not, and the service
+  would die at boot. Hence a standalone `Table` on its own `MetaData`.
+- The id is generated in Python. A server default would need RETURNING, which
+  needs SELECT, which this role must not have.
 """
 
 from __future__ import annotations
@@ -37,12 +27,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 AUDIT_SCHEMA = "audit"
 
-# The name this service reports as `source_service`, so an entry can be traced
-# back to the process that wrote it.
+# What this service reports as `source_service`.
 SOURCE_SERVICE = "market_service"
 
-# Separate from Base.metadata on purpose. Read the module docstring before
-# moving it.
+# Separate from Base.metadata on purpose; see the module docstring.
 audit_metadata = MetaData(schema=AUDIT_SCHEMA)
 
 admin_actions = Table(
@@ -64,75 +52,32 @@ admin_actions = Table(
 
 
 class AdminAction(StrEnum):
-    """The action types this service appends.
+    """The action types this service appends, namespaced by what was acted on.
 
-    Namespaced by the entity acted on, so the log reads sensibly when the auth
-    service's `user.suspended` and the ledger's `payout.settled` land beside
-    these. The vocabulary lives here rather than as a CHECK constraint in SQL:
-    the audit INSERT commits with the action it records, so a constraint the
-    database could reject on is a way for a stale audit schema to abort a
-    perfectly good admin action. sql/02-schemas.sql explains that at length.
-
-    Notice which action is absent. A draft autosave is not here and must never
-    be: the form saves every three seconds, so logging it would bury every real
-    action under thousands of keystroke records within one sitting. The log is
-    for decisions, not for typing.
+    A Python enum rather than a CHECK constraint, so a stale audit schema
+    cannot abort a valid admin action. ADR 0006. Autosave is deliberately
+    absent and must stay so: the log is for decisions, not keystrokes.
     """
 
     MARKET_SUBMITTED = "market.submitted"
 
-    # [1.3] #3. Recorded separately from the submission rather than folded into
-    # it, because they are two decisions and only the second one exposed
-    # anything to a trader. "Who made this market tradeable, and on what terms"
-    # is the question the log will actually be asked once money is moving, and
-    # a market can sit submitted for a week before anybody answers it.
+    # [1.3] #3. Separate from submission: only publication puts the terms in
+    # front of traders. ADR 0008.
     MARKET_PUBLISHED = "market.published"
 
-    # [2.3] #7. An administrator stopped a market before its closing time, and
-    # said why.
-    #
-    # The only close that ever appears in this log. A market that reaches its
-    # own `close_time` is closed by the clock, and the clock is not an actor —
-    # there is nobody to record, and the `market.published` entry already
-    # carries the `close_time` that was approved. An entry here therefore means
-    # a human intervened, which is precisely the thing worth being able to find.
-    #
-    # The justification rides in the entry's `reason` column rather than in
-    # `context`, because it is the same kind of value [3.2] #10's rejection
-    # puts there and [4.2] #14's suspension will, and one column is what lets a
-    # reader ask "what did somebody explain, and how" across all of them.
+    # [2.3] #7. The only close in the log: the clock is not an actor, so an
+    # entry here always means a human intervened. The justification goes in
+    # `reason`. ADR 0014.
     MARKET_CLOSED_EARLY = "market.closed_early"
 
-    # [3.1] #9. An administrator named a winning outcome and attached the
-    # evidence for it.
-    #
-    # The market row carries the same facts and is not a substitute for this
-    # entry, because [3.2] #10's rejection clears those columns and sends the
-    # market back to CLOSED. After that the only record that a proposal was
-    # ever made — and of who made it, and on what evidence — is this one. The
-    # story asks for the decision to be documented, and a column that a later
-    # action overwrites does not document anything.
+    # [3.1] #9. Outlives the proposal columns, which a rejection clears.
+    # ADR 0013.
     MARKET_OUTCOME_PROPOSED = "market.outcome_proposed"
 
-    # [3.2] #10. A second administrator agreed with a proposal.
-    #
-    # Written under the approver, never the proposer — the proposer's own
-    # `market.outcome_proposed` entry already names them, and the two entries
-    # side by side are the two-person rule as a reader of the log sees it. No
-    # `reason`: an approver is agreeing with evidence already given, and a null
-    # here keeps `reason IS NOT NULL` meaning "somebody had to explain
-    # themselves". `context` repeats the proposal it agreed to — its
-    # `proposal_id`, who proposed it and when — so the entry stands on its own
-    # for `audit_svc`, which cannot read the market, and names exactly which of
-    # a market's proposal entries it approved.
+    # [3.2] #10. Under the approver, with no `reason`, and carrying the
+    # proposal it approved. ADR 0016.
     MARKET_OUTCOME_APPROVED = "market.outcome_approved"
 
-    # [3.2] #10. A second administrator sent a proposal back, and said why.
-    #
-    # The reason goes in `reason`, like an early close's. `context` is the same
-    # eight keys the approval carries, led by the `proposal_id` it decided, taken before the rejection cleared them
-    # from the market — which makes this entry, with the proposer's own, the
-    # only place the rejected proposal still exists. Same shape as the approval
-    # on purpose, so "what was decided about this proposal" is one question
-    # whichever way it went.
+    # [3.2] #10. The reason in `reason`, and the same eight `context` keys as
+    # an approval, snapshotted before the rejection cleared them. ADR 0016.
     MARKET_OUTCOME_REJECTED = "market.outcome_rejected"
