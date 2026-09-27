@@ -69,22 +69,24 @@ describe('useMarketPrices', () => {
 
   it('subscribes, then shows the snapshot in position order', async () => {
     const { result } = renderHook(() => useMarketPrices('m1'))
-    expect(result.current).toBeNull()
+    expect(result.current.prices).toBeNull()
+    expect(result.current.status).toBe('connecting')
     subscribe(latest())
     expect(latest().sent).toContainEqual({ action: 'subscribe', market_id: 'm1' })
-    await waitFor(() => expect(result.current?.map(p => p.price)).toEqual(['0.6000', '0.4000']))
+    await waitFor(() => expect(result.current.prices?.map(p => p.price)).toEqual(['0.6000', '0.4000']))
+    expect(result.current.status).toBe('connected')
   })
 
   it('applies newer price frames and drops ones the snapshot already covers', async () => {
     const { result } = renderHook(() => useMarketPrices('m1'))
     subscribe(latest())
-    await waitFor(() => expect(result.current?.[0].price).toBe('0.6000'))
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
 
     act(() => latest().receive({ type: 'price', ...priceState(4, '0.1000', '0.9000') }))
-    expect(result.current?.[0].price).toBe('0.6000')
+    expect(result.current.prices?.[0].price).toBe('0.6000')
 
     act(() => latest().receive({ type: 'price', ...priceState(6, '0.7000', '0.3000') }))
-    expect(result.current?.[0].price).toBe('0.7000')
+    expect(result.current.prices?.[0].price).toBe('0.7000')
   })
 
   it('does not reconnect in a loop when it closes the socket itself', async () => {
@@ -106,7 +108,8 @@ describe('useMarketPrices', () => {
     vi.useFakeTimers()
     const { result } = renderHook(() => useMarketPrices('m1'))
     act(() => latest().serverClose(1000))
-    expect(result.current).toBeNull()
+    expect(result.current.prices).toBeNull()
+    expect(result.current.status).toBe('reconnecting')
     await act(() => vi.advanceTimersByTimeAsync(900))
     expect(FakeSocket.instances).toHaveLength(1)
     await act(() => vi.advanceTimersByTimeAsync(200))
@@ -128,10 +131,11 @@ describe('useMarketPrices', () => {
 
   it('gives up when the origin is refused', async () => {
     vi.useFakeTimers()
-    renderHook(() => useMarketPrices('m1'))
+    const { result } = renderHook(() => useMarketPrices('m1'))
     act(() => latest().serverClose(4403))
     await act(() => vi.advanceTimersByTimeAsync(60_000))
     expect(FakeSocket.instances).toHaveLength(1)
+    expect(result.current.status).toBe('degraded')
   })
 
   it('refreshes the session before reconnecting when the token expired', async () => {
@@ -149,9 +153,10 @@ describe('useMarketPrices', () => {
         HttpResponse.json({ error: { code: 'invalid_token', message: 'Not authenticated.' } }, { status: 401 }),
       ),
     )
-    renderHook(() => useMarketPrices('m1'))
+    const { result } = renderHook(() => useMarketPrices('m1'))
     act(() => latest().serverClose(4401))
     await wait(1500)
     expect(FakeSocket.instances).toHaveLength(1)
+    expect(result.current.status).toBe('degraded')
   })
 })
