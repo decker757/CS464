@@ -20,8 +20,9 @@ on:
       - "docker-compose.yml"
       - ".github/workflows/ci-backend.yml"
       - ".github/workflows/notify-failure.yml"
+  # Every pull request, whatever it targets: a stacked PR targets the branch
+  # below it, and would otherwise get no CI until that one merges.
   pull_request:
-    branches: [ "dev", "staging", "main" ]
     paths:
       - "backend/**"
       - "sql/**"
