@@ -2181,6 +2181,21 @@ though its own had landed, holding expired entities. No trade reaches it today
 and `test_a_replay_found_by_the_insert_race_is_refused_too` drives it by hiding
 the first lookup.
 
+*Amended 2026-09-27 in #139, correcting the paragraph above.* Two of its claims
+are wrong, checked by driving the second branch with a caller's `q = 41`
+pending. `begin_nested()` flushes the caller's pending writes *before* it
+issues the SAVEPOINT, so rolling the SAVEPOINT back after the failed INSERT
+does not undo them. The caller's `q` is still in the outer transaction when the
+second lookup runs, and the rollback only expires the objects. Without the
+refusal, the commit at the end of `post` would land the caller's writes beside
+another request's transaction — the first branch's harm, not only a
+misreported result — which is what makes the refusal there matter. And the
+session looks clean there only to `new`, `dirty` and `deleted`:
+`has_pending_writes` now reports True, because that flush set its flag.
+`caller_pending` is still taken on entry anyway. An answer taken before
+anything runs does not depend on the flag, or on what the SAVEPOINT did to the
+session.
+
 `PendingWritesOnReplay` is a `LedgerError` at 500 rather than a bare exception,
 so the response keeps the one error envelope `controller/errors.py` exists to
 preserve. 500 and not 409: nothing the client sent is wrong and nothing it can
