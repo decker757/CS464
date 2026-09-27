@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -42,6 +42,12 @@ function renderLoginPageWithRoutes() {
       </MemoryRouter>
     </AuthContext.Provider>,
   )
+}
+
+// The message shown under one field: the alert inside the same Field as its label.
+function fieldError(label: string) {
+  const labelElement = screen.getByText(label, { selector: 'label' })
+  return within(labelElement.parentElement as HTMLElement).queryByRole('alert')
 }
 
 describe('LoginPage — links', () => {
@@ -200,5 +206,40 @@ describe('LoginPage — integration', () => {
     await user.click(screen.getByRole('button', { name: /log in/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Please try again.')
+  })
+
+  it('replaces the last response\'s errors on each submit', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post(
+        'http://localhost:8000/auth/login',
+        () =>
+          HttpResponse.json(
+            { detail: [{ type: 'string_too_long', loc: ['body', 'identifier'], msg: 'That username is too long.' }] },
+            { status: 422 },
+          ),
+        { once: true },
+      ),
+      http.post('http://localhost:8000/auth/login', () =>
+        HttpResponse.json(
+          { error: { code: 'invalid_credentials', message: 'Invalid credentials' } },
+          { status: 401 },
+        ),
+      ),
+    )
+
+    renderLoginPage()
+    await user.type(screen.getByLabelText('Username or Email'), 'alice')
+    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('That username is too long.')
+
+    // Editing the other field clears only that field's error, so the
+    // identifier one is still on screen when the second response arrives.
+    await user.type(screen.getByLabelText('Password'), '2')
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+
+    expect(await screen.findByText('Incorrect username or password.')).toHaveAttribute('role', 'alert')
+    expect(fieldError('Username or Email')).not.toBeInTheDocument()
   })
 })
