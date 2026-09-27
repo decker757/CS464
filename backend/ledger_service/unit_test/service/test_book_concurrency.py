@@ -1,29 +1,9 @@
 """Two traders touch a market at the same instant. [F-7] #96, D-010, ADR 0015.
 
-The race D-010 is about: two first-touches both find no book, both build one,
-and the primary key on `market_id` turns the loser into an `IntegrityError` it
-catches, re-reads and proceeds from. Nothing here is simulated — every writer
-gets its own session, its own connection and its own database transaction,
-because the thing under test is what Postgres does when two transactions want
-the same row.
-
-**Every race in this file is gated on an `asyncio.Barrier`, and that is not
-decoration.** `asyncio.gather` alone starts coroutines in order and the first
-one can be most of the way through its work before the second has opened a
-connection — which produces a test that passes because the two never actually
-overlapped. `await own.connection()` forces the connection to be established,
-then the barrier holds both there until both have arrived. Same shape as
-`market_service/unit_test/service/test_approving.py`.
-
-ADR 0015's standard for this file: **a race test is evidence only once it
-fails with its lock removed.** Each test below names what to delete to watch it
-go red, because a concurrency test nobody has seen fail is a concurrency test
-that might be asserting nothing.
-
-`test_concurrency.py` next door covers the same ground for `posting.post` and
-`accounts.ensure`. This file is the layer above: the book, the pool account and
-the funding transaction, which are three separate writes that have to end up
-looking like one.
+Every writer has its own session, connection and transaction, and every race
+waits on an `asyncio.Barrier` after connecting, or the writers never overlap.
+A race test is evidence only once it fails with its guard removed (ADR 0015),
+so each test names what to delete to watch it go red.
 """
 
 from __future__ import annotations
@@ -48,13 +28,8 @@ from unit_test.conftest import mint_token
 
 
 def _books():
-    """Imported inside each test rather than at module scope.
-
-    `service/books.py` does not exist yet, and a top-level import would be one
-    collection error taking the whole file down as a single red line. Reached
-    through here, every test fails on its own, named after the criterion it
-    holds (D-007). Same convention as `market_service`'s `test_browsing.py`.
-    """
+    """Imported inside each test, so a missing name fails one test rather than
+    collection (D-007)."""
     from service import books  # noqa: PLC0415
 
     return books
@@ -95,12 +70,9 @@ class _Upstream:
         self.calls = 0
         self.market_id = market_id
         self.outcomes = outcomes
-        # One subsidy per call, last value repeating. A market service cannot
-        # actually do this — [1.4] #4 forbids editing a published market's
-        # terms — which is the point: it is the only way to tell a caller that
-        # funds from the committed book apart from one that funds from its own
-        # copy of the terms, because in every reachable world the two numbers
-        # are equal.
+        # One subsidy per call, last value repeating. Unreachable for a real
+        # market service, and the only way to tell funding from the committed
+        # book apart from funding from the caller's own copy of the terms.
         self.subsidies = subsidies or [_SUBSIDY]
 
     def transport(self) -> httpx.MockTransport:
@@ -136,22 +108,9 @@ async def _race(
 ) -> list[object]:
     """`writers` first-touches, each in its own transaction, released together.
 
-    Returns the `MarketBook` each one ended up holding, or the exception it
-    raised, so a caller can assert that they all agreed rather than only that
-    one of them worked.
-
-    **The book itself, not its `pool_account_id`.** Returning the account id
-    was enough to prove the callers agreed about the pool, and it is exactly
-    what cannot prove the loser re-read: `accounts.ensure` resolves every
-    racing caller onto one account *before* the book insert is attempted, so
-    the winner's committed book and the loser's rolled-back one carry the same
-    `pool_account_id` either way. `opened_at` is the field that differs —
-    each caller stamps its own — which is what
-    `test_the_loser_gets_the_winner_s_book_rather_than_its_own` compares now.
-
-    Safe to read after the session closes because the factory sets
-    `expire_on_commit=False`, so the attributes loaded inside the block stay
-    loaded on the detached instance.
+    Returns the `MarketBook` each ended up holding, or the exception it raised.
+    The whole book, because only `opened_at` tells the winner's from a loser's
+    own. Readable after the session closes: `expire_on_commit=False`.
     """
     barrier = asyncio.Barrier(writers)
     factory = get_session_factory()
@@ -180,17 +139,10 @@ async def _race(
 async def test_two_concurrent_first_touches_produce_one_book(
     session: AsyncSession,
 ) -> None:
-    """D-010, and the criterion the ticket words as "one inserts, the other
-    catches `IntegrityError`, re-reads and proceeds".
+    """D-010: "one inserts, the other catches `IntegrityError`, re-reads and
+    proceeds".
 
-    Both callers find no book. Both build one. The primary key on `market_id`
-    admits exactly one, and the loser's recovery is to read the row the winner
-    has by then committed — not to fail, because from a trader's side nothing
-    went wrong and their preview should simply render.
-
-    **Remove the `except IntegrityError` recovery and this goes red**, with the
-    loser surfacing a driver error out of what is, for them, an ordinary first
-    look at a market.
+    Remove the `except IntegrityError` recovery and this goes red.
     """
     market_id = uuid.uuid4()
     upstream = _upstream(market_id)
@@ -215,25 +167,11 @@ async def test_two_concurrent_first_touches_produce_one_book(
 async def test_the_loser_gets_the_winner_s_book_rather_than_its_own(
     session: AsyncSession,
 ) -> None:
-    """Re-reads, rather than returning the object it had built in memory.
+    """Re-reads, rather than returning the uncommitted object it built.
 
-    The loser's own `MarketBook` was never committed. A caller carrying on
-    with it holds a row that does not exist: its `opened_at` and
-    `state_changed_at` are its own, not the ones the market actually opened
-    at, and [T-2] #22 bumping `state_version` on it would write against an
-    instance the session has already discarded.
-
-    **Compared on `opened_at`, and `pool_account_id` cannot do this job.**
-    That was the original assertion and it passes whether or not the loser
-    re-reads: `accounts.ensure` puts every racing caller on one pool account
-    before the book insert is even attempted, so both objects carry the same
-    id. Deleting `book = existing` from `service/books.py` left the whole
-    suite green. `opened_at` is stamped per caller from its own
-    `datetime.now(UTC)`, so it is the field that tells the committed row from
-    a discarded one.
-
-    Six writers rather than two, because the recovery path has to survive
-    losing repeatedly, not just once.
+    Compared on `opened_at`, which each caller stamps itself; every racer
+    shares one pool account, so `pool_account_id` cannot tell. Remove
+    `book = existing` from `service/books.py` and this goes red.
     """
     market_id = uuid.uuid4()
     upstream = _upstream(market_id)
@@ -259,20 +197,9 @@ async def test_the_loser_funds_from_the_committed_book_not_its_own_terms(
 ) -> None:
     """`Leg(amount=book.seed_subsidy)`, never `terms.seed_subsidy`.
 
-    Both callers fetch before either inserts, so each holds its own copy of
-    the terms. The winner's copy is the one that gets committed into the book.
-    A loser that funded from *its* copy would hand `posting.post` a different
-    pair of legs under the same `market-open:<id>` key — which `post`
-    correctly refuses as `IdempotencyKeyReused`, so the second trader's first
-    touch of that market fails with an error about a key they have never seen.
-
-    In every reachable world the two numbers are identical, and that is why
-    this needs an upstream that answers differently per call: with one value
-    the distinction is invisible, and deleting `book.` from those two legs
-    left the whole suite green.
-
-    Two writers and two subsidies, so whichever one loses the insert race is
-    holding the number that is not in the book.
+    A loser funding from its own copy would send different legs under the same
+    key and get `IdempotencyKeyReused`. Needs an upstream answering differently
+    per call, or the two numbers are equal and the mistake invisible.
     """
     market_id = uuid.uuid4()
     upstream = _Upstream(
@@ -307,16 +234,8 @@ async def test_the_loser_funds_from_the_committed_book_not_its_own_terms(
 async def test_the_race_creates_exactly_one_market_pool_account(
     session: AsyncSession,
 ) -> None:
-    """D-028, and the reason `owner_id` has to be the market id.
-
-    This is the assertion that fails if the pool account is keyed on anything
-    else. With a sentinel or a fresh `uuid4`, `uq_accounts_kind_owner` never
-    fires, every racing caller commits its own pool account, and only the book
-    race is caught — leaving orphan accounts that nothing points at and that
-    no later call can find.
-
-    Note what would *not* catch it: the book count, the funding count and the
-    ledger sum are all still correct in that world. Only this is wrong.
+    """D-028: keyed on anything but the market id, every racer commits its own
+    pool account, and only this assertion notices.
     """
     market_id = uuid.uuid4()
     upstream = _upstream(market_id)
@@ -338,18 +257,11 @@ async def test_the_race_creates_exactly_one_market_pool_account(
 
 
 async def test_the_pool_is_funded_exactly_once(session: AsyncSession) -> None:
-    """The money half of D-010, and the one that would be expensive to get wrong.
+    """The money half of D-010: six first touches, one subsidy, because the
+    `market-open` key replays under the account locks.
 
-    Six simultaneous first touches, one subsidy. The idempotency key
-    `market-open:<market_id>` is what makes that true under contention:
-    `posting.post` takes the account locks, then looks the key up *under* them,
-    so a caller that lost the book race and a caller whose funding raced the
-    winner's both find the committed transaction and replay it.
-
-    **Remove the key and this is six times the subsidy**, in a pool the
-    administrator approved 250 credits for, with the platform account carrying
-    the difference and nothing anywhere reporting it — the whole-ledger sum
-    stays zero the entire time, because every leg still balances.
+    Remove the key and this is six subsidies, with the ledger still summing to
+    zero.
     """
     market_id = uuid.uuid4()
     upstream = _upstream(market_id)
@@ -379,17 +291,8 @@ async def test_the_pool_is_funded_exactly_once(session: AsyncSession) -> None:
 async def test_the_race_writes_one_set_of_outcome_rows(
     session: AsyncSession,
 ) -> None:
-    """The third write, which has its own uniqueness and its own way to fail.
-
-    `market_books` is protected by its primary key and the funding by its
-    idempotency key. `market_outcomes` has neither — it is a child collection,
-    and its guards are the two unique constraints the ticket specifies, on
-    `(market_id, outcome_id)` and on `(market_id, position)`.
-
-    Without them the losing callers' rows land beside the winner's, and the
-    first price calculation reads four outcomes in a binary market. `q` would
-    be zero for all of them, so the prices would still sum to one — at 0.25
-    each, on a market with two outcomes.
+    """The third write, guarded by the two unique constraints on
+    `market_outcomes`, or a binary market reads as four outcomes.
     """
     market_id = uuid.uuid4()
     upstream = _upstream(market_id)
@@ -413,14 +316,8 @@ async def test_the_race_writes_one_set_of_outcome_rows(
 async def test_only_the_callers_that_raced_the_first_touch_fetch_the_terms(
     session: AsyncSession,
 ) -> None:
-    """The HTTP cost of the race is bounded by the race, not by the traffic.
-
-    Every caller that arrives before the winner commits legitimately fetches —
-    none of them can see a book that does not exist yet, and that is the
-    window D-008 accepted. What must not happen is a fetch *after* the book
-    exists, which is the fast path `test_market_books.py` pins.
-
-    So: at most one call per racing writer, and exactly zero afterwards.
+    """The HTTP cost is bounded by the race: at most one call per racing
+    writer (D-008), and none once the book exists.
     """
     market_id = uuid.uuid4()
     upstream = _upstream(market_id)
@@ -442,12 +339,8 @@ async def test_only_the_callers_that_raced_the_first_touch_fetch_the_terms(
 
 # --- the invariant, under contention --------------------------------------
 async def test_the_ledger_still_balances_after_a_race(session: AsyncSession) -> None:
-    """Every entry ever written, summed, after the messiest path in the ticket.
-
-    Six callers, three of them opening different markets, all against one
-    platform account — which is the shape where a dropped leg or a half-written
-    transaction would actually show up.
-    """
+    """Every entry ever written, summed, after six racing callers on three
+    markets and one platform account."""
     for _ in range(3):
         market_id = uuid.uuid4()
         await _race(market_id, _upstream(market_id), writers=6)
@@ -501,18 +394,9 @@ async def test_every_transaction_balances_on_its_own_after_a_race(
 async def test_two_markets_opening_at_once_do_not_deadlock(
     session: AsyncSession,
 ) -> None:
-    """ADR 0015's lock-ordering rule, at the point where it first has two locks.
-
-    Every market's funding touches the *same* platform account, so two markets
-    opening simultaneously contend on one row while each also holds its own
-    pool account. `accounts.lock` takes account locks ascending by id, which is
-    an order both callers agree on without coordinating — and a market id sorts
-    unpredictably against the all-zero platform owner, so a path that locked in
-    the order its legs happened to be listed would deadlock here roughly half
-    the time.
-
-    A deadlock shows up as this test hanging rather than failing, so it is
-    bounded: `asyncio.timeout` turns it into a failure with a name.
+    """ADR 0015's lock order: two markets share the platform account, so locks
+    must be taken ascending by id or this deadlocks about half the time.
+    `asyncio.timeout` turns a hang into a named failure.
     """
     first, second = uuid.uuid4(), uuid.uuid4()
 
