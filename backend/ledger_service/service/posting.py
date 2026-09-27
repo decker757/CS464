@@ -54,6 +54,83 @@ class Leg:
     amount: Decimal
 
 
+def _quantize(amount: Decimal) -> Decimal:
+    """Round half up, as Postgres numeric does, not banker's rounding: a
+    retry rounded the other way would not match the stored fingerprint.
+    """
+    return amount.quantize(_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def _require_balanced(legs: list[Leg]) -> None:
+    """Refuse legs that do not sum to zero, fewer than two legs, or a zero leg
+    (which `ck_entries_amount_nonzero` refuses anyway). ADR 0009.
+    """
+    if len(legs) < 2 or any(leg.amount == ZERO for leg in legs):
+        raise UnbalancedTransaction
+    if sum((leg.amount for leg in legs), ZERO) != ZERO:
+        raise UnbalancedTransaction
+
+
+def _fingerprint(kind: TransactionKind, legs: list[Leg]) -> str:
+    """A stable hash of what this transaction does.
+
+    Sorted by account id so leg order does not matter to a retry. Amounts are
+    already quantized, so values Postgres stores as one hash as one.
+    """
+    parts = sorted(f"{leg.account.id}:{leg.amount}" for leg in legs)
+    raw = "|".join([kind.value, *parts])
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _replay(existing: Transaction, fingerprint: str) -> Transaction:
+    """The existing transaction if the fingerprint matches, else raise
+    `IdempotencyKeyReused`: a retry replays, a reused key is refused (ADR 0009).
+    """
+    if existing.request_fingerprint != fingerprint:
+        raise IdempotencyKeyReused
+    return existing
+
+
+def _net_by_account(legs: list[Leg]) -> dict[uuid.UUID, tuple[Account, Decimal]]:
+    """Each account's net movement, keyed on the account id, not the object:
+    legs assembled from two queries would otherwise be netted in halves.
+    """
+    netted: dict[uuid.UUID, tuple[Account, Decimal]] = {}
+    for leg in legs:
+        _, running = netted.get(leg.account.id, (leg.account, ZERO))
+        netted[leg.account.id] = (leg.account, running + leg.amount)
+    return netted
+
+
+async def _refuse_overdrafts(session: AsyncSession, legs: list[Leg]) -> None:
+    """Raise `InsufficientFunds` if any USER account would end below zero.
+
+    Netted per account, and only accounts losing credits are read. An
+    allowlist on USER, not a list of exempt kinds: PLATFORM and MARKET_POOL
+    are meant to go negative (ADR 0009, D-009). Adding a kind here means
+    deciding it holds spendable money.
+    """
+    for account, delta in _net_by_account(legs).values():
+        if delta >= ZERO or account.kind is not AccountKind.USER:
+            continue
+
+        balance = await accounts.balance_of(session, account.id)
+        if balance + delta < ZERO:
+            raise InsufficientFunds(balance=balance, required=-delta)
+
+
+async def find_by_idempotency_key(
+    session: AsyncSession, idempotency_key: str
+) -> Transaction | None:
+    """The transaction this key already named, or None.
+
+    Public for `grants.ensure_granted`, which must ask whether a movement
+    happened without building its legs; its docstring has the case.
+    """
+    stmt = select(Transaction).where(Transaction.idempotency_key == idempotency_key)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def post(
     session: AsyncSession,
     *,
@@ -147,80 +224,3 @@ async def post(
 
     await session.commit()
     return transaction
-
-
-async def find_by_idempotency_key(
-    session: AsyncSession, idempotency_key: str
-) -> Transaction | None:
-    """The transaction this key already named, or None.
-
-    Public for `grants.ensure_granted`, which must ask whether a movement
-    happened without building its legs; its docstring has the case.
-    """
-    stmt = select(Transaction).where(Transaction.idempotency_key == idempotency_key)
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-def _replay(existing: Transaction, fingerprint: str) -> Transaction:
-    """The existing transaction if the fingerprint matches, else raise
-    `IdempotencyKeyReused`: a retry replays, a reused key is refused (ADR 0009).
-    """
-    if existing.request_fingerprint != fingerprint:
-        raise IdempotencyKeyReused
-    return existing
-
-
-def _require_balanced(legs: list[Leg]) -> None:
-    """Refuse legs that do not sum to zero, fewer than two legs, or a zero leg
-    (which `ck_entries_amount_nonzero` refuses anyway). ADR 0009.
-    """
-    if len(legs) < 2 or any(leg.amount == ZERO for leg in legs):
-        raise UnbalancedTransaction
-    if sum((leg.amount for leg in legs), ZERO) != ZERO:
-        raise UnbalancedTransaction
-
-
-async def _refuse_overdrafts(session: AsyncSession, legs: list[Leg]) -> None:
-    """Raise `InsufficientFunds` if any USER account would end below zero.
-
-    Netted per account, and only accounts losing credits are read. An
-    allowlist on USER, not a list of exempt kinds: PLATFORM and MARKET_POOL
-    are meant to go negative (ADR 0009, D-009). Adding a kind here means
-    deciding it holds spendable money.
-    """
-    for account, delta in _net_by_account(legs).values():
-        if delta >= ZERO or account.kind is not AccountKind.USER:
-            continue
-
-        balance = await accounts.balance_of(session, account.id)
-        if balance + delta < ZERO:
-            raise InsufficientFunds(balance=balance, required=-delta)
-
-
-def _net_by_account(legs: list[Leg]) -> dict[uuid.UUID, tuple[Account, Decimal]]:
-    """Each account's net movement, keyed on the account id, not the object:
-    legs assembled from two queries would otherwise be netted in halves.
-    """
-    netted: dict[uuid.UUID, tuple[Account, Decimal]] = {}
-    for leg in legs:
-        _, running = netted.get(leg.account.id, (leg.account, ZERO))
-        netted[leg.account.id] = (leg.account, running + leg.amount)
-    return netted
-
-
-def _fingerprint(kind: TransactionKind, legs: list[Leg]) -> str:
-    """A stable hash of what this transaction does.
-
-    Sorted by account id so leg order does not matter to a retry. Amounts are
-    already quantized, so values Postgres stores as one hash as one.
-    """
-    parts = sorted(f"{leg.account.id}:{leg.amount}" for leg in legs)
-    raw = "|".join([kind.value, *parts])
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
-def _quantize(amount: Decimal) -> Decimal:
-    """Round half up, as Postgres numeric does, not banker's rounding: a
-    retry rounded the other way would not match the stored fingerprint.
-    """
-    return amount.quantize(_QUANTUM, rounding=ROUND_HALF_UP)

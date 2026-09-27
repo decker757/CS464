@@ -19,6 +19,13 @@ from model.entities import PLATFORM_OWNER_ID, Account, AccountKind, Entry
 ZERO = Decimal(0)
 
 
+async def find(
+    session: AsyncSession, kind: AccountKind, owner_id: uuid.UUID
+) -> Account | None:
+    stmt = select(Account).where(Account.kind == kind, Account.owner_id == owner_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def ensure(
     session: AsyncSession, kind: AccountKind, owner_id: uuid.UUID
 ) -> Account:
@@ -47,13 +54,6 @@ async def ensure(
         return found
 
     return account
-
-
-async def find(
-    session: AsyncSession, kind: AccountKind, owner_id: uuid.UUID
-) -> Account | None:
-    stmt = select(Account).where(Account.kind == kind, Account.owner_id == owner_id)
-    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def ensure_platform(session: AsyncSession) -> Account:
