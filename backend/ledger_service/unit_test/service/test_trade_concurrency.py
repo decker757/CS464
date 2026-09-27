@@ -1,32 +1,10 @@
 """Two traders, or one trader twice, at the same instant. [T-2] #22, ADR 0015
 
-Nothing here is simulated. Every party gets its own session, its own
-connection and its own database transaction, because the thing under test is
-what Postgres does when two transactions want the same rows.
-
-**Every race is gated on an `asyncio.Barrier`, and that is not decoration.**
-`asyncio.gather` alone starts coroutines in order and the first can be most of
-the way through its work before the second has opened a connection, which
-produces a test that passes because the two never overlapped. `await
-own.connection()` forces the connection to exist, then the barrier holds both
-there until both have arrived. ADR 0015 makes that the standard for any test
-in this repository asserting something about two transactions, and #22's
-criteria restate it.
-
-**Two of these are not barrier races, and that is deliberate.** A barrier
-decides only that both parties start together; it does not decide who wins,
-and for the duplicate-key tests the interleaving *is* the claim. Those two use
-the upstream's `before_response` hook instead: the second request's whole
-trade runs from inside the first's market-service call, which puts it exactly
-in the window ADR 0017 describes — the unlocked pre-gate lookup has already
-missed, and the key exists by the time the book row is taken. That window is
-the only one in which the under-lock re-check is the thing standing between a
-retry and a doubled `q`, and a barrier cannot be relied on to produce it.
-
-**Each test names what to remove to watch it go red**, and where the
-counterfactual is a *move* rather than a deletion, or where the test is a
-smoke test rather than evidence, the docstring says so rather than letting the
-name imply more than the test holds.
+Every party has its own session and transaction, and every race waits on an
+`asyncio.Barrier` after connecting (ADR 0015). The two duplicate-key tests
+instead run the second request inside the first's market-service call, the
+one window where only the under-lock re-check stands between a retry and a
+doubled `q`. Each test names what to remove to watch it go red.
 """
 
 from __future__ import annotations
@@ -67,13 +45,8 @@ from unit_test.trade_fixtures import (
 
 
 def _sequential_totals(n: int, *, quantity: Decimal = QUANTITY, outcome: int = 0):
-    """What `n` buys of `quantity` cost when each is priced against the `q`
-    the one before it left.
-
-    This is the number a market with a working book lock produces, and it is
-    strictly larger than `n` copies of the first cost, because LMSR prices
-    each successive share higher. That gap is the whole evidence in
-    `test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn`.
+    """What `n` sequential buys cost, each priced against the `q` the one
+    before left: more than `n` copies of the first cost.
     """
     q = list(Q)
     totals = []
@@ -89,26 +62,12 @@ def _sequential_totals(n: int, *, quantity: Decimal = QUANTITY, outcome: int = 0
 async def test_one_key_sent_twice_moves_q_state_version_and_the_position_once(
     session: AsyncSession,
 ) -> None:
-    """The criterion, written the way the criterion words it.
+    """The criterion as worded: one key sent twice moves everything once, and
+    both callers get the same answer.
 
-    Two requests, one derived key, one quoted `state_version`, released
-    together. Exactly one transaction, one debit, one increment of `q`, one
-    increment of `state_version`, and one position — and both callers get the
-    same answer, because a retry asks what its answer was and is entitled to
-    be told.
-
-    **This is the criterion, and `test_a_duplicate_arriving_after_the_pre_gate
-    _lookup_is_replayed_under_the_lock` below is the evidence.** Read the two
-    together. The criterion says to run this with the under-lock re-check
-    removed and watch it fail, and it does fail — but not on the assertions
-    the criterion names. With the re-check gone the loser wakes from the book
-    lock, reads a `state_version` the winner has just bumped, and is refused
-    `quote_stale` before it reaches `post`; so `q`, `state_version` and the
-    position have each still moved exactly once and only the "both callers
-    succeeded, with the same body" assertion goes red. Which lookup answers
-    the loser here — the unlocked pre-gate one or the one under the lock —
-    also depends on how the two interleave, which is why the deterministic
-    test below exists rather than this one carrying the whole claim.
+    Without the under-lock re-check only the "same answer" assertion fails,
+    and which lookup answers depends on interleaving; the test below is the
+    deterministic evidence.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -150,32 +109,15 @@ async def test_one_key_sent_twice_moves_q_state_version_and_the_position_once(
 async def test_a_duplicate_arriving_after_the_pre_gate_lookup_is_replayed_under_the_lock(
     session: AsyncSession,
 ) -> None:
-    """The evidence for the under-lock re-check, in the one window where it is
+    """Evidence for the under-lock key re-check, in the one window where it is
     the only defence.
 
-    **Remove the `find_by_idempotency_key` re-check issued after the
-    `SELECT ... FROM market_books ... FOR UPDATE` and before the first write,
-    and this fails.** Nothing else in the suite covers it: the unlocked
-    pre-gate lookup catches every sequential retry, and the staleness check
-    catches most concurrent ones.
-
-    The window is built rather than waited for, because waiting for it is
-    flaky. The duplicate's whole trade runs from inside the original's
-    market-service call, which is ADR 0017's own ordering played out: the
-    duplicate's pre-gate lookup has already missed, the original commits while
-    the duplicate is mid-hop, and by the time the duplicate takes the book row
-    the key exists. The duplicate quotes `1` — the version the original
-    creates — so the staleness check cannot rescue it either, which is what
-    leaves the re-check alone.
-
-    With the re-check gone this is the corruption "A caller holding pending
+    Remove the re-check after the book `FOR UPDATE` and this fails. The
+    duplicate runs inside the original's market-service call and quotes the
+    version the original creates, so neither the pre-gate lookup nor the
+    staleness check can rescue it. See DECISIONS.md, "A caller holding pending
     writes must establish under its own lock that the idempotency key is
-    absent" measured: the duplicate writes `q`, `state_version` and the
-    position into its session, calls `post`, and `post`'s replay branch
-    commits all of it against a payment that was made once. With the re-check
-    gone *and* `posting.post`'s guard in place the same removal surfaces as a
-    `PendingWritesOnReplay` instead — a refused request rather than a doubled
-    position, which is exactly the trade that guard exists to make.
+    absent".
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -234,23 +176,10 @@ async def test_one_key_with_two_different_quantities_is_refused_not_replayed(
     session: AsyncSession,
 ) -> None:
     """The under-lock half of "A replay hit is compared against the request
-    before it is returned".
+    before it is returned": a different quantity is `idempotency_key_reused`.
 
-    Same window as the test above, same reason it is built rather than waited
-    for — but the duplicate asks for a *different* quantity. It must not be
-    handed the original's trade with a `201`. One of the two executes and the
-    other is refused `idempotency_key_reused`.
-
-    **Remove the context comparison from the under-lock re-check and this
-    fails**, silently: the duplicate is answered with the original's body, so
-    a trader who asked for 13.3333 shares is told they bought 41 and shown a
-    transaction id that proves it. `posting.post`'s fingerprint cannot save
-    it — it is never reached, and it hashes only the kind and the legs, whose
-    accounts are already fixed by the derived key.
-
-    The pre-gate half of the same rule is
-    `test_trade_replay.py::test_a_retry_with_a_different_quantity_is_refused`.
-    Both go through one helper; these are the two callers of it.
+    Remove the context comparison from the under-lock re-check and this fails;
+    `posting.post`'s fingerprint is never reached.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -301,26 +230,11 @@ async def test_one_key_with_two_different_quantities_is_refused_not_replayed(
 async def test_concurrent_buys_from_one_user_across_markets_cannot_overdraw(
     session: AsyncSession,
 ) -> None:
-    """The overdraft criterion, in the only shape that is evidence.
+    """The overdraft criterion, across distinct markets so only the trader's
+    account row separates the requests (one market would queue at the book).
 
-    **The markets are distinct, and that is the whole design of this test.**
-    Two concurrent buys by one trader in *one* market are serialised by the
-    book row lock before they ever reach an account, so `accounts.lock` could
-    be deleted outright and a same-market version of this test would still
-    pass — it would be proving the book lock twice and the account lock never.
-    Distinct markets mean distinct book rows, nothing queues at the book, and
-    the trader's own USER row is the only thing between the requests.
-
-    **Remove `.with_for_update()` from `service/accounts.py::lock` and this
-    fails**: every party reads the same balance, every party decides there is
-    enough, and the account ends below zero. That is the line, and it is
-    Ernest's — this ticket is the first caller that can reach it from two
-    directions at once.
-
-    The quantity is sized from the configured grant rather than written
-    down (`twice_affordable`), so the test neither goes vacuous nor asks its
-    barrier for more connections than the pool holds for whoever sets
-    `STARTING_CREDITS` in their own `.env`.
+    Remove `.with_for_update()` from `accounts.lock` and this fails. The
+    quantity is sized from the configured grant.
     """
     user_id = uuid.uuid4()
     credits = await fund(session, user_id)
@@ -372,13 +286,8 @@ async def test_concurrent_buys_from_one_user_across_markets_cannot_overdraw(
 async def test_no_user_balance_goes_negative_under_a_mixed_race(
     session: AsyncSession,
 ) -> None:
-    """The property rather than the arithmetic of one scenario.
-
-    Three traders against three markets, nine requests, every one of them for
-    a quantity each trader can afford twice and not three times. Some fill, some are refused for
-    funds, some are refused stale. Whatever the interleaving, no account holds
-    less than nothing and the ledger still sums to zero.
-    """
+    """The property: whatever the interleaving of nine requests, no account
+    goes negative and the ledger sums to zero."""
     users = [uuid.uuid4() for _ in range(3)]
     for user_id in users:
         credits = await fund(session, user_id)
@@ -421,19 +330,10 @@ async def test_no_user_balance_goes_negative_under_a_mixed_race(
 async def test_only_one_of_many_buys_from_one_quote_fills_and_the_rest_are_stale(
     session: AsyncSession,
 ) -> None:
-    """What strict staleness actually does under contention, stated outright
-    rather than discovered by [FE] #49.
+    """Six buys from one quote: exactly one fills, five are `quote_stale`.
 
-    Six traders all quote `state_version = 0` and all press buy together.
-    Exactly one fills. The other five are refused `quote_stale`, because the
-    first fill made their quote describe a market that no longer exists —
-    which is the protection, not a defect. `q` moves by one fill, the version
-    rises by one, and the pool collects exactly one cost.
-
-    **Remove the staleness comparison and this fails**: all six fill, `q`
-    moves six times, and five traders are charged against a price they were
-    never shown. That is the line, and this is the test that holds it under
-    contention rather than against a hand-written version number.
+    Remove the staleness comparison and this fails: all six fill at prices
+    nobody was shown.
     """
     upstream = Upstream()
     users = [uuid.uuid4() for _ in range(6)]
@@ -479,22 +379,11 @@ async def test_only_one_of_many_buys_from_one_quote_fills_and_the_rest_are_stale
 async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
     session: AsyncSession,
 ) -> None:
-    """Four traders, one market, every one of them filling — and each priced
-    against the `q` the one before it left.
+    """Four traders retrying on `quote_stale` all fill, each priced against
+    the `q` the one before left.
 
-    Each party retries on `quote_stale`, taking the new version out of the
-    error's own `details`, which is what a client does and what those two
-    fields are for. That turns six simultaneous requests into four sequential
-    fills without anybody coordinating.
-
-    **Remove `.with_for_update()` from the `market_books` read in the trade
-    path and this fails.** The assertion that catches it is the pool balance,
-    not `q`: if `q` and `state_version` are written as SQL increments they
-    survive a missing lock intact, and "final `q` is the sum of the fills"
-    stays green. What cannot survive is the price — without the lock two
-    parties read the same `q`, both pass staleness against the same version,
-    and both pay the *first* trade's cost. The pool then holds less than the
-    four sequential costs, and `state_version` ends below four.
+    Remove `.with_for_update()` from the trade's `market_books` read and this
+    fails on the pool balance: two parties would pay the same first cost.
     """
     upstream = Upstream()
     users = [uuid.uuid4() for _ in range(4)]
@@ -556,21 +445,10 @@ async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
 async def test_the_book_row_is_not_held_across_the_market_service_call(
     session: AsyncSession,
 ) -> None:
-    """ADR 0017's "the check is issued before the book lock", as a property
-    somebody can observe rather than as a line in a docstring.
+    """ADR 0017: the gate runs before the book lock, so a held book row cannot
+    stop the hop.
 
-    Another session holds the book row `FOR UPDATE` and does not let go. A
-    trade starts anyway and must still reach market_service: the hop precedes
-    the lock, so a held book row cannot stop it. Once the hop is observed the
-    holder releases and the trade finishes.
-
-    **Move `ensure_trading` to after the `SELECT ... FOR UPDATE` and this
-    fails** — the trade blocks on the row before it ever dials, the hop never
-    happens, and `asyncio.timeout` turns what would otherwise be a hung suite
-    into a named failure. The cost that ordering avoids is exact: every trade
-    in a market serialised behind a remote round trip, and a hung dependency
-    holding the hottest row in the system for the whole terms timeout per
-    queued trade.
+    Move `ensure_trading` after the `FOR UPDATE` and this times out.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -616,20 +494,9 @@ async def test_the_book_row_is_not_held_across_the_market_service_call(
 async def test_trades_across_users_and_markets_do_not_deadlock(
     session: AsyncSession,
 ) -> None:
-    """An ordering smoke test, not ADR 0015 evidence, and the name of the
-    thing it cannot do is worth writing down.
-
-    D-015's "book row before account rows" becomes a live rule in this ticket
-    because `post` now runs *inside* the book lock, so both are held at once.
-    But there is only one trade path, so there is no second ordering for it to
-    deadlock against, and the counterfactual is a *move* — calling `post`
-    before taking the book row — rather than a line to delete. A deadlock also
-    surfaces as a hang rather than as an assertion, so this is bounded and
-    proves only that four crossing trades complete.
-
-    Kept because the shape is the one that would deadlock the day a second
-    write path arrives: two markets, two traders, every party contending on a
-    book row and an account row at the same time.
+    """A smoke test, not ADR 0015 evidence: with one trade path there is no
+    second lock order to deadlock against. Kept for the day a second write
+    path arrives.
     """
     users = [uuid.uuid4() for _ in range(2)]
     upstreams = [Upstream() for _ in range(2)]
@@ -666,12 +533,8 @@ async def test_trades_across_users_and_markets_do_not_deadlock(
 async def test_a_race_that_refuses_everything_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """The rollback claim under contention rather than in isolation.
-
-    Six requests against a closed market, released together. Not one of them
-    may leave an entry, a `q`, a version bump or a position behind — the shape
-    where a path that writes first and checks afterwards finally shows itself.
-    """
+    """The rollback claim under contention: six refused requests leave nothing
+    behind."""
     upstream = Upstream()
     users = [uuid.uuid4() for _ in range(6)]
     await warm(session, upstream)
@@ -706,13 +569,7 @@ async def test_a_race_that_refuses_everything_writes_nothing(
 async def test_a_recorder_is_not_published_to_when_every_party_is_refused(
     session: AsyncSession,
 ) -> None:
-    """The publish is per committed trade, and a refused race commits none.
-
-    Kept in this file rather than in `test_trade_publish.py` because the
-    claim is about contention: a publish fired from a path that had not yet
-    decided whether it was going to commit would show up here and nowhere
-    else.
-    """
+    """The publish is per committed trade, and a refused race commits none."""
     upstream = Upstream()
     users = [uuid.uuid4() for _ in range(4)]
     await warm(session, upstream)

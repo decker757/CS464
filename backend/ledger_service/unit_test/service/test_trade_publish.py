@@ -1,27 +1,10 @@
 """The price event a trade puts on the bus. [T-2] #22, [F-9] #112, ADR 0010
 
-[F-9] #112 shipped the producer with no caller and a test asserting there was
-none. This ticket is the caller, so what is left to hold is the three things
-the primitive could not hold on its own: that a committed trade publishes
-**once**, that the publish happens **after** the commit, and that a publish
-that fails does not turn a trade that has already charged somebody into a
-failure.
-
-Everything else about the producer — the channel, the payload's shape, the
-swallow, the log line, the `CancelledError` that is not caught — belongs to
-`test_price_publish.py` and is not re-decided or re-asserted here.
-
-**`test_price_publish.py::test_nothing_in_this_service_calls_publish` is
-deleted by this ticket**, as its own docstring and #22's issue both say. It
-held the "primitive before caller" shape for exactly one ticket and is false
-the moment this file's first test passes.
-
-**"After the commit" is asserted rather than asserted-about.** The recorder
-runs a callback while the publish is in flight, from a session of its own.
-Under READ COMMITTED that session can see the trade only if it has already
-committed, so the ordering claim becomes a row that is either there or is
-not. Ordering two timestamps would prove less and would pass on a publish
-issued from inside the transaction.
+What the caller owes the producer: a committed trade publishes once, after the
+commit, and a failed publish never fails the trade. The producer itself is
+`test_price_publish.py`'s. "After the commit" is checked from a second session
+while the publish is in flight: under READ COMMITTED it sees the trade only if
+the commit already happened.
 """
 
 from __future__ import annotations
@@ -67,13 +50,8 @@ def _bus():
 
 
 def _expected_prices(q: list[Decimal]) -> list[str]:
-    """Every outcome's price at `q`, quantized the way the wire wants it.
-
-    `ROUND_HALF_UP`, with no direction to favour — nobody is charged a price,
-    unlike `core/pricing.py::quantize_cost`'s directional rounding of a cost.
-    Recomputed from `core/lmsr.py` rather than pinned, the same rule the rest
-    of this suite follows.
-    """
+    """Every outcome's price at `q`, recomputed from `core/lmsr.py` and
+    rounded half up: nobody is charged a price."""
     return [
         str(price.quantize(QUANTUM, rounding=ROUND_HALF_UP))
         for price in lmsr().prices(q, B)
@@ -92,13 +70,7 @@ async def _trade(session: AsyncSession, upstream: Upstream, recorder: Recorder):
 async def test_a_committed_trade_publishes_exactly_once(
     session: AsyncSession,
 ) -> None:
-    """One trade moves the market once, so it announces once.
-
-    Twice would put a duplicate on the channel for one `state_version`,
-    harmless only because `realtime_service/service/ordering.py` drops it —
-    and a guard that starts absorbing a producer's duplicates by default has
-    stopped being defensive.
-    """
+    """One trade moves the market once, so it announces once."""
     upstream = Upstream()
     recorder = Recorder()
     await warm(session, upstream)
@@ -112,15 +84,8 @@ async def test_a_committed_trade_publishes_exactly_once(
 async def test_the_event_carries_the_post_trade_prices_for_every_outcome(
     session: AsyncSession,
 ) -> None:
-    """The prices the trade left behind, not the ones it was quoted against.
-
-    Every outcome, because a trade moves the whole softmax and a client
-    rendering only the traded one would show a market whose prices no longer
-    sum to one. Compared against `core/lmsr.py` evaluated at the post-trade
-    `q`, so an event built from the pre-trade vector — the easy mistake, since
-    that vector is the one already in hand when the cost is computed — fails
-    here.
-    """
+    """The prices the trade left behind, for every outcome, not the pre-trade
+    ones already in hand."""
     upstream = Upstream()
     recorder = Recorder()
     await warm(session, upstream)
@@ -160,11 +125,8 @@ async def test_the_event_carries_the_new_state_version(
 async def test_the_event_validates_as_a_price_event(
     session: AsyncSession,
 ) -> None:
-    """What goes on the channel is what the consumer validates with
-    `extra="forbid"` over four fields. Parsed back through the producer's own
-    model, so a trade that assembled the payload by hand — with an extra field
-    the relay would drop the whole event over — fails here rather than in
-    production, silently, as prices that stop arriving."""
+    """The payload parses back through `PriceEvent`, as the consumer, which
+    forbids extra fields, will parse it."""
     upstream = Upstream()
     recorder = Recorder()
     await warm(session, upstream)
@@ -184,18 +146,8 @@ async def test_the_event_validates_as_a_price_event(
 async def test_the_publish_happens_after_the_transaction_has_committed(
     session: AsyncSession,
 ) -> None:
-    """ADR 0010's one unbendable rule, as a row that is either visible or not.
-
-    Publishing first announces a price that a rollback then un-makes, and
-    nothing acknowledges or subscribes on the producer's behalf, so there is
-    no second chance to correct it. The callback below runs while the publish
-    is in flight and asks a **separate** session whether the trade is there.
-    Under READ COMMITTED it can only be there if the commit already happened.
-
-    The crash window between the commit and the publish is real, accepted and
-    named in ADR 0010 — a client that reconnects fetches a snapshot, which is
-    the same recovery path [X-4] #37 already requires. This test is about the
-    ordering, not about closing that window.
+    """ADR 0010: publish after the commit, or a rollback un-makes an announced
+    price. Checked from a separate session while the publish is in flight.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -244,15 +196,8 @@ async def test_the_publish_happens_after_the_transaction_has_committed(
 async def test_a_publish_that_fails_does_not_fail_the_trade(
     session: AsyncSession,
 ) -> None:
-    """The trade has committed by the time the publish runs, so the exception
-    has nowhere useful to go.
-
-    Turning a committed trade into a 500 would tell a trader their trade
-    failed when it had charged them, which is strictly worse than a stale
-    price on a screen that is about to reconcile. The swallow itself lives in
-    `service/bus.py` and is `test_price_publish.py`'s; what this holds is that
-    the trade path did not wrap it in something that re-raises.
-    """
+    """A failed publish does not fail a trade that has already committed
+    (ADR 0010, D-049)."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -268,13 +213,8 @@ async def test_a_publish_that_fails_does_not_fail_the_trade(
 async def test_a_trade_whose_publish_failed_is_still_fully_written(
     session: AsyncSession,
 ) -> None:
-    """The other half, and the one that would catch a "publish, then commit"
-    ordering hidden behind a swallow.
-
-    If the publish were inside the transaction and its failure were caught,
-    this would still return — and the trade might still be there. What pins
-    the ordering is that everything the trade writes is committed and correct
-    after a publish that threw.
+    """After a publish that threw, everything the trade wrote is committed and
+    correct, which catches a "publish, then commit" hidden behind a swallow.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -302,13 +242,8 @@ async def test_a_trade_whose_publish_failed_is_still_fully_written(
 async def test_a_refused_trade_publishes_nothing(
     session: AsyncSession, break_it: str
 ) -> None:
-    """A price event says a market moved. A refused trade moved nothing.
-
-    Three different refusals, because the three leave the request at three
-    different depths — the gate before the lock, the staleness check under it,
-    and the overdraft check inside `post` with the book writes already pending
-    in the session. A publish wired anywhere but after a successful commit
-    shows up in at least one of them.
+    """A refused trade moved nothing, so it publishes nothing. Three refusals
+    at three depths: before the lock, under it, and inside `post`.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
