@@ -1,8 +1,6 @@
-"""Status codes, the error envelope and the response shape. [1.1] #1.
+"""Status codes, the error envelope and the response shape of the admin routes.
 
-Business rules are asserted in unit_test/service. A test that goes through a
-route to check a rule belongs there instead; what belongs here is everything
-the frontend parses.
+Everything the frontend parses; business rules belong in unit_test/service.
 """
 
 from __future__ import annotations
@@ -45,12 +43,7 @@ async def test_saving_with_a_traders_token_is_403(
 async def test_a_trader_cannot_list_markets(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
-    """[1.1] #1: a draft is not visible to traders.
-
-    Asserted on the read routes, not only on the write one. The write guard
-    stops a trader creating a market; this is the guard that stops one seeing
-    somebody else's.
-    """
+    """[1.1] #1: the read routes are guarded too, not only the write one."""
     response = await client.get("/markets", headers=trader_headers)
 
     assert response.status_code == 403
@@ -60,13 +53,7 @@ async def test_a_trader_cannot_list_markets(
 async def test_a_trader_cannot_read_a_market_even_by_its_exact_id(
     client: AsyncClient, admin_headers: dict[str, str], trader_headers: dict[str, str]
 ) -> None:
-    """403 rather than 404 here, and deliberately so.
-
-    The admin check runs before the route body, so a trader is turned away
-    before ownership is even considered. They learn that they are not an
-    administrator, which they already knew, and nothing about whether this
-    market exists.
-    """
+    """403, not 404: the admin check runs first, so nothing about the market leaks."""
     created = await client.post("/markets", json=_payload(), headers=admin_headers)
     market_id = created.json()["market"]["id"]
 
@@ -431,13 +418,7 @@ async def test_a_malformed_id_on_publish_is_422_not_500(
 async def test_a_blocked_publish_is_422_and_lists_every_field(
     client: AsyncClient, admin_headers: dict[str, str], session
 ) -> None:
-    """The market was complete when it was submitted and has since gone stale.
-
-    Aged through the database rather than by moving the clock, because that is
-    what actually happens: a market sits submitted until its close time passes.
-    The envelope is the same `draft_incomplete` shape the submit button returns,
-    so the form needs no second branch.
-    """
+    """A submitted market gone stale: the same `draft_incomplete` envelope. ADR 0008."""
     from sqlalchemy import text  # noqa: PLC0415
 
     market_id = await _submit(client, admin_headers)
@@ -599,16 +580,12 @@ async def test_the_list_is_a_summary_not_the_whole_market(
 
 
 # --- proposing an outcome [3.1] #9 ----------------------------------------
-# No route closes a market — the clock does, and a background sweep writes it
-# down — so this section reaches CLOSED through the service layer and then
-# drives the route. `session` and `client` share one `clean_database`, so they
-# are looking at the same rows.
+# The clock closes a market, not a route, so this reaches CLOSED through the
+# service layer; `session` and `client` share one database.
 async def _closed(session: AsyncSession, admin_id: uuid.UUID) -> tuple[str, str]:
-    """A closed market of `admin_id`'s, and the id of its first outcome.
+    """A closed market of `admin_id`'s, and its first outcome's id.
 
-    The username matches the one `mint_token` signs by default, because the
-    proposer's name is snapshotted from the token and one of the tests below
-    reads it back off the response.
+    The username matches `mint_token`'s default, which a test reads back.
     """
     market = await closed_market(
         session, Actor(id=admin_id, username="ernest_t", role="admin")
@@ -795,12 +772,7 @@ async def test_a_body_with_no_winner_is_fastapis_422_not_ours(
     admin_id: uuid.UUID,
     admin_headers: dict[str, str],
 ) -> None:
-    """Two 422s exist here and they do not look alike.
-
-    A missing `winning_outcome_id` never reaches this service, so it comes back
-    as FastAPI's `{"detail": [...]}`. The frontend branches on the presence of
-    `error`, which is what docs/api/market-service.md tells it to do.
-    """
+    """A missing key is FastAPI's `{"detail": [...]}`; the frontend branches on `error`."""
     market_id, _ = await _closed(session, admin_id)
 
     response = await client.post(
@@ -819,14 +791,8 @@ async def test_a_refused_proposal_leaves_the_market_closed(
     admin_id: uuid.UUID,
     admin_headers: dict[str, str],
 ) -> None:
-    """Atomicity on the real request path, like the blocked publish above.
-
-    Not the service test of the same name. That one calls `propose_outcome`
-    directly and rolls back by hand; nothing rolls back by hand on a real
-    request. This asserts that the `get_session` dependency does it as the
-    error propagates out through FastAPI — if it stopped, the service test
-    would still pass and the route would leave a half-written market.
-    """
+    """Atomicity on the real request path: `get_session` rolls back, which the
+    service test, rolling back by hand, cannot see."""
     market_id, outcome_id = await _closed(session, admin_id)
 
     await client.post(
@@ -870,12 +836,7 @@ async def test_closing_returns_the_closed_market(
 async def test_the_response_does_not_carry_the_reason_back(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
-    """It is not a field on the market. ADR 0014.
-
-    The reason is in the audit log and only [4.3] #15 may read it, so a
-    frontend must not be written expecting it here — this asserts there is
-    nothing to be tempted by.
-    """
+    """Guard: the reason is in the audit log only, never on the wire. ADR 0014."""
     market_id = await _published(client, admin_headers)
 
     body = (
@@ -956,12 +917,7 @@ async def test_another_administrator_can_close_it(
     admin_headers: dict[str, str],
     other_admin_headers: dict[str, str],
 ) -> None:
-    """The deliberate difference from every other route on this page. ADR 0014.
-
-    Publishing and proposing are the creator's alone and answer 404 to anybody
-    else. This one does not: a broken market that only its creator can stop is
-    not oversight, and the audit entry names whoever stopped it.
-    """
+    """Unlike publish and propose, any administrator may close. ADR 0014."""
     market_id = await _published(client, admin_headers)
 
     response = await client.post(
@@ -977,11 +933,7 @@ async def test_another_administrator_still_cannot_read_it(
     admin_headers: dict[str, str],
     other_admin_headers: dict[str, str],
 ) -> None:
-    """The close is the only thing that widened.
-
-    `get_any` sits one call away from `get`, so this is the assertion that the
-    unscoped read did not escape into the route that reloads a market.
-    """
+    """The close widened, the read did not: `get_any` must not reach GET."""
     market_id = await _published(client, admin_headers)
     await client.post(
         f"/markets/{market_id}/close", json=_close(), headers=other_admin_headers
@@ -1032,12 +984,7 @@ async def test_a_close_without_a_usable_reason_is_422_and_names_the_field(
 async def test_a_body_with_no_reason_at_all_is_fastapis_422_not_ours(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
-    """Two 422s exist here and they do not look alike.
-
-    A missing `reason` key never reaches this service, so it comes back as
-    FastAPI's `{"detail": [...]}`. The frontend branches on the presence of
-    `error`, which is what docs/api/market-service.md tells it to do.
-    """
+    """A missing key is FastAPI's `{"detail": [...]}`; the frontend branches on `error`."""
     market_id = await _published(client, admin_headers)
 
     response = await client.post(
@@ -1051,12 +998,7 @@ async def test_a_body_with_no_reason_at_all_is_fastapis_422_not_ours(
 async def test_a_refused_close_leaves_the_market_open(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
-    """Atomicity on the real request path, like the blocked publish above.
-
-    Nothing rolls back by hand on a real request: this asserts the
-    `get_session` dependency does it as the error propagates out through
-    FastAPI, which the service test cannot see.
-    """
+    """Atomicity on the real request path, where `get_session` rolls back."""
     market_id = await _published(client, admin_headers)
 
     await client.post(
@@ -1069,11 +1011,9 @@ async def test_a_refused_close_leaves_the_market_open(
 
 
 # --- deciding a proposal [3.2] #10 ----------------------------------------
-# Reached through the service layer, for the reason the proposing section above
-# gives, one step further on. `admin_headers` is the creator and therefore the
-# proposer; `other_admin_headers` is the second administrator this ticket
-# exists to require. `mint_token` signs both with the username "ernest_t" — the
-# ids differ, and the ids are what the rule compares.
+# `admin_headers` is the creator and proposer; `other_admin_headers` is the
+# second administrator. Both tokens carry the username "ernest_t": only the ids
+# differ, and the ids are what the rule compares.
 async def _proposed(
     session: AsyncSession, admin_id: uuid.UUID
 ) -> tuple[str, str, str, str]:
@@ -1145,9 +1085,7 @@ async def test_an_approval_body_cannot_change_the_winner(
     admin_id: uuid.UUID,
     other_admin_headers: dict[str, str],
 ) -> None:
-    """The approver says which proposal and supplies nothing of their own, so a
-    body that also names a different winner has that part ignored. The outcome
-    approved is the outcome proposed."""
+    """Extra fields in an approval body are ignored: the approved winner is the proposed one."""
     market_id, outcome_id, _, proposal_id = await _proposed(session, admin_id)
 
     response = await client.post(
@@ -1170,9 +1108,7 @@ async def test_the_proposer_cannot_approve(
     admin_id: uuid.UUID,
     admin_headers: dict[str, str],
 ) -> None:
-    """403, not 409 and not 404. The session is fine and the market is in the
-    right state; this account will never be allowed to decide this proposal,
-    and retrying cannot help. The frontend branches on the code."""
+    """403, not 409 or 404: retrying cannot help. ADR 0016."""
     market_id, _, _, proposal_id = await _proposed(session, admin_id)
 
     response = await client.post(
@@ -1262,9 +1198,7 @@ async def test_approving_twice_is_409(
     admin_headers: dict[str, str],
     other_admin_headers: dict[str, str],
 ) -> None:
-    """A different code from the one above, because the remedy differs: there
-    is nothing to decide yet, versus it has already been decided. The second
-    one must not move `approved_at` either."""
+    """Not the code above: already decided, not nothing to decide. `approved_at` stays."""
     market_id, _, _, proposal_id = await _proposed(session, admin_id)
     first = await client.post(
         f"/markets/{market_id}/approve-outcome",
@@ -1326,11 +1260,7 @@ async def test_the_rejection_response_does_not_carry_the_reason_back(
     admin_id: uuid.UUID,
     other_admin_headers: dict[str, str],
 ) -> None:
-    """It is not a field on the market, as an early close's reason is not.
-
-    The reason is in the audit log and only [4.3] #15 may read it, so a
-    frontend must not be written expecting it here.
-    """
+    """Guard: the reason is in the audit log only, never on the wire. ADR 0016."""
     market_id, _, _, proposal_id = await _proposed(session, admin_id)
 
     body = (
@@ -1396,12 +1326,7 @@ async def test_a_rejection_with_no_reason_at_all_is_fastapis_422_not_ours(
     admin_id: uuid.UUID,
     other_admin_headers: dict[str, str],
 ) -> None:
-    """Two 422s exist here too, and they do not look alike.
-
-    A missing `reason` key never reaches this service, so it comes back as
-    FastAPI's `{"detail": [...]}`. The frontend branches on the presence of
-    `error`, which is what docs/api/market-service.md tells it to do.
-    """
+    """A missing key is FastAPI's `{"detail": [...]}`; the frontend branches on `error`."""
     market_id, _, _, proposal_id = await _proposed(session, admin_id)
 
     response = await client.post(
@@ -1419,13 +1344,7 @@ async def test_a_refused_rejection_leaves_the_market_pending(
     admin_headers: dict[str, str],
     other_admin_headers: dict[str, str],
 ) -> None:
-    """Atomicity on the real request path, like the refused close above.
-
-    Nothing rolls back by hand on a real request: this asserts the
-    `get_session` dependency does it as the error propagates, which the service
-    test cannot see. A rejection that cleared the proposal and then refused
-    would lose it with no log entry to recover it from.
-    """
+    """Atomicity on the real request path, where `get_session` rolls back."""
     market_id, _, _, proposal_id = await _proposed(session, admin_id)
 
     await client.post(
@@ -1487,12 +1406,7 @@ async def test_another_administrator_still_cannot_read_an_approved_market(
     admin_id: uuid.UUID,
     other_admin_headers: dict[str, str],
 ) -> None:
-    """The decision is the only thing that widened.
-
-    The approver reached this market by id, and approving it did not make it
-    theirs to read: `get_any` sits one call away from `get`, and this is the
-    assertion that it did not escape into the route that reloads a market.
-    """
+    """The decision widened, the read did not: `get_any` must not reach GET."""
     market_id, _, _, proposal_id = await _proposed(session, admin_id)
     approved = await client.post(
         f"/markets/{market_id}/approve-outcome",
@@ -1535,9 +1449,7 @@ async def test_an_autosave_after_approval_is_409(
     admin_headers: dict[str, str],
     other_admin_headers: dict[str, str],
 ) -> None:
-    """The create form may still be open behind everything that has happened
-    since. Michelle stops the timer on this, the same as on every other code
-    that says a market's terms are frozen."""
+    """The create form may still be open; the frontend stops its timer on this code."""
     market_id, _, draft_key, proposal_id = await _proposed(session, admin_id)
     await client.post(
         f"/markets/{market_id}/approve-outcome",

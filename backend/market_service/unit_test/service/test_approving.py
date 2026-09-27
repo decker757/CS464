@@ -1,26 +1,9 @@
-"""Approving or rejecting a proposed outcome, driven through the service layer
-without HTTP. [3.2] #10.
+"""Approving or rejecting a proposed outcome, through the service layer. [3.2] #10.
 
-The two transitions out of PENDING_RESOLUTION and the rules guarding them.
-Status codes and the error envelope live in unit_test/controller; what reaches
-the audit log, which is where a rejection's reason and the proposal it cleared
-go, lives in unit_test/service/test_audit.py.
-
-Three things this suite is really about, under the obvious ones.
-
-**The administrator who proposed can never decide.** Not by approving, and not
-by rejecting either, because a proposer rejecting their own proposal is the
-un-propose ADR 0013 declined to build. The rule compares ids, so a rename does
-not get round it and a shared username does not trip it.
-
-**The order of the refusals is part of the contract.** State before identity,
-identity before content: a proposer looking at a market that is already
-approved is told so rather than told they may not act, and a proposer sending a
-one-word reason is told they may not act rather than told to write more.
-
-**Each decision happens exactly once.** Every read that decides the write is
-locked (ADR 0015), and the tests at the bottom are real races between real
-transactions — each written to fail if that lock is removed.
+The proposer may never decide, compared by id; the refusals come in a fixed
+order (state, identity, which proposal, reason); and each decision happens
+once, which the real races at the bottom hold. ADR 0015, ADR 0016. HTTP
+answers are in unit_test/controller, audit entries in test_audit.py.
 """
 
 from __future__ import annotations
@@ -47,9 +30,7 @@ from model.schemas import OutcomeApprovalRequest, OutcomeRejectionRequest
 from service import closing, market_service
 from service.audit import Actor
 
-# The suite's actor factory and market builders. Aliased rather than imported
-# under their own names because every helper below takes an `actor` argument,
-# which would shadow the first.
+# Aliased so the names do not shadow an `actor` argument.
 from unit_test.conftest import (
     REJECTION_REASON,
     closed_market,
@@ -70,9 +51,7 @@ _ENTRIES = text(
     "WHERE actor_id = :actor AND action_type = :action"
 )
 
-# The seven columns one proposal occupies. An approval keeps every one of them —
-# `proposed_outcome_id` is what [3.4] #12 settles against — and a rejection
-# clears every one of them.
+# The seven proposal columns: an approval keeps them all, a rejection clears them all.
 _PROPOSAL_COLUMNS = (
     "proposal_id",
     "proposed_outcome_id",
@@ -91,12 +70,7 @@ def _columns(market: Market, names: tuple[str, ...]) -> dict[str, object]:
 
 
 async def _stored(session: AsyncSession) -> Market:
-    """The one market in the database, as committed.
-
-    Every suite here rebuilds the schema per test, so there is exactly one row
-    unless a test made a second. Expired first, so the answer comes from
-    Postgres rather than from the object the service just handed back.
-    """
+    """The one market in the database, re-read from Postgres."""
     session.expire_all()
     return (await session.execute(select(Market))).scalar_one()
 
@@ -108,11 +82,7 @@ async def _decide(
     decision: str,
     proposal_id: uuid.UUID | None,
 ) -> Market:
-    """Approve, or reject with a usable reason, for the rules the two share.
-
-    `proposal_id` is the market's own wherever it has one, so a refusal a test
-    expects is refused for its own reason and not as `proposal_superseded`.
-    """
+    """Approve, or reject with a usable reason, for the rules the two share."""
     if decision == "approve":
         return await market_service.approve_outcome(
             session, actor, market_id, _approve(proposal_id)
@@ -128,13 +98,8 @@ async def _entry_count(audit_reader: AsyncSession, actor: Actor, action: str) ->
 
 
 async def _stopped_early_and_proposed(session: AsyncSession, proposer: Actor) -> Market:
-    """A pending market whose closing time is still in the future.
-
-    Reached through [2.3] #7's early close rather than the clock, for the tests
-    that ask whether a market can be traded. Against a market the clock closed,
-    `is_open_for_trading` answers False whatever this ticket writes to the
-    status column, so those tests would pass while proving nothing.
-    """
+    """A pending market whose close time is still ahead, so only the status can
+    refuse a trade; a clock-closed market would pass the trading tests vacuously."""
     market = await published_market(session, proposer)
     await market_service.close_early(session, proposer, market.id, _close())
     return await market_service.propose_outcome(
@@ -156,8 +121,7 @@ async def test_a_pending_market_can_be_approved(session: AsyncSession) -> None:
 
 
 async def test_the_approval_survives_a_reload(session: AsyncSession) -> None:
-    """Asserted from the database rather than the in-memory object, so this
-    fails if the transition is never actually committed."""
+    """Read from the database, so this fails if the transition is never committed."""
     proposer, approver = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -169,12 +133,7 @@ async def test_the_approval_survives_a_reload(session: AsyncSession) -> None:
 
 
 async def test_both_identities_are_stored_on_the_market(session: AsyncSession) -> None:
-    """[3.2] #10's third criterion: who proposed and who approved, on the row.
-
-    Usernames beside the ids for the reason [3.1] #9 stored the proposer's:
-    this service cannot resolve one from the other, so a name not written here
-    is a name nobody can render later. ADR 0003.
-    """
+    """[3.2] #10's third criterion: who proposed and who approved, on the row."""
     proposer, approver = _actor(username="ernest_t"), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -189,9 +148,7 @@ async def test_both_identities_are_stored_on_the_market(session: AsyncSession) -
 
 
 async def test_approving_records_when_it_happened(session: AsyncSession) -> None:
-    """A timestamp of its own, and the one [3.3] #11's dispute window will be
-    measured from. A proposal can sit for days before a second administrator
-    gets to it, so reusing `proposed_at` would start that window early."""
+    """Its own timestamp: [3.3] #11's dispute window will run from it."""
     proposer, approver = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
     later = datetime.now(UTC) + timedelta(days=2)
@@ -205,12 +162,7 @@ async def test_approving_records_when_it_happened(session: AsyncSession) -> None
 
 
 async def test_an_approval_keeps_the_proposal(session: AsyncSession) -> None:
-    """The winner is what was approved, so it stays exactly where it was.
-
-    [3.4] #12 settles against `proposed_outcome_id`. An approval that tidied
-    the proposal away, or rewrote the proposer as the approver, would leave
-    settlement with nothing to pay out on.
-    """
+    """The approved winner stays where it was; [3.4] #12 settles against it."""
     proposer, approver = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
     before = _columns(market, _PROPOSAL_COLUMNS)
@@ -224,9 +176,7 @@ async def test_an_approval_keeps_the_proposal(session: AsyncSession) -> None:
 async def test_an_approval_leaves_the_terms_and_closed_at_alone(
     session: AsyncSession,
 ) -> None:
-    """The request carries nothing, so nothing but the decision moves. The
-    market a second administrator agreed to is the market traders traded, and
-    `closed_at` still says when trading stopped."""
+    """Nothing but the decision moves."""
     proposer, approver = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer, question="The question traders saw?")
     close_time, closed_at = market.close_time, market.closed_at
@@ -244,8 +194,7 @@ async def test_an_approval_leaves_the_terms_and_closed_at_alone(
 async def test_a_pending_market_can_be_rejected_back_to_closed(
     session: AsyncSession,
 ) -> None:
-    """[3.2] #10's second criterion. Back to CLOSED, which is the state
-    [3.1] #9 proposes from, so the market can be resolved again."""
+    """[3.2] #10's second criterion: back to CLOSED, ready to propose again."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -257,8 +206,7 @@ async def test_a_pending_market_can_be_rejected_back_to_closed(
 
 
 async def test_the_rejection_survives_a_reload(session: AsyncSession) -> None:
-    """Asserted from the database rather than the in-memory object, so this
-    fails if the transition is never actually committed."""
+    """Read from the database, so this fails if the transition is never committed."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -270,13 +218,7 @@ async def test_the_rejection_survives_a_reload(session: AsyncSession) -> None:
 
 
 async def test_a_rejection_clears_every_proposal_column(session: AsyncSession) -> None:
-    """All six, not only the winner.
-
-    A CLOSED market with a leftover `proposed_by_id` would name a proposer for
-    a proposal that no longer exists, and a leftover evidence URL would sit
-    beside the next proposal as if it belonged to it. The rejected proposal
-    survives in the audit log instead.
-    """
+    """All seven, not only the winner; the log keeps the rejected proposal. ADR 0016."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -287,9 +229,7 @@ async def test_a_rejection_clears_every_proposal_column(session: AsyncSession) -
 
 
 async def test_a_rejection_leaves_closed_at_alone(session: AsyncSession) -> None:
-    """`closed_at` says when trading stopped, and a rejection does not change
-    that. Rewriting it would also blur the one signal that tells an early close
-    from a clock close: a `closed_at` earlier than `close_time`."""
+    """`closed_at` says when trading stopped, which a rejection does not change."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
     closed_at = market.closed_at
@@ -305,8 +245,7 @@ async def test_a_rejection_leaves_closed_at_alone(session: AsyncSession) -> None
 async def test_a_rejection_leaves_the_approver_columns_null(
     session: AsyncSession,
 ) -> None:
-    """The rejecter is named in the log and nowhere else. After a rejection the
-    row holds no proposal, so there is nothing for a `rejected_by` to describe."""
+    """The rejecter is named in the log and nowhere else. ADR 0016."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -317,8 +256,7 @@ async def test_a_rejection_leaves_the_approver_columns_null(
 
 
 async def test_a_rejection_leaves_the_terms_alone(session: AsyncSession) -> None:
-    """The reason is about the proposal, not the market. The next proposal is
-    made against the same terms traders traded."""
+    """The reason is about the proposal, not the market."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer, question="The question traders saw?")
     close_time = market.close_time
@@ -334,12 +272,7 @@ async def test_a_rejection_leaves_the_terms_alone(session: AsyncSession) -> None
 async def test_the_rejection_reason_is_not_stored_on_the_market(
     session: AsyncSession,
 ) -> None:
-    """One fact, one place, as with an early close's reason. ADR 0014.
-
-    A guard against somebody adding a `rejection_reason` column later and
-    leaving two answers in the system — one of which a second rejection would
-    overwrite, while the log keeps both.
-    """
+    """Guard: the reason lives in the log only, not a `rejection_reason` column. ADR 0016."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -356,11 +289,7 @@ async def test_the_rejection_reason_is_not_stored_on_the_market(
 async def test_a_rejected_market_can_be_proposed_for_again(
     session: AsyncSession,
 ) -> None:
-    """The point of sending it back to CLOSED rather than somewhere new.
-
-    A rejection is not the end of a market. Its creator proposes again — here
-    the other outcome — down exactly the path the first proposal took.
-    """
+    """The point of sending it back to CLOSED: its creator proposes again."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
     market_id, proposal_id, second = market.id, market.proposal_id, market.outcomes[1].id
@@ -375,13 +304,7 @@ async def test_a_rejected_market_can_be_proposed_for_again(
 
 
 async def test_a_rejected_market_takes_no_more_trades(session: AsyncSession) -> None:
-    """Back to CLOSED, not back to OPEN.
-
-    Reached through an early close, so `close_time` is still in the future and
-    only the status can be what answers False. A rejection that reopened
-    trading would let people bet on a question an administrator has just
-    publicly tried to answer.
-    """
+    """Back to CLOSED, not OPEN: nobody may bet on a question just answered."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await _stopped_early_and_proposed(session, proposer)
 
@@ -394,12 +317,7 @@ async def test_a_rejected_market_takes_no_more_trades(session: AsyncSession) -> 
 
 # --- who may decide -------------------------------------------------------
 async def test_the_proposer_cannot_approve(session: AsyncSession) -> None:
-    """[3.2] #10's first criterion, in the half this service owns.
-
-    A disabled button is a hint; this is the rule behind it. Without it one
-    administrator names a winner and agrees with themselves, and the second
-    signature is decoration.
-    """
+    """[3.2] #10's first criterion: the rule behind the disabled button."""
     proposer = _actor()
     market = await proposed_market(session, proposer)
 
@@ -408,9 +326,7 @@ async def test_the_proposer_cannot_approve(session: AsyncSession) -> None:
 
 
 async def test_the_proposer_cannot_reject(session: AsyncSession) -> None:
-    """Not only approval. A proposer rejecting their own proposal is a
-    withdrawal, which ADR 0013 declined: a second path back to CLOSED with no
-    second administrator in it."""
+    """Rejecting your own proposal is the un-propose ADR 0013 declined."""
     proposer = _actor()
     market = await proposed_market(session, proposer)
 
@@ -440,9 +356,7 @@ async def test_a_refused_proposer_writes_nothing(
 
 
 async def test_the_rule_compares_the_id_not_the_username(session: AsyncSession) -> None:
-    """Usernames are a snapshot for display. Two administrators may share one
-    over time, and a rule keyed on it would refuse a legitimate second pair of
-    eyes."""
+    """Usernames can be reissued; a namesake is a legitimate second administrator."""
     proposer = _actor(username="ernest_t")
     market = await proposed_market(session, proposer)
     namesake = Actor(id=uuid.uuid4(), username=proposer.username, role="admin")
@@ -456,8 +370,7 @@ async def test_the_rule_compares_the_id_not_the_username(session: AsyncSession) 
 async def test_the_proposer_under_a_new_username_is_still_refused(
     session: AsyncSession, decision: str
 ) -> None:
-    """The other direction of the same rule. A rename between proposing and
-    deciding must not turn the proposer into somebody else."""
+    """The other direction: a rename does not make the proposer somebody else."""
     proposer = _actor(username="ernest_t")
     market = await proposed_market(session, proposer)
     renamed = Actor(id=proposer.id, username="renamed", role="admin")
@@ -473,12 +386,7 @@ async def test_the_proposer_under_a_new_username_is_still_refused(
 async def test_any_other_administrator_may_decide_a_market_they_did_not_create(
     session: AsyncSession, decision: str, status: MarketStatus
 ) -> None:
-    """The second read in this service not scoped to the creator. ADR 0013
-    named this ticket as the one that widens it.
-
-    It has to be: only the creator may propose, and the proposer may not
-    decide, so a decision scoped to the creator could never be made by anyone.
-    """
+    """Unscoped by necessity: the creator proposes and may not decide. ADR 0016."""
     owner, overseer = _actor(username="ernest_t"), _actor(username="ihsan_b")
     market = await proposed_market(session, owner)
 
@@ -489,12 +397,7 @@ async def test_any_other_administrator_may_decide_a_market_they_did_not_create(
 
 
 async def test_the_creator_scoped_read_is_untouched(session: AsyncSession) -> None:
-    """Widening the decision must not have widened anything else.
-
-    `get_any` is one call away from `get`. If this ever passes for the second
-    administrator, the unscoped read has escaped into the one every other route
-    uses, and drafts have started leaking.
-    """
+    """Widening the decision must not widen the creator-scoped read."""
     owner, other = _actor(), _actor()
     market = await proposed_market(session, owner)
 
@@ -508,11 +411,9 @@ async def _replaced(
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
     """A market whose first proposal was rejected and replaced by a second.
 
-    Returns the market id, the first proposal's id — what a reviewer who opened
-    the market before the rejection is still holding — the second proposal's
-    id, and the outcome the second one names. Plain values rather than the
-    entity, because the tests that use this roll back after a refusal and an
-    async ORM instance is unreadable once they do.
+    Returns (market id, stale first proposal id, current id, second winner) as
+    plain values, because the callers roll back and an expired entity is
+    unreadable.
     """
     first = await proposed_market(session, proposer)
     market_id, stale, second_winner = first.id, first.proposal_id, first.outcomes[1].id
@@ -531,9 +432,7 @@ async def test_proposing_gives_the_proposal_an_id(session: AsyncSession) -> None
 
 
 async def test_a_replacement_proposal_gets_a_new_id(session: AsyncSession) -> None:
-    """Even for the same creator on the same market. The id is what tells two
-    proposals apart when the status, the market and the proposer are all the
-    same — which is exactly the case a stale decision arrives in."""
+    """Even for the same creator on the same market: the id alone tells them apart."""
     _, stale, current, _ = await _replaced(
         session, _actor(), _actor(username="ihsan_b")
     )
@@ -545,14 +444,9 @@ async def test_a_replacement_proposal_gets_a_new_id(session: AsyncSession) -> No
 async def test_a_stale_approval_does_not_approve_the_replacement(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The Codex P1 on this ticket, as a test.
+    """A reviewer still reading proposal 1 approves after 1 was replaced by 2.
 
-    A reviewer opens proposal 1. Somebody else rejects it and the creator
-    proposes 2, naming the other outcome. The reviewer, still looking at 1,
-    presses approve. Keyed only by the market this approved 2 — a winner the
-    reviewer never saw — and no row lock could stop it, because nothing was
-    overlapping: the reject-and-repropose had committed before the approval
-    arrived. The quoted proposal id is what catches it.
+    No row lock can catch this; the quoted id does. ADR 0016.
     """
     proposer, reviewer = _actor(), _actor(username="ihsan_b")
     market_id, stale, current, second_winner = await _replaced(
@@ -576,8 +470,7 @@ async def test_a_stale_approval_does_not_approve_the_replacement(
 async def test_a_stale_rejection_does_not_clear_the_replacement(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The same stale page, the other button. A reason written about proposal 1
-    must not clear proposal 2 and sit in the log as the reason 2 was refused."""
+    """The same stale page, the other button: a reason about 1 must not clear 2."""
     proposer, reviewer = _actor(), _actor(username="ihsan_b")
     market_id, stale, current, second_winner = await _replaced(
         session, proposer, _actor()
@@ -600,8 +493,7 @@ async def test_a_stale_rejection_does_not_clear_the_replacement(
 async def test_the_current_proposal_can_still_be_decided(
     session: AsyncSession, decision: str
 ) -> None:
-    """The refusal is about the quoted id, not about the market having been
-    proposed for twice: a reviewer who reloads and quotes proposal 2 decides it."""
+    """A reviewer who reloads and quotes proposal 2 decides it."""
     market_id, _, current, _ = await _replaced(
         session, _actor(), _actor(username="ihsan_b")
     )
@@ -627,8 +519,7 @@ async def test_an_id_no_proposal_ever_had_is_refused(
 async def test_a_stale_proposer_is_told_they_may_not_decide_at_all(
     session: AsyncSession, decision: str
 ) -> None:
-    """Identity before which proposal. Reloading would not help the proposer,
-    so `proposal_superseded` — whose remedy is to reload — would mislead."""
+    """Identity before which proposal: reloading would not help the proposer."""
     proposer = _actor()
     market_id, stale, _, _ = await _replaced(
         session, proposer, _actor(username="ihsan_b")
@@ -641,8 +532,7 @@ async def test_a_stale_proposer_is_told_they_may_not_decide_at_all(
 async def test_a_stale_rejection_is_refused_before_its_reason_is_read(
     session: AsyncSession,
 ) -> None:
-    """Which proposal before the reason: nobody should be asked to lengthen a
-    reason about a proposal that is no longer there."""
+    """Which proposal before the reason."""
     market_id, stale, _, _ = await _replaced(
         session, _actor(), _actor(username="ihsan_b")
     )
@@ -653,9 +543,8 @@ async def test_a_stale_rejection_is_refused_before_its_reason_is_read(
         )
 
 
-# A proposal made before proposal ids existed is pending with a null one, and is
-# decided by quoting null. `sql/migrations/0006` explains why it is not
-# backfilled; these are the tests that a null opens nothing else.
+# A proposal older than ids is decided by quoting null, and a null must open
+# nothing else. ADR 0016.
 def _quoting_null(decision: str) -> OutcomeApprovalRequest | OutcomeRejectionRequest:
     if decision == "approve":
         return OutcomeApprovalRequest(proposal_id=None)
@@ -681,8 +570,7 @@ async def _decide_quoting_null(
 async def test_a_proposal_from_before_ids_is_decided_by_quoting_null(
     session: AsyncSession, decision: str, status: MarketStatus
 ) -> None:
-    """The migration's promise. Without this, a proposal already waiting when
-    0006 ran could never be decided by anybody allowed to decide it."""
+    """The migration's promise: a proposal from before 0006 can still be decided."""
     market = await proposed_before_ids(session, _actor())
     assert market.proposal_id is None
 
@@ -697,8 +585,7 @@ async def test_a_proposal_from_before_ids_is_decided_by_quoting_null(
 async def test_quoting_null_does_not_decide_a_proposal_that_has_an_id(
     session: AsyncSession, decision: str
 ) -> None:
-    """A null is not a wildcard. It matches the absence of an id, and every
-    proposal made since ids existed has one."""
+    """A null is not a wildcard."""
     market = await proposed_market(session, _actor())
 
     with pytest.raises(ProposalSuperseded):
@@ -711,9 +598,7 @@ async def test_quoting_null_does_not_decide_a_proposal_that_has_an_id(
 async def test_a_stale_null_does_not_decide_the_replacement_of_an_old_proposal(
     session: AsyncSession, decision: str
 ) -> None:
-    """The Codex P1 scenario, starting from a proposal that predates ids. A
-    reviewer read the old proposal and holds a null; it is rejected and
-    replaced; the replacement has an id, so the stale null is refused."""
+    """The replaced-proposal case starting from an old proposal: a stale null is refused."""
     proposer = _actor()
     old = await proposed_before_ids(session, proposer)
     market_id, second_winner = old.id, old.outcomes[1].id
@@ -746,8 +631,7 @@ async def test_an_old_proposal_quoted_by_a_made_up_id_is_refused(
 async def test_an_approved_market_answers_already_approved_to_a_stale_id(
     session: AsyncSession,
 ) -> None:
-    """State before which proposal. The market is past deciding, and that is
-    the fact worth reporting, whichever proposal the caller last saw."""
+    """State before which proposal: the market is past deciding."""
     market = await proposed_market(session, _actor())
     await market_service.approve_outcome(
         session, _actor(username="ihsan_b"), market.id, _approve(market.proposal_id)
@@ -765,9 +649,7 @@ async def test_an_approved_market_answers_already_approved_to_a_stale_id(
 async def test_a_market_that_never_opened_cannot_be_decided(
     session: AsyncSession, status: str, decision: str
 ) -> None:
-    """There is no proposal on it. A 409 rather than a 404 even to another
-    administrator — the same trade ADR 0014 made for an early close, because
-    a decision refuses anything without a proposal before it acts."""
+    """No proposal on it: a 409, not a 404, even to another admin. ADR 0016."""
     owner = _actor()
     market, _, _ = await market_service.save(session, owner, _request(status=status))
 
@@ -790,8 +672,7 @@ async def test_an_open_market_cannot_be_decided(
 async def test_a_closed_market_with_no_proposal_cannot_be_decided(
     session: AsyncSession, decision: str
 ) -> None:
-    """The closest miss. CLOSED is the state just before a proposal, and there
-    is nothing yet for a second administrator to agree or disagree with."""
+    """The closest miss: CLOSED is the state just before a proposal."""
     owner = _actor()
     market = await closed_market(session, owner)
 
@@ -800,8 +681,7 @@ async def test_a_closed_market_with_no_proposal_cannot_be_decided(
 
 
 async def test_approving_twice_is_refused(session: AsyncSession) -> None:
-    """By anybody. The second approver here is a third administrator, so the
-    identity rule would let them through; the state is what refuses them."""
+    """By a third administrator too: the state refuses them, not identity."""
     proposer = _actor()
     market = await proposed_market(session, proposer)
     await market_service.approve_outcome(session, _actor(username="ihsan_b"), market.id, _approve(market.proposal_id))
@@ -813,11 +693,7 @@ async def test_approving_twice_is_refused(session: AsyncSession) -> None:
 async def test_a_second_approval_does_not_overwrite_the_first(
     session: AsyncSession,
 ) -> None:
-    """The refusal above must actually protect the row, not merely report.
-
-    A later clock and a different administrator, so an overwrite would show in
-    either column.
-    """
+    """The refusal must protect the row; a later clock and another admin would show."""
     proposer, first, second = _actor(), _actor(username="ihsan_b"), _actor()
     market = await proposed_market(session, proposer)
     market_id, proposal_id = market.id, market.proposal_id
@@ -836,9 +712,7 @@ async def test_a_second_approval_does_not_overwrite_the_first(
 
 
 async def test_rejecting_an_approved_market_is_refused(session: AsyncSession) -> None:
-    """An approval is final as far as this ticket goes. Undoing one is
-    [3.3] #11's dispute, with its own window and its own record — not a
-    rejection that happens to arrive late."""
+    """An approval is final here; undoing one is [3.3] #11's dispute."""
     proposer = _actor()
     market = await proposed_market(session, proposer)
     market_id, proposal_id = market.id, market.proposal_id
@@ -854,9 +728,7 @@ async def test_rejecting_an_approved_market_is_refused(session: AsyncSession) ->
 
 
 async def test_rejecting_twice_is_refused(session: AsyncSession) -> None:
-    """The first rejection sent it back to CLOSED with no proposal on it, so
-    the second finds nothing to reject — the same answer as a market that was
-    never proposed for, because that is now exactly what it is."""
+    """After the first, there is no proposal left to reject."""
     proposer = _actor()
     market = await proposed_market(session, proposer)
     await market_service.reject_outcome(
@@ -879,8 +751,7 @@ async def test_an_unknown_market_is_not_found(
 async def test_an_approved_market_tells_the_proposer_it_is_approved(
     session: AsyncSession, decision: str
 ) -> None:
-    """State before identity. The proposer's remedy here is not to find another
-    administrator — one already has — so the refusal says that instead."""
+    """State before identity: another administrator already has."""
     proposer = _actor()
     market = await proposed_market(session, proposer)
     await market_service.approve_outcome(session, _actor(username="ihsan_b"), market.id, _approve(market.proposal_id))
@@ -890,8 +761,7 @@ async def test_an_approved_market_tells_the_proposer_it_is_approved(
 
 
 async def test_the_identity_is_checked_before_the_reason(session: AsyncSession) -> None:
-    """A proposer is not told to improve the wording of a rejection they are
-    not allowed to make."""
+    """A proposer is not told to improve a rejection they may not make."""
     proposer = _actor()
     market = await proposed_market(session, proposer)
 
@@ -906,8 +776,7 @@ async def test_the_identity_is_checked_before_the_reason(session: AsyncSession) 
 async def test_a_proposal_is_not_rejected_without_a_usable_reason(
     session: AsyncSession, reason: str
 ) -> None:
-    """The rules themselves are in unit_test/service/test_validation.py; this
-    is that they are enforced here."""
+    """Enforced here; the rules are in test_validation.py."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
 
@@ -922,9 +791,7 @@ async def test_a_proposal_is_not_rejected_without_a_usable_reason(
 async def test_a_refused_rejection_leaves_the_market_pending(
     session: AsyncSession,
 ) -> None:
-    """All-or-nothing. Clearing the proposal before refusing would lose the
-    thing the rejecter was about to explain, with no log entry to recover it
-    from."""
+    """All-or-nothing: the proposal is not cleared by a refused rejection."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
     market_id, proposal_id, winner = (
@@ -943,8 +810,7 @@ async def test_a_refused_rejection_leaves_the_market_pending(
 
 
 async def test_the_state_is_checked_before_the_reason(session: AsyncSession) -> None:
-    """A market with nothing to reject is not told to fix its wording. The
-    same ordering `close_early` uses, and the same argument."""
+    """A market with nothing to reject is not told to fix its wording."""
     owner = _actor()
     market = await closed_market(session, owner)
 
@@ -965,12 +831,7 @@ async def _approved(session: AsyncSession, proposer: Actor, **overrides: object)
 async def test_a_late_autosave_cannot_touch_an_approved_market(
     session: AsyncSession,
 ) -> None:
-    """The form may still be open behind everything that has happened since.
-
-    A save here would change the terms two administrators have just agreed an
-    outcome for, or — without the frozen check — write DRAFT over APPROVED on
-    the next three-second tick.
-    """
+    """Without the frozen check, the open form would write DRAFT over APPROVED."""
     proposer = _actor()
     key = uuid.uuid4()
     await _approved(session, proposer, draft_key=key, question="The approved question?")
@@ -987,8 +848,7 @@ async def test_a_late_autosave_cannot_touch_an_approved_market(
 
 
 async def test_an_approved_market_cannot_be_published(session: AsyncSession) -> None:
-    """The refusal names the state it is actually in, rather than reporting
-    that it is not submitted."""
+    """The refusal names the state it is in, not "not submitted"."""
     proposer = _actor()
     market = await _approved(session, proposer)
 
@@ -999,8 +859,7 @@ async def test_an_approved_market_cannot_be_published(session: AsyncSession) -> 
 async def test_an_approved_market_cannot_be_proposed_for_again(
     session: AsyncSession,
 ) -> None:
-    """Not `market_not_closed`, which would send the creator off to wait for a
-    market that has already been decided."""
+    """Not `market_not_closed`, which would have the creator wait forever."""
     proposer = _actor()
     market = await _approved(session, proposer)
 
@@ -1011,8 +870,7 @@ async def test_an_approved_market_cannot_be_proposed_for_again(
 
 
 async def test_an_approved_market_cannot_be_closed_early(session: AsyncSession) -> None:
-    """Not `market_closed`, which is true and useless: the administrator should
-    be shown that an outcome has been agreed, not that trading has stopped."""
+    """Not `market_closed`, which is true and useless here."""
     proposer = _actor()
     market = await _approved(session, proposer)
 
@@ -1021,11 +879,7 @@ async def test_an_approved_market_cannot_be_closed_early(session: AsyncSession) 
 
 
 async def test_an_approved_market_is_not_tradeable(session: AsyncSession) -> None:
-    """Asked of both halves of the rule the trade path and the browse query use.
-
-    Reached through an early close, so `close_time` is still in the future and
-    the status is the only thing that can answer.
-    """
+    """Both forms of the trading rule, with the close time still ahead."""
     proposer = _actor()
     market = await _stopped_early_and_proposed(session, proposer)
     approved = await market_service.approve_outcome(
@@ -1043,11 +897,7 @@ async def test_an_approved_market_is_not_tradeable(session: AsyncSession) -> Non
 async def test_the_sweeper_leaves_an_approved_market_alone(
     session: AsyncSession,
 ) -> None:
-    """It is not `open`, so it is not in the sweep's working set at all.
-
-    What matters is that the sweep never writes CLOSED over APPROVED when a
-    market stopped early reaches the closing time it was stopped short of.
-    """
+    """The sweep never writes CLOSED over APPROVED when the close time arrives."""
     proposer = _actor()
     market = await _stopped_early_and_proposed(session, proposer)
     approved = await market_service.approve_outcome(
@@ -1069,15 +919,9 @@ async def test_the_sweeper_leaves_an_approved_market_alone(
 async def test_two_concurrent_approvals_produce_one_winner(
     clean_database, audit_reader: AsyncSession
 ) -> None:
-    """An administrator double-clicks the approve button.
+    """A double-clicked approve: two real transactions, one approval in the log.
 
-    Two real transactions, not a simulated race. Read without a lock both would
-    see PENDING_RESOLUTION, both would write APPROVED, and the log would carry
-    two entries for one approval, each with its own `approved_at`.
-
-    `approve_outcome` takes a row lock, so under READ COMMITTED the loser
-    blocks on the SELECT and then re-reads the row the winner committed. It
-    finds APPROVED and is refused.
+    The loser blocks on the row lock, re-reads APPROVED and is refused. ADR 0015.
     """
     factory = get_session_factory()
     proposer, approver = _actor(), _actor(username="ihsan_b")
@@ -1086,8 +930,7 @@ async def test_two_concurrent_approvals_produce_one_winner(
         pending = await proposed_market(setup, proposer)
         market_id, proposal_id = pending.id, pending.proposal_id
 
-    # Both connected before either starts, so the outcome is decided by the
-    # lock and not by which session had to open a connection first.
+    # Both connected before either starts, so the lock decides. ADR 0015.
     barrier = asyncio.Barrier(2)
 
     async def attempt() -> str:
@@ -1118,14 +961,7 @@ async def test_two_concurrent_approvals_produce_one_winner(
 async def test_two_concurrent_rejections_produce_one_winner(
     clean_database, audit_reader: AsyncSession
 ) -> None:
-    """Two administrators reject the same proposal in the same instant.
-
-    Read without a lock both would see PENDING_RESOLUTION, both would clear the
-    proposal, and the log would carry two rejections with two different
-    reasons for one proposal — the second of them rejecting something that no
-    longer existed. The loser re-reads CLOSED under the lock and is told there
-    is nothing to reject.
-    """
+    """Two administrators reject at once: one rejection in the log. ADR 0015."""
     factory = get_session_factory()
     proposer = _actor()
     first, second = _actor(username="ihsan_b"), _actor()
@@ -1166,13 +1002,7 @@ async def test_two_concurrent_rejections_produce_one_winner(
 async def test_an_approval_racing_a_rejection_produces_exactly_one_decision(
     clean_database, audit_reader: AsyncSession
 ) -> None:
-    """Two administrators open the same proposal and disagree.
-
-    Either order is legitimate, so the assertions follow whoever won rather
-    than naming a winner. What can never happen is both: a market marked
-    APPROVED whose proposal a rejection has cleared, or two entries in the log
-    recording opposite decisions about one proposal.
-    """
+    """Two administrators disagree at once: exactly one decision, whichever wins."""
     factory = get_session_factory()
     proposer = _actor()
     approver, rejecter = _actor(username="ihsan_b"), _actor()

@@ -1,9 +1,7 @@
-"""The database boundary, asserted rather than assumed.
+"""The database boundary, asserted rather than assumed. Guards, not decoration.
 
-`sql/02-schemas.sql` deliberately grants nothing between schemas. That is the
-only thing stopping this service from growing a convenient join into
-`auth.users`, and a comment is not enforcement. These tests fail loudly if
-somebody adds a grant to make something work.
+`sql/02-schemas.sql` grants nothing between schemas; these fail if somebody
+adds a grant to make something convenient. ADR 0003, ADR 0006.
 """
 
 from __future__ import annotations
@@ -37,12 +35,7 @@ async def test_it_connects_as_its_own_role(session: AsyncSession) -> None:
 
 
 async def test_it_cannot_read_the_auth_schema(session: AsyncSession) -> None:
-    """The one that matters for [1.1] #1.
-
-    market.markets.creator_id names a row in auth.users and cannot be a foreign
-    key, because this query is a permission error. If it ever stops being one,
-    the two services have been welded together and can no longer be separated.
-    """
+    """If this ever stops being a permission error, the services are welded together."""
     with pytest.raises(ProgrammingError):
         await session.execute(text("SELECT count(*) FROM auth.users"))
     await session.rollback()
@@ -51,13 +44,7 @@ async def test_it_cannot_read_the_auth_schema(session: AsyncSession) -> None:
 async def test_no_other_role_holds_any_privilege_on_this_schema(
     session: AsyncSession,
 ) -> None:
-    """[1.1] #1's "not visible to traders", enforced one layer below the API.
-
-    The route guard is what stops a trader reading a draft over HTTP. This is
-    what stops any other service reading one straight out of the database, and
-    it is the reason a draft is genuinely private rather than merely
-    unexposed. A grant added here to make something convenient turns this red.
-    """
+    """[1.1] #1's draft privacy, one layer below the API: no other service may read it."""
     rows = (
         await session.execute(
             text(
@@ -78,15 +65,10 @@ async def test_it_cannot_create_tables_in_public(session: AsyncSession) -> None:
 
 
 async def test_the_audit_grant_is_exactly_insert(session: AsyncSession) -> None:
-    """[4.3] #15's one deliberate exception, stated precisely.
+    """[4.3] #15's one deliberate exception, by shape: INSERT and nothing else.
 
-    `sql/02-schemas.sql` grants nothing between the service schemas and one
-    thing into the audit schema. This asserts the shape of that exception
-    rather than its existence: INSERT and nothing else.
-
-    SELECT here would let this service read what auth and ledger did, which is
-    the coupling the rest of that file prevents. UPDATE or DELETE would end the
-    append-only guarantee the whole story is about. Either turns this red.
+    SELECT would read other services' actions; UPDATE or DELETE would end the
+    append-only log. ADR 0006.
     """
     rows = (
         await session.execute(

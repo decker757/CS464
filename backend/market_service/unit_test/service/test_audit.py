@@ -1,14 +1,8 @@
-"""What reaches the audit log, and what does not. [4.3] #15
+"""What reaches the audit log, and what does not. [4.3] #15, ADR 0006.
 
-These are the tests that make the design's central claim falsifiable: an admin
-action and the record of it commit together, or neither does. Every one of them
-reads the log back as `audit_svc`, because `market_svc` cannot — it holds
-INSERT and no SELECT, which is what stops one service reading another's
-actions.
-
-The log is append-only and nothing may truncate it, so rows from earlier tests
-in this database are still present. Each test scopes itself to an actor id no
-other test has used.
+An admin action and its entry commit together or not at all. Entries are read
+back as `audit_svc`, and each test filters on a fresh actor id, because the log
+can never be cleaned.
 """
 
 from __future__ import annotations
@@ -27,9 +21,7 @@ from model.audit import AdminAction
 from service import market_service
 from service.audit import Actor
 
-# The suite's one actor factory. Aliased rather than imported under its own
-# name because every helper below takes an `actor` argument, which would
-# shadow it.
+# Aliased so the names do not shadow an `actor` argument.
 from unit_test.conftest import (
     CLOSE_REASON,
     CRITERIA,
@@ -91,13 +83,7 @@ async def test_a_submission_is_recorded(
 async def test_it_records_who_the_actor_was_rather_than_who_they_are(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The username and role are snapshots.
-
-    This service cannot resolve an id against auth.users and neither can the
-    audit service, so a name that is not stored is a name nobody can ever
-    recover. Storing it also survives the rename, the demotion and the deleted
-    account, which is the case an audit log exists for.
-    """
+    """The username and role are snapshots, which survive a rename or demotion. ADR 0003."""
     actor = _actor(username="ihsan_b", role="admin")
 
     await _save(session, actor, status="submitted")
@@ -110,12 +96,7 @@ async def test_it_records_who_the_actor_was_rather_than_who_they_are(
 async def test_it_records_the_terms_that_were_submitted(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The snapshot [1.4] #4 will make necessary.
-
-    Once a submitted market can be edited by submitting it again, the markets
-    table only ever shows the latest terms. Without this, the log could say a
-    market was submitted but never what was approved.
-    """
+    """The terms snapshot: the table keeps only the latest terms."""
     actor = _actor()
 
     await _save(
@@ -138,13 +119,7 @@ async def test_it_records_the_terms_that_were_submitted(
 async def test_the_subsidy_is_recorded_exactly(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """A string, not a float.
-
-    MarketOut sends these as numbers because the form does arithmetic with
-    them. Nothing does arithmetic with an audit entry, and the subsidy is
-    money: the record should say what was approved, not something that once
-    rounded to it.
-    """
+    """A string, not a float: the subsidy is money."""
     actor = _actor()
 
     await _save(session, actor, status="submitted", seed_subsidy=Decimal("1234.5678"))
@@ -172,15 +147,7 @@ async def test_each_submission_appends_rather_than_replacing(
 async def test_a_changed_resolution_rule_shows_in_the_snapshot(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The rule that decides who wins is a term, and the one a trader would
-    most want to know had moved.
-
-    Re-submitting with only the criteria changed used to produce two entries
-    with identical snapshots: the old rule was overwritten on the market and
-    recorded nowhere, so the log could neither reconstruct what was approved
-    nor reveal that the settlement rule had changed under the same question.
-    Every other term is pinned so the comparison at the end is exact.
-    """
+    """The resolution rule is a term, so a change to it alone shows. ADR 0015."""
     actor = _actor()
     terms = _request(draft_key=uuid.uuid4(), status="submitted")
     changed = "Resolves YES on any MAS print below 2.0%, revised or not."
@@ -205,11 +172,7 @@ async def _publish(session: AsyncSession, actor: Actor, **overrides: object):
 async def test_a_publication_is_recorded(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """[1.3] #3's third criterion.
-
-    The entry that matters most in this file: the moment a set of terms was put
-    in front of people who will commit credits to them.
-    """
+    """[1.3] #3's third criterion."""
     actor = _actor()
     before = datetime.now(UTC)
 
@@ -232,12 +195,7 @@ async def test_a_publication_is_recorded(
 async def test_submitting_and_publishing_leave_two_distinct_entries(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """Two decisions, two records.
-
-    A market can sit submitted for a week before anybody publishes it, and only
-    the second of those exposed anything to a trader. Folding them into one
-    would lose the question the log will actually be asked.
-    """
+    """Two decisions, two records. ADR 0008."""
     actor = _actor()
 
     await _publish(session, actor)
@@ -253,13 +211,7 @@ async def test_submitting_and_publishing_leave_two_distinct_entries(
 async def test_a_publication_records_the_terms_that_went_live(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """Carried on the entry rather than pointed at from it.
-
-    [1.4] #4 lets a submitted market be edited by submitting it again, so the
-    terms that went live are not necessarily the terms of any one earlier
-    entry, and a reader should not have to replay a market's history to find
-    out which set traders actually saw.
-    """
+    """Carried on the entry, not pointed at: a resubmission can change the terms."""
     actor = _actor()
 
     await _publish(
@@ -284,12 +236,7 @@ async def test_a_publication_records_the_terms_that_went_live(
 async def test_the_two_snapshots_have_the_same_shape(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """One function builds both, so an unchanged market gives identical terms.
-
-    The one case this log is genuinely useful for is seeing whether anything
-    moved between submission and going live, and that comparison is only
-    possible if the two entries describe a market the same way.
-    """
+    """An unchanged market gives identical terms, so the two entries compare."""
     actor = _actor()
 
     await _publish(session, actor)
@@ -307,12 +254,7 @@ async def test_the_two_snapshots_have_the_same_shape(
 async def test_the_publication_entry_and_the_status_commit_together(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """ADR 0006's claim, on the action this ticket adds.
-
-    `audit_reader` is a separate connection in a separate transaction, so an
-    entry visible there is genuinely committed. A market cannot become
-    tradeable without a record of who made it so.
-    """
+    """ADR 0006's claim: an entry visible to a second connection is committed."""
     actor = _actor()
 
     market = await _publish(session, actor)
@@ -327,12 +269,7 @@ async def test_the_publication_entry_and_the_status_commit_together(
 
 # --- closing a market early [2.3] #7 --------------------------------------
 async def _close_early(session: AsyncSession, actor: Actor, closer: Actor | None = None):
-    """A published market, stopped by hand.
-
-    `closer` defaults to the creator. The tests that care about who acted pass
-    a second administrator, because this is the one action in this service that
-    somebody other than the creator can perform.
-    """
+    """A published market, stopped by hand by `closer`, the creator by default."""
     market = await published_market(session, actor)
     return await market_service.close_early(
         session, closer or actor, market.id, _close()
@@ -365,12 +302,7 @@ async def test_an_early_close_is_recorded(
 async def test_an_early_close_records_the_reason(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The other half of the third criterion, and the only copy of it anywhere.
-
-    Nothing on `market.markets` holds this text, so if it does not reach the
-    log it is gone — which is why the entry is written inside the transaction
-    that closes the market rather than after it.
-    """
+    """The other half of the third criterion, and the reason's only copy. ADR 0014."""
     actor = _actor()
 
     await _close_early(session, actor)
@@ -385,12 +317,7 @@ async def test_an_early_close_records_the_reason(
 async def test_an_early_close_records_the_closing_time_it_cut_short(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """What makes the word "early" mean anything.
-
-    `occurred_at` says when the market stopped; only this says what it stopped
-    short of, and `audit_svc` holds no grant on `market.markets` to look it up
-    with.
-    """
+    """What makes "early" mean anything; `audit_svc` cannot look it up. ADR 0014."""
     actor = _actor()
 
     market = await _close_early(session, actor)
@@ -406,12 +333,7 @@ async def test_an_early_close_records_the_closing_time_it_cut_short(
 async def test_an_early_close_names_the_administrator_who_closed_it(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The accountability half of ADR 0014.
-
-    Any administrator may stop any market, and this entry is what that is
-    traded for: the log names whoever reached into somebody else's market, not
-    the creator whose market it was.
-    """
+    """The accountability half of ADR 0014: the closer is named, not the creator."""
     owner, overseer = _actor(username="ernest_t"), _actor(username="ihsan_b")
 
     await _close_early(session, owner, closer=overseer)
@@ -428,12 +350,7 @@ async def test_an_early_close_names_the_administrator_who_closed_it(
 async def test_an_automatic_close_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The distinction this action type exists to draw.
-
-    A market that reaches its own closing time is closed by the clock, and the
-    clock is not an actor. An entry here would name whichever administrator's
-    market it happened to be, for something they did not do.
-    """
+    """The clock is not an actor. ADR 0011."""
     actor = _actor()
 
     await closed_market(session, actor)
@@ -446,9 +363,7 @@ async def test_an_automatic_close_records_nothing(
 async def test_a_refused_close_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The entry is written before the commit, so a close that raises takes the
-    entry down with it — and the market stays open with nothing claiming it
-    was ever stopped."""
+    """A close that raises takes its entry down with it."""
     from core.errors import CloseIncomplete  # noqa: PLC0415
 
     actor = _actor()
@@ -490,11 +405,7 @@ async def _propose(session: AsyncSession, actor: Actor, **overrides: object):
 async def test_a_proposal_is_recorded(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The half of "so the decision is documented" that survives [3.2] #10.
-
-    A rejection clears the columns on the market and sends it back to CLOSED.
-    After that this entry is the only record that the proposal was ever made.
-    """
+    """The record that outlives a rejection's clearing of the columns. ADR 0013."""
     actor = _actor()
     before = datetime.now(UTC)
 
@@ -517,11 +428,7 @@ async def test_a_proposal_is_recorded(
 async def test_a_proposal_records_the_outcome_and_the_evidence(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The label as well as the id.
-
-    `audit_svc` may read this log and nothing else, so an entry naming only a
-    UUID would be unreadable to the one role that can read it at all.
-    """
+    """The label as well as the id: `audit_svc` can read nothing but the log."""
     actor = _actor()
 
     market = await _propose(session, actor)
@@ -539,12 +446,7 @@ async def test_a_proposal_records_the_outcome_and_the_evidence(
 async def test_the_evidence_is_context_rather_than_a_reason(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """Evidence is not a reason, and the two must not be conflated.
-
-    `reason` is for the free-text justification [2.3] #7 and [3.2] #10 demand
-    of an administrator. Splitting a URL into `context` and a note into
-    `reason` would put one proposal's support in two columns.
-    """
+    """Evidence is not a reason. ADR 0013."""
     actor = _actor()
 
     await _propose(session, actor)
@@ -559,9 +461,7 @@ async def test_the_evidence_is_context_rather_than_a_reason(
 async def test_a_proposal_leaves_the_earlier_entries_alone(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """Three decisions, three records, and an automatic close is not one of
-    them — the clock is not an actor, and the `market.published` entry already
-    recorded the `close_time` that was approved."""
+    """Three decisions, three records; the automatic close is not one. ADR 0011."""
     actor = _actor()
 
     await _propose(session, actor)
@@ -577,8 +477,7 @@ async def test_a_proposal_leaves_the_earlier_entries_alone(
 async def test_a_refused_proposal_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The entry is written before the commit, so a proposal that raises takes
-    the entry down with it."""
+    """A proposal that raises takes its entry down with it."""
     from core.errors import ProposalIncomplete  # noqa: PLC0415
 
     actor = _actor()
@@ -595,11 +494,7 @@ async def test_a_refused_proposal_records_nothing(
 
 # --- deciding a proposal [3.2] #10 ----------------------------------------
 async def _approve(session: AsyncSession, proposer: Actor, approver: Actor):
-    """A market proposed for by its creator, then approved by `approver`.
-
-    Always two administrators, because the service refuses one: the proposer
-    is necessarily the creator, and may not decide their own proposal.
-    """
+    """A market proposed for by its creator, then approved by a second `approver`."""
     market = await proposed_market(session, proposer)
     return await market_service.approve_outcome(
         session, approver, market.id, _approval(market.proposal_id)
@@ -661,9 +556,7 @@ async def test_an_approval_is_recorded(
 async def test_an_approval_names_the_approver_not_the_proposer(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The second signature is the one this entry exists to record. An entry
-    under the proposer's name would make the log say one person did both
-    halves, which is the thing [3.2] #10 forbids."""
+    """The second signature is what this entry records. ADR 0016."""
     proposer, approver = _actor(username="ernest_t"), _actor(username="ihsan_b")
 
     await _approve(session, proposer, approver)
@@ -682,12 +575,7 @@ async def test_an_approval_names_the_approver_not_the_proposer(
 async def test_an_approval_records_the_proposal_it_agreed_to(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """What was approved, on the entry rather than pointed at from it.
-
-    `audit_svc` holds no grant on `market.markets`, so an approval that named
-    only the market would leave the one role able to read it unable to say
-    which outcome two administrators agreed on, or whose proposal it was.
-    """
+    """What was approved, on the entry: `audit_svc` cannot read the market. ADR 0016."""
     proposer, approver = _actor(username="ernest_t"), _actor(username="ihsan_b")
 
     market = await _approve(session, proposer, approver)
@@ -704,8 +592,7 @@ async def test_an_approval_records_the_proposal_it_agreed_to(
 async def test_an_approval_has_no_reason(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """Approving carries no reason. `reason IS NOT NULL` stays a filter for every
-    action somebody had to explain, which is what ADR 0014 set it up to be."""
+    """`reason IS NOT NULL` keeps meaning "somebody had to explain". ADR 0016."""
     proposer, approver = _actor(), _actor(username="ihsan_b")
 
     await _approve(session, proposer, approver)
@@ -720,8 +607,7 @@ async def test_an_approval_has_no_reason(
 async def test_a_rejection_is_recorded(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The actor, and what they acted on — the administrator who rejected,
-    never the one whose proposal it was."""
+    """Under the rejecter, never the proposer."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     before = datetime.now(UTC)
 
@@ -745,11 +631,7 @@ async def test_a_rejection_is_recorded(
 async def test_a_rejection_records_the_reason(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """[3.2] #10's second criterion, in the half that outlives the request.
-
-    Nothing on `market.markets` holds this text, so if it does not reach the
-    log it is gone — the same argument an early close's reason makes.
-    """
+    """[3.2] #10's second criterion; the log is the reason's only copy."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
 
     await _reject(session, proposer, rejecter)
@@ -764,13 +646,7 @@ async def test_a_rejection_records_the_reason(
 async def test_a_rejection_records_the_proposal_it_cleared(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The reconstruction claim ADR 0013 makes.
-
-    A rejection clears all six proposal columns, so once it commits the market
-    row no longer says what was proposed, by whom, or on what evidence. This
-    entry is the only place that still does, which means the snapshot has to
-    be taken before the columns are cleared rather than after.
-    """
+    """The snapshot is taken before the columns are cleared. ADR 0016."""
     proposer, rejecter = _actor(username="ernest_t"), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
     market_id, proposal_id = market.id, market.proposal_id
@@ -794,13 +670,7 @@ async def test_a_rejection_records_the_proposal_it_cleared(
 async def test_the_two_decision_entries_have_the_same_shape(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """One function builds both, so a reader of the log handles one shape.
-
-    The two entries are the two answers to the same question about the same
-    kind of proposal, and a reader comparing them — which proposals were sent
-    back, and what was agreed instead — should not need to know which is which
-    before it can read the context.
-    """
+    """Both decisions carry the same keys, so a reader handles one shape."""
     proposer, decider = _actor(), _actor(username="ihsan_b")
 
     await _approve(session, proposer, decider)
@@ -819,9 +689,7 @@ async def test_the_two_decision_entries_have_the_same_shape(
 async def test_a_refused_decision_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The entry is written before the commit, so a decision that raises takes
-    the entry down with it — whether it was refused for who asked or for what
-    they sent."""
+    """A decision refused for who asked or what they sent writes no entry."""
     from core.errors import RejectionIncomplete, SecondAdministratorRequired  # noqa: PLC0415
 
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
@@ -870,9 +738,7 @@ async def test_a_decision_leaves_the_earlier_entries_alone(
 async def test_the_log_keeps_both_proposals_after_a_rejection(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The market row only ever holds the latest proposal. The log holds every
-    one, so a proposal that was rejected and replaced is still there to read —
-    with the outcome it named, which is not the one proposed after it."""
+    """The row holds the latest proposal; the log holds every one."""
     proposer, rejecter = _actor(), _actor(username="ihsan_b")
     market = await proposed_market(session, proposer)
     market_id, proposal_id, second = market.id, market.proposal_id, market.outcomes[1].id
@@ -898,8 +764,7 @@ async def test_the_log_keeps_both_proposals_after_a_rejection(
 async def test_a_decision_on_a_proposal_from_before_ids_records_a_null(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """JSON null, not the string "None". A reviewer quotes this value back,
-    and "None" would be a 422 on a proposal that should be decidable."""
+    """JSON null, not "None": a reviewer quotes this value back."""
     proposer, approver = _actor(), _actor()
     market = await proposed_before_ids(session, proposer)
 
@@ -921,9 +786,7 @@ def _approval_quoting_null():
 async def test_a_decision_names_the_proposal_entry_it_decided(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """With two proposals for one market in the log, "which one was rejected"
-    and "which one was approved" are answered by `proposal_id`, not by guessing
-    from timestamps: each decision quotes the id its proposal entry carries."""
+    """Each decision quotes its proposal entry's id, not a timestamp to match. ADR 0016."""
     proposer, rejecter, approver = _actor(), _actor(), _actor()
     market = await proposed_market(session, proposer)
     market_id, first, second_winner = market.id, market.proposal_id, market.outcomes[1].id
@@ -956,11 +819,7 @@ async def test_a_decision_names_the_proposal_entry_it_decided(
 async def test_an_autosave_is_not_recorded(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The form saves every three seconds.
-
-    Recording that would bury every real decision under thousands of keystroke
-    entries within one sitting. The log is for decisions, not for typing.
-    """
+    """The log is for decisions, not keystrokes."""
     actor = _actor()
 
     for word in ("Will", "Will Singapore", "Will Singapore core inflation"):
@@ -972,12 +831,7 @@ async def test_an_autosave_is_not_recorded(
 async def test_a_refused_publish_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """A market that fails the completeness gate at publish time leaves the
-    submission entry alone and adds nothing of its own.
-
-    Sixty days on, the close time this market was submitted with has passed, so
-    publishing it would put an already-closed market in front of traders.
-    """
+    """Sixty days on the close time has passed: the publish adds no entry."""
     from datetime import timedelta as _timedelta  # noqa: PLC0415
 
     actor = _actor()
@@ -996,8 +850,7 @@ async def test_a_refused_publish_records_nothing(
 async def test_publishing_someone_elses_market_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The 404 must not be a refusal that also wrote an entry naming the
-    administrator who tried."""
+    """The 404 writes no entry naming who tried."""
     from core.errors import MarketNotFound  # noqa: PLC0415
 
     owner, intruder = _actor(), _actor()
@@ -1013,13 +866,7 @@ async def test_publishing_someone_elses_market_records_nothing(
 async def test_a_refused_submission_records_nothing(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The atomicity claim, in the direction that matters most.
-
-    The entry is written before the commit, so a submission that raises takes
-    the entry down with it. A log that recorded submissions which never
-    happened would be worse than no log, because every entry in it would have
-    to be checked against the markets table before it could be believed.
-    """
+    """The atomicity claim ADR 0006 names: a refused action leaves no entry."""
     actor = _actor()
 
     with pytest.raises(DraftIncomplete):
@@ -1032,12 +879,7 @@ async def test_a_refused_submission_records_nothing(
 async def test_the_entry_and_the_market_commit_together(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """The same claim in the other direction, read from a second connection.
-
-    `audit_reader` is a different connection in a different transaction, so it
-    can only see rows that are genuinely committed. One entry visible there
-    means the submission's own transaction completed.
-    """
+    """The other direction: an entry a second connection sees is committed."""
     actor = _actor()
 
     market, _, _ = await _save(session, actor, status="submitted")
@@ -1051,13 +893,7 @@ async def test_the_entry_and_the_market_commit_together(
 async def test_this_service_cannot_read_the_log_it_writes_to(
     session: AsyncSession,
 ) -> None:
-    """INSERT without SELECT.
-
-    This is what keeps the one cross-schema grant from being a way for this
-    service to read another's actions. If it ever stops being a permission
-    error, the exception in sql/02-schemas.sql has quietly widened into the
-    coupling the rest of that file exists to prevent.
-    """
+    """Guard: INSERT without SELECT, so no service reads another's actions. ADR 0006."""
     with pytest.raises(ProgrammingError):
         await session.execute(text("SELECT count(*) FROM audit.admin_actions"))
     await session.rollback()
@@ -1074,12 +910,7 @@ async def test_this_service_cannot_read_the_log_it_writes_to(
 async def test_this_service_cannot_change_the_log(
     session: AsyncSession, statement: str
 ) -> None:
-    """[4.3] #15's second criterion, one layer below the API.
-
-    The route guard is what stops an edit arriving over HTTP. This is what
-    stops one arriving any other way, and it is the reason the log is genuinely
-    append-only rather than merely lacking an endpoint.
-    """
+    """[4.3] #15's second criterion, one layer below the API: append-only for real."""
     with pytest.raises(ProgrammingError):
         await session.execute(text(statement))
     await session.rollback()

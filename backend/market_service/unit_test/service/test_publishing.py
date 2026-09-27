@@ -1,8 +1,7 @@
 """Publishing a market, driven through the service layer without HTTP. [1.3] #3.
 
-The transition itself and the rules guarding it. What the publish endpoint
-answers with lives in unit_test/controller, and what reaches the audit log
-lives in unit_test/service/test_audit.py.
+The transition and its rules. HTTP answers are in unit_test/controller, audit
+entries in test_audit.py.
 """
 
 from __future__ import annotations
@@ -25,9 +24,7 @@ from model.entities import Market, MarketStatus
 from service import market_service
 from service.audit import Actor
 
-# The suite's one actor factory and one market builder. Aliased rather than
-# imported under their own names because every helper below takes an `actor`
-# argument, which would shadow the first.
+# Aliased so the names do not shadow an `actor` argument.
 from unit_test.conftest import actor as _actor
 from unit_test.conftest import draft_request as _request
 
@@ -48,9 +45,7 @@ async def _submitted(session: AsyncSession, actor: Actor, **overrides: object) -
 
 # --- the transition -------------------------------------------------------
 async def test_a_submitted_market_publishes(session: AsyncSession) -> None:
-    """[1.3] #3's second criterion, in the half this service owns: the status
-    moves to OPEN, which is the value the trader browse query in #62 filters
-    on."""
+    """[1.3] #3's second criterion, this service's half: the status moves to OPEN."""
     actor = _actor()
     market = await _submitted(session, actor)
 
@@ -61,8 +56,7 @@ async def test_a_submitted_market_publishes(session: AsyncSession) -> None:
 
 
 async def test_publishing_survives_a_reload(session: AsyncSession) -> None:
-    """Asserted from the database rather than the in-memory object, so this
-    fails if the transition is never actually committed."""
+    """Read from the database, so this fails if the transition is never committed."""
     actor = _actor()
     market = await _submitted(session, actor)
 
@@ -76,11 +70,7 @@ async def test_publishing_survives_a_reload(session: AsyncSession) -> None:
 async def test_publishing_records_when_rather_than_reusing_submitted_at(
     session: AsyncSession,
 ) -> None:
-    """Two decisions, two timestamps.
-
-    A market can sit submitted for a week before anybody publishes it, and the
-    gap is the thing worth being able to see.
-    """
+    """Two decisions, two timestamps: the gap between them is worth seeing."""
     actor = _actor()
     submitted_at = datetime.now(UTC)
     market = await _submitted(session, actor)
@@ -95,11 +85,7 @@ async def test_publishing_records_when_rather_than_reusing_submitted_at(
 
 # --- which markets may be published --------------------------------------
 async def test_a_draft_cannot_be_published(session: AsyncSession) -> None:
-    """Publishing is a second decision, not a shortcut through the first.
-
-    A draft has never been through the submission gate, and it is the one state
-    where the three-second autosave is still overwriting the row.
-    """
+    """Publishing is a second decision, not a shortcut through the first. ADR 0008."""
     actor = _actor()
     market, _, _ = await market_service.save(session, actor, _request())
 
@@ -110,12 +96,7 @@ async def test_a_draft_cannot_be_published(session: AsyncSession) -> None:
 async def test_a_draft_that_would_pass_every_rule_still_cannot_be_published(
     session: AsyncSession,
 ) -> None:
-    """The state is what is refused, not the terms.
-
-    `_request()` is complete enough to submit, so this draft would validate. It
-    is still a 409, which is what keeps `submitted` from being a state an admin
-    can skip.
-    """
+    """The state is refused, not the terms, so `submitted` cannot be skipped."""
     actor = _actor()
     market, problems, _ = await market_service.save(session, actor, _request())
     assert problems == []
@@ -125,9 +106,7 @@ async def test_a_draft_that_would_pass_every_rule_still_cannot_be_published(
 
 
 async def test_publishing_twice_is_refused(session: AsyncSession) -> None:
-    """Rather than silently succeeding. A second entry in the audit log saying
-    a market went live again would be noise, and the admin has more likely
-    double-clicked than changed their mind."""
+    """Refused rather than silently succeeding. ADR 0008."""
     actor = _actor()
     market = await _submitted(session, actor)
     await market_service.publish(session, actor, market.id)
@@ -137,9 +116,7 @@ async def test_publishing_twice_is_refused(session: AsyncSession) -> None:
 
 
 async def test_another_administrator_cannot_publish_it(session: AsyncSession) -> None:
-    """404, not 403, and for the same reason reading it is: a 403 would confirm
-    the market exists. Publication stays with the creator, like every other
-    route in this service."""
+    """404, not 403: publication stays with the creator. ADR 0008."""
     actor = _actor()
     market = await _submitted(session, actor)
 
@@ -175,14 +152,7 @@ async def test_publishing_a_market_that_does_not_exist_is_not_found(
 async def test_publishing_is_blocked_when_the_terms_no_longer_pass(
     session: AsyncSession,
 ) -> None:
-    """[1.3] #3's first criterion, and the case that makes it more than a
-    formality.
-
-    The market was complete when it was submitted. It is now sixty days later
-    and its close time is in the past, so publishing it would put a market in
-    front of traders that has already closed. The same pure function that
-    guarded submission is re-run against the clock now.
-    """
+    """[1.3] #3's first criterion: sixty days on, the close time has passed. ADR 0008."""
     actor = _actor()
     market = await _submitted(session, actor)
 
@@ -198,9 +168,7 @@ async def test_publishing_is_blocked_when_the_terms_no_longer_pass(
 async def test_a_blocked_publish_says_published_rather_than_submitted(
     session: AsyncSession,
 ) -> None:
-    """Same error code and same `details` shape as a refused submission, so the
-    form needs no second branch, but a sentence that describes what the admin
-    actually pressed."""
+    """Same code and `details` as a refused submission; only the sentence differs. ADR 0008."""
     actor = _actor()
     market = await _submitted(session, actor)
 
@@ -216,8 +184,7 @@ async def test_a_blocked_publish_says_published_rather_than_submitted(
 async def test_a_blocked_publish_leaves_the_market_submitted(
     session: AsyncSession,
 ) -> None:
-    """All-or-nothing, the same as a refused submission. A market half-way to
-    open is a market nobody can reason about."""
+    """All-or-nothing, the same as a refused submission."""
     actor = _actor()
     market = await _submitted(session, actor)
 
@@ -237,8 +204,7 @@ async def test_a_blocked_publish_leaves_the_market_submitted(
 async def test_a_late_autosave_cannot_touch_a_published_market(
     session: AsyncSession,
 ) -> None:
-    """The form may still be open behind the publish button when the
-    three-second timer next fires. Traders are pricing against these terms."""
+    """The form behind the publish button autosaves again. ADR 0008."""
     actor = _actor()
     key = uuid.uuid4()
     market = await _submitted(session, actor, draft_key=key)
@@ -251,9 +217,7 @@ async def test_a_late_autosave_cannot_touch_a_published_market(
 async def test_a_resubmission_cannot_touch_a_published_market(
     session: AsyncSession,
 ) -> None:
-    """The escape hatch that works on a submitted market is closed once it is
-    open. Submitting again is how a submitted market is changed; there is no
-    such route back from published."""
+    """Submitting again changes a submitted market, never a published one."""
     actor = _actor()
     key = uuid.uuid4()
     market = await _submitted(session, actor, draft_key=key)
@@ -270,8 +234,7 @@ async def test_a_resubmission_cannot_touch_a_published_market(
 async def test_the_refusal_names_the_open_state_rather_than_the_submitted_one(
     session: AsyncSession,
 ) -> None:
-    """MarketNotEditable offers a remedy — submit again — that does not exist
-    for a published market, so the two cannot share an error."""
+    """MarketNotEditable's remedy, submit again, does not exist once published."""
     actor = _actor()
     key = uuid.uuid4()
     market = await _submitted(session, actor, draft_key=key)
@@ -314,16 +277,9 @@ async def test_a_published_market_keeps_its_terms(session: AsyncSession) -> None
 async def test_two_concurrent_publishes_produce_one_winner(
     clean_database, audit_reader: AsyncSession
 ) -> None:
-    """An administrator double-clicks the publish button.
+    """A double-clicked publish: two real transactions, one publication in the log.
 
-    Two real transactions, not a simulated race. Read without a lock both would
-    see SUBMITTED, both would flip the status, and the audit log would carry two
-    entries each claiming to be the moment this market went live — which is
-    precisely the thing [1.3] #3 promises the log can answer.
-
-    `publish` takes a row lock, so under READ COMMITTED the loser blocks on the
-    SELECT and then re-reads the row the winner committed. It finds OPEN and is
-    refused.
+    The loser blocks on the row lock, re-reads OPEN and is refused. ADR 0015.
     """
     import asyncio  # noqa: PLC0415
 
@@ -359,21 +315,10 @@ async def test_two_concurrent_publishes_produce_one_winner(
 async def test_a_resubmission_racing_a_publish_cannot_change_what_went_live(
     clean_database, audit_reader: AsyncSession
 ) -> None:
-    """An administrator publishes while their own resubmission is in flight.
+    """A resubmission racing a publish must not write SUBMITTED back over OPEN. ADR 0015.
 
-    `publish` holds the row, but a lock only queues other lockers, and the save
-    path used to read without one. The resubmission saw SUBMITTED, passed the
-    frozen check, waited on its own INSERTs for the publication to commit, and
-    then landed anyway: new terms under a market traders were already pricing,
-    and SUBMITTED written back over OPEN, while the publication entry in the
-    log swore to the old terms.
-
-    Either order is legitimate, so the assertions are about the market rather
-    than about who won. If the publish wins, the resubmission is refused and
-    the original terms are live; if the resubmission wins, the publish takes
-    the row after it and the new terms are the ones that go live. What can
-    never happen is a third thing: the market is OPEN, and the question
-    traders see is the one the single publication entry recorded.
+    Either may win, so the assertions are about the result: the market is
+    OPEN, and its question is the one the single publication entry recorded.
     """
     import asyncio  # noqa: PLC0415
 
@@ -430,27 +375,10 @@ async def test_a_resubmission_racing_a_publish_cannot_change_what_went_live(
 async def test_publish_reads_the_clock_after_it_has_the_lock(
     session: AsyncSession,
 ) -> None:
-    """A publish that queued for the row lock validates against the clock it
-    finds on the way out, not the one it arrived with. #97.
+    """A publish that queued for the row lock validates against the clock after
+    the wait, so a close time that passed meanwhile blocks it. #97.
 
-    The re-validation above is the ticket's first acceptance criterion: a
-    market that sat submitted past its own close time must not go live. That
-    argument assumes the clock read and the validation are the same instant.
-    They were not — `now` was sampled at the top of the call, before a lock
-    wait that is unbounded by construction, because anything else holding this
-    row queues this request behind it.
-
-    So the failure needs no clock skew and no slow database, only contention:
-    the close time passes while the publish is blocked, the lock is released,
-    and the check runs against a timestamp from before the wait. It answers
-    "still in the future" about a market that has already closed, and the
-    market goes live already closed — with a publication entry recording a
-    `close_time` in the past.
-
-    The lock here is held by a raw `SELECT ... FOR UPDATE` rather than by a
-    second service call, because what is being tested is the wait itself. Any
-    holder would do; this one is the shortest way to hold the row for a known
-    length of time.
+    A raw `SELECT ... FOR UPDATE` holds the row, because the wait is the subject.
     """
     import asyncio  # noqa: PLC0415
 
@@ -459,9 +387,8 @@ async def test_publish_reads_the_clock_after_it_has_the_lock(
     factory = get_session_factory()
     actor = _actor()
 
-    # Closes very soon, and the holder below outlasts it. Generous margins on
-    # purpose: this asserts an ordering, and a tight one would fail on a busy
-    # CI runner for reasons that have nothing to do with the ordering.
+    # Closes soon, and the holder below outlasts it. Margins are generous so a
+    # busy CI runner cannot fail the ordering.
     async with factory() as setup:
         market = await _submitted(
             setup, actor, close_time=datetime.now(UTC) + timedelta(seconds=1.5)

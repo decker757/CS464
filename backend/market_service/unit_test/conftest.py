@@ -1,20 +1,11 @@
-"""Shared fixtures.
+"""Shared fixtures and builders.
 
-Tests run against Postgres, not SQLite, as `market_svc` under the same grants
-the service uses in production. The two engines disagree about naive versus
-aware timestamps, and this service is almost entirely about timestamps, so
-testing on the engine we deploy is the only way those differences show up
-before production.
+Tests run against Postgres, not SQLite, as `market_svc` under production
+grants, in the separate `cs464_test` database (`docker compose up -d db`). Do
+not "simplify" this to SQLite: the engines disagree about timestamps.
 
-Start the database with `docker compose up -d db` from the repo root. The suite
-uses the separate `cs464_test` database created by `sql/00-init.sh`, so it can
-truncate without touching development data.
-
-Tokens here are minted with PyJWT directly rather than by importing anything
-from the auth service. That is deliberate: the market service has no minting
-code and never will, so a test that signs its own token is exercising the same
-path a real request takes, and it stays honest about the fact that the two
-services agree on a wire format rather than on an implementation.
+Tokens are minted with PyJWT directly, never imported from the auth service:
+the two services share a wire format, not an implementation.
 """
 
 from __future__ import annotations
@@ -26,9 +17,8 @@ import uuid
 from shared.testing import load_repo_env
 
 
-# Before any project module is imported. `get_settings` is lru_cached, so the
-# first call wins, and importing main.py triggers it. [F-6] #76 moved the
-# reader itself to `shared/testing.py`; it was identical in all five suites.
+# Before any project module is imported: `get_settings` is cached, so the first
+# call wins, and importing main.py makes it.
 load_repo_env()
 
 _test_db = os.environ.get("MARKET_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
@@ -41,20 +31,13 @@ if not _test_db:
         "Start the database first with:  docker compose up -d db"
     )
 
-# Set before any project module is imported: core.config.get_settings is cached
-# on first call, and importing main.py triggers it.
 os.environ["DATABASE_URL"] = _test_db
-# Fresh per run. Nothing signed here outlives the process, and no key-shaped
-# string needs to sit in the repository.
+# Fresh per run, so no key-shaped string sits in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 
-# [4.3] #15. A second connection, as the audit reader, purely so the suite can
-# check what this service appended to `audit.admin_actions`.
-#
-# It needs its own role because `market_svc` genuinely cannot read that table —
-# it holds INSERT and nothing else, which is what stops one service reading
-# another's actions. A test that could read the log back through the service's
-# own connection would be proving the grants are weaker than they are.
+# [4.3] #15. The audit reader's own connection: `market_svc` holds INSERT on
+# the log and no SELECT, and reading it back through that role would prove the
+# grants weaker than they are. ADR 0006.
 _audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 
 from datetime import UTC, datetime, timedelta  # noqa: E402
@@ -140,36 +123,18 @@ def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str
 def actor(username: str = "ernest_t", role: str = "admin") -> Actor:
     """A distinct administrator, for driving the service layer without HTTP.
 
-    A fresh id every call, which is what keeps the audit assertions
-    independent: `audit.admin_actions` is append-only, no role holds DELETE or
-    TRUNCATE, and `clean_database` rebuilds only this service's own schema — so
-    rows from every earlier test in this database are still there and always
-    will be. Filtering on an id nothing else has used is how a test sees only
-    its own entries, and it is a more honest assertion than a truncated table.
-
-    A plain function rather than a fixture because several tests need more than
-    one, and because it is called from helpers that take no fixtures.
+    A fresh id every call: the audit log cannot be cleaned, so a test sees only
+    its own entries by filtering on an id nothing else has used. ADR 0006.
     """
     return Actor(id=uuid.uuid4(), username=username, role=role)
 
 
 @pytest.fixture
 async def clean_database():
-    """Rebuild the schema, then hand over an empty database.
+    """Drop and recreate this service's schema, then hand over an empty database.
 
-    Dropped and recreated rather than created-if-absent. `create_all` only ever
-    issues CREATE TABLE IF NOT EXISTS, so a column added to `model/entities.py`
-    never reaches a test database that already has the table, and the suite
-    fails with "column ... does not exist" on a model change that is perfectly
-    correct. [1.2] #2 added two columns and hit exactly that.
-
-    The cost is a drop and create per test, which is a few milliseconds for
-    three small tables and buys a suite that always matches the models. When
-    [F-5] #75 brings Alembic, this becomes "migrate to head" instead.
-
-    Deliberately not autouse. Only `session` and `client` depend on it, so the
-    pure unit tests under core/, model/ and the validation rules never need
-    Postgres running.
+    Dropped rather than created-if-absent, so a new column always reaches the
+    test database. Not autouse, so the pure tests need no Postgres.
     """
     from model import entities  # noqa: F401  - registers the mappers
 
@@ -197,9 +162,7 @@ async def session(clean_database):
 async def client(clean_database):
     """An HTTP client bound to the app, for controller-layer tests.
 
-    `create_app` is imported here rather than at module scope so that running
-    only the pure layers never constructs the application, in keeping with the
-    rule that nothing below the controller knows HTTP exists.
+    `create_app` is imported here so the pure layers never build the app.
     """
     from main import create_app  # noqa: PLC0415
 
@@ -235,11 +198,7 @@ def trader_headers() -> dict[str, str]:
     return bearer(uuid.uuid4(), UserRole.TRADER)
 
 
-# The terms of one complete market, named once. Every suite in this service
-# builds its markets from these, so a rule change that needs the fixture to move
-# — a longer minimum question, a second required source, a different default
-# subsidy — is one edit rather than a hunt through five files that had drifted
-# into agreeing by coincidence.
+# The terms of one complete market, named once so a rule change is one edit.
 QUESTION = "Will Singapore core inflation be below 2% in December 2026?"
 CRITERIA = "Resolves YES on the first published MAS print below 2.0%."
 SOURCE_URL = "https://www.mas.gov.sg/statistics"
@@ -249,12 +208,7 @@ SEED_SUBSIDY = 250
 
 
 def _outcomes() -> list[dict[str, str]]:
-    """A fresh list per call.
-
-    Returned rather than held as a constant because a test that appends to what
-    it is given would otherwise edit the fixture for everything after it, and
-    that failure arrives in an unrelated test.
-    """
+    """A fresh list per call, so a test that mutates it cannot affect the next."""
     return [{"label": "Yes"}, {"label": "No"}]
 
 
@@ -263,14 +217,9 @@ def _sources() -> list[dict[str, str]]:
 
 
 def market_terms(**overrides: object) -> dict[str, object]:
-    """A market that passes every rule in service/validation.py.
+    """A market that passes every rule in service/validation.py, as Python values.
 
-    In the shape the service layer takes: real `datetime` and `Decimal`
-    objects, not their wire forms. `market_json` is the same market as a
-    request body, built from the same values.
-
-    Overrides are applied last and are not validated, so a test can ask for
-    terms that break exactly one rule.
+    Overrides are applied last and unvalidated, so a test can break one rule.
     """
     now = datetime.now(UTC)
     base: dict[str, object] = {
@@ -298,13 +247,8 @@ def draft_request(**overrides: object) -> MarketDraftRequest:
 def market_json(**overrides: object) -> dict[str, object]:
     """The same market as a JSON request body, for driving routes.
 
-    Shares every value with `market_terms` and differs only in serialisation,
-    so a rule change moves both. It is not built by dumping `draft_request`,
-    because the controller suite's whole job is what happens to a body that
-    never parses: it sends `status="open"`, a naive `close_time` and unknown
-    fields on purpose, and a builder that validated first could not express any
-    of those tests. Overrides are applied raw, after serialisation, for the
-    same reason.
+    Not built by dumping `draft_request`: controller tests send bodies that
+    must never parse, so overrides are applied raw, after serialisation.
     """
     now = datetime.now(UTC)
     base: dict[str, object] = {
@@ -323,13 +267,7 @@ def market_json(**overrides: object) -> dict[str, object]:
 
 
 async def published_market(session, actor: Actor, **overrides: object) -> Market:
-    """A market that has been submitted and published, so traders can see it.
-
-    The lifecycle as far as OPEN, in one call, for the suites whose subject
-    starts somewhere past it. Anything testing the transitions themselves
-    should drive `save` and `publish` directly — that is what
-    unit_test/service/test_publishing.py is.
-    """
+    """A market that has been submitted and published, so traders can see it."""
     market, _, _ = await market_service.save(
         session, actor, draft_request(status="submitted", **overrides)
     )
@@ -340,20 +278,9 @@ async def published_market(session, actor: Actor, **overrides: object) -> Market
 async def closed_market(session, actor: Actor, **overrides: object) -> Market:
     """The same market, after its closing time passed and the sweep ran.
 
-    Closed the way a real market closes rather than by assigning to `status`:
-    `close_time` is moved into the past and `close_due_markets` notices. ADR
-    0011 is the whole reason that distinction is worth three extra lines — the
-    clock is what closes a market, and a fixture that wrote the status itself
-    would be asserting against a state no market in production arrives in.
-
-    `publish` refuses to create a market that is already due — it re-runs the
-    rule that a close time must be in the future — so the column is moved
-    afterwards, which is the honest way to ask this question.
-
-    Expires the session on the way out, because the sweep is a bulk UPDATE with
-    `synchronize_session=False` and nothing in the identity map knows about it.
-    Read anything you need off the returned market rather than off a reference
-    taken before the call.
+    Closed the way production closes one, by the clock and the sweep, not by
+    writing `status` (ADR 0011). Expires the session, because the sweep's bulk
+    UPDATE bypasses the identity map: read from the returned market only.
     """
     market = await published_market(session, actor, **overrides)
     market_id = market.id
@@ -368,9 +295,7 @@ async def closed_market(session, actor: Actor, **overrides: object) -> Market:
     return await market_service.get(session, actor.id, market_id)
 
 
-# [3.1] #9. The evidence one proposal carries, named here for the same reason
-# the market's terms are: the service suite and the controller suite have to
-# send the same values, or a rule change is two edits and they drift.
+# [3.1] #9. One proposal's evidence, shared by the service and controller suites.
 EVIDENCE_URL = "https://www.mas.gov.sg/statistics/cpi-december-2026"
 EVIDENCE_NOTE = (
     "MAS published December 2026 core inflation at 1.8% on 23 January, below "
@@ -381,12 +306,9 @@ EVIDENCE_NOTE = (
 def proposal_terms(
     winning_outcome_id: uuid.UUID | str, **overrides: object
 ) -> dict[str, object]:
-    """A proposal that passes every rule in service/validation.py.
+    """A proposal that passes every rule, with both kinds of evidence by default.
 
-    Both kinds of evidence by default, because that is what the form will
-    usually send and because a test that wants only one says so by overriding
-    the other to None — which reads as the case it is testing rather than as an
-    accident of the fixture.
+    A test that wants only one overrides the other to None.
     """
     base: dict[str, object] = {
         "winning_outcome_id": winning_outcome_id,
@@ -405,19 +327,11 @@ def proposal_request(
 
 
 def proposal_json(winning_outcome_id: object, **overrides: object) -> dict[str, object]:
-    """The same proposal as a JSON body, for driving the route.
-
-    Not built by dumping `proposal_request`, for the reason `market_json` gives:
-    the controller suite's job includes what happens to a body that never
-    parses, and a builder that validated first could not express that.
-    """
+    """The same proposal as a JSON body, unvalidated, as `market_json` is."""
     return proposal_terms(str(winning_outcome_id), **overrides)
 
 
-# [2.3] #7. The reason one early close carries, named here for the reason the
-# market's terms and the proposal's evidence are: the service suite and the
-# controller suite have to send the same value, or a rule change is two edits
-# and they drift into agreeing by coincidence.
+# [2.3] #7. One early close's reason, shared by both suites.
 CLOSE_REASON = (
     "The resolution source retracted its December print, so this question can "
     "no longer be settled as written."
@@ -425,14 +339,7 @@ CLOSE_REASON = (
 
 
 def close_terms(**overrides: object) -> dict[str, object]:
-    """A close that passes every rule in service/validation.py.
-
-    One builder rather than the `_terms` / `_json` pair the market and the
-    proposal have, because the body is a single string: its wire form and its
-    parsed form differ in type only, so there is nothing for a second builder
-    to express. The controller suite sends this dict as JSON and passes
-    overrides that do not parse, exactly as it does there.
-    """
+    """A close that passes every rule. Also the JSON body: the wire form is the same."""
     base: dict[str, object] = {"reason": CLOSE_REASON}
     base.update(overrides)
     return base
@@ -443,9 +350,7 @@ def close_request(**overrides: object) -> MarketCloseRequest:
     return MarketCloseRequest(**close_terms(**overrides))  # type: ignore[arg-type]
 
 
-# [3.2] #10. The reason one rejection carries, named here for the reason the
-# early close's is: the service suite and the controller suite have to send the
-# same value, or a rule change is two edits and they drift.
+# [3.2] #10. One rejection's reason, shared by both suites.
 REJECTION_REASON = (
     "The MAS print cited is the headline figure, not core inflation; the core "
     "figure for December 2026 has not been published yet."
@@ -455,11 +360,8 @@ REJECTION_REASON = (
 def approval_terms(proposal_id: uuid.UUID | None = None) -> dict[str, object]:
     """An approval body quoting `proposal_id`, as the wire carries it.
 
-    With no argument it quotes a proposal nobody made. That is only for a test
-    whose market has no proposal to quote, or one refused before the proposal
-    is compared; a test that expects the decision to succeed has to pass the
-    market's own `proposal_id`, and fails as `proposal_superseded` if it
-    forgets — loudly, which is why a default is safe here.
+    With no argument it quotes a proposal nobody made; a test expecting
+    success that forgets the real id fails loudly as `proposal_superseded`.
     """
     return {"proposal_id": str(proposal_id or uuid.uuid4())}
 
@@ -472,13 +374,7 @@ def approval_request(proposal_id: uuid.UUID | None = None) -> OutcomeApprovalReq
 def rejection_terms(
     proposal_id: uuid.UUID | None = None, **overrides: object
 ) -> dict[str, object]:
-    """A rejection that passes every rule in service/validation.py.
-
-    `proposal_id` defaults the way `approval_terms`'s does, and for the same
-    tests. One builder rather than a `_terms` / `_json` pair, for the reason
-    `close_terms` gives: every value is a string on the wire, and pydantic
-    parses the id back.
-    """
+    """A rejection that passes every rule; `proposal_id` defaults as in `approval_terms`."""
     base: dict[str, object] = {
         "proposal_id": str(proposal_id or uuid.uuid4()),
         "reason": REJECTION_REASON,
@@ -495,18 +391,10 @@ def rejection_request(
 
 
 async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
-    """The same closed market, with an outcome proposed for it by `actor`.
+    """The same closed market, with its first outcome proposed by `actor`.
 
-    Proposed the way a real proposal is made rather than by writing the six
-    columns: `closed_market`, then `propose_outcome` naming the first outcome
-    with the default evidence. `actor` is the creator and therefore also the
-    proposer, because [3.1] #9 lets nobody else propose — so whoever a test
-    asks to approve or reject has to be a second administrator, which is the
-    rule [3.2] #10 exists to enforce.
-
-    Overrides are the market's terms, handed to `closed_market`; the proposal
-    itself is always the default one. Returns the market as `propose_outcome`
-    returned it, in PENDING_RESOLUTION.
+    `actor` is the creator and so the proposer; a decision in a test must come
+    from a second administrator. Overrides are the market's terms.
     """
     market = await closed_market(session, actor, **overrides)
     return await market_service.propose_outcome(
@@ -515,12 +403,9 @@ async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
 
 
 async def proposed_before_ids(session, actor: Actor) -> Market:
-    """A pending proposal as one made before [3.2] #10 left it: no `proposal_id`.
+    """A pending proposal with no `proposal_id`, as one made before ids existed.
 
-    `sql/migrations/0006` adds the column without a backfill, so a proposal
-    already waiting when it runs keeps a null id and is decided by quoting
-    null. Every proposal made since is minted an id, so the only way to build
-    one of these now is to make a proposal and take its id away.
+    Built by making a proposal and nulling its id. ADR 0016.
     """
     market_id = (await proposed_market(session, actor)).id
     await session.execute(
@@ -533,16 +418,10 @@ async def proposed_before_ids(session, actor: Actor) -> Market:
 
 @pytest.fixture
 async def audit_reader():
-    """A session on `audit.admin_actions`, connected as the role that may read it.
+    """A session on `audit.admin_actions`, connected as `audit_svc`, which may read it.
 
-    Separate engine, separate role, and deliberately not the one under test.
-
-    Note what this fixture does NOT do: clean up. The log is append-only and no
-    role holds DELETE or TRUNCATE, so rows from every previous test in this
-    database are still present and always will be. Tests scope themselves by
-    filtering on an actor id nothing else has used — see `_actor()` in
-    unit_test/service/test_drafting.py — which is a more honest assertion than
-    a truncated table anyway: it is what reading a real audit log looks like.
+    It cannot clean up: nobody may delete from the log. Tests filter on a
+    fresh `actor()` id instead.
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: PLC0415
 
