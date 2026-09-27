@@ -51,36 +51,18 @@ _RETRIES = 8
 async def test_two_sells_exceeding_the_position_one_fills_one_is_refused_held(
     session: AsyncSession,
 ) -> None:
-    """One trader holds `54.3333`, and sells `41.0000` and `29.7777` at once:
+    """One trader holds `54.3333` and sells `41.0000` and `29.7777` at once:
     each within the position, together over it by `16.4444`.
 
-    **The line: the `.with_for_update()` on the `market_books` select in
-    `service/trading.py::_lock_book`.** With it, the second party waits on the
-    book row, is refused `quote_stale`, re-quotes, and meets the holding check
-    against the position the first left behind — `insufficient_shares_held`.
-    Without it, both read `state_version` 1 and a holding of `54.3333` before
-    either commits, both pass both checks, and the loser's writes queue only
-    on row write locks and then land a stale absolute quantity: a lost update,
-    proceeds paid twice, and a position that is wrong but not negative.
+    The evidence for the `.with_for_update()` in `trading._lock_book`. Without
+    it both parties read the same holding before either commits, both fill,
+    and the loser's write is a lost update: assertions 1–3 fail. 4 and 5 are
+    asserted because the criterion lists them, and probably survive the bug.
+    "Never goes negative" is deliberately not asserted — it passes on the bug.
 
-    **Assertions 1–3 are the evidence.** Without the lock, 1 fails (two fills
-    and no refusal — or, if the implementation writes by SQL increment, a
-    `CHECK` violation, which is still not `insufficient_shares_held`), 2 fails
-    (the position is `54.3333` less the *last* writer's quantity), and 3 fails
-    (the balance rose by both totals). **4 and 5 are asserted because the
-    criterion lists them, and they probably survive the bug:** `q` and the
-    position are lost the same way, and every transaction's legs still
-    balance. "Never goes negative" is deliberately not an assertion here — it
-    passes on the bug.
-
-    **Named fix, if this ever passes with the lock removed.** The barrier sits
-    before the call, so about ten round trips separate it from the unlocked
-    book read, and the bug shows only if both parties read the book before
-    either commits. If the five-in-five run with `_lock_book`'s
-    `.with_for_update()` removed passes on the bug, tighten with
-    `Upstream.before_response` as a second `asyncio.Barrier(2)`, one-shot per
-    party (only each party's first gate call waits, so a lone retry cannot
-    hang), so both leave the gate together.
+    If this ever passes with the lock removed, add a second, one-shot
+    `asyncio.Barrier(2)` at `Upstream.before_response` so both parties leave
+    the gate together.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
