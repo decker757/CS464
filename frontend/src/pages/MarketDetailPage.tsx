@@ -79,6 +79,9 @@ export default function MarketDetailPage() {
     if (!marketId || !closeTime) return
     const ms = new Date(closeTime).getTime() - Date.now()
     if (ms > MAX_TIMEOUT_MS) return
+    // A close_time already past still goes through a 0 ms timer: calling
+    // setState directly in the effect is what the set-state-in-effect lint
+    // rule forbids, so do not "simplify" this back to an early setState.
     const timer = setTimeout(() => setClosedMarketId(marketId), Math.max(ms, 0))
     return () => clearTimeout(timer)
   }, [marketId, closeTime])
