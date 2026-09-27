@@ -43,6 +43,8 @@ const STATUS_AFTER_DRAFT: Record<string, string> = {
   market_not_editable: 'submitted',
   market_already_open: 'open',
   market_closed: 'closed',
+  market_pending_resolution: 'pending_resolution',
+  market_already_approved: 'approved',
 }
 
 const SAVE_STATUS_TEXT: Record<SaveStatus, { text: string; className: string } | null> = {

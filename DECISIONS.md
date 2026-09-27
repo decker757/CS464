@@ -2149,6 +2149,28 @@ because `autoflush=False` and `accounts.lock` issues only SELECTs — but it is 
 detection, not a proof. A future caller that flushes before calling `post` sits
 outside it, and the entry above is still the rule that protects that caller.
 
+*Amended 2026-09-27 in #139: a flushing caller no longer sits outside it.* A
+flushed row leaves `session.new` and a replay's commit still lands it, and
+`accounts.ensure` — which every caller uses — flushes inside a SAVEPOINT it
+releases. `core/database.py::has_pending_writes` now also reports a
+`session.info` flag that an `after_flush` listener sets and the end of the
+outermost transaction clears. It still sees ORM writes only, not a Core
+`insert()` executed directly, so it remains a detection and the entry above is
+still the rule. It errs toward True: a flush rolled back to a SAVEPOINT counts
+until the transaction ends, which fails closed where this is the alarm. In the
+ledger that rollback follows only a *failed* flush (`accounts.ensure`,
+`books.ensure_open`, `posting.post`), and a failed flush sets nothing.
+
+That reopens the first bullet above, whose "persistent rather than pending" is
+now a flush the check counts. It still holds, for a different reason: two first
+reads racing on one new account cannot both flush it. The second INSERT waits
+on the first's uncommitted row and fails once that commits, so the request that
+flushed is always the one that writes, and the one that replays flushed
+nothing. The pool account on a lost first-touch race is the same shape. The
+tests under "Neither existing caller changes behaviour" still pass unchanged.
+`books.ensure_open`'s entry assertion shares the function, so it now refuses a
+caller that flushed first too — which its rollback would otherwise discard.
+
 Whether the caller had pending work is recorded on entry to `post`, not asked at
 each branch. The second branch is reached after the SAVEPOINT has flushed the
 caller's writes and rolled them back, which expires them, so the session looks
@@ -2158,6 +2180,21 @@ though its own had landed, holding expired entities. No trade reaches it today
 — the book lock queues two trades on one key before either gets to `post` —
 and `test_a_replay_found_by_the_insert_race_is_refused_too` drives it by hiding
 the first lookup.
+
+*Amended 2026-09-27 in #139, correcting the paragraph above.* Two of its claims
+are wrong, checked by driving the second branch with a caller's `q = 41`
+pending. `begin_nested()` flushes the caller's pending writes *before* it
+issues the SAVEPOINT, so rolling the SAVEPOINT back after the failed INSERT
+does not undo them. The caller's `q` is still in the outer transaction when the
+second lookup runs, and the rollback only expires the objects. Without the
+refusal, the commit at the end of `post` would land the caller's writes beside
+another request's transaction — the first branch's harm, not only a
+misreported result — which is what makes the refusal there matter. And the
+session looks clean there only to `new`, `dirty` and `deleted`:
+`has_pending_writes` now reports True, because that flush set its flag.
+`caller_pending` is still taken on entry anyway. An answer taken before
+anything runs does not depend on the flag, or on what the SAVEPOINT did to the
+session.
 
 `PendingWritesOnReplay` is a `LedgerError` at 500 rather than a bare exception,
 so the response keeps the one error envelope `controller/errors.py` exists to
@@ -3273,6 +3310,47 @@ its own high-water mark.
 client must check versions too. This entry adds the cost reason for not sharing
 the gate. Recorded in #127 from the comment at
 `realtime_service/service/ordering.py`, which the refactor shortened.
+
+---
+
+### D-NEW — The refresh path locks the user row before the token
+
+**Date:** 2026-09-27 · **Ticket:** #137 · **Status:** active
+
+**Decision.** `rotate_refresh_token` looks up the token's owner without a lock,
+then locks the owner's row in `auth.users` (`_lock_user`), then the token's
+row. The rotation and the replay take the same two locks in the same order.
+
+**Why.** A replay revokes every live token the user holds. It finds them with
+a SELECT, and a SELECT cannot see a token another request has inserted but not
+yet committed. So a replay that ran while the attacker's rotation was midway
+through missed the attacker's new token, and that session survived. Adding
+`FOR UPDATE` to that SELECT does not help: it only locks rows it can already
+see, and the new token is not one of them. Both requests have to wait on
+something they share, and the only thing they share is the user.
+
+The user row goes first on the rotation too, not just on the replay. Locking
+it only on the replay deadlocks: the rotation holds the old token and, when it
+inserts the new one, its foreign key takes a `KEY SHARE` on the user row. That
+waits for the replay's user lock, while the replay waits for the rotation's
+token so it can revoke it. One order everywhere, the wider lock first. ADR 0015.
+
+The owner lookup is unlocked because a token's owner never changes. It selects
+only the `user_id` column, so no token object lands in the session before its
+row is locked. The token lock re-reads its row (`populate_existing`) anyway,
+because locking the user loads all of the user's tokens through the
+`refresh_tokens` relationship, and a logout may have revoked this one in
+between.
+
+**Rejected.** Locking the token rows in `revoke_all_for_user` (sees nothing it
+did not already see). Locking the user on the replay path only (deadlocks, as
+above). `SERIALIZABLE` isolation, for the reasons ADR 0015 gives.
+
+**Notes.** `revoke_all_for_user` now requires its caller to hold the user's row
+lock. [4.2] #14's suspend must take it too before it revokes a user's sessions,
+or a rotation committing at the same moment keeps its new token. Logout locks
+only its own token and waits on nothing else, so it cannot join a deadlock
+with the rotation.
 
 ---
 

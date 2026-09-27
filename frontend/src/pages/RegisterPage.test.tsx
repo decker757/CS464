@@ -22,6 +22,14 @@ function renderRegisterPage() {
   )
 }
 
+// The message shown under one field: the alert inside the same Field as its
+// label, so a message that landed above the form or under another field
+// does not count.
+function fieldError(label: string) {
+  const labelElement = screen.getByText(label, { selector: 'label' })
+  return within(labelElement.parentElement as HTMLElement).queryByRole('alert')
+}
+
 const fillForm = async (
   user: ReturnType<typeof userEvent.setup>,
   overrides: Partial<Record<'username' | 'email' | 'password', string>> = {},
@@ -156,6 +164,144 @@ describe('RegisterPage — integration', () => {
     expect(within(emailField as HTMLElement).getByRole('alert')).toHaveTextContent(
       'value is not a valid email address',
     )
+  })
+
+  it('shows the message of a duplicate_user that names no field', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          { error: { code: 'duplicate_user', message: 'That account already exists.', details: [] } },
+          { status: 409 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('That account already exists.')
+  })
+
+  it('shows every field a 422 names, not only the first', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          {
+            detail: [
+              { type: 'string_too_long', loc: ['body', 'username'], msg: 'Username is too long.' },
+              { type: 'string_too_short', loc: ['body', 'password'], msg: 'Password is too weak.' },
+            ],
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    await screen.findAllByRole('alert')
+    expect(fieldError('Username')).toHaveTextContent('Username is too long.')
+    expect(fieldError('Password')).toHaveTextContent('Password is too weak.')
+  })
+
+  it('shows a 422 about a field and about the request together', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          {
+            detail: [
+              { type: 'value_error', loc: ['body', 'email'], msg: 'That email is not allowed.' },
+              { type: 'json_invalid', loc: ['body'], msg: 'The request body is not valid.' },
+            ],
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByText('The request body is not valid.')).toHaveAttribute('role', 'alert')
+    expect(fieldError('Email')).toHaveTextContent('That email is not allowed.')
+  })
+
+  it('replaces the last response\'s errors on each submit', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post(
+        'http://localhost:8000/auth/register',
+        () =>
+          HttpResponse.json(
+            {
+              error: {
+                code: 'duplicate_user',
+                message: 'Already registered',
+                details: [{ field: 'email', message: 'Email already registered' }],
+              },
+            },
+            { status: 409 },
+          ),
+        { once: true },
+      ),
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          { error: { code: 'internal_error', message: 'The server had a problem.' } },
+          { status: 500 },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Email already registered')
+
+    // Editing another field clears only that field's error, so the email
+    // one is still on screen when the second response arrives.
+    await user.type(screen.getByLabelText('Username'), '2')
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByText('The server had a problem.')).toHaveAttribute('role', 'alert')
+    expect(fieldError('Email')).not.toBeInTheDocument()
+  })
+
+  // The inputs stay enabled while a request is pending, so a field can be
+  // emptied before the response arrives. That edit clears a banner that does
+  // not exist yet; the next submit, stopped by client validation, must.
+  it('clears a banner from a request answered after an edit on the next submit', async () => {
+    const user = userEvent.setup()
+    let releaseResponse!: () => void
+    server.use(
+      http.post('http://localhost:8000/auth/register', async () => {
+        await new Promise<void>((resolve) => { releaseResponse = resolve })
+        return HttpResponse.json(
+          { error: { code: 'internal_error', message: 'The server had a problem.' } },
+          { status: 500 },
+        )
+      }),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+    await screen.findByRole('button', { name: /creating account/i })
+
+    await user.clear(screen.getByLabelText('Password'))
+    releaseResponse()
+    await screen.findByText('The server had a problem.')
+
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(fieldError('Password')).toHaveTextContent('Password must be at least 12 characters.')
+    expect(screen.queryByText('The server had a problem.')).not.toBeInTheDocument()
   })
 
   it('shows generic error when the server is unreachable', async () => {

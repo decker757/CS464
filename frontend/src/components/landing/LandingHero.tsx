@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { buttonClass } from '../ui/buttonClass'
 import Eyebrow from '../ui/Eyebrow'
 import MarketPreviewCard from './MarketPreviewCard'
@@ -64,10 +65,10 @@ export default function LandingHero() {
           </p>
 
           <div className="flex flex-wrap gap-3">
-            <a href="/register" className={buttonClass('primary', 'md')}>
+            <Link to="/register" className={buttonClass('primary', 'md')}>
               Explore Markets
               <span className="text-base font-bold text-smu-gold">→</span>
-            </a>
+            </Link>
             <a href="#how-it-works" className={buttonClass('outline', 'md')}>
               How It Works
             </a>

@@ -162,10 +162,11 @@ async def post(
     _require_balanced(legs)
     fingerprint = _fingerprint(kind, legs)
 
-    # Recorded on entry, not asked at each replay branch: the second is reached
-    # after the SAVEPOINT's rollback has expired the caller's writes, so the
-    # session looks clean there. DECISIONS.md, "`posting.post` refuses to
-    # replay into a dirty session".
+    # Recorded on entry, not asked at each replay branch: by the second, the
+    # SAVEPOINT has flushed the caller's writes and its rollback has expired
+    # them, so only the flush flag still sees them. An answer taken here does
+    # not depend on it. DECISIONS.md, "`posting.post` refuses to replay into a
+    # dirty session".
     caller_pending = has_pending_writes(session)
 
     await accounts.lock(session, [leg.account.id for leg in legs])
@@ -217,8 +218,9 @@ async def post(
         existing = await find_by_idempotency_key(session, idempotency_key)
         if existing is None:
             raise
-        # Same refusal: the rollback discarded the caller's writes, but it
-        # would still get another request's transaction back as its own.
+        # Same refusal, same reason: `begin_nested` flushed the caller's writes
+        # before the SAVEPOINT, so its rollback kept them and the commit below
+        # would land them beside another request's transaction.
         if caller_pending:
             raise PendingWritesOnReplay
         transaction = _replay(existing, fingerprint)

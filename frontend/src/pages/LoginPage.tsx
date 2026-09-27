@@ -39,7 +39,11 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const validationErrors = validateLogin(form)
-    if (Object.keys(validationErrors).length > 0) { setErrors(validationErrors); return }
+    if (Object.keys(validationErrors).length > 0) {
+      setErrors(validationErrors)
+      setServerError('')
+      return
+    }
 
     setLoading(true)
     try {
@@ -51,8 +55,9 @@ export default function LoginPage() {
         fields: LOGIN_FIELDS,
         codeMessages: { invalid_credentials: 'Incorrect username or password.' },
       })
-      if (formError) setServerError(formError)
-      else setErrors(fieldErrors)
+      // Both, always: this response replaces whatever the last one showed.
+      setErrors(fieldErrors)
+      setServerError(formError)
     } finally {
       setLoading(false)
     }
@@ -64,7 +69,7 @@ export default function LoginPage() {
       title="Log in to your account"
       subtitle="Enter your username or email and password to continue."
       error={serverError}
-      footer={<>Don't have an account? <AuthFooterLink href="/register">Register</AuthFooterLink></>}
+      footer={<>Don't have an account? <AuthFooterLink to="/register">Register</AuthFooterLink></>}
     >
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-1">
         <Field id="identifier" label="Username or Email" error={errors.identifier}>

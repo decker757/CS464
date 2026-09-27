@@ -32,6 +32,7 @@ export default function RegisterPage() {
     const validationErrors = validateRegister(form)
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors)
+      setServerError('')
       return
     }
 
@@ -43,8 +44,9 @@ export default function RegisterPage() {
         fields: REGISTER_FIELDS,
         fieldErrorCodes: ['duplicate_user'],
       })
-      if (formError) setServerError(formError)
-      else setErrors(fieldErrors)
+      // Both, always: this response replaces whatever the last one showed.
+      setErrors(fieldErrors)
+      setServerError(formError)
     } finally {
       setLoading(false)
     }
@@ -56,7 +58,7 @@ export default function RegisterPage() {
       title="Create your account"
       subtitle="Join PredictSMU and start trading with mock credits."
       error={serverError}
-      footer={<>Already have an account? <AuthFooterLink href="/login">Log in</AuthFooterLink></>}
+      footer={<>Already have an account? <AuthFooterLink to="/login">Log in</AuthFooterLink></>}
     >
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-1">
         <Field id="username" label="Username" error={errors.username}>

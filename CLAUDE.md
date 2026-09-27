@@ -62,6 +62,10 @@ cd backend/auth_service       # or market_service, audit_service, ledger_service
 
 cd backend/realtime_service   # the exception: no database, wants Redis
 .venv/bin/pytest              # needs `docker compose up -d redis`
+
+cd backend/shared             # the token verifier, tested once, where it lives
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # once
+.venv/bin/pytest              # no database, no Redis, no .env
 ```
 
 ## Things that will waste your time if you do not know them
@@ -152,7 +156,9 @@ trading on a market that has closed, and an outage widens it silently. No
 interval makes that window zero; deriving the answer does. The sweeper falling
 behind, or being switched off with `CLOSE_SWEEP_ENABLED`, makes a dashboard
 count stale and cannot let a trade through. Same shape as the ledger's derived
-balances, and the same reason. ADR 0011.
+balances, and the same reason. ADR 0011. Off on *every* replica, it also means
+no market the clock closed reaches CLOSED, so none of them can be proposed for
+until one replica runs it again. Safe and recoverable, but leave it on somewhere.
 
 One reader deliberately does the opposite, and it is not an inconsistency.
 Proposing an outcome ([3.1] #9) gates on `status == CLOSED`, so for up to one
@@ -323,7 +329,7 @@ Everything mapped there is created by `create_all` at startup and dropped by
 `unit_test/conftest.py` per test. Either against this table fails — no service
 has CREATE or DROP on the audit schema — and the service dies at boot. Writers
 declare it as a standalone `Table` on its own `MetaData` (see
-`market_service/model/audit.py`); the audit service maps it but has no
+`backend/shared/audit.py`); the audit service maps it but has no
 `create_all` at all.
 
 **A writing service cannot read the log it writes to, including in its own
@@ -340,7 +346,8 @@ beside it and `PYTHONPATH=/app` makes the import resolve the way it does in a
 checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 
 It holds token verification, the settings base, the role enum, the cursor
-format and the test env loader. That is the whole list, and ADR 0012 spends
+format, the audit writer and the test helpers (the env loader and the
+import-boundary scan). That is the whole list, and ADR 0012 spends
 most of its length on what was left copied and why — `core/database.py` above
 all, because one shared `Base` would enrol every service's tables in every
 other service's metadata and the first conftest `drop_all` would hit a table

@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import Eyebrow from '../ui/Eyebrow'
 import { ChevronLeftIcon } from '../ui/icons'
 import Logo from '../ui/Logo'
@@ -21,15 +22,15 @@ export default function AuthLayout({ eyebrow, title, subtitle, error, footer, ch
       <BrandPanel />
 
       <div className="flex flex-1 flex-col items-center justify-center bg-smu-cream px-[clamp(20px,5vw,48px)] py-[clamp(24px,4vw,48px)]">
-        <a href="/" className="mb-7 md:hidden">
+        <Link to="/" className="mb-7 md:hidden">
           <Logo iconSize={18} className="text-lg text-smu-navy" />
-        </a>
+        </Link>
 
         <div className="w-full max-w-[460px] rounded-[20px] border border-smu-gold/20 bg-white p-[clamp(24px,4vw,36px)] shadow-panel">
-          <a href="/" className="mb-5 inline-flex items-center gap-1 text-[13px] text-subtle transition-colors hover:text-smu-navy">
+          <Link to="/" className="mb-5 inline-flex items-center gap-1 text-[13px] text-subtle transition-colors hover:text-smu-navy">
             <ChevronLeftIcon />
             Back to home
-          </a>
+          </Link>
 
           <Eyebrow className="mb-1.5 text-[11px]">{eyebrow}</Eyebrow>
           <h1 className="mb-1 text-2xl font-extrabold tracking-[-0.3px] text-smu-navy">{title}</h1>

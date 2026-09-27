@@ -83,7 +83,8 @@ that already does it. The ones people most often rewrite by accident:
 - "is this market still trading": `market_service/service/closing.py`
 - money rounding and pricing: `ledger_service/core/pricing.py`, `core/lmsr.py`
 - moving credits: `ledger_service/service/posting.py::post`
-- audit entries: `service/audit.py` in each writing service
+- audit entries: `service/audit.py` in each writing service; row and insert:
+  `shared/audit.py`
 
 When your PR would add the **second** copy of some logic, extracting it is part
 of your PR — do not ship the copy with a TODO. Within a service, it goes in

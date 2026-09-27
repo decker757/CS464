@@ -1,11 +1,12 @@
+import { Link } from 'react-router-dom'
 import TopBar from '../layout/TopBar'
 import { buttonClass } from '../ui/buttonClass'
 
 export default function LandingNavbar() {
   return (
     <TopBar>
-      <a href="/login" className={buttonClass('outlineOnNavy', 'sm')}>Log In</a>
-      <a href="/register" className={buttonClass('gold', 'sm')}>Register</a>
+      <Link to="/login" className={buttonClass('outlineOnNavy', 'sm')}>Log In</Link>
+      <Link to="/register" className={buttonClass('gold', 'sm')}>Register</Link>
     </TopBar>
   )
 }

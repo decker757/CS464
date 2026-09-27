@@ -1,4 +1,7 @@
-"""Password hashing and token handling. No database, no HTTP."""
+"""Password hashing and token handling. No database, no HTTP.
+
+The verifier's own rules are tested once, in `shared/unit_test/test_security.py`.
+"""
 
 from __future__ import annotations
 
@@ -51,6 +54,29 @@ def test_access_token_round_trip(role: UserRole) -> None:
     assert claims.expires_at > datetime.now(UTC)
 
 
+def test_a_token_from_another_issuer_is_rejected() -> None:
+    """Covers a token minted for a different system that shares our secret.
+
+    Not a copy of the shared test: it proves this service's seam passes the
+    issuer at all, which the round trip above cannot.
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "sub": str(uuid.uuid4()),
+            "username": "ernest_t",
+            "iss": "somebody-else",
+            "iat": now,
+            "exp": now + timedelta(minutes=15),
+        },
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+
+    assert security.decode_access_token(token) is None
+
+
 def test_the_role_travels_as_a_plain_string_claim() -> None:
     """Asserted on the wire, since other services read this claim. ADR 0003."""
     token = security.create_access_token(uuid.uuid4(), "ernest_t", UserRole.ADMIN)
@@ -63,59 +89,6 @@ def test_the_role_travels_as_a_plain_string_claim() -> None:
     )
 
     assert payload["role"] == "admin"
-
-
-def _hand_signed_token(secret: str | None = None, **claims: object) -> str:
-    """Sign a token with PyJWT directly, for shapes `create_access_token` will not build.
-
-    Carries no role claim unless one is passed.
-    """
-    settings = get_settings()
-    now = datetime.now(UTC)
-    payload = {
-        "sub": str(uuid.uuid4()),
-        "username": "ernest_t",
-        "iss": settings.jwt_issuer,
-        "iat": now,
-        "exp": now + timedelta(minutes=5),
-        **claims,
-    }
-    signing_key = secret if secret is not None else settings.jwt_secret
-    return jwt.encode(payload, signing_key, algorithm=settings.jwt_algorithm)
-
-
-def test_a_token_with_no_role_claim_decodes_as_a_trader() -> None:
-    """Fail closed. The token is still valid; it just carries no authority."""
-    claims = security.decode_access_token(_hand_signed_token())
-
-    assert claims is not None
-    assert claims.role is UserRole.TRADER
-
-
-def test_an_unrecognised_role_decodes_as_a_trader() -> None:
-    token = _hand_signed_token(role="super_admin")  # only a newer build knows it
-
-    claims = security.decode_access_token(token)
-
-    assert claims is not None
-    assert claims.role is UserRole.TRADER
-
-
-def test_expired_token_is_rejected() -> None:
-    past = datetime.now(UTC) - timedelta(hours=1)
-    expired = _hand_signed_token(iat=past, exp=past + timedelta(seconds=1))
-
-    assert security.decode_access_token(expired) is None
-
-
-def test_token_signed_with_another_key_is_rejected() -> None:
-    forged = _hand_signed_token(secret="a-different-secret-of-sufficient-length")
-
-    assert security.decode_access_token(forged) is None
-
-
-def test_garbage_token_is_rejected() -> None:
-    assert security.decode_access_token("not.a.token") is None
 
 
 def test_refresh_token_is_stored_only_as_a_hash() -> None:

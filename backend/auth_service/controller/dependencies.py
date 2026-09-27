@@ -62,8 +62,8 @@ CurrentAdmin = Annotated[User, Depends(require_admin)]
 async def get_actor(user: CurrentAdmin) -> Actor:
     """Return the admin caller as the `Actor` the audit log names. [4.3] #15
 
-    An `Actor`, not a `User`, so `service/audit.py` stays identical to the
-    market service's copy.
+    An `Actor`, not a `User`: the writer in `shared/audit.py` takes the same
+    snapshot from every service, and never sees this service's tables.
     """
     return Actor(id=user.id, username=user.username, role=user.role.value)
 

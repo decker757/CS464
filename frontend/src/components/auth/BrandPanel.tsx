@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { CheckIcon } from '../ui/icons'
 import Logo from '../ui/Logo'
 
@@ -13,9 +14,9 @@ export default function BrandPanel() {
       <div aria-hidden className="dot-grid-on-navy pointer-events-none absolute inset-0" />
 
       <div className="relative">
-        <a href="/" className="mb-14 inline-flex">
+        <Link to="/" className="mb-14 inline-flex">
           <Logo className="text-[19px] text-white" />
-        </a>
+        </Link>
 
         <h2 className="mb-4 text-[clamp(26px,3vw,36px)] leading-[1.2] font-extrabold tracking-[-0.5px] text-white">
           Predict what happens next.

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-15
 - **Affects:** [4.3] #15, [1.3] #3, [1.4] #4, [2.3] #7, [3.1] #9, [3.2] #10, [3.4] #12, [4.1] #13, [4.2] #14, [4.4] #16, [F-1] #41
-- **Implemented in:** `sql/01-roles.sql`, `sql/02-schemas.sql`, `backend/audit_service/`, `backend/market_service/service/audit.py`
+- **Implemented in:** `sql/01-roles.sql`, `sql/02-schemas.sql`, `backend/audit_service/`, `backend/shared/audit.py`, and the seams over it in `backend/auth_service/core/audit.py` and `backend/market_service/core/audit.py`
 
 ## Context
 
@@ -209,6 +209,25 @@ verification and the LMSR engine.
 > record's to move. What is left to decide is narrow — the `Table` is
 > identical, `AdminAction` is per service by design — and it is a decision
 > about the audit log rather than about packaging.
+
+> **Amended 2026-09-27 by #135.** The writer moved to `backend/shared/audit.py`:
+> the `audit.admin_actions` `Table` on its own `MetaData`, the `Actor`
+> snapshot, the `Entry` a service describes an action with, and `record`, which
+> appends on the caller's session and does not commit. It clears ADR 0012's
+> bar: every writer inserts into one table, generates the id in Python for want
+> of SELECT, and must never commit. A drifted table or id fails loudly; a copy
+> that committed would break this record's atomicity silently, which is what
+> `test_an_entry_is_not_committed_by_its_writer` now pins. The copies were
+> identical apart from `SOURCE_SERVICE` and `AdminAction`, which differ by
+> design and stay in each service: the vocabulary in `model/audit.py`, the
+> source name in `core/audit.py`. The `Table` joins no service's
+> `Base.metadata`, and the audit service's read mapping is unchanged.
+>
+> **Reversal trigger.** Copy it back into one service the day that service's
+> write path must differ — the case already named above is a service moving to
+> its own database, which needs an outbox. The test is `shared/audit.py`
+> gaining a parameter, flag or branch that only one caller uses: the behaviour
+> is then no longer identical, and a copy is cheaper than a flag.
 
 **The audit table is not in any service's `Base.metadata`, and that is
 load-bearing.** Everything mapped there is created by `create_all` at startup
