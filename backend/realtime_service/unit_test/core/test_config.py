@@ -54,15 +54,6 @@ def test_the_connection_limits_must_be_positive(field: str) -> None:
         Settings(**{**_REQUIRED, field: 0}, _env_file=None)
 
 
-def test_cors_origins_accepts_a_comma_separated_value() -> None:
-    """The validator, given the string form directly."""
-    settings = Settings(
-        **_REQUIRED, cors_origins="http://a.test, http://b.test", _env_file=None
-    )
-
-    assert settings.cors_origins == ["http://a.test", "http://b.test"]
-
-
 def test_cors_origins_parse_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

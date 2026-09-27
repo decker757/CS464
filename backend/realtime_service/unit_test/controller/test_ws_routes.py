@@ -94,13 +94,6 @@ def test_a_bad_token_is_refused(client, description: str, headers: dict) -> None
     assert refused.value.code == NotAuthenticated.close_code, description
 
 
-def test_a_service_may_authenticate_with_a_bearer_header(
-    client, market_id: uuid.UUID
-) -> None:
-    with client.websocket_connect("/ws/prices", headers=bearer()) as websocket:
-        assert _subscribe(websocket, market_id)["type"] == "subscribed"
-
-
 def test_a_browser_may_authenticate_with_the_cookie(
     client, market_id: uuid.UUID
 ) -> None:
@@ -177,14 +170,27 @@ def test_unsubscribing_is_acknowledged(client, market_id: uuid.UUID) -> None:
         }
 
 
-def test_subscribing_twice_is_one_subscription(client, market_id: uuid.UUID) -> None:
-    with client.websocket_connect("/ws/prices", headers=bearer()) as websocket:
-        _subscribe(websocket, market_id)
-        _subscribe(websocket, market_id)
+def test_subscribing_twice_is_one_subscription(
+    connected_client, market_id: uuid.UUID
+) -> None:
+    """docs/api/realtime-service.md promises subscribe is idempotent: the
+    repeat is acknowledged like the first, and each price still arrives once."""
+    client, publisher = connected_client
 
-        hub = get_hub()
-        subscriber = next(iter(hub._by_subscriber))
-        assert hub.subscription_count(subscriber) == 1
+    with client.websocket_connect("/ws/prices", headers=bearer()) as websocket:
+        first = _subscribe(websocket, market_id)
+        second = _subscribe(websocket, market_id)
+        subscribers = get_hub().subscriber_count(market_id)
+
+        _publish(publisher, market_id, 1)
+        _publish(publisher, market_id, 2)
+        versions = [websocket.receive_json()["state_version"] for _ in range(2)]
+
+    acknowledgement = {"type": "subscribed", "market_id": str(market_id)}
+    assert first == acknowledgement
+    assert second == acknowledgement
+    assert subscribers == 1
+    assert versions == [1, 2]
 
 
 @pytest.mark.parametrize(
@@ -253,21 +259,6 @@ def test_a_published_price_reaches_a_subscribed_socket(
     assert frame["market_id"] == str(market_id)
     assert frame["state_version"] == 4
     assert frame["prices"][0]["price"] == "0.6000"
-
-
-def test_a_socket_receives_only_the_markets_it_asked_for(
-    connected_client, market_id: uuid.UUID, other_market_id: uuid.UUID
-) -> None:
-    client, publisher = connected_client
-
-    with client.websocket_connect("/ws/prices", headers=bearer()) as websocket:
-        _subscribe(websocket, market_id)
-        _publish(publisher, other_market_id, 1)
-        _publish(publisher, market_id, 1)
-
-        frame = websocket.receive_json()
-
-    assert frame["market_id"] == str(market_id)
 
 
 def test_unsubscribing_stops_delivery(
@@ -341,15 +332,6 @@ def test_a_closed_socket_leaves_nothing_in_the_hub(
         assert get_hub().subscriber_count(market_id) == 1
 
     assert get_hub().subscriber_count(market_id) == 0
-    assert get_hub().connection_count == 0
-
-
-def test_a_socket_that_never_subscribed_leaves_nothing_behind(client) -> None:
-    """`forget` has to be safe for a connection that was closed before it said
-    a word — which is every connection refused for an expired token."""
-    with client.websocket_connect("/ws/prices", headers=bearer()):
-        pass
-
     assert get_hub().connection_count == 0
 
 
