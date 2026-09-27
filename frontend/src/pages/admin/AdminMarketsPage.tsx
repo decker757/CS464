@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { listMyMarkets, type MarketSummaryOut } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
+import { buttonClass } from '../../components/ui/buttonClass'
 import StatusBadge from '../../components/markets/StatusBadge'
 import { STATUS_CONFIG, tradingStopped, type AdminMarketStatus } from '../../components/markets/marketStatus'
 
@@ -104,7 +106,14 @@ export default function AdminMarketsPage() {
                 </p>
                 <p className="mt-1 text-xs text-subtle">{formatCloseTime(market)}</p>
               </div>
-              <StatusBadge status={market.status} />
+              <div className="flex shrink-0 items-center gap-3">
+                {market.status === 'closed' && (
+                  <Link to={`/admin/markets/${market.id}/propose-outcome`} className={buttonClass('outline', 'xs')}>
+                    Propose Outcome
+                  </Link>
+                )}
+                <StatusBadge status={market.status} />
+              </div>
             </Card>
           ))}
         </div>
