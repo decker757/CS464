@@ -3,7 +3,7 @@ import { listMyMarkets, type MarketSummaryOut } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
 import StatusBadge from '../../components/markets/StatusBadge'
-import { STATUS_CONFIG, type AdminMarketStatus } from '../../components/markets/marketStatus'
+import { STATUS_CONFIG, tradingStopped, type AdminMarketStatus } from '../../components/markets/marketStatus'
 
 type StatusFilter = AdminMarketStatus | 'all'
 
@@ -29,9 +29,13 @@ function countByStatus(markets: MarketSummaryOut[]): Record<AdminMarketStatus, n
   return counts
 }
 
-function formatCloseTime(closeTime: string | null): string {
-  if (!closeTime) return '—'
-  return new Date(closeTime).toLocaleString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+// "Closes {date}" only while the market can still trade — a market closed
+// early keeps a future close_time (ADR 0014), and a market past open (pending
+// resolution, approved) has a close_time that is no longer a live deadline.
+function formatCloseTime(market: MarketSummaryOut): string {
+  if (!market.close_time) return '—'
+  if (tradingStopped(market.status, market.close_time)) return 'Closed'
+  return `Closes ${new Date(market.close_time).toLocaleString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
 }
 
 export default function AdminMarketsPage() {
@@ -98,7 +102,7 @@ export default function AdminMarketsPage() {
                 <p className="truncate text-[15px] font-semibold text-smu-navy">
                   {market.question ?? <span className="italic text-subtle">Untitled market</span>}
                 </p>
-                <p className="mt-1 text-xs text-subtle">Closes {formatCloseTime(market.close_time)}</p>
+                <p className="mt-1 text-xs text-subtle">{formatCloseTime(market)}</p>
               </div>
               <StatusBadge status={market.status} />
             </Card>
