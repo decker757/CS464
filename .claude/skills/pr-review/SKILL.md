@@ -44,9 +44,14 @@ gh api repos/{owner}/{repo}/issues/<N>/sub_issues --jq '.[] | "#\(.number) \(.ti
 Also read any issue the body names under "Depends on", "Blocked by" or
 "Required by", and the parent if this is an `[FE]`/`[BE]` sub-issue.
 
-If there is no issue, say so at the top of the report and review conventions
-and tests only — you cannot judge "done" without the ticket. Do not invent
-acceptance criteria from the code.
+Check the PR follows the root `CLAUDE.md` → Branches rule: a title of the form
+`[<tag>] <what it does> (#N)` and `Closes #N` or `Refs #N` as the body's first
+line, with `Closes` only if merging finishes the issue. A missing link is a
+**Must fix**; a title in the wrong shape is a **Nit**.
+
+If there is no issue at all, say so at the top of the report and review
+conventions and tests only — you cannot judge "done" without the ticket. Do
+not invent acceptance criteria from the code.
 
 ## 3. Load the rules for what changed
 

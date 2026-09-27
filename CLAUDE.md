@@ -491,8 +491,19 @@ and you have changed the contract.
 `dev` is where work lands. `staging` and `main` are promotion targets. Branch
 from `dev`, name it `<issue>-<slug>`, open a pull request into `dev`.
 
-Use `Refs #N`, not `Closes #N`, when a ticket has open sub-issues. Auto-closing
-a parent whose frontend half is unbuilt hides work.
+**Every pull request names the issue it resolves.** No issue, no PR — a
+refactor or a chore gets an issue first, so the board shows the work.
+
+- Title: `[<story tag>] <what it does> (#N)`, e.g.
+  `[FE][X-3] Market detail page with live prices (#36)`.
+- First line of the body: `Closes #N` when merging it finishes the issue,
+  `Refs #N` when it does not — a part of a stack that is not the last, or a
+  ticket with open sub-issues. Auto-closing a parent whose frontend half is
+  unbuilt hides work.
+- The branch starts with the same number: `<issue>-<slug>`.
+
+`.github/pull_request_template.md` fills this in for you, and `/pr-review`
+treats a PR with no linked issue as a must-fix.
 
 **Commits are split by layer**, bottom up, so a reviewer can follow the
 reasoning one step at a time: `model` → `core` → `service` → `controller`, and
