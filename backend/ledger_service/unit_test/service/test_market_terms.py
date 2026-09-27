@@ -9,6 +9,7 @@ real market service cannot be imported (`test_import_boundary.py`).
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -262,10 +263,30 @@ async def test_an_upstream_401_propagates_as_not_authenticated() -> None:
         )
 
 
-async def test_a_malformed_body_is_unavailable_rather_than_a_crash() -> None:
-    """A 200 carrying something that is not a market, such as a proxy's HTML."""
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"<html>not json</html>", id="a proxy's HTML"),
+        # A `ValueError` that is not a `JSONDecodeError`.
+        pytest.param(
+            b'{"id": ' + b"1" * (sys.get_int_max_str_digits() + 1) + b"}",
+            id="an integer longer than Python will parse",
+        ),
+        # A `RecursionError`, which is not a `ValueError` at all.
+        pytest.param(
+            b"[" * 100_000 + b"]" * 100_000,
+            id="arrays nested deeper than the decoder goes",
+        ),
+    ],
+)
+async def test_a_malformed_body_is_unavailable_rather_than_a_crash(
+    raw: bytes,
+) -> None:
+    """A 200 whose bytes do not decode, ADR 0017's "unparseable 200". One case
+    per exception `json.loads` raises for it.
+    """
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<html>not json</html>")
+        return httpx.Response(200, content=raw)
 
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
@@ -287,6 +308,22 @@ async def test_a_malformed_body_is_unavailable_rather_than_a_crash() -> None:
         ),
         ("an outcome has no id", _terms_body(outcomes=[{"position": 0}])),
         ("a position is not a number", _terms_body(outcomes=[{"id": str(_YES), "position": "first"}])),
+        # The contract's `position: int`: `int()` truncates one and reads the
+        # other as 1.
+        ("a position is a fraction", _terms_body(outcomes=[{"id": str(_YES), "position": 1.5}])),
+        ("a position is a boolean", _terms_body(outcomes=[{"id": str(_YES), "position": True}])),
+        # The field is always present, and only null means unpublished.
+        ("published_at is empty", _terms_body(published_at="")),
+        ("published_at is false", _terms_body(published_at=False)),
+        (
+            "published_at is absent",
+            {k: v for k, v in _terms_body().items() if k != "published_at"},
+        ),
+        # `str()` of it is 32 hex digits, which `uuid.UUID` accepts.
+        (
+            "an outcome id is a JSON number",
+            _terms_body(outcomes=[{"id": 12345678901234567890123456789012, "position": 0}]),
+        ),
         ("outcomes is not a list of objects", _terms_body(outcomes=["yes", "no"])),
         ("the body is a JSON array", []),
         ("the body is a JSON string", "not a market"),
