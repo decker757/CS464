@@ -92,12 +92,11 @@ def mint_token(
     username: str = "ernest_t",
     expires_in: int = 900,
     issuer: str | None = None,
-    secret: str | None = None,
 ) -> str:
     """Sign a token the way the auth service does, for tests only.
 
-    The overridable issuer and secret are what let a test prove this service
-    rejects a token from a system it does not trust.
+    The overridable issuer is what lets a test prove this service rejects a
+    token from a system it does not trust.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -111,7 +110,7 @@ def mint_token(
             "exp": now + timedelta(seconds=expires_in),
             "jti": secrets.token_urlsafe(16),
         },
-        secret if secret is not None else settings.jwt_secret,
+        settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
 

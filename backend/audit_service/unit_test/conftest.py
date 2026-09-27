@@ -65,11 +65,10 @@ def mint_token(
     username: str = "ernest_t",
     expires_in: int = 900,
     issuer: str | None = None,
-    secret: str | None = None,
 ) -> str:
     """Sign a token the way the auth service does, for tests only.
 
-    `issuer` and `secret` let a test sign as a system this service must not trust.
+    `issuer` lets a test sign as a system this service must not trust.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -83,7 +82,7 @@ def mint_token(
             "exp": now + timedelta(seconds=expires_in),
             "jti": secrets.token_urlsafe(16),
         },
-        secret if secret is not None else settings.jwt_secret,
+        settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
 

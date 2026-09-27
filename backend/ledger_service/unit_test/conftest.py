@@ -70,12 +70,11 @@ def mint_token(
     username: str = "ernest_t",
     expires_in: int = 900,
     issuer: str | None = None,
-    secret: str | None = None,
 ) -> str:
     """Sign a token the way the auth service does, for tests only.
 
-    Defaults to TRADER, the ordinary caller here. The overridable issuer and
-    secret let a test prove a foreign token is refused.
+    Defaults to TRADER, the ordinary caller here. The overridable issuer lets
+    a test prove a foreign token is refused.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -89,7 +88,7 @@ def mint_token(
             "exp": now + timedelta(seconds=expires_in),
             "jti": secrets.token_urlsafe(16),
         },
-        secret if secret is not None else settings.jwt_secret,
+        settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
 
