@@ -104,6 +104,15 @@ of who may act. The answer is every administrator, and the audit entry — which
 names whoever reached into somebody else's market, and why — is what makes that
 accountable rather than anonymous.
 
+> **Amended 2026-09-27 by #138.** "This route only ever acts on a market that
+> is open to traders" is true of what it *writes* and not of what it answers.
+> `get_any` finds another administrator's draft or submitted market too, and
+> `close_early` refuses it with `409 market_not_open` rather than
+> `404 market_not_found`, so the answer confirms that a market with that id
+> exists. [ADR 0016](0016-deciding-a-proposal.md) records that trade under
+> "A market's existence leaks to another administrator as a 409", and #138
+> kept it. The decision above is unchanged.
+
 `get_any` is deliberately a second function rather than a `creator_id=None`
 default on `get`. An unscoped read is a decision, and it should be visible at
 the call site and greppable from the definition. Both delegate to one private

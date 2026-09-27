@@ -182,7 +182,10 @@ trades. No interval makes that window zero; deriving the answer does. So a
 trade path, a browse query and a status filter all ask `closing.py` and never
 `status` alone — `open_for_trading()` is the same rule as a WHERE clause. The
 sweeper falling behind, or being switched off with `CLOSE_SWEEP_ENABLED`, makes
-a dashboard count stale and cannot let a trade through.
+a dashboard count stale and cannot let a trade through. Switched off on *every*
+replica, it also stops [3.1] #9: proposing gates on `status == CLOSED`, so no
+market closed by the clock can be proposed for until one replica runs the sweep
+again. ADR 0011.
 
 This is ADR 0009's shape one service over: the ledger derives a balance from
 `SUM(amount)` rather than storing one, so the number is right by construction

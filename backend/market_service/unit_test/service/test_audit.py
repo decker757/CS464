@@ -20,7 +20,7 @@ from core.database import get_session_factory
 from core.errors import DraftIncomplete
 from model.audit import AdminAction
 from model.entities import Market, MarketStatus
-from service import audit, market_service
+from service import audit, market_audit, market_service
 from service.audit import Actor
 
 # Aliased so the names do not shadow an `actor` argument.
@@ -867,7 +867,7 @@ class _AuditInsertFailed(Exception):
 
 
 async def _fail_to_record(*args: object, **kwargs: object) -> None:
-    """Stands in for `audit.record` when the audit insert itself fails."""
+    """Stands in for an audit writer when the audit insert itself fails."""
     raise _AuditInsertFailed
 
 
@@ -919,6 +919,101 @@ async def test_a_publication_whose_entry_fails_leaves_the_market_submitted(
     assert AdminAction.MARKET_PUBLISHED.value not in {
         entry["action_type"] for entry in await _entries(audit_reader, actor)
     }
+
+
+# The four below patch the `market_audit` writer rather than `audit.record`,
+# so they hold wherever the shared writer lives.
+async def test_an_early_close_whose_entry_fails_leaves_the_market_open(
+    session: AsyncSession,
+    audit_reader: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0006, and ADR 0014's reason for caring most: a market stopped with no
+    entry is a market nobody can ever explain."""
+    actor = _actor()
+    market_id = (await published_market(session, actor)).id
+    monkeypatch.setattr(market_audit, "record_early_close", _fail_to_record)
+
+    with pytest.raises(_AuditInsertFailed):
+        await market_service.close_early(session, actor, market_id, _close())
+    await session.rollback()
+
+    async with get_session_factory()() as fresh:
+        stored = await market_service.get(fresh, actor.id, market_id)
+        status, closed_at = stored.status, stored.closed_at
+
+    assert status is MarketStatus.OPEN
+    assert closed_at is None
+    assert AdminAction.MARKET_CLOSED_EARLY.value not in {
+        entry["action_type"] for entry in await _entries(audit_reader, actor)
+    }
+
+
+async def test_a_proposal_whose_entry_fails_leaves_the_market_closed(
+    session: AsyncSession,
+    audit_reader: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0006, for the entry ADR 0013 makes the durable record of a proposal."""
+    actor = _actor()
+    market = await closed_market(session, actor)
+    market_id, winner = market.id, market.outcomes[0].id
+    monkeypatch.setattr(market_audit, "record_proposal", _fail_to_record)
+
+    with pytest.raises(_AuditInsertFailed):
+        await market_service.propose_outcome(session, actor, market_id, _proposal(winner))
+    await session.rollback()
+
+    async with get_session_factory()() as fresh:
+        stored = await market_service.get(fresh, actor.id, market_id)
+        status, proposal_id = stored.status, stored.proposal_id
+
+    assert status is MarketStatus.CLOSED
+    assert proposal_id is None
+    assert AdminAction.MARKET_OUTCOME_PROPOSED.value not in {
+        entry["action_type"] for entry in await _entries(audit_reader, actor)
+    }
+
+
+@pytest.mark.parametrize(
+    ("decision", "writer"),
+    [("approve", "record_approval"), ("reject", "record_rejection")],
+)
+async def test_a_decision_whose_entry_fails_leaves_the_proposal_pending(
+    session: AsyncSession,
+    audit_reader: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+    writer: str,
+) -> None:
+    """ADR 0006, for the two-person rule: no approval without a record of the
+    second administrator, and no cleared proposal without the entry that is
+    then its only copy (ADR 0016)."""
+    proposer, decider = _actor(), _actor(username="ihsan_b")
+    pending = await proposed_market(session, proposer)
+    market_id, proposal_id = pending.id, pending.proposal_id
+    monkeypatch.setattr(market_audit, writer, _fail_to_record)
+
+    with pytest.raises(_AuditInsertFailed):
+        if decision == "approve":
+            await market_service.approve_outcome(
+                session, decider, market_id, _approval(proposal_id)
+            )
+        else:
+            await market_service.reject_outcome(
+                session, decider, market_id, _rejection(proposal_id)
+            )
+    await session.rollback()
+
+    async with get_session_factory()() as fresh:
+        stored = await market_service.get(fresh, proposer.id, market_id)
+        status = stored.status
+        stored_proposal_id, approved_at = stored.proposal_id, stored.approved_at
+
+    assert status is MarketStatus.PENDING_RESOLUTION
+    assert stored_proposal_id == proposal_id
+    assert approved_at is None
+    assert await _entries(audit_reader, decider) == []
 
 
 # --- the grants that make it append-only ----------------------------------

@@ -1,8 +1,10 @@
 """Proposing an outcome, driven through the service layer without HTTP. [3.1] #9.
 
 Every market is closed the way production closes one, by the clock and the
-sweep, because the first criterion is about the CLOSED boundary. HTTP answers
-are in unit_test/controller, audit entries in test_audit.py.
+sweep, because the first criterion is about the CLOSED boundary. The one
+exception is the race test at the bottom, which closes its market by hand; its
+comment says why. HTTP answers are in unit_test/controller, audit entries in
+test_audit.py.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
@@ -452,3 +454,54 @@ async def test_two_concurrent_proposals_produce_one_winner(
         (await audit_reader.execute(_PROPOSED_ENTRIES, {"actor": actor.id})).mappings()
     )
     assert len(entries) == 1, "the log must record one proposal, not two"
+
+
+async def test_a_proposal_queued_behind_the_close_is_stamped_after_it(
+    clean_database,
+) -> None:
+    """A proposal that waited on the row lock while the market was being closed
+    is stamped after the close, so `proposed_at` never predates `closed_at`.
+    ADR 0015, as `publish` and `close_early` already do."""
+    import asyncio  # noqa: PLC0415
+
+    from core.database import get_session_factory  # noqa: PLC0415
+
+    factory = get_session_factory()
+    actor = _actor()
+
+    async with factory() as setup:
+        market = await overdue_market(setup, actor)
+        market_id, winner = market.id, _winner(market)
+
+    # Both connected before either starts, so the lock decides. ADR 0015.
+    barrier = asyncio.Barrier(2)
+
+    async def close_it_while_the_proposal_waits() -> None:
+        # Not `close_due_markets`: its `closed_at` is `func.now()`, the start of
+        # this transaction, which would precede even a clock read on the way in.
+        async with factory() as own:
+            await own.execute(select(Market.id).where(Market.id == market_id).with_for_update())
+            await barrier.wait()
+            await asyncio.sleep(1)
+            await own.execute(
+                update(Market)
+                .where(Market.id == market_id)
+                .values(status=MarketStatus.CLOSED, closed_at=datetime.now(UTC))
+            )
+            await own.commit()
+
+    async def propose() -> None:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            await market_service.propose_outcome(own, actor, market_id, _proposal(winner))
+
+    await asyncio.gather(close_it_while_the_proposal_waits(), propose())
+
+    async with factory() as check:
+        stored = (
+            await check.execute(select(Market).where(Market.id == market_id))
+        ).scalar_one()
+
+    assert stored.status is MarketStatus.PENDING_RESOLUTION
+    assert stored.proposed_at >= stored.closed_at, "stamped before the close it waited on"

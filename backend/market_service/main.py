@@ -46,8 +46,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     else:
         logger.warning(
-            "close sweeper disabled by CLOSE_SWEEP_ENABLED; market statuses "
-            "will not be maintained on this replica"
+            "close sweeper disabled by CLOSE_SWEEP_ENABLED on this replica; "
+            "if it is off on every replica, no market closed by the clock "
+            "reaches CLOSED or can be proposed for"
         )
 
     try:

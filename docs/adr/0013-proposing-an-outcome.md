@@ -73,6 +73,10 @@ Nobody will notice the wait. `service/validation.py` requires
 be known when it closes; an administrator with an answer to propose is never
 standing on the closing bell.
 
+That wait is unbounded if the sweep is switched off on every replica: no
+market reaches CLOSED, so none can be proposed for. ADR 0011's amendment of
+2026-09-27 (#138) records it and why it stays a status gate.
+
 ### One proposal at a time, and the status is what enforces it
 
 Proposing requires CLOSED and leaves the market PENDING_RESOLUTION, so a second
