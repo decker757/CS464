@@ -1,5 +1,5 @@
 import { GOLD, NAV } from '../../theme/colors'
-import { TrendIcon } from '../auth/AuthIcons'
+import { TrendIcon } from '../ui/icons'
 
 export default function LandingNavbar() {
   return (
@@ -16,7 +16,7 @@ export default function LandingNavbar() {
         }}
       >
         <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontSize: 20, fontWeight: 700, letterSpacing: '-0.3px' }}>
-          <TrendIcon size={20} color={GOLD} />
+          <TrendIcon size={20} className="text-smu-gold" />
           PredictSMU
         </span>
 

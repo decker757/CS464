@@ -10,7 +10,7 @@ import {
   saveMarket,
 } from '../../api/marketApi'
 import AppNavbar from '../../components/AppNavbar'
-import Field from '../../components/auth/Field'
+import Field from '../../components/ui/Field'
 import { focusHandlers, inputBase } from '../../components/auth/inputStyles'
 import { CREAM, GOLD, NAV } from '../../theme/colors'
 
