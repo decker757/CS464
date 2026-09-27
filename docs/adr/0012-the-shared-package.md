@@ -108,6 +108,8 @@ The build context is no longer the reason, and this one is a genuine candidate:
 the `Table` is identical and only `AdminAction` differs, by design. It belongs
 to ADR 0006 to move, not to a packaging change.
 
+> **Amended 2026-09-27 by #135.** ADR 0006 moved it: `backend/shared/audit.py`.
+
 **`bus.py::publish`** — four lines of `redis.publish`. Below the bar.
 
 > **Extended by [F-9] #112.** `PriceEvent` is copied too, and it is the more
