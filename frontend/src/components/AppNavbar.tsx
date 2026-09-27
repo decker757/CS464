@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { GOLD, NAV } from '../theme/colors'
-import { TrendIcon } from './auth/AuthIcons'
+import { TrendIcon } from './ui/icons'
 
 export default function AppNavbar() {
   const { user, logout } = useAuth()
@@ -44,7 +44,7 @@ export default function AppNavbar() {
         }}
       >
         <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontSize: 20, fontWeight: 700, letterSpacing: '-0.3px' }}>
-          <TrendIcon size={20} color={GOLD} />
+          <TrendIcon size={20} className="text-smu-gold" />
           PredictSMU
         </span>
 
