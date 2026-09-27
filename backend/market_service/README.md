@@ -123,6 +123,7 @@ service/                    business rules. Raises domain errors, knows no HTTP.
     closing.py              when a market stops trading, and the sweep [F-4]
     sweeper.py              the background timer that runs the sweep
     audit.py                one append, on the caller's own transaction
+    market_audit.py         what each of a market's audit entries carries
 
 core/                       this service's own plumbing
     config.py               settings, read from the environment once

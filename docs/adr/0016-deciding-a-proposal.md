@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-17
 - **Affects:** [3.2] #10, [3.1] #9, [3.3] #11, [3.4] #12, [2.1] #5, [BE][X] #62, [4.3] #15, ADR 0007, ADR 0013, ADR 0014
-- **Implemented in:** `backend/market_service/service/market_service.py` (`approve_outcome`, `reject_outcome`, `_proposal_to_decide`), `service/validation.py`, `model/entities.py`, `model/schemas.py`, `controller/routes.py`, `sql/migrations/0006-market-outcome-approval.sql`
+- **Implemented in:** `backend/market_service/service/market_service.py` (`approve_outcome`, `reject_outcome`, `_proposal_to_decide`), `service/market_audit.py`, `service/validation.py`, `model/entities.py`, `model/schemas.py`, `controller/routes.py`, `sql/migrations/0006-market-outcome-approval.sql`
 
 ## Context
 
