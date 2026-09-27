@@ -6,6 +6,7 @@ import AppLayout from '../../components/layout/AppLayout'
 import BackLink from '../../components/ui/BackLink'
 import Button from '../../components/ui/Button'
 import Field from '../../components/ui/Field'
+import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
 import TextArea from '../../components/ui/TextArea'
 import TextInput from '../../components/ui/TextInput'
@@ -114,7 +115,7 @@ export default function ProposeOutcomePage() {
   return (
     <AppLayout width="max-w-[700px]">
       <BackLink to="/admin/markets" label="My Markets" className="mb-1.5 block" />
-      <h1 className="mb-8 text-[28px] font-extrabold tracking-[-0.3px] text-smu-navy">Propose Outcome</h1>
+      <PageTitle className="mb-8">Propose Outcome</PageTitle>
 
       <SectionCard title={market.question ?? 'Untitled market'} className="mb-5">
         <p className="mb-2 text-[13px] font-semibold text-smu-navy">Winning outcome *</p>
