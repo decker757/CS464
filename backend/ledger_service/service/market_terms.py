@@ -129,6 +129,9 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         # one is a malformed body, not an unpublished market.
         published_at = _to_published_at(body["published_at"])
 
+        # `.get` is safe here where it was not for `published_at`: a missing
+        # list reads as empty, which `books.ensure_open` refuses as the same
+        # 503, and the status gate never needed the outcomes.
         outcomes = [
             OutcomeTerms(
                 outcome_id=_to_uuid(o["id"]), position=_to_position(o["position"])

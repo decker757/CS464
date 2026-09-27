@@ -77,8 +77,9 @@ def _remember_the_flush(session: Session, flush_context: object) -> None:
 
 @event.listens_for(Session, "after_transaction_end")
 def _forget_the_flush(session: Session, transaction: SessionTransaction) -> None:
-    # Only the outermost transaction: a released SAVEPOINT's rows are still
-    # uncommitted, and it is the commit or rollback that settles them.
+    # Only the outermost transaction: the inner one every flush opens, and a
+    # released SAVEPOINT, both end with their rows still uncommitted, and it
+    # is the commit or rollback that settles them.
     if transaction.parent is None:
         session.info.pop(_FLUSHED_KEY, None)
 
