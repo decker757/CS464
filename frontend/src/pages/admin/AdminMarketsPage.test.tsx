@@ -27,6 +27,7 @@ function renderPage() {
       <MemoryRouter initialEntries={['/admin/markets']}>
         <Routes>
           <Route path="/admin/markets" element={<AdminMarketsPage />} />
+          <Route path="/admin/markets/:id/propose-outcome" element={<p>propose outcome</p>} />
         </Routes>
       </MemoryRouter>
     </AuthContext.Provider>,
@@ -125,5 +126,25 @@ describe('AdminMarketsPage', () => {
     expect(screen.queryByText(/closes/i)).not.toBeInTheDocument()
     // A past close_time also renders "Closed" in the status badge, so two elements match.
     expect(screen.getAllByText('Closed').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('offers Propose Outcome only for closed markets', async () => {
+    mockList(mockMarkets)
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    const links = screen.getAllByRole('link', { name: /propose outcome/i })
+    expect(links).toHaveLength(1)
+  })
+
+  it('navigates to the propose-outcome page for a closed market', async () => {
+    mockList(mockMarkets)
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will inflation fall below 2%?')
+
+    await actor.click(screen.getByRole('link', { name: /propose outcome/i }))
+
+    expect(await screen.findByText('propose outcome')).toBeInTheDocument()
   })
 })
