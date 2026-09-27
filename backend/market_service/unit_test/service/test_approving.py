@@ -47,7 +47,7 @@ from unit_test.conftest import rejection_request as _reject
 
 # Read back as audit_svc: market_svc holds INSERT on this table and no SELECT.
 _ENTRIES = text(
-    "SELECT id FROM audit.admin_actions "
+    "SELECT id, occurred_at FROM audit.admin_actions "
     "WHERE actor_id = :actor AND action_type = :action"
 )
 
@@ -1031,3 +1031,55 @@ async def test_an_approval_racing_a_rejection_produces_exactly_one_decision(
         assert stored.proposed_outcome_id is None
         assert stored.approved_by_id is None
         assert rejections == 1
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_a_decision_is_stamped_after_it_has_the_lock(
+    clean_database, audit_reader: AsyncSession, decision: str
+) -> None:
+    """A decision that queued for the row lock is stamped when it got the row,
+    not when it arrived, so it can never predate the state it decided on.
+    ADR 0015, as `publish` and `close_early` already do."""
+    factory = get_session_factory()
+    proposer, decider = _actor(), _actor(username="ihsan_b")
+
+    async with factory() as setup:
+        pending = await proposed_market(setup, proposer)
+        market_id, proposal_id = pending.id, pending.proposal_id
+
+    barrier = asyncio.Barrier(2)
+    released_at: list[datetime] = []
+
+    async def hold_the_row() -> None:
+        async with factory() as own:
+            await own.execute(select(Market.id).where(Market.id == market_id).with_for_update())
+            await barrier.wait()
+            await asyncio.sleep(1)
+            released_at.append(datetime.now(UTC))
+            await own.rollback()
+
+    async def decide() -> None:
+        async with factory() as own:
+            await own.connection()
+            await barrier.wait()
+            await _decide(own, decider, market_id, decision, proposal_id)
+
+    await asyncio.gather(hold_the_row(), decide())
+
+    if decision == "approve":
+        action = "market.outcome_approved"
+    else:
+        action = "market.outcome_rejected"
+    entries = list(
+        (await audit_reader.execute(_ENTRIES, {"actor": decider.id, "action": action})).mappings()
+    )
+    assert len(entries) == 1
+    assert entries[0]["occurred_at"] >= released_at[0], "stamped before it had the row"
+
+    if decision == "approve":
+        async with factory() as check:
+            stored = (
+                await check.execute(select(Market).where(Market.id == market_id))
+            ).scalar_one()
+        assert stored.approved_at is not None
+        assert stored.approved_at >= released_at[0]
