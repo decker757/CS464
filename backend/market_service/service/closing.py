@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.closing import trading_is_open
 from model.entities import Market, MarketStatus
 
+
 def is_open_for_trading(market: Market, *, now: datetime | None = None) -> bool:
     """May a trade execute against this market right now? ADR 0011.
 

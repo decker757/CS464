@@ -25,32 +25,6 @@ logger = logging.getLogger(__name__)
 MAX_DRAIN_BATCHES = 50
 
 
-async def run_close_sweeper(
-    session_factory: async_sessionmaker[AsyncSession],
-    *,
-    interval_seconds: float,
-    batch_limit: int,
-) -> None:
-    """Close due markets every `interval_seconds`, forever, starting at once.
-
-    Started and cancelled by `main.py`. Swallows every `Exception`, because a
-    task that ended is a service where no market ever closes again and nothing
-    says so; `CancelledError` is a `BaseException`, so shutdown still works.
-    ADR 0011.
-    """
-    logger.info(
-        "close sweeper started: every %.1fs, up to %d markets per batch",
-        interval_seconds,
-        batch_limit,
-    )
-    while True:
-        try:
-            await _drain(session_factory, batch_limit)
-        except Exception:
-            logger.exception("close sweep failed; retrying in %.1fs", interval_seconds)
-        await asyncio.sleep(interval_seconds)
-
-
 async def _drain(
     session_factory: async_sessionmaker[AsyncSession], batch_limit: int
 ) -> int:
@@ -81,3 +55,29 @@ async def _drain(
         MAX_DRAIN_BATCHES,
     )
     return total
+
+
+async def run_close_sweeper(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    interval_seconds: float,
+    batch_limit: int,
+) -> None:
+    """Close due markets every `interval_seconds`, forever, starting at once.
+
+    Started and cancelled by `main.py`. Swallows every `Exception`, because a
+    task that ended is a service where no market ever closes again and nothing
+    says so; `CancelledError` is a `BaseException`, so shutdown still works.
+    ADR 0011.
+    """
+    logger.info(
+        "close sweeper started: every %.1fs, up to %d markets per batch",
+        interval_seconds,
+        batch_limit,
+    )
+    while True:
+        try:
+            await _drain(session_factory, batch_limit)
+        except Exception:
+            logger.exception("close sweep failed; retrying in %.1fs", interval_seconds)
+        await asyncio.sleep(interval_seconds)
