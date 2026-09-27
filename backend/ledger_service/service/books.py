@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import has_pending_writes
 from core.errors import MarketNotPublished, MarketTermsUnavailable
 from model.entities import AccountKind, MarketBook, MarketOutcome, TransactionKind
 from service import accounts, market_terms, posting
@@ -55,6 +57,16 @@ def _refuse_unpriceable(outcomes: list[OutcomeTerms]) -> None:
         raise MarketTermsUnavailable
 
 
+def is_positive_finite(value: Decimal) -> bool:
+    """True for a finite value above zero: the only `b` or subsidy a book can
+    be written or priced from.
+
+    Finiteness first: `Decimal` takes "Infinity" and "NaN" off the wire, and
+    `NaN > 0` raises. `numeric` stores NaN, so a stored `b` can be one too.
+    """
+    return value.is_finite() and value > 0
+
+
 async def find(session: AsyncSession, market_id: uuid.UUID) -> MarketBook | None:
     """This market's book, or None. Unlocked."""
     stmt = select(MarketBook).where(MarketBook.market_id == market_id)
@@ -86,7 +98,7 @@ async def ensure_open(
     # Enforced, not just documented: the rollback would discard a pending
     # write silently, and release a lock taken before this call mid-request,
     # which ADR 0015 forbids.
-    assert not (session.new or session.dirty or session.deleted), (
+    assert not has_pending_writes(session), (
         "ensure_open() rolls back on the cold path: call it with nothing "
         "pending on the session, or hoist the terms fetch out of it"
     )
@@ -110,17 +122,14 @@ async def ensure_open(
     # race (D-010), and end as a 500 instead of this 503.
     if terms.liquidity_b is None or terms.seed_subsidy is None:
         raise MarketTermsUnavailable
-    # Finite first: `Decimal` takes "Infinity" and "NaN" off the wire.
-    # Infinity passes `<= 0` and then fails the column as an unmapped
-    # `DataError`; NaN makes `<= 0` raise, and `numeric` would store it.
-    if not (terms.liquidity_b.is_finite() and terms.seed_subsidy.is_finite()):
-        raise MarketTermsUnavailable
     # The book is immutable (ADR 0005), so a bad `b` is a bare `ValueError`
     # from `core/lmsr.py` on every price, forever. A zero subsidy builds zero
     # legs `post` refuses as a 422; a negative one drains the pool, and no
-    # overdraft check covers a pool. market_service checks both at submission;
-    # this copy guards the write.
-    if terms.liquidity_b <= 0 or terms.seed_subsidy <= 0:
+    # overdraft check covers a pool. An infinite one fails the column as an
+    # unmapped `DataError`. market_service checks both; this guards the write.
+    if not is_positive_finite(terms.liquidity_b):
+        raise MarketTermsUnavailable
+    if not is_positive_finite(terms.seed_subsidy):
         raise MarketTermsUnavailable
     _refuse_unpriceable(terms.outcomes)
 
