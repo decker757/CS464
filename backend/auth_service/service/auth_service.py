@@ -49,6 +49,20 @@ async def _taken_fields(session: AsyncSession, username: str, email: str) -> lis
     return taken
 
 
+async def _lock_refresh_token(session: AsyncSession, raw: str) -> RefreshToken | None:
+    """Lock and return the row for this raw token, or None.
+
+    Locked because both callers write `revoked_at` from what they read; unlocked,
+    two concurrent refreshes of one token would both succeed. ADR 0015.
+    """
+    stmt = (
+        select(RefreshToken)
+        .where(RefreshToken.token_hash == security.hash_refresh_token(raw))
+        .with_for_update()
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def issue_tokens(session: AsyncSession, user: User) -> TokenPair:
     """Mint an access token and add a fresh refresh token to the session.
 
@@ -130,18 +144,14 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
     return user
 
 
-async def _load_refresh(session: AsyncSession, raw: str) -> RefreshToken | None:
-    """Lock and return the row for this raw token, or None.
-
-    Locked because both callers write `revoked_at` from what they read; unlocked,
-    two concurrent refreshes of one token would both succeed. ADR 0015.
-    """
-    stmt = (
-        select(RefreshToken)
-        .where(RefreshToken.token_hash == security.hash_refresh_token(raw))
-        .with_for_update()
+async def revoke_all_for_user(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """Revoke every live refresh token the user holds. Does not commit."""
+    stmt = select(RefreshToken).where(
+        RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None)
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    now = datetime.now(UTC)
+    for record in (await session.execute(stmt)).scalars():
+        record.revoked_at = now
 
 
 async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, TokenPair]:
@@ -150,7 +160,7 @@ async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, T
     Raises InvalidToken. A revoked token is a replay of a leaked cookie, so it
     revokes every session for that user first. ADR 0002.
     """
-    record = await _load_refresh(session, raw)
+    record = await _lock_refresh_token(session, raw)
     if record is None:
         raise InvalidToken
 
@@ -172,17 +182,7 @@ async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, T
 
 async def revoke_refresh_token(session: AsyncSession, raw: str) -> None:
     """Revoke a refresh token and commit; silent if unknown or dead. [A-3] #31"""
-    record = await _load_refresh(session, raw)
+    record = await _lock_refresh_token(session, raw)
     if record is not None and record.revoked_at is None:
         record.revoked_at = datetime.now(UTC)
     await session.commit()
-
-
-async def revoke_all_for_user(session: AsyncSession, user_id: uuid.UUID) -> None:
-    """Revoke every live refresh token the user holds. Does not commit."""
-    stmt = select(RefreshToken).where(
-        RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None)
-    )
-    now = datetime.now(UTC)
-    for record in (await session.execute(stmt)).scalars():
-        record.revoked_at = now
