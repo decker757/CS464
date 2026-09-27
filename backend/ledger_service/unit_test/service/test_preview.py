@@ -10,20 +10,37 @@ preview) and the caller's own holdings (the trade's check, D-012).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 import pytest
-from sqlalchemy import delete, event, func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine
-from core.lmsr import cost_to_trade, prices
+from core.lmsr import cost_to_trade
 from model.entities import Entry
-from unit_test.conftest import mint_token, strip_outcomes
+from unit_test.book_fixtures import (
+    B,
+    Q,
+    QUANTUM,
+    SUBSIDY,
+    Upstream,
+    book_row,
+    books,
+    capture_sql,
+    entities,
+    errors,
+    expected_prices,
+    fresh_token,
+    mentioning,
+    set_q,
+    warm,
+    writes,
+)
+from unit_test.conftest import strip_outcomes
 
 
 def _preview():
@@ -41,96 +58,17 @@ def _pricing():
     return pricing
 
 
-def _books():
-    from service import books  # noqa: PLC0415
-
-    return books
-
-
-def _entities():
-    from model import entities  # noqa: PLC0415
-
-    return entities
-
-
-def _errors():
-    from core import errors  # noqa: PLC0415
-
-    return errors
-
-
 ZERO = Decimal(0)
-_QUANTUM = Decimal("0.0001")
-
-_B = Decimal("100.0000")
-_SUBSIDY = Decimal("250.0000")
-
-# Asymmetric on purpose: with a uniform `q`, reading the vector in the wrong
-# order would be invisible.
-_Q = [Decimal("137.5000"), Decimal("42.2500")]
 
 # Chosen so the raw cost lands off a tick boundary, which
 # `_assert_rounding_is_load_bearing` checks.
 _QUANTITY = Decimal("13.3333")
 
 
-# --- upstream -------------------------------------------------------------
-class _Upstream:
-    """A stand-in market service that counts its calls (D-008's one-off cost)
-    and keeps the forwarded token (D-018)."""
-
-    def __init__(
-        self,
-        *,
-        published_at: str | None = "2026-09-01T09:00:00Z",
-        status: str = "open",
-        outcomes: int = 2,
-    ) -> None:
-        self.calls = 0
-        self.tokens: list[str] = []
-        self.market_id = uuid.uuid4()
-        self.outcomes = [uuid.uuid4() for _ in range(outcomes)]
-        self._body = {
-            "id": str(self.market_id),
-            "status": status,
-            "close_time": "2027-01-05T12:00:00Z",
-            "resolution_time": "2027-01-20T12:00:00Z",
-            "liquidity_b": str(_B),
-            "seed_subsidy": str(_SUBSIDY),
-            "published_at": published_at,
-            "outcomes": [
-                {"id": str(o), "position": i, "label": f"Outcome {i}"}
-                for i, o in enumerate(self.outcomes)
-            ],
-        }
-
-    @property
-    def transport(self) -> httpx.MockTransport:
-        def handler(request: httpx.Request) -> httpx.Response:
-            self.calls += 1
-            header = request.headers.get("Authorization", "")
-            self.tokens.append(header.removeprefix("Bearer "))
-            return httpx.Response(200, json=self._body)
-
-        return httpx.MockTransport(handler)
-
-    @property
-    def dead(self) -> httpx.MockTransport:
-        def handler(request: httpx.Request) -> httpx.Response:
-            self.calls += 1
-            raise httpx.ConnectError("market service is down")
-
-        return httpx.MockTransport(handler)
-
-
-def _token() -> str:
-    return mint_token(uuid.uuid4())
-
-
 # --- driving the thing under test ----------------------------------------
 async def _quote(
     session: AsyncSession,
-    upstream: _Upstream,
+    upstream: Upstream,
     *,
     outcome: int = 0,
     side: str = "buy",
@@ -145,48 +83,9 @@ async def _quote(
         outcome_id=upstream.outcomes[outcome],
         side=_pricing().Side(side),
         quantity=quantity,
-        access_token=access_token if access_token is not None else _token(),
+        access_token=access_token if access_token is not None else fresh_token(),
         transport=upstream.transport if transport is None else transport,
     )
-
-
-async def _warm(
-    session: AsyncSession, upstream: _Upstream, q: Sequence[Decimal] = tuple(_Q)
-):
-    """A market whose book exists and whose outcomes hold shares, with `q`
-    written directly as a trade would have left it."""
-    book = await _books().ensure_open(
-        session,
-        upstream.market_id,
-        access_token=_token(),
-        transport=upstream.transport,
-    )
-    await _set_q(session, upstream, q)
-    return book
-
-
-async def _set_q(
-    session: AsyncSession, upstream: _Upstream, q: Sequence[Decimal]
-) -> None:
-    outcome = _entities().MarketOutcome
-    for position, value in enumerate(q):
-        await session.execute(
-            update(outcome)
-            .where(
-                outcome.market_id == upstream.market_id,
-                outcome.position == position,
-            )
-            .values(q=value)
-        )
-    await session.commit()
-
-
-async def _book_row(session: AsyncSession, upstream: _Upstream):
-    book = _entities().MarketBook
-    session.expire_all()
-    return (
-        await session.execute(select(book).where(book.market_id == upstream.market_id))
-    ).scalar_one()
 
 
 # --- the expected arithmetic ---------------------------------------------
@@ -200,7 +99,7 @@ def _delta(q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal):
 
 
 def _raw_cost(q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal):
-    return cost_to_trade(list(q), _B, _delta(q, outcome, side, quantity))
+    return cost_to_trade(list(q), B, _delta(q, outcome, side, quantity))
 
 
 def _expected_total(q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal):
@@ -212,51 +111,16 @@ def _expected_total(q: Sequence[Decimal], outcome: int, side: str, quantity: Dec
     return -magnitude if side == "buy" else magnitude
 
 
-def _expected_prices(q: Sequence[Decimal]) -> list[Decimal]:
-    """`ROUND_HALF_UP` at scale 4: nobody is charged a price."""
-    return [p.quantize(_QUANTUM, rounding=ROUND_HALF_UP) for p in prices(list(q), _B)]
-
-
 def _assert_rounding_is_load_bearing(
     q: Sequence[Decimal], outcome: int, side: str, quantity: Decimal
 ) -> None:
     """Guard on the fixture, not the code: rounding assertions are worthless
     on a cost exact at scale 4. If it fires, change `_QUANTITY`."""
     raw = _raw_cost(q, outcome, side, quantity).copy_abs()
-    assert raw != raw.quantize(_QUANTUM), (
+    assert raw != raw.quantize(QUANTUM), (
         "this fixture's raw cost is already exact at scale 4, so the "
         "quantization tests below prove nothing; pick another quantity"
     )
-
-
-# --- structural capture ---------------------------------------------------
-@contextlib.contextmanager
-def _capture_sql() -> Iterator[list[str]]:
-    """Every statement the block sends to Postgres, in order, from the
-    engine's `before_cursor_execute`."""
-    statements: list[str] = []
-    engine = get_engine().sync_engine
-
-    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        statements.append(statement)
-
-    event.listen(engine, "before_cursor_execute", before)
-    try:
-        yield statements
-    finally:
-        event.remove(engine, "before_cursor_execute", before)
-
-
-def _mentioning(statements: Sequence[str], table: str) -> list[str]:
-    return [s for s in statements if table in s.lower()]
-
-
-def _writes(statements: Sequence[str]) -> list[str]:
-    return [
-        s
-        for s in statements
-        if s.strip().lower().startswith(("insert", "update", "delete"))
-    ]
 
 
 # =========================================================================
@@ -266,12 +130,12 @@ async def test_the_total_is_computed_from_the_lmsr_cost_function(
     session: AsyncSession,
 ) -> None:
     """The second criterion: computed from `core/lmsr.py`, not estimated."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(session, upstream)
 
-    assert quote.total == _expected_total(_Q, 0, "buy", _QUANTITY)
+    assert quote.total == _expected_total(Q, 0, "buy", _QUANTITY)
 
 
 async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
@@ -281,17 +145,17 @@ async def test_the_previewed_total_is_what_the_same_quantization_would_charge(
     trade charges with. The fixture guard makes a wrong rounding miss by a
     tick rather than agree by luck.
     """
-    upstream = _Upstream()
-    await _warm(session, upstream)
-    _assert_rounding_is_load_bearing(_Q, 0, "buy", _QUANTITY)
+    upstream = Upstream()
+    await warm(session, upstream)
+    _assert_rounding_is_load_bearing(Q, 0, "buy", _QUANTITY)
 
     quote = await _quote(session, upstream)
 
     magnitude = _pricing().quantize_cost(
-        _raw_cost(_Q, 0, "buy", _QUANTITY).copy_abs(), side=_pricing().Side.BUY
+        _raw_cost(Q, 0, "buy", _QUANTITY).copy_abs(), side=_pricing().Side.BUY
     )
     assert quote.total == -magnitude
-    assert abs(quote.total) != _raw_cost(_Q, 0, "buy", _QUANTITY).copy_abs()
+    assert abs(quote.total) != _raw_cost(Q, 0, "buy", _QUANTITY).copy_abs()
 
 
 async def test_the_total_is_negative_on_a_buy_and_positive_on_a_sell(
@@ -299,8 +163,8 @@ async def test_the_total_is_negative_on_a_buy_and_positive_on_a_sell(
 ) -> None:
     """From the trader's side: negative means credits leave them, the opposite
     of `cost_to_trade`'s sign."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     bought = await _quote(session, upstream, side="buy")
     sold = await _quote(session, upstream, side="sell")
@@ -315,12 +179,12 @@ async def test_it_works_for_buy_and_sell_on_every_outcome(
     session: AsyncSession, side: str, outcome: int
 ) -> None:
     """The sixth criterion, over both sides and every outcome."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(session, upstream, outcome=outcome, side=side)
 
-    assert quote.total == _expected_total(_Q, outcome, side, _QUANTITY)
+    assert quote.total == _expected_total(Q, outcome, side, _QUANTITY)
     assert quote.outcome_id == upstream.outcomes[outcome]
     assert quote.side is _pricing().Side(side)
 
@@ -329,16 +193,16 @@ async def test_the_q_vector_is_ordered_by_position(session: AsyncSession) -> Non
     """`position`, not insertion order: an unordered read is stable enough to
     pass other tests and free to change. Asserted by reversing `q`.
     """
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
     straight = await _quote(session, upstream, outcome=0)
 
-    await _set_q(session, upstream, list(reversed(_Q)))
+    await set_q(session, upstream, list(reversed(Q)))
     reversed_q = await _quote(session, upstream, outcome=0)
 
     assert straight.total != reversed_q.total
     assert reversed_q.total == _expected_total(
-        list(reversed(_Q)), 0, "buy", _QUANTITY
+        list(reversed(Q)), 0, "buy", _QUANTITY
     )
 
 
@@ -348,13 +212,13 @@ async def test_average_price_is_the_quantized_total_over_the_quantity(
 ) -> None:
     """The fourth criterion: `abs(total) / quantity`, from the quantized total,
     so it multiplies back to what the trader pays."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(session, upstream)
 
     expected = (abs(quote.total) / _QUANTITY).quantize(
-        _QUANTUM, rounding=ROUND_HALF_UP
+        QUANTUM, rounding=ROUND_HALF_UP
     )
     assert quote.average_price == expected
 
@@ -363,8 +227,8 @@ async def test_average_price_is_positive_on_both_sides(
     session: AsyncSession,
 ) -> None:
     """A price, not a direction: the sign already lives on `total`."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     bought = await _quote(session, upstream, side="buy")
     sold = await _quote(session, upstream, side="sell")
@@ -379,13 +243,13 @@ async def test_average_price_rounds_half_up_because_it_is_derived_not_charged(
     """Half up, not directional: the trade charges `total`, never
     `quantity * average_price`, so there is no residue to send anywhere.
     """
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(session, upstream)
     exact = abs(quote.total) / _QUANTITY
 
-    assert quote.average_price == exact.quantize(_QUANTUM, rounding=ROUND_HALF_UP)
+    assert quote.average_price == exact.quantize(QUANTUM, rounding=ROUND_HALF_UP)
     assert quote.average_price.as_tuple().exponent == -4
 
 
@@ -395,15 +259,15 @@ async def test_prices_carry_every_outcome_in_position_order(
 ) -> None:
     """"the market's current prices": every outcome, ordered and carrying
     `position` the way `PriceEvent` does."""
-    upstream = _Upstream(outcomes=3)
+    upstream = Upstream(outcomes=3)
     q = [Decimal("137.5000"), Decimal("42.2500"), Decimal("88.0000")]
-    await _warm(session, upstream, q)
+    await warm(session, upstream, q)
 
     quote = await _quote(session, upstream)
 
     assert [p.position for p in quote.prices] == [0, 1, 2]
     assert [p.outcome_id for p in quote.prices] == upstream.outcomes
-    assert [p.price for p in quote.prices] == _expected_prices(q)
+    assert [p.price for p in quote.prices] == expected_prices(q)
 
 
 async def test_post_trade_prices_are_the_prices_the_trade_would_leave(
@@ -411,14 +275,14 @@ async def test_post_trade_prices_are_the_prices_the_trade_would_leave(
 ) -> None:
     """"the post-trade price of every outcome": moving one `q_i` moves the
     whole softmax."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(session, upstream)
 
-    after = [a + d for a, d in zip(_Q, _delta(_Q, 0, "buy", _QUANTITY))]
+    after = [a + d for a, d in zip(Q, _delta(Q, 0, "buy", _QUANTITY))]
     assert [p.outcome_id for p in quote.post_trade_prices] == upstream.outcomes
-    assert [p.price for p in quote.post_trade_prices] == _expected_prices(after)
+    assert [p.price for p in quote.post_trade_prices] == expected_prices(after)
 
 
 async def test_a_buy_raises_the_traded_outcome_s_post_trade_price(
@@ -426,8 +290,8 @@ async def test_a_buy_raises_the_traded_outcome_s_post_trade_price(
 ) -> None:
     """The direction, separately from the value: a sign error shared by the
     code and the oracle would pass the equality test above."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(session, upstream, outcome=0, side="buy")
 
@@ -442,15 +306,15 @@ async def test_post_trade_prices_need_not_sum_to_exactly_one_at_scale_four(
     not normalise them. The loose bound catches a wrong price vector, not the
     rounding mode.
     """
-    upstream = _Upstream(outcomes=3)
+    upstream = Upstream(outcomes=3)
     q = [Decimal("137.5000"), Decimal("42.2500"), Decimal("88.0000")]
-    await _warm(session, upstream, q)
+    await warm(session, upstream, q)
 
     quote = await _quote(session, upstream)
 
     for vector in (quote.prices, quote.post_trade_prices):
         total = sum((p.price for p in vector), ZERO)
-        tolerance = _QUANTUM * len(vector)
+        tolerance = QUANTUM * len(vector)
         assert abs(total - Decimal(1)) <= tolerance, f"{total} is not near 1"
 
 
@@ -460,13 +324,13 @@ async def test_buying_then_selling_the_same_quantity_never_profits(
 ) -> None:
     """[F-3] #43's round-trip property, in quantized credits: the sell is
     priced against the `q` the buy would have left."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     bought = await _quote(session, upstream, side="buy")
 
-    after = [a + d for a, d in zip(_Q, _delta(_Q, 0, "buy", _QUANTITY))]
-    await _set_q(session, upstream, after)
+    after = [a + d for a, d in zip(Q, _delta(Q, 0, "buy", _QUANTITY))]
+    await set_q(session, upstream, after)
     sold = await _quote(session, upstream, side="sell")
 
     assert sold.total <= abs(bought.total), (
@@ -483,8 +347,8 @@ async def test_state_version_is_the_book_s_own_counter(
 ) -> None:
     """D-011: the book's own counter, the one the trade's staleness check
     compares."""
-    upstream = _Upstream()
-    book = await _warm(session, upstream)
+    upstream = Upstream()
+    book = await warm(session, upstream)
 
     quote = await _quote(session, upstream)
 
@@ -497,9 +361,9 @@ async def test_a_preview_after_an_intervening_version_bump_returns_the_newer_num
 ) -> None:
     """The reference tracks the book rather than being cached. The `UPDATE`
     stands in for a committed trade."""
-    upstream = _Upstream()
-    book = _entities().MarketBook
-    await _warm(session, upstream)
+    upstream = Upstream()
+    book = entities().MarketBook
+    await warm(session, upstream)
 
     before = await _quote(session, upstream)
 
@@ -524,12 +388,12 @@ async def test_a_sell_larger_than_that_outcome_s_q_is_refused(
     """The seventh criterion, at 409: against shares outstanding, not the
     caller's holding. Refused rather than clamped to a trade nobody asked for.
     """
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _quote(
-            session, upstream, outcome=1, side="sell", quantity=_Q[1] + _QUANTUM
+            session, upstream, outcome=1, side="sell", quantity=Q[1] + QUANTUM
         )
 
     assert raised.value.code == "insufficient_shares_outstanding"
@@ -540,19 +404,19 @@ async def test_a_sell_of_exactly_that_outcome_s_q_is_allowed(
     session: AsyncSession,
 ) -> None:
     """The boundary, on the permitted side: a `>=` would refuse the last sale."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    quote = await _quote(session, upstream, outcome=1, side="sell", quantity=_Q[1])
+    quote = await _quote(session, upstream, outcome=1, side="sell", quantity=Q[1])
 
-    assert quote.total == _expected_total(_Q, 1, "sell", _Q[1])
+    assert quote.total == _expected_total(Q, 1, "sell", Q[1])
 
 
 async def test_a_buy_is_never_refused_for_size(session: AsyncSession) -> None:
     """The rule is about shares outstanding and applies to sells only;
     affordability is the trade's question (D-014)."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(session, upstream, side="buy", quantity=Decimal("100000"))
 
@@ -564,8 +428,8 @@ async def test_a_sell_is_priced_with_no_holdings_check(
 ) -> None:
     """A caller holding nothing still gets a sell price: the holdings check
     only means anything under the trade's lock (D-012)."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     quote = await _quote(
         session, upstream, outcome=1, side="sell", quantity=Decimal("1.0000")
@@ -583,13 +447,13 @@ async def test_the_pricing_read_is_one_statement_joining_the_two_tables(
     """D-013, structurally: exactly one statement touches `market_books`, and
     it joins `market_outcomes`, so the warm path is a single read.
     """
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with _capture_sql() as statements:
+    with capture_sql() as statements:
         await _quote(session, upstream)
 
-    books = _mentioning(statements, "market_books")
+    books = mentioning(statements, "market_books")
     assert len(books) == 1, f"the warm path must read once, sent:\n{statements}"
     assert "market_outcomes" in books[0].lower(), (
         "`q` and `state_version` must come back from one statement (D-013), "
@@ -600,10 +464,10 @@ async def test_the_pricing_read_is_one_statement_joining_the_two_tables(
 async def test_a_warm_preview_takes_no_locks(session: AsyncSession) -> None:
     """D-012, as corrected by D-036: the pricing read is unlocked, or every
     keystroke in a market queues."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with _capture_sql() as statements:
+    with capture_sql() as statements:
         await _quote(session, upstream)
 
     locking = [s for s in statements if "for update" in s.lower()]
@@ -613,14 +477,14 @@ async def test_a_warm_preview_takes_no_locks(session: AsyncSession) -> None:
 async def test_a_warm_preview_writes_nothing(session: AsyncSession) -> None:
     """A warm preview writes nothing: the only write a preview may make is the
     first touch."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with _capture_sql() as statements:
+    with capture_sql() as statements:
         await _quote(session, upstream)
 
-    assert _writes(statements) == [], (
-        f"a warm preview must not write:\n{_writes(statements)}"
+    assert writes(statements) == [], (
+        f"a warm preview must not write:\n{writes(statements)}"
     )
 
 
@@ -629,10 +493,10 @@ async def test_a_preview_changes_nothing_on_a_warm_market(
 ) -> None:
     """The same claim as state: no entries, and the book row unchanged. It
     fails differently from the statement capture."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    before = await _book_row(session, upstream)
+    before = await book_row(session, upstream)
     snapshot = (
         before.market_id,
         before.liquidity_b,
@@ -649,7 +513,7 @@ async def test_a_preview_changes_nothing_on_a_warm_market(
     for _ in range(3):
         await _quote(session, upstream)
 
-    after = await _book_row(session, upstream)
+    after = await book_row(session, upstream)
     assert (
         after.market_id,
         after.liquidity_b,
@@ -673,20 +537,20 @@ async def test_the_first_preview_on_a_cold_market_opens_the_book(
     session: AsyncSession,
 ) -> None:
     """The ninth criterion, and D-037: the preview is a market's first toucher."""
-    upstream = _Upstream()
+    upstream = Upstream()
 
     quote = await _quote(session, upstream)
 
     assert quote.market_id == upstream.market_id
     assert upstream.calls == 1
 
-    book = await _book_row(session, upstream)
-    assert book.liquidity_b == _B
+    book = await book_row(session, upstream)
+    assert book.liquidity_b == B
     assert book.state_version == 0
 
     from service import accounts  # noqa: PLC0415
 
-    assert await accounts.balance_of(session, book.pool_account_id) == _SUBSIDY
+    assert await accounts.balance_of(session, book.pool_account_id) == SUBSIDY
 
 
 async def test_a_cold_market_prices_from_the_book_it_just_opened(
@@ -694,11 +558,11 @@ async def test_a_cold_market_prices_from_the_book_it_just_opened(
 ) -> None:
     """"and prices from it": a binary market opened at `q = 0` quotes 0.5
     each."""
-    upstream = _Upstream()
+    upstream = Upstream()
 
     quote = await _quote(session, upstream)
 
-    assert [p.price for p in quote.prices] == _expected_prices([ZERO, ZERO])
+    assert [p.price for p in quote.prices] == expected_prices([ZERO, ZERO])
     assert [p.price for p in quote.prices] == [Decimal("0.5000"), Decimal("0.5000")]
     assert quote.total == _expected_total([ZERO, ZERO], 0, "buy", _QUANTITY)
 
@@ -707,7 +571,7 @@ async def test_the_second_preview_makes_no_http_call_at_all(
     session: AsyncSession,
 ) -> None:
     """"once per market ever": after the first, no call to market_service."""
-    upstream = _Upstream()
+    upstream = Upstream()
 
     await _quote(session, upstream)
     assert upstream.calls == 1
@@ -722,8 +586,8 @@ async def test_the_cold_path_forwards_the_caller_s_own_token(
     session: AsyncSession,
 ) -> None:
     """D-018: the caller's own token goes upstream, and none is minted."""
-    upstream = _Upstream()
-    token = _token()
+    upstream = Upstream()
+    token = fresh_token()
 
     await _quote(session, upstream, access_token=token)
 
@@ -735,9 +599,9 @@ async def test_the_cold_path_takes_the_handoff_s_locks(
 ) -> None:
     """D-036: the cold path does take the handoff's locks. Do not delete one to
     make "preview takes no locks" literally true."""
-    upstream = _Upstream()
+    upstream = Upstream()
 
-    with _capture_sql() as statements:
+    with capture_sql() as statements:
         await _quote(session, upstream)
 
     locking = [s for s in statements if "for update" in s.lower()]
@@ -751,7 +615,7 @@ async def test_a_preview_on_a_closed_market_returns_a_number(
     session: AsyncSession,
 ) -> None:
     """A preview on a closed market returns a number (ADR 0017)."""
-    upstream = _Upstream(status="closed")
+    upstream = Upstream(status="closed")
 
     quote = await _quote(session, upstream)
 
@@ -764,8 +628,8 @@ async def test_a_preview_on_a_warm_closed_market_makes_no_http_call(
     """ADR 0017: a preview never asks market_service whether a market is open.
     A closed market is the input that would catch a status check being added.
     """
-    upstream = _Upstream(status="closed")
-    await _warm(session, upstream)
+    upstream = Upstream(status="closed")
+    await warm(session, upstream)
     calls_after_the_first_touch = upstream.calls
 
     quote = await _quote(session, upstream)
@@ -785,17 +649,17 @@ async def test_an_unknown_outcome_id_is_refused_as_unknown_outcome(
 ) -> None:
     """The tenth criterion: 422, not 404, because the market was found and the
     parameter is wrong."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _preview().quote(
             session,
             upstream.market_id,
             outcome_id=uuid.uuid4(),
             side=_pricing().Side.BUY,
             quantity=_QUANTITY,
-            access_token=_token(),
+            access_token=fresh_token(),
             transport=upstream.transport,
         )
 
@@ -809,26 +673,26 @@ async def test_an_unknown_outcome_on_a_cold_market_leaves_the_funded_book_behind
     """Deliberate, not a leak: the book a bad outcome id opens is the one the
     next honest request would have created (D-037).
     """
-    upstream = _Upstream()
+    upstream = Upstream()
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _preview().quote(
             session,
             upstream.market_id,
             outcome_id=uuid.uuid4(),
             side=_pricing().Side.BUY,
             quantity=_QUANTITY,
-            access_token=_token(),
+            access_token=fresh_token(),
             transport=upstream.transport,
         )
     assert raised.value.code == "unknown_outcome"
 
-    book = await _book_row(session, upstream)
-    assert book.liquidity_b == _B
+    book = await book_row(session, upstream)
+    assert book.liquidity_b == B
 
     from service import accounts  # noqa: PLC0415
 
-    assert await accounts.balance_of(session, book.pool_account_id) == _SUBSIDY
+    assert await accounts.balance_of(session, book.pool_account_id) == SUBSIDY
 
     later = await _quote(session, upstream)
     assert later.total < ZERO
@@ -839,14 +703,14 @@ async def test_an_unreachable_market_service_leaves_nothing_behind(
     session: AsyncSession,
 ) -> None:
     """D-030's 503, and nothing written afterwards."""
-    upstream = _Upstream()
+    upstream = Upstream()
 
-    with pytest.raises(_errors().MarketTermsUnavailable):
+    with pytest.raises(errors().MarketTermsUnavailable):
         await _quote(session, upstream, transport=upstream.dead)
 
     await session.rollback()
 
-    book = _entities().MarketBook
+    book = entities().MarketBook
     assert (
         await session.execute(
             select(book).where(book.market_id == upstream.market_id)
@@ -860,9 +724,9 @@ async def test_an_unreachable_market_service_leaves_nothing_behind(
 async def test_an_unpublished_market_gets_no_quote(session: AsyncSession) -> None:
     """The eleventh criterion, inherited from `books.ensure_open` rather than
     restated."""
-    upstream = _Upstream(published_at=None)
+    upstream = Upstream(published_at=None)
 
-    with pytest.raises(_errors().MarketNotPublished):
+    with pytest.raises(errors().MarketNotPublished):
         await _quote(session, upstream)
 
 
@@ -875,7 +739,7 @@ async def test_the_ledger_still_sums_to_zero_after_a_run_of_previews(
     """Three markets opened by preview, each funded once, and the whole ledger
     still sums to zero."""
     for _ in range(3):
-        upstream = _Upstream()
+        upstream = Upstream()
         await _quote(session, upstream)
         await _quote(session, upstream)
 
@@ -906,21 +770,21 @@ async def test_a_sub_tick_sell_is_refused_rather_than_quoted_at_zero(
     same sub-tick buy is charged a tick. Driven through `quote` to show the
     preview calls `quantize_cost`.
     """
-    upstream = _Upstream()
-    await _warm(session, upstream, _SATURATED)
+    upstream = Upstream()
+    await warm(session, upstream, _SATURATED)
 
     raw = _raw_cost(_SATURATED, 1, "sell", _HUNDRED).copy_abs()
-    assert ZERO < raw < _QUANTUM, (
+    assert ZERO < raw < QUANTUM, (
         "this fixture is meant to price a real trade at under one tick; "
         f"got {raw}, so the assertions below prove nothing"
     )
 
-    with pytest.raises(_errors().ProceedsBelowTick):
+    with pytest.raises(errors().ProceedsBelowTick):
         await _quote(session, upstream, outcome=1, side="sell", quantity=_HUNDRED)
 
     buy = await _quote(session, upstream, outcome=1, side="buy", quantity=_HUNDRED)
 
-    assert buy.total == -_QUANTUM
+    assert buy.total == -QUANTUM
 
 
 async def test_a_quantity_that_prices_above_the_column_is_refused(
@@ -928,10 +792,10 @@ async def test_a_quantity_that_prices_above_the_column_is_refused(
 ) -> None:
     """D-040. A cost `Numeric(18, 4)` cannot hold is refused, not quoted for a
     trade that would then fail to store."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with pytest.raises(_errors().QuantityTooLarge):
+    with pytest.raises(errors().QuantityTooLarge):
         await _quote(
             session, upstream, quantity=Decimal("1000000000000000.0000")
         )
@@ -941,8 +805,8 @@ async def test_an_ordinary_large_quantity_is_still_quoted(
     session: AsyncSession,
 ) -> None:
     """The ceiling is the column's: an absurd but storable cost is priced."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     result = await _quote(session, upstream, quantity=Decimal("10000000000000.0000"))
 
@@ -950,13 +814,12 @@ async def test_an_ordinary_large_quantity_is_still_quoted(
     assert result.total < ZERO
 
 
-
 # =========================================================================
 # Precision, zero totals and raw-string sides
 # =========================================================================
-async def _set_b(session: AsyncSession, upstream: _Upstream, b: Decimal) -> None:
-    """`b` written directly, as `_set_q` writes `q`: `_Upstream` serves one `b`."""
-    book = _entities().MarketBook
+async def _set_b(session: AsyncSession, upstream: Upstream, b: Decimal) -> None:
+    """`b` written directly, as `set_q` writes `q`: `Upstream` serves one `b`."""
+    book = entities().MarketBook
     await session.execute(
         update(book).where(book.market_id == upstream.market_id).values(liquidity_b=b)
     )
@@ -972,11 +835,11 @@ async def test_a_sell_s_magnitude_is_not_rounded_up_by_the_ambient_context(
     digits. At 28 that rounds up to `100.0000...`, and `ROUND_FLOOR` then
     pays the trader a tick more than the proceeds.
     """
-    upstream = _Upstream()
+    upstream = Upstream()
     q = [Decimal("7000"), Decimal("0")]
-    await _warm(session, upstream, q)
+    await warm(session, upstream, q)
 
-    raw = cost_to_trade(q, _B, [Decimal(-100), ZERO]).copy_abs()
+    raw = cost_to_trade(q, B, [Decimal(-100), ZERO]).copy_abs()
     assert raw < Decimal(100), f"the engine's own answer must be under 100; got {raw}"
 
     quote = await _quote(
@@ -997,11 +860,11 @@ async def test_a_buy_priced_at_exactly_zero_is_refused(
     session: AsyncSession, q: list[Decimal], b: Decimal
 ) -> None:
     """100 real shares for zero credits, refused rather than quoted."""
-    upstream = _Upstream()
-    await _warm(session, upstream, q)
+    upstream = Upstream()
+    await warm(session, upstream, q)
     await _set_b(session, upstream, b)
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream, outcome=1, side="buy", quantity=Decimal("100"))
 
     assert raised.value.code == "cost_below_tick"
@@ -1012,10 +875,10 @@ async def test_a_buy_whose_resulting_q_the_column_cannot_hold_is_refused(
     session: AsyncSession,
 ) -> None:
     """The cost is one tick and fits; the `q` it leaves is 15 integer digits."""
-    upstream = _Upstream()
-    await _warm(session, upstream, [Decimal("99999999999999.9999"), ZERO])
+    upstream = Upstream()
+    await warm(session, upstream, [Decimal("99999999999999.9999"), ZERO])
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream, outcome=0, quantity=Decimal("0.0001"))
 
     assert raised.value.code == "quantity_too_large"
@@ -1026,10 +889,10 @@ async def test_a_quantity_beyond_the_ambient_precision_is_refused_not_raised(
     session: AsyncSession,
 ) -> None:
     """`1E+25` quantized at 28 digits is `InvalidOperation`, which is a 500."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream, quantity=Decimal("1E+25"))
 
     assert raised.value.code == "quantity_too_large"
@@ -1037,8 +900,8 @@ async def test_a_quantity_beyond_the_ambient_precision_is_refused_not_raised(
 
 async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> None:
     """`"buy" is Side.BUY` is False, so an unconverted buy priced as a sell."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
     enum = await _quote(session, upstream, side="buy")
     raw = await _preview().quote(
@@ -1047,7 +910,7 @@ async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> Non
         outcome_id=upstream.outcomes[0],
         side="buy",
         quantity=_QUANTITY,
-        access_token=_token(),
+        access_token=fresh_token(),
         transport=upstream.transport,
     )
 
@@ -1057,17 +920,17 @@ async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> Non
 async def test_a_raw_string_sell_still_meets_the_no_shorting_rule(
     session: AsyncSession,
 ) -> None:
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
 
-    with pytest.raises(_errors().InsufficientSharesOutstanding):
+    with pytest.raises(errors().InsufficientSharesOutstanding):
         await _preview().quote(
             session,
             upstream.market_id,
             outcome_id=upstream.outcomes[1],
             side="sell",
-            quantity=_Q[1] + _QUANTUM,
-            access_token=_token(),
+            quantity=Q[1] + QUANTUM,
+            access_token=fresh_token(),
             transport=upstream.transport,
         )
 
@@ -1080,7 +943,7 @@ class _Stalled:
     stalls until `release`."""
 
     def __init__(
-        self, upstream: _Upstream, probe: Callable[[], dict[str, object]]
+        self, upstream: Upstream, probe: Callable[[], dict[str, object]]
     ) -> None:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
@@ -1095,7 +958,7 @@ class _Stalled:
             self.seen.append(self._probe())
             self.entered.set()
             await self.release.wait()
-            return httpx.Response(200, json=self._upstream._body)
+            return httpx.Response(200, json=self._upstream.body)
 
         return httpx.MockTransport(handler)
 
@@ -1125,7 +988,7 @@ async def test_a_cold_preview_holds_no_connection_while_market_service_is_slow(
     Checked from the session, the pool and Postgres, with exactly one call.
     Remove the rollback in `books.ensure_open` and this goes red.
     """
-    upstream = _Upstream()
+    upstream = Upstream()
     pool = get_engine().pool
     stalled = _Stalled(
         upstream,
@@ -1156,11 +1019,11 @@ async def test_a_book_with_no_outcome_rows_is_a_named_error_not_an_index_error(
 ) -> None:
     """A book with no outcome rows reads as no book twice; the re-read is a
     named error, not an `IndexError`."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
     await strip_outcomes(session, upstream.market_id)
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream)
 
     assert raised.value.code == "market_book_incomplete"
@@ -1172,9 +1035,9 @@ async def test_the_oracle_agrees_with_the_preview_past_the_ambient_precision(
 ) -> None:
     """`_expected_total` takes `copy_abs()`, like the preview (D-042), on the
     fixture where `abs()` would differ."""
-    upstream = _Upstream()
+    upstream = Upstream()
     q = [Decimal("7000"), ZERO]
-    await _warm(session, upstream, q)
+    await warm(session, upstream, q)
 
     quote = await _quote(session, upstream, outcome=0, side="sell", quantity=_HUNDRED)
 
@@ -1186,8 +1049,8 @@ async def test_every_display_figure_goes_through_one_half_up_helper(
 ) -> None:
     """Prices, post-trade prices and `average_price` share one rounding helper
     (D-052)."""
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
     marker = Decimal("0.5000")
     monkeypatch.setattr(
         _preview().book_prices, "quantize_price", lambda value: marker
@@ -1211,9 +1074,9 @@ async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
 
     from core.errors import LedgerError  # noqa: PLC0415
 
-    upstream = _Upstream()
-    await _warm(session, upstream)
-    outcome = _entities().MarketOutcome
+    upstream = Upstream()
+    await warm(session, upstream)
+    outcome = entities().MarketOutcome
     await session.execute(
         delete(outcome).where(
             outcome.market_id == upstream.market_id, outcome.position == 1
@@ -1229,7 +1092,7 @@ async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
         f"{type(raised.value).__name__}: {raised.value!r}"
     )
     assert raised.value.code == "market_book_incomplete"
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream)
 
     assert raised.value.code == "market_book_incomplete"
@@ -1245,11 +1108,11 @@ async def test_a_book_whose_b_cannot_price_is_a_named_error_not_a_value_error(
     """The read side of the `b` rule: the ingress guard protects new books
     only, and NaN is storable and slips `_require_positive_b`.
     """
-    upstream = _Upstream()
-    await _warm(session, upstream)
+    upstream = Upstream()
+    await warm(session, upstream)
     await _set_b(session, upstream, Decimal(bad_b))
 
-    with pytest.raises(_errors().LedgerError) as raised:
+    with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream)
 
     assert raised.value.code == "market_book_incomplete"
