@@ -1,18 +1,9 @@
 """Shared fixtures.
 
-Unlike the other four suites there is no database here, because there is no
-database anywhere in this service. What this one needs instead is Redis, and
-only for `service/test_bus.py` and the end-to-end test in
-`controller/test_ws_routes.py` — everything else drives the hub directly and
-runs with nothing else on the machine at all.
-
-Start it with `docker compose up -d redis` from the repo root.
-
-Tokens are minted with PyJWT directly rather than by importing anything from
-the auth service. That is deliberate: this service has no minting code and
-never will, so a test that signs its own token exercises the same path a real
-handshake takes, and it stays honest about the fact that the two services agree
-on a wire format rather than on an implementation.
+No database, because this service has none. Redis is needed only by
+`service/test_bus.py` and the delivery tests in `controller/test_ws_routes.py`:
+`docker compose up -d redis`. Tokens are signed with PyJWT directly, because
+this service has no minting code and must not import the auth service's.
 """
 
 from __future__ import annotations
@@ -24,9 +15,8 @@ import uuid
 from shared.testing import load_repo_env
 
 
-# Before any project module is imported. `get_settings` is lru_cached, so the
-# first call wins, and importing main.py triggers it. [F-6] #76 moved the
-# reader itself to `shared/testing.py`; it was identical in all five suites.
+# Everything down to the project imports runs first: `get_settings` is cached
+# on first call, and importing main.py triggers it.
 load_repo_env()
 
 _test_redis = os.environ.get("REALTIME_TEST_REDIS_URL") or os.environ.get("REDIS_URL")
@@ -38,11 +28,8 @@ if not _test_redis:
         "Start it first with:  docker compose up -d redis"
     )
 
-# Set before any project module is imported: core.config.get_settings is cached
-# on first call, and importing main.py triggers it.
 os.environ["REDIS_URL"] = _test_redis
-# Fresh per run. Nothing signed here outlives the process, and no key-shaped
-# string needs to sit in the repository.
+# Fresh per run, so no key-shaped string sits in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 
 from datetime import UTC, datetime, timedelta  # noqa: E402
@@ -69,9 +56,7 @@ REDIS_UNREACHABLE = (
 class Recorder:
     """A `service.subscriptions.Subscriber` that keeps what it was handed.
 
-    Lives here rather than in the file that happens to need it first, because
-    three suites assert on what the fan-out delivered and a double that drifted
-    between them would have them testing subtly different contracts.
+    Shared, so every suite asserting on the fan-out uses the same double.
     """
 
     def __init__(self) -> None:
@@ -92,13 +77,8 @@ def mint_token(
 ) -> str:
     """Sign a token the way the auth service does, for tests only.
 
-    Defaults to TRADER because that is the only caller this service has: a
-    price is public to every signed-in user and no route here branches on the
-    role.
-
-    The overridable issuer, secret and lifetime are what let a test prove this
-    service rejects a token from a system it does not trust, and that it closes
-    a socket whose token has run out.
+    Issuer, secret and lifetime are overridable so a test can present a
+    foreign or expiring token.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -129,12 +109,7 @@ def make_event(
     yes: str = "0.6000",
     no: str = "0.4000",
 ) -> "PriceEvent":
-    """A well-formed price event for a binary market.
-
-    The two outcome ids are generated per call rather than fixed, because
-    nothing in this service joins on them and a test that shared them across
-    markets would be asserting a coincidence.
-    """
+    """A well-formed price event for a binary market, with fresh outcome ids."""
     return PriceEvent(
         market_id=market_id,
         state_version=state_version,
@@ -150,12 +125,8 @@ def make_event(
 def fresh_singletons():
     """Give every test its own hub and version gate.
 
-    Autouse and unconditional, unlike the database fixtures in the other
-    suites, because these are process-wide dictionaries rather than a
-    connection somebody has to ask for. A gate that survived a test would
-    silently drop the next test's first event for having a lower version than
-    one that no longer exists, and it would do it in whichever test happened to
-    run second.
+    Autouse: a gate that survived one test would silently drop the next test's
+    first event as stale.
     """
     reset_hub()
     reset_gate()
@@ -181,13 +152,9 @@ def redis_url() -> str:
 
 @pytest.fixture
 def client():
-    """A TestClient with the app's lifespan running.
+    """A TestClient with the app's lifespan, and so the bus, running.
 
-    The `with` block is what starts the bus, so a test that uses this fixture is
-    a test with a live subscription. Imported inside the fixture rather than at
-    module scope so that running only the pure layers never constructs the
-    application, in keeping with the rule that nothing below the controller
-    knows the transport exists.
+    Imported here so the pure-layer suites never construct the application.
     """
     from fastapi.testclient import TestClient  # noqa: PLC0415
 

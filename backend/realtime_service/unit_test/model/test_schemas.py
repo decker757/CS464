@@ -1,9 +1,5 @@
-"""The wire contract, in both directions.
-
-These are the tests [T-2] #22 and [X-4] #37 are really relying on: this file is
-where the shape they code against is pinned, and `docs/api/realtime-service.md`
-is prose that cannot fail a build.
-"""
+"""The wire contract, in both directions. This file, not the prose in
+`docs/api/realtime-service.md`, is what pins it."""
 
 from __future__ import annotations
 
@@ -41,10 +37,7 @@ def test_a_well_formed_event_round_trips(market_id: uuid.UUID) -> None:
 
 
 def test_prices_are_strings_on_the_wire(market_id: uuid.UUID) -> None:
-    """Not JSON numbers, for the reason `ledger_service` sends balances as
-    strings: a JSON number is an IEEE double by the time a browser has parsed
-    it. The ledger keeps its arithmetic exact and handing the result through a
-    double on the last hop throws that away."""
+    """Not JSON numbers, which a browser parses as doubles."""
     frame = make_event(market_id).frame()
 
     assert frame["prices"][0]["price"] == "0.6000"
@@ -111,21 +104,15 @@ def test_a_negative_state_version_is_refused(market_id: uuid.UUID) -> None:
 
 
 def test_prices_that_do_not_sum_to_one_are_relayed(market_id: uuid.UUID) -> None:
-    """Deliberate, and the reason is worth stating as a test rather than only a
-    comment. LMSR marginal prices do sum to one, but this service does not own
-    that invariant and cannot check it. A relay that rejected a correct price
-    over a rounding tolerance would be worse than one that relays whatever the
-    authority said."""
+    """Deliberate: this service does not own that invariant and cannot check
+    it, so it must not reject a price over it."""
     event = make_event(market_id, yes="0.9000", no="0.9000")
 
     assert PriceEvent.model_validate_json(event.model_dump_json()) is not None
 
 
 def test_occurred_at_keeps_its_timezone(market_id: uuid.UUID) -> None:
-    """CLAUDE.md records that naive-versus-aware timestamps have already caused
-    bugs here. This one is display-only — ordering is `state_version`'s job —
-    but a naive timestamp rendered in the browser's local zone is still an hour
-    of somebody's afternoon."""
+    """Display-only, but a naive timestamp renders in the browser's local zone."""
     frame = make_event(market_id).frame()
 
     assert datetime.fromisoformat(frame["occurred_at"]).tzinfo is not None
@@ -159,10 +146,8 @@ def test_a_market_id_that_is_not_a_uuid_is_refused() -> None:
 
 
 def test_an_extra_field_on_a_command_is_ignored(market_id: uuid.UUID) -> None:
-    """The opposite of `PriceEvent`, on purpose. A producer is one service we
-    control and a contract change there should be loud; a client is a browser
-    that may be a version behind, and refusing its whole command over a field
-    this build does not read would break a page to no benefit."""
+    """The opposite of `PriceEvent`, on purpose: a client may be a version
+    ahead, and refusing its command would break a page for nothing."""
     command = ClientCommand.model_validate(
         {"action": "subscribe", "market_id": str(market_id), "since": 4}
     )

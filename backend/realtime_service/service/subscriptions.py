@@ -1,20 +1,9 @@
-"""Who is watching which market. [F-2] #42
+"""Who is watching which market: the fan-out, and nothing else. [F-2] #42
 
-The fan-out, and nothing else. This module holds no WebSocket type and imports
-nothing from `controller`: a subscriber here is anything with an `enqueue`
-method, which is what lets the whole of the routing logic be tested without a
-socket, a browser or an event loop full of network.
-
-The concrete subscriber — the one that owns a real WebSocket, a send queue and
-a pump — is `controller/connection.py`, because a send queue is transport. The
-rule that a market's event reaches exactly the connections watching that market
-is a business rule, and it lives here.
-
-**Not shared between processes, and does not need to be.** Each replica holds
-its own connections and its own map. Redis delivers every event to every
-replica, and each forwards to whoever it is holding. Nothing here has to know
-that another replica exists, which is the property that makes this service
-horizontally scalable without any coordination at all.
+Knows no WebSocket: a subscriber is anything with `enqueue`, so the routing
+rules are tested without a socket. The real subscriber is
+`controller/connection.py`. Each replica keeps its own map; replicas coordinate
+about nothing. ADR 0010.
 """
 
 from __future__ import annotations
@@ -27,32 +16,21 @@ from core.errors import TooManySubscriptions
 
 
 class Subscriber(Protocol):
-    """Anything that can be handed a frame.
-
-    A Protocol rather than a base class so that the test double is a five-line
-    class that collects dicts, rather than something that has to inherit a
-    WebSocket's worth of machinery to be allowed into a set.
-    """
+    """Anything that can be handed a frame. A Protocol, so a test double needs no base class."""
 
     def enqueue(self, frame: dict[str, Any]) -> None:
         """Take this frame, or arrange to be dropped.
 
-        Must not block and must not raise. A fan-out that could raise would let
-        one broken connection interrupt delivery to everyone after it in the
-        loop, and the ordering of a `set` is not something anybody should be
-        able to be unlucky about.
+        Must not block and must not raise, or one broken connection would
+        interrupt delivery to everyone after it in the loop.
         """
 
 
 def _discard[K, V](index: dict[K, set[V]], key: K, value: V) -> None:
     """Remove one value from one entry of a set index, pruning an emptied entry.
 
-    Dropped rather than left empty because both of this hub's maps are
-    long-lived and only ever gain keys otherwise. Markets accumulate for the
-    life of the platform and connections come and go, so an index that never
-    pruned would be a slow leak in the one process meant to stay up for days —
-    and it would quietly make `len(index)` mean something other than what its
-    callers read it as.
+    Both of the hub's maps live as long as the process. Without pruning they
+    only grow, and `len(index)` stops meaning "entries in use".
     """
     members = index.get(key)
     if members is None:
@@ -64,14 +42,10 @@ def _discard[K, V](index: dict[K, set[V]], key: K, value: V) -> None:
 
 
 class Hub:
-    """The connections, indexed both ways.
+    """The subscriptions, indexed both ways.
 
-    `_by_market` answers "who wants this event", which is every broadcast.
-    `_by_subscriber` answers "what was this connection watching", which is
-    every disconnect. Keeping both is a few bytes per subscription and it is
-    what stops a disconnect from being a scan of every market on the platform —
-    connections drop constantly, and a price feed that got slower the more
-    markets existed would get slower for a reason unrelated to load.
+    `_by_market` serves every broadcast; `_by_subscriber` serves every
+    disconnect, so dropping a connection is not a scan of every market.
     """
 
     def __init__(self) -> None:
@@ -81,23 +55,11 @@ class Hub:
     # -- membership -------------------------------------------------------
 
     def subscribe(self, subscriber: Subscriber, market_id: uuid.UUID) -> None:
-        """Idempotent. Subscribing twice is one subscription.
+        """Subscribe, idempotently. Raises `TooManySubscriptions` past the ceiling.
 
-        A client that resubscribes after a reconnect it did not notice should
-        not receive every price twice, and sets make that true for free rather
-        than by the client being careful.
-
-        Raises `TooManySubscriptions` past the per-connection ceiling. The check
-        lives here rather than in the route because it is a rule about this
-        hub's own state, and a rule enforced by its only caller is a rule the
-        second caller will not enforce — a bulk-subscribe command or an admin
-        tool would silently bypass a cap held in the controller. It also means
-        the ceiling is tested without a socket, which is where the backend
-        conventions put a business rule.
-
-        The already-subscribed case is checked first, so a client re-sending a
-        subscription it already holds is never refused for a ceiling it is not
-        pushing against. The limit counts markets, not commands.
+        The ceiling is enforced here, not in the route, so no second caller can
+        bypass it. A market already held is never refused: the limit counts
+        markets, not commands.
         """
         if (
             not self.is_subscribed(subscriber, market_id)
@@ -110,32 +72,17 @@ class Hub:
         self._by_subscriber.setdefault(subscriber, set()).add(market_id)
 
     def unsubscribe(self, subscriber: Subscriber, market_id: uuid.UUID) -> None:
-        """Also idempotent, and silent about a subscription that was not there.
+        """Idempotent, and silent about a subscription that was not there.
 
-        The client's view of what it is watching and this one can differ by a
-        frame in flight, and an error for unsubscribing from something already
-        gone would be an error for a race the client cannot avoid.
-
-        Both maps go through the same helper. Writing the cleanup out twice by
-        hand is exactly how they came to disagree: the market side pruned its
-        empty sets and the subscriber side did not, so a client that
-        unsubscribed from its last market and stayed connected was still
-        counted by `connection_count`.
+        The client's view can lag this one by a frame in flight. Both maps must
+        prune through `_discard`; cleanup written by hand for one of them lets
+        the two disagree and `connection_count` over-count.
         """
         _discard(self._by_market, market_id, subscriber)
         _discard(self._by_subscriber, subscriber, market_id)
 
     def forget(self, subscriber: Subscriber) -> None:
-        """Remove a subscriber from every market it was watching.
-
-        Called on disconnect, and it must be safe to call for a connection that
-        never subscribed to anything — which is every connection that was closed
-        for an expired token before it said a word.
-
-        No separate cleanup of `_by_subscriber` afterwards: `_discard` drops the
-        key with the last market, and `subscribe` is the only thing that creates
-        one, so an entry holding an empty set cannot exist to be left behind.
-        """
+        """Remove a subscriber from every market. Safe for one that never subscribed."""
         for market_id in list(self._by_subscriber.get(subscriber, ())):
             self.unsubscribe(subscriber, market_id)
 
@@ -144,10 +91,8 @@ class Hub:
     def broadcast(self, market_id: uuid.UUID, frame: dict[str, Any]) -> int:
         """Hand this frame to everyone watching this market. Returns how many.
 
-        Iterates a copy of the set, because a subscriber that fails while being
-        enqueued to arranges its own removal, and mutating a set mid-iteration
-        raises. The copy is the size of the audience for one market, not of the
-        platform.
+        Iterates a copy, defensively: a failing subscriber is removed later
+        by `forget`, but nothing here should break if one is removed mid-loop.
         """
         watchers = self._by_market.get(market_id)
         if not watchers:
@@ -160,35 +105,23 @@ class Hub:
     # -- introspection ----------------------------------------------------
 
     def subscriber_count(self, market_id: uuid.UUID) -> int:
+        """How many subscribers this market has."""
         return len(self._by_market.get(market_id, ()))
 
     def is_subscribed(self, subscriber: Subscriber, market_id: uuid.UUID) -> bool:
-        """Whether this connection is already watching this market.
-
-        Asked before the per-connection limit is enforced, so that a client
-        re-sending a subscribe it already holds is not refused for being at a
-        ceiling it is not actually pushing against. Subscribing is idempotent;
-        the limit counts markets, not commands.
-        """
+        """Whether this connection is already watching this market."""
         return market_id in self._by_subscriber.get(subscriber, ())
 
     def subscription_count(self, subscriber: Subscriber) -> int:
         """How many markets this connection is watching.
 
-        Read by the route to enforce `MAX_SUBSCRIPTIONS_PER_CONNECTION`. Asked
-        of the hub rather than tracked on the connection so that there is one
-        answer to the question rather than two that can disagree.
+        Asked of the hub rather than counted on the connection, so there is one answer.
         """
         return len(self._by_subscriber.get(subscriber, ()))
 
     @property
     def connection_count(self) -> int:
-        """Subscribers holding at least one subscription.
-
-        Not the number of open sockets: a connection that has authenticated and
-        not yet subscribed is unknown to the hub, which is the correct place for
-        it to be.
-        """
+        """Subscribers holding at least one subscription; not the open sockets."""
         return len(self._by_subscriber)
 
 
@@ -196,12 +129,7 @@ _hub: Hub | None = None
 
 
 def get_hub() -> Hub:
-    """The process-wide hub.
-
-    A module-level singleton with an accessor, the same shape as
-    `core/database.py`'s `get_engine` in the other services, and reset the same
-    way between tests.
-    """
+    """The process-wide hub."""
     global _hub
     if _hub is None:
         _hub = Hub()
@@ -209,10 +137,6 @@ def get_hub() -> Hub:
 
 
 def reset_hub() -> None:
-    """Drop the hub. For tests, and for nothing else.
-
-    The production lifespan never calls this: a process that has lost its hub
-    has lost every connection's routing while the sockets are still open.
-    """
+    """Drop the hub. For tests only: in production it would orphan every open socket."""
     global _hub
     _hub = None

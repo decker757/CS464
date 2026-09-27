@@ -1,20 +1,8 @@
-"""One client's socket, and the queue in front of it. [F-2] #42
+"""One client's socket and the bounded queue in front of it. [F-2] #42
 
-This is the concrete `service.subscriptions.Subscriber`. It lives in the
-controller because everything in it is transport: a WebSocket, a send buffer
-and the frames on the wire. The hub that decides *which* connections get an
-event knows none of this.
-
-**Why there is a queue at all.** The obvious implementation broadcasts by
-awaiting `send_json` on each subscriber in turn. One client on a bad connection
-then stalls the loop, and every other subscriber to that market waits behind it
-— on a feed whose entire value is being faster than a page refresh. The
-alternative of firing a task per send does not block, but it gives up ordering:
-two prices for one market can land out of order on one socket, which is exactly
-the bug `service/ordering.py` exists to prevent, reintroduced one layer lower.
-
-A queue per connection with a single pump keeps delivery ordered per socket and
-keeps one slow client's problem to itself.
+The concrete `service.subscriptions.Subscriber`, in `controller` because a send
+queue is transport. One queue and one pump per connection keeps delivery
+ordered per socket and keeps a slow client's problem its own. ADR 0010.
 """
 
 from __future__ import annotations
@@ -41,16 +29,8 @@ class Connection:
     def enqueue(self, frame: dict[str, Any]) -> None:
         """Take a frame for delivery. Never blocks, never raises.
 
-        The contract `service.subscriptions.Subscriber` requires, and the reason
-        it requires it: this is called from inside the bus's fan-out loop, where
-        an exception would interrupt delivery to every subscriber after this one
-        in the set.
-
-        Every outbound frame goes through here, including command
-        acknowledgements, so that a `subscribed` reply cannot overtake a price
-        that was already queued. A client that saw the price first would have
-        good reason to discard it as belonging to a market it had not finished
-        subscribing to.
+        It runs inside the hub's fan-out loop. Acknowledgements go through here
+        too, so a `subscribed` reply cannot overtake a price already queued.
         """
         if self._failed.is_set():
             return
@@ -58,20 +38,16 @@ class Connection:
         try:
             self._queue.put_nowait(frame)
         except asyncio.QueueFull:
-            # Not an error to raise here — the caller is the fan-out. Recorded
-            # instead, and the connection's supervisor acts on it.
+            # Recorded, not raised: the caller is the fan-out.
             self.fail(SlowConsumer())
 
     # -- lifecycle --------------------------------------------------------
 
     def fail(self, error: RealtimeError) -> None:
-        """Record why this connection must close. First reason wins.
+        """Record why this connection must close. The first reason wins.
 
-        First rather than last, because the first is the cause and everything
-        after it is a consequence: a socket dropped for an expired token will
-        also stop draining its queue, and reporting `slow_consumer` to a client
-        whose real problem is an expired session would send it to debug its
-        network instead of refreshing its token.
+        Today only `enqueue` calls this, with `SlowConsumer`; recording once
+        means later overflows cannot replace the reason already given.
         """
         if self._failed.is_set():
             return
@@ -95,4 +71,5 @@ class Connection:
 
     @property
     def pending(self) -> int:
+        """Frames queued and not yet sent."""
         return self._queue.qsize()

@@ -1,12 +1,7 @@
-"""The Redis subscription, against a real Redis.
+"""The Redis subscription, against a real Redis (`docker compose up -d redis`).
 
-Not a fake, for the same reason the other four suites run against Postgres
-rather than SQLite: the claims here are about what the bus actually does — that
-`listen` yields subscription confirmations as well as messages, that a payload
-arrives as text, that a publish to a channel nobody has subscribed to yet is
-simply gone. A double would agree with whatever this file assumed.
-
-Start it with `docker compose up -d redis` from the repo root.
+Not a fake: the claims here are about what Redis actually does, and a double
+would agree with whatever this file assumed.
 """
 
 from __future__ import annotations
@@ -25,13 +20,7 @@ from unit_test.conftest import REDIS_UNREACHABLE, Recorder, make_event
 
 
 async def _settle(predicate, *, timeout: float = 5.0) -> bool:
-    """Wait for something to become true, or give up.
-
-    Polled rather than signalled because the thing being waited on is a message
-    crossing a network and being dispatched by another task. A fixed sleep long
-    enough to be reliable on a loaded CI runner would be long enough to make the
-    suite unpleasant locally.
-    """
+    """Poll until something becomes true, or give up after `timeout` seconds."""
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         if predicate():
@@ -44,10 +33,8 @@ async def _settle(predicate, *, timeout: float = 5.0) -> bool:
 async def running_bus(redis_url: str):
     """A subscribed bus, its hub, and a client to publish through.
 
-    Yields only once the subscription is live. Redis pub/sub has no buffering
-    whatsoever — a message published before the subscribe lands is not delayed,
-    it is discarded — so a test that raced this would fail intermittently and
-    look like a bug in the service.
+    Yields only once the subscription is live: Redis discards a message
+    published before the subscribe lands.
     """
     hub, gate = Hub(), VersionGate()
     bus = PriceBus(redis_url=redis_url, hub=hub, gate=gate)
@@ -138,14 +125,8 @@ async def test_a_stale_event_is_not_delivered(
 async def test_a_malformed_message_does_not_stop_the_bus(
     running_bus, market_id: uuid.UUID, description: str, payload: str
 ) -> None:
-    """The most important test in this file.
-
-    `_dispatch` runs inside the `listen` loop. An exception escaping it would
-    tear down the subscription for every connected client on this replica
-    because one producer sent one bad frame — and the symptom would be prices
-    that stop updating everywhere, with nothing in the logs tying it to the
-    publish that caused it.
-    """
+    """`_dispatch` runs inside `listen`; an exception escaping it would stop
+    prices for every client on this replica over one bad frame."""
     _, hub, publisher = running_bus
     watcher = Recorder()
     hub.subscribe(watcher, market_id)
@@ -158,17 +139,10 @@ async def test_a_malformed_message_does_not_stop_the_bus(
 
 
 async def test_an_unreachable_redis_is_retried_rather_than_fatal() -> None:
-    """The bus must outlive its bus.
-
-    Every connected client is still holding a socket while Redis is away, so a
-    subscriber that gave up and let the task die would turn a blip into a
-    service that looks healthy and silently broadcasts nothing, forever. Pointed
-    at a port with nothing on it, `run` has to keep going and keep saying it is
-    not connected.
-    """
+    """A bus that gave up would leave a healthy-looking service relaying
+    nothing, forever. `run` must keep going and keep reporting disconnected."""
     bus = PriceBus(
-        # Port 1 is reserved and nothing listens on it, so this fails to connect
-        # rather than hanging on a route that might come back.
+        # Nothing listens on port 1, so this fails fast rather than hanging.
         redis_url="redis://localhost:1/0",
         hub=Hub(),
         gate=VersionGate(),
