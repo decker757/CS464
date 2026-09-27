@@ -242,4 +242,36 @@ describe('LoginPage — integration', () => {
     expect(await screen.findByText('Incorrect username or password.')).toHaveAttribute('role', 'alert')
     expect(fieldError('Username or Email')).not.toBeInTheDocument()
   })
+
+  // The inputs stay enabled while a request is pending, so a field can be
+  // emptied before the response arrives. That edit clears a banner that does
+  // not exist yet; the next submit, stopped by client validation, must.
+  it('clears a banner from a request answered after an edit on the next submit', async () => {
+    const user = userEvent.setup()
+    let releaseResponse!: () => void
+    server.use(
+      http.post('http://localhost:8000/auth/login', async () => {
+        await new Promise<void>((resolve) => { releaseResponse = resolve })
+        return HttpResponse.json(
+          { error: { code: 'invalid_credentials', message: 'Invalid credentials' } },
+          { status: 401 },
+        )
+      }),
+    )
+
+    renderLoginPage()
+    await user.type(screen.getByLabelText('Username or Email'), 'alice')
+    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+    await screen.findByRole('button', { name: /logging in/i })
+
+    await user.clear(screen.getByLabelText('Password'))
+    releaseResponse()
+    await screen.findByText('Incorrect username or password.')
+
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+
+    expect(fieldError('Password')).toHaveTextContent('Enter your password.')
+    expect(screen.queryByText('Incorrect username or password.')).not.toBeInTheDocument()
+  })
 })

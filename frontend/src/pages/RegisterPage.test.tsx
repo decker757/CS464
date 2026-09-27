@@ -273,6 +273,37 @@ describe('RegisterPage — integration', () => {
     expect(fieldError('Email')).not.toBeInTheDocument()
   })
 
+  // The inputs stay enabled while a request is pending, so a field can be
+  // emptied before the response arrives. That edit clears a banner that does
+  // not exist yet; the next submit, stopped by client validation, must.
+  it('clears a banner from a request answered after an edit on the next submit', async () => {
+    const user = userEvent.setup()
+    let releaseResponse!: () => void
+    server.use(
+      http.post('http://localhost:8000/auth/register', async () => {
+        await new Promise<void>((resolve) => { releaseResponse = resolve })
+        return HttpResponse.json(
+          { error: { code: 'internal_error', message: 'The server had a problem.' } },
+          { status: 500 },
+        )
+      }),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+    await screen.findByRole('button', { name: /creating account/i })
+
+    await user.clear(screen.getByLabelText('Password'))
+    releaseResponse()
+    await screen.findByText('The server had a problem.')
+
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(fieldError('Password')).toHaveTextContent('Password must be at least 12 characters.')
+    expect(screen.queryByText('The server had a problem.')).not.toBeInTheDocument()
+  })
+
   it('shows generic error when the server is unreachable', async () => {
     const user = userEvent.setup()
     server.use(
