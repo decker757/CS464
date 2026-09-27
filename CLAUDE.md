@@ -329,7 +329,7 @@ Everything mapped there is created by `create_all` at startup and dropped by
 `unit_test/conftest.py` per test. Either against this table fails — no service
 has CREATE or DROP on the audit schema — and the service dies at boot. Writers
 declare it as a standalone `Table` on its own `MetaData` (see
-`market_service/model/audit.py`); the audit service maps it but has no
+`backend/shared/audit.py`); the audit service maps it but has no
 `create_all` at all.
 
 **A writing service cannot read the log it writes to, including in its own
@@ -346,8 +346,8 @@ beside it and `PYTHONPATH=/app` makes the import resolve the way it does in a
 checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 
 It holds token verification, the settings base, the role enum, the cursor
-format and the test helpers (the env loader and the import-boundary scan).
-That is the whole list, and ADR 0012 spends
+format, the audit writer and the test helpers (the env loader and the
+import-boundary scan). That is the whole list, and ADR 0012 spends
 most of its length on what was left copied and why — `core/database.py` above
 all, because one shared `Base` would enrol every service's tables in every
 other service's metadata and the first conftest `drop_all` would hit a table

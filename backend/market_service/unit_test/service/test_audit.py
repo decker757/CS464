@@ -1016,6 +1016,20 @@ async def test_a_decision_whose_entry_fails_leaves_the_proposal_pending(
     assert await _entries(audit_reader, decider) == []
 
 
+async def test_an_entry_is_not_committed_by_its_writer(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """ADR 0006: the entry exists only if the action's own commit says so."""
+    actor = _actor()
+
+    await audit.record(
+        session, actor=actor, action=AdminAction.MARKET_SUBMITTED, target_type="market"
+    )
+    await session.rollback()
+
+    assert await _entries(audit_reader, actor) == []
+
+
 # --- the grants that make it append-only ----------------------------------
 async def test_this_service_cannot_read_the_log_it_writes_to(
     session: AsyncSession,

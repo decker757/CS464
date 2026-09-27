@@ -1,54 +1,13 @@
-"""The audit log, as a writer sees it. [4.3] #15, ADR 0006.
+"""The audit log's vocabulary, as this service writes it. [4.3] #15, ADR 0006.
 
-`audit.admin_actions` is not this service's table: `market_svc` holds INSERT on
-it and nothing else. Two details are load-bearing:
-
-- It must never join `core.database.Base.metadata`. `create_all` and the test
-  rebuild would issue DDL against it, which this role may not, and the service
-  would die at boot. Hence a standalone `Table` on its own `MetaData`.
-- The id is generated in Python. A server default would need RETURNING, which
-  needs SELECT, which this role must not have.
+The table and the insert are behind `core/audit.py`; only what differs by design
+lives here. `audit.admin_actions` is not this service's table: `market_svc`
+holds INSERT on it and nothing else.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-
-from sqlalchemy import (
-    Column,
-    DateTime,
-    MetaData,
-    String,
-    Table,
-    Text,
-    Uuid,
-)
-from sqlalchemy.dialects.postgresql import JSONB
-
-AUDIT_SCHEMA = "audit"
-
-# What this service reports as `source_service`.
-SOURCE_SERVICE = "market_service"
-
-# Separate from Base.metadata on purpose; see the module docstring.
-audit_metadata = MetaData(schema=AUDIT_SCHEMA)
-
-admin_actions = Table(
-    "admin_actions",
-    audit_metadata,
-    Column("id", Uuid, primary_key=True),
-    Column("occurred_at", DateTime(timezone=True), nullable=False),
-    Column("actor_id", Uuid, nullable=False),
-    Column("actor_username", String(32), nullable=False),
-    Column("actor_role", String(16), nullable=False),
-    Column("action_type", String(64), nullable=False),
-    Column("target_type", String(32), nullable=False),
-    Column("target_id", Uuid, nullable=True),
-    Column("target_label", Text, nullable=True),
-    Column("reason", Text, nullable=True),
-    Column("context", JSONB, nullable=True),
-    Column("source_service", String(32), nullable=False),
-)
 
 
 class AdminAction(StrEnum):

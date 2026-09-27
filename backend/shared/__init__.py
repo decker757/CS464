@@ -2,8 +2,9 @@
 
 ADR 0005 named what belongs here and, just as importantly, what does not:
 "Extract when #41 lands, and narrowly: token verification, the settings base,
-and the LMSR engine. Not `core`." This package is the first two of those three
-and nothing else.
+and the LMSR engine. Not `core`." This package is the first two of those three,
+plus what later cleared the bar below: the role enum, the cursor format, the
+test env loader, and the audit writer (ADR 0006's #135 amendment).
 
 **The LMSR engine is not here, and that is deliberate.** [F-3] #43 put it in
 `ledger_service/core/lmsr.py`. ADR 0010 settled that the ledger owns the trade
