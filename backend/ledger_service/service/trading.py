@@ -43,11 +43,11 @@ commits.
    book's current one, either direction ("The trade's staleness check is
    strict `state_version` equality, and the field is required").
 9. The outcome, the holding check on a sell (the caller's own position, read
-   here and taking no lock of its own — the book lock holds it still), the
-   outstanding check as a backstop, the price, D-040's bound on both the
-   cost and the resulting `q`, and `quantize_cost` — which refuses a zero
-   result itself (D-041) — in `service/preview.py::quote`'s order and through
-   the same `core/pricing.py` helpers, so the two code paths cannot disagree
+   here and taking no lock of its own — the book lock holds it still), then
+   `core/pricing.py::trade_cost_of`: the outstanding check as a backstop, the
+   price, D-040's bound on both the cost and the resulting `q`, and
+   `quantize_cost` — which refuses a zero result itself (D-041). The preview
+   prices through the same function, so the two code paths cannot disagree
    about what a trade costs.
 10. The writes: `state_version` up by one, `state_changed_at` to this
     transaction's own moment, the traded outcome's `q`, and the position —
@@ -86,13 +86,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientSharesHeld,
-    InsufficientSharesOutstanding,
-    QuantityTooLarge,
     QuoteStale,
     UnknownOutcome,
 )
-from core.lmsr import _engine_context, cost_to_trade, prices as lmsr_prices
-from core.pricing import MAX_MAGNITUDE, QUANTUM, Side, quantize_cost, release_basis
+from core.lmsr import prices as lmsr_prices
+from core.pricing import QUANTUM, Side, release_basis, trade_cost_of
 from model.entities import (
     Account,
     MarketBook,
@@ -409,44 +407,19 @@ async def execute(
                 held=held.quantize(QUANTUM), requested=quantity.quantize(QUANTUM)
             )
 
-    # A backstop: `q` equals the sum of positions, so the check above always
-    # refuses first. It is what stands between a hand-repaired book and a
-    # negative `q`.
-    if side is Side.SELL and quantity > q[index]:
-        raise InsufficientSharesOutstanding
-
-    # 9. The price. The same helpers `service/preview.py` uses, so the two
-    # code paths cannot disagree about what this trade costs.
-    delta = [ZERO] * len(q)
-    delta[index] = quantity if side is Side.BUY else -quantity
-
-    with _engine_context():
-        after_q = [q_i + d_i for q_i, d_i in zip(q, delta)]
-
-    # D-040, both halves, in `service/preview.py::quote`'s order: this path
-    # writes the resulting `q` as well as the cost into `Numeric(18, 4)`, and
-    # both are checked before anything is quantized, because quantizing a
-    # value wider than the ambient 28 digits raises `InvalidOperation`.
-    if after_q[index] > MAX_MAGNITUDE:
-        raise QuantityTooLarge
-
-    # `copy_abs`, never `abs` (D-042): `abs` rounds at the ambient precision.
-    raw = cost_to_trade(q, b, delta).copy_abs()
-    if raw > MAX_MAGNITUDE:
-        raise QuantityTooLarge
-
-    # Refuses a result of `0.0000` itself — `CostBelowTick` on a buy,
-    # `ProceedsBelowTick` on a sell (D-041).
-    magnitude = quantize_cost(raw, side=side)
-
-    total = -magnitude if side is Side.BUY else magnitude
+    # 9. The price, through `trade_cost_of` like the preview, so the two code
+    # paths cannot disagree about what this trade costs. Its outstanding
+    # check is a backstop here: `q` equals the sum of positions, so the
+    # holding check above always refuses first. It is what stands between a
+    # hand-repaired book and a negative `q`.
+    cost = trade_cost_of(q, b, index=index, side=side, quantity=quantity)
 
     # 10. The writes. Pending, not yet committed — `posting.post` below is
     # the one statement that commits them.
     now = datetime.now(UTC)
     book.state_version += 1
     book.state_changed_at = now
-    outcomes[index].q = q[index] + delta[index]
+    outcomes[index].q = cost.after_q[index]
 
     if side is Side.BUY:
         _add_to_position(
@@ -456,7 +429,7 @@ async def execute(
             market_id=market_id,
             outcome_id=outcome_id,
             quantity=quantity,
-            cost=magnitude,
+            cost=cost.magnitude,
             now=now,
         )
     else:
@@ -471,7 +444,7 @@ async def execute(
         "outcome_id": str(outcome_id),
         "side": side.value,
         "quantity": str(quantity),
-        "total": str(total),
+        "total": str(cost.total),
         "state_version": book.state_version,
     }
 
@@ -483,8 +456,8 @@ async def execute(
         idempotency_key=key,
         kind=kind,
         legs=[
-            Leg(account=user_account, amount=total),
-            Leg(account=pool_account, amount=-total),
+            Leg(account=user_account, amount=cost.total),
+            Leg(account=pool_account, amount=-cost.total),
         ],
         context=context,
         now=now,
@@ -505,7 +478,7 @@ async def execute(
         state_version=book.state_version,
         prices=[
             OutcomePrice(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in book_prices.priced(outcomes, lmsr_prices(after_q, b))
+            for p in book_prices.priced(outcomes, lmsr_prices(cost.after_q, b))
         ],
         occurred_at=now,
     )
