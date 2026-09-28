@@ -53,6 +53,17 @@ function subscribe(socket: FakeSocket) {
 
 const wait = (ms: number) => act(() => new Promise(resolve => setTimeout(resolve, ms)))
 
+// Counts the snapshot responses MSW sends from now on, so a test can wait for
+// a request to have completed rather than for a fixed pause. afterEach removes
+// the listener.
+function countSnapshotResponses() {
+  const counter = { count: 0 }
+  server.events.on('response:mocked', ({ request }) => {
+    if (new URL(request.url).pathname.endsWith('/snapshot')) counter.count++
+  })
+  return counter
+}
+
 describe('useMarketPrices', () => {
   beforeEach(() => {
     FakeSocket.instances = []
@@ -62,12 +73,13 @@ describe('useMarketPrices', () => {
   })
 
   afterEach(() => {
+    server.events.removeAllListeners('response:mocked')
     vi.useRealTimers()
     vi.unstubAllGlobals()
     configure({ reactStrictMode: false })
   })
 
-  it('subscribes, then shows the snapshot in position order', async () => {
+  it('subscribes, and shows the snapshot in position order', async () => {
     const { result } = renderHook(() => useMarketPrices('m1'))
     expect(result.current.status).toBe('connecting')
     subscribe(latest())
@@ -121,7 +133,7 @@ describe('useMarketPrices', () => {
     expect(result.current.prices?.[0].price).toBe('0.7000')
   })
 
-  // AC 4: a market nobody has traded is at state_version 0 (docs/api/realtime-service.md).
+  // AC 4: a market nobody has traded is at state_version 0 (DECISIONS.md D-029).
   it("shows a never-traded market's snapshot at version zero", async () => {
     server.use(http.get(SNAPSHOT, () => HttpResponse.json(priceState(0, '0.5000', '0.5000'))))
     const { result } = renderHook(() => useMarketPrices('m1'))
@@ -186,8 +198,10 @@ describe('useMarketPrices', () => {
     act(() => latest().receive({ type: 'price', ...priceState(8, '0.9000', '0.1000') }))
     expect(result.current.prices?.[0].price).toBe('0.9000')
 
+    const responses = countSnapshotResponses()
     releases.forEach(release => release())
-    await wait(50)
+    await waitFor(() => expect(responses.count).toBe(releases.length))
+    await wait(0)
     expect(result.current.prices?.[0].price).toBe('0.9000')
     expect(result.current.status).toBe('connected')
   })
@@ -212,8 +226,10 @@ describe('useMarketPrices', () => {
     act(() => latest().serverClose(1006))
     await wait(1100)
     failSnapshots = true
+    const responses = countSnapshotResponses()
     subscribe(latest())
-    await wait(50)
+    await waitFor(() => expect(responses.count).toBe(1))
+    await wait(0)
     expect(result.current.prices?.[0].price).toBe('0.7000')
   })
 
@@ -319,12 +335,11 @@ describe('useMarketPrices', () => {
     let snapshots = 0
     server.use(http.get(SNAPSHOT, () => { snapshots++; return HttpResponse.json(priceState(5, '0.6000', '0.4000')) }))
     renderHook(() => useMarketPrices('m1'))
-    // Lets any snapshot fetched on open land first, so only the refresh is counted.
-    await wait(100)
-    const before = snapshots
+    // The snapshot fetched on open lands first, so only the refresh is counted after it.
+    await waitFor(() => expect(snapshots).toBe(1))
     act(() => latest().serverClose(4408))
     await waitFor(() => expect(FakeSocket.instances).toHaveLength(2), { timeout: 2000 })
-    expect(snapshots).toBe(before + 1)
+    expect(snapshots).toBe(2)
   })
 
   it('stops when the session cannot be refreshed', async () => {
