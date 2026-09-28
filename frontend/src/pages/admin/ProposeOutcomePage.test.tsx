@@ -43,6 +43,22 @@ function baseMarket(overrides: Partial<Record<string, unknown>> = {}) {
   }
 }
 
+const PENDING = {
+  status: 'pending_resolution',
+  proposed_outcome_id: 'o-yes',
+  proposed_by_id: 'u2',
+  proposed_by_username: 'admin2',
+  proposed_at: '2025-01-02T09:00:00Z',
+}
+
+const APPROVED = {
+  ...PENDING,
+  status: 'approved',
+  approved_by_id: 'u3',
+  approved_by_username: 'admin3',
+  approved_at: '2025-01-03T09:00:00Z',
+}
+
 function renderPage(id = 'mkt-1') {
   return render(
     <AuthContext.Provider value={{ user: admin, login: () => {}, logout: async () => {} }}>
@@ -117,16 +133,18 @@ describe('ProposeOutcomePage', () => {
     expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 
-  it('shows a friendly message when a proposal is already pending', async () => {
-    mockGet(baseMarket({ status: 'pending_resolution' }))
+  it('shows who proposed, instead of the form, when a proposal is already pending', async () => {
+    mockGet(baseMarket(PENDING))
     renderPage()
-    expect(await screen.findByText(/already been proposed/i)).toBeInTheDocument()
+    expect(await screen.findByText(/awaiting approval: proposed by admin2/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 
-  it('shows a friendly message when the market is already approved', async () => {
-    mockGet(baseMarket({ status: 'approved' }))
+  it('shows who approved, instead of the form, when the market is already approved', async () => {
+    mockGet(baseMarket(APPROVED))
     renderPage()
-    expect(await screen.findByText(/already been approved/i)).toBeInTheDocument()
+    expect(await screen.findByText(/approved by admin3/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 
   it('shows field errors from a 422 without losing the form', async () => {
@@ -159,11 +177,20 @@ describe('ProposeOutcomePage', () => {
     expect(screen.getByText('Will Singapore core inflation be below 2%?')).toBeInTheDocument()
   })
 
-  it('shows a reload message on 409 market_pending_resolution from a race', async () => {
-    mockGet(baseMarket())
+  it.each([
+    ['market_pending_resolution', PENDING, /awaiting approval: proposed by admin2/i],
+    ['market_already_approved', APPROVED, /approved by admin3/i],
+  ])('reloads and shows who got there first on a 409 %s', async (code, decided, expected) => {
+    // The first load finds the market closed; by the time the admin submits,
+    // another tab or administrator has moved it on.
+    let loads = 0
     server.use(
+      http.get(`${MARKET_BASE}/markets/mkt-1`, () => {
+        loads++
+        return HttpResponse.json(loads === 1 ? baseMarket() : baseMarket(decided))
+      }),
       http.post(`${MARKET_BASE}/markets/mkt-1/propose-outcome`, () =>
-        HttpResponse.json({ error: { code: 'market_pending_resolution', message: 'Already proposed.' } }, { status: 409 }),
+        HttpResponse.json({ error: { code, message: 'Somebody got there first.' } }, { status: 409 }),
       ),
     )
     const actor = userEvent.setup()
@@ -174,7 +201,8 @@ describe('ProposeOutcomePage', () => {
     await actor.type(screen.getByLabelText('Written note'), 'MAS published 1.8% for December.')
     await actor.click(screen.getByRole('button', { name: /propose outcome/i }))
 
-    expect(await screen.findByText(/already been proposed/i)).toBeInTheDocument()
+    expect(await screen.findByText(expected)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 
   it('shows an error when the market fails to load', async () => {
