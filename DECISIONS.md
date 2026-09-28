@@ -3669,6 +3669,204 @@ route.
 
 ---
 
+### D-NEW — The portfolio is one route, `GET /ledger/portfolio/me`, and is not paginated
+
+**Date:** 2026-09-28 · **Ticket:** #24 · **Status:** active
+
+**Decision.** `GET /ledger/portfolio/me` returns `user_id`, `account_id`,
+`balance`, `positions_value`, `net_worth`, and a flat list of `positions`, each
+carrying `market_id`, `outcome_id`, `outcome_position`, `quantity`,
+`cost_basis`, `average_entry_price`, `price`, `value`, `unrealized_pnl` and
+`state_version`. Every amount, quantity and price is a decimal string at
+scale 4. No cursor, no `limit`, no admin variant.
+
+**Why no pagination.** `positions_value` and `net_worth` are sums over every
+position. Paging the list either pages the totals, which makes them wrong, or
+computes them over every row while returning a page of them, which is an
+unpaginated read that also has a cursor. The list is bounded by the markets a
+user has traded times their outcomes, not by time, so it does not grow the way
+the entry history does.
+
+**Why flat.** A position is the unit the ledger stores, keyed on the triple
+("`ledger.positions` stores quantity and cost basis, keyed on the triple").
+One user can hold two outcomes of one market, and grouping them is
+presentation. Each row carries its own `state_version`, so a client can match
+a row against the realtime feed without a parent object. Rows are ordered by
+`market_id`, then `outcome_position`, so two reads of one state list the same
+rows in the same order.
+
+**Why `/me` only.** No criterion asks to read another user's portfolio. The
+admin balance route exists for [4.1] #13's investigation case. Nothing asks
+for the portfolio equivalent.
+
+**Rejected.** *Keyset pagination as on `/entries/me`*: see above. *Nested by
+market*: a shape for a screen, fixed into the API. *An admin
+`/users/{id}/portfolio`*: a route for a caller that does not exist.
+
+**Reversal trigger.** A measured portfolio read that is a material share of
+its latency budget because of its row count ([5.4] #20 is where that would
+show), or a ticket that displays another user's positions. Either changes
+the shape, and the first one also forces a decision on where the totals come
+from.
+
+---
+
+### D-NEW — The portfolio reads its balance and positions in one statement, after the grant, with no lock
+
+**Date:** 2026-09-28 · **Ticket:** #24 · **Status:** active
+
+**Decision.** `grants.ensure_granted` runs first. It may post and commit on a
+user's first read. Then one SQL statement, with no `FOR UPDATE`: an anchor row
+carrying the balance as a scalar subquery over the user's entries, outer-joined
+to every position with `quantity > 0`, joined to every outcome of each held
+market (for `q`) and to its book (for `b` and `state_version`). No
+`books.ensure_open`.
+
+**Why the grant first.** It is the one step that can write, and `posting.post`
+commits. Running it before the read means the read sees the grant it just
+minted, and nothing follows a commit on a path that wrote ("The book's writes
+share `posting.post`'s commit, and nothing may follow it").
+
+**Why one statement.** The argument in "Preview reads `q` and `state_version`
+in one SQL statement", widened to the balance. Under READ COMMITTED each
+statement sees its own snapshot. Read the balance and then the positions, and
+a trade committing in between shows the credits already spent and not the
+shares they bought: net worth drops by the whole trade, then comes back on
+refresh. The same is true between two markets' books. One statement sees one
+snapshot, so every figure in the response describes the same moment.
+
+**Why an anchor row.** An inner join from positions returns nothing for a user
+with none, and the balance with it. Hanging the balance off a one-row anchor
+keeps an empty portfolio inside the same statement.
+
+**Why no lock.** ADR 0015's rule covers reads that decide a write. This read
+decides nothing, for the reason "Preview takes no locks" gave, and a lock here
+would queue every portfolio page load behind every trade in every market the
+user holds.
+
+**Why no `ensure_open`.** `positions (market_id, outcome_id)` is a foreign key
+to `market_outcomes`, whose `market_id` is a foreign key to `market_books`. A
+position implies a book, so the cold path cannot be needed, and calling it
+would bring a market_service dependency into a read that has no use for one.
+
+**Rejected.** *`balance_of_user` plus `book_prices.read_or_open` per market*:
+N + 1 statements, N + 1 snapshots, and a cold path that cannot be reached.
+*One REPEATABLE READ transaction over several statements*: correct, and it
+changes isolation for one reader where every other reader in this service
+gets its consistency from one statement.
+
+**Reversal trigger.** A portfolio figure that decides a write, such as a
+margin rule or a prize paid on net worth. At that point ADR 0015 applies and
+the read takes locks. Also split it if one statement can no longer serve,
+which the test in "The price read exists once, and the price quantizer is in
+`core/pricing.py`" states: a reader needing something it does not use to
+decide its answer.
+
+---
+
+### D-NEW — The portfolio carries ids only, and makes no call to market_service
+
+**Date:** 2026-09-28 · **Ticket:** #24 · **Status:** active
+
+**Decision.** Each position names its market and outcome by `market_id`,
+`outcome_id` and `outcome_position`. No question, no label, no status. The
+read makes no HTTP call.
+
+**Why.** Valuation needs only `q`, `b` and the holding, all of them the
+ledger's (ADR 0018). Labels and status belong to market_service, and the
+frontend already fetches market detail for any market it shows. A call per
+held market would make a read depend on market_service's availability, which
+ADR 0017 accepted for a trade because a trade must know whether the market is
+open. A portfolio does not need to know that to value a position.
+
+**Rejected.** *A call per market*: N round trips and a new outage mode for a
+read. *A batch endpoint on market_service*: a new route in another service for
+one caller. *Snapshotting labels into the book at handoff*: a migration and a
+second copy of display data the ledger never reads.
+
+**Reversal trigger.** A portfolio criterion whose answer depends on a
+market's state and that the ledger cannot answer from its own data. [3.4]
+#12's realized outcome is the candidate, and it should come from the ledger's
+own settlement record rather than from a call. Also a measured N + 1 cost on
+the frontend's joins, which makes the batch endpoint worth building.
+
+---
+
+### D-NEW — A damaged book, or a position above `q`, fails the whole portfolio with `market_book_incomplete`
+
+**Date:** 2026-09-28 · **Ticket:** #24 · **Status:** active
+
+**Decision.** If any held market's book fails `book_prices.refuse_unpriceable`,
+or any holding exceeds its outcome's `q` (`trade_cost_of` raises
+`InsufficientSharesOutstanding`), the whole read is `500
+market_book_incomplete`. `ProceedsBelowTick` is not damage: it values the
+position at `0.0000` (ADR 0018). `QuantityTooLarge` is not caught.
+
+**Why the whole read.** `net_worth` is a sum, and [L-1] #38 ranks on it.
+Leaving a row out makes the total silently wrong, and a partial answer that
+looks complete is worse than no answer. A per-row error field would add to the
+contract a state that means this service's own data is wrong.
+
+**Why this code.** It is the one the preview and the snapshot already return
+for a book this service holds and cannot price. It is not 503, which blames
+market_service and invites a retry ("The price read exists once, and the price
+quantizer is in `core/pricing.py`"). A position above `q` is that same fault:
+"Shares outstanding equal the sum of positions, so the outstanding check is a
+backstop on the trade route" says it cannot happen while the invariant holds,
+and when it does, the engine cannot price the sale. It is not surfaced as
+`409 insufficient_shares_outstanding`, because a 409 says the caller's request
+was refused by state, and this caller asked for nothing. The code's meaning
+widens from "cannot be priced" to "cannot be priced *at this holding*", and
+its docs line says so.
+
+**Why `QuantityTooLarge` is unreachable.** Selling `x ≤ q` leaves `q − x ≥ 0`,
+and the proceeds are under `x` because every price is below one. `x` was read
+from a `Numeric(18, 4)` column, so neither can pass `MAX_MAGNITUDE`.
+
+**Rejected.** *Skipping the damaged row*: a wrong total with no signal.
+*Valuing it at zero*: the same, disguised as a real valuation. *503*: see
+above.
+
+**Reversal trigger.** A second writer of `q` or of positions that breaks the
+outstanding invariant by design ([3.4] #12 is the candidate, and it is
+already told so), or a ticket that asks for a partial portfolio to be shown
+when one market is broken.
+
+---
+
+### D-NEW — A resolved market's realized outcome is [3.4] #12's criterion, not [T-4] #24's
+
+**Date:** 2026-09-28 · **Ticket:** #24 · **Status:** active
+
+**Decision.** #24's criterion "Resolved markets show realized outcome (paid
+out / worthless) rather than a live price" moves to #12. #24 ships no
+placeholder field for it. Until #12 lands, an approved market that has not
+been settled is valued at its frozen book, like any other closed market.
+
+**Why.** Before #12 there is no settlement, no SETTLED status and no record in
+the ledger of which outcome won, and the portfolio holds ids only ("The
+portfolio carries ids only, and makes no call to market_service"). What #24
+could show depends on what settlement does to the position rows (zero them,
+keep them, or write something beside them), and #12 has not decided that. A
+criterion whose answer depends on another ticket's schema belongs to that
+ticket.
+
+**Rejected.** *A `resolved: false` or `outcome: null` field now*: a promise
+in the contract with no implementation, and the frontend writes a handler for
+a value that is always the same. *Calling market_service for the resolution*:
+reverses the entry above for a criterion that settlement answers better from
+the ledger's own data.
+
+**Reversal trigger.** #12 lands, or a ticket needs a resolved market shown
+before settlement exists. The first is expected. The second would mean
+reading the approved outcome from market_service, and reopens the ids-only
+entry with it.
+
+**Notes.** #12's note carries the trap: a settlement that pays out and leaves
+positions at `quantity > 0` has the portfolio count those shares twice.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
