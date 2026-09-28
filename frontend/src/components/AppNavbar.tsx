@@ -31,7 +31,7 @@ export default function AppNavbar() {
           {user.role === 'admin' && (
             <>
               <Link to="/admin/markets" className="text-sm text-white/75 hover:text-white">
-                My Markets
+                All Markets
               </Link>
               <Link to="/admin/markets/new" className={buttonClass('outlineGoldOnNavy', 'sm')}>
                 + New Market
