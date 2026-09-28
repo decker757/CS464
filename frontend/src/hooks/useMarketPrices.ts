@@ -51,10 +51,11 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
     }
 
     // Snapshot and price frame share a shape, so one function applies both.
-    // Anything not newer than what is on screen is dropped: a snapshot can be
-    // newer than a frame still in flight, and replicas keep separate counts.
+    // Anything for another market, or not newer than what is on screen, is
+    // dropped: a snapshot can be newer than a frame still in flight, and
+    // replicas keep separate counts.
     const apply = (s: PriceState) => {
-      if (cancelled || s.state_version <= version) return
+      if (cancelled || s.market_id !== marketId || s.state_version <= version) return
       version = s.state_version
       showPrices([...s.prices].sort((a, b) => a.position - b.position))
     }
@@ -77,9 +78,9 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
           // Set here rather than when prices arrive: a reconnect where nothing
           // traded brings a snapshot that `apply` drops as not newer.
           showStatus('connected')
-          // Fetched after the ack, not before: from here on every trade
-          // arrives on the socket, and everything earlier is in the snapshot.
-          // The version check drops any overlap.
+          // Fetched again after the ack: from here on every trade arrives on
+          // the socket, and everything earlier is in this snapshot. The
+          // version check drops any overlap.
           loadSnapshot().catch(() => {})
         } else if (msg.type === 'price') {
           apply(msg as PriceState)
@@ -124,6 +125,11 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
       }
     }
 
+    // The snapshot comes from the ledger, not the socket, so a realtime service
+    // that is down or refuses us must not keep a healthy price off the page
+    // (AC 1, AC 7). The fetch after `subscribed` is still needed: it covers a
+    // trade that lands between this request and the subscription.
+    loadSnapshot().catch(() => {})
     connect()
 
     return () => {
