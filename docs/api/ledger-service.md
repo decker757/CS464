@@ -21,6 +21,7 @@ trade: [ADR 0017](../adr/0017-the-ledger-and-a-stopped-market.md).
 | --- | --- | --- |
 | GET | `/ledger/balances/me` | My available balance |
 | GET | `/ledger/entries/me` | My ledger history |
+| GET | `/ledger/portfolio/me` | My positions and their current value |
 | GET | `/ledger/users/{user_id}/balance` | Any user's balance (admin) |
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
@@ -35,12 +36,13 @@ write, and [T-2] #22 answers ADR 0009's deferred question about it: the route
 takes no account, no amount and no leg, so a trader's own token is a safe
 credential for it in a way it could never be for a route that accepted one.
 
-The balance route, the preview route and the snapshot route are each an
-exception to "reads don't write," and for the same reason: a balance mints a
-user's starting grant on first read (below), and the preview and the snapshot
-each open and fund a market's book on that market's first touch (D-008,
-D-037, and [F-9] #112 for the snapshot). All three are once-per-subject,
-idempotent, and invisible to every caller after the first.
+The balance route, the portfolio route, the preview route and the snapshot
+route are each an exception to "reads don't write," and for the same reason:
+a balance or a portfolio mints a user's starting grant on first read (below
+and [T-4] #24), and the preview and the snapshot each open and fund a
+market's book on that market's first touch (D-008, D-037, and [F-9] #112 for
+the snapshot). All four are once-per-subject, idempotent, and invisible to
+every caller after the first.
 
 ## Authentication
 
@@ -174,6 +176,85 @@ do {
 can be driven without reasoning about the cursor at all. A cursor this service
 did not issue is a `400 malformed_cursor`; echo the value back rather than
 constructing one.
+
+## GET /ledger/portfolio/me
+
+[T-4] #24. The caller's own positions and their current value: what they
+hold in every market they have traded, each valued the way
+[ADR 0018](../adr/0018-positions-are-valued-at-liquidation.md) requires
+rather than at the marginal price.
+
+Any valid access token — a trader reads their own portfolio and nothing
+else's; there is no admin variant.
+
+```jsonc
+{
+  "user_id": "5f3e...",
+  "account_id": "a71c...",
+  "balance": "568.6431",
+  "positions_value": "431.3568",
+  "net_worth": "1000.0000",
+  "positions": [
+    {
+      "market_id": "9d1c...",
+      "outcome_id": "4f2a...",
+      "outcome_position": 0,
+      "quantity": "500.0000",
+      "cost_basis": "431.3569",
+      "average_entry_price": "0.8627",
+      "price": "0.9933",
+      "value": "431.3568",
+      "unrealized_pnl": "-0.0001",
+      "state_version": 1
+    }
+  ]
+}
+```
+
+Flat, not paginated: `positions_value` and `net_worth` are sums over every
+row, and paging the list either pages the totals or defeats its own point.
+Only rows with `quantity > 0` are shown, ordered by `market_id` then
+`outcome_position`; a position sold to zero keeps its row in the database but
+is left out here.
+
+**`value` is not `quantity × price`.** `price` is the outcome's marginal
+price — informational only, and equal to the snapshot's price for the same
+`state_version` — but nobody can sell at it: a position of any real size
+moves the book as it sells, and there is no other buyer for it. `value` is
+what selling the whole position now would actually credit, computed by
+`core/pricing.py::liquidation_values_of` against this market's own book. See
+ADR 0018 for the worked example where the two rules disagree by 65 credits
+on a single trade.
+
+**Where a caller holds more than one outcome of one market, the outcomes are
+sold in one sequence, not each against the current book.** They are sold in
+`outcome_position` order, each against the book the previous sale left —
+ADR 0018's "holdings in one market are sold together". A market's only held
+position equals the trade route's proceeds for that sell at the same
+`state_version`; a second held outcome in the same market is priced on a book
+no preview can quote, because the first sale would have to happen first.
+
+`unrealized_pnl` is `value - cost_basis`. `average_entry_price` is
+`cost_basis / quantity`, `ROUND_HALF_UP` at scale 4, and is display only, the
+same rule the preview's `average_price` follows.
+
+**The balance and every position are read together, in one statement, with
+no lock.** So a trade committing mid-read cannot show its debit without its
+shares, or its shares without its debit. The read makes no call to
+market_service — valuation needs only `q`, `b` and the holding, all of them
+this service's own — so a market that has closed is valued at its last
+traded book like any other; there is nothing for the market's status to
+change here.
+
+**The first call for a user also mints their starting grant**, exactly as
+`/balances/me` does (above).
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 500 | `market_book_incomplete` | A held market's book cannot be priced, or a position exceeds its outcome's shares outstanding. The whole read fails — no partial portfolio is returned. |
 
 ## GET /ledger/users/{user_id}/balance and /entries
 
