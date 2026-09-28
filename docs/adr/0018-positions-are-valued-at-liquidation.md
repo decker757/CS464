@@ -30,12 +30,19 @@ action on this platform can realise.
 
 ## Decision
 
-**A position's value is what selling the whole of it now would credit.** For a
-holding of `held` shares of outcome `i`, it is the magnitude
-`core/pricing.py::trade_cost_of` returns for a sell of `held` at the book's
-current `q` and `b`. That is the function the trade route calls, with the same
-rounding, so for the same `state_version` the portfolio's `value` and the
-proceeds of that sell are the same string, by construction.
+**A user's holdings are worth what selling all of them now would credit.** A
+user's holdings in one market are valued as one sequence of trade-route
+sells, one outcome at a time in `outcome_position` order, each priced by
+`core/pricing.py::trade_cost_of` on the book the previous sale left. A
+position's `value` is its proceeds in that sequence.
+`core/pricing.py::liquidation_values_of(q, b, holdings)` computes it, and
+[L-1] #38 calls the same function.
+
+Where a user holds one outcome of a market, the sequence is one sale, so for
+the same `state_version` the portfolio's `value` and the trade route's
+proceeds for that sell are the same string, by construction. For every later
+sale in a sequence the same is true against the book the earlier sales would
+leave, which no route can quote.
 
 Unrealized P&L is `value − cost_basis`. `positions_value` is the sum of the
 values, and `net_worth` is `balance + positions_value`. Every term is already
@@ -53,7 +60,10 @@ worth".
 zero credits ("A sell whose proceeds quantize to zero is refused, not
 quoted"). The position cannot be sold, so its value is `0.0000`, and its
 unrealized P&L is minus its whole basis. That is the dust case "A sell
-releases cost basis at average cost" warned about, stated honestly.
+releases cost basis at average cost" warned about, stated honestly. In a
+sequence, a sale whose proceeds are below one tick is valued `0.0000` and the
+next sale is priced on the book as it was, because the route would have
+refused the sale that was skipped.
 
 ## Worked example
 
@@ -77,13 +87,39 @@ trader's own price impact, counted as if it were somebody else's money, and it
 grows with the size of the position. On a leaderboard that ranks on it, the
 winning strategy would be to buy as much as possible of anything.
 
-The general shape: a position bought and not yet moved by anyone else shows a
-loss of at most two ticks, and never a gain. The buy's ceiling lands at most a
-tick above the true cost and the sale's floor at most a tick below it, and the
-engine's last-digit residue is far too small to turn either into a gain ("A
-cost exactly on a tick can round one tick against the trader, or toward them
-on a sell" has the edge cases). That is correct and the frontend should expect
-it.
+The general shape: on a book nobody else has traded, unrealized P&L is never
+a gain, and loses less than one tick per trade involved — each buy that built
+the position, and each sale in its valuation. Every buy rounds up and every
+sale rounds down, each by less than a tick, and the engine's last-digit
+residue is far too small to turn either into a gain ("A cost exactly on a
+tick can round one tick against the trader, or toward them on a sell" has the
+edge cases). At `b = 137`, three buys of 13, 13 and 13.0411 show −0.0003.
+That is correct and the frontend should expect it.
+
+## Holdings in one market are sold together
+
+`b = 100`, a book at zero. A trader buys 500 YES for 431.3569, then 500 NO for
+68.6432, leaving `q = (500, 500)`. That is a complete set: it pays exactly 500
+whichever outcome wins.
+
+Sold in sequence, YES at `(500, 500)` pays 68.6431, and NO then, at
+`(0, 500)`, pays 431.3568: **499.9999**. A uniform shift of `q` moves `C` by
+exactly the shift, so the sequence recovers the set's worth, less the floors.
+
+Valued one position at a time against the current book, each sale pays
+68.6431: **137.2862**, understating the set by 362.71. It is the error the
+marginal rule makes — price impact counted as if it were somebody else's
+money — in the other direction.
+
+**Row values depend on the fixed order, and the rounded total can too.**
+Reversed, the same set shows YES 431.3568 and NO 68.6431. The unrounded total
+is `C(q) − C(q − h)` in any order, but each sale floors on its own, so two
+orders can differ by less than one tick per sale: at `b = 137`,
+`q = (13.3333, 46.5555)`, holding `(13.3333, 41.0000)`, one order totals
+28.1430 and the other 28.1429. A sub-tick sale may be skipped in one order
+and not in the other. The order is fixed so every read of one state gives the
+same answer, not because it is better. Row P&L follows the order, so a row's
+P&L alone says less than the market's total.
 
 ## Consequences
 
@@ -132,6 +168,11 @@ itself, and it is already computed by the function the trade route uses.
 **Value at payout: one credit per share if the outcome wins.** Unknown before
 resolution, and it is the realized outcome [3.4] #12 now owns.
 
+**Each position valued alone against the current book.** Every row one
+quotable preview, and a user holding more than one outcome undervalued by the
+whole price impact of the others: a complete set of 500 shown at 137.29.
+Rejected by "Holdings in one market are sold together" above.
+
 **A stored value per position.** It would be wrong the moment anyone traded in
 that market. It is a second source of truth, rejected for the reason in
 "`cost_basis` is stored; average entry price is derived".
@@ -146,6 +187,10 @@ that market. It is a second source of truth, rejected for the reason in
 > for a sell stop being `trade_cost_of`'s magnitude. At that point valuation
 > becomes a question about the whole venue, and this record is superseded
 > rather than amended.
+>
+> It is also revisited by a ticket that needs order-independent per-row
+> values, such as a row that must equal a quotable sale on its own. That
+> reopens the per-market sequence, not the liquidation rule.
 >
 > What does **not** reverse it is a UI that would prefer the bigger number, or
 > a leaderboard that looks flat. Both are arguments for the rule this record

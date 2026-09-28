@@ -3867,6 +3867,46 @@ positions at `quantity > 0` has the portfolio count those shares twice.
 
 ---
 
+### D-NEW — A user's holdings in one market are valued as one sequence of sales
+
+**Date:** 2026-09-28 · **Ticket:** #24 · **Status:** active
+
+**Decision.** `core/pricing.py::liquidation_values_of(q, b, holdings)` returns
+one value per outcome, `0.0000` where nothing is held. It sells the holdings
+in `outcome_position` order, each through `trade_cost_of` on the `q` the
+previous sale left. A sale whose proceeds are below a tick is valued `0.0000`
+and leaves `q` unchanged for the next. `InsufficientSharesOutstanding`
+propagates, and the portfolio remaps it ("A damaged book, or a position above
+`q`, fails the whole portfolio with `market_book_incomplete`"). [L-1] #38
+calls the same function.
+
+**Why.** ADR 0018 values a position at what selling it would pay, and a
+user's holdings in one market share one book: selling one moves the price of
+the next. At `b = 100`, a complete set of 500 YES and 500 NO at
+`q = (500, 500)` is worth exactly 500. In sequence it is valued 499.9999;
+one position at a time, 137.2862 — ADR 0018's rejected error in reverse.
+
+**Why a fixed order.** Row values depend on it, and so can the rounded total,
+by less than a tick per sale, because each sale floors on its own. The
+unrounded total does not. `outcome_position` is already the order of the `q`
+vector and of every price list, and fixing it makes every read of one state
+agree.
+
+**Why a skipped sale leaves `q` alone.** The trade route refuses that sale
+(`proceeds_below_tick`), so a book it had moved is one no sequence of real
+sales could reach.
+
+**Rejected.** *Each position valued alone at the current `q`*: every row
+quotable, and a complete set shown at 137.29. *One unrounded
+`C(q) − C(q − h)` per market, split across rows*: no sale pays that figure,
+and the split would be a rule nobody could check against a trade.
+
+**Reversal trigger.** A ticket that needs order-independent per-row values,
+or a trade route that sells several outcomes in one transaction — which makes
+the combined sale real, and the portfolio should then value that.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
