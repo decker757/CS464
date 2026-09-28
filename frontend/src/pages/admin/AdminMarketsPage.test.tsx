@@ -33,8 +33,13 @@ function renderPage() {
   )
 }
 
-function mockList(markets: typeof mockMarkets) {
-  server.use(http.get(`${MARKET_BASE}/markets`, () => HttpResponse.json({ markets })))
+// `markets` are the admin's own (GET /markets); `published` are every admin's
+// published markets (GET /public/markets), which include the admin's own too.
+function mockList(markets: typeof mockMarkets, published: Record<string, unknown>[] = []) {
+  server.use(
+    http.get(`${MARKET_BASE}/markets`, () => HttpResponse.json({ markets })),
+    http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: published })),
+  )
 }
 
 describe('AdminMarketsPage', () => {
@@ -44,6 +49,19 @@ describe('AdminMarketsPage', () => {
     expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
     expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+  })
+
+  it('lists other administrators\' published markets beside your own, each market once', async () => {
+    mockList(mockMarkets, [
+      // The admin's own open market, which the public list returns as well.
+      { id: 'c3', status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z' },
+      { id: 'x9', status: 'pending_resolution', question: 'Another admin\'s market?', close_time: '2025-07-01T00:00:00Z' },
+    ])
+    renderPage()
+    expect(await screen.findByText('Another admin\'s market?')).toBeInTheDocument()
+    expect(screen.getAllByText('Will SMU win SUNIG?')).toHaveLength(1)
+    expect(screen.getByRole('tab', { name: /all/i })).toHaveTextContent('7')
+    expect(screen.getAllByText(/created by you/i)).toHaveLength(6)
   })
 
   it('shows a count per status on the filter tabs', async () => {
@@ -109,6 +127,7 @@ describe('AdminMarketsPage', () => {
   })
 
   it('shows an error when the API fails', async () => {
+    mockList(mockMarkets)
     server.use(http.get(`${MARKET_BASE}/markets`, () => HttpResponse.error()))
     renderPage()
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
