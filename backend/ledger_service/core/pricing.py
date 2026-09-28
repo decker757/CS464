@@ -187,6 +187,24 @@ def trade_cost_of(
     return TradeCost(after_q=after_q, magnitude=magnitude, total=total)
 
 
+def per_share(amount: Decimal, quantity: Decimal) -> Decimal:
+    """`amount / quantity`, at a price's scale (D-052).
+
+    The preview's `average_price`: `cost.magnitude / quantity`, divided in
+    the engine's pinned context so the ambient precision and its traps never
+    reach it, then rounded through `quantize_price` rather than
+    `quantize_cost` — an average price is display, not a charge, so there is
+    no side for a residue to favour.
+
+    Raises `ValueError` for `quantity <= 0` rather than dividing by it; a
+    caller reaches this only after pricing a positive quantity.
+    """
+    if quantity <= 0:
+        raise ValueError(f"quantity must be positive, got {quantity}")
+    with _engine_context():
+        return quantize_price(amount / quantity)
+
+
 def release_basis(
     basis: Decimal, held: Decimal, quantity: Decimal
 ) -> tuple[Decimal, Decimal]:

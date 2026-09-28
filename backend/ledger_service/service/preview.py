@@ -18,8 +18,8 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import UnknownOutcome
-from core.lmsr import _engine_context, prices as lmsr_prices
-from core.pricing import Side, quantize_price, trade_cost_of
+from core.lmsr import prices as lmsr_prices
+from core.pricing import Side, per_share, trade_cost_of
 from service import book_prices
 from service.book_prices import PricedOutcome
 
@@ -76,11 +76,8 @@ async def quote(
     index = ids.index(outcome_id)
     cost = trade_cost_of(q, b, index=index, side=side, quantity=quantity)
 
-    # An average price is a price, so `quantize_price` rounds it (D-052). The
-    # division runs in the engine's pinned context, out of reach of an
-    # ambient trap or precision.
-    with _engine_context():
-        average_price = quantize_price(cost.magnitude / quantity)
+    # An average price is a price, so `quantize_price` rounds it (D-052).
+    average_price = per_share(cost.magnitude, quantity)
 
     return Quote(
         market_id=market_id,

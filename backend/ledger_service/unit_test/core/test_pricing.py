@@ -12,7 +12,7 @@ Pure, so no database.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Context, Decimal, localcontext
 
 import pytest
 
@@ -377,3 +377,61 @@ def test_a_sell_just_under_a_tick_can_be_paid_the_whole_tick() -> None:
 
     assert raw == Decimal("-0.0001")
     assert _pricing().quantize_cost(raw.copy_abs(), side=_pricing().Side.SELL) == _QUANTUM
+
+
+# =========================================================================
+# A trade's average price: amount / quantity, rounded like any other price
+# =========================================================================
+def test_a_typical_division_rounds_half_up_at_scale_four() -> None:
+    """10 credits for 3 shares averages 3.3333, not the repeating decimal."""
+    assert _pricing().per_share(Decimal("10.0000"), Decimal("3.0000")) == Decimal(
+        "3.3333"
+    )
+
+
+def test_a_dust_trade_of_one_tick_each_averages_one_credit() -> None:
+    """The smallest real trade there is: one tick of cost for one tick of
+    shares, averaging exactly 1.0000."""
+    assert _pricing().per_share(Decimal("0.0001"), Decimal("0.0001")) == Decimal(
+        "1.0000"
+    )
+
+
+def test_the_engine_s_precision_avoids_a_double_rounding_the_ambient_context_would_make() -> (
+    None
+):
+    """`_engine_context` (D-003, 50 digits) is not a formality: at the
+    default ambient precision (28 digits), Python's division itself rounds
+    the quotient before `quantize_price` ever sees it, and on a quotient
+    whose integer part alone is 22 digits wide that first rounding already
+    lands on the wrong side of the tick. `per_share` must divide inside
+    `_engine_context`, not on the ambient one, or this is off by a tick.
+
+    Pinned against the exact rational answer (computed independently, not
+    through `Decimal`), not just against "differs from ambient".
+    """
+    amount = Decimal("100999999999999999999.9949")
+    quantity = Decimal("0.0101")
+
+    with localcontext(Context(prec=28)):
+        ambient = (amount / quantity).quantize(
+            Decimal("0.0001"), rounding=ROUND_HALF_UP
+        )
+    assert ambient == Decimal("9999999999999999999999.4951"), (
+        "this fixture is meant to catch the ambient context rounding the "
+        "division itself before the quantize; got a different ambient "
+        "answer, so it no longer exercises that failure"
+    )
+
+    assert _pricing().per_share(amount, quantity) == Decimal(
+        "9999999999999999999999.4950"
+    )
+
+
+@pytest.mark.parametrize("quantity", [Decimal(0), Decimal("-0.0001")])
+def test_a_non_positive_quantity_is_refused(quantity: Decimal) -> None:
+    """Dividing by zero or by a negative quantity is a caller bug, not a
+    price; refused rather than raising `DivisionByZero` or answering a
+    negative price."""
+    with pytest.raises(ValueError):
+        _pricing().per_share(Decimal("1.0000"), quantity)
