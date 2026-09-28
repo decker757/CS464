@@ -299,6 +299,21 @@ async def buy(
     )
 
 
+async def retry_on_quote_stale(
+    own: AsyncSession, attempt, *, version: int, retries: int
+):
+    """Call `attempt(version)`, and on `quote_stale` roll back and retry at the
+    version the refusal names. Bounded, so a path that refuses forever fails
+    with a name rather than a suite that spins."""
+    for _ in range(retries):
+        try:
+            return await attempt(version)
+        except errors().QuoteStale as stale:
+            await own.rollback()
+            version = stale.current
+    raise AssertionError(f"never got past quote_stale in {retries} tries")
+
+
 async def warm(
     session: AsyncSession, upstream: Upstream, q: Sequence[Decimal] = tuple(Q)
 ):
@@ -529,7 +544,7 @@ def expected_total(
     already publishes and the one the ledger legs are built from.
     """
     magnitude = pricing().quantize_cost(
-        abs(raw_cost(q, outcome, side, quantity)), side=pricing().Side(side)
+        raw_cost(q, outcome, side, quantity).copy_abs(), side=pricing().Side(side)
     )
     return -magnitude if side == "buy" else magnitude
 
@@ -576,7 +591,7 @@ def floored_total(
     ceiling" is a claim about direction rather than about a number that
     happened to match.
     """
-    return -abs(raw_cost(q, outcome, "buy", quantity)).quantize(
+    return -raw_cost(q, outcome, "buy", quantity).copy_abs().quantize(
         QUANTUM, rounding=ROUND_FLOOR
     )
 
@@ -592,7 +607,7 @@ def assert_rounding_is_load_bearing(
     a rounder `b` fails here with a sentence about why instead of hollowing
     out four tests silently.
     """
-    magnitude = abs(raw_cost(q, outcome, "buy", quantity))
+    magnitude = raw_cost(q, outcome, "buy", quantity).copy_abs()
     up = magnitude.quantize(QUANTUM, rounding=ROUND_CEILING)
     down = magnitude.quantize(QUANTUM, rounding=ROUND_FLOOR)
     assert up != down, (
