@@ -507,8 +507,9 @@ terms from `market_service`, funds the pool from the platform account, and
 only then prices the market — once per market, ever. That request can take
 up to the market-terms timeout. Every request after it, for that market, is a
 single indexed read that writes nothing. Debouncing is not this route's
-concern the way it is the preview's — a client fetches it once per page open
-and once per reconnect, not on every keystroke — but the cold-path cost is
+concern the way it is the preview's — a client fetches it when a page opens and
+again on every `subscribed` acknowledgement from the realtime socket (so once
+more per reconnect), not on every keystroke — but the cold-path cost is
 identical.
 
 **It deliberately does not check whether the market is still open (ADR

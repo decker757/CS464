@@ -64,11 +64,12 @@ gone rather than delayed. A double would agree with whatever the tests assumed.
 Most of the suite needs nothing running at all. Only `service/test_bus.py` and
 the delivery tests in `controller/test_ws_routes.py` open a connection.
 
-## Driving it before trading exists
+## Driving it without placing a trade
 
-[T-2] #22 is the real producer, and until it lands nothing publishes anything —
-which would leave [X-4] #37 building against a feed that is silent, where "my
-subscription is broken" and "nobody has traded" look identical.
+The real producer is the ledger's trade path — [T-2] #22 and [T-3] #23 — which
+publishes after every committed trade. Without a trade the feed is silent, and
+"my subscription is broken" and "nobody has traded" look identical, so this
+script publishes a price by hand.
 
 ```bash
 .venv/bin/python publish_test_price.py            # invents a market, prints its id
