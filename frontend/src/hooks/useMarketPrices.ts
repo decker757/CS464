@@ -41,6 +41,9 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
       })
     }
     const showStatus = (status: ConnectionStatus) => {
+      // A request for a market the page has left may still settle, and must
+      // not overwrite the market now on screen.
+      if (cancelled) return
       setState(prev => {
         const prices = prev?.marketId === marketId ? prev.prices : null
         return { marketId, prices, status }
