@@ -29,7 +29,26 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
     let ws: WebSocket | null = null
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     let attempt = 0
+    // The highest version on screen. Kept across reconnects, because the prices
+    // are: a late frame from before the drop must not replace newer ones.
     let version = -1
+
+    // State left by the previous market is not carried over to this one.
+    const showPrices = (prices: OutcomePrice[]) => {
+      setState(prev => {
+        const status = prev?.marketId === marketId ? prev.status : 'connecting'
+        return { marketId, prices, status }
+      })
+    }
+    const showStatus = (status: ConnectionStatus) => {
+      // A request for a market the page has left may still settle, and must
+      // not overwrite the market now on screen.
+      if (cancelled) return
+      setState(prev => {
+        const prices = prev?.marketId === marketId ? prev.prices : null
+        return { marketId, prices, status }
+      })
+    }
 
     // Snapshot and price frame share a shape, so one function applies both.
     // Anything not newer than what is on screen is dropped: a snapshot can be
@@ -37,7 +56,7 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
     const apply = (s: PriceState) => {
       if (cancelled || s.state_version <= version) return
       version = s.state_version
-      setState({ marketId, prices: [...s.prices].sort((a, b) => a.position - b.position), status: 'connected' })
+      showPrices([...s.prices].sort((a, b) => a.position - b.position))
     }
 
     const loadSnapshot = () => getMarketSnapshot(marketId).then(apply)
@@ -55,6 +74,9 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
         try { msg = JSON.parse(event.data as string) } catch { return }
         if (msg.type === 'subscribed') {
           attempt = 0
+          // Set here rather than when prices arrive: a reconnect where nothing
+          // traded brings a snapshot that `apply` drops as not newer.
+          showStatus('connected')
           // Fetched after the ack, not before: from here on every trade
           // arrives on the socket, and everything earlier is in the snapshot.
           // The version check drops any overlap.
@@ -66,19 +88,17 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
 
       socket.onclose = (event: CloseEvent) => {
         if (cancelled) return
-        // Forget the version so the next snapshot is accepted even if nothing traded.
-        version = -1
 
         // Origin refused: retrying cannot help. Mark degraded but keep last
         // known prices visible (AC 7).
         if (event.code === 4403) {
-          setState(prev => prev ? { ...prev, status: 'degraded' } : { marketId, prices: null, status: 'degraded' })
+          showStatus('degraded')
           return
         }
 
         // Keep last known prices while reconnecting (AC 7: retain stale prices
         // during temporary loss rather than blanking the display).
-        setState(prev => prev ? { ...prev, status: 'reconnecting' } : { marketId, prices: null, status: 'reconnecting' })
+        showStatus('reconnecting')
 
         const delay = Math.min(1000 * 2 ** attempt, MAX_RETRY_MS)
         attempt += 1
@@ -93,7 +113,7 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
         if (event.code === 4401 || event.code === 4408) {
           loadSnapshot().then(reconnect, (err: unknown) => {
             if (axios.isAxiosError(err) && err.response?.status === 401) {
-              setState(prev => prev ? { ...prev, status: 'degraded' } : { marketId, prices: null, status: 'degraded' })
+              showStatus('degraded')
               return
             }
             reconnect()
