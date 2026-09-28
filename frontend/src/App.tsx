@@ -7,6 +7,7 @@ import LoginPage from './pages/LoginPage'
 import MarketDetailPage from './pages/MarketDetailPage'
 import MarketsPage from './pages/MarketsPage'
 import RegisterPage from './pages/RegisterPage'
+import AdminMarketsPage from './pages/admin/AdminMarketsPage'
 import CreateMarketPage from './pages/admin/CreateMarketPage'
 
 export default function App() {
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
           <Route path="/markets" element={<ProtectedRoute><MarketsPage /></ProtectedRoute>} />
           <Route path="/markets/:id" element={<ProtectedRoute><MarketDetailPage /></ProtectedRoute>} />
+          <Route path="/admin/markets" element={<ProtectedRoute requireAdmin><AdminMarketsPage /></ProtectedRoute>} />
           <Route path="/admin/markets/new" element={<ProtectedRoute requireAdmin><CreateMarketPage /></ProtectedRoute>} />
           {/* /portfolio — added as built */}
         </Routes>

@@ -113,3 +113,18 @@ export async function publishMarket(id: string): Promise<MarketOut> {
   const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/publish`)
   return res.data
 }
+
+export interface MarketSummaryOut {
+  id: string
+  draft_key: string
+  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved'
+  question: string | null
+  close_time: string | null
+  updated_at: string
+}
+
+/** Every market the calling administrator owns, most recently updated first (market-service.md, GET /markets). */
+export async function listMyMarkets(): Promise<MarketSummaryOut[]> {
+  const res = await api.get<{ markets: MarketSummaryOut[] }>(`${MARKET_BASE}/markets`)
+  return res.data.markets
+}

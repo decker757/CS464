@@ -29,9 +29,14 @@ export default function AppNavbar() {
       {user && (
         <div className="flex items-center gap-4">
           {user.role === 'admin' && (
-            <Link to="/admin/markets/new" className={buttonClass('outlineGoldOnNavy', 'sm')}>
-              + New Market
-            </Link>
+            <>
+              <Link to="/admin/markets" className="text-sm text-white/75 hover:text-white">
+                All Markets
+              </Link>
+              <Link to="/admin/markets/new" className={buttonClass('outlineGoldOnNavy', 'sm')}>
+                + New Market
+              </Link>
+            </>
           )}
           <span className="text-sm text-white/75">{user.username}</span>
           <Button variant="outlineOnNavy" size="sm" onClick={handleLogout} disabled={loggingOut}>
