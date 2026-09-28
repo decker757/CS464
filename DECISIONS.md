@@ -3596,6 +3596,10 @@ for first if this reverses, but it adds a field nothing reads.
 position, such as a trade history or a leaderboard ranking on it. Add
 `released_basis` to the sell's `context` then, not a column.
 
+**Notes.** [T-5] #25 (2026-09-28) is a trade history and does not fire the
+reversal trigger above. Its rows show each trade's signed amount and average
+fill price, and no realized P&L.
+
 ---
 
 ### D-NEW — A sell cannot take a market's pool below its seed subsidy
@@ -3904,6 +3908,185 @@ and the split would be a rule nobody could check against a trade.
 **Reversal trigger.** A ticket that needs order-independent per-row values,
 or a trade route that sells several outcomes in one transaction — which makes
 the combined sale real, and the portfolio should then value that.
+
+---
+
+### D-NEW — The trade history is `/entries/me` extended, not a second route
+
+**Date:** 2026-09-28 · **Ticket:** #25 · **Status:** active
+
+**Decision.** [T-5] #25's history is `GET /ledger/entries/me`, with typed trade
+fields added to its rows. Nothing it returns today is removed or renamed,
+`context` included. `ledger_service.history_for_user` stays the one function
+behind it and behind the admin `GET /ledger/users/{user_id}/entries` ([4.1]
+#13), so both routes get the new fields.
+
+**Why.** #13 already built the query #25 needs: newest first, keyset-paged, a
+derived `balance_after`, and the grant minted on first read. #25's note says
+"Same query, different scope. Build once." A second route over the same rows is
+the second copy CLAUDE.md forbids. An additive change breaks no client: no
+frontend code calls either route yet (#53 and #57 are unbuilt), and the backend
+tests assert fields that stay.
+
+**Rejected.** *A new `GET /ledger/history/me`*: two routes and two response
+shapes over the same rows, and they would first disagree about a row nobody
+tests. *Dropping `context` now that its trade fields are typed*: a documented
+contract change that buys nothing, and `context` is still the only place an
+unrecognised kind's detail can reach a client.
+
+**Reversal trigger.** A history row that is not one entry of the user's
+account, for example a row that merges two transactions. Then the history is a
+different query from #13's and gets its own route.
+
+---
+
+### D-NEW — A transaction puts at most one leg on any USER account
+
+**Date:** 2026-09-28 · **Ticket:** #25 · **Status:** active
+
+**Decision.** No transaction has two entries on one USER account. [T-5] #25's
+history shows one entry of the user's account as one row, and this invariant is
+what makes that row one transaction. A guard test over the whole ledger fails
+if any transaction breaks it.
+
+**Why.** "What the user sees for a trade is one row." Every writer already
+complies: the grant puts one leg on the user, and a trade puts one leg on the
+user and one on the pool. `posting.post` does not enforce it, because a list of
+legs may name an account twice. Written down and tested, it becomes something
+the next writer has to keep rather than something that happens to be true.
+
+**Rejected.** *Grouping the history by `transaction_id`*: a GROUP BY and a
+netted amount on every page, for a case no writer produces. *Netting legs per
+account inside `posting.post`*: a change to the write primitive for a reader's
+convenience, and it would hide a writer's bug instead of failing on it.
+
+**Reversal trigger.** A movement that has to put two legs on one user, for
+example a settlement that pays and charges one user in one transaction. [3.4]
+#12 is told to keep one leg per USER account. If it cannot, the history groups
+by transaction instead.
+
+---
+
+### D-NEW — The history page and its running balances are read in one statement, anchored at the page's newest row
+
+**Date:** 2026-09-28 · **Ticket:** #25 · **Status:** active
+
+**Decision.** One SQL statement returns a page's entries, their transaction's
+`kind` and `context`, and every `balance_after` on the page. `balance_after` is
+the sum of the account's entries at or before the page's newest row, minus a
+window sum of the newer rows on the page. The anchor is the page's own newest
+row. It is not today's balance counted back.
+
+**Why the anchor.** A figure anchored to a position in the feed does not depend
+on when the page was fetched. A page 2 read after new trades still continues
+page 1, as long as every new entry is newer than every anchor. #187 is what
+makes that true for a user trading in two markets at once; until it lands, that
+case is a documented limitation. Counting back from the current balance is also
+more expensive, not less: the current balance is itself a sum over the whole
+history, so it costs every entry plus the newer ones. No derived approach
+avoids a sum over O(entries) per page without storing something, and storing is
+ruled out (ADR 0009). Page k sums about N − (k − 1)·limit rows of
+`ix_ledger_entries_account_feed`.
+
+**Why one statement.** "Preview reads `q` and `state_version` in one SQL
+statement", widened to a page. As two statements, the page and its anchor sum
+can see different snapshots. A transaction committing between them can be
+counted in the anchor and missing from the rows, which shifts every figure
+below it. One statement sees one snapshot, and a transaction's legs commit
+together.
+
+**Rejected.** *The page then `accounts.balance_of(as_at=...)`*: the #13 shape,
+and two snapshots. *Current balance minus the newer entries*: see above.
+*`INCLUDE (amount)` on the index for index-only scans*: a hand-applied
+migration for a cost nobody has measured.
+
+**Reversal trigger.** A measured history page whose anchor sum is a material
+share of its latency ([5.4] #20 is where that would show). The first answer is
+`INCLUDE (amount)`, and only after that a stored snapshot with a delta, which
+ADR 0009 names as the upgrade.
+
+---
+
+### D-NEW — The history's price is the average fill price, and the trade response's "no prices" excluded only marginal prices
+
+**Date:** 2026-09-28 · **Ticket:** #25 · **Status:** active
+
+**Decision.** A trade row carries `average_price = per_share(|amount|,
+quantity)`: half-up at scale 4, the preview's field name and its function. "The
+trade response is reconstructed from `Transaction.context`, and carries no
+prices" excluded **marginal** prices, not a price derived from what was
+charged. The trade response itself stays price-free.
+
+**Why.** That entry's argument is that a marginal price "is not derivable from
+a stored trade" and is "a lie with a timestamp" when replayed. An average fill
+price is derived from `amount` and `quantity`, both stored in the transaction's
+own commit, and it stays true for ever, as `total` does. It equals the
+preview's `average_price` for the same trade at the same `state_version`,
+because the preview divides the same quantized magnitude by the same quantity
+through the same function. The name `average_price` keeps it apart from the
+marginal `price` the portfolio and the snapshot report.
+
+**Rejected.** *`price`*: the issue's word, and the portfolio's name for the
+marginal price. One name for two numbers is the confusion ADR 0018 spent a
+record on. *No price at all*: #25's criterion asks for one. *Storing it in
+`context`*: a second copy of a quotient of two stored values.
+
+**Reversal trigger.** A trade that can fill at more than one price, for example
+against a resting order. Then `|amount| ÷ quantity` is still the average, but
+it stops being the only price the trader saw, and the history may need fills.
+
+---
+
+### D-NEW — A trade row's typed fields come from its kind and `context`; any other kind renders with them null
+
+**Date:** 2026-09-28 · **Ticket:** #25 · **Status:** active
+
+**Decision.** For `trade_buy` and `trade_sell`, the row builder reads
+`market_id`, `outcome_id` and `quantity` from `context` (with `quantity`
+quantized to scale 4) and `side` from `kind`. Every other kind, the grant
+included, carries `market_id`, `outcome_id`, `side`, `quantity` and
+`average_price` as `null`. `amount` always comes from the entry, never from
+`context.total`. An unrecognised kind is not an error.
+
+**Why.** Every trade since [T-2] #22 has written those keys, because
+`result_of` requires them. `side` is taken from the column rather than the
+jsonb because the column is what the ledger indexes and validates. `quantity`
+is quantized because `context` stores it exactly as it arrived ("A replay hit
+is compared against the request before it is returned"), so `"10"` and
+`"10.0000"` both exist. Rendering unknown kinds generically means a new kind
+appears in the history the day it is written, with its amount and running
+balance correct, and needs a mapping only if it wants more.
+
+**Rejected.** *Reading any kind's `context` for a `market_id`*: it guesses a
+shape nobody has promised. *Refusing an unknown kind*: a history that fails on
+the day settlement ships.
+
+**Notes.** The one test that fabricates a kind posts a `market_seed`
+transaction against a user account. No real writer does that; it stands in for
+a kind the builder does not recognise, and its docstring says so.
+
+---
+
+### D-NEW — A resolution payout's history row is [3.4] #12's criterion, not [T-5] #25's
+
+**Date:** 2026-09-28 · **Ticket:** #25 · **Status:** active
+
+**Decision.** #25's "Every balance-affecting event appears: …resolution
+payouts…" moves to #12. #25 ships the generic row, which a payout renders
+through unchanged. If the payout's market should show, #12 adds its kind to the
+row builder's mapping.
+
+**Why.** No settlement kind and no settlement `context` exist. A test here
+would invent both, and #12 would then either inherit an invented shape or break
+the test. The part #25 can promise, that an unknown kind appears with a correct
+amount and `balance_after`, it tests with the stand-in above. Same shape as "A
+resolved market's realized outcome is [3.4] #12's criterion, not [T-4] #24's".
+
+**Rejected.** *Keeping the criterion and testing it with a fabricated
+settlement*: a test pinned to a shape #12 has not chosen.
+
+**Reversal trigger.** #12 lands. Its row either renders through the generic
+path or adds a mapping, and this entry is then history.
 
 ---
 
