@@ -22,6 +22,7 @@ can then produce rather than something it has to recover.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -129,6 +130,22 @@ class PortfolioOut(BaseModel):
     @field_serializer("balance", "positions_value", "net_worth")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+
+@dataclass(frozen=True)
+class TradeFields:
+    """The five fields a history row carries for a trade. [T-5] #25.
+
+    All null by default: that is the grant's row, and any kind the history
+    does not recognise. `service/ledger_service.py` fills them in; they live
+    here so `LedgerEntryOut.of` can take them without importing `service`.
+    """
+
+    market_id: uuid.UUID | None = None
+    outcome_id: uuid.UUID | None = None
+    side: Side | None = None
+    quantity: Decimal | None = None
+    average_price: Decimal | None = None
 
 
 class LedgerEntryOut(BaseModel):
@@ -242,11 +259,7 @@ class LedgerEntryOut(BaseModel):
         entry: Entry,
         *,
         balance_after: Decimal,
-        market_id: uuid.UUID | None = None,
-        outcome_id: uuid.UUID | None = None,
-        side: Side | None = None,
-        quantity: Decimal | None = None,
-        average_price: Decimal | None = None,
+        trade: TradeFields = TradeFields(),
     ) -> LedgerEntryOut:
         """Flatten an entry and the transaction it belongs to into one row.
 
@@ -256,7 +269,7 @@ class LedgerEntryOut(BaseModel):
         lifted out of the transaction so that a client renders one list rather
         than walking a tree to find the word "grant".
 
-        `balance_after` and the five trade fields arrive as arguments rather
+        `balance_after` and `trade` arrive as arguments rather
         than being read off the entry, because there is nothing on the entry to
         read them from: they are derived a page at a time by
         `service/ledger_service.py`, which is the only layer that knows where
@@ -273,11 +286,11 @@ class LedgerEntryOut(BaseModel):
             transaction_id=entry.transaction_id,
             kind=entry.transaction.kind,
             context=entry.transaction.context,
-            market_id=market_id,
-            outcome_id=outcome_id,
-            side=side,
-            quantity=quantity,
-            average_price=average_price,
+            market_id=trade.market_id,
+            outcome_id=trade.outcome_id,
+            side=trade.side,
+            quantity=trade.quantity,
+            average_price=trade.average_price,
         )
 
 
