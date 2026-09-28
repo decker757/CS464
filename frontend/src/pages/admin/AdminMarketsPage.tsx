@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { listMarkets, listMyMarkets, type MarketSummaryOut, type PublicMarketSummary } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
+import PageTitle from '../../components/ui/PageTitle'
+import { buttonClass } from '../../components/ui/buttonClass'
 import StatusBadge from '../../components/markets/StatusBadge'
 import { STATUS_CONFIG, formatCloseTime, type AdminMarketStatus } from '../../components/markets/marketStatus'
 
@@ -69,7 +72,7 @@ export default function AdminMarketsPage() {
 
   return (
     <AppLayout width="max-w-[1000px]">
-      <h1 className="mb-8 text-[28px] font-extrabold tracking-[-0.3px] text-smu-navy">All Markets</h1>
+      <PageTitle className="mb-8">All Markets</PageTitle>
 
       <div role="tablist" aria-label="Filter by status" className="mb-6 flex flex-wrap gap-2">
         {FILTERS.map(f => {
@@ -115,7 +118,14 @@ export default function AdminMarketsPage() {
                   {market.isMine && ' · Created by you'}
                 </p>
               </div>
-              <StatusBadge status={market.status} />
+              <div className="flex shrink-0 items-center gap-3">
+                {market.isMine && market.status === 'closed' && (
+                  <Link to={`/admin/markets/${market.id}/propose-outcome`} className={buttonClass('outline', 'xs')}>
+                    Propose Outcome
+                  </Link>
+                )}
+                <StatusBadge status={market.status} />
+              </div>
             </Card>
           ))}
         </div>

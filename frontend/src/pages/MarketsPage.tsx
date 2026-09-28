@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { listMarkets, type PublicMarketSummary } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import MarketCard from '../components/markets/MarketCard'
+import PageTitle from '../components/ui/PageTitle'
 
 export default function MarketsPage() {
   const [markets, setMarkets] = useState<PublicMarketSummary[]>([])
@@ -17,7 +18,7 @@ export default function MarketsPage() {
 
   return (
     <AppLayout width="max-w-[1200px]">
-      <h1 className="mb-8 text-[28px] font-extrabold tracking-[-0.3px] text-smu-navy">Markets</h1>
+      <PageTitle className="mb-8">Markets</PageTitle>
 
       {loading && <p className="text-sm text-muted">Loading markets…</p>}
 

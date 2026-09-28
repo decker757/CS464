@@ -67,7 +67,7 @@ export interface SourceOut {
 
 export interface MarketOut {
   id: string
-  status: string
+  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved'
   question: string | null
   description: string | null
   outcomes: OutcomeOut[]
@@ -78,6 +78,18 @@ export interface MarketOut {
   liquidity_b: number | null
   seed_subsidy: number | null
   max_platform_loss: number | null
+  // Set together once an outcome is proposed ([3.1] #9); null together until then.
+  proposal_id: string | null
+  proposed_outcome_id: string | null
+  proposed_by_id: string | null
+  proposed_by_username: string | null
+  proposed_at: string | null
+  proposal_evidence_url: string | null
+  proposal_evidence_note: string | null
+  // Set together once the proposal is approved ([3.2] #10); null together until then.
+  approved_by_id: string | null
+  approved_by_username: string | null
+  approved_at: string | null
 }
 
 export interface BlockingHint {
@@ -127,4 +139,22 @@ export interface MarketSummaryOut {
 export async function listMyMarkets(): Promise<MarketSummaryOut[]> {
   const res = await api.get<{ markets: MarketSummaryOut[] }>(`${MARKET_BASE}/markets`)
   return res.data.markets
+}
+
+/** One of the calling administrator's own markets, with the raw status column (market-service.md, GET /markets/{id}). */
+export async function getMyMarket(id: string): Promise<MarketOut> {
+  const res = await api.get<MarketOut>(`${MARKET_BASE}/markets/${id}`)
+  return res.data
+}
+
+export interface ProposeOutcomeRequest {
+  winning_outcome_id: string
+  evidence_url?: string
+  evidence_note?: string
+}
+
+/** Names the winner of a closed market, moving it to pending_resolution ([3.1] #9). */
+export async function proposeOutcome(id: string, data: ProposeOutcomeRequest): Promise<MarketOut> {
+  const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/propose-outcome`, data)
+  return res.data
 }

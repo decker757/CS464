@@ -13,6 +13,7 @@ import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import SectionCard from '../../components/ui/SectionCard'
 import Field from '../../components/ui/Field'
+import PageTitle from '../../components/ui/PageTitle'
 import TextArea from '../../components/ui/TextArea'
 import TextInput from '../../components/ui/TextInput'
 
@@ -276,7 +277,7 @@ export default function CreateMarketPage() {
       <div className="mb-8 flex items-start justify-between">
         <div>
           <BackLink to="/markets" label="Markets" className="mb-1.5 block" />
-          <h1 className="text-[28px] font-extrabold tracking-[-0.3px] text-smu-navy">New Market</h1>
+          <PageTitle>New Market</PageTitle>
         </div>
         {SAVE_STATUS_TEXT[saveStatus] && (
           <span className={`pt-7 text-[13px] ${SAVE_STATUS_TEXT[saveStatus].className}`}>
