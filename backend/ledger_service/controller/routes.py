@@ -50,6 +50,8 @@ from model.schemas import (
     LedgerEntryListResponse,
     LedgerEntryOut,
     OutcomePriceOut,
+    PortfolioOut,
+    PortfolioPositionOut,
     PreviewOut,
     SnapshotOut,
     TradeIn,
@@ -57,6 +59,7 @@ from model.schemas import (
 )
 from service import (
     ledger_service,
+    portfolio as portfolio_service,
     preview as preview_service,
     snapshot as snapshot_service,
     trading,
@@ -176,6 +179,64 @@ async def my_entries(
     limit: PageLimit = None,
 ) -> LedgerEntryListResponse:
     return await _entries(session, user.user_id, cursor=cursor, limit=limit)
+
+
+_PORTFOLIO_DESCRIPTION = (
+    "[T-4] #24. The caller's own positions and their current value, each "
+    "valued at liquidation (ADR 0018) rather than at the marginal price: "
+    "`value` is what selling the whole position now would credit, never "
+    "`quantity * price`.\n\n"
+    "The balance and every position are read together, in one statement, "
+    "with no lock, after minting the caller's starting credits on their "
+    "first read exactly as `/balances/me` does. Makes no call to "
+    "market_service — a market that has closed is valued at its frozen "
+    "book like any other.\n\n"
+    "Only positions with quantity > 0 are shown, ordered by `market_id` "
+    "then `outcome_position`; there is no admin variant."
+)
+
+
+@router.get(
+    "/portfolio/me",
+    response_model=PortfolioOut,
+    summary="My positions and their current value",
+    description=_PORTFOLIO_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        500: {
+            "description": (
+                "`market_book_incomplete`: a held market's book cannot be "
+                "priced, or a position exceeds its outcome's shares "
+                "outstanding. The whole read fails; no partial portfolio is "
+                "returned."
+            )
+        },
+    },
+)
+async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
+    result = await portfolio_service.portfolio_of_user(session, user.user_id)
+    return PortfolioOut(
+        user_id=result.user_id,
+        account_id=result.account_id,
+        balance=result.balance,
+        positions_value=result.positions_value,
+        net_worth=result.net_worth,
+        positions=[
+            PortfolioPositionOut(
+                market_id=p.market_id,
+                outcome_id=p.outcome_id,
+                outcome_position=p.outcome_position,
+                quantity=p.quantity,
+                cost_basis=p.cost_basis,
+                average_entry_price=p.average_entry_price,
+                price=p.price,
+                value=p.value,
+                unrealized_pnl=p.unrealized_pnl,
+                state_version=p.state_version,
+            )
+            for p in result.positions
+        ],
+    )
 
 
 @router.get(

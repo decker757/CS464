@@ -8,10 +8,14 @@ Each structural test names the change that turns it red:
 - **No lock.** Another session holds `FOR UPDATE` on everything a trade in
   flight holds — the book row, the outcome rows, the caller's position rows
   and the caller's account row — and the read must finish under a 2 s
-  `lock_timeout`. A plain SELECT does not wait on row locks. Add
-  `.with_for_update(of=MarketBook)` to the read and it queues on the held row
-  and fails `LockNotAvailable`; `FOR SHARE` and `FOR KEY SHARE` conflict with
-  `FOR UPDATE` too, and so fail the same way.
+  `lock_timeout`. A plain SELECT does not wait on row locks. Adding
+  `.with_for_update(of=MarketBook)` to the read turns this red either way:
+  against the current outer-join query, every table past the anchor sits on
+  the nullable side of a left join, so Postgres refuses the lock outright
+  with `FeatureNotSupportedError` before it can even queue. If the query is
+  ever rewritten so a lock is accepted, it queues on the held rows instead
+  and fails on `lock_timeout` (`LockNotAvailable`). `FOR SHARE` and
+  `FOR KEY SHARE` conflict with `FOR UPDATE` too, and so fail the same way.
 - **One statement.** After the grant, exactly one statement mentions
   `ledger.entries`, `ledger.positions` and `ledger.market_books`, and it is
   the same statement. Read the balance through `accounts.balance_of` beside
