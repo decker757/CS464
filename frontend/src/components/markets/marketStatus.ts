@@ -32,3 +32,12 @@ export function statusDisplay(status: string): { label: string; tone: Tone } {
 export function tradingStopped(status: MarketStatus | AdminMarketStatus, closeTime: string, now = new Date()): boolean {
   return status !== 'open' || new Date(closeTime) <= now
 }
+
+// "Closes {date}" only while the market can still trade, so a market closed
+// early never shows a future date. Only a draft can have no close time yet.
+export function formatCloseTime(status: MarketStatus | AdminMarketStatus, closeTime: string | null): string {
+  if (!closeTime) return '—'
+  if (tradingStopped(status, closeTime)) return 'Closed'
+  const closes = new Date(closeTime).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' })
+  return `Closes ${closes}`
+}

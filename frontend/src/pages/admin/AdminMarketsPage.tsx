@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { listMyMarkets, type MarketSummaryOut } from '../../api/marketApi'
+import { listMarkets, listMyMarkets, type MarketSummaryOut, type PublicMarketSummary } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
 import PageTitle from '../../components/ui/PageTitle'
 import { buttonClass } from '../../components/ui/buttonClass'
 import StatusBadge from '../../components/markets/StatusBadge'
-import { STATUS_CONFIG, tradingStopped, type AdminMarketStatus } from '../../components/markets/marketStatus'
+import { STATUS_CONFIG, formatCloseTime, type AdminMarketStatus } from '../../components/markets/marketStatus'
+
+// A market on the list, and whether the signed-in admin created it: only the
+// creator can act on it, e.g. propose its outcome.
+type MarketRow = Pick<MarketSummaryOut, 'id' | 'status' | 'question' | 'close_time'> & { isMine: boolean }
 
 type StatusFilter = AdminMarketStatus | 'all'
 
@@ -19,37 +23,41 @@ function filterLabel(filter: StatusFilter): string {
 // Markets with no close_time (draft, submitted) sort after every market that
 // has one, oldest-scheduled-close first for the rest — the soonest closing
 // market is the one that needs an admin's attention soonest.
-function byClosingSoonest(a: MarketSummaryOut, b: MarketSummaryOut): number {
+function byClosingSoonest(a: MarketRow, b: MarketRow): number {
   if (!a.close_time && !b.close_time) return 0
   if (!a.close_time) return 1
   if (!b.close_time) return -1
   return new Date(a.close_time).getTime() - new Date(b.close_time).getTime()
 }
 
-function countByStatus(markets: MarketSummaryOut[]): Record<AdminMarketStatus, number> {
+// [2.1] #5 asks for all markets. GET /markets returns the admin's own in every
+// status, and GET /public/markets every admin's once published, so together
+// they are all an admin may see; another admin's draft stays private. The
+// admin's own markets are in both lists and are kept once, from the first.
+function combineMarkets(mine: MarketSummaryOut[], published: PublicMarketSummary[]): MarketRow[] {
+  const rows: MarketRow[] = mine.map(market => ({ ...market, isMine: true }))
+  const myIds = new Set(mine.map(market => market.id))
+  for (const market of published) {
+    if (!myIds.has(market.id)) rows.push({ ...market, isMine: false })
+  }
+  return rows
+}
+
+function countByStatus(markets: MarketRow[]): Record<AdminMarketStatus, number> {
   const counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0 }
   for (const market of markets) counts[market.status]++
   return counts
 }
 
-// "Closes {date}" only while the market can still trade — a market closed
-// early keeps a future close_time (ADR 0014), and a market past open (pending
-// resolution, approved) has a close_time that is no longer a live deadline.
-function formatCloseTime(market: MarketSummaryOut): string {
-  if (!market.close_time) return '—'
-  if (tradingStopped(market.status, market.close_time)) return 'Closed'
-  return `Closes ${new Date(market.close_time).toLocaleString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-}
-
 export default function AdminMarketsPage() {
-  const [markets, setMarkets] = useState<MarketSummaryOut[]>([])
+  const [markets, setMarkets] = useState<MarketRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [filter, setFilter] = useState<StatusFilter>('all')
 
   useEffect(() => {
-    listMyMarkets()
-      .then(setMarkets)
+    Promise.all([listMyMarkets(), listMarkets()])
+      .then(([mine, published]) => setMarkets(combineMarkets(mine, published)))
       .catch(() => setError(true))
       .finally(() => setLoading(false))
   }, [])
@@ -64,7 +72,7 @@ export default function AdminMarketsPage() {
 
   return (
     <AppLayout width="max-w-[1000px]">
-      <PageTitle className="mb-8">My Markets</PageTitle>
+      <PageTitle className="mb-8">All Markets</PageTitle>
 
       <div role="tablist" aria-label="Filter by status" className="mb-6 flex flex-wrap gap-2">
         {FILTERS.map(f => {
@@ -105,7 +113,10 @@ export default function AdminMarketsPage() {
                 <p className="truncate text-[15px] font-semibold text-smu-navy">
                   {market.question ?? <span className="italic text-subtle">Untitled market</span>}
                 </p>
-                <p className="mt-1 text-xs text-subtle">{formatCloseTime(market)}</p>
+                <p className="mt-1 text-xs text-subtle">
+                  {formatCloseTime(market.status, market.close_time)}
+                  {market.isMine && ' · Created by you'}
+                </p>
               </div>
               <div className="flex shrink-0 items-center gap-3">
                 {market.status === 'closed' && (
