@@ -131,6 +131,30 @@ describe('useMarketPrices', () => {
     expect(result.current.prices).toBeNull()
   })
 
+  it('ignores a failed session refresh for a market the page has already left', async () => {
+    let refuseRefresh = () => {}
+    server.use(
+      http.get(SNAPSHOT, ({ params }) => {
+        if (params.id === 'm2') return HttpResponse.json(priceState(5, '0.6000', '0.4000'))
+        // Held until the page has moved on to m2.
+        return new Promise(resolve => {
+          refuseRefresh = () => resolve(HttpResponse.json({ error: { code: 'invalid_token', message: 'Not authenticated.' } }, { status: 401 }))
+        })
+      }),
+    )
+    const { result, rerender } = renderHook(({ id }) => useMarketPrices(id), { initialProps: { id: 'm1' } })
+    act(() => latest().serverClose(4401))
+
+    rerender({ id: 'm2' })
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
+
+    refuseRefresh()
+    await wait(50)
+    expect(result.current.status).toBe('connected')
+    expect(result.current.prices?.[0].price).toBe('0.6000')
+  })
+
   it('does not reconnect in a loop when it closes the socket itself', async () => {
     // StrictMode mounts, unmounts and remounts, closing the first socket. The
     // app runs in StrictMode, so this is every page load in development.
