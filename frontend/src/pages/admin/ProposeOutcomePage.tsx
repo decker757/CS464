@@ -13,23 +13,41 @@ import TextInput from '../../components/ui/TextInput'
 
 const FIELDS = ['winning_outcome_id', 'evidence_url', 'evidence_note', 'evidence'] as const
 
-// One message per status: what the admin should do, from market-service.md's
-// "Only a closed market" table.
-const CODE_MESSAGES: Record<string, string> = {
-  market_not_found: 'This market is not available.',
-  market_not_closed: 'This market has not finished yet. Wait for it to close before proposing an outcome.',
-  market_pending_resolution: 'An outcome has already been proposed for this market. Reload to see it.',
-  market_already_approved: 'An outcome has already been approved for this market. Reload to see who approved it.',
-}
-
 // Why this market's own status blocks the page from loading the form at all —
 // only "closed" ever reaches the form itself.
 const NOT_CLOSED_MESSAGES: Record<Exclude<MarketOut['status'], 'closed'>, string> = {
   draft: 'This market is still a draft and has not been published.',
   submitted: 'This market has been submitted but not published yet.',
   open: 'This market has not finished yet. Wait for it to close before proposing an outcome.',
-  pending_resolution: 'An outcome has already been proposed for this market. Reload to see it.',
-  approved: 'An outcome has already been approved for this market. Reload to see who approved it.',
+  pending_resolution: 'An outcome has already been proposed for this market and is awaiting approval.',
+  approved: 'An outcome has already been approved for this market.',
+}
+
+// What the admin should do, per error code, from market-service.md's
+// "Only a closed market" table.
+const CODE_MESSAGES: Record<string, string> = {
+  market_not_found: 'This market is not available.',
+  market_not_closed: NOT_CLOSED_MESSAGES.open,
+  market_pending_resolution: NOT_CLOSED_MESSAGES.pending_resolution,
+  market_already_approved: NOT_CLOSED_MESSAGES.approved,
+}
+
+// Somebody got there first. The page reloads the market and shows their
+// proposal or approval instead of the form (market-service.md, notes for #52).
+const DECIDED_ELSEWHERE_CODES = ['market_pending_resolution', 'market_already_approved']
+
+// Says who proposed or approved, when the market says so.
+function describeNotClosed(market: MarketOut): string {
+  if (market.status === 'pending_resolution' && market.proposed_at) {
+    const proposedAt = new Date(market.proposed_at).toLocaleString('en-SG')
+    return `Awaiting approval: proposed by ${market.proposed_by_username} on ${proposedAt}.`
+  }
+  if (market.status === 'approved' && market.approved_at) {
+    const approvedAt = new Date(market.approved_at).toLocaleString('en-SG')
+    return `Approved by ${market.approved_by_username} on ${approvedAt}.`
+  }
+  if (market.status === 'closed') return ''
+  return NOT_CLOSED_MESSAGES[market.status]
 }
 
 export default function ProposeOutcomePage() {
@@ -70,16 +88,20 @@ export default function ProposeOutcomePage() {
       navigate('/admin/markets')
     } catch (err) {
       const code = errorCode(err)
-      if (code && CODE_MESSAGES[code]) {
-        setFormError(CODE_MESSAGES[code])
-      } else {
-        const { fieldErrors: fe, formError: msg } = describeFormError(err, {
-          fields: FIELDS,
-          fieldErrorCodes: ['proposal_incomplete'],
-        })
-        setFieldErrors(fe)
-        setFormError(msg)
+      if (code && DECIDED_ELSEWHERE_CODES.includes(code)) {
+        const freshMarket = await getMyMarket(id).catch(() => null)
+        if (freshMarket) {
+          setMarket(freshMarket)
+          return
+        }
       }
+      const view = describeFormError(err, {
+        fields: FIELDS,
+        codeMessages: CODE_MESSAGES,
+        fieldErrorCodes: ['proposal_incomplete'],
+      })
+      setFieldErrors(view.fieldErrors)
+      setFormError(view.formError)
     } finally {
       setSubmitting(false)
     }
@@ -105,7 +127,7 @@ export default function ProposeOutcomePage() {
     return (
       <AppLayout width="max-w-[700px]">
         <BackLink to="/admin/markets" label="My Markets" className="mb-4 block" />
-        <p className="text-sm text-muted">{NOT_CLOSED_MESSAGES[market.status]}</p>
+        <p className="text-sm text-muted">{describeNotClosed(market)}</p>
       </AppLayout>
     )
   }
