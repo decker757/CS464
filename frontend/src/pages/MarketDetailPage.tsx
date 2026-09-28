@@ -59,7 +59,7 @@ export default function MarketDetailPage() {
   const error = current?.failed ?? false
   const pastClose = market !== null && closedMarketId === market.id
 
-  const prices = useMarketPrices(market?.id ?? null)
+  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null)
 
   useEffect(() => {
     if (!id) return
@@ -137,7 +137,7 @@ export default function MarketDetailPage() {
             </Banner>
           )}
 
-          <div className="mb-8 grid gap-3" style={{ gridTemplateColumns: `repeat(${market.outcomes.length}, 1fr)` }}>
+          <div className="mb-3 grid gap-3" style={{ gridTemplateColumns: `repeat(${market.outcomes.length}, 1fr)` }}>
             {market.outcomes.map(outcome => {
               const outcomePrice = prices?.find(p => p.outcome_id === outcome.id)
               const isWinner = outcome.id === market.proposed_outcome_id
@@ -152,6 +152,16 @@ export default function MarketDetailPage() {
               )
             })}
           </div>
+
+          {(priceStatus === 'reconnecting' || priceStatus === 'degraded') && (
+            <div
+              role="status"
+              className={`mb-6 flex items-center gap-2 text-xs font-medium ${priceStatus === 'degraded' ? 'text-danger' : 'text-warning-strong'}`}
+            >
+              <span className={`h-2 w-2 shrink-0 rounded-full ${priceStatus === 'degraded' ? 'bg-danger' : 'animate-pulse bg-warning'}`} />
+              {priceStatus === 'reconnecting' ? 'Reconnecting to live prices…' : 'Live prices unavailable.'}
+            </div>
+          )}
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (

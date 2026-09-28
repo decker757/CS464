@@ -69,22 +69,90 @@ describe('useMarketPrices', () => {
 
   it('subscribes, then shows the snapshot in position order', async () => {
     const { result } = renderHook(() => useMarketPrices('m1'))
-    expect(result.current).toBeNull()
+    expect(result.current.prices).toBeNull()
+    expect(result.current.status).toBe('connecting')
     subscribe(latest())
     expect(latest().sent).toContainEqual({ action: 'subscribe', market_id: 'm1' })
-    await waitFor(() => expect(result.current?.map(p => p.price)).toEqual(['0.6000', '0.4000']))
+    await waitFor(() => expect(result.current.prices?.map(p => p.price)).toEqual(['0.6000', '0.4000']))
+    expect(result.current.status).toBe('connected')
   })
 
   it('applies newer price frames and drops ones the snapshot already covers', async () => {
     const { result } = renderHook(() => useMarketPrices('m1'))
     subscribe(latest())
-    await waitFor(() => expect(result.current?.[0].price).toBe('0.6000'))
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
 
     act(() => latest().receive({ type: 'price', ...priceState(4, '0.1000', '0.9000') }))
-    expect(result.current?.[0].price).toBe('0.6000')
+    expect(result.current.prices?.[0].price).toBe('0.6000')
 
     act(() => latest().receive({ type: 'price', ...priceState(6, '0.7000', '0.3000') }))
-    expect(result.current?.[0].price).toBe('0.7000')
+    expect(result.current.prices?.[0].price).toBe('0.7000')
+  })
+
+  it('keeps the last prices through a reconnect, and a late older frame cannot replace them', async () => {
+    const { result } = renderHook(() => useMarketPrices('m1'))
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
+    act(() => latest().receive({ type: 'price', ...priceState(6, '0.7000', '0.3000') }))
+
+    act(() => latest().serverClose(1006))
+    expect(result.current.status).toBe('reconnecting')
+    expect(result.current.prices?.[0].price).toBe('0.7000')
+
+    await wait(1100)
+    subscribe(latest())
+    // A different replica may still deliver a frame from before the drop.
+    act(() => latest().receive({ type: 'price', ...priceState(5, '0.5000', '0.5000') }))
+    expect(result.current.prices?.[0].price).toBe('0.7000')
+  })
+
+  it('fetches a fresh snapshot after reconnecting, and shows connected even when nothing traded', async () => {
+    let snapshots = 0
+    server.use(http.get(SNAPSHOT, () => { snapshots++; return HttpResponse.json(priceState(5, '0.6000', '0.4000')) }))
+    const { result } = renderHook(() => useMarketPrices('m1'))
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
+
+    act(() => latest().serverClose(1006))
+    await wait(1100)
+    subscribe(latest())
+    await waitFor(() => expect(snapshots).toBe(2))
+    expect(result.current.status).toBe('connected')
+  })
+
+  it('shows reconnecting for the market now open, not the one before it', async () => {
+    const { result, rerender } = renderHook(({ id }) => useMarketPrices(id), { initialProps: { id: 'm1' } })
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices).not.toBeNull())
+
+    rerender({ id: 'm2' })
+    act(() => latest().serverClose(1006))
+    expect(result.current.status).toBe('reconnecting')
+    expect(result.current.prices).toBeNull()
+  })
+
+  it('ignores a failed session refresh for a market the page has already left', async () => {
+    let refuseRefresh = () => {}
+    server.use(
+      http.get(SNAPSHOT, ({ params }) => {
+        if (params.id === 'm2') return HttpResponse.json(priceState(5, '0.6000', '0.4000'))
+        // Held until the page has moved on to m2.
+        return new Promise(resolve => {
+          refuseRefresh = () => resolve(HttpResponse.json({ error: { code: 'invalid_token', message: 'Not authenticated.' } }, { status: 401 }))
+        })
+      }),
+    )
+    const { result, rerender } = renderHook(({ id }) => useMarketPrices(id), { initialProps: { id: 'm1' } })
+    act(() => latest().serverClose(4401))
+
+    rerender({ id: 'm2' })
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
+
+    refuseRefresh()
+    await wait(50)
+    expect(result.current.status).toBe('connected')
+    expect(result.current.prices?.[0].price).toBe('0.6000')
   })
 
   it('does not reconnect in a loop when it closes the socket itself', async () => {
@@ -106,7 +174,8 @@ describe('useMarketPrices', () => {
     vi.useFakeTimers()
     const { result } = renderHook(() => useMarketPrices('m1'))
     act(() => latest().serverClose(1000))
-    expect(result.current).toBeNull()
+    expect(result.current.prices).toBeNull()
+    expect(result.current.status).toBe('reconnecting')
     await act(() => vi.advanceTimersByTimeAsync(900))
     expect(FakeSocket.instances).toHaveLength(1)
     await act(() => vi.advanceTimersByTimeAsync(200))
@@ -128,10 +197,11 @@ describe('useMarketPrices', () => {
 
   it('gives up when the origin is refused', async () => {
     vi.useFakeTimers()
-    renderHook(() => useMarketPrices('m1'))
+    const { result } = renderHook(() => useMarketPrices('m1'))
     act(() => latest().serverClose(4403))
     await act(() => vi.advanceTimersByTimeAsync(60_000))
     expect(FakeSocket.instances).toHaveLength(1)
+    expect(result.current.status).toBe('degraded')
   })
 
   it('refreshes the session before reconnecting when the token expired', async () => {
@@ -149,9 +219,10 @@ describe('useMarketPrices', () => {
         HttpResponse.json({ error: { code: 'invalid_token', message: 'Not authenticated.' } }, { status: 401 }),
       ),
     )
-    renderHook(() => useMarketPrices('m1'))
+    const { result } = renderHook(() => useMarketPrices('m1'))
     act(() => latest().serverClose(4401))
     await wait(1500)
     expect(FakeSocket.instances).toHaveLength(1)
+    expect(result.current.status).toBe('degraded')
   })
 })
