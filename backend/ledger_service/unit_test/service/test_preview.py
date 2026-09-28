@@ -947,14 +947,16 @@ async def test_every_display_figure_goes_through_one_half_up_helper(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Prices, post-trade prices and `average_price` share one rounding helper
-    (D-052)."""
+    (D-052). `average_price` reaches it through `core/pricing.py::per_share`
+    rather than calling it directly, so this patches the module it actually
+    lives in, not `service/preview.py`."""
     upstream = Upstream()
     await warm(session, upstream)
     marker = Decimal("0.5000")
     monkeypatch.setattr(
         _preview().book_prices, "quantize_price", lambda value: marker
     )
-    monkeypatch.setattr(_preview(), "quantize_price", lambda value: marker)
+    monkeypatch.setattr(_pricing(), "quantize_price", lambda value: marker)
 
     quote = await _quote(session, upstream)
 
