@@ -55,6 +55,10 @@ export default function DecideOutcomePage() {
     Promise.all([getMarket(id), listAllActions('market.outcome_proposed')])
       .then(([marketDetail, entries]) => {
         setMarket(marketDetail)
+        // The audit log keeps every proposal ever made, including rejected and
+        // approved ones. Only a pending_resolution market has one waiting
+        // (market-service.md's approval-screen notes, point 1).
+        if (marketDetail.status !== 'pending_resolution') return
         const latest = latestProposalPerMarket(entries.filter(e => e.target_id === id))
         const entry = latest.get(id)
         if (entry) setProposal(toPendingProposal(marketDetail, entry))
@@ -118,7 +122,11 @@ export default function DecideOutcomePage() {
     return (
       <AppLayout width="max-w-[700px]">
         <BackLink to="/admin/proposals" label="Proposals" className="mb-4 block" />
-        <p className="text-sm text-muted">This market has no proposal waiting on a decision.</p>
+        <p className="text-sm text-muted">
+          {market.status === 'approved'
+            ? 'This market’s outcome has already been approved.'
+            : 'This market has no proposal waiting on a decision.'}
+        </p>
       </AppLayout>
     )
   }
