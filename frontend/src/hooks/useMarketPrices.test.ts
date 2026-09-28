@@ -89,6 +89,48 @@ describe('useMarketPrices', () => {
     expect(result.current.prices?.[0].price).toBe('0.7000')
   })
 
+  it('keeps the last prices through a reconnect, and a late older frame cannot replace them', async () => {
+    const { result } = renderHook(() => useMarketPrices('m1'))
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
+    act(() => latest().receive({ type: 'price', ...priceState(6, '0.7000', '0.3000') }))
+
+    act(() => latest().serverClose(1006))
+    expect(result.current.status).toBe('reconnecting')
+    expect(result.current.prices?.[0].price).toBe('0.7000')
+
+    await wait(1100)
+    subscribe(latest())
+    // A different replica may still deliver a frame from before the drop.
+    act(() => latest().receive({ type: 'price', ...priceState(5, '0.5000', '0.5000') }))
+    expect(result.current.prices?.[0].price).toBe('0.7000')
+  })
+
+  it('fetches a fresh snapshot after reconnecting, and shows connected even when nothing traded', async () => {
+    let snapshots = 0
+    server.use(http.get(SNAPSHOT, () => { snapshots++; return HttpResponse.json(priceState(5, '0.6000', '0.4000')) }))
+    const { result } = renderHook(() => useMarketPrices('m1'))
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices?.[0].price).toBe('0.6000'))
+
+    act(() => latest().serverClose(1006))
+    await wait(1100)
+    subscribe(latest())
+    await waitFor(() => expect(snapshots).toBe(2))
+    expect(result.current.status).toBe('connected')
+  })
+
+  it('shows reconnecting for the market now open, not the one before it', async () => {
+    const { result, rerender } = renderHook(({ id }) => useMarketPrices(id), { initialProps: { id: 'm1' } })
+    subscribe(latest())
+    await waitFor(() => expect(result.current.prices).not.toBeNull())
+
+    rerender({ id: 'm2' })
+    act(() => latest().serverClose(1006))
+    expect(result.current.status).toBe('reconnecting')
+    expect(result.current.prices).toBeNull()
+  })
+
   it('does not reconnect in a loop when it closes the socket itself', async () => {
     // StrictMode mounts, unmounts and remounts, closing the first socket. The
     // app runs in StrictMode, so this is every page load in development.
