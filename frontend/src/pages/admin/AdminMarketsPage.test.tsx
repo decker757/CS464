@@ -147,13 +147,17 @@ describe('AdminMarketsPage', () => {
     expect(screen.getAllByText('Closed').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('offers Propose Outcome only for closed markets', async () => {
-    mockList(mockMarkets)
+  it('offers Propose Outcome only for closed markets the admin created', async () => {
+    // Only the creator may propose; for anyone else the request is a 404.
+    mockList(mockMarkets, [
+      { id: 'y8', status: 'closed', question: 'Another admin\'s closed market?', close_time: '2025-02-01T00:00:00Z' },
+    ])
     renderPage()
-    await screen.findByText('Will SMU win SUNIG?')
+    await screen.findByText('Another admin\'s closed market?')
 
     const links = screen.getAllByRole('link', { name: /propose outcome/i })
     expect(links).toHaveLength(1)
+    expect(links[0]).toHaveAttribute('href', '/admin/markets/d4/propose-outcome')
   })
 
   it('navigates to the propose-outcome page for a closed market', async () => {
