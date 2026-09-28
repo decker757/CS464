@@ -213,11 +213,18 @@ describe('DecideOutcomePage', () => {
     expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
   })
 
-  it('shows a message when the market has no proposal waiting', async () => {
-    mockGetMarket(publicMarket({ status: 'closed', proposed_outcome_id: null }))
-    mockAuditActions([])
+  // The audit log still holds the old proposal after a rejection or an
+  // approval, e.g. when the reviewer presses Back after rejecting.
+  it.each([
+    ['closed', /no proposal waiting/i],
+    ['approved', /already been approved/i],
+  ])('offers no decision when the market is %s, even with an old proposal in the log', async (status, expected) => {
+    mockGetMarket(publicMarket({ status }))
+    mockAuditActions([proposedAction()])
     renderPage()
-    expect(await screen.findByText(/no proposal waiting/i)).toBeInTheDocument()
+    expect(await screen.findByText(expected)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^reject$/i })).not.toBeInTheDocument()
   })
 
   it('shows an error when the market fails to load', async () => {
