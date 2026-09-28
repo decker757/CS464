@@ -126,7 +126,7 @@ export default function ProposeOutcomePage() {
   if (market.status !== 'closed') {
     return (
       <AppLayout width="max-w-[700px]">
-        <BackLink to="/admin/markets" label="My Markets" className="mb-4 block" />
+        <BackLink to="/admin/markets" label="All Markets" className="mb-4 block" />
         <p className="text-sm text-muted">{describeNotClosed(market)}</p>
       </AppLayout>
     )
@@ -136,7 +136,7 @@ export default function ProposeOutcomePage() {
 
   return (
     <AppLayout width="max-w-[700px]">
-      <BackLink to="/admin/markets" label="My Markets" className="mb-1.5 block" />
+      <BackLink to="/admin/markets" label="All Markets" className="mb-1.5 block" />
       <PageTitle className="mb-8">Propose Outcome</PageTitle>
 
       <SectionCard title={market.question ?? 'Untitled market'} className="mb-5">

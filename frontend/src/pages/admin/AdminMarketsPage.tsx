@@ -119,7 +119,7 @@ export default function AdminMarketsPage() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-3">
-                {market.status === 'closed' && (
+                {market.isMine && market.status === 'closed' && (
                   <Link to={`/admin/markets/${market.id}/propose-outcome`} className={buttonClass('outline', 'xs')}>
                     Propose Outcome
                   </Link>
