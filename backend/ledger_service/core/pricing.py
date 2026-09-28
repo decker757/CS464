@@ -187,6 +187,41 @@ def trade_cost_of(
     return TradeCost(after_q=after_q, magnitude=magnitude, total=total)
 
 
+def liquidation_values_of(
+    q: Sequence[Decimal], b: Decimal, holdings: Sequence[Decimal]
+) -> list[Decimal]:
+    """What selling every held outcome would pay, one at a time. [T-4] #24
+
+    "A user's holdings in one market are valued as one sequence of sales"
+    (ADR 0018): `holdings[i]` of outcome `i` is sold through `trade_cost_of`,
+    in the order given, each against the `q` the previous sale left.
+    `0.0000` where nothing is held. A sale whose proceeds round to nothing is
+    valued `0.0000` and leaves `q` unchanged for the next sale, because the
+    trade route would have refused that sale rather than move the book for
+    it. `InsufficientSharesOutstanding` propagates rather than being valued
+    at anything — a holding above `q` is the caller's data being wrong, not a
+    sale to skip.
+
+    Pure. No session, no clock.
+    """
+    current = list(q)
+    values: list[Decimal] = []
+    for index, held in enumerate(holdings):
+        if held == 0:
+            values.append(Decimal("0.0000"))
+            continue
+        try:
+            cost = trade_cost_of(
+                current, b, index=index, side=Side.SELL, quantity=held
+            )
+        except ProceedsBelowTick:
+            values.append(Decimal("0.0000"))
+            continue
+        values.append(cost.magnitude)
+        current = list(cost.after_q)
+    return values
+
+
 def per_share(amount: Decimal, quantity: Decimal) -> Decimal:
     """`amount / quantity`, at a price's scale (D-052).
 

@@ -459,8 +459,8 @@ class Position(Base):
 
     Primary key is the triple `(user_id, market_id, outcome_id)` rather than a
     surrogate id — the same argument `MarketOutcome`'s pair makes: nothing
-    references a position by an identity of its own, and [T-4] #24 reaches
-    them by the triple.
+    references a position by an identity of its own. [T-4] #24 reaches them
+    by a `user_id` scan, joined out to every outcome of each market it names.
 
     **This table is not append-only, and must not carry `ledger.entries`'
     trigger.** It is a rollup, UPDATEd on every later buy or sell in the same

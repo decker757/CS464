@@ -53,6 +53,84 @@ class BalanceOut(BaseModel):
         return str(value)
 
 
+class PortfolioPositionOut(BaseModel):
+    """One outcome the caller still holds, valued at liquidation. [T-4] #24
+
+    `value` is what selling the whole position now would credit — never
+    `quantity * price`. See `GET /ledger/portfolio/me` in
+    `docs/api/ledger-service.md` and ADR 0018 for why.
+    """
+
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    outcome_position: int = Field(
+        ge=0, description="The outcome's order within its market."
+    )
+
+    quantity: Decimal
+    cost_basis: Decimal = Field(
+        description="What this position cost to build, at average cost."
+    )
+    average_entry_price: Decimal = Field(
+        description="cost_basis / quantity, ROUND_HALF_UP at scale 4."
+    )
+    price: Decimal = Field(
+        description=(
+            "The outcome's marginal price — informational only, and equal "
+            "to the snapshot's for the same state_version. Not what `value` "
+            "is computed from."
+        )
+    )
+    value: Decimal = Field(
+        description=(
+            "What selling the whole position now would credit (ADR 0018), "
+            "not quantity * price."
+        )
+    )
+    unrealized_pnl: Decimal = Field(description="value - cost_basis.")
+    state_version: int = Field(
+        description="This market's book version this row was valued at."
+    )
+
+    @field_serializer(
+        "quantity",
+        "cost_basis",
+        "average_entry_price",
+        "price",
+        "value",
+        "unrealized_pnl",
+    )
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class PortfolioOut(BaseModel):
+    """The caller's balance and every position they still hold. [T-4] #24
+
+    `positions_value` is the sum of the positions' `value`, and `net_worth`
+    is `balance + positions_value`, exactly — nothing is rounded after the
+    valuation (ADR 0018).
+    """
+
+    user_id: uuid.UUID
+    account_id: uuid.UUID
+
+    balance: Decimal
+    positions_value: Decimal = Field(description="The sum of the positions' values.")
+    net_worth: Decimal = Field(description="balance + positions_value, exactly.")
+
+    positions: list[PortfolioPositionOut] = Field(
+        description=(
+            "Only outcomes with quantity > 0, ordered by market_id then "
+            "outcome_position. A position sold to zero is not shown."
+        )
+    )
+
+    @field_serializer("balance", "positions_value", "net_worth")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
 class LedgerEntryOut(BaseModel):
     """One side of one movement, as it was written.
 

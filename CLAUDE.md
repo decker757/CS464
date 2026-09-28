@@ -582,6 +582,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0015** every read that decides a write is locked, and the wider lock goes first
 - **0016** deciding a proposal, by any admin but the proposer, with APPROVED as a status
 - **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first
+- **0018** positions are valued at liquidation, not at the marginal price
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
