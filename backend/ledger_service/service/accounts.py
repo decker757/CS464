@@ -9,11 +9,10 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.paging import Position
 from model.entities import PLATFORM_OWNER_ID, Account, AccountKind, Entry
 
 ZERO = Decimal(0)
@@ -76,32 +75,15 @@ async def lock(session: AsyncSession, account_ids: list[uuid.UUID]) -> None:
         )
 
 
-async def balance_of(
-    session: AsyncSession,
-    account_id: uuid.UUID,
-    *,
-    as_at: Position | None = None,
-) -> Decimal:
+async def balance_of(session: AsyncSession, account_id: uuid.UUID) -> Decimal:
     """What this account holds: the sum of its entries, derived on every read,
-    never stored (ADR 0009). [B-1] #32, [B-2] #33, [4.1] #13.
+    never stored (ADR 0009). [B-1] #32, [B-2] #33.
 
-    Zero for an account with no entries. `as_at` gives the balance just after
-    that position in the feed, [4.1] #13's running balance. Anchored on a
-    position, so a read's own figure does not depend on when it ran.
-
-    Known limitation (#187): two transactions on this account can commit in an
-    order other than their timestamps show, so a position taken from the feed
-    is not yet guaranteed to be the order they actually committed in.
+    Zero for an account with no entries. [4.1] #13's running balance is not
+    read here: `ledger_service._page_query` sums to a position inside the
+    page's own statement.
     """
     stmt = select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
         Entry.account_id == account_id
     )
-
-    if as_at is not None:
-        # `<=`: the balance after an entry includes it. Row-wise on the feed's
-        # ordering pair, so it reads `ix_ledger_entries_account_feed` and
-        # agrees with the page boundary even between the two legs of one
-        # movement, which share a timestamp.
-        stmt = stmt.where(tuple_(Entry.created_at, Entry.id) <= tuple_(*as_at))
-
     return (await session.execute(stmt)).scalar_one()
