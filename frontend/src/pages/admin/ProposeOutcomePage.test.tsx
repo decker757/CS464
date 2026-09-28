@@ -136,14 +136,14 @@ describe('ProposeOutcomePage', () => {
   it('shows who proposed, instead of the form, when a proposal is already pending', async () => {
     mockGet(baseMarket(PENDING))
     renderPage()
-    expect(await screen.findByText(/awaiting approval: proposed by admin2/i)).toBeInTheDocument()
+    expect(await screen.findByText(/awaiting approval: proposed by admin2 on .*2025/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 
   it('shows who approved, instead of the form, when the market is already approved', async () => {
     mockGet(baseMarket(APPROVED))
     renderPage()
-    expect(await screen.findByText(/approved by admin3/i)).toBeInTheDocument()
+    expect(await screen.findByText(/approved by admin3 on .*2025/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 
@@ -178,8 +178,8 @@ describe('ProposeOutcomePage', () => {
   })
 
   it.each([
-    ['market_pending_resolution', PENDING, /awaiting approval: proposed by admin2/i],
-    ['market_already_approved', APPROVED, /approved by admin3/i],
+    ['market_pending_resolution', PENDING, /awaiting approval: proposed by admin2 on .*2025/i],
+    ['market_already_approved', APPROVED, /approved by admin3 on .*2025/i],
   ])('reloads and shows who got there first on a 409 %s', async (code, decided, expected) => {
     // The first load finds the market closed; by the time the admin submits,
     // another tab or administrator has moved it on.
