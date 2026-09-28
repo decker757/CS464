@@ -548,15 +548,7 @@ async def _entries(
     )
     return LedgerEntryListResponse(
         entries=[
-            LedgerEntryOut.of(
-                row.entry,
-                balance_after=row.balance_after,
-                market_id=row.market_id,
-                outcome_id=row.outcome_id,
-                side=row.side,
-                quantity=row.quantity,
-                average_price=row.average_price,
-            )
+            LedgerEntryOut.of(row.entry, balance_after=row.balance_after, trade=row.trade)
             for row in page.rows
         ],
         next_cursor=page.next_cursor,
