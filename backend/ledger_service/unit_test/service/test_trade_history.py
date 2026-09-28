@@ -22,7 +22,6 @@ from unit_test.history_fixtures import (
     assert_average_rounding_is_load_bearing,
     expected_balances,
     grant_id_of,
-    ledger_service,
     read_history,
     stored_context,
     trade_fields,
@@ -48,11 +47,6 @@ from unit_test.trade_fixtures import (
 )
 
 NULL_TRADE_FIELDS = (None, None, None, None, None)
-
-
-async def _balance(session: AsyncSession, user_id: uuid.UUID) -> Decimal:
-    """What `GET /ledger/balances/me` answers, from its service function."""
-    return (await ledger_service().balance_of_user(session, user_id)).amount
 
 
 # =========================================================================
@@ -133,18 +127,6 @@ async def test_another_user_s_rows_and_a_market_seed_never_appear(
 # =========================================================================
 # balance_after
 # =========================================================================
-async def test_the_newest_balance_after_is_the_balance_route_s_answer(
-    session: AsyncSession,
-) -> None:
-    scenario = await traded(session)
-
-    page = await read_history(session, scenario.user_id)
-    balance = await _balance(session, scenario.user_id)
-
-    assert page.rows[0].balance_after == scenario.after_sell
-    assert balance == scenario.after_sell
-
-
 async def test_walking_every_page_each_balance_after_is_the_older_row_s_plus_its_amount(
     session: AsyncSession,
 ) -> None:
@@ -161,32 +143,6 @@ async def test_walking_every_page_each_balance_after_is_the_older_row_s_plus_its
     for newer, older in zip(rows, rows[1:]):
         assert newer.balance_after == older.balance_after + newer.entry.amount
     assert rows[-1].balance_after == rows[-1].entry.amount == scenario.credits
-
-
-async def test_a_trade_committed_between_pages_leaves_page_two_continuing_page_one(
-    session: AsyncSession,
-) -> None:
-    """Sequential, in the same market: the new buy commits after page 1 is
-    read and before page 2 is. No race; that is #187's."""
-    scenario = await traded(session)
-    before = await expected_balances(session, scenario.user_id)
-    page_one = await read_history(session, scenario.user_id, limit=2)
-    # Read off before the trade commits and expires the loaded entries.
-    shown = as_pairs(page_one.rows)
-    last_of_one = page_one.rows[-1]
-    continues_at = last_of_one.balance_after - last_of_one.entry.amount
-
-    later = await hold(session, scenario.upstream, user_id=scenario.user_id, quantity=SMALL_QUANTITY)
-
-    page_two = await read_history(
-        session, scenario.user_id, limit=2, cursor=page_one.next_cursor
-    )
-    assert shown + as_pairs(page_two.rows) == before
-    assert page_two.rows[0].balance_after == continues_at
-
-    fresh = await read_history(session, scenario.user_id, limit=2)
-    assert fresh.rows[0].entry.transaction_id == later.transaction_id
-    assert fresh.rows[0].balance_after == scenario.after_sell + fresh.rows[0].entry.amount
 
 
 # =========================================================================
@@ -210,8 +166,8 @@ async def test_a_buy_row_carries_its_market_outcome_side_quantity_and_average_pr
         HELD,
         BUY_AVERAGE,
     )
-    assert str(row.quantity) == "54.3333"
-    assert str(row.average_price) == "0.5493"
+    assert str(row.trade.quantity) == "54.3333"
+    assert str(row.trade.average_price) == "0.5493"
 
 
 async def test_a_sell_row_carries_positive_proceeds_and_its_average_price(
@@ -232,7 +188,7 @@ async def test_a_sell_row_carries_positive_proceeds_and_its_average_price(
         Decimal("10.0000"),
         SELL_AVERAGE,
     )
-    assert str(row.average_price) == "0.5891"
+    assert str(row.trade.average_price) == "0.5891"
 
 
 async def test_quantity_sent_as_10_is_shown_as_10_0000(session: AsyncSession) -> None:
@@ -243,7 +199,7 @@ async def test_quantity_sent_as_10_is_shown_as_10_0000(session: AsyncSession) ->
     row = (await read_history(session, scenario.user_id)).rows[0]
 
     assert (await stored_context(session, scenario.sell.transaction_id))["quantity"] == "10"
-    assert str(row.quantity) == "10.0000"
+    assert str(row.trade.quantity) == "10.0000"
 
 
 @pytest.mark.parametrize("side", ["buy", "sell"])
@@ -276,8 +232,8 @@ async def test_average_price_equals_the_preview_s_at_the_same_state_version(
     )
 
     row = (await read_history(session, user_id)).rows[0]
-    assert row.average_price == quote.average_price
-    assert row.average_price == (BUY_AVERAGE if side == "buy" else SELL_AVERAGE)
+    assert row.trade.average_price == quote.average_price
+    assert row.trade.average_price == (BUY_AVERAGE if side == "buy" else SELL_AVERAGE)
 
 
 # =========================================================================

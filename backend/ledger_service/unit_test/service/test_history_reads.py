@@ -5,8 +5,8 @@ Each structural test names the change that turns it red:
 - **One statement.** The grant check's own statements are captured alone
   first and subtracted from the read's. Exactly one statement must be left,
   and it must read both `ledger.entries` and `ledger.transactions`. Reading the
-  anchor sum through `accounts.balance_of(..., as_at=...)` beside the page
-  leaves a second `entries` statement. Taking `kind` and `context` from
+  anchor sum in its own query beside the page leaves a second `entries`
+  statement. Taking `kind` and `context` from
   `Entry.transaction`'s `selectin` load leaves a second `transactions` one.
 - **One leg per USER account.** The mixed test stays green while every writer
   keeps one leg on the user. A writer that splits the user's side in two turns
@@ -169,4 +169,4 @@ async def test_the_history_makes_no_call_to_market_service(
         scenario.sell.transaction_id,
         scenario.buy.transaction_id,
     ]
-    assert page.rows[0].market_id == scenario.upstream.market_id
+    assert page.rows[0].trade.market_id == scenario.upstream.market_id

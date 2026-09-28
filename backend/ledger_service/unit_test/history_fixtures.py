@@ -9,9 +9,9 @@ scenario, and the one-leg guard's query.
 **The interface is agreed for #25, and this is the single place it is written
 down.** `ledger_service.history_for_user(session, user_id, *, limit, cursor)`
 returns an `EntryPage` as it did for [4.1] #13. Each `HistoryRow` keeps `entry`
-and `balance_after`, and gains `market_id`, `outcome_id`, `side`, `quantity`
-and `average_price`, all nullable and defaulting to `None`. `LedgerEntryOut`
-gains the same five on the wire.
+and `balance_after`, and gains `trade`, a `TradeFields` holding `market_id`,
+`outcome_id`, `side`, `quantity` and `average_price`, all nullable.
+`LedgerEntryOut` gains the same five on the wire.
 
 **History comes from real grants and trades on a book opened at zero.** The
 numbers are #23's worked example at `b = 137`: buying 54.3333 costs 29.8428,
@@ -112,7 +112,7 @@ async def walk(
 
 def trade_fields(row) -> tuple:
     """The five fields #25 adds, in `TRADE_FIELDS` order."""
-    return tuple(getattr(row, name) for name in TRADE_FIELDS)
+    return tuple(getattr(row.trade, name) for name in TRADE_FIELDS)
 
 
 def transaction_ids(rows) -> list[uuid.UUID]:

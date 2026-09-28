@@ -237,6 +237,10 @@ async def test_a_movement_arriving_mid_read_does_not_move_an_earlier_figure(
     # the balances they had before the new movement existed.
     assert _as_pairs(page_one.rows) + _as_pairs(page_two.rows) == before
 
+    # A fresh read, by contrast, shows the new movement on top.
+    fresh = await ledger_service.history_for_user(session, user_id, limit=2)
+    assert _as_pairs(fresh.rows) == (await _expected(session, account.id))[:2]
+
 
 # --- the design this rests on ---------------------------------------------
 
