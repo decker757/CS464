@@ -262,8 +262,8 @@ class Entry(Base):
 
     There is deliberately no `balance_after` column. It would be a second
     source of truth that a concurrent write could make wrong, and it is one
-    aggregate away at read time for [4.1] #13, which is the only story that
-    wants it.
+    aggregate away at read time for [4.1] #13 and [T-5] #25, the two stories
+    that want it.
     """
 
     __tablename__ = "entries"

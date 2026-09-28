@@ -87,7 +87,11 @@ async def balance_of(
 
     Zero for an account with no entries. `as_at` gives the balance just after
     that position in the feed, [4.1] #13's running balance. Anchored on a
-    position, so entries appended mid-read cannot move a figure on screen.
+    position, so a read's own figure does not depend on when it ran.
+
+    Known limitation (#187): two transactions on this account can commit in an
+    order other than their timestamps show, so a position taken from the feed
+    is not yet guaranteed to be the order they actually committed in.
     """
     stmt = select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
         Entry.account_id == account_id
