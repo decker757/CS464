@@ -8,6 +8,7 @@ import { server } from '../test/server'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
+const SNAPSHOT = 'http://localhost:8003/ledger/markets/:id/snapshot'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
@@ -75,11 +76,27 @@ function renderMovableRouter(marketId: string) {
   return router
 }
 
+function priceFrame(version: number, yes: string, no: string) {
+  return {
+    market_id: 'mkt-abc',
+    state_version: version,
+    prices: [
+      { outcome_id: 'o1', position: 0, price: yes },
+      { outcome_id: 'o2', position: 1, price: no },
+    ],
+    occurred_at: '2026-09-26T00:00:00Z',
+  }
+}
+
 describe('MarketDetailPage', () => {
   beforeEach(() => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
         HttpResponse.json(baseMarket),
+      ),
+      // No price unless a test serves one, so the placeholder stays on screen.
+      http.get(SNAPSHOT, () =>
+        HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 }),
       ),
     )
   })
@@ -102,6 +119,32 @@ describe('MarketDetailPage', () => {
     expect(screen.getByLabelText('Yes price')).toHaveTextContent('—')
     expect(screen.getByLabelText('No price')).toHaveTextContent('—')
     expect(screen.getAllByText('loading price…').length).toBe(2)
+  })
+
+  // AC 1 and AC 3: the page shows the ledger's snapshot, then what a trade pushes.
+  it('shows the snapshot price, then the price a trade pushes', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(SNAPSHOT, () => HttpResponse.json(priceFrame(5, '0.6000', '0.4000'))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+    renderPage()
+    await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('60.0%'))
+    expect(screen.getByLabelText('No price')).toHaveTextContent('40.0%')
+    expect(screen.queryByText('loading price…')).not.toBeInTheDocument()
+
+    await waitFor(() => expect(wsClient).not.toBeNull())
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(6, '0.7000', '0.3000') })))
+    await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('70.0%'))
+    expect(screen.getByLabelText('No price')).toHaveTextContent('30.0%')
   })
 
   it('says closed early, not a future closing date, for a market an admin closed', async () => {

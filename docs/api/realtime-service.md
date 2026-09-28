@@ -28,18 +28,18 @@ Two consequences matter to a client:
 - **It cannot tell you a market does not exist.** It holds no market table.
   Subscribing to an id that names nothing is legal, silent, and never delivers.
 
-## Not all of [F-2] #42 has landed
+## Where the pieces live
 
 The socket, the bus and the ordering rules below are built and tested. The
 **snapshot endpoint is specified here and implemented on the ledger**, per
-ADR 0005, because it needs `q`, `b` and the LMSR cost function. Both landed:
-the engine with [F-3] #43, the route itself with [F-9] #112.
+ADR 0005, because it needs `q`, `b` and the LMSR cost function: the engine
+landed with [F-3] #43, the route with [F-9] #112.
 
-What has not landed is the producer's caller: nothing on the ledger publishes
-a `PriceEvent` yet. `service/bus.py::publish` exists and is tested, but
-[T-2] #22 is the trade path that calls it after a commit. Until then, a
-client can connect, snapshot and subscribe, but will see no `price` frame
-arrive on a market that has already been open.
+The producer is on the ledger too. The trade path — buying with [T-2] #22,
+selling with [T-3] #23, both through
+`ledger_service/service/trading.py::execute` — calls `bus.publish` once, after
+`posting.post` has committed the trade. Every committed trade therefore sends a
+`price` frame to everyone subscribed to that market.
 
 ## Connecting
 
@@ -201,6 +201,13 @@ Subscribing before snapshotting is also fine, and slightly safer — an event
 that arrives during step 1 is then discarded by the version check rather than
 missed.
 
+The frontend (`useMarketPrices`) does both: it requests the snapshot as the
+page opens, without waiting for the socket, and requests it again on every
+`subscribed`. The first means a realtime service that is down or refuses the
+origin still leaves the ledger's price on screen; the second closes the gap
+between that first request and the subscription. The version check drops
+whichever answer is older.
+
 **Reconnecting**
 
 1. Reconnect the socket and `subscribe` again.
@@ -255,10 +262,11 @@ each end. `unit_test/model/test_price_event.py` and
 `unit_test/service/test_price_publish.py` on the ledger's side hold both
 copies to their originals by reading this service's source as text.
 
-**Nothing calls `publish` yet.** [F-9] #112 shipped the primitive with no
-caller — the same "primitive before caller" shape [F-7] #96 and [F-8] #109
-already used — so a market's price does not currently change on this socket.
-[T-2] #22 is the trade path that calls it, once, right after its own commit.
+**The trade path is the one caller.** [F-9] #112 shipped the primitive with
+no caller — the same "primitive before caller" shape [F-7] #96 and [F-8] #109
+already used — and [T-2] #22 and [T-3] #23 added it: `trading.py::execute`
+calls `bus.publish` once, right after `posting.post` commits, and never on a
+rejection or an idempotent replay.
 
 Rules that are not negotiable:
 
