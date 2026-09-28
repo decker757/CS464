@@ -5,8 +5,8 @@ from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8003/docs).
 
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
-[T-1] #21's cost preview, and the trade route that buys ([T-2] #22) and
-sells ([T-3] #23).
+[T-1] #21's cost preview, the trade route that buys ([T-2] #22) and sells
+([T-3] #23), and [T-5] #25's trade history.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -109,12 +109,34 @@ credits keeps them and stays readable.
   "entries": [
     {
       "id": "0c9d...",
+      "created_at": "2026-09-15T09:41:02.118000Z",
+      "amount": "5.8905",
+      "balance_after": "976.4477",
+      "transaction_id": "8a7e...",
+      "kind": "trade_sell",
+      "context": {
+        "market_id": "9d1c...", "outcome_id": "4f2a...", "side": "sell",
+        "quantity": "10", "total": "5.8905", "state_version": 43
+      },
+      "market_id": "9d1c...",
+      "outcome_id": "4f2a...",
+      "side": "sell",
+      "quantity": "10.0000",
+      "average_price": "0.5891"
+    },
+    {
+      "id": "3f61...",
       "created_at": "2026-09-15T04:21:09.412883Z",
       "amount": "1000.0000",
       "balance_after": "1000.0000",
       "transaction_id": "36fd...",
       "kind": "signup_grant",
-      "context": { "user_id": "5f3e..." }
+      "context": { "user_id": "5f3e..." },
+      "market_id": null,
+      "outcome_id": null,
+      "side": null,
+      "quantity": null,
+      "average_price": null
     }
   ],
   "next_cursor": null,
@@ -131,12 +153,19 @@ including that one, so there is no stored column for it to disagree with, and
 the newest entry's `balance_after` is the same number `/balance` returns.
 
 It is anchored to the entry rather than counted back from today's balance,
-which is what makes a page's figures independent of when it was fetched. A trade
-arriving while an administrator reads is strictly newer than every row already
-on screen, so nothing they have looked at moves, and page 2 fetched an hour
-after page 1 still adds up against it. A column that stacks
-`balance_after - amount` down the page will therefore always agree with the row
-below it.
+which is what makes a page's figures independent of when it was fetched. A
+column that stacks `balance_after - amount` down the page will therefore
+always agree with the row below it.
+
+**Known limitation, tracked in #187.** A user trading in two markets at once
+can have two transactions listed out of the order they actually committed in
+— each trade's timestamp is fixed under its own market's book lock, not the
+user's account lock, so two trades in different markets can commit in the
+opposite order their timestamps show. When that happens the `balance_after`
+shown is not one the account ever actually held, and a row can still appear
+below a page already fetched. #187 fixes the write path; until then, treat
+the order of two rows as reliable only when they could not have been placed
+concurrently in two different markets.
 
 **Only this account's side appears.** Every movement writes at least two
 entries sharing one `transaction_id`, and the other side belongs to the platform
@@ -144,11 +173,24 @@ or to a market pool. `transaction_id` is there so two entries of one movement ca
 be recognised as one event, not so you can fetch the other half; there is no
 route that returns it.
 
-`kind` is the vocabulary of why credits moved. Today the only value is
-`signup_grant`; `trade_buy`, `trade_sell` and `settlement` arrive with [T-2]
-#22, [T-3] #23 and [3.4] #12. **Treat an unrecognised value as opaque rather
-than as an error** — new ones will appear without a version bump. Same rule for
-`context`: render what you recognise, ignore the rest.
+`kind` is the vocabulary of why credits moved. The values that reach a user's
+own history today are `signup_grant`, `trade_buy` and `trade_sell`;
+`settlement` arrives with [3.4] #12. `market_seed` exists as a kind too, but
+never reaches here — it moves credits between the platform and a market's
+pool, touching no USER account. **Treat an unrecognised value as opaque
+rather than as an error** — new ones will appear without a version bump. Same
+rule for `context`: render what you recognise, ignore the rest.
+
+**`market_id`, `outcome_id`, `side`, `quantity` and `average_price` are set
+only on a `trade_buy` or `trade_sell` row, and `null` on every other kind** —
+the grant, and any kind this service does not recognise. `side` comes from
+`kind` rather than from `context`. `quantity` is at scale 4 whatever the
+trader sent: `context.quantity` keeps the value exactly as it arrived (a sell
+of `10` stays `"10"` there), and this field is that value quantized.
+`average_price` is the average fill price — `|amount| ÷ quantity`,
+`ROUND_HALF_UP` at scale 4 — and equals the preview's `average_price` for the
+same trade at the same `state_version`. **It is not the marginal price** the
+portfolio and the snapshot report; it is what this trade actually averaged.
 
 ### Paging
 

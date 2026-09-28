@@ -22,6 +22,7 @@ can then produce rather than something it has to recover.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -131,6 +132,22 @@ class PortfolioOut(BaseModel):
         return str(value)
 
 
+@dataclass(frozen=True)
+class TradeFields:
+    """The five fields a history row carries for a trade. [T-5] #25.
+
+    All null by default: that is the grant's row, and any kind the history
+    does not recognise. `service/ledger_service.py` fills them in; they live
+    here so `LedgerEntryOut.of` can take them without importing `service`.
+    """
+
+    market_id: uuid.UUID | None = None
+    outcome_id: uuid.UUID | None = None
+    side: Side | None = None
+    quantity: Decimal | None = None
+    average_price: Decimal | None = None
+
+
 class LedgerEntryOut(BaseModel):
     """One side of one movement, as it was written.
 
@@ -159,8 +176,10 @@ class LedgerEntryOut(BaseModel):
             "one — there is no stored column for it to disagree with, and the "
             "newest entry's value is the same number `/balance` returns. "
             "Anchored to the entry rather than accumulated from today, so a "
-            "movement arriving while you page cannot change a figure already "
-            "on the screen."
+            "page's figures do not depend on when it was fetched.\n\n"
+            "Known limitation (#187): two transactions on this account can "
+            "commit in an order other than their timestamps show, so this "
+            "figure is not yet guaranteed to be one the account actually held."
         ),
         examples=["1000.0000"],
     )
@@ -181,9 +200,47 @@ class LedgerEntryOut(BaseModel):
         ),
     )
 
+    market_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Set on a `trade_buy` or `trade_sell` row; `null` on every other "
+            "kind, the grant included. [T-5] #25."
+        ),
+    )
+    outcome_id: uuid.UUID | None = Field(
+        default=None,
+        description="Set alongside `market_id`, and null under the same rule.",
+    )
+    side: Side | None = Field(
+        default=None,
+        description=(
+            "`buy` or `sell`, taken from `kind` rather than from `context`. "
+            "Null on every row that is not a trade."
+        ),
+    )
+    quantity: Decimal | None = Field(
+        default=None,
+        description=(
+            "The trade's quantity, at scale 4 whatever the trader sent. Null "
+            "on every row that is not a trade."
+        ),
+    )
+    average_price: Decimal | None = Field(
+        default=None,
+        description=(
+            "The average fill price, `|amount| ÷ quantity` rounded half-up "
+            "at scale 4 — not the marginal price the portfolio and the "
+            "snapshot report. Null on every row that is not a trade."
+        ),
+    )
+
     @field_serializer("amount", "balance_after")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+    @field_serializer("quantity", "average_price")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
 
     @field_validator("created_at")
     @classmethod
@@ -197,7 +254,13 @@ class LedgerEntryOut(BaseModel):
         return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
     @classmethod
-    def of(cls, entry: Entry, *, balance_after: Decimal) -> LedgerEntryOut:
+    def of(
+        cls,
+        entry: Entry,
+        *,
+        balance_after: Decimal,
+        trade: TradeFields = TradeFields(),
+    ) -> LedgerEntryOut:
         """Flatten an entry and the transaction it belongs to into one row.
 
         The nesting is real — two entries share one transaction — but nobody
@@ -206,12 +269,14 @@ class LedgerEntryOut(BaseModel):
         lifted out of the transaction so that a client renders one list rather
         than walking a tree to find the word "grant".
 
-        `balance_after` arrives as an argument rather than being read off the
-        entry, because there is nothing on the entry to read: it is derived a
-        page at a time by `service/ledger_service.py`, which is the only layer
-        that knows where in the feed this row sits. A `HistoryRow` parameter
-        would read better and would have this module import `service`, which is
-        the one direction the layering forbids.
+        `balance_after` and `trade` arrive as arguments rather
+        than being read off the entry, because there is nothing on the entry to
+        read them from: they are derived a page at a time by
+        `service/ledger_service.py`, which is the only layer that knows where
+        in the feed this row sits and what its transaction's `kind` and
+        `context` mean. A `HistoryRow` parameter would read better and would
+        have this module import `service`, which is the one direction the
+        layering forbids. [T-5] #25.
         """
         return cls(
             id=entry.id,
@@ -221,6 +286,11 @@ class LedgerEntryOut(BaseModel):
             transaction_id=entry.transaction_id,
             kind=entry.transaction.kind,
             context=entry.transaction.context,
+            market_id=trade.market_id,
+            outcome_id=trade.outcome_id,
+            side=trade.side,
+            quantity=trade.quantity,
+            average_price=trade.average_price,
         )
 
 
