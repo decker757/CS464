@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import Select, select, tuple_
+from sqlalchemy import Row, Select, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.paging import decode_cursor, encode_cursor
-from model.entities import Entry
+from core.paging import Position, decode_cursor, encode_cursor
+from core.pricing import QUANTUM, Side, per_share
+from model.entities import Entry, Transaction, TransactionKind
 from service import accounts, grants
 
 
@@ -30,11 +33,19 @@ class UserBalance:
 class HistoryRow:
     """One entry, and what the account held once it had landed. [4.1] #13.
 
-    `balance_after` is derived per read and stored nowhere.
+    `balance_after` is derived per read and stored nowhere. The five trade
+    fields are [T-5] #25's: set on a `trade_buy` or `trade_sell` row, `null`
+    on every other kind — "A trade row's typed fields come from its kind and
+    context; any other kind renders with them null".
     """
 
     entry: Entry
     balance_after: Decimal
+    market_id: uuid.UUID | None = None
+    outcome_id: uuid.UUID | None = None
+    side: Side | None = None
+    quantity: Decimal | None = None
+    average_price: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -49,42 +60,163 @@ class EntryPage:
         return self.next_cursor is not None
 
 
-def _ordered_query(account_id: uuid.UUID) -> Select[tuple[Entry]]:
-    """Newest first, tie broken by id, matching `ix_ledger_entries_account_feed`.
+# Kind -> Side for the two trade kinds. Every other kind, the dict has nothing
+# to say about, which is exactly "any other kind renders with them null".
+_TRADE_SIDE_OF_KIND = {
+    TransactionKind.TRADE_BUY: Side.BUY,
+    TransactionKind.TRADE_SELL: Side.SELL,
+}
 
-    Both legs of a movement share a timestamp, so without the id a page
-    boundary could drop one side of a trade.
+
+@dataclass(frozen=True)
+class _TradeFields:
+    """The five fields a trade row carries; every field defaults to null."""
+
+    market_id: uuid.UUID | None = None
+    outcome_id: uuid.UUID | None = None
+    side: Side | None = None
+    quantity: Decimal | None = None
+    average_price: Decimal | None = None
+
+
+def _trade_fields_of(
+    kind: TransactionKind, context: dict[str, Any] | None, amount: Decimal
+) -> _TradeFields:
+    """market_id, outcome_id, side, quantity and average_price for one row.
+
+    `side` comes from `kind`, never from `context` — `kind` is the column the
+    ledger indexes and validates. `quantity` is read from `context` and
+    quantized to scale 4, because `context` keeps it exactly as the trader
+    sent it. `average_price` is `per_share(|amount|, quantity)`, the same
+    function the preview uses, so the two agree for the same trade at the
+    same `state_version`.
+
+    Every other kind — the grant, and anything this row builder does not
+    recognise, `context` included — renders with all five fields null. Not an
+    error: a new kind reaches the history the day it is written.
     """
-    return (
-        select(Entry)
-        .where(Entry.account_id == account_id)
+    side = _TRADE_SIDE_OF_KIND.get(kind)
+    if side is None or context is None:
+        return _TradeFields()
+
+    quantity = Decimal(str(context["quantity"])).quantize(QUANTUM)
+    return _TradeFields(
+        market_id=uuid.UUID(str(context["market_id"])),
+        outcome_id=uuid.UUID(str(context["outcome_id"])),
+        side=side,
+        quantity=quantity,
+        average_price=per_share(amount.copy_abs(), quantity),
+    )
+
+
+_PageRow = tuple[
+    uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, "dict[str, Any] | None", Decimal
+]
+
+
+def _page_query(
+    account_id: uuid.UUID, position: Position | None, limit_plus_one: int
+) -> Select[_PageRow]:
+    """The page, its transactions' `kind` and `context`, and every
+    `balance_after` on it, in one statement anchored at the page's newest row.
+
+    "The history page and its running balances are read in one statement,
+    anchored at the page's newest row": `page` is `entries` joined to
+    `transactions`, cursor-filtered and cut to the page — the join, not
+    `Entry.transaction`'s `selectin` load, is what keeps `transactions` out of
+    a second statement. `balance_after` is the account's balance at or before
+    the page's own newest row (one aggregate over the full feed, read once),
+    minus a window sum of the page's own newer rows walking back from there —
+    cheap, because the window only ever sees this page's `limit + 1` rows.
+    """
+    conditions = [Entry.account_id == account_id]
+    if position is not None:
+        created_at, row_id = position
+        conditions.append(tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id))
+
+    page = (
+        select(
+            Entry.id,
+            Entry.transaction_id,
+            Entry.amount,
+            Entry.created_at,
+            Transaction.kind,
+            Transaction.context,
+        )
+        .join(Transaction, Transaction.id == Entry.transaction_id)
+        .where(*conditions)
         .order_by(Entry.created_at.desc(), Entry.id.desc())
+        .limit(limit_plus_one)
+        .cte("history_page")
     )
 
+    anchor_position = (
+        select(page.c.created_at, page.c.id)
+        .order_by(page.c.created_at.desc(), page.c.id.desc())
+        .limit(1)
+        .subquery("history_anchor_position")
+    )
 
-async def _with_running_balance(
-    session: AsyncSession, account_id: uuid.UUID, entries: list[Entry]
-) -> list[HistoryRow]:
-    """Pair each entry with what the account held once it had landed.
+    # The full-feed sum through the page's newest row — the same shape as
+    # `accounts.balance_of(..., as_at=...)`, inlined so it shares this
+    # statement rather than opening a second one.
+    anchor_sum = (
+        select(func.coalesce(func.sum(Entry.amount), accounts.ZERO))
+        .where(
+            Entry.account_id == account_id,
+            tuple_(Entry.created_at, Entry.id)
+            <= tuple_(anchor_position.c.created_at, anchor_position.c.id),
+        )
+        .scalar_subquery()
+    )
 
-    One aggregate anchored at the page's newest row, then subtraction walking
-    back. The anchor keeps a page's figures fixed while entries are appended.
+    # Every row on the page newer than this one, summed over the page alone —
+    # "a window sum of the newer rows on the page".
+    newer_on_page = func.coalesce(
+        func.sum(page.c.amount).over(
+            order_by=(page.c.created_at.desc(), page.c.id.desc()),
+            rows=(None, -1),
+        ),
+        accounts.ZERO,
+    )
+
+    return select(
+        page.c.id,
+        page.c.transaction_id,
+        page.c.amount,
+        page.c.created_at,
+        page.c.kind,
+        page.c.context,
+        (anchor_sum - newer_on_page).label("balance_after"),
+    ).order_by(page.c.created_at.desc(), page.c.id.desc())
+
+
+def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
+    """One fetched row into a `HistoryRow`.
+
+    `entry` is built rather than loaded, and carries its transaction the same
+    way `posting.post` builds a fresh one (`Entry(transaction=..., ...)`) —
+    `LedgerEntryOut.of` reads `entry.transaction.kind`/`.context` unchanged,
+    so this is what supplies them without a second query.
     """
-    if not entries:
-        return []
-
-    newest = entries[0]
-    running = await accounts.balance_of(
-        session, account_id, as_at=(newest.created_at, newest.id)
+    entry = Entry(
+        id=row.id,
+        transaction_id=row.transaction_id,
+        account_id=account_id,
+        amount=row.amount,
+        created_at=row.created_at,
+        transaction=Transaction(kind=row.kind, context=row.context),
     )
-
-    rows: list[HistoryRow] = []
-    for entry in entries:
-        rows.append(HistoryRow(entry=entry, balance_after=running))
-        # Walking back in time: undo this entry to get the next one's balance.
-        running -= entry.amount
-
-    return rows
+    fields = _trade_fields_of(row.kind, row.context, row.amount)
+    return HistoryRow(
+        entry=entry,
+        balance_after=row.balance_after,
+        market_id=fields.market_id,
+        outcome_id=fields.outcome_id,
+        side=fields.side,
+        quantity=fields.quantity,
+        average_price=fields.average_price,
+    )
 
 
 async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
@@ -103,7 +235,7 @@ async def history_for_user(
     cursor: str | None = None,
 ) -> EntryPage:
     """One page of this user's entries, newest first, each with the balance it
-    left behind. [4.1] #13.
+    left behind and, for a trade, the market it was in. [4.1] #13, [T-5] #25.
 
     Fetches `limit + 1` rows so `has_more` is exact without a COUNT. Raises
     `MalformedCursor`.
@@ -111,26 +243,22 @@ async def history_for_user(
     # Mints the starting grant if this is the user's first read. [B-1] #32.
     account = await grants.ensure_granted(session, user_id)
 
-    stmt = _ordered_query(account.id)
+    # Decoded before the query, so a bad cursor is a 400 rather than a driver
+    # error.
+    position = decode_cursor(cursor) if cursor is not None else None
 
-    if cursor is not None:
-        # Decoded before the query, so a bad cursor is a 400 rather than a
-        # driver error.
-        created_at, row_id = decode_cursor(cursor)
-        stmt = stmt.where(
-            tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id)
-        )
+    fetched = list(
+        (await session.execute(_page_query(account.id, position, limit + 1))).all()
+    )
 
-    entries = list((await session.execute(stmt.limit(limit + 1))).scalars())
-
-    page = entries[:limit]
+    page = fetched[:limit]
     next_cursor = (
         encode_cursor(page[-1].created_at, page[-1].id)
-        if len(entries) > limit
+        if len(fetched) > limit
         else None
     )
 
     return EntryPage(
-        rows=await _with_running_balance(session, account.id, page),
+        rows=[_history_row_of(account.id, row) for row in page],
         next_cursor=next_cursor,
     )
