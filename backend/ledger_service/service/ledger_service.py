@@ -18,7 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.paging import Position, decode_cursor, encode_cursor
 from core.pricing import QUANTUM, Side, per_share
 from model.entities import Entry, Transaction, TransactionKind
-from service import accounts, grants
+from model.schemas import TradeFields
+from service import accounts, grants, trading
+
+# Kind -> Side for the two trade kinds. Every other kind, the dict has nothing
+# to say about, which is exactly "any other kind renders with them null".
+_TRADE_SIDE_OF_KIND = {
+    TransactionKind.TRADE_BUY: Side.BUY,
+    TransactionKind.TRADE_SELL: Side.SELL,
+}
 
 
 @dataclass(frozen=True)
@@ -33,19 +41,14 @@ class UserBalance:
 class HistoryRow:
     """One entry, and what the account held once it had landed. [4.1] #13.
 
-    `balance_after` is derived per read and stored nowhere. The five trade
-    fields are [T-5] #25's: set on a `trade_buy` or `trade_sell` row, `null`
-    on every other kind — "A trade row's typed fields come from its kind and
-    context; any other kind renders with them null".
+    `balance_after` is derived per read and stored nowhere. `trade` is
+    [T-5] #25's: filled in on a `trade_buy` or `trade_sell` row, all null on
+    every other kind.
     """
 
     entry: Entry
     balance_after: Decimal
-    market_id: uuid.UUID | None = None
-    outcome_id: uuid.UUID | None = None
-    side: Side | None = None
-    quantity: Decimal | None = None
-    average_price: Decimal | None = None
+    trade: TradeFields
 
 
 @dataclass(frozen=True)
@@ -60,58 +63,40 @@ class EntryPage:
         return self.next_cursor is not None
 
 
-# Kind -> Side for the two trade kinds. Every other kind, the dict has nothing
-# to say about, which is exactly "any other kind renders with them null".
-_TRADE_SIDE_OF_KIND = {
-    TransactionKind.TRADE_BUY: Side.BUY,
-    TransactionKind.TRADE_SELL: Side.SELL,
-}
+_PageRow = tuple[
+    uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict[str, Any] | None, Decimal
+]
 
 
-@dataclass(frozen=True)
-class _TradeFields:
-    """The five fields a trade row carries; every field defaults to null."""
-
-    market_id: uuid.UUID | None = None
-    outcome_id: uuid.UUID | None = None
-    side: Side | None = None
-    quantity: Decimal | None = None
-    average_price: Decimal | None = None
-
-
-def _trade_fields_of(
-    kind: TransactionKind, context: dict[str, Any] | None, amount: Decimal
-) -> _TradeFields:
+def _trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
     """market_id, outcome_id, side, quantity and average_price for one row.
 
     `side` comes from `kind`, never from `context` — `kind` is the column the
-    ledger indexes and validates. `quantity` is read from `context` and
-    quantized to scale 4, because `context` keeps it exactly as the trader
-    sent it. `average_price` is `per_share(|amount|, quantity)`, the same
-    function the preview uses, so the two agree for the same trade at the
-    same `state_version`.
+    ledger indexes and validates. The rest is read from `context` by
+    `trading.result_of`, the one reader of a trade's context, so the history
+    and the trade response cannot disagree about it. `quantity` is quantized
+    to scale 4, because `context` keeps it exactly as the trader sent it.
+    `average_price` is `per_share(|amount|, quantity)`, the same function the
+    preview uses, so the two agree for the same trade at the same
+    `state_version`.
 
     Every other kind — the grant, and anything this row builder does not
     recognise, `context` included — renders with all five fields null. Not an
     error: a new kind reaches the history the day it is written.
     """
-    side = _TRADE_SIDE_OF_KIND.get(kind)
-    if side is None or context is None:
-        return _TradeFields()
+    side = _TRADE_SIDE_OF_KIND.get(transaction.kind)
+    if side is None or transaction.context is None:
+        return TradeFields()
 
-    quantity = Decimal(str(context["quantity"])).quantize(QUANTUM)
-    return _TradeFields(
-        market_id=uuid.UUID(str(context["market_id"])),
-        outcome_id=uuid.UUID(str(context["outcome_id"])),
+    trade = trading.result_of(transaction)
+    quantity = trade.quantity.quantize(QUANTUM)
+    return TradeFields(
+        market_id=trade.market_id,
+        outcome_id=trade.outcome_id,
         side=side,
         quantity=quantity,
         average_price=per_share(amount.copy_abs(), quantity),
     )
-
-
-_PageRow = tuple[
-    uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, "dict[str, Any] | None", Decimal
-]
 
 
 def _page_query(
@@ -128,6 +113,10 @@ def _page_query(
     the page's own newest row (one aggregate over the full feed, read once),
     minus a window sum of the page's own newer rows walking back from there —
     cheap, because the window only ever sees this page's `limit + 1` rows.
+
+    Known limitation (#187): two transactions on this account can commit in an
+    order other than their timestamps show, so a position taken from the feed
+    is not yet guaranteed to be the order they actually committed in.
     """
     conditions = [Entry.account_id == account_id]
     if position is not None:
@@ -157,9 +146,10 @@ def _page_query(
         .subquery("history_anchor_position")
     )
 
-    # The full-feed sum through the page's newest row — the same shape as
-    # `accounts.balance_of(..., as_at=...)`, inlined so it shares this
-    # statement rather than opening a second one.
+    # The full-feed sum through the page's newest row, `<=` because the
+    # balance after an entry includes it. Row-wise on the feed's ordering
+    # pair, so it agrees with the page boundary even between the two legs of
+    # one movement, which share a timestamp.
     anchor_sum = (
         select(func.coalesce(func.sum(Entry.amount), accounts.ZERO))
         .where(
@@ -194,28 +184,24 @@ def _page_query(
 def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
     """One fetched row into a `HistoryRow`.
 
-    `entry` is built rather than loaded, and carries its transaction the same
-    way `posting.post` builds a fresh one (`Entry(transaction=..., ...)`) —
-    `LedgerEntryOut.of` reads `entry.transaction.kind`/`.context` unchanged,
-    so this is what supplies them without a second query.
+    `entry` and its transaction are built from the row rather than loaded,
+    the same way `posting.post` builds a fresh pair, so `LedgerEntryOut.of`
+    and `trading.result_of` can read them without a second query. Neither is
+    added to the session.
     """
+    transaction = Transaction(id=row.transaction_id, kind=row.kind, context=row.context)
     entry = Entry(
         id=row.id,
         transaction_id=row.transaction_id,
         account_id=account_id,
         amount=row.amount,
         created_at=row.created_at,
-        transaction=Transaction(kind=row.kind, context=row.context),
+        transaction=transaction,
     )
-    fields = _trade_fields_of(row.kind, row.context, row.amount)
     return HistoryRow(
         entry=entry,
         balance_after=row.balance_after,
-        market_id=fields.market_id,
-        outcome_id=fields.outcome_id,
-        side=fields.side,
-        quantity=fields.quantity,
-        average_price=fields.average_price,
+        trade=_trade_fields_of(transaction, row.amount),
     )
 
 
