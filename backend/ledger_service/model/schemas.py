@@ -37,7 +37,13 @@ class BalanceOut(BaseModel):
     """What one user holds, as at this request."""
 
     user_id: uuid.UUID
-    account_id: uuid.UUID
+    account_id: uuid.UUID | None = Field(
+        description=(
+            "Never null on `/balances/me`. Null on the admin route for an id "
+            "the ledger has never opened an account for, which that route "
+            "does not do on its behalf."
+        ),
+    )
 
     balance: Decimal = Field(
         description=(
