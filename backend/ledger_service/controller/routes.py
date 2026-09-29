@@ -19,8 +19,9 @@ anything in the body, and a trader's own token is safe to accept because
 there is nothing in the request for it to mint. See ADR 0009's amendment.
 
 The grant is the older exception that proves the same rule from the read
-side: reading a balance can write, because [B-1] #32's starting credits are
-minted lazily on first read. See `service/grants.py`.
+side: a user reading their own balance can write, because [B-1] #32's starting
+credits are minted lazily on first read. See `service/grants.py`. An
+administrator reading somebody else's writes nothing (D-NEW, #188).
 """
 
 from __future__ import annotations
@@ -30,12 +31,7 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from sqlalchemy.ext.asyncio import AsyncSession
 
-# DbSession is the injected annotation and belongs on route signatures only.
-# The two private helpers below take a plain AsyncSession: FastAPI never looks
-# at them, so an Annotated[..., Depends(...)] there would advertise an
-# injection that does not happen.
 from controller.dependencies import (
     AccessToken,
     CurrentAdmin,
@@ -72,10 +68,20 @@ _BALANCE_DESCRIPTION = (
     "account. There is no stored balance for this number to disagree with.\n\n"
     "Exact decimal strings, not JSON numbers. A balance that has been through "
     "an IEEE double is a balance that can be wrong by an epsilon, and this is "
-    "money.\n\n"
-    "The first call for a user also mints their starting credits ([B-1] #32), "
-    "as a real append-only transaction, keyed on the user id so it can happen "
-    "exactly once. Every later call just reads."
+    "money."
+)
+
+_FIRST_READ_MINTS = (
+    "\n\nThe first call for a user also mints their starting credits "
+    "([B-1] #32), as a real append-only transaction, keyed on the user id so it "
+    "can happen exactly once. Every later call just reads."
+)
+
+_ADMIN_READ_MINTS_NOTHING = (
+    "\n\n**Mints nothing.** This service cannot tell a user's id from any other "
+    "uuid, and a grant is permanent, so an id the ledger has no account for "
+    "reads as a zero balance with a null `account_id`, and an empty history. "
+    "A new user's starting credits appear here after their own first read."
 )
 
 _ENTRIES_DESCRIPTION = (
@@ -155,18 +161,19 @@ _PREVIEW_DESCRIPTION = (
     "/balances/me",
     response_model=BalanceOut,
     summary="My available credit balance",
-    description=_BALANCE_DESCRIPTION,
+    description=_BALANCE_DESCRIPTION + _FIRST_READ_MINTS,
     responses={401: {"description": "Missing, malformed or expired access token."}},
 )
 async def my_balance(user: CurrentUser, session: DbSession) -> BalanceOut:
-    return await _balance(session, user.user_id)
+    balance = await ledger_service.balance_of_user(session, user.user_id)
+    return _balance_out(user.user_id, balance)
 
 
 @router.get(
     "/entries/me",
     response_model=LedgerEntryListResponse,
     summary="My ledger history",
-    description=_ENTRIES_DESCRIPTION,
+    description=_ENTRIES_DESCRIPTION + _FIRST_READ_MINTS,
     responses={
         400: {"description": "`cursor` was not one this service issued."},
         401: {"description": "Missing, malformed or expired access token."},
@@ -178,7 +185,10 @@ async def my_entries(
     cursor: PageCursor = None,
     limit: PageLimit = None,
 ) -> LedgerEntryListResponse:
-    return await _entries(session, user.user_id, cursor=cursor, limit=limit)
+    page = await ledger_service.history_for_user(
+        session, user.user_id, limit=_page_size(limit), cursor=cursor
+    )
+    return _entries_out(page)
 
 
 _PORTFOLIO_DESCRIPTION = (
@@ -245,7 +255,9 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
     summary="Any user's balance",
     description=(
         "[4.1] #13. The same number the user sees, for an administrator "
-        "investigating an anomaly.\n\n" + _BALANCE_DESCRIPTION
+        "investigating an anomaly.\n\n"
+        + _BALANCE_DESCRIPTION
+        + _ADMIN_READ_MINTS_NOTHING
     ),
     responses={
         401: {"description": "Missing, malformed or expired access token."},
@@ -255,7 +267,8 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
 async def user_balance(
     user_id: uuid.UUID, admin: CurrentAdmin, session: DbSession
 ) -> BalanceOut:
-    return await _balance(session, user_id)
+    balance = await ledger_service.balance_for_admin(session, user_id)
+    return _balance_out(user_id, balance)
 
 
 @router.get(
@@ -264,7 +277,9 @@ async def user_balance(
     summary="Any user's ledger history",
     description=(
         "[4.1] #13. Every credit that has moved in or out of this account, for "
-        "an administrator investigating an anomaly.\n\n" + _ENTRIES_DESCRIPTION
+        "an administrator investigating an anomaly.\n\n"
+        + _ENTRIES_DESCRIPTION
+        + _ADMIN_READ_MINTS_NOTHING
     ),
     responses={
         400: {"description": "`cursor` was not one this service issued."},
@@ -279,7 +294,10 @@ async def user_entries(
     cursor: PageCursor = None,
     limit: PageLimit = None,
 ) -> LedgerEntryListResponse:
-    return await _entries(session, user_id, cursor=cursor, limit=limit)
+    page = await ledger_service.history_for_admin(
+        session, user_id, limit=_page_size(limit), cursor=cursor
+    )
+    return _entries_out(page)
 
 
 @router.get(
@@ -524,28 +542,15 @@ async def execute_trade(
     )
 
 
-async def _balance(session: AsyncSession, user_id: uuid.UUID) -> BalanceOut:
-    """One answer, two routes.
-
-    The `/me` and admin routes differ in who may call them and in nothing else,
-    so the difference lives in their dependencies and the work lives here.
-    """
-    balance = await ledger_service.balance_of_user(session, user_id)
+def _balance_out(user_id: uuid.UUID, balance: ledger_service.UserBalance) -> BalanceOut:
+    """One body, two routes: `/me` mints the caller's grant, the admin route
+    mints nothing (D-NEW, #188), and the wire shape is the same."""
     return BalanceOut(
         user_id=user_id, account_id=balance.account_id, balance=balance.amount
     )
 
 
-async def _entries(
-    session: AsyncSession,
-    user_id: uuid.UUID,
-    *,
-    cursor: str | None,
-    limit: int | None,
-) -> LedgerEntryListResponse:
-    page = await ledger_service.history_for_user(
-        session, user_id, limit=_page_size(limit), cursor=cursor
-    )
+def _entries_out(page: ledger_service.EntryPage) -> LedgerEntryListResponse:
     return LedgerEntryListResponse(
         entries=[
             LedgerEntryOut.of(row.entry, balance_after=row.balance_after, trade=row.trade)
