@@ -4090,6 +4090,36 @@ path or adds a mapping, and this entry is then history.
 
 ---
 
+### D-NEW — An administrator's read of somebody else's balance or history mints nothing
+
+**Date:** 2026-09-29 · **Ticket:** #188 · **Status:** active
+
+**Decision.** `GET /ledger/users/{id}/balance` and `/entries` read through
+`ledger_service.balance_for_admin` and `history_for_admin`, which find the
+USER account and never create one or mint a grant. An id with no account reads
+as a zero balance with a null `account_id`, and an empty history. Only a
+user's own reads (`/balances/me`, `/entries/me`, `/portfolio/me`) and the trade
+path mint, as ADR 0009 describes.
+
+**Why.** This service holds no user table (ADR 0003), so every id looks like a
+user id to it. Before this, an administrator who pasted a market's id, the
+platform owner's id or a typo minted `STARTING_CREDITS` into an account nobody
+owns. That grant is an append-only transaction, so undoing it takes a
+compensating one written by hand. An admin read is investigating, and should
+not be able to change what it investigates.
+
+**Rejected.** *Refusing only the ids this service can recognise*, the platform
+owner and any MARKET_POOL owner: cheap, but a typo still mints, and a typo is
+the likeliest of the three. *A 404 for an id with no account*: a user who has
+registered and never opened the app is a real user with nothing yet, which is a
+zero, not an error.
+
+**Notes.** [4.1] #13's "sees their starting credits" now holds after the
+user's own first read, not before it. `BalanceOut.account_id` became nullable,
+and is null only on the admin route. The frontend does not read it.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.

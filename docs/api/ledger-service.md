@@ -300,12 +300,28 @@ Errors:
 
 ## GET /ledger/users/{user_id}/balance and /entries
 
-[4.1] #13. Identical responses, for an administrator investigating an anomaly.
-`403` for a non-admin.
+[4.1] #13. The same responses, for an administrator investigating an anomaly,
+except for an id the ledger has no account for (below). `403` for a non-admin.
 
-The first call mints the target user's grant if they have never been read
-before, exactly as the `/me` route does — so an admin looking up a brand new
-account sees their starting credits rather than an empty one.
+**These two routes mint nothing.** #188, D-NEW.
+This service holds no user table, so it cannot tell a user's id from a
+market's, from the platform owner's `00000000-0000-0000-0000-000000000000`, or
+from a typo — and a grant made to any of them would be real, permanent credit
+that nobody owns. So an id the ledger has never opened an account for reads as
+a zero balance with a **null `account_id`**, and an empty history, with `200`:
+
+```jsonc
+{
+  "user_id": "5f3e...",
+  "account_id": null,
+  "balance": "0.0000"
+}
+```
+
+A brand new user's starting credits appear here after the user's own first
+read of `/balances/me`, `/entries/me` or `/portfolio/me`, which is where the
+grant is minted. `account_id` is never null on `/balances/me`. A malformed
+`cursor` is still `400 malformed_cursor`, account or no account.
 
 Each entry carries its `balance_after`, exactly as on the `/me` routes, which
 is [4.1] #13's second criterion; that the newest one equals what `/balance`
