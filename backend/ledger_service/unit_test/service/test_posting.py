@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -33,13 +34,26 @@ def _key() -> str:
     return f"test:{uuid.uuid4()}"
 
 
-async def _fund(session: AsyncSession, user, platform, amount: Decimal) -> None:
-    await posting.post(
+async def _fund(
+    session: AsyncSession,
+    user,
+    platform,
+    amount: Decimal,
+    *,
+    now: datetime | None = None,
+):
+    return await posting.post(
         session,
         idempotency_key=_key(),
         kind=TransactionKind.SIGNUP_GRANT,
         legs=[Leg(account=platform, amount=-amount), Leg(account=user, amount=amount)],
+        now=now,
     )
+
+
+async def _entries_of(session: AsyncSession, transaction_id: uuid.UUID) -> list[Entry]:
+    stmt = select(Entry).where(Entry.transaction_id == transaction_id)
+    return list((await session.execute(stmt)).scalars())
 
 
 async def test_a_movement_writes_both_sides(session: AsyncSession) -> None:
@@ -55,13 +69,7 @@ async def test_a_movement_writes_both_sides(session: AsyncSession) -> None:
         ],
     )
 
-    written = list(
-        (
-            await session.execute(
-                select(Entry).where(Entry.transaction_id == transaction.id)
-            )
-        ).scalars()
-    )
+    written = await _entries_of(session, transaction.id)
 
     assert len(written) == 2
     assert sum(e.amount for e in written) == ZERO
@@ -316,3 +324,52 @@ async def test_an_account_with_no_entries_holds_zero(session: AsyncSession) -> N
     user, _ = await _pair(session)
 
     assert await accounts.balance_of(session, user.id) == ZERO
+
+
+# --- the timestamp, fixed under the lock (#187) ----------------------------
+async def test_a_movement_lands_after_the_newest_entry_on_its_accounts(
+    session: AsyncSession,
+) -> None:
+    """A `now` from before the newest entry on any locked account is not
+    trusted for order: the movement lands one microsecond after that entry.
+    Here the newest is on the platform, from another user's grant."""
+    user, platform = await _pair(session)
+    other = await accounts.ensure(session, AccountKind.USER, uuid.uuid4())
+    newest = await _fund(session, other, platform, Decimal("500"))
+
+    transaction = await _fund(
+        session, user, platform, Decimal("500"),
+        now=newest.occurred_at - timedelta(hours=1),
+    )
+
+    assert transaction.occurred_at == newest.occurred_at + timedelta(microseconds=1)
+    legs = await _entries_of(session, transaction.id)
+    assert {leg.created_at for leg in legs} == {transaction.occurred_at}
+
+
+async def test_a_now_later_than_every_entry_is_the_stamp(session: AsyncSession) -> None:
+    user, platform = await _pair(session)
+    await _fund(session, user, platform, Decimal("500"))
+    later = datetime.now(UTC) + timedelta(days=1)
+
+    transaction = await _fund(session, user, platform, Decimal("500"), now=later)
+
+    assert transaction.occurred_at == later
+
+
+async def test_no_two_entries_on_one_account_share_a_time(session: AsyncSession) -> None:
+    """#187's fourth criterion, over the whole ledger, after three movements
+    that were all handed the same instant."""
+    user, platform = await _pair(session)
+    same_instant = datetime.now(UTC)
+    for _ in range(3):
+        await _fund(session, user, platform, Decimal("100"), now=same_instant)
+
+    shared = (
+        await session.execute(
+            select(Entry.account_id, Entry.created_at)
+            .group_by(Entry.account_id, Entry.created_at)
+            .having(func.count() > 1)
+        )
+    ).all()
+    assert shared == []
