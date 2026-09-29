@@ -4090,6 +4090,50 @@ path or adds a mapping, and this entry is then history.
 
 ---
 
+### D-NEW — Every decision a market records is stamped with Postgres's `clock_timestamp()`, read after the row lock
+
+**Date:** 2026-09-29 · **Ticket:** #179 · **Status:** active
+
+**Decision.** `submitted_at`, `published_at`, `closed_at` (early close),
+`proposed_at`, `approved_at`, and the audit entry's `occurred_at` on each of
+those paths, come from `market_service._database_now`: `SELECT
+clock_timestamp()`, run after the path holds the market row. Display reads
+(`browsing.py`) keep Python's clock, as D-025 allows for reads that decide
+nothing.
+
+**Why.** The sweep stamps `closed_at` with Postgres's clock. A proposal stamped
+by the container could land before that close if the container ran behind the
+database, so a market's history could show a proposal made before the market
+had closed. One clock for every stamp makes the order the history shows the
+order things happened, however far a replica drifts. Submission moves too,
+although #179 did not list it: `submitted_at` sits beside `published_at` on the
+same row, and two clocks there could invert those two instead.
+
+**Rejected.** *`func.now()`*: it is `transaction_timestamp()`, frozen when the
+transaction opened and so before the lock wait. That brings back the bug #138
+fixed, a decision stamped before the state it decided on existed, and the #173
+race tests fail under it. *Moving the sweep to Python's clock instead*: replicas
+would then disagree about which markets are due (D-025).
+
+**What stays on another clock, and why.** `created_at` and `updated_at` are
+bookkeeping, not decisions, and keep Python's clock through their ORM defaults.
+Moving them means server defaults and an `onupdate` on an existing table for
+two columns nothing orders against. The one pair that can invert is
+`created_at` after `submitted_at`, on a first save that submits straight away
+from a container running ahead, by that clock drift. The sweep keeps
+`func.now()`: its transaction starts before it commits the close, and a
+proposal can only follow that commit, so its `closed_at` is still earlier.
+
+**Notes.** One extra round trip per write, including each draft autosave. The
+`now` parameters stay, so tests can still pin a time. #179's last criterion
+says to skew the container clock ahead; the tests skew it behind, because the
+sweep's database stamp is earlier than any later proposal in real time, so
+only a container running behind can stamp a proposal before it. The tests in
+`unit_test/service/test_database_clock.py` put the container's clock an hour
+behind and fail against a Python stamp.
+
+---
+
 ### D-NEW — A movement's timestamp is fixed under its account locks, not trusted from the clock
 
 **Date:** 2026-09-29 · **Ticket:** #187 · **Status:** active
