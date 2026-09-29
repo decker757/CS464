@@ -114,9 +114,11 @@ def _page_query(
     minus a window sum of the page's own newer rows walking back from there —
     cheap, because the window only ever sees this page's `limit + 1` rows.
 
-    Known limitation (#187): two transactions on this account can commit in an
-    order other than their timestamps show, so a position taken from the feed
-    is not yet guaranteed to be the order they actually committed in.
+    A position in the feed is a position in commit order, because
+    `posting.post` stamps a movement under its account locks (#187). So
+    an entry appended mid-read is newer than every anchor, and cannot move a
+    figure already on screen. DECISIONS.md, "A movement's timestamp is fixed
+    under its account locks".
     """
     conditions = [Entry.account_id == account_id]
     if position is not None:

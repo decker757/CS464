@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -41,6 +41,9 @@ from service import accounts
 _QUANTUM = Decimal(1).scaleb(-AMOUNT_SCALE)
 
 ZERO = Decimal(0)
+
+# Postgres's timestamp resolution: the smallest step that still orders.
+_TICK = timedelta(microseconds=1)
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,33 @@ async def _refuse_overdrafts(session: AsyncSession, legs: list[Leg]) -> None:
             raise InsufficientFunds(balance=balance, required=-delta)
 
 
+async def _stamp_after_newest(
+    session: AsyncSession, account_ids: set[uuid.UUID], now: datetime
+) -> datetime:
+    """`now`, or one tick after the newest entry on any of these accounts if
+    that is later. Call it holding their locks. #187, DECISIONS.md,
+    "A movement's timestamp is fixed under its account locks".
+
+    Every writer holds an account's lock from here to its commit, so on every
+    account the feed order is the commit order and no two entries share a
+    time, whatever the clock says on whichever replica. One probe of
+    `ix_ledger_entries_account_feed` per account.
+    """
+    stamp = now
+    for account_id in account_ids:
+        newest = (
+            await session.execute(
+                select(Entry.created_at)
+                .where(Entry.account_id == account_id)
+                .order_by(Entry.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if newest is not None and newest + _TICK > stamp:
+            stamp = newest + _TICK
+    return stamp
+
+
 async def find_by_idempotency_key(
     session: AsyncSession, idempotency_key: str
 ) -> Transaction | None:
@@ -152,11 +182,14 @@ async def post(
     The order is the design: round, refuse unbalanced legs, lock every account
     ascending by id (ADR 0009), then look the key up and check overdrafts under
     that lock. Looked up before the lock, a retry racing its original is
-    refused as an overdraft for a trade that succeeded (ADR 0015).
+    refused as an overdraft for a trade that succeeded (ADR 0015). The
+    timestamp is fixed under the lock too, so a history lists movements in
+    the order they committed (#187).
 
-    `now` is injectable so a test can assert on a timestamp.
+    `now` is a floor, not the stamp: the movement lands at `now` or just after
+    the newest entry on its accounts, whichever is later. Assert on the
+    returned transaction's `occurred_at`.
     """
-    now = now or datetime.now(UTC)
     legs = [Leg(account=leg.account, amount=_quantize(leg.amount)) for leg in legs]
 
     _require_balanced(legs)
@@ -187,11 +220,18 @@ async def post(
 
     await _refuse_overdrafts(session, legs)
 
+    # Under the lock, never on the way in: a stamp taken before it lets a
+    # movement that queued behind a later-stamped one commit second and list
+    # first, with a running balance the user never had. #187.
+    stamp = await _stamp_after_newest(
+        session, {leg.account.id for leg in legs}, now or datetime.now(UTC)
+    )
+
     transaction = Transaction(
         kind=kind,
         idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,
-        occurred_at=now,
+        occurred_at=stamp,
         context=context,
     )
 
@@ -206,7 +246,7 @@ async def post(
                     transaction=transaction,
                     account_id=leg.account.id,
                     amount=leg.amount,
-                    created_at=now,
+                    created_at=stamp,
                 )
                 for leg in legs
             )
