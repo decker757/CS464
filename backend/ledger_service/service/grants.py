@@ -4,7 +4,7 @@ Minted lazily, on a user's first read of their own balance, history or
 portfolio, or their first trade, because this service is never told a
 registration happened and the auth service does not know credits exist. ADR
 0009 has the alternatives it rejected. An administrator's read of somebody
-else's mints nothing (D-NEW, #188).
+else's mints nothing (#188).
 """
 
 from __future__ import annotations

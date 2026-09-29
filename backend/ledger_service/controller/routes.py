@@ -21,7 +21,7 @@ there is nothing in the request for it to mint. See ADR 0009's amendment.
 The grant is the older exception that proves the same rule from the read
 side: a user reading their own balance can write, because [B-1] #32's starting
 credits are minted lazily on first read. See `service/grants.py`. An
-administrator reading somebody else's writes nothing (D-NEW, #188).
+administrator reading somebody else's writes nothing (#188).
 """
 
 from __future__ import annotations
@@ -544,7 +544,7 @@ async def execute_trade(
 
 def _balance_out(user_id: uuid.UUID, balance: ledger_service.UserBalance) -> BalanceOut:
     """One body, two routes: `/me` mints the caller's grant, the admin route
-    mints nothing (D-NEW, #188), and the wire shape is the same."""
+    mints nothing (#188), and the wire shape is the same."""
     return BalanceOut(
         user_id=user_id, account_id=balance.account_id, balance=balance.amount
     )

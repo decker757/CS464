@@ -2,7 +2,7 @@
 
 A user's own reads first mint their starting grant if it does not exist yet:
 that is where [B-1] #32's grant happens (ADR 0009). An administrator's reads
-of somebody else mint nothing (D-NEW, #188).
+of somebody else mint nothing (#188).
 """
 
 from __future__ import annotations
@@ -278,7 +278,8 @@ async def balance_for_admin(session: AsyncSession, user_id: uuid.UUID) -> UserBa
 
     Mints no grant: this ledger holds no user table, so it cannot tell a user's
     id from a market's or a typo, and a grant is permanent. An id with no
-    account reads as zero, with `account_id` None. D-NEW, #188.
+    account reads as zero, with `account_id` None. #188; DECISIONS.md, "An
+    administrator's read of somebody else's balance or history mints nothing".
     """
     account = await accounts.find(session, AccountKind.USER, user_id)
     if account is None:

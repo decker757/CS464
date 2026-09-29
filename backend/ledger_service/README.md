@@ -114,7 +114,7 @@ an outbox, an event, and a balance column.
 An administrator's read of somebody else's balance or history mints nothing.
 This service has no user table, so it cannot tell a user's id from a market's
 or a typo, and a grant made to the wrong id is permanent. An id with no account
-reads as zero with a null `account_id`. D-NEW, #188.
+reads as zero with a null `account_id`. #188.
 
 Changing `STARTING_CREDITS` does not re-grant anybody. The grant has been
 written and nothing rewrites an entry, so a new value reaches accounts created

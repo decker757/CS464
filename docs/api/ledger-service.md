@@ -303,7 +303,7 @@ Errors:
 [4.1] #13. The same responses, for an administrator investigating an anomaly,
 except for an id the ledger has no account for (below). `403` for a non-admin.
 
-**These two routes mint nothing.** #188, D-NEW.
+**These two routes mint nothing.** #188.
 This service holds no user table, so it cannot tell a user's id from a
 market's, from the platform owner's `00000000-0000-0000-0000-000000000000`, or
 from a typo — and a grant made to any of them would be real, permanent credit

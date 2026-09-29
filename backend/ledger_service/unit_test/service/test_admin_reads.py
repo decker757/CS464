@@ -1,4 +1,4 @@
-"""An administrator's reads of somebody else's money mint nothing. #188, D-NEW.
+"""An administrator's reads of somebody else's money mint nothing. #188.
 
 The ledger holds no user table, so it cannot tell a user's id from a market's,
 the platform's or a typo. A grant is permanent, so the admin reads open no
