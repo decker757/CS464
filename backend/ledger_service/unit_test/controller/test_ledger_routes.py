@@ -112,6 +112,19 @@ async def test_an_admin_reads_any_balance(
     assert response.json()["user_id"] == str(other_user_id)
 
 
+async def test_an_admin_read_of_an_id_with_no_account_is_zero_with_no_account(
+    client: AsyncClient, admin_headers: dict[str, str], other_user_id: uuid.UUID
+) -> None:
+    """#188 on the wire: a 200 with a null `account_id`, not a 404 or a grant."""
+    balance = await client.get(_user(other_user_id), headers=admin_headers)
+    entries = await client.get(_user_entries(other_user_id), headers=admin_headers)
+
+    assert balance.status_code == entries.status_code == 200
+    assert balance.json()["account_id"] is None
+    assert balance.json()["balance"] == "0.0000"
+    assert entries.json()["entries"] == []
+
+
 # --- the balance ---------------------------------------------------------
 
 
@@ -190,8 +203,10 @@ async def test_the_newest_running_balance_matches_the_balance_route(
 async def test_an_admin_sees_the_running_balance_on_somebody_elses_history(
     client: AsyncClient, admin_headers: dict[str, str], other_user_id: uuid.UUID
 ) -> None:
-    """The route the story is actually about. Same body as `/me`, and the only
-    difference between them is who may call it."""
+    """The route the story is actually about. Same body as `/me`, once the user
+    has read their own and so been granted: the admin route mints nothing."""
+    await client.get(MY_ENTRIES, headers=bearer(other_user_id, UserRole.TRADER))
+
     response = await client.get(_user_entries(other_user_id), headers=admin_headers)
 
     assert response.status_code == 200
