@@ -103,13 +103,18 @@ accounts rather than credits appearing from nowhere, and it is what lets
 than over a carefully chosen subset. If that query ever returns anything else,
 something is badly wrong and the suite should have caught it.
 
-**Reading a balance can write.** The first read of a new user's balance or
+**Reading a balance can write.** A user's first read of their own balance or
 history mints their starting grant ([B-1] #32), because nothing tells this
 service that a registration happened — the auth service does not know credits
 exist and there is no event between them. It is one insert per user, ever,
 keyed on the user id so concurrent first requests race safely.
 `backend/auth_service/README.md` and ADR 0009 both carry the argument against
 an outbox, an event, and a balance column.
+
+An administrator's read of somebody else's balance or history mints nothing.
+This service has no user table, so it cannot tell a user's id from a market's
+or a typo, and a grant made to the wrong id is permanent. An id with no account
+reads as zero with a null `account_id`. #188.
 
 Changing `STARTING_CREDITS` does not re-grant anybody. The grant has been
 written and nothing rewrites an entry, so a new value reaches accounts created
