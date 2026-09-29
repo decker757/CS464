@@ -4090,7 +4090,7 @@ path or adds a mapping, and this entry is then history.
 
 ---
 
-### D-NEW — Every time a market records is Postgres's `clock_timestamp()`, read after the row lock
+### D-NEW — Every decision a market records is stamped with Postgres's `clock_timestamp()`, read after the row lock
 
 **Date:** 2026-09-29 · **Ticket:** #179 · **Status:** active
 
@@ -4115,8 +4115,20 @@ fixed, a decision stamped before the state it decided on existed, and the #173
 race tests fail under it. *Moving the sweep to Python's clock instead*: replicas
 would then disagree about which markets are due (D-025).
 
+**What stays on another clock, and why.** `created_at` and `updated_at` are
+bookkeeping, not decisions, and keep Python's clock through their ORM defaults.
+Moving them means server defaults and an `onupdate` on an existing table for
+two columns nothing orders against. The one pair that can invert is
+`created_at` after `submitted_at`, on a first save that submits straight away
+from a container running ahead, by that clock drift. The sweep keeps
+`func.now()`: its transaction starts before it commits the close, and a
+proposal can only follow that commit, so its `closed_at` is still earlier.
+
 **Notes.** One extra round trip per write, including each draft autosave. The
-`now` parameters stay, so tests can still pin a time. The tests in
+`now` parameters stay, so tests can still pin a time. #179's last criterion
+says to skew the container clock ahead; the tests skew it behind, because the
+sweep's database stamp is earlier than any later proposal in real time, so
+only a container running behind can stamp a proposal before it. The tests in
 `unit_test/service/test_database_clock.py` put the container's clock an hour
 behind and fail against a Python stamp.
 
