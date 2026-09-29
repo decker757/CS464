@@ -4210,6 +4210,187 @@ through its pool account. Keep the replicas on NTP.
 
 ---
 
+### D-NEW — The admin market overview is its own route: published markets plus the caller's own
+
+**Date:** 2026-09-29 · **Ticket:** #5 · **Status:** active
+
+**Decision.** `GET /markets/overview`, admin-only, lists every published
+market and the caller's own draft and submitted markets. It is declared
+before `GET /markets/{market_id}`. A trader gets `403 not_an_administrator`.
+Each row carries `creator_id`.
+
+**Why.** Neither existing list serves #5. `GET /markets` is scoped to the
+creator, reports the raw column and orders by `updated_at`; the frontend's
+create and propose flows depend on all three. `GET /public/markets` never
+returns a draft and orders still-trading first. A draft stays visible only to
+its creator (ADR 0003, [1.1] #1), so "all markets" for an administrator is
+exactly published-or-mine, written as an allowlist like `_visible` so a new
+status is not visible by default. `creator_id` rather than a computed
+`is_mine`: it is the fact, the frontend already knows its own id, and a flag
+computed against the caller would make one row mean different things to two
+readers.
+
+**Rejected.** *`/admin/markets`*: auth owns the `/admin` prefix, and a
+gateway routing on the first path segment, which ADR 0002's shared-domain
+constraint makes likely, would send it there. *A scope parameter on
+`GET /markets`*: a flag with one user that changes a route others depend on.
+*Widening `GET /markets` to every admin's markets*: exposes other admins'
+drafts, which ADR 0016 declined for the same reason.
+
+**Notes.** Declared before `/{market_id}`, or FastAPI parses `overview` as a
+UUID and answers 422; a route test pins it. Reversal trigger: [4.4] #16's
+finer admin roles, if any of them should see less than published-or-mine.
+
+---
+
+### D-NEW — The admin overview derives status, and its counts are read against the derivation, not the column
+
+**Date:** 2026-09-29 · **Ticket:** #5 · **Status:** active
+
+**Decision.** The overview's `status`, its filter and its counts all derive
+from ADR 0011's predicate, through `displayed_status` and one clock. There is
+no raw field beside it. `MarketOut` keeps the column, and is now where the
+sweeper-health signal is read. This supersedes the claim in "The public
+projection derives `status`; `MarketOut` reports the column", and in ADR
+0011's #62 amendment, that #5 counts against the column. Amended in ADR 0011.
+
+**Why.** Counts beside a filtered list must agree with it, and with ADR
+0011's rule at the same instant. Against the column, a market past its close
+time counts as open while every trade is refused. Deriving also makes the
+sweep invisible to the counts, since writing CLOSED moves nothing between
+buckets.
+
+**Rejected.** *The raw column*, which the #62 amendment anticipated: the
+counts disagree with the trade gate for a whole sweep interval, and
+indefinitely if the sweep is off. *Derived plus a raw field*: removes the
+early-Propose 409 below, and costs a second status on every row for a window
+of seconds; declined by ruling.
+
+**Notes.** Accepted cost: proposing gates on the column (ADR 0013), so for up
+to one sweep interval a market shown as closed refuses a proposal with
+`409 market_not_closed`, which the frontend handles. It errs the safe way.
+Reversal trigger: an overview control whose server gate reads the column and
+whose early refusal is no longer acceptable. Then the raw column comes back
+as a separately named field, as ADR 0011's amendment describes.
+
+---
+
+### D-NEW — Counts cover every status the caller can see, zero-filled, and ignore the status filter
+
+**Date:** 2026-09-29 · **Ticket:** #5 · **Status:** active
+
+**Decision.** The overview response carries `counts`, an object keyed by
+every `MarketStatus` value and zero-filled, over every market the caller can
+see. Every filter except `status` applies to the counts. With no other filter
+on the route today, they are totals.
+
+**Why.** "What needs action" includes `submitted` (waiting to be published)
+and `approved` (waiting for settlement), and leaving them out breaks the
+invariant that the counts sum to the markets visible. Zero-filling means a
+tab never has to guess whether a missing key is 0 or an error. Keyed by value
+rather than a list, so SETTLED is an additive key. Ignoring only `status`
+makes each count equal the length of that status's filtered list, whatever
+else is added later, `q` included.
+
+**Rejected.** *The criterion's five statuses only*: "settled" is unreachable
+until #12 and the other two are real work queues. *Counts that apply the
+status filter*: every count but one would be zero. *A separate counts route*:
+two requests cannot agree by construction, and nothing reads counts alone.
+
+**Notes.** Draft and submitted counts include only the caller's own, so two
+administrators see different numbers, and that is correct. Reversal trigger: a
+consumer that needs counts without the list, such as a dashboard tile, which
+earns a counts-only route.
+
+---
+
+### D-NEW — The overview's list and counts share one clock and one statement
+
+**Date:** 2026-09-29 · **Ticket:** #5 · **Status:** active
+
+**Decision.** The controller reads the clock once. The service selects every
+market the caller can see in one statement, ordered, derives each status in
+Python with that clock, then counts all of the rows and filters the same rows
+for the list. This is `count_by_status`'s existing approach, widened to the
+caller's scope.
+
+**Why.** Two statements under READ COMMITTED each take their own snapshot, so
+a publish, proposal, approval, rejection, early close or autosave committing
+between them splits the counts from the list. One statement has one snapshot
+by construction. The clock follows "One clock per request, read at the
+controller, Python's not the transaction's": this read decides nothing and
+writes nothing.
+
+**Rejected.** *Two statements at REPEATABLE READ*: while the route is
+unpaged, one statement gives one snapshot with no isolation setting and one
+round trip fewer. REPEATABLE READ is the move once paging splits the read, as
+the reversal trigger below says. *Grouping by status in SQL*: restates the
+substitution in SQL, the sixth copy "One clock per request…" refused. *Two
+statements at READ COMMITTED*: the split above.
+
+**Notes.** It reads every visible row on every request, with no paging.
+Reversal trigger: the route gains paging (#104). The page is then no longer
+every row, so the counts need their own statement and the read moves to
+REPEATABLE READ to keep one snapshot. The test's mutation is "read the counts
+in a separate statement", and it must fail under that mutation.
+
+---
+
+### D-NEW — The admin overview orders by soonest close, missing close times last, then id; #105's order is the trader browse's
+
+**Date:** 2026-09-29 · **Ticket:** #5, #105 · **Status:** active
+
+**Decision.** `close_time ASC NULLS LAST, id ASC`, for the unfiltered view and
+every status filter alike. #105's most-recently-closed-first applies to
+`GET /public/markets` only.
+
+**Why.** For open markets it is the criterion as written. For closed,
+pending-resolution and approved markets, oldest close first is the one waiting
+longest for an administrator, so each tab reads as a work queue in arrival
+order, which is the story's "what needs action". A trader scrolling closed
+markets wants recent results, a different reader with a different goal, so
+the two views disagree on purpose. `NULLS LAST` is Postgres's ASC default and
+is written out anyway; it puts close-time-less drafts at the end. `id` makes
+the order total, which a cursor will need.
+
+**Rejected.** *#105's order here*: pushes the longest-waiting items to the
+bottom of an action queue. *An order per status*: more rules for a reader to
+learn, and none of them earned yet. *Still-trading first, like the public
+browse*: the criterion asks for close time, not grouping.
+
+**Notes.** Reversal trigger: SETTLED exists. Settled markets are terminal and
+would pile up at the top of the unfiltered view, so [3.4] #12 decides whether
+that view sinks or excludes terminal statuses.
+
+---
+
+### D-NEW — Settled is #12's filter and count, not #5's
+
+**Date:** 2026-09-29 · **Ticket:** #5, #12 · **Status:** active
+
+**Decision.** [2.1] #5 ships the six statuses that exist. "Settled" moved to
+[3.4] #12, which adds SETTLED to `MarketStatus` and `PublicMarketStatus`, and
+carries the criterion that it appears in the overview's filter and
+zero-filled counts and on the trader browse.
+
+**Why.** No `MarketStatus` member exists, so no fixture can create a settled
+market and the column cannot hold one. A settled filter in #5 would be
+untestable, and a `settled: 0` count could only be asserted as a constant: a
+test that passes with the feature broken. #12 is the first ticket that can
+create one to count.
+
+**Rejected.** *Adding the member in #5 with nothing able to reach it*: a
+status no path writes, and a filter tab that is always empty. *A hard-coded
+`settled: 0`*: decorative, and wrong the day #12 lands if nobody remembers it.
+
+**Notes.** The overview zero-fills over `MarketStatus`, so the count appears
+once the member exists. The trader browse reads `PublicMarketStatus`, so #12
+must add it there too, or settled markets vanish from `/public/markets`: that
+is `_visible`'s allowlist working as designed. Reversal trigger: none. It
+reverts by #12 landing.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
