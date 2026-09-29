@@ -27,8 +27,9 @@ def is_open_for_trading(market: Market, *, now: datetime | None = None) -> bool:
 
     The authority: nothing may answer this by reading `status` alone.
     `close_early` asks it against the row it holds locked. A path that decides
-    and writes should read `func.now()` from its transaction and pass that
-    value, not the container's clock, so replicas agree (D-025); passing the
+    and writes should read Postgres's `clock_timestamp()` after its lock and
+    pass that value, not the container's clock, so replicas agree (D-025) —
+    and not `func.now()`, frozen before the lock wait (D-NEW). Passing the
     SQL expression itself would crash. The two-condition check is
     `core/closing.py` (D-023).
     """

@@ -9,10 +9,10 @@ argument, so "only the creator can see this" is testable without a request.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -201,15 +201,27 @@ def _apply(
     ]
 
 
+async def _database_now(session: AsyncSession) -> datetime:
+    """Postgres's clock, the one the close sweep stamps `closed_at` with. D-NEW.
+
+    `clock_timestamp()`, never `func.now()`: that is the transaction's start,
+    read before the caller queued for its lock. So call this after the lock.
+    """
+    return (await session.execute(select(func.clock_timestamp()))).scalar_one()
+
+
 async def _save_once(
     session: AsyncSession,
     actor: Actor,
     data: MarketDraftRequest,
-    now: datetime,
+    now: datetime | None,
 ) -> tuple[Market, list[ValidationProblem], bool]:
     """One attempt at `save`. Raises IntegrityError if it lost the insert race."""
     market = await _find_by_draft_key(session, actor.id, data.draft_key)
     created = market is None
+
+    # After the lock, for the reason `publish` gives.
+    now = now or await _database_now(session)
 
     if market is None:
         market = Market(creator_id=actor.id, draft_key=data.draft_key)
@@ -308,8 +320,6 @@ async def save(
     because a submission's audit entry names who acted, and this service
     cannot look a user up (ADR 0003).
     """
-    now = now or datetime.now(UTC)
-
     try:
         return await _save_once(session, actor, data, now)
     except IntegrityError:
@@ -348,8 +358,9 @@ async def publish(
     # Sampled after the lock, never on the way in. The wait for the lock is
     # unbounded, and a clock read before it could let a market whose close
     # time passed while it queued go live. The clock is a value a check
-    # depends on, so ADR 0015's rule applies to it.
-    now = now or datetime.now(UTC)
+    # depends on, so ADR 0015's rule applies to it. Postgres's clock, so every
+    # time a market records agrees with the sweep's `closed_at`. D-NEW.
+    now = now or await _database_now(session)
 
     problems = problems_blocking_submission(market, now=now)
     if problems:
@@ -394,7 +405,7 @@ async def close_early(
         raise MarketNotOpen
 
     # After the lock, for the reason `publish` gives.
-    now = now or datetime.now(UTC)
+    now = now or await _database_now(session)
 
     # Derived from the clock, not the status column, so the answer is
     # `market_closed` on either side of the sweep. ADR 0014.
@@ -445,7 +456,7 @@ async def propose_outcome(
         raise MarketNotClosed
 
     # After the lock, for the reason `publish` gives. ADR 0015.
-    now = now or datetime.now(UTC)
+    now = now or await _database_now(session)
 
     problems = problems_blocking_proposal(market, proposal)
     if problems:
@@ -522,7 +533,7 @@ async def approve_outcome(
     )
 
     # After the lock, for the reason `publish` gives. ADR 0015.
-    now = now or datetime.now(UTC)
+    now = now or await _database_now(session)
 
     market.status = MarketStatus.APPROVED
     market.approved_by_id = actor.id
@@ -559,7 +570,7 @@ async def reject_outcome(
     )
 
     # After the lock, for the reason `publish` gives. ADR 0015.
-    now = now or datetime.now(UTC)
+    now = now or await _database_now(session)
 
     problems = problems_blocking_rejection(rejection)
     if problems:
