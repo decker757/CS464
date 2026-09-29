@@ -34,7 +34,9 @@ async def _id_named(session: AsyncSession, which: str) -> uuid.UUID:
         await accounts.ensure(session, AccountKind.MARKET_POOL, market_id)
         await session.commit()
         return market_id
-    return uuid.uuid4()
+    if which == "typo":
+        return uuid.uuid4()
+    raise ValueError(f"no id named {which!r}")
 
 
 @pytest.mark.parametrize("which", ["platform owner", "market pool owner", "typo"])

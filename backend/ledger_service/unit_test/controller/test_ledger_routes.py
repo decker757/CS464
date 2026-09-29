@@ -105,11 +105,18 @@ async def test_a_trader_cannot_reach_their_own_balance_by_the_admin_route(
 async def test_an_admin_reads_any_balance(
     client: AsyncClient, admin_headers: dict[str, str], other_user_id: uuid.UUID
 ) -> None:
-    """[4.1] #13. An administrator investigating an anomaly."""
+    """[4.1] #13. An administrator investigating an anomaly sees the number the
+    user sees, once the user has read their own (#188: the admin read mints
+    nothing)."""
+    own = await client.get(ME, headers=bearer(other_user_id, UserRole.TRADER))
+
     response = await client.get(_user(other_user_id), headers=admin_headers)
 
     assert response.status_code == 200
     assert response.json()["user_id"] == str(other_user_id)
+    assert response.json()["account_id"] is not None
+    assert response.json()["account_id"] == own.json()["account_id"]
+    assert response.json()["balance"] == own.json()["balance"]
 
 
 async def test_an_admin_read_of_an_id_with_no_account_is_zero_with_no_account(
