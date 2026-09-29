@@ -1,8 +1,10 @@
 """The starting mock-credit grant. [B-1] #32, [A-1] #29, ADR 0009.
 
-Minted lazily, on the first read of a user's balance or history, because this
-service is never told a registration happened and the auth service does not
-know credits exist. ADR 0009 has the alternatives it rejected.
+Minted lazily, on a user's first read of their own balance, history or
+portfolio, or their first trade, because this service is never told a
+registration happened and the auth service does not know credits exist. ADR
+0009 has the alternatives it rejected. An administrator's read of somebody
+else's mints nothing (#188).
 """
 
 from __future__ import annotations

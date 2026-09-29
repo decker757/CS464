@@ -76,6 +76,12 @@ A user with no entries is by definition a user who has not been granted yet. So
 the first read of a balance or a history writes the genesis transaction, keyed
 `signup-grant:<user_id>`, and carries on.
 
+> **Amended 2026-09-29 by #188.** Only a user's own reads mint. An
+> administrator's read of somebody else's balance or history mints nothing,
+> because this service cannot tell a user's id from any other uuid; an id with
+> no account reads as zero. DECISIONS.md, "An administrator's read of somebody
+> else's balance or history mints nothing".
+
 The alternatives were considered in `backend/auth_service/README.md` before any
 of this was built:
 

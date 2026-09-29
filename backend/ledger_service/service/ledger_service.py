@@ -1,7 +1,8 @@
 """Reading a user's money. [B-2] #33, [4.1] #13
 
-Both reads first mint the caller's starting grant if it does not exist yet:
-that is where [B-1] #32's grant happens (ADR 0009).
+A user's own reads first mint their starting grant if it does not exist yet:
+that is where [B-1] #32's grant happens (ADR 0009). An administrator's reads
+of somebody else mint nothing (#188).
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.paging import Position, decode_cursor, encode_cursor
 from core.pricing import QUANTUM, Side, per_share
-from model.entities import Entry, Transaction, TransactionKind
+from model.entities import Account, AccountKind, Entry, Transaction, TransactionKind
 from model.schemas import TradeFields
 from service import accounts, grants, trading
 
@@ -31,9 +32,13 @@ _TRADE_SIDE_OF_KIND = {
 
 @dataclass(frozen=True)
 class UserBalance:
-    """What a user holds, and the account it was derived from."""
+    """What a user holds, and the account it was derived from.
 
-    account_id: uuid.UUID
+    `account_id` is None only on an administrator's read of an id this ledger
+    has never opened an account for.
+    """
+
+    account_id: uuid.UUID | None
     amount: Decimal
 
 
@@ -205,33 +210,24 @@ def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
     )
 
 
-async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
-    """What this user holds right now, derived from their entries. [B-2] #33."""
-    # Mints the starting grant if this is the user's first read. [B-1] #32.
-    account = await grants.ensure_granted(session, user_id)
-    amount = await accounts.balance_of(session, account.id)
-    return UserBalance(account_id=account.id, amount=amount)
-
-
-async def history_for_user(
+async def _history_of_account(
     session: AsyncSession,
-    user_id: uuid.UUID,
+    account: Account | None,
     *,
     limit: int,
-    cursor: str | None = None,
+    cursor: str | None,
 ) -> EntryPage:
-    """One page of this user's entries, newest first, each with the balance it
-    left behind and, for a trade, the market it was in. [4.1] #13, [T-5] #25.
+    """One page of this account's entries; an empty page for no account.
 
     Fetches `limit + 1` rows so `has_more` is exact without a COUNT. Raises
     `MalformedCursor`.
     """
-    # Mints the starting grant if this is the user's first read. [B-1] #32.
-    account = await grants.ensure_granted(session, user_id)
-
-    # Decoded before the query, so a bad cursor is a 400 rather than a driver
-    # error.
+    # Decoded before the query, and before the no-account answer, so a bad
+    # cursor is a 400 on either route rather than a driver error or a 200.
     position = decode_cursor(cursor) if cursor is not None else None
+
+    if account is None:
+        return EntryPage(rows=[], next_cursor=None)
 
     fetched = list(
         (await session.execute(_page_query(account.id, position, limit + 1))).all()
@@ -248,3 +244,62 @@ async def history_for_user(
         rows=[_history_row_of(account.id, row) for row in page],
         next_cursor=next_cursor,
     )
+
+
+async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
+    """What this user holds right now, derived from their entries. [B-2] #33.
+
+    Mints the starting grant if this is the user's first read. [B-1] #32.
+    """
+    account = await grants.ensure_granted(session, user_id)
+    amount = await accounts.balance_of(session, account.id)
+    return UserBalance(account_id=account.id, amount=amount)
+
+
+async def history_for_user(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    limit: int,
+    cursor: str | None = None,
+) -> EntryPage:
+    """One page of this user's entries, newest first, each with the balance it
+    left behind and, for a trade, the market it was in. [4.1] #13, [T-5] #25.
+
+    Mints the starting grant if this is the user's first read. [B-1] #32.
+    Raises `MalformedCursor`.
+    """
+    account = await grants.ensure_granted(session, user_id)
+    return await _history_of_account(session, account, limit=limit, cursor=cursor)
+
+
+async def balance_for_admin(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
+    """Any user's balance, for an administrator. [4.1] #13. Writes nothing.
+
+    Mints no grant: this ledger holds no user table, so it cannot tell a user's
+    id from a market's or a typo, and a grant is permanent. An id with no
+    account reads as zero, with `account_id` None. #188; DECISIONS.md, "An
+    administrator's read of somebody else's balance or history mints nothing".
+    """
+    account = await accounts.find(session, AccountKind.USER, user_id)
+    if account is None:
+        return UserBalance(account_id=None, amount=Decimal(0).quantize(QUANTUM))
+
+    amount = await accounts.balance_of(session, account.id)
+    return UserBalance(account_id=account.id, amount=amount)
+
+
+async def history_for_admin(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    limit: int,
+    cursor: str | None = None,
+) -> EntryPage:
+    """Any user's history, for an administrator. [4.1] #13. Writes nothing.
+
+    Mints no grant, for the reason `balance_for_admin` gives: an id with no
+    account reads as an empty page. Raises `MalformedCursor`.
+    """
+    account = await accounts.find(session, AccountKind.USER, user_id)
+    return await _history_of_account(session, account, limit=limit, cursor=cursor)
