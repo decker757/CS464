@@ -202,10 +202,12 @@ def _apply(
 
 
 async def _database_now(session: AsyncSession) -> datetime:
-    """Postgres's clock, the one the close sweep stamps `closed_at` with. D-NEW.
+    """Postgres's clock, the one the close sweep stamps `closed_at` with. #179.
 
     `clock_timestamp()`, never `func.now()`: that is the transaction's start,
     read before the caller queued for its lock. So call this after the lock.
+    DECISIONS.md, "Every decision a market records is stamped with Postgres's
+    `clock_timestamp()`".
     """
     return (await session.execute(select(func.clock_timestamp()))).scalar_one()
 
@@ -359,7 +361,7 @@ async def publish(
     # unbounded, and a clock read before it could let a market whose close
     # time passed while it queued go live. The clock is a value a check
     # depends on, so ADR 0015's rule applies to it. Postgres's clock, so every
-    # time a market records agrees with the sweep's `closed_at`. D-NEW.
+    # time a market records agrees with the sweep's `closed_at`. #179.
     now = now or await _database_now(session)
 
     problems = problems_blocking_submission(market, now=now)

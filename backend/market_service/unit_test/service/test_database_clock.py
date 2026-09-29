@@ -1,4 +1,4 @@
-"""Every decision a market records is stamped with Postgres's clock. #179, D-NEW.
+"""Every decision a market records is stamped with Postgres's clock. #179.
 
 The sweep stamps `closed_at` with Postgres's clock, so the decisions must too,
 or a container clock running behind the database's stamps a proposal before
