@@ -7,15 +7,19 @@ become JSON in `errors.register_error_handlers`.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Query, Response, status
 
 from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
+from model.entities import MarketStatus
 from model.schemas import (
     MarketCloseRequest,
     MarketDraftRequest,
     MarketListResponse,
     MarketOut,
+    MarketOverviewResponse,
+    MarketOverviewRowOut,
     MarketSaveResponse,
     MarketSummaryOut,
     OutcomeApprovalRequest,
@@ -23,7 +27,7 @@ from model.schemas import (
     OutcomeRejectionRequest,
     ValidationProblemOut,
 )
-from service import market_service
+from service import browsing, market_service
 
 # Every route here requires an administrator; traders read through
 # `controller/public_routes.py`.
@@ -341,6 +345,44 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
     markets = await market_service.list_for_creator(session, admin.user_id)
     return MarketListResponse(
         markets=[MarketSummaryOut.model_validate(m) for m in markets]
+    )
+
+
+@router.get(
+    "/overview",
+    response_model=MarketOverviewResponse,
+    summary="Every market I can see, filtered by status, with counts",
+    description=(
+        "[2.1] #5. Every published market, plus the calling administrator's "
+        "own drafts and submissions; another administrator's are neither "
+        "listed nor counted.\n\n"
+        "`status` is derived from the clock (ADR 0011): a market past its "
+        "`close_time` is `closed` here even before the sweep writes it. "
+        "`counts` has a key for every status, zero when none, over every "
+        "market the caller can see, and ignores the `status` filter, so each "
+        "count equals the length of that status's filtered list.\n\n"
+        "Ordered by soonest `close_time`, markets with none last, then by id."
+    ),
+    responses={403: {"description": "`not_an_administrator` — a trader."}},
+)
+async def market_overview(
+    admin: CurrentAdmin,
+    session: DbSession,
+    status: MarketStatus | None = Query(
+        default=None,
+        description="Restrict the list to one status. Counts are unaffected.",
+    ),
+) -> MarketOverviewResponse:
+    # One clock for the request, so the list and the counts agree. Same as
+    # `public_routes.py`.
+    now = datetime.now(UTC)
+
+    result = await browsing.overview(
+        session, caller_id=admin.user_id, status=status, now=now
+    )
+    return MarketOverviewResponse(
+        markets=[MarketOverviewRowOut.model_validate(card) for card in result.markets],
+        counts=result.counts,
     )
 
 

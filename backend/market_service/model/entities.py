@@ -132,6 +132,29 @@ class MarketCard:
     close_time: datetime | None
 
 
+@dataclass(frozen=True)
+class AdminMarketCard:
+    """One row of the administrator's overview. [2.1] #5.
+
+    `MarketCard` plus `creator_id`, which the trader projection deliberately
+    lacks (D-019). `status` is the derived value with no raw one beside it.
+    """
+
+    id: uuid.UUID
+    creator_id: uuid.UUID
+    status: MarketStatus
+    question: str | None
+    close_time: datetime | None
+
+
+@dataclass(frozen=True)
+class MarketOverview:
+    """The overview's rows and per-status counts, read against one clock."""
+
+    markets: list[AdminMarketCard]
+    counts: dict[MarketStatus, int]
+
+
 def displayed_status(
     status: MarketStatus,
     close_time: datetime | None,
