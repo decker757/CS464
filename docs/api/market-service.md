@@ -42,6 +42,7 @@ status of its own, and why the proposer is refused a `403` on both decisions:
 | POST | `/markets/{id}/approve-outcome` | Approve another administrator's proposal |
 | POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
 | GET | `/markets` | List my own markets |
+| GET | `/markets/overview` | Every market I can see, by status, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
 
@@ -117,12 +118,20 @@ deliberate:
 | Response | `status` | Who reads it |
 | --- | --- | --- |
 | `MarketOut`, `MarketSummaryOut` | the raw column | administrators |
+| `MarketOverviewResponse` ([2.1] #5) | **derived** | administrators |
 | `PublicMarketOut`, `PublicMarketSummaryOut` ([BE][X] #62) | **derived** | traders |
 
-An administrator wants the column. The gap between `close_time` and `closed_at`
-is how you tell whether the sweeper is running, and [2.1] #5's counts are read
-against it — so these routes hand back what is stored and the snippet above is
-how you use it.
+An administrator's *single-market* reads want the column. The gap between
+`close_time` and `closed_at` is how you tell whether the sweeper is running, and
+`MarketOut` (`GET /markets/{id}`) is now the one place to read it — so those
+routes hand back what is stored and the snippet above is how you use it.
+
+**`GET /markets/overview` is the exception among the admin routes.** Its
+`status`, its filter and its counts are all derived, exactly as the public read
+derives them, and it carries no raw column beside the derived one. The
+[ADR 0011](../adr/0011-market-auto-close.md) amendment for [2.1] #5 has the
+reason: counts beside a filtered list must agree with the list, and with the
+trade gate at the same instant. Do not apply the snippet above to it.
 
 A trader has no interest in the sweeper. The public read applies the same rule
 server-side, so a market past its `close_time` comes back as `"closed"` even
@@ -818,6 +827,65 @@ first. A summary, not the whole market:
   ]
 }
 ```
+
+## GET /markets/overview — [2.1] #5
+
+Every market the calling administrator can see, filtered by status, with a
+count for every status beside the list. Declared before `GET /markets/{id}`, so
+`overview` is never parsed as an id. A trader is refused with
+`403 not_an_administrator`.
+
+```
+GET /markets/overview?status=closed
+```
+
+```json
+{
+  "markets": [
+    {
+      "id": "410465f3-2852-4833-964b-f42e23b8227c",
+      "creator_id": "7c1d5a0e-3b52-4f0a-9d0e-6f2b8a4c1e93",
+      "status": "closed",
+      "question": "Will Singapore core inflation be below 2% for December 2026?",
+      "close_time": "2026-12-31T16:00:00Z"
+    }
+  ],
+  "counts": {
+    "draft": 1,
+    "submitted": 0,
+    "open": 4,
+    "closed": 1,
+    "pending_resolution": 0,
+    "approved": 2
+  }
+}
+```
+
+- **What the caller can see.** Every published market, and the caller's own
+  drafts and submitted markets. Another administrator's draft or submitted
+  market is neither listed nor counted, so two administrators see different
+  `draft` and `submitted` counts, and that is correct.
+- **`status` is derived.** A market past its `close_time` is `closed`, in the
+  list, in the filter and in the counts, even while its stored status still
+  reads `open` ([ADR 0011](../adr/0011-market-auto-close.md)). There is no raw
+  status field. Proposing gates on the stored column (ADR 0013), so for up to
+  one sweep interval a market shown here as `closed` refuses a proposal with
+  `409 market_not_closed`; handle that 409.
+- **`?status=`** accepts any of the six statuses, including `draft` and
+  `submitted`, which the trader filter refuses. Anything else is a `422`.
+  `settled` arrives with [3.4] #12, which adds it to the filter and the counts.
+- **`counts`** is an object of integers keyed by every status, `0` when there
+  are none, over every market the caller can see. **It ignores `?status=`**, so
+  each count equals the length of that status's filtered list and the counts
+  sum to the length of the unfiltered list. Both come from one read at one
+  instant.
+- **Order** is soonest `close_time` first, markets with no `close_time` last,
+  then by `id`, with or without a filter. So the `closed` tab reads oldest
+  close first: the one waiting longest for an administrator. This differs from
+  `GET /public/markets` on purpose.
+- **`creator_id`** is on every row, so the caller can tell their own by
+  comparing it with their own id.
+- Not paged; #104 owns that.
 
 ## GET /markets/{id}
 
