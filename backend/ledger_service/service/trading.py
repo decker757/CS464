@@ -49,8 +49,10 @@ commits.
    `quantize_cost` — which refuses a zero result itself (D-041). The preview
    prices through the same function, so the two code paths cannot disagree
    about what a trade costs.
-10. The writes: `state_version` up by one, `state_changed_at` to this
-    transaction's own moment, the traded outcome's `q`, and the position —
+10. The writes: `state_version` up by one, `state_changed_at` to the time
+    taken here under the book lock (which the snapshot and the price frame
+    report; the ledger entries may land a little later, #187), the traded
+    outcome's `q`, and the position —
     added to on a buy, released at average cost on a sell — all as pending ORM
     changes, none of them committed yet.
 11. `posting.post`, last, because it is the one statement in this whole path

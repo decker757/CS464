@@ -153,19 +153,19 @@ including that one, so there is no stored column for it to disagree with, and
 the newest entry's `balance_after` is the same number `/balance` returns.
 
 It is anchored to the entry rather than counted back from today's balance,
-which is what makes a page's figures independent of when it was fetched. A
-column that stacks `balance_after - amount` down the page will therefore
-always agree with the row below it.
+which is what makes a page's figures independent of when it was fetched. A trade
+arriving while an administrator reads is strictly newer than every row already
+on screen, so nothing they have looked at moves, and page 2 fetched an hour
+after page 1 still adds up against it. A column that stacks
+`balance_after - amount` down the page will therefore always agree with the row
+below it.
 
-**Known limitation, tracked in #187.** A user trading in two markets at once
-can have two transactions listed out of the order they actually committed in
-— each trade's timestamp is fixed under its own market's book lock, not the
-user's account lock, so two trades in different markets can commit in the
-opposite order their timestamps show. When that happens the `balance_after`
-shown is not one the account ever actually held, and a row can still appear
-below a page already fetched. #187 fixes the write path; until then, treat
-the order of two rows as reliable only when they could not have been placed
-concurrently in two different markets.
+That holds for a user trading in two markets at once too. A movement's
+timestamp is fixed after it holds the locks on its accounts, at one microsecond
+past the newest entry on any of them if the clock says earlier, so on every
+account the order listed is the order committed, and no two entries share a
+time. #187; DECISIONS.md, "A movement's timestamp is fixed under its
+account locks".
 
 **Only this account's side appears.** Every movement writes at least two
 entries sharing one `transaction_id`, and the other side belongs to the platform
@@ -513,7 +513,9 @@ a price frame with one function. `prices` carries every outcome, ordered by
 counter the preview and every `PriceEvent` report.
 
 `occurred_at` is the book's `state_changed_at`: the moment the trade that last
-moved `q` committed. On a market nobody has traded that equals `opened_at`
+moved `q` took its price, under the book lock. Its ledger entries can carry a
+slightly later `created_at`, because they are stamped under the account locks
+(#187). On a market nobody has traded that equals `opened_at`
 (D-029) — creating the book was the last state change there has been.
 
 **The first request on a market writes, and can take a moment.** A market

@@ -4164,6 +4164,52 @@ and is null only on the admin route. The frontend does not read it.
 
 ---
 
+### D-NEW — A movement's timestamp is fixed under its account locks, not trusted from the clock
+
+**Date:** 2026-09-29 · **Ticket:** #187 · **Status:** active
+
+**Decision.** `posting.post` fixes `created_at` after `accounts.lock`, as
+`max(now, newest created_at on any locked account + 1µs)`. Both legs and
+`Transaction.occurred_at` carry it. `now` is a floor, not the stamp. A trade's
+`state_changed_at` and its price frame's `occurred_at` keep the trade's own
+`now`, because they describe the book, not the ledger feed.
+
+**Why.** A trade took its time under its market's book lock, before it queued
+for the user's account lock. Two trades by one user in two markets hold two
+different book locks, so the earlier-stamped one could commit second. The
+history orders by `(created_at, id)`, so it listed the two out of commit order,
+and a running balance the user never had appeared: a buy costing more than the
+user held, paid for by a sale that committed first, showed a negative
+`balance_after`. Every writer of an account's entries holds that account's lock
+from the stamp to the commit, so reading the newest entry under the lock makes
+feed order equal commit order on every account. That holds across replicas and
+when the clock steps back, because it does not rely on the clock being in
+order. It also means no two entries on one account share a time. It restores
+the guarantee [T-5] #25 had to withdraw, "The history page and its running
+balances are read in one statement, anchored at the page's newest row": every
+new entry is newer than every anchor.
+
+**Rejected.** *Taking the time from Python after the lock and trusting it*: two
+replicas' clocks, or one clock stepped back by NTP, still disagree about order.
+*Postgres's `clock_timestamp()` after the lock*: one clock for every replica,
+but a clock that steps back still breaks it, and it is a round trip that buys
+no more than the probe does. *Ordering the feed by a sequence instead of
+`created_at`*: a new column on an append-only table, and a cursor format
+change for every client.
+
+**Notes.** One indexed probe of `ix_ledger_entries_account_feed` per locked
+account, two on a trade. PLATFORM is touched by every grant, so a test that
+injects a fixed past `now` after another grant gets a later stamp than it
+injected. Assert against the returned transaction's `occurred_at`.
+
+A clock that runs *fast* is an accepted cost. Order stays right, but the shown
+time does not: once a replica ten minutes ahead has written a grant, every
+later grant lands after PLATFORM's newest entry, a little past that future
+time, until the real clock catches up. The same happens to a market's trades
+through its pool account. Keep the replicas on NTP.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.

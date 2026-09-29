@@ -182,10 +182,9 @@ class LedgerEntryOut(BaseModel):
             "one — there is no stored column for it to disagree with, and the "
             "newest entry's value is the same number `/balance` returns. "
             "Anchored to the entry rather than accumulated from today, so a "
-            "page's figures do not depend on when it was fetched.\n\n"
-            "Known limitation (#187): two transactions on this account can "
-            "commit in an order other than their timestamps show, so this "
-            "figure is not yet guaranteed to be one the account actually held."
+            "movement arriving while you page cannot change a figure already "
+            "on the screen. Entries are listed in the order they committed, "
+            "so this is always a balance the account actually held (#187)."
         ),
         examples=["1000.0000"],
     )

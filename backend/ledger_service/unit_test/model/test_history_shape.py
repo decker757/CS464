@@ -2,8 +2,8 @@
 
 No new table and no new column: every figure on a history row is read or
 derived from what [F-1] #41 and the trades already store. And the
-`balance_after` contract states #187's known limitation rather than a
-guarantee the write path does not yet keep.
+`balance_after` contract promises a figure on screen never moves, which #187's
+write path keeps.
 """
 
 from __future__ import annotations
@@ -41,11 +41,9 @@ def test_the_history_adds_no_table_and_no_column() -> None:
     }
 
 
-def test_balance_after_s_description_links_187_instead_of_the_guarantee() -> None:
-    """The OpenAPI contract. Until #187 lands, a trade in another market can
-    commit below a row already on screen, so the description may not promise
-    otherwise."""
+def test_balance_after_s_description_promises_a_figure_on_screen_does_not_move() -> None:
+    """The OpenAPI contract, restored by #187: entries list in commit order."""
     description = LedgerEntryOut.model_fields["balance_after"].description or ""
 
-    assert "#187" in description
-    assert "cannot change a figure already on the screen" not in description
+    assert "cannot change a figure already on the screen" in description
+    assert "Known limitation" not in description

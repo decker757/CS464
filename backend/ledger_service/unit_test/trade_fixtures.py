@@ -560,18 +560,9 @@ def unaffordable(credits: Decimal) -> Decimal:
     return credits + 2 * B
 
 
-def twice_affordable(credits: Decimal) -> Decimal:
-    """A buy of outcome 0 against `Q` that `credits` can afford exactly twice.
-
-    For the overdraft races, which need somebody refused whatever the grant
-    is. A fixed quantity against a larger grant fills every party: the mixed
-    race turns vacuous, and the one-user race asks its barrier for more
-    connections than the pool holds and never starts.
-
-    The largest whole-tick buy costing at most `credits / 2.5` — two fit, a
-    third does not. Bisected, because the cost has no closed-form inverse.
-    """
-    budget = credits / Decimal("2.5")
+def largest_buy_within(budget: Decimal) -> Decimal:
+    """The largest whole-tick buy of outcome 0 against `Q` costing at most
+    `budget`. Bisected, because the cost has no closed-form inverse."""
     lo, hi = 0, int(unaffordable(budget) / QUANTUM)
     while lo < hi:
         mid = (lo + hi + 1) // 2
@@ -580,6 +571,20 @@ def twice_affordable(credits: Decimal) -> Decimal:
         else:
             hi = mid - 1
     return lo * QUANTUM
+
+
+def twice_affordable(credits: Decimal) -> Decimal:
+    """A buy of outcome 0 against `Q` that `credits` can afford exactly twice.
+
+    For the overdraft races, which need somebody refused whatever the grant
+    is. A fixed quantity against a larger grant fills every party: the mixed
+    race turns vacuous, and the one-user race asks its barrier for more
+    connections than the pool holds and never starts.
+
+    The largest buy costing at most `credits / 2.5` — two fit, a third does
+    not.
+    """
+    return largest_buy_within(credits / Decimal("2.5"))
 
 
 def floored_total(

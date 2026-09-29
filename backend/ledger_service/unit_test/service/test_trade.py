@@ -238,11 +238,12 @@ async def test_the_state_version_rises_by_exactly_one(
     assert trade.state_version == after
 
 
-async def test_state_changed_at_advances_to_the_transactions_own_moment(
+async def test_state_changed_at_advances_and_the_ledger_stamp_is_no_earlier(
     session: AsyncSession,
 ) -> None:
-    """The fourth write: the transaction's own `occurred_at`, not a second
-    clock read, since the snapshot serves this column (D-029)."""
+    """The fourth write, served by the snapshot (D-029). The trade's own time,
+    taken under the book lock; its ledger entries are stamped under the
+    account locks, which can only be the same moment or later (#187)."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -254,7 +255,7 @@ async def test_state_changed_at_advances_to_the_transactions_own_moment(
     book = await book_row(session, upstream.market_id)
     transaction = await session.get(entities().Transaction, trade.transaction_id)
     assert book.state_changed_at > before
-    assert book.state_changed_at == transaction.occurred_at
+    assert transaction.occurred_at >= book.state_changed_at
 
 
 # =========================================================================

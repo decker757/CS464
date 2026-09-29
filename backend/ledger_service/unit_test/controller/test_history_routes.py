@@ -35,7 +35,7 @@ from unit_test.trade_fixtures import QUANTUM, entities
 MY_ENTRIES = "/ledger/entries/me"
 _HEADING = "## GET /ledger/entries/me"
 _SCALE_FOUR = re.compile(r"^-?\d+\.\d{4}$")
-_STALE_GUARANTEE = "strictly newer than every row already on screen"
+_ON_SCREEN_GUARANTEE = "strictly newer than every row already on screen"
 
 
 def _admin_entries(user_id: uuid.UUID) -> str:
@@ -155,7 +155,7 @@ async def test_amounts_quantities_and_prices_are_scale_four_strings(
 # =========================================================================
 # The docs
 # =========================================================================
-def test_the_docs_document_the_new_fields_and_link_187_instead_of_strictly_newer() -> None:
+def test_the_docs_document_the_new_fields_and_promise_rows_on_screen_do_not_move() -> None:
     doc = _doc()
     section = _section(doc, _HEADING)
     example = section.split("```jsonc", 1)[1].split("```", 1)[0]
@@ -171,5 +171,7 @@ def test_the_docs_document_the_new_fields_and_link_187_instead_of_strictly_newer
     for kind in ("signup_grant", "trade_buy", "trade_sell"):
         assert f"`{kind}`" in section, f"the kinds list does not name `{kind}`"
 
-    assert _STALE_GUARANTEE not in doc
-    assert "#187" in section, "the known limitation does not link #187"
+    # #187 restored the guarantee #25 had to withdraw.
+    # Joined, so a re-wrap of the paragraph does not read as a broken promise.
+    assert _ON_SCREEN_GUARANTEE in " ".join(section.split())
+    assert "Known limitation" not in section
