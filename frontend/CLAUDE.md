@@ -130,7 +130,8 @@ What counts as a test worth keeping is in the root `CLAUDE.md` under
 
 `e2e/` holds Playwright tests that drive the real frontend in a real browser
 against the real backend ([F-12] #199). CI runs them on every PR that touches
-`frontend/`, `backend/` or `sql/` (`.github/workflows/e2e.yml`). To run them
+`frontend/`, `backend/`, `sql/`, `docker-compose.yml` or `.env.example`
+(`.github/workflows/e2e.yml`). To run them
 locally, start the stack first:
 
 ```bash

@@ -12,16 +12,21 @@ test("a trader's market page moves when someone else buys", async ({ page }) => 
   const buyer = await registerTrader('lp_buy')
   await logIn(page, watcher)
 
-  const socketOpened = page.waitForEvent('websocket')
+  // Every frame the page's socket receives, recorded from before it opens.
+  const frameTypes: string[] = []
+  page.on('websocket', socket => {
+    socket.on('framereceived', frame => frameTypes.push(JSON.parse(String(frame.payload)).type))
+  })
   await page.goto(`/markets/${market.id}`)
-  const socket = await socketOpened
-  // Subscribed before the trade, so the new price can only arrive as a frame.
-  await socket.waitForEvent('framereceived', { predicate: frame => String(frame.payload).includes('"subscribed"') })
+  await expect.poll(() => frameTypes).toContain('subscribed')
   const yesPrice = page.getByLabel('Yes price')
   await expect(yesPrice).toHaveText('50.0%')
 
   await buy(buyer, market, 'Yes', '50.0000')
 
+  // The page also fetches a snapshot over HTTP when it subscribes, so the new
+  // price on screen alone does not prove the socket delivered it. This does.
+  await expect.poll(() => frameTypes).toContain('price')
   const after = await snapshot(buyer, market.id)
   const yes = market.outcomes.find(outcome => outcome.label === 'Yes')
   const expected = after.prices.find(price => price.outcome_id === yes?.id)

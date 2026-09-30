@@ -16,6 +16,8 @@ on:
       - "backend/**"
       - "sql/**"
       - "docker-compose.yml"
+      # The throwaway .env is built from it.
+      - ".env.example"
       - ".github/workflows/e2e.yml"
       - ".github/workflows/notify-failure.yml"
   # Every pull request, whatever it targets, like the other two workflows.
@@ -25,6 +27,8 @@ on:
       - "backend/**"
       - "sql/**"
       - "docker-compose.yml"
+      # The throwaway .env is built from it.
+      - ".env.example"
       - ".github/workflows/e2e.yml"
       - ".github/workflows/notify-failure.yml"
 

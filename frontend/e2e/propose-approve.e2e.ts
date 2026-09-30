@@ -10,7 +10,8 @@ test('one admin proposes an outcome and a second admin approves it', async ({ br
   const market = await publishMarket(proposer, `Did ${uniqueName('resolve')} happen?`)
   await closeEarly(proposer, market.id)
 
-  const proposerPage = await (await browser.newContext()).newPage()
+  const proposerContext = await browser.newContext()
+  const proposerPage = await proposerContext.newPage()
   await logIn(proposerPage, proposer)
   await proposerPage.goto('/admin/markets')
   await marketCard(proposerPage, market.question).getByRole('link', { name: 'Propose Outcome' }).click()
@@ -19,7 +20,10 @@ test('one admin proposes an outcome and a second admin approves it', async ({ br
   await proposerPage.getByRole('button', { name: 'Propose Outcome' }).click()
   await expect(proposerPage).toHaveURL(/\/admin\/markets$/)
 
-  const approverPage = await (await browser.newContext()).newPage()
+  await proposerContext.close()
+
+  const approverContext = await browser.newContext()
+  const approverPage = await approverContext.newPage()
   await logIn(approverPage, approver)
   await approverPage.goto('/admin/proposals')
   await expect(marketCard(approverPage, market.question)).toContainText(`Proposed by ${proposer.username}`)
@@ -29,4 +33,5 @@ test('one admin proposes an outcome and a second admin approves it', async ({ br
   await expect(approverPage.getByRole('heading', { name: 'Proposal Approved' })).toBeVisible()
   // The "Approved by" line, not the navbar's username.
   await expect(approverPage.getByText(`${approver.username} on `)).toBeVisible()
+  await approverContext.close()
 })

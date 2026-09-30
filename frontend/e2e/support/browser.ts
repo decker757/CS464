@@ -11,7 +11,11 @@ export async function logIn(page: Page, session: Session): Promise<void> {
   await expect(page).toHaveURL(/\/markets$/)
 }
 
-/** The card on a markets list whose question is `question`. */
+/**
+ * The card on a markets list whose question is `question`. Two levels up from
+ * the question's text, which is how the admin list and the proposals list
+ * both nest it today; a wrapper around the question breaks this.
+ */
 export function marketCard(page: Page, question: string): Locator {
   return page.getByText(question, { exact: true }).locator('xpath=../..')
 }
