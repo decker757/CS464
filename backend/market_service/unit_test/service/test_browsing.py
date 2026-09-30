@@ -18,10 +18,9 @@ from core.errors import MarketNotFound
 from model.entities import Market, MarketStatus
 from core.database import get_session_factory
 from service import browsing, market_service
-from service.audit import Actor
+from unit_test.conftest import approved_market as _approved_market
 from unit_test.conftest import (
     actor,
-    approval_request,
     closed_market,
     draft_request,
     overdue_market,
@@ -51,14 +50,6 @@ async def _open_market(
         close_time=now + closes_in,
         resolution_time=now + closes_in + timedelta(days=15),
         **overrides,
-    )
-
-
-async def _approved_market(session: AsyncSession, creator: Actor) -> Market:
-    """An approved market, standing in for "settled" until [3.4] #12."""
-    market = await proposed_market(session, creator)
-    return await market_service.approve_outcome(
-        session, actor(), market.id, approval_request(market.proposal_id)
     )
 
 

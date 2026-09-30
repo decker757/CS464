@@ -208,6 +208,40 @@ already agrees with it.
 > `docs/api/market-service.md` carries the same statement, so the next reader
 > finds it from either direction.
 
+> **Amended 2026-09-29 by [2.1] #5.** The #62 amendment above says an
+> administrator wants the column and that "[2.1] #5's counts are read against
+> it". That claim is superseded. The rest of that amendment stands: the split
+> is still by payload, and `MarketOut` still reports what is stored.
+>
+> #5's overview, `GET /markets/overview`, derives `status` exactly as the
+> public read does, and its filter and its counts are read against the
+> derivation. The reason is the criterion itself: counts shown beside a
+> filtered list must agree with that list, and a list that answers "open"
+> for a market the clock has closed would disagree with this record's own
+> rule for the same instant. With the column, a market past its `close_time`
+> sits in the open count while every trade against it is refused. Deriving
+> also takes the sweep out of the counts entirely: writing CLOSED moves no
+> market between buckets, because it was already counted as closed.
+>
+> The sweeper-health signal moves rather than disappears. The gap between
+> `close_time` and `closed_at` is still on `MarketOut`, which
+> `GET /markets/{id}` returns, and that is now the one place an administrator
+> reads it. The overview carries no raw field beside the derived one.
+>
+> One cost is accepted on purpose. [3.1] #9 gates proposing on the column
+> (ADR 0013), so for up to one sweep interval a market the overview shows as
+> closed refuses a proposal with `409 market_not_closed`. The error points
+> the safe way: it refuses a proposal, and it never lets a trade or a
+> proposal through that should not be. The frontend handles the 409.
+>
+> **This reverses when an administrator needs to act on the stored status
+> from the overview itself**: a control on that page whose server-side gate
+> reads the column and whose early refusal is no longer acceptable. At that
+> point the overview carries the raw column as a separately named field
+> beside the derived `status`, which is the "field rather than a
+> substitution" answer the #62 amendment already describes. The 409 above
+> does not fire this, because it was accepted with the ruling.
+
 **`closed_at` and `close_time` are different columns and mean different
 things.** `close_time` is when trading stopped. `closed_at` is when the sweep
 wrote that down. A gap is normal, and after an outage it can be large.

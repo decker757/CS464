@@ -576,3 +576,24 @@ class PublicMarketSummaryOut(_UtcTimestamps):
 
 class PublicMarketListResponse(BaseModel):
     markets: list[PublicMarketSummaryOut]
+
+
+# --- the administrator's overview. [2.1] #5 --------------------------------
+# `status` is derived by `service/browsing.py::overview` before these are
+# built, for the reason given above. `creator_id` is here, unlike the public
+# projection, so the caller can tell their own markets.
+
+
+class MarketOverviewRowOut(_UtcTimestamps):
+    id: uuid.UUID
+    creator_id: uuid.UUID
+    status: MarketStatus
+    question: str | None
+    close_time: datetime | None
+
+
+class MarketOverviewResponse(BaseModel):
+    """Rows for the chosen filter, and a count for every status regardless of it."""
+
+    markets: list[MarketOverviewRowOut]
+    counts: dict[MarketStatus, int]

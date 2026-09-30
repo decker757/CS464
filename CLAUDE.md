@@ -148,7 +148,7 @@ A market stops accepting trades the instant `close_time` passes.
 `is_open_for_trading` for an entity and `open_for_trading()` for a WHERE
 clause — and every trade path, browse query and status filter asks it. The
 CLOSED status is written a few seconds later by a background sweep, for the
-readers that want a value to count and gate on ([2.1] #5, [3.1] #9, [3.4] #12).
+readers that want a value to count and gate on ([3.1] #9, [3.4] #12).
 
 Write it the other way round — gate trading on `status == OPEN` — and the sweep
 interval becomes a correctness parameter: every second of it is a second of

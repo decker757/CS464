@@ -9,6 +9,7 @@ column alone (ADR 0011, D-022). No prices: `q` lives with the ledger (ADR 0005).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, and_, not_, or_, select
@@ -17,9 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.errors import MarketNotFound
 from model.entities import (
     PUBLIC_STATUSES,
+    AdminMarketCard,
     TRADER_FACING_STATUS,
     Market,
     MarketCard,
+    MarketOverview,
     MarketStatus,
     displayed_status,
 )
@@ -148,6 +151,16 @@ async def get_published(
     return market
 
 
+def _tally(
+    statuses: Iterable[MarketStatus], seeded: Iterable[MarketStatus]
+) -> dict[MarketStatus, int]:
+    """Count `statuses`, with every member of `seeded` present at 0 at least."""
+    counts: dict[MarketStatus, int] = dict.fromkeys(seeded, 0)
+    for status in statuses:
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
 async def count_by_status(
     session: AsyncSession, *, now: datetime | None = None
 ) -> dict[MarketStatus, int]:
@@ -161,10 +174,53 @@ async def count_by_status(
     # Columns, not entities, for the reason `browse` gives.
     stmt = select(Market.status, Market.close_time).where(_visible())
 
-    # Seeded, so a status with no markets reads 0 rather than a KeyError.
-    counts: dict[MarketStatus, int] = dict.fromkeys(PUBLIC_STATUSES, 0)
+    rows = (await session.execute(stmt)).all()
+    return _tally(
+        (displayed_status(status, close_time, now=now) for status, close_time in rows),
+        seeded=PUBLIC_STATUSES,
+    )
 
-    for status, close_time in (await session.execute(stmt)).all():
-        derived = displayed_status(status, close_time, now=now)
-        counts[derived] = counts.get(derived, 0) + 1
-    return counts
+
+async def overview(
+    session: AsyncSession,
+    *,
+    caller_id: uuid.UUID,
+    status: MarketStatus | None = None,
+    now: datetime,
+) -> MarketOverview:
+    """Every market an administrator can see, with per-status counts. [2.1] #5.
+
+    Published markets plus the caller's own drafts and submissions. One
+    statement and one `now`, so the list and the counts describe the same
+    instant; do not read the counts separately. The counts cover everything
+    visible and ignore `status`. Ordered by soonest close, none last, then id.
+    D-NEW entries for #5, ADR 0011's #5 amendment.
+    """
+    # Columns, not entities, for the reason `browse` gives. An allowlist plus
+    # ownership: a new status is not visible to everyone by default.
+    stmt = (
+        select(
+            Market.id,
+            Market.creator_id,
+            Market.status,
+            Market.question,
+            Market.close_time,
+        )
+        .where(or_(_visible(), Market.creator_id == caller_id))
+        .order_by(Market.close_time.asc().nulls_last(), Market.id.asc())
+    )
+
+    cards = [
+        AdminMarketCard(
+            id=row.id,
+            creator_id=row.creator_id,
+            status=displayed_status(row.status, row.close_time, now=now),
+            question=row.question,
+            close_time=row.close_time,
+        )
+        for row in (await session.execute(stmt)).all()
+    ]
+
+    counts = _tally((card.status for card in cards), seeded=MarketStatus)
+    listed = [card for card in cards if status is None or card.status == status]
+    return MarketOverview(markets=listed, counts=counts)

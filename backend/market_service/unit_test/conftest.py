@@ -274,6 +274,19 @@ async def published_market(session, actor: Actor, **overrides: object) -> Market
     return market
 
 
+async def published_market_closing_at(
+    session, actor: Actor, closes: datetime
+) -> Market:
+    """A published market, stored OPEN, closing at `closes`. [2.1] #5.
+
+    `closes` is chosen against a test's injected clock and must still be in
+    the real future, or `publish` refuses it. Nothing sweeps it.
+    """
+    return await published_market(
+        session, actor, close_time=closes, resolution_time=closes + timedelta(days=15)
+    )
+
+
 async def overdue_market(
     session,
     actor: Actor,
@@ -418,6 +431,14 @@ async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
     market = await closed_market(session, actor, **overrides)
     return await market_service.propose_outcome(
         session, actor, market.id, proposal_request(market.outcomes[0].id)
+    )
+
+
+async def approved_market(session, creator: Actor) -> Market:
+    """An approved market, standing in for "settled" until [3.4] #12."""
+    market = await proposed_market(session, creator)
+    return await market_service.approve_outcome(
+        session, actor(), market.id, approval_request(market.proposal_id)
     )
 
 
