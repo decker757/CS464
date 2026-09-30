@@ -9,8 +9,8 @@ name: Backend CI
 # JOB, not the workflow — and note the job names now carry the matrix value,
 # so they read "test (auth_service, auth_svc)", "test (market_service,
 # market_svc)", "test (audit_service, audit_svc)", "test (ledger_service,
-# ledger_svc)", "test (realtime_service, none)" and "test (shared)". Never
-# mark `notify` required; it only runs on failure.
+# ledger_svc)", "test (realtime_service, none)", "test (shared)" and "dead
+# code". Never mark `notify` required; it only runs on failure.
 on:
   push:
     branches: [ "dev", "staging", "main" ]
@@ -212,8 +212,34 @@ jobs:
       - name: Test
         run: pytest
 
+  # [F-11] #198. One scan over all of backend/, because a function in shared/
+  # is used from the services, and a scan per service would call it dead.
+  dead-code:
+    name: dead code
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/requirements-dead-code.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dead-code.txt
+
+      - name: Check for dead code
+        run: ./check_dead_code.sh
+
   notify:
-    needs: [test, shared]
+    needs: [test, shared, dead-code]
     if: failure()
     uses: ./.github/workflows/notify-failure.yml
     with:

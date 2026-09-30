@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "knip": "knip"
   },
   "dependencies": {
     "axios": "^1.20.0",
@@ -27,6 +28,7 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^29.1.1",
+    "knip": "^6.38.0",
     "msw": "^2.15.0",
     "oxlint": "^1.81.0",
     "tailwindcss": "^4.3.3",
