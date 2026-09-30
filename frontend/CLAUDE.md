@@ -7,7 +7,7 @@ Tests: Vitest, Testing Library, MSW. Lint: oxlint.
 npm run dev
 npm run test:run      # CI runs this,
 npm run lint          # this,
-npx tsc --noEmit      # this,
+npx tsc --noEmit      # this (and `npx tsc --noEmit -p e2e` for the e2e tests),
 npm run build         # and this. Run all four before pushing.
 ```
 
@@ -125,6 +125,33 @@ What counts as a test worth keeping is in the root `CLAUDE.md` under
   restyle and pass when the feature is broken.
 - Each page gets its main flow and at least one server-error case asserting
   the message the user sees.
+
+## End-to-end tests
+
+`e2e/` holds Playwright tests that drive the real frontend in a real browser
+against the real backend ([F-12] #199). CI runs them on every PR that touches
+`frontend/`, `backend/` or `sql/` (`.github/workflows/e2e.yml`). To run them
+locally, start the stack first:
+
+```bash
+docker compose up -d --build --wait     # from the repo root
+npm run e2e                             # builds and serves the frontend itself
+```
+
+They exist for the seams the other tests cannot see: a unit test here fakes
+the backend with MSW, and a backend test has no browser, so a field renamed on
+one side passes both. Keep them few and about journeys across services.
+Everything else belongs in a unit test.
+
+- Set data up through the API (`e2e/support/backend.ts`), and click through
+  only the thing under test. Admins are promoted with `docker compose exec`,
+  the way a first admin is made by hand.
+- Every name carries a per-run suffix, so tests run in parallel and against a
+  database that already has data in it. Never assert a total or a count.
+- They run against whatever stack answers on the `VITE_*` addresses, so they
+  also run beside your dev stack: another compose project on other ports,
+  with the same variables pointed at it, `E2E_BASE_URL` for the frontend,
+  and `COMPOSE_PROJECT_NAME` so promotion reaches that project's database.
 
 ## Before calling it done
 
