@@ -1,0 +1,2 @@
+# The dead-code check, check_dead_code.sh. [F-11] #198.
+vulture==2.16

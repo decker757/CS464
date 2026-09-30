@@ -139,4 +139,9 @@ What counts as a test worth keeping is in the root `CLAUDE.md` under
 
 1. `.venv/bin/pytest` passes for every service you touched.
 2. Re-read your own diff for a second copy of something that already exists.
-3. Run `/pr-review` on your branch and fix what it finds before asking a person.
+3. `./check_dead_code.sh` from `backend/` passes (once:
+   `pip install -r requirements-dead-code.txt`). It fails on any function,
+   class, method or property that production code does not use; tests do not
+   count. Delete what your change left behind, or add it to
+   `dead_code_allowlist.py` with the reason it stays. CI runs the same check.
+4. Run `/pr-review` on your branch and fix what it finds before asking a person.

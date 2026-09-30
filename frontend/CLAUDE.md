@@ -8,7 +8,8 @@ npm run dev
 npm run test:run      # CI runs this,
 npm run lint          # this,
 npx tsc --noEmit      # this (and `npx tsc --noEmit -p e2e` for the e2e tests),
-npm run build         # and this. Run all four before pushing.
+npm run knip          # this (dead code: unused files, exports, dependencies),
+npm run build         # and this. Run all five before pushing.
 ```
 
 The backend contract is the OpenAPI page at `/docs` on each service and
@@ -156,5 +157,5 @@ Everything else belongs in a unit test.
 
 ## Before calling it done
 
-Run the four commands above, then `/pr-review` on your branch, and fix what it
+Run the five commands above, then `/pr-review` on your branch, and fix what it
 finds before asking a person.
