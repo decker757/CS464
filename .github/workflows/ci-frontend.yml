@@ -63,7 +63,9 @@ jobs:
 
       - name: Type check
         if: steps.check.outputs.exists == 'true'
-        run: npx tsc --noEmit
+        run: |
+          npx tsc --noEmit
+          npx tsc --noEmit -p e2e
 
       # [F-11] #198. Unused files, exports and dependencies; config in knip.jsonc.
       - name: Dead code

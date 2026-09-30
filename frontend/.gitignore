@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright ([F-12] #199)
+playwright-report/
+test-results/

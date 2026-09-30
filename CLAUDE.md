@@ -63,6 +63,9 @@ cd backend/auth_service       # or market_service, audit_service, ledger_service
 cd backend/realtime_service   # the exception: no database, wants Redis
 .venv/bin/pytest              # needs `docker compose up -d redis`
 
+cd frontend                   # end-to-end: the real frontend against the stack
+npm run e2e                   # needs `docker compose up -d --build --wait` first
+
 cd backend/shared             # the token verifier, tested once, where it lives
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # once
 .venv/bin/pytest              # no database, no Redis, no .env
