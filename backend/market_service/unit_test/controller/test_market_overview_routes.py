@@ -28,8 +28,7 @@ def route_now(monkeypatch: pytest.MonkeyPatch) -> datetime:
     """Freeze the admin routes' clock ten days ahead; returns the frozen instant.
 
     Assumes `controller/routes.py` reads the clock as `datetime.now(UTC)`, as
-    `public_routes.py` does. `raising=False` because the module does not
-    import `datetime` until the route exists.
+    `public_routes.py` does.
     """
     import controller.routes as routes  # noqa: PLC0415
 
@@ -40,7 +39,7 @@ def route_now(monkeypatch: pytest.MonkeyPatch) -> datetime:
         def now(tz: object = None) -> datetime:
             return frozen
 
-    monkeypatch.setattr(routes, "datetime", _Frozen, raising=False)
+    monkeypatch.setattr(routes, "datetime", _Frozen)
     return frozen
 
 
