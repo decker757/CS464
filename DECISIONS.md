@@ -486,6 +486,10 @@ only ever makes a market *less* tradeable: an early close ([2.3] #7) leaves
 `close_time` in the future deliberately, and a market already CLOSED is never
 reopened by it — pinned by
 `test_an_early_closed_market_is_not_reopened_by_the_derivation`.
+*Superseded in part 2026-09-29 by [2.1] #5: "[2.1] #5 counts against it" no
+longer holds. The admin overview derives its status and its counts; see "The
+admin overview derives status, and its counts are read against the
+derivation, not the column" below, and ADR 0011's #5 amendment.*
 
 ---
 
