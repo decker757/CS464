@@ -10,6 +10,7 @@ import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
 import TextArea from '../../components/ui/TextArea'
 import TextInput from '../../components/ui/TextInput'
+import { tradingStopped } from '../../components/markets/marketStatus'
 
 const FIELDS = ['winning_outcome_id', 'evidence_url', 'evidence_note', 'evidence'] as const
 
@@ -22,6 +23,11 @@ const NOT_CLOSED_MESSAGES: Record<Exclude<MarketOut['status'], 'closed'>, string
   pending_resolution: 'An outcome has already been proposed for this market and is awaiting approval.',
   approved: 'An outcome has already been approved for this market.',
 }
+
+// The markets list shows a market as closed the moment its close time passes;
+// this page reads the stored status, which the sweep writes a few seconds later
+// (ADR 0011, ADR 0013). In that gap the market is not "unfinished".
+const CLOSING_MESSAGE = 'Trading on this market has stopped. It can take an outcome in a few seconds; reload the page shortly.'
 
 // What the admin should do, per error code, from market-service.md's
 // "Only a closed market" table.
@@ -47,6 +53,9 @@ function describeNotClosed(market: MarketOut): string {
     return `Approved by ${market.approved_by_username} on ${approvedAt}.`
   }
   if (market.status === 'closed') return ''
+  if (market.status === 'open' && market.close_time && tradingStopped(market.status, market.close_time)) {
+    return CLOSING_MESSAGE
+  }
   return NOT_CLOSED_MESSAGES[market.status]
 }
 

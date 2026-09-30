@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
+import type { MarketOverviewRow } from '../../api/marketApi'
 import { AuthContext } from '../../context/AuthContext'
 import type { User } from '../../context/AuthContext'
 import { server } from '../../test/server'
@@ -12,13 +13,17 @@ const MARKET_BASE = 'http://localhost:8001'
 
 const admin: User = { id: 'u1', username: 'admin1', email: 'admin@smu.edu.sg', role: 'admin', created_at: '2026-01-01' }
 
-const mockMarkets = [
-  { id: 'a1', draft_key: 'k1', status: 'draft', question: 'Untitled draft', close_time: null, updated_at: '2026-01-01T00:00:00Z' },
-  { id: 'b2', draft_key: 'k2', status: 'submitted', question: 'Will X happen?', close_time: '2099-03-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' },
-  { id: 'c3', draft_key: 'k3', status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z', updated_at: '2026-01-03T00:00:00Z' },
-  { id: 'd4', draft_key: 'k4', status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z', updated_at: '2026-01-04T00:00:00Z' },
-  { id: 'e5', draft_key: 'k5', status: 'pending_resolution', question: 'Will it rain?', close_time: '2025-06-01T00:00:00Z', updated_at: '2026-01-05T00:00:00Z' },
-  { id: 'f6', draft_key: 'k6', status: 'approved', question: 'Did it rain yesterday?', close_time: '2025-05-01T00:00:00Z', updated_at: '2026-01-06T00:00:00Z' },
+const OTHER_ADMIN_ID = 'u2'
+
+// The admin's own markets, one in each status, in the order the server sends
+// them: soonest close first, no close time last.
+const mockMarkets: MarketOverviewRow[] = [
+  { id: 'd4', creator_id: admin.id, status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z' },
+  { id: 'f6', creator_id: admin.id, status: 'approved', question: 'Did it rain yesterday?', close_time: '2025-05-01T00:00:00Z' },
+  { id: 'e5', creator_id: admin.id, status: 'pending_resolution', question: 'Will it rain?', close_time: '2025-06-01T00:00:00Z' },
+  { id: 'c3', creator_id: admin.id, status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z' },
+  { id: 'b2', creator_id: admin.id, status: 'submitted', question: 'Will X happen?', close_time: '2099-03-01T00:00:00Z' },
+  { id: 'a1', creator_id: admin.id, status: 'draft', question: 'Untitled draft', close_time: null },
 ]
 
 function renderPage() {
@@ -34,13 +39,12 @@ function renderPage() {
   )
 }
 
-// `markets` are the admin's own (GET /markets); `published` are every admin's
-// published markets (GET /public/markets), which include the admin's own too.
-function mockList(markets: typeof mockMarkets, published: Record<string, unknown>[] = []) {
-  server.use(
-    http.get(`${MARKET_BASE}/markets`, () => HttpResponse.json({ markets })),
-    http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: published })),
-  )
+// GET /markets/overview, with the counts the server would send for these rows:
+// every status present, zero when none.
+function mockList(markets: MarketOverviewRow[]) {
+  const counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0 }
+  for (const market of markets) counts[market.status] += 1
+  server.use(http.get(`${MARKET_BASE}/markets/overview`, () => HttpResponse.json({ markets, counts })))
 }
 
 describe('AdminMarketsPage', () => {
@@ -52,15 +56,14 @@ describe('AdminMarketsPage', () => {
     expect(screen.getByText('Untitled draft')).toBeInTheDocument()
   })
 
-  it('lists other administrators\' published markets beside your own, each market once', async () => {
-    mockList(mockMarkets, [
-      // The admin's own open market, which the public list returns as well.
-      { id: 'c3', status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z' },
-      { id: 'x9', status: 'pending_resolution', question: 'Another admin\'s market?', close_time: '2025-07-01T00:00:00Z' },
+  it('marks only the markets the signed-in admin created as theirs', async () => {
+    mockList([
+      ...mockMarkets,
+      { id: 'x9', creator_id: OTHER_ADMIN_ID, status: 'pending_resolution', question: 'Another admin\'s market?', close_time: '2025-07-01T00:00:00Z' },
     ])
     renderPage()
-    expect(await screen.findByText('Another admin\'s market?')).toBeInTheDocument()
-    expect(screen.getAllByText('Will SMU win SUNIG?')).toHaveLength(1)
+    const theirs = await screen.findByText('Another admin\'s market?')
+    expect(theirs.closest('div')).not.toHaveTextContent(/created by you/i)
     expect(screen.getByRole('tab', { name: /all/i })).toHaveTextContent('7')
     expect(screen.getAllByText(/created by you/i)).toHaveLength(6)
   })
@@ -80,13 +83,11 @@ describe('AdminMarketsPage', () => {
     expect(byName('Settled')).toHaveTextContent('1')
   })
 
-  it('sorts by soonest close time by default, with no-close-time markets last', async () => {
+  it('keeps the server\'s order: soonest close time first, no close time last', async () => {
     mockList(mockMarkets)
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
     const questions = screen.getAllByText(/^(Untitled draft|Will |Did )/).map(el => el.textContent)
-    // Closest close_time first: approved (2025-05), pending (2025-06), closed
-    // (2025-01 -> actually earliest), open (2099-01), submitted (2099-03), then draft (no close_time) last.
     expect(questions).toEqual([
       'Will inflation fall below 2%?',
       'Did it rain yesterday?',
@@ -116,6 +117,7 @@ describe('AdminMarketsPage', () => {
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
 
+    expect(screen.getByRole('tab', { name: /draft/i })).toHaveTextContent('0')
     await actor.click(screen.getByRole('tab', { name: /draft/i }))
 
     expect(await screen.findByText(/no markets in this status/i)).toBeInTheDocument()
@@ -128,8 +130,7 @@ describe('AdminMarketsPage', () => {
   })
 
   it('shows an error when the API fails', async () => {
-    mockList(mockMarkets)
-    server.use(http.get(`${MARKET_BASE}/markets`, () => HttpResponse.error()))
+    server.use(http.get(`${MARKET_BASE}/markets/overview`, () => HttpResponse.error()))
     renderPage()
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
   })
@@ -138,7 +139,7 @@ describe('AdminMarketsPage', () => {
     // An admin can close a market before its close_time, and close_time stays
     // in the future — so the row must go by the status, not only the clock.
     mockList([
-      { id: 'g7', draft_key: 'k7', status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'g7', creator_id: admin.id, status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z' },
     ])
     renderPage()
     await screen.findByText('Closed early by an admin?')
@@ -149,8 +150,9 @@ describe('AdminMarketsPage', () => {
 
   it('offers Propose Outcome only for closed markets the admin created', async () => {
     // Only the creator may propose; for anyone else the request is a 404.
-    mockList(mockMarkets, [
-      { id: 'y8', status: 'closed', question: 'Another admin\'s closed market?', close_time: '2025-02-01T00:00:00Z' },
+    mockList([
+      ...mockMarkets,
+      { id: 'y8', creator_id: OTHER_ADMIN_ID, status: 'closed', question: 'Another admin\'s closed market?', close_time: '2025-02-01T00:00:00Z' },
     ])
     renderPage()
     await screen.findByText('Another admin\'s closed market?')

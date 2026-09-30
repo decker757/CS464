@@ -127,9 +127,18 @@ describe('ProposeOutcomePage', () => {
   })
 
   it('shows a friendly message and hides the form when the market has not closed yet', async () => {
-    mockGet(baseMarket({ status: 'open' }))
+    mockGet(baseMarket({ status: 'open', close_time: '2099-01-01T00:00:00Z' }))
     renderPage()
     expect(await screen.findByText(/has not finished yet/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
+  })
+
+  it('says to reload shortly when the close time has passed but the market still reads open', async () => {
+    // The markets list already shows it closed; the sweep has not written it yet.
+    mockGet(baseMarket({ status: 'open', close_time: '2025-01-01T00:00:00Z' }))
+    renderPage()
+    expect(await screen.findByText(/reload the page shortly/i)).toBeInTheDocument()
+    expect(screen.queryByText(/has not finished yet/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 

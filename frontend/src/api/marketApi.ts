@@ -135,10 +135,28 @@ export interface MarketSummaryOut {
   updated_at: string
 }
 
-/** Every market the calling administrator owns, most recently updated first (market-service.md, GET /markets). */
-export async function listMyMarkets(): Promise<MarketSummaryOut[]> {
-  const res = await api.get<{ markets: MarketSummaryOut[] }>(`${MARKET_BASE}/markets`)
-  return res.data.markets
+export interface MarketOverviewRow {
+  id: string
+  creator_id: string
+  // Derived from the clock: past its close_time reads `closed` before the sweep writes it.
+  status: MarketSummaryOut['status']
+  question: string | null
+  close_time: string | null
+}
+
+export interface MarketOverview {
+  markets: MarketOverviewRow[]
+  counts: Record<MarketSummaryOut['status'], number>
+}
+
+/**
+ * Every market the calling administrator can see — all published ones plus
+ * their own drafts and submissions — soonest close first, with a count per
+ * status read at the same instant ([2.1] #5, market-service.md, GET /markets/overview).
+ */
+export async function getMarketOverview(): Promise<MarketOverview> {
+  const res = await api.get<MarketOverview>(`${MARKET_BASE}/markets/overview`)
+  return res.data
 }
 
 /** One of the calling administrator's own markets, with the raw status column (market-service.md, GET /markets/{id}). */
