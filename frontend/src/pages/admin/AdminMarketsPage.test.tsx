@@ -117,6 +117,7 @@ describe('AdminMarketsPage', () => {
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
 
+    expect(screen.getByRole('tab', { name: /draft/i })).toHaveTextContent('0')
     await actor.click(screen.getByRole('tab', { name: /draft/i }))
 
     expect(await screen.findByText(/no markets in this status/i)).toBeInTheDocument()
