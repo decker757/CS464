@@ -1,0 +1,9 @@
+// The dead-code check, `npm run knip`. [F-11] #198.
+//
+// Fails on an unused file, export or dependency. An export only its own file
+// uses counts as used. To keep an unused export on purpose, tag it
+// `/** @public */` with a comment saying why, next to the code it keeps.
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreExportsUsedInFile": true
+}

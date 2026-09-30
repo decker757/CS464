@@ -8,7 +8,8 @@ npm run dev
 npm run test:run      # CI runs this,
 npm run lint          # this,
 npx tsc --noEmit      # this,
-npm run build         # and this. Run all four before pushing.
+npm run knip          # this (dead code: unused files, exports, dependencies),
+npm run build         # and this. Run all five before pushing.
 ```
 
 The backend contract is the OpenAPI page at `/docs` on each service and
@@ -128,5 +129,5 @@ What counts as a test worth keeping is in the root `CLAUDE.md` under
 
 ## Before calling it done
 
-Run the four commands above, then `/pr-review` on your branch, and fix what it
+Run the five commands above, then `/pr-review` on your branch, and fix what it
 finds before asking a person.
