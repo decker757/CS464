@@ -135,12 +135,6 @@ export interface MarketSummaryOut {
   updated_at: string
 }
 
-/** Every market the calling administrator owns, most recently updated first (market-service.md, GET /markets). */
-export async function listMyMarkets(): Promise<MarketSummaryOut[]> {
-  const res = await api.get<{ markets: MarketSummaryOut[] }>(`${MARKET_BASE}/markets`)
-  return res.data.markets
-}
-
 export interface MarketOverviewRow {
   id: string
   creator_id: string
