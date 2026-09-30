@@ -4,27 +4,6 @@ import api from './axios'
 // shared `api` instance, so the refresh interceptor and withCredentials come along.
 const AUDIT_BASE = import.meta.env.VITE_AUDIT_API_URL ?? 'http://localhost:8002'
 
-// context is shaped by action_type; only the market.outcome_* keys this app
-// reads are named here (audit-service.md, "Action types").
-export interface OutcomeProposedContext {
-  proposal_id: string | null
-  winning_outcome_id: string
-  winning_outcome: string
-  evidence_url: string | null
-  evidence_note: string | null
-}
-
-export interface OutcomeDecisionContext {
-  proposal_id: string | null
-  winning_outcome_id: string
-  winning_outcome: string
-  evidence_url: string | null
-  evidence_note: string | null
-  proposed_by_id: string
-  proposed_by_username: string
-  proposed_at: string
-}
-
 export interface AdminAction {
   id: string
   occurred_at: string
