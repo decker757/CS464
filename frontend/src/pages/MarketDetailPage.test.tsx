@@ -163,11 +163,12 @@ describe('MarketDetailPage', () => {
     expect(screen.queryByText(/^Closes \d/)).not.toBeInTheDocument()
   })
 
-  it('shows trading controls for open markets', async () => {
+  it('shows the trading panel for open markets', async () => {
+    // The panel's own behaviour (preview, submit, error handling) is
+    // TradingPanel.test.tsx's job; this just checks it is the thing shown.
     renderPage()
-    expect(await screen.findByRole('button', { name: /buy yes/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /buy no/i })).toBeInTheDocument()
-    expect(screen.getByText('Trading coming soon.')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /^buy$/i })).toBeInTheDocument()
+    expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
   })
 
   it('shows trading closed message for closed markets', async () => {
