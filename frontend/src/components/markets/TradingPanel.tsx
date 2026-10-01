@@ -3,6 +3,7 @@ import { errorCode, tradeErrorDetails } from '../../api/errors'
 import { postTrade, previewTrade, type TradePreview, type TradeSide } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
+import { formatCreditsPrecise, unsignedCredits } from '../../utils/formatCredits'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 
@@ -216,7 +217,7 @@ export default function TradingPanel({ marketId, outcomes }: {
 
       {visibleLastTrade && (
         <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success">
-          {visibleLastTrade.side === 'buy' ? 'Bought' : 'Sold'} {visibleLastTrade.quantity} {visibleLastTrade.outcomeLabel} for {Math.abs(parseFloat(visibleLastTrade.total)).toFixed(4)} credits.
+          {visibleLastTrade.side === 'buy' ? 'Bought' : 'Sold'} {visibleLastTrade.quantity} {visibleLastTrade.outcomeLabel} for {formatCreditsPrecise(unsignedCredits(visibleLastTrade.total))} credits.
         </p>
       )}
 
@@ -244,7 +245,7 @@ export default function TradingPanel({ marketId, outcomes }: {
         <div aria-label="trade preview" className="mb-3 rounded-control bg-smu-cream px-4 py-3 text-[13px]">
           <div className="flex justify-between">
             <span className="text-muted">{side === 'buy' ? 'Cost' : 'Proceeds'}</span>
-            <strong className="text-smu-navy">{(Math.abs(parseFloat(visiblePreview.total))).toFixed(4)} credits</strong>
+            <strong className="text-smu-navy">{formatCreditsPrecise(unsignedCredits(visiblePreview.total))} credits</strong>
           </div>
           <div className="mt-1 flex justify-between">
             <span className="text-muted">Average price</span>
