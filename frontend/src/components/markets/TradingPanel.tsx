@@ -22,6 +22,14 @@ const FIXED_MESSAGES: Record<string, string> = {
   market_not_found: 'This market is not available.',
 }
 
+// Buy and Sell are the same toggle shape with a different active colour.
+function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
+  const activeClass = activeColor === 'success' ? 'border-success bg-success/10 text-success' : 'border-danger bg-danger/10 text-danger'
+  return `flex-1 cursor-pointer rounded-control border py-2.5 text-sm font-semibold transition ${
+    active ? activeClass : 'border-smu-navy/20 text-smu-navy hover:border-smu-navy/40'
+  }`
+}
+
 function describeTradeError(err: unknown): string {
   const code = errorCode(err)
   if (!code) return 'Something went wrong. Please try again.'
@@ -30,6 +38,23 @@ function describeTradeError(err: unknown): string {
   if (code === 'insufficient_funds') return `You have ${details.balance} credits, but this trade needs ${details.required}.`
   if (code === 'insufficient_shares_held') return `You hold ${details.held} shares, but this sell asks for ${details.requested}.`
   return FIXED_MESSAGES[code] ?? 'Something went wrong. Please try again.'
+}
+
+// What is wrong with the quantity field, if anything — checked client-side
+// so a malformed value never reaches the preview or the trade, where it
+// would come back as FastAPI's own {"detail": [...]} shape rather than this
+// app's {"error": {...}} envelope (ledger-service.md's quantity rule, D-038:
+// > 0, at most 4 decimal places, at most 18 digits in all).
+function quantityError(raw: string): string | undefined {
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(trimmed)
+  if (!match) return 'Enter a number.'
+  const [, wholePart, fractionPart = ''] = match
+  if (Number(trimmed) <= 0) return 'Must be greater than zero.'
+  if (fractionPart.length > 4) return 'At most 4 decimal places.'
+  if (wholePart.length + fractionPart.length > 18) return 'That quantity is too large.'
+  return undefined
 }
 
 export default function TradingPanel({ marketId, outcomes }: {
@@ -66,8 +91,8 @@ export default function TradingPanel({ marketId, outcomes }: {
   const idempotencyKeyRef = useRef(crypto.randomUUID())
 
   const trimmedQuantity = quantity.trim()
-  const quantityNum = parseFloat(trimmedQuantity)
-  const hasValidQuantity = trimmedQuantity !== '' && quantityNum > 0
+  const quantityInputError = quantityError(trimmedQuantity)
+  const hasValidQuantity = trimmedQuantity !== '' && !quantityInputError
 
   const visiblePreview = quoteFor === inputKey ? preview : null
   const visiblePreviewError = quoteFor === inputKey ? previewError : ''
@@ -159,9 +184,7 @@ export default function TradingPanel({ marketId, outcomes }: {
           type="button"
           onClick={() => setSide('buy')}
           aria-pressed={side === 'buy'}
-          className={`flex-1 cursor-pointer rounded-control border py-2.5 text-sm font-semibold transition ${
-            side === 'buy' ? 'border-success bg-success/10 text-success' : 'border-smu-navy/20 text-smu-navy hover:border-smu-navy/40'
-          }`}
+          className={sideToggleClass(side === 'buy', 'success')}
         >
           Buy
         </button>
@@ -169,9 +192,7 @@ export default function TradingPanel({ marketId, outcomes }: {
           type="button"
           onClick={() => setSide('sell')}
           aria-pressed={side === 'sell'}
-          className={`flex-1 cursor-pointer rounded-control border py-2.5 text-sm font-semibold transition ${
-            side === 'sell' ? 'border-danger bg-danger/10 text-danger' : 'border-smu-navy/20 text-smu-navy hover:border-smu-navy/40'
-          }`}
+          className={sideToggleClass(side === 'sell', 'danger')}
         >
           Sell
         </button>
@@ -210,12 +231,14 @@ export default function TradingPanel({ marketId, outcomes }: {
         value={quantity}
         onChange={e => setQuantity(e.target.value)}
         placeholder="e.g. 10"
-        className={`${controlClass(!!visiblePreviewError)} mb-3 h-[46px]`}
+        className={`${controlClass(!!quantityInputError || !!visiblePreviewError)} mb-3 h-[46px]`}
       />
 
-      {previewLoading && <p className="mb-3 text-xs text-subtle">Getting a quote…</p>}
+      {quantityInputError && <p role="alert" className="mb-3 text-xs text-danger">{quantityInputError}</p>}
 
-      {visiblePreviewError && <p role="alert" className="mb-3 text-xs text-danger">{visiblePreviewError}</p>}
+      {!quantityInputError && previewLoading && <p className="mb-3 text-xs text-subtle">Getting a quote…</p>}
+
+      {!quantityInputError && visiblePreviewError && <p role="alert" className="mb-3 text-xs text-danger">{visiblePreviewError}</p>}
 
       {visiblePreview && !previewLoading && (
         <div aria-label="trade preview" className="mb-3 rounded-control bg-smu-cream px-4 py-3 text-[13px]">
