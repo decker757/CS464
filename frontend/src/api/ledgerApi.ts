@@ -43,6 +43,44 @@ export async function getMyBalance(): Promise<Balance> {
   return res.data
 }
 
+export interface Position {
+  market_id: string
+  outcome_id: string
+  outcome_position: number
+  quantity: string
+  cost_basis: string
+  average_entry_price: string
+  // The outcome's marginal price, informational only — not the basis for `value`.
+  price: string
+  // What selling the whole position now would credit — a liquidation value,
+  // never quantity × price (ledger-service.md, ADR 0018).
+  value: string
+  // value − cost_basis. Can be negative.
+  unrealized_pnl: string
+  state_version: number
+}
+
+export interface Portfolio {
+  user_id: string
+  account_id: string
+  balance: string
+  positions_value: string
+  // balance + positions_value, exactly — nothing rounded after the valuation.
+  net_worth: string
+  positions: Position[]
+}
+
+/**
+ * The signed-in user's positions, cash and net worth ([T-4] #24). Only
+ * positions with quantity > 0 are included — a position sold to zero is
+ * omitted, not zeroed. Carries ids only; market question and outcome labels
+ * are this frontend's own join, never market_service's job here.
+ */
+export async function getMyPortfolio(): Promise<Portfolio> {
+  const res = await api.get<Portfolio>(`${LEDGER_BASE}/ledger/portfolio/me`)
+  return res.data
+}
+
 export type TradeSide = 'buy' | 'sell'
 
 export interface TradePreview {
