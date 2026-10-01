@@ -40,6 +40,15 @@ function PnlCell({ pnl }: { pnl: string }) {
   )
 }
 
+/** A right-aligned table cell for a plain number or price — every row has several of these. */
+function NumberCell({ children }: { children: React.ReactNode }) {
+  return <td className="px-5 py-3 text-right text-smu-navy">{children}</td>
+}
+
+function HeaderCell({ align = 'left', children }: { align?: 'left' | 'right'; children: React.ReactNode }) {
+  return <th className={`px-5 py-3 ${align === 'right' ? 'text-right' : ''}`}>{children}</th>
+}
+
 export default function PortfolioPage() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
   const [rows, setRows] = useState<PositionRow[]>([])
@@ -91,13 +100,14 @@ export default function PortfolioPage() {
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
-                    <th className="px-5 py-3">Market</th>
-                    <th className="px-5 py-3">Outcome</th>
-                    <th className="px-5 py-3 text-right">Quantity</th>
-                    <th className="px-5 py-3 text-right">Avg. entry</th>
-                    <th className="px-5 py-3 text-right">Price</th>
-                    <th className="px-5 py-3 text-right">Value</th>
-                    <th className="px-5 py-3 text-right">Unrealized P&L</th>
+                    <HeaderCell>Market</HeaderCell>
+                    <HeaderCell>Outcome</HeaderCell>
+                    <HeaderCell align="right">Quantity</HeaderCell>
+                    <HeaderCell align="right">Avg. entry</HeaderCell>
+                    <HeaderCell align="right">Cost basis</HeaderCell>
+                    <HeaderCell align="right">Price</HeaderCell>
+                    <HeaderCell align="right">Value</HeaderCell>
+                    <HeaderCell align="right">Unrealized P&L</HeaderCell>
                   </tr>
                 </thead>
                 <tbody>
@@ -109,10 +119,11 @@ export default function PortfolioPage() {
                         </Link>
                       </td>
                       <td className="px-5 py-3 text-muted">{row.outcomeLabel}</td>
-                      <td className="px-5 py-3 text-right text-smu-navy">{row.quantity}</td>
-                      <td className="px-5 py-3 text-right text-smu-navy">{row.average_entry_price}</td>
-                      <td className="px-5 py-3 text-right text-smu-navy">{row.price}</td>
-                      <td className="px-5 py-3 text-right text-smu-navy">{formatCreditsPrecise(unsignedCredits(row.value))}</td>
+                      <NumberCell>{row.quantity}</NumberCell>
+                      <NumberCell>{row.average_entry_price}</NumberCell>
+                      <NumberCell>{formatCreditsPrecise(row.cost_basis)}</NumberCell>
+                      <NumberCell>{row.price}</NumberCell>
+                      <NumberCell>{formatCreditsPrecise(unsignedCredits(row.value))}</NumberCell>
                       <td className="px-5 py-3 text-right"><PnlCell pnl={row.unrealized_pnl} /></td>
                     </tr>
                   ))}

@@ -104,6 +104,17 @@ describe('PortfolioPage', () => {
     expect(screen.getByText('5.0000')).toBeInTheDocument()
   })
 
+  it('shows cost basis distinctly from value and unrealized P&L', async () => {
+    // [T-4] #24's AC lists cost basis as one of the fields shown per
+    // position, alongside quantity, average entry, price, value and P&L.
+    mockPortfolio(portfolio())
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    await screen.findByText('Will it rain in Singapore tomorrow?')
+    expect(screen.getByText('2.5625')).toBeInTheDocument()
+  })
+
   it('shows unrealized P&L in red with a minus sign for a loss', async () => {
     mockPortfolio(portfolio())
     mockMarket('mkt-1', market())
