@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, AuthProvider } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
+import { BalanceContext, BalanceProvider } from '../context/BalanceContext'
 import { server } from '../test/server'
 import AppNavbar from './AppNavbar'
 import ProtectedRoute from './ProtectedRoute'
@@ -16,9 +17,11 @@ const admin: User = { id: '2', username: 'bob', email: 'bob@smu.edu.sg', role: '
 function renderNavbar(user: User | null | undefined) {
   render(
     <AuthContext.Provider value={{ user, login: () => {}, logout: vi.fn() }}>
-      <MemoryRouter initialEntries={['/markets']}>
-        <AppNavbar />
-      </MemoryRouter>
+      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
+        <MemoryRouter initialEntries={['/markets']}>
+          <AppNavbar />
+        </MemoryRouter>
+      </BalanceContext.Provider>
     </AuthContext.Provider>,
   )
 }
@@ -36,23 +39,28 @@ function renderInApp() {
   server.use(
     http.get('http://localhost:8000/auth/me', () => HttpResponse.json(trader)),
     http.post('http://localhost:8000/auth/logout', () => HttpResponse.json({ message: 'Logged out.' })),
+    http.get('http://localhost:8003/ledger/balances/me', () =>
+      HttpResponse.json({ user_id: trader.id, account_id: 'acc-1', balance: '1000.0000' }),
+    ),
   )
   render(
     <AuthProvider>
-      <MemoryRouter initialEntries={['/markets']}>
-        <Routes>
-          <Route
-            path="/markets"
-            element={
-              <ProtectedRoute>
-                <AppNavbar />
-              </ProtectedRoute>
-            }
-          />
-          <Route path="/" element={<p>landing page</p>} />
-          <Route path="/login" element={<p>login page</p>} />
-        </Routes>
-      </MemoryRouter>
+      <BalanceProvider>
+        <MemoryRouter initialEntries={['/markets']}>
+          <Routes>
+            <Route
+              path="/markets"
+              element={
+                <ProtectedRoute>
+                  <AppNavbar />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/" element={<p>landing page</p>} />
+            <Route path="/login" element={<p>login page</p>} />
+          </Routes>
+        </MemoryRouter>
+      </BalanceProvider>
     </AuthProvider>,
   )
 }
