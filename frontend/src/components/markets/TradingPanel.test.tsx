@@ -264,6 +264,43 @@ describe('TradingPanel', () => {
     expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
   })
 
+  it('rejects a quantity with more than 4 decimal places, client-side, without calling the preview', async () => {
+    let calls = 0
+    server.use(
+      http.get(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/preview`, () => {
+        calls += 1
+        return HttpResponse.json(previewResponse())
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+
+    await typeQuantity(actor, '10.12345')
+
+    expect(await screen.findByText(/at most 4 decimal places/i)).toBeInTheDocument()
+    expect(calls).toBe(0)
+    expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
+  })
+
+  it('rejects a quantity of zero, client-side', async () => {
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+
+    await typeQuantity(actor, '0')
+
+    expect(await screen.findByText(/must be greater than zero/i)).toBeInTheDocument()
+  })
+
+  it('accepts a quantity at exactly 4 decimal places', async () => {
+    mockPreview(previewResponse())
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+
+    await typeQuantity(actor, '10.0001')
+
+    expect(await screen.findByLabelText('trade preview')).toBeInTheDocument()
+  })
+
   it('clears a stale preview immediately when the outcome changes', async () => {
     mockPreview(previewResponse())
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
