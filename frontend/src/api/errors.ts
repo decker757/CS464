@@ -4,6 +4,9 @@ export interface ApiError {
   error: {
     code: string
     message: string
+    // Most codes list field-by-field messages. A handful of ledger trade
+    // codes (quote_stale, insufficient_funds, insufficient_shares_held) send
+    // a flat object instead — read those with tradeErrorDetails, not this.
     details?: { field: string; message: string }[]
   }
 }
@@ -33,6 +36,19 @@ export function errorCode(err: unknown): string | undefined {
 export function errorDetails(err: unknown): { field: string; message: string }[] {
   if (!axios.isAxiosError<ApiError>(err)) return []
   return err.response?.data?.error?.details ?? []
+}
+
+/**
+ * `error.details` for the ledger trade codes that send a flat object rather
+ * than a field-message list — quote_stale's `{quoted, current}`,
+ * insufficient_funds's `{balance, required}`, insufficient_shares_held's
+ * `{held, requested}` (ledger-service.md). Read the keys that code names;
+ * nothing validates the shape beyond "an object, or nothing."
+ */
+export function tradeErrorDetails(err: unknown): Record<string, unknown> {
+  if (!axios.isAxiosError(err)) return {}
+  const details = (err.response?.data as { error?: { details?: unknown } } | undefined)?.error?.details
+  return details && typeof details === 'object' && !Array.isArray(details) ? details as Record<string, unknown> : {}
 }
 
 interface FormErrorOptions {
