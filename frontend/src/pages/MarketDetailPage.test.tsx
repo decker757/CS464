@@ -4,6 +4,7 @@ import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
+import { BalanceContext } from '../context/BalanceContext'
 import { server } from '../test/server'
 import MarketDetailPage from './MarketDetailPage'
 
@@ -51,12 +52,14 @@ afterEach(() => {
 function renderPage(marketId = 'mkt-abc') {
   return render(
     <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
-        <Routes>
-          <Route path="/markets/:id" element={<MarketDetailPage />} />
-          <Route path="/markets" element={<p>markets list</p>} />
-        </Routes>
-      </MemoryRouter>
+      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
+        <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
+          <Routes>
+            <Route path="/markets/:id" element={<MarketDetailPage />} />
+            <Route path="/markets" element={<p>markets list</p>} />
+          </Routes>
+        </MemoryRouter>
+      </BalanceContext.Provider>
     </AuthContext.Provider>,
   )
 }
@@ -70,7 +73,9 @@ function renderMovableRouter(marketId: string) {
   )
   render(
     <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <RouterProvider router={router} />
+      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
+        <RouterProvider router={router} />
+      </BalanceContext.Provider>
     </AuthContext.Provider>,
   )
   return router

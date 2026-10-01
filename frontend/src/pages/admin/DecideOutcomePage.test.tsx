@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import { AuthContext } from '../../context/AuthContext'
 import type { User } from '../../context/AuthContext'
+import { BalanceContext } from '../../context/BalanceContext'
 import { server } from '../../test/server'
 import DecideOutcomePage from './DecideOutcomePage'
 
@@ -95,12 +96,14 @@ function mockAuditActions(actions: Record<string, unknown>[]) {
 function renderPage() {
   return render(
     <AuthContext.Provider value={{ user: admin, login: () => {}, logout: async () => {} }}>
-      <MemoryRouter initialEntries={['/admin/markets/mkt-1/decide-outcome']}>
-        <Routes>
-          <Route path="/admin/markets/:id/decide-outcome" element={<DecideOutcomePage />} />
-          <Route path="/admin/proposals" element={<p>proposals list</p>} />
-        </Routes>
-      </MemoryRouter>
+      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
+        <MemoryRouter initialEntries={['/admin/markets/mkt-1/decide-outcome']}>
+          <Routes>
+            <Route path="/admin/markets/:id/decide-outcome" element={<DecideOutcomePage />} />
+            <Route path="/admin/proposals" element={<p>proposals list</p>} />
+          </Routes>
+        </MemoryRouter>
+      </BalanceContext.Provider>
     </AuthContext.Provider>,
   )
 }

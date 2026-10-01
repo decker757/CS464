@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import type { MarketOverviewRow } from '../../api/marketApi'
 import { AuthContext } from '../../context/AuthContext'
 import type { User } from '../../context/AuthContext'
+import { BalanceContext } from '../../context/BalanceContext'
 import { server } from '../../test/server'
 import AdminMarketsPage from './AdminMarketsPage'
 
@@ -29,12 +30,14 @@ const mockMarkets: MarketOverviewRow[] = [
 function renderPage() {
   return render(
     <AuthContext.Provider value={{ user: admin, login: () => {}, logout: async () => {} }}>
-      <MemoryRouter initialEntries={['/admin/markets']}>
-        <Routes>
-          <Route path="/admin/markets" element={<AdminMarketsPage />} />
-          <Route path="/admin/markets/:id/propose-outcome" element={<p>propose outcome</p>} />
-        </Routes>
-      </MemoryRouter>
+      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
+        <MemoryRouter initialEntries={['/admin/markets']}>
+          <Routes>
+            <Route path="/admin/markets" element={<AdminMarketsPage />} />
+            <Route path="/admin/markets/:id/propose-outcome" element={<p>propose outcome</p>} />
+          </Routes>
+        </MemoryRouter>
+      </BalanceContext.Provider>
     </AuthContext.Provider>,
   )
 }

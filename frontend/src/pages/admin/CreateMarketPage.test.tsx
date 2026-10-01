@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../../context/AuthContext'
 import type { User } from '../../context/AuthContext'
+import { BalanceContext } from '../../context/BalanceContext'
 import { server } from '../../test/server'
 import CreateMarketPage from './CreateMarketPage'
 
@@ -48,12 +49,14 @@ function touchForm() {
 function renderPage() {
   return render(
     <AuthContext.Provider value={{ user: admin, login: () => {}, logout: async () => {} }}>
-      <MemoryRouter initialEntries={['/admin/markets/new']}>
-        <Routes>
-          <Route path="/admin/markets/new" element={<CreateMarketPage />} />
-          <Route path="/markets" element={<p>markets list</p>} />
-        </Routes>
-      </MemoryRouter>
+      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
+        <MemoryRouter initialEntries={['/admin/markets/new']}>
+          <Routes>
+            <Route path="/admin/markets/new" element={<CreateMarketPage />} />
+            <Route path="/markets" element={<p>markets list</p>} />
+          </Routes>
+        </MemoryRouter>
+      </BalanceContext.Provider>
     </AuthContext.Provider>,
   )
 }
