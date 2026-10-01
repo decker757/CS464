@@ -31,6 +31,9 @@ export default function AppNavbar() {
     <TopBar>
       {user && (
         <div className="flex items-center gap-4">
+          <Link to="/portfolio" className="text-sm text-white/75 hover:text-white">
+            Portfolio
+          </Link>
           {user.role === 'admin' && (
             <>
               <Link to="/admin/markets" className="text-sm text-white/75 hover:text-white">
