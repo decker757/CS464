@@ -33,4 +33,8 @@ describe('formatCredits', () => {
   it('handles a value with no decimal point', () => {
     expect(formatCredits('500')).toBe('500')
   })
+
+  it('shows a dash for anything that is not a plain decimal', () => {
+    expect(formatCredits('1E-4')).toBe('—')
+  })
 })

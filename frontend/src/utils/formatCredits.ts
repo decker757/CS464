@@ -5,8 +5,15 @@
 // reads the integer part directly off the string instead of parsing it as a
 // float and rounding. BigInt is exact over that integer part — no float
 // involved — and toLocaleString adds the thousands separators and the minus
-// sign, which is what a hand-written regex was doing less readably.
+// sign.
+//
+// Anything that is not a plain signed decimal shows "—" rather than letting
+// BigInt throw during render and take the whole page down (formatPrice.ts).
+const PLAIN_SIGNED_DECIMAL = /^-?\d+(\.\d+)?$/
+
 export function formatCredits(balance: string): string {
+  if (!PLAIN_SIGNED_DECIMAL.test(balance)) return '—'
+
   const integerPart = balance.split('.')[0] || '0'
   return BigInt(integerPart).toLocaleString('en-US')
 }
