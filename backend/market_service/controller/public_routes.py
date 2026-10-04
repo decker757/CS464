@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Query
 
 from controller.dependencies import CurrentUser, DbSession
+from core.config import get_settings
 from model.entities import MarketStatus, PublicMarketStatus
 from model.schemas import (
     MAX_QUESTION_LENGTH,
@@ -99,11 +100,17 @@ async def browse_markets(
     # D-025, D-027.
     now = datetime.now(UTC)
 
-    markets = await browsing.browse(
-        session, query=q, status=MarketStatus(status) if status else None, now=now
+    # At most `max_page_size` markets, and no cursor, until this route takes
+    # `limit` and `cursor` in #104's next pull request.
+    page = await browsing.browse(
+        session,
+        limit=get_settings().max_page_size,
+        query=q,
+        status=MarketStatus(status) if status else None,
+        now=now,
     )
     return PublicMarketListResponse(
-        markets=[PublicMarketSummaryOut.model_validate(card) for card in markets]
+        markets=[PublicMarketSummaryOut.model_validate(card) for card in page.markets]
     )
 
 
