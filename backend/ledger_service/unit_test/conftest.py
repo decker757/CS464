@@ -106,6 +106,40 @@ def terms_client_over(transport: httpx.AsyncBaseTransport) -> httpx.AsyncClient:
     return market_terms.open_client(transport=transport)
 
 
+class ManualClock:
+    """A monotonic clock a test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture(autouse=True)
+def not_found_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+    """A fresh 404 memory for every test, on a clock the test moves. D-053.
+
+    The memory lasts as long as the process, so without this one test's 404
+    would answer another test's fetch of the same id. Built from
+    `market_terms`'s own window and bound, so those are what is tested.
+    """
+    from core.not_found_cache import NotFoundCache  # noqa: PLC0415
+    from service import market_terms  # noqa: PLC0415
+
+    clock = ManualClock()
+    monkeypatch.setattr(
+        market_terms,
+        "_recent_not_found",
+        NotFoundCache(
+            ttl_seconds=market_terms.NOT_FOUND_TTL_SECONDS,
+            max_entries=market_terms.NOT_FOUND_MAX_ENTRIES,
+            clock=clock,
+        ),
+    )
+    return clock
+
+
 @pytest.fixture
 async def clean_database():
     """Drop and rebuild the schema, then hand over an empty database.
@@ -208,3 +242,23 @@ async def strip_outcomes(session, market_id: uuid.UUID) -> None:
         delete(MarketOutcome).where(MarketOutcome.market_id == market_id)
     )
     await session.commit()
+
+
+async def idle_in_transaction() -> int:
+    """Backends of this role in this database sitting `idle in transaction`,
+    from Postgres's own view. D-043's third witness, beside the session and
+    the pool."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    async with get_engine().connect() as conn:
+        return (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() "
+                    "AND usename = current_user "
+                    "AND state = 'idle in transaction' "
+                    "AND pid <> pg_backend_pid()"
+                )
+            )
+        ).scalar_one()

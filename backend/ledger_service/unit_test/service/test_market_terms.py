@@ -17,7 +17,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from unit_test.conftest import terms_client_over
+from unit_test.conftest import ManualClock, terms_client_over
 
 
 def _terms():
@@ -553,3 +553,110 @@ async def test_the_close_time_is_not_what_decides_anything_here() -> None:
 
     assert terms.liquidity_b == Decimal("100.0000")
     assert terms.published_at is not None
+
+
+# --- #115, D-053: a 404 is remembered for a while, and nothing else is -----
+class _Upstream:
+    """market_service answering one way at a time, through one client, and
+    counting the calls that reach it."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        self.raises: Exception | None = None
+        self.calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.calls += 1
+            if self.raises is not None:
+                raise self.raises
+            if self.status_code == 200:
+                return httpx.Response(200, json=_terms_body())
+            return httpx.Response(self.status_code, json={"code": "refused"})
+
+        self.client = terms_client_over(httpx.MockTransport(handler))
+
+    async def fetch(self, market_id: uuid.UUID = _MARKET_ID):
+        return await _terms().fetch(
+            market_id, access_token=_token(), terms_client=self.client
+        )
+
+
+async def test_a_repeat_404_within_the_window_makes_no_call(
+    not_found_clock: ManualClock,
+) -> None:
+    """A trader looping one unpublished id costs market_service one call per
+    window, and still gets `market_not_found` every time."""
+    upstream = _Upstream(404)
+
+    with pytest.raises(_errors().MarketNotFound):
+        await upstream.fetch()
+    not_found_clock.now += _terms().NOT_FOUND_TTL_SECONDS - 0.001
+    with pytest.raises(_errors().MarketNotFound):
+        await upstream.fetch()
+
+    assert upstream.calls == 1
+
+
+async def test_a_market_published_after_its_404_is_served_once_the_window_passes(
+    not_found_clock: ManualClock,
+) -> None:
+    """A draft is a 404 today and a published market tomorrow. Inside the
+    window it still reads as missing, which is the delay D-053 accepts; at the
+    end of it the next request asks again and gets the terms."""
+    upstream = _Upstream(404)
+    with pytest.raises(_errors().MarketNotFound):
+        await upstream.fetch()
+
+    upstream.status_code = 200
+    not_found_clock.now += _terms().NOT_FOUND_TTL_SECONDS - 0.001
+    with pytest.raises(_errors().MarketNotFound):
+        await upstream.fetch()
+
+    not_found_clock.now += 0.001
+    terms = await upstream.fetch()
+
+    assert terms.market_id == _MARKET_ID
+    assert upstream.calls == 2
+
+
+@pytest.mark.parametrize(
+    ("status_code", "raises", "error"),
+    [
+        (503, None, "MarketTermsUnavailable"),
+        (200, httpx.ReadTimeout("slow"), "MarketTermsUnavailable"),
+        (401, None, "NotAuthenticated"),
+    ],
+    ids=["503", "timeout", "401"],
+)
+async def test_only_a_404_is_remembered(
+    status_code: int, raises: Exception | None, error: str
+) -> None:
+    """A sick dependency and a bad token are not facts about the market, so
+    the next request asks again."""
+    upstream = _Upstream(status_code)
+    upstream.raises = raises
+
+    for _ in range(2):
+        with pytest.raises(getattr(_errors(), error)):
+            await upstream.fetch()
+
+    assert upstream.calls == 2
+
+
+async def test_the_memory_is_bounded_and_forgets_the_oldest_first() -> None:
+    """Looping random well-formed ids cannot grow it past its bound. One past
+    the bound, the first id is asked about again and the last is not."""
+    upstream = _Upstream(404)
+    ids = [uuid.uuid4() for _ in range(_terms().NOT_FOUND_MAX_ENTRIES + 1)]
+    for market_id in ids:
+        with pytest.raises(_errors().MarketNotFound):
+            await upstream.fetch(market_id)
+    calls_after_filling = upstream.calls
+
+    with pytest.raises(_errors().MarketNotFound):
+        await upstream.fetch(ids[-1])
+    assert upstream.calls == calls_after_filling, "the newest id was forgotten"
+
+    with pytest.raises(_errors().MarketNotFound):
+        await upstream.fetch(ids[0])
+    assert upstream.calls == calls_after_filling + 1, "the oldest id was kept"

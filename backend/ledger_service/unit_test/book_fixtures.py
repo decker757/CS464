@@ -10,8 +10,9 @@ so a missing name fails one test rather than collection (D-007).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -104,6 +105,35 @@ class Upstream:
         def handler(request: httpx.Request) -> httpx.Response:
             self.calls += 1
             return httpx.Response(404, json={"error": {"code": "market_not_found"}})
+
+        return httpx.MockTransport(handler)
+
+
+class Stalled:
+    """A market service that records what the caller holds on every call, then
+    stalls until `release`. D-043's test shape.
+
+    `upstream` is any stand-in with a `calls` counter and a `body` to answer
+    with; `test_market_status.py`'s own `_Upstream` has both.
+    """
+
+    def __init__(
+        self, upstream: Upstream, probe: Callable[[], dict[str, object]]
+    ) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.seen: list[dict[str, object]] = []
+        self._upstream = upstream
+        self._probe = probe
+
+    @property
+    def transport(self) -> httpx.MockTransport:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self._upstream.calls += 1
+            self.seen.append(self._probe())
+            self.entered.set()
+            await self.release.wait()
+            return httpx.Response(200, json=self._upstream.body)
 
         return httpx.MockTransport(handler)
 
