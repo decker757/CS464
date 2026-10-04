@@ -2,6 +2,6 @@
 #
 # Only what shared/security.py and its tests import. Pinned to the versions the
 # five services use, so the verifier is tested against the PyJWT they run.
-PyJWT==2.14.0
+PyJWT==2.15.0
 
 pytest==9.1.1
