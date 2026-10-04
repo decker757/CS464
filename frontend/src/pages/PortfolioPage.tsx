@@ -7,6 +7,7 @@ import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import PageTitle from '../components/ui/PageTitle'
 import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
+import { formatPrice } from '../utils/formatPrice'
 
 interface PositionRow extends Position {
   question: string
@@ -42,8 +43,14 @@ function toRow(position: Position, markets: Map<string, PublicMarketDetail>): Po
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
 // say it is never a gain on a book nobody else has traded. Only colour an
 // actual loss or an actual gain; zero stays neutral.
+function pnlColor(pnl: string): string {
+  if (isZeroCredits(pnl)) return 'text-muted'
+  if (pnl.startsWith('-')) return 'text-danger'
+  return 'text-success'
+}
+
 function PnlCell({ pnl }: { pnl: string }) {
-  const color = isZeroCredits(pnl) ? 'text-muted' : pnl.startsWith('-') ? 'text-danger' : 'text-success'
+  const color = pnlColor(pnl)
   return (
     <span className={color}>
       {formatCreditsPrecise(pnl, { showSign: true })}
@@ -60,10 +67,7 @@ function HeaderCell({ align = 'left', children }: { align?: 'left' | 'right'; ch
   return <th className={`px-5 py-3 ${align === 'right' ? 'text-right' : ''}`}>{children}</th>
 }
 
-// Cash, positions value and net worth are all shown at the same precision
-// formatCredits truncates to a whole number, so the three cards did not add
-// up on screen (997 + 2 could show as 1,000, and a position worth 0.9000
-// read as "0 credits"). formatCreditsPrecise keeps all four decimal places.
+// Shown at full precision so the three cards add up.
 function StatCard({ label, value, emphasized = false }: { label: string; value: string; emphasized?: boolean }) {
   return (
     <Card className="px-6 py-5" borderColor={emphasized ? 'border-smu-navy/20' : undefined}>
@@ -138,7 +142,7 @@ export default function PortfolioPage() {
                       <NumberCell>{row.quantity}</NumberCell>
                       <NumberCell>{row.average_entry_price}</NumberCell>
                       <NumberCell>{formatCreditsPrecise(row.cost_basis)}</NumberCell>
-                      <NumberCell>{row.price}</NumberCell>
+                      <NumberCell>{formatPrice(row.price)}</NumberCell>
                       <NumberCell>{formatCreditsPrecise(row.value)}</NumberCell>
                       <td className="px-5 py-3 text-right"><PnlCell pnl={row.unrealized_pnl} /></td>
                     </tr>

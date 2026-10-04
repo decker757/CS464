@@ -13,6 +13,8 @@ const MARKET_BASE = 'http://localhost:8001'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
+// A real portfolio, confirmed against the live ledger: a trader buys 5 Yes
+// on a market with liquidity_b 100 and nothing else traded against it.
 function portfolio(overrides: Record<string, unknown> = {}) {
   return {
     user_id: '1',
@@ -26,12 +28,12 @@ function portfolio(overrides: Record<string, unknown> = {}) {
         outcome_id: 'o-yes',
         outcome_position: 0,
         quantity: '5.0000',
-        cost_basis: '2.5625',
-        average_entry_price: '0.5125',
+        cost_basis: '2.5313',
+        average_entry_price: '0.5063',
         price: '0.5125',
         value: '2.5312',
-        unrealized_pnl: '-0.0313',
-        state_version: 2,
+        unrealized_pnl: '-0.0001',
+        state_version: 1,
       },
     ],
     ...overrides,
@@ -107,6 +109,16 @@ describe('PortfolioPage', () => {
     expect(screen.getByText('5.0000')).toBeInTheDocument()
   })
 
+  it('shows the price as a percentage, like the market page does', async () => {
+    mockPortfolio(portfolio())
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    await screen.findByText('Will it rain in Singapore tomorrow?')
+    expect(screen.getByText('51.3%')).toBeInTheDocument()
+    expect(screen.queryByText('0.5125')).not.toBeInTheDocument()
+  })
+
   it('shows cost basis distinctly from value and unrealized P&L', async () => {
     // [T-4] #24's AC lists cost basis as one of the fields shown per
     // position, alongside quantity, average entry, price, value and P&L.
@@ -115,7 +127,7 @@ describe('PortfolioPage', () => {
     renderPage()
 
     await screen.findByText('Will it rain in Singapore tomorrow?')
-    expect(screen.getByText('2.5625')).toBeInTheDocument()
+    expect(screen.getByText('2.5313')).toBeInTheDocument()
   })
 
   it('shows the server\'s own value, not quantity times price', async () => {
@@ -136,7 +148,7 @@ describe('PortfolioPage', () => {
     mockMarket('mkt-1', market())
     renderPage()
 
-    expect(await screen.findByText('-0.0313')).toBeInTheDocument()
+    expect(await screen.findByText('-0.0001')).toBeInTheDocument()
   })
 
   it('shows unrealized P&L with a plus sign for a gain', async () => {
