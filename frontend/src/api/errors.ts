@@ -51,6 +51,46 @@ export function tradeErrorDetails(err: unknown): Record<string, unknown> {
   return details && typeof details === 'object' && !Array.isArray(details) ? details as Record<string, unknown> : {}
 }
 
+/**
+ * Whether a failed request got a definite answer from the server — a 2xx
+ * would not be here, so this means a 4xx — versus no response at all
+ * (network error, timeout) or a 5xx. A trade's idempotency key must only be
+ * replaced once the answer is definite: a lost reply or a 5xx means the
+ * server may have committed the trade anyway, and the only safe retry is
+ * one that reuses the key so the server's own replay recognises it
+ * (ledger-service.md's idempotency section).
+ */
+export function isDefiniteRejection(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false
+  const status = err.response?.status
+  return status !== undefined && status >= 400 && status < 500
+}
+
+// Trade/preview codes with a fixed message (ledger-service.md). Codes with
+// structured details (quote_stale, insufficient_funds,
+// insufficient_shares_held) are built from those details instead, below.
+const TRADE_FIXED_MESSAGES: Record<string, string> = {
+  market_closed: 'This market has closed. Trading is no longer possible.',
+  idempotency_key_reused: 'This trade already went through under a different request. Reload the page to see your position.',
+  unknown_outcome: 'That outcome is no longer part of this market. Reload the page.',
+  quantity_too_large: 'That quantity is too large for this market.',
+  cost_below_tick: 'That quantity costs less than the smallest amount this market can charge. Try a larger quantity.',
+  proceeds_below_tick: 'That quantity would pay out less than the smallest amount this market can pay. Try a larger quantity.',
+  insufficient_shares_outstanding: 'Nobody holds enough shares of this outcome yet for a sell this size.',
+  market_not_found: 'This market is not available.',
+}
+
+/** What the trader should do about a failed preview or trade (ledger-service.md). */
+export function describeTradeError(err: unknown): string {
+  const code = errorCode(err)
+  if (!code) return GENERIC_ERROR
+  const details = tradeErrorDetails(err)
+  if (code === 'quote_stale') return 'Prices moved while you were looking. Getting a fresh quote…'
+  if (code === 'insufficient_funds') return `You have ${details.balance} credits, but this trade needs ${details.required}.`
+  if (code === 'insufficient_shares_held') return `You hold ${details.held} shares, but this sell asks for ${details.requested}.`
+  return TRADE_FIXED_MESSAGES[code] ?? GENERIC_ERROR
+}
+
 interface FormErrorOptions {
   /** The form's fields; a 422 about one of these is shown under that field. */
   fields: readonly string[]
