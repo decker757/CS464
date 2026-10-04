@@ -6,7 +6,7 @@ import AppLayout from '../components/layout/AppLayout'
 import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import PageTitle from '../components/ui/PageTitle'
-import { formatCredits, formatCreditsPrecise, unsignedCredits } from '../utils/formatCredits'
+import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
 
 interface PositionRow extends Position {
   question: string
@@ -22,7 +22,10 @@ interface PositionRow extends Position {
 async function loadMarkets(positions: Position[]): Promise<Map<string, PublicMarketDetail>> {
   const ids = [...new Set(positions.map(p => p.market_id))]
   const results = await Promise.allSettled(ids.map(getMarket))
-  const markets = results.filter((r): r is PromiseFulfilledResult<PublicMarketDetail> => r.status === 'fulfilled').map(r => r.value)
+  const markets: PublicMarketDetail[] = []
+  for (const result of results) {
+    if (result.status === 'fulfilled') markets.push(result.value)
+  }
   return new Map(markets.map(m => [m.id, m]))
 }
 
@@ -36,10 +39,13 @@ function toRow(position: Position, markets: Map<string, PublicMarketDetail>): Po
   }
 }
 
+// A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
+// say it is never a gain on a book nobody else has traded. Only colour an
+// actual loss or an actual gain; zero stays neutral.
 function PnlCell({ pnl }: { pnl: string }) {
-  const isLoss = pnl.startsWith('-')
+  const color = isZeroCredits(pnl) ? 'text-muted' : pnl.startsWith('-') ? 'text-danger' : 'text-success'
   return (
-    <span className={isLoss ? 'text-danger' : 'text-success'}>
+    <span className={color}>
       {formatCreditsPrecise(pnl, { showSign: true })}
     </span>
   )
@@ -52,6 +58,20 @@ function NumberCell({ children }: { children: React.ReactNode }) {
 
 function HeaderCell({ align = 'left', children }: { align?: 'left' | 'right'; children: React.ReactNode }) {
   return <th className={`px-5 py-3 ${align === 'right' ? 'text-right' : ''}`}>{children}</th>
+}
+
+// Cash, positions value and net worth are all shown at the same precision
+// formatCredits truncates to a whole number, so the three cards did not add
+// up on screen (997 + 2 could show as 1,000, and a position worth 0.9000
+// read as "0 credits"). formatCreditsPrecise keeps all four decimal places.
+function StatCard({ label, value, emphasized = false }: { label: string; value: string; emphasized?: boolean }) {
+  return (
+    <Card className="px-6 py-5" borderColor={emphasized ? 'border-smu-navy/20' : undefined}>
+      <DetailItem label={label}>
+        <p className="text-[22px] font-extrabold text-smu-navy">{formatCreditsPrecise(value)} credits</p>
+      </DetailItem>
+    </Card>
+  )
 }
 
 export default function PortfolioPage() {
@@ -82,21 +102,9 @@ export default function PortfolioPage() {
       {!loading && !error && portfolio && (
         <>
           <div className="mb-6 grid grid-cols-3 gap-4">
-            <Card className="px-6 py-5">
-              <DetailItem label="Cash">
-                <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.balance)} credits</p>
-              </DetailItem>
-            </Card>
-            <Card className="px-6 py-5">
-              <DetailItem label="Positions value">
-                <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.positions_value)} credits</p>
-              </DetailItem>
-            </Card>
-            <Card className="px-6 py-5" borderColor="border-smu-navy/20">
-              <DetailItem label="Net worth">
-                <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.net_worth)} credits</p>
-              </DetailItem>
-            </Card>
+            <StatCard label="Cash" value={portfolio.balance} />
+            <StatCard label="Positions value" value={portfolio.positions_value} />
+            <StatCard label="Net worth" value={portfolio.net_worth} emphasized />
           </div>
 
           {rows.length === 0 && (
@@ -131,7 +139,7 @@ export default function PortfolioPage() {
                       <NumberCell>{row.average_entry_price}</NumberCell>
                       <NumberCell>{formatCreditsPrecise(row.cost_basis)}</NumberCell>
                       <NumberCell>{row.price}</NumberCell>
-                      <NumberCell>{formatCreditsPrecise(unsignedCredits(row.value))}</NumberCell>
+                      <NumberCell>{formatCreditsPrecise(row.value)}</NumberCell>
                       <td className="px-5 py-3 text-right"><PnlCell pnl={row.unrealized_pnl} /></td>
                     </tr>
                   ))}
