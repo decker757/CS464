@@ -969,7 +969,25 @@ argument for why the split is by audience rather than by rule.
 ### GET /public/markets
 
 The default view, with no query parameters: **every published market**, the
-ones still trading first and then by soonest closing time within each group.
+ones still trading first.
+
+**Order.** The same rule with or without `status` and `q`:
+
+1. Markets still trading, **soonest `close_time` first** — the one about to
+   stop is at the top.
+2. Every other market, **most recently stopped first** — whatever its status,
+   so `closed`, `pending_resolution` and `approved` share one ordering and an
+   approved market gets no place of its own. "Stopped" is when trading
+   actually stopped: `close_time` for a market the clock closed, and the
+   moment of the close for one an administrator closed early ([2.3] #7), whose
+   `close_time` is still in the future.
+3. Within either group, markets that tie come back in `id` order, so a refresh
+   never reshuffles them.
+
+Which group a market is in comes from the clock, the same rule as `status`
+below. Keep the server's order rather than re-sorting by `close_time` in the
+browser: an early-closed market would jump to the wrong place, because this
+response does not carry the time it was closed.
 
 It is not an open-only list, and that is deliberate. [X-1] #34 asks for two
 things from this view — "open markets ordered by soonest closing time", which
