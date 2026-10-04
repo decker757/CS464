@@ -14,7 +14,7 @@ pydantic-settings==2.15.0
 redis==8.1.0
 
 # Token verification only. This service never signs.
-PyJWT==2.14.0
+PyJWT==2.15.0
 
 # Note what is NOT here: SQLAlchemy and asyncpg. This service owns no schema,
 # holds no role and opens no connection to Postgres. Adding either is a
