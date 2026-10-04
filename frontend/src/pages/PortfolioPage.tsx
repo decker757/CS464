@@ -4,6 +4,7 @@ import { getMyPortfolio, type Portfolio, type Position } from '../api/ledgerApi'
 import { getMarket, type PublicMarketDetail } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import Card from '../components/ui/Card'
+import DetailItem from '../components/ui/DetailItem'
 import PageTitle from '../components/ui/PageTitle'
 import { formatCredits, formatCreditsPrecise, unsignedCredits } from '../utils/formatCredits'
 
@@ -14,10 +15,14 @@ interface PositionRow extends Position {
 
 // Markets, keyed by id, for every distinct market a position names — one
 // fetch per market held, not per position (ledger-service.md: the portfolio
-// carries ids only, and labels are the frontend's own join).
+// carries ids only, and labels are the frontend's own join). allSettled, not
+// all: one market failing to load (market_service down, or a 404) must not
+// blank the whole portfolio — cash and net worth came from the ledger and
+// are correct regardless. toRow's "Unknown market" fallback covers the gap.
 async function loadMarkets(positions: Position[]): Promise<Map<string, PublicMarketDetail>> {
   const ids = [...new Set(positions.map(p => p.market_id))]
-  const markets = await Promise.all(ids.map(getMarket))
+  const results = await Promise.allSettled(ids.map(getMarket))
+  const markets = results.filter((r): r is PromiseFulfilledResult<PublicMarketDetail> => r.status === 'fulfilled').map(r => r.value)
   return new Map(markets.map(m => [m.id, m]))
 }
 
@@ -78,16 +83,19 @@ export default function PortfolioPage() {
         <>
           <div className="mb-6 grid grid-cols-3 gap-4">
             <Card className="px-6 py-5">
-              <p className="mb-1 text-xs font-semibold tracking-[0.5px] text-subtle uppercase">Cash</p>
-              <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.balance)} credits</p>
+              <DetailItem label="Cash">
+                <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.balance)} credits</p>
+              </DetailItem>
             </Card>
             <Card className="px-6 py-5">
-              <p className="mb-1 text-xs font-semibold tracking-[0.5px] text-subtle uppercase">Positions value</p>
-              <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.positions_value)} credits</p>
+              <DetailItem label="Positions value">
+                <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.positions_value)} credits</p>
+              </DetailItem>
             </Card>
             <Card className="px-6 py-5" borderColor="border-smu-navy/20">
-              <p className="mb-1 text-xs font-semibold tracking-[0.5px] text-subtle uppercase">Net worth</p>
-              <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.net_worth)} credits</p>
+              <DetailItem label="Net worth">
+                <p className="text-[22px] font-extrabold text-smu-navy">{formatCredits(portfolio.net_worth)} credits</p>
+              </DetailItem>
             </Card>
           </div>
 
