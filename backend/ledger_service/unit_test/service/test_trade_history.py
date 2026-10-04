@@ -13,6 +13,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.history_fixtures import (
     BUY_AVERAGE,
     BUY_COST,
@@ -219,7 +220,7 @@ async def test_average_price_equals_the_preview_s_at_the_same_state_version(
         side=pricing().Side(side),
         quantity=quantity,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     await buy(
         session,

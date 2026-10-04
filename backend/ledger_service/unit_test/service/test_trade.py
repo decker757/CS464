@@ -17,6 +17,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -92,7 +93,7 @@ async def test_a_buy_debits_exactly_the_total_the_preview_quoted(
         side=pricing().Side.BUY,
         quantity=QUANTITY,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     before = await balance_of_user(session, user_id)
@@ -668,7 +669,7 @@ async def test_an_unknown_outcome_is_refused_and_writes_nothing(
             idempotency_key="k",
             access_token=token(),
             redis_client=Recorder(),
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
         )
     await session.rollback()
 
@@ -1062,7 +1063,7 @@ async def test_the_trade_charges_the_previews_tick_where_ambient_abs_would_not(
         side=pricing().Side.BUY,
         quantity=Decimal("200.0000"),
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     assert quote.total == Decimal("-100.0001"), (
         "this book no longer lands on D-044's tick case, so the test below "

@@ -42,6 +42,7 @@ os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
+import httpx  # noqa: E402
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
@@ -97,6 +98,14 @@ def bearer(user_id: uuid.UUID, role: UserRole = UserRole.TRADER, **kwargs) -> di
     return {"Authorization": f"Bearer {mint_token(user_id, role, **kwargs)}"}
 
 
+def terms_client_over(transport: httpx.AsyncBaseTransport) -> httpx.AsyncClient:
+    """The production market_service client, with a test transport under it,
+    so the real base URL, timeout and request building still run (#114)."""
+    from service import market_terms  # noqa: PLC0415
+
+    return market_terms.open_client(transport=transport)
+
+
 @pytest.fixture
 async def clean_database():
     """Drop and rebuild the schema, then hand over an empty database.
@@ -129,15 +138,32 @@ async def session(clean_database):
 
 
 @pytest.fixture
-async def client(clean_database):
-    """An HTTP client bound to the app, for controller-layer tests.
+async def app_under_test(clean_database):
+    """The app, with the market_service client its lifespan would open.
+
+    `ASGITransport` runs no lifespan, so `app.state.terms_client` does not
+    exist under test. The dependency is overridden rather than the attribute
+    set, because the override is the seam the routes read through. It is the
+    production client, so a route test that does not stub `market_terms.fetch`
+    makes a real connection attempt, never a silent success.
 
     `create_app` is imported here so the pure layers never construct the app.
     """
+    from controller.dependencies import get_terms_client  # noqa: PLC0415
     from main import create_app  # noqa: PLC0415
+    from service import market_terms  # noqa: PLC0415
 
+    app = create_app()
+    async with market_terms.open_client() as terms_client:
+        app.dependency_overrides[get_terms_client] = lambda: terms_client
+        yield app
+
+
+@pytest.fixture
+async def client(app_under_test):
+    """An HTTP client bound to the app, for controller-layer tests."""
     async with AsyncClient(
-        transport=ASGITransport(app=create_app()), base_url="http://test"
+        transport=ASGITransport(app=app_under_test), base_url="http://test"
     ) as c:
         yield c
 

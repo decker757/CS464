@@ -40,7 +40,7 @@ from unit_test.book_fixtures import (
     warm,
     writes,
 )
-from unit_test.conftest import strip_outcomes
+from unit_test.conftest import strip_outcomes, terms_client_over
 
 
 def _preview():
@@ -84,7 +84,9 @@ async def _quote(
         side=_pricing().Side(side),
         quantity=quantity,
         access_token=access_token if access_token is not None else fresh_token(),
-        transport=upstream.transport if transport is None else transport,
+        terms_client=terms_client_over(
+            upstream.transport if transport is None else transport
+        ),
     )
 
 
@@ -591,7 +593,7 @@ async def test_an_unknown_outcome_id_is_refused_as_unknown_outcome(
             side=_pricing().Side.BUY,
             quantity=_QUANTITY,
             access_token=fresh_token(),
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
         )
 
     assert raised.value.code == "unknown_outcome"
@@ -614,7 +616,7 @@ async def test_an_unknown_outcome_on_a_cold_market_leaves_the_funded_book_behind
             side=_pricing().Side.BUY,
             quantity=_QUANTITY,
             access_token=fresh_token(),
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
         )
     assert raised.value.code == "unknown_outcome"
 
@@ -842,7 +844,7 @@ async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> Non
         side="buy",
         quantity=_QUANTITY,
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     assert raw.total == enum.total

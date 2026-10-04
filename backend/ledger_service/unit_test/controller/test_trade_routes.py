@@ -44,7 +44,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import bearer, mint_token
+from unit_test.conftest import bearer, mint_token, terms_client_over
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -137,7 +137,7 @@ async def _warm(
         session,
         market.market_id,
         access_token=mint_token(uuid.uuid4()),
-        transport=market.transport,
+        terms_client=terms_client_over(market.transport),
     )
     outcome = _entities().MarketOutcome
     for position, value in enumerate(q):
@@ -169,7 +169,7 @@ class _Terms:
     def install(self, monkeypatch: pytest.MonkeyPatch, market: _Market):
         from service import market_terms  # noqa: PLC0415
 
-        async def fake(market_id, *, access_token, transport=None):  # noqa: ANN001
+        async def fake(market_id, *, access_token, terms_client=None):  # noqa: ANN001
             self.calls += 1
             if self._raises is not None:
                 raise self._raises
@@ -190,7 +190,7 @@ class _Terms:
 
 
 @pytest.fixture
-async def trade_client(clean_database):
+async def trade_client(app_under_test):
     """A client whose app has a Redis stand-in bound to it.
 
     `httpx`'s `ASGITransport` does not run the lifespan, so `app.state.redis`
@@ -198,20 +198,18 @@ async def trade_client(clean_database):
     dependency is overridden rather than the attribute set, because the
     override is the seam the route actually reads through, and a test that
     poked `app.state` would keep passing if the route stopped using
-    `get_redis` at all.
+    `get_redis` at all. `app_under_test` does the same for the terms client.
 
     Yields the client and the recorder, so a controller test can also assert
     that a refused request published nothing.
     """
     from controller.dependencies import get_redis  # noqa: PLC0415
-    from main import create_app  # noqa: PLC0415
 
-    app = create_app()
     recorder = Recorder()
-    app.dependency_overrides[get_redis] = lambda: recorder
+    app_under_test.dependency_overrides[get_redis] = lambda: recorder
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app_under_test), base_url="http://test"
     ) as client:
         yield client, recorder
 
