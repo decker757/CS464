@@ -35,7 +35,7 @@ async def snapshot(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> Snapshot:
     """This market's current price. Opens the book first if nobody has yet,
     forwarding `access_token` unchanged.
@@ -44,7 +44,7 @@ async def snapshot(
     pending on the session.
     """
     rows = await book_prices.read_or_open(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     state_version = rows[0].state_version

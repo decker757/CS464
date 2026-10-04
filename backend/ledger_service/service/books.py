@@ -82,7 +82,7 @@ async def ensure_open(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> MarketBook:
     """This market's book, opening and funding it first if nobody has yet.
 
@@ -112,7 +112,7 @@ async def ensure_open(
     await session.rollback()
 
     terms = await market_terms.fetch(
-        market_id, access_token=access_token, transport=transport
+        market_id, access_token=access_token, terms_client=terms_client
     )
     if terms.published_at is None:
         raise MarketNotPublished

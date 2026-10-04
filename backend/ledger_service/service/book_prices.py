@@ -76,7 +76,7 @@ async def read_or_open(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> Sequence[Row]:
     """This market's book, one row per outcome, ordered by position. Opens the
     book first if nobody has yet, forwarding `access_token` unchanged.
@@ -91,7 +91,7 @@ async def read_or_open(
     rows = await _read(session, market_id)
     if not rows:
         await books.ensure_open(
-            session, market_id, access_token=access_token, transport=transport
+            session, market_id, access_token=access_token, terms_client=terms_client
         )
         rows = await _read(session, market_id)
 
