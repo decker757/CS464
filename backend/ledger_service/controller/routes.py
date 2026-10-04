@@ -38,6 +38,7 @@ from controller.dependencies import (
     CurrentUser,
     DbSession,
     RedisClient,
+    TermsClient,
 )
 from core.config import get_settings
 from core.pricing import Side
@@ -345,6 +346,7 @@ async def preview_trade(
     side: Side,
     quantity: PreviewQuantity,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
 ) -> PreviewOut:
     result = await preview_service.quote(
@@ -354,6 +356,7 @@ async def preview_trade(
         side=side,
         quantity=quantity,
         access_token=access_token,
+        terms_client=terms_client,
     )
     return PreviewOut(
         market_id=result.market_id,
@@ -414,10 +417,11 @@ _SNAPSHOT_DESCRIPTION = (
 async def market_snapshot(
     market_id: uuid.UUID,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
 ) -> SnapshotOut:
     result = await snapshot_service.snapshot(
-        session, market_id, access_token=access_token
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
     return SnapshotOut(
         market_id=result.market_id,
@@ -515,6 +519,7 @@ async def execute_trade(
     body: TradeIn,
     user: CurrentUser,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
     redis: RedisClient,
 ) -> TradeOut:
@@ -528,6 +533,7 @@ async def execute_trade(
         state_version=body.state_version,
         idempotency_key=body.idempotency_key,
         access_token=access_token,
+        terms_client=terms_client,
         redis_client=redis,
     )
     return TradeOut(

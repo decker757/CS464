@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import httpx
 import redis.asyncio as redis
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,14 @@ async def get_redis(request: Request) -> redis.Redis:
 
 
 RedisClient = Annotated[redis.Redis, Depends(get_redis)]
+
+
+async def get_terms_client(request: Request) -> httpx.AsyncClient:
+    """The process-wide market_service client `main.py`'s lifespan built (#114)."""
+    return request.app.state.terms_client
+
+
+TermsClient = Annotated[httpx.AsyncClient, Depends(get_terms_client)]
 
 
 async def get_claims(request: Request) -> TokenClaims:
