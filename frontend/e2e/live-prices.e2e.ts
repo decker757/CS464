@@ -4,7 +4,10 @@ import { logIn } from './support/browser'
 
 // [X-3] #36 and [F-2] #42: a trade on the ledger reaches an open page through
 // Redis and the realtime socket, with the socket's cookie auth and origin
-// check in the way. Buying through the browser waits on #49's trading panel.
+// check in the way. The buyer here acts through the buy() backend helper
+// rather than the trading panel on purpose: this test is about the socket
+// delivering the update to the *watcher's* page, not about placing the
+// trade — trading-panel.e2e.ts covers buying and selling through the panel.
 test("a trader's market page moves when someone else buys", async ({ page }) => {
   const admin = await registerAdmin('lp_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('live')} move?`)
