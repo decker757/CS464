@@ -50,6 +50,8 @@ export function formatCreditsPrecise(value: string, { showSign = false } = {}): 
   const [wholeRaw, fractionRaw = ''] = digits.split('.')
   const integerPart = BigInt(wholeRaw || '0').toLocaleString('en-US')
   const fractionPart = (fractionRaw + '0000').slice(0, 4)
-  const sign = isNegative ? '-' : (showSign && !isZeroCredits(value)) ? '+' : ''
+  let sign = ''
+  if (isNegative) sign = '-'
+  else if (showSign && !isZeroCredits(value)) sign = '+'
   return `${sign}${integerPart}.${fractionPart}`
 }
