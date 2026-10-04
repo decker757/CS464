@@ -40,7 +40,7 @@ os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 # grants weaker than they are. ADR 0006.
 _audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 
-from collections.abc import Iterator  # noqa: E402
+from collections.abc import Iterator, Sequence  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
@@ -121,16 +121,32 @@ def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str
     return {"Authorization": f"Bearer {mint_token(user_id, role)}"}
 
 
+class RecordedStatement(str):
+    """One statement's SQL text, and the parameters it was sent with.
+
+    A `str`, so a test that only counts statements or searches their text
+    reads it as one. #104 reads `parameters` to see which ids a query asked for.
+    """
+
+    parameters: tuple[object, ...]
+
+    def __new__(cls, sql: str, parameters: Sequence[object]) -> RecordedStatement:
+        recorded = super().__new__(cls, sql)
+        recorded.parameters = tuple(parameters)
+        return recorded
+
+
 @contextmanager
-def recorded_statements() -> Iterator[list[str]]:
+def recorded_statements() -> Iterator[list[RecordedStatement]]:
     """Every SQL statement this service's engine sends while the block runs.
 
-    For tests that pin how many queries a read costs, not what it returns.
+    For tests that pin how many queries a read costs, or what it asked for,
+    not what it returns.
     """
-    statements: list[str] = []
+    statements: list[RecordedStatement] = []
 
     def _record(conn, cursor, statement, parameters, context, executemany) -> None:
-        statements.append(statement)
+        statements.append(RecordedStatement(statement, parameters or ()))
 
     sync_engine = get_engine().sync_engine
     event.listen(sync_engine, "before_cursor_execute", _record)
