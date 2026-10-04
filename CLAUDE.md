@@ -67,7 +67,7 @@ cd frontend                   # end-to-end: the real frontend against the stack
 npm run e2e                   # needs `docker compose up -d --build --wait` first
 
 cd backend/shared             # the token verifier, tested once, where it lives
-python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # once
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # once, and again whenever requirements-dev.txt changes
 .venv/bin/pytest              # no database, no Redis, no .env
 ```
 
@@ -97,6 +97,12 @@ EXISTS, so a new column in `model/entities.py` reaches a fresh database
 automatically and an existing one never. The service then dies on
 every request with `column ... does not exist`, which reads like a code bug and
 is not one. [1.2] #2 hit this on both the dev and the test database.
+
+**Auth is on Alembic as of #224.** For a new auth column, add a revision
+(`cd backend/auth_service && PYTHONPATH=.. .venv/bin/alembic revision -m "..."`)
+rather than a `sql/migrations` file; the `auth-migrate` compose step applies it.
+Market and ledger still work the way described here until #75's later PRs, and
+ADR 0020 lands with the last of them.
 
 Write an idempotent `ALTER TABLE` in `sql/migrations/` and apply it by hand:
 
