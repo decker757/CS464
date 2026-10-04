@@ -146,9 +146,11 @@ async def test_a_side_other_than_buy_or_sell_is_422(
 
     The location alone passes on #22's `Literal["buy"]`, which refuses these
     four and `"sell"` with the same `body.side`. What it refuses them *for*
-    is pinned too: the message names both sides. That reads the same
-    whether the field is `Literal["buy", "sell"]` or `Side`. It is the
-    message because the envelope carries no `ctx` (#117)."""
+    is pinned too: the message names `'sell'` as allowed, which
+    `Literal["buy"]`'s does not. The type is either of the two pydantic
+    gives for the two ways to declare the field, so this reads the same for
+    `Literal["buy", "sell"]` and `Side`. pydantic's full sentence is not
+    pinned (#117's envelope carries no `ctx`)."""
     client, recorder = trade_client
     market = _Market()
     _Terms().install(monkeypatch, market)
@@ -163,7 +165,9 @@ async def test_a_side_other_than_buy_or_sell_is_422(
     error = response.json()["error"]
     assert error["code"] == "invalid_request"
     assert [e["loc"] for e in error["details"]] == [["body", "side"]]
-    assert [e["msg"] for e in error["details"]] == ["Input should be 'buy' or 'sell'"]
+    [detail] = error["details"]
+    assert detail["type"] in {"enum", "literal_error"}
+    assert "'sell'" in detail["msg"]
     assert recorder.calls == []
 
 

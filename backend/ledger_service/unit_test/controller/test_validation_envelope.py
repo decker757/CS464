@@ -78,20 +78,22 @@ _MALFORMED_REQUESTS = [
 
 
 @pytest.fixture
-async def any_route_client(clean_database):
+async def any_route_client(app_under_test):
     """A client on which every ledger route, the trade route included, can run.
 
-    `ASGITransport` runs no lifespan, so the trade route's Redis dependency is
-    overridden. Nothing here reaches it: validation refuses first.
+    `ASGITransport` runs no lifespan. `app_under_test` supplies the
+    market_service client, and the trade route's Redis dependency is
+    overridden here, because FastAPI resolves dependencies before it
+    validates parameters: without both, the preview, snapshot and trade cases
+    would fail on a missing client before validation ran. Nothing here uses
+    Redis.
     """
     from controller.dependencies import get_redis  # noqa: PLC0415
-    from main import create_app  # noqa: PLC0415
 
-    app = create_app()
-    app.dependency_overrides[get_redis] = lambda: None
+    app_under_test.dependency_overrides[get_redis] = lambda: None
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app_under_test), base_url="http://test"
     ) as client:
         yield client
 
