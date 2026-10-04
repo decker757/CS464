@@ -166,16 +166,33 @@ describe('TradingPanel', () => {
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 
-  it('re-previews automatically on a 409 quote_stale and lets the trader confirm again', async () => {
-    mockPreview(previewResponse())
-    let tradeAttempts = 0
+  it('re-previews automatically on a 409 quote_stale, re-enables submit, and sends the same key with the new state_version on confirm', async () => {
+    let previewCalls = 0
     server.use(
-      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () => {
+      http.get(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/preview`, () => {
+        previewCalls += 1
+        return HttpResponse.json(previewResponse({ state_version: previewCalls === 1 ? 1 : 2 }))
+      }),
+    )
+    let tradeAttempts = 0
+    let firstKey: unknown
+    let secondBody: Record<string, unknown> | undefined
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
         tradeAttempts += 1
-        return HttpResponse.json(
-          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
-          { status: 409 },
-        )
+        const body = await request.json() as Record<string, unknown>
+        if (tradeAttempts === 1) {
+          firstKey = body.idempotency_key
+          return HttpResponse.json(
+            { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
+            { status: 409 },
+          )
+        }
+        secondBody = body
+        return HttpResponse.json({
+          transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+          outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.1250', state_version: 3,
+        }, { status: 201 })
       }),
     )
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
@@ -186,8 +203,17 @@ describe('TradingPanel', () => {
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
 
     expect(await screen.findByText(/prices moved while you were looking/i)).toBeInTheDocument()
-    // A fresh quote was requested, and the trade itself was attempted only once.
-    expect(tradeAttempts).toBe(1)
+    // The re-quote actually ran: a second preview call landed, and the
+    // button is enabled again rather than stuck disabled or mid-submit.
+    expect(previewCalls).toBe(2)
+    const submitButton = screen.getByRole('button', { name: /^buy yes$/i })
+    expect(submitButton).toBeEnabled()
+
+    await actor.click(submitButton)
+
+    expect(await screen.findByText(/bought/i)).toBeInTheDocument()
+    expect(tradeAttempts).toBe(2)
+    expect(secondBody).toMatchObject({ state_version: 2, idempotency_key: firstKey })
   })
 
   it('shows the balance and amount needed on insufficient_funds', async () => {
@@ -229,6 +255,136 @@ describe('TradingPanel', () => {
     await actor.click(screen.getByRole('button', { name: /^sell yes$/i }))
 
     expect(await screen.findByText(/you hold 2\.0000 shares, but this sell asks for 10\.0000/i)).toBeInTheDocument()
+  })
+
+  it('gives insufficient_shares_outstanding its own message instead of the generic one', async () => {
+    // Only the preview can return this (ledger-service.md); the trade route
+    // never does, because insufficient_shares_held always refuses first.
+    mockPreviewError('insufficient_shares_outstanding', 'No shares outstanding yet.', 409)
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    await typeQuantity(actor, '10')
+
+    expect(await screen.findByText(/nobody holds enough shares of this outcome yet/i)).toBeInTheDocument()
+    expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the same idempotency key across a retry after a network error', async () => {
+    // A dropped connection could mean the trade went through and only the
+    // reply was lost. Retrying with a new key would let the server treat
+    // it as a second, different trade and charge twice.
+    mockPreview(previewResponse())
+    let attempts = 0
+    const keys: unknown[] = []
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+        attempts += 1
+        const body = await request.json() as Record<string, unknown>
+        keys.push(body.idempotency_key)
+        if (attempts === 1) return HttpResponse.error()
+        return HttpResponse.json({
+          transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+          outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.1250', state_version: 2,
+        }, { status: 201 })
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    expect(await screen.findByText(/something went wrong/i)).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    expect(await screen.findByText(/bought/i)).toBeInTheDocument()
+
+    expect(attempts).toBe(2)
+    expect(keys[0]).toBe(keys[1])
+  })
+
+  it('keeps the same idempotency key across a retry after a 500', async () => {
+    mockPreview(previewResponse())
+    let attempts = 0
+    const keys: unknown[] = []
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+        attempts += 1
+        const body = await request.json() as Record<string, unknown>
+        keys.push(body.idempotency_key)
+        if (attempts === 1) {
+          return HttpResponse.json({ error: { code: 'market_book_incomplete', message: 'Server fault.' } }, { status: 500 })
+        }
+        return HttpResponse.json({
+          transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+          outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.1250', state_version: 2,
+        }, { status: 201 })
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByRole('alert')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    expect(await screen.findByText(/bought/i)).toBeInTheDocument()
+
+    expect(attempts).toBe(2)
+    expect(keys[0]).toBe(keys[1])
+  })
+
+  it('generates a new idempotency key after a definite 4xx rejection', async () => {
+    mockPreview(previewResponse())
+    const keys: unknown[] = []
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>
+        keys.push(body.idempotency_key)
+        return HttpResponse.json(
+          { error: { code: 'insufficient_funds', message: 'Not enough.', details: { balance: '1.0000', required: '5.1250' } } },
+          { status: 409 },
+        )
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/you have 1\.0000 credits/i)
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/you have 1\.0000 credits/i)
+
+    expect(keys).toHaveLength(2)
+    expect(keys[0]).not.toBe(keys[1])
+  })
+
+  it('clears the submit error when the trader changes the quantity', async () => {
+    mockPreview(previewResponse())
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
+        HttpResponse.json(
+          { error: { code: 'insufficient_funds', message: 'Not enough.', details: { balance: '1.0000', required: '5.1250' } } },
+          { status: 409 },
+        ),
+      ),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/you have 1\.0000 credits/i)
+
+    mockPreview(previewResponse({ total: '-10.2500' }))
+    await typeQuantity(actor, '1')
+
+    expect(screen.queryByText(/you have 1\.0000 credits/i)).not.toBeInTheDocument()
   })
 
   it('shows a plain message when the market has closed', async () => {
