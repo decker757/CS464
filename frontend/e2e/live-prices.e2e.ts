@@ -30,6 +30,7 @@ test("a trader's market page moves when someone else buys", async ({ page }) => 
   const after = await snapshot(buyer, market.id)
   const yes = market.outcomes.find(outcome => outcome.label === 'Yes')
   const expected = after.prices.find(price => price.outcome_id === yes?.id)
-  await expect(yesPrice).toHaveText(`${(Number(expected?.price) * 100).toFixed(1)}%`)
-  await expect(yesPrice).not.toHaveText('50.0%')
+  // 50 Yes shares at b = 100 (support/backend.ts) move Yes to 0.6225.
+  expect(expected?.price).toBe('0.6225')
+  await expect(yesPrice).toHaveText('62.3%')
 })

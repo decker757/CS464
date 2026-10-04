@@ -1,13 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { listMarkets, type PublicMarketSummary } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import MarketCard from '../components/markets/MarketCard'
 import PageTitle from '../components/ui/PageTitle'
+import { usePricesForMarkets } from '../hooks/usePricesForMarkets'
 
 export default function MarketsPage() {
   const [markets, setMarkets] = useState<PublicMarketSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  // Memoised so the prices are fetched when the list changes, not on every render.
+  const marketIds = useMemo(() => markets.map(market => market.id), [markets])
+  const pricesByMarket = usePricesForMarkets(marketIds)
 
   useEffect(() => {
     listMarkets()
@@ -30,7 +34,7 @@ export default function MarketsPage() {
 
       {!loading && !error && markets.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
-          {markets.map((market) => <MarketCard key={market.id} market={market} />)}
+          {markets.map((market) => <MarketCard key={market.id} market={market} prices={pricesByMarket.get(market.id)} />)}
         </div>
       )}
     </AppLayout>

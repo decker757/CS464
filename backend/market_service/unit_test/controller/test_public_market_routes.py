@@ -144,6 +144,22 @@ async def test_a_market_card_carries_what_the_browse_page_renders(
     assert card["id"]
 
 
+async def test_a_market_card_names_its_outcomes_as_the_detail_read_does(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """#214: the card's outcomes are the detail's `{id, position, label}`, no more.
+
+    Without them the browse page guessed "Yes" and "No" for every market.
+    """
+    market = await _published(session)
+
+    card = (await client.get(_LIST, headers=trader_headers)).json()["markets"][0]
+    detail = (await client.get(_detail(market.id), headers=trader_headers)).json()
+
+    assert [outcome["label"] for outcome in card["outcomes"]] == ["Yes", "No"]
+    assert card["outcomes"] == detail["outcomes"]
+
+
 # --- refusals -------------------------------------------------------------
 async def test_an_unpublished_market_is_404_with_the_service_envelope(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
