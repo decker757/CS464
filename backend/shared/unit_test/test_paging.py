@@ -16,8 +16,8 @@ from shared.paging import decode_fields, encode_fields
 
 
 def test_any_number_of_fields_round_trips() -> None:
-    """Four fields, one of them empty, so a decoder that drops empty fields or
-    restores padding wrongly loses a field and fails here."""
+    """Four fields, one of them empty, so a decoder that drops or merges empty
+    fields fails here."""
     fields = ["2026-10-04T09:15:00.123456+08:00", "1", "", str(uuid.uuid4())]
 
     assert decode_fields(encode_fields(*fields), count=4) == fields
