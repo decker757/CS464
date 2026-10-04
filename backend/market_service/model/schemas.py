@@ -565,13 +565,15 @@ class PublicMarketSummaryOut(_UtcTimestamps):
 
     Prices are not here either, for the same reason they are not on the
     detail read: a card renders them from the snapshot endpoint once [F-3]
-    #43 and [T-2] #22 land.
+    #43 and [T-2] #22 land. The outcomes are, in the detail read's own shape,
+    so a card can name each price without guessing "Yes" and "No". #214.
     """
 
     id: uuid.UUID
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    outcomes: list[PublicOutcomeOut]
 
 
 class PublicMarketListResponse(BaseModel):

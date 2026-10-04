@@ -1020,11 +1020,33 @@ nothing to render.
       "id": "410465f3-2852-4833-964b-f42e23b8227c",
       "status": "open",
       "question": "Will Singapore core inflation be below 2% for December 2026?",
-      "close_time": "2027-01-05T12:00:00Z"
+      "close_time": "2027-01-05T12:00:00Z",
+      "outcomes": [
+        { "id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f", "position": 0, "label": "Yes" },
+        { "id": "9c5d1e32-3a8b-4b2f-9b1e-2e3f4c5d6a7b", "position": 1, "label": "No" }
+      ]
+    },
+    {
+      "id": "5d2a9e04-7b31-4c8e-a6f2-3e9b1c7d0a58",
+      "status": "open",
+      "question": "Who wins the 2027 NBA Finals?",
+      "close_time": "2027-06-01T00:00:00Z",
+      "outcomes": [
+        { "id": "0f6e2d1c-4b3a-4e9d-8c7b-6a5f4e3d2c1b", "position": 0, "label": "Lakers" },
+        { "id": "1a7f3e2d-5c4b-4f0e-9d8c-7b6a5f4e3d2c", "position": 1, "label": "Celtics" },
+        { "id": "2b8a4f3e-6d5c-4a1f-8e9d-8c7b6a5f4e3d", "position": 2, "label": "Another team" }
+      ]
     }
   ]
 }
 ```
+
+**`outcomes`** (#214) is every outcome of the market, ordered by `position`,
+in the same `{id, position, label}` shape as `GET /public/markets/{id}`
+returns — so a card can name each outcome without fetching the detail per row.
+A market has two or more outcomes with any labels; render the labels given
+rather than assuming `Yes` and `No`. Like the rest of this response, it
+carries no prices.
 
 ### GET /public/markets/{id}
 

@@ -16,10 +16,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_engine
 from model.entities import MarketStatus
 from service import browsing, market_service
 from service.audit import Actor
@@ -30,6 +28,7 @@ from unit_test.conftest import (
     draft_request,
     proposed_market,
     published_market_closing_at,
+    recorded_statements,
 )
 
 # A statement that reads the markets table, and not `market_outcomes`.
@@ -289,17 +288,8 @@ async def test_the_list_and_the_counts_come_from_one_statement(
     the counts are read in a separate statement. "The overview's list and
     counts share one clock and one statement".
     """
-    statements: list[str] = []
-
-    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
-        statements.append(statement)
-
-    sync_engine = get_engine().sync_engine
-    event.listen(sync_engine, "before_cursor_execute", _record)
-    try:
+    with recorded_statements() as statements:
         await _overview(session, population.caller, now=population.now)
-    finally:
-        event.remove(sync_engine, "before_cursor_execute", _record)
 
     market_reads = [s for s in statements if _READS_MARKETS.search(s)]
     assert len(market_reads) == 1, market_reads

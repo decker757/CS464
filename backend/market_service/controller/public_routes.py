@@ -54,7 +54,12 @@ PublicStatusFilter = PublicMarketStatus
         "background sweep writes it down (ADR 0011), so `status=open` never "
         "includes one and `status=closed` does. In the default view it is "
         "present, labelled `closed`, and sorted behind whatever is still "
-        "trading."
+        "trading.\n\n"
+        "Each market carries its `outcomes` as `{id, position, label}`, "
+        "ordered by `position` — the same shape the detail read returns — "
+        "so a card can name every outcome without a detail fetch per row "
+        "(#214). A market has two or more, with any labels; do not assume "
+        "`Yes` and `No`."
     ),
     responses={
         422: {
