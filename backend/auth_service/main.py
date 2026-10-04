@@ -13,18 +13,15 @@ from controller.admin_routes import router as admin_router
 from controller.errors import register_error_handlers
 from controller.routes import router as auth_router
 from core.config import get_settings
-from core.database import create_all, dispose_engine
-
-# Registers the mappers on Base before create_all runs. Keep it explicit.
-from model import entities  # noqa: F401
+from core.database import dispose_engine
 
 logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Replace with Alembic: [F-5] #75.
-    await create_all()
+    # No DDL here: `auth-migrate` (migrate.py) brought the schema to head
+    # before this process started. ADR 0020.
     yield
     await dispose_engine()
 
