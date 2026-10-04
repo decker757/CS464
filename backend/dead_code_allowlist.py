@@ -19,3 +19,8 @@ connection_count
 # delete it and supersede D-020 is being decided on #194.
 count_by_status
 
+
+# Used by #104 Task 4 (the paged browse). Temporary; Task 4 removes these.
+encode_browse_cursor
+decode_browse_cursor
+MarketPage
