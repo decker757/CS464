@@ -2,10 +2,9 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
-import { BalanceContext } from '../context/BalanceContext'
 import { server } from '../test/server'
+import { WithProviders } from '../test/renderWithProviders'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
@@ -51,16 +50,14 @@ afterEach(() => {
 
 function renderPage(marketId = 'mkt-abc') {
   return render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
-        <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
-          <Routes>
-            <Route path="/markets/:id" element={<MarketDetailPage />} />
-            <Route path="/markets" element={<p>markets list</p>} />
-          </Routes>
-        </MemoryRouter>
-      </BalanceContext.Provider>
-    </AuthContext.Provider>,
+    <WithProviders user={trader}>
+      <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
+        <Routes>
+          <Route path="/markets/:id" element={<MarketDetailPage />} />
+          <Route path="/markets" element={<p>markets list</p>} />
+        </Routes>
+      </MemoryRouter>
+    </WithProviders>,
   )
 }
 
@@ -72,11 +69,9 @@ function renderMovableRouter(marketId: string) {
     { initialEntries: [`/markets/${marketId}`] },
   )
   render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
-        <RouterProvider router={router} />
-      </BalanceContext.Provider>
-    </AuthContext.Provider>,
+    <WithProviders user={trader}>
+      <RouterProvider router={router} />
+    </WithProviders>,
   )
   return router
 }

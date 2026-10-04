@@ -2,27 +2,27 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
-import { AuthContext, AuthProvider } from '../context/AuthContext'
+import { describe, expect, it } from 'vitest'
+import { AuthProvider } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
-import { BalanceContext, BalanceProvider } from '../context/BalanceContext'
+import { BalanceProvider } from '../context/BalanceContext'
 import { server } from '../test/server'
+import { WithProviders } from '../test/renderWithProviders'
 import AppNavbar from './AppNavbar'
 import ProtectedRoute from './ProtectedRoute'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 const admin: User = { id: '2', username: 'bob', email: 'bob@smu.edu.sg', role: 'admin', created_at: '2026-01-01' }
 
-/** The navbar on its own, for what it renders. */
-function renderNavbar(user: User | null | undefined) {
+/** The navbar on its own, for what it renders. `balance` defaults to
+ * undefined (still loading); pass it to test the loaded and failed states. */
+function renderNavbar(user: User | null | undefined, balance?: string | null) {
   render(
-    <AuthContext.Provider value={{ user, login: () => {}, logout: vi.fn() }}>
-      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
-        <MemoryRouter initialEntries={['/markets']}>
-          <AppNavbar />
-        </MemoryRouter>
-      </BalanceContext.Provider>
-    </AuthContext.Provider>,
+    <WithProviders user={user} balance={balance}>
+      <MemoryRouter initialEntries={['/markets']}>
+        <AppNavbar />
+      </MemoryRouter>
+    </WithProviders>,
   )
 }
 
@@ -96,20 +96,6 @@ describe('AppNavbar', () => {
     expect(screen.queryByRole('button', { name: /log out/i })).not.toBeInTheDocument()
   })
 
-  it('shows the formatted balance once it has loaded', () => {
-    render(
-      <AuthContext.Provider value={{ user: trader, login: () => {}, logout: vi.fn() }}>
-        <BalanceContext.Provider value={{ balance: '1000.0000', refetch: async () => {} }}>
-          <MemoryRouter initialEntries={['/markets']}>
-            <AppNavbar />
-          </MemoryRouter>
-        </BalanceContext.Provider>
-      </AuthContext.Provider>,
-    )
-
-    expect(screen.getByText('1,000 credits')).toBeInTheDocument()
-  })
-
   it('shows nothing for the balance while it is still loading', () => {
     // undefined — the renderNavbar default — must not be confused with a
     // failed load; it should simply not render yet.
@@ -118,26 +104,17 @@ describe('AppNavbar', () => {
   })
 
   it('shows Balance unavailable when the load has failed', () => {
-    render(
-      <AuthContext.Provider value={{ user: trader, login: () => {}, logout: vi.fn() }}>
-        <BalanceContext.Provider value={{ balance: null, refetch: async () => {} }}>
-          <MemoryRouter initialEntries={['/markets']}>
-            <AppNavbar />
-          </MemoryRouter>
-        </BalanceContext.Provider>
-      </AuthContext.Provider>,
-    )
-
+    renderNavbar(trader, null)
     expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
   })
-})
 
-describe('AppNavbar — logging out', () => {
   it('shows the real balance fetched through BalanceProvider, not just a stubbed one', async () => {
     renderInApp()
     expect(await screen.findByText('1,000 credits')).toBeInTheDocument()
   })
+})
 
+describe('AppNavbar — logging out', () => {
   it('ends the session', async () => {
     const actor = userEvent.setup()
     renderInApp()

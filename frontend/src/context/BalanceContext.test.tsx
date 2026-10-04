@@ -11,11 +11,17 @@ const LEDGER_BASE = 'http://localhost:8003'
 const alice: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 const bob: User = { id: '2', username: 'bob', email: 'bob@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
+function describeBalance(balance: string | null | undefined): string {
+  if (balance === undefined) return 'no balance'
+  if (balance === null) return 'failed'
+  return balance
+}
+
 function DisplayBalance() {
   const { balance, refetch } = useBalance()
   return (
     <>
-      <p>{balance === undefined ? 'no balance' : balance === null ? 'failed' : balance}</p>
+      <p>{describeBalance(balance)}</p>
       <button onClick={() => refetch()}>Refetch</button>
     </>
   )
