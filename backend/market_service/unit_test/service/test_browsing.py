@@ -359,7 +359,8 @@ async def test_stopped_markets_list_most_recently_stopped_first_whatever_their_s
 
     The approved market stopped longest ago and sorts last: it gets no place
     of its own. Created oldest first, so `close_time ASC` and insertion order
-    both give the reverse. "Stopped markets sort by when trading stopped".
+    both give the reverse. DECISIONS.md, "Stopped markets sort by when trading
+    stopped".
     """
     creator = actor()
     # Ids held as they are created; each sweep expires the session.
@@ -385,8 +386,9 @@ async def test_an_early_closed_market_sorts_by_when_it_was_closed_not_its_close_
     """#105, ADR 0014: closed by hand a day ago, with 30 days left on its
     `close_time`, it sorts between markets that stopped an hour and two days ago.
 
-    Sorting on `close_time` alone puts it first, and on `closed_at` alone puts
-    the unswept market (no `closed_at` yet) last, so both columns are needed.
+    Sorting on `close_time` alone puts it first. Sorting on `closed_at` alone
+    puts the two-days-ago market above it, because the sweep stamped that one's
+    `closed_at` just now; so both columns are needed.
     """
     creator = actor()
     a_day_ago = datetime.now(UTC) - timedelta(days=1)
