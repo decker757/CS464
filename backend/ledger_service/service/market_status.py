@@ -14,6 +14,7 @@ import uuid
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import has_pending_writes
 from core.errors import MarketClosed, MarketNotFound, MarketTermsUnavailable
 from service import books, market_terms
 
@@ -39,11 +40,23 @@ async def ensure_trading(
     only an error code. Every other upstream failure propagates from
     `market_terms.fetch`, so a sick dependency is never read as closed.
 
-    Unlike `books.ensure_open`, this cannot roll back before the HTTP call:
-    its caller may hold pending writes or locks, which a rollback would lose.
-    So a caller holding a transaction pins a pooled connection for up to five
-    seconds. The trade path releases its own first; #115 moves that in here.
+    **Call this with nothing pending and no row lock held**: the gate runs
+    before the book lock. It rolls back before the HTTP call, as
+    `books.ensure_open` does (D-043), so a lock taken before it would be
+    released mid-request, which ADR 0015 forbids. The assert below catches a
+    pending write and cannot see a `SELECT ... FOR UPDATE`. The rollback also
+    expires every ORM instance the session has loaded.
     """
+    # Enforced, not just documented: the rollback would discard a pending
+    # write silently. A held lock is the caller's to avoid; see above.
+    assert not has_pending_writes(session), (
+        "ensure_trading() rolls back before it calls market_service: call it "
+        "with nothing pending on the session"
+    )
+
+    # D-043: release the connection a read before this autobegan, so the call
+    # (up to 5s) holds none. The `books.find` below autobegins its own.
+    await session.rollback()
     try:
         terms = await market_terms.fetch(
             market_id, access_token=access_token, terms_client=terms_client

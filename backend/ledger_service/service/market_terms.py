@@ -17,11 +17,24 @@ import httpx
 
 from core.config import get_settings
 from core.errors import MarketNotFound, MarketTermsUnavailable, NotAuthenticated
+from core.not_found_cache import NotFoundCache
 
 # D-030: stated rather than inherited, though it equals httpx's default, so a
 # hung market_service cannot hold the caller's request open. No test can catch
 # its deletion; whether five seconds is the right budget is open there.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
+
+# How long a 404 is remembered, which is also the longest a newly published
+# market can still be told it does not exist, and how many ids are held at
+# once, so the memory stays bounded. Per process, and only a 404 goes in: a
+# 503, a timeout or a 401 says nothing about the market. DECISIONS.md, "A
+# market_service 404 is remembered for ten seconds, per process".
+_NOT_FOUND_TTL_SECONDS = 10.0
+_NOT_FOUND_MAX_ENTRIES = 10_000
+
+_recent_not_found = NotFoundCache(
+    ttl_seconds=_NOT_FOUND_TTL_SECONDS, max_entries=_NOT_FOUND_MAX_ENTRIES
+)
 
 
 @dataclass(frozen=True)
@@ -196,11 +209,18 @@ async def fetch(
     | 404 | `MarketNotFound` | 404 |
     | 401 | `NotAuthenticated` | 401 |
 
+    A 404 is remembered for ten seconds, and a repeat inside that window
+    raises `MarketNotFound` with no call (DECISIONS.md, "A market_service 404
+    is remembered for ten seconds, per process").
+
     `terms_client` comes from `open_client` and is left open: it is shared
     by every request in the process. Carries what it reads and decides
     nothing on it (ADR 0017): null or unpriceable terms and a status that is
     not open are all handed back.
     """
+    if _recent_not_found.is_remembered(market_id):
+        raise MarketNotFound
+
     try:
         response = await terms_client.get(
             f"/public/markets/{market_id}",
@@ -213,6 +233,7 @@ async def fetch(
         raise MarketTermsUnavailable from exc
 
     if response.status_code == 404:
+        _recent_not_found.remember(market_id)
         raise MarketNotFound
     if response.status_code == 401:
         raise NotAuthenticated

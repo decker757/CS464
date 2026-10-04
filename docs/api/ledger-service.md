@@ -734,6 +734,14 @@ three of them —
 — for the reason its own section gives: both routes share the same cold
 path.
 
+**A `404 market_not_found` is remembered for ten seconds** (DECISIONS.md,
+"A market_service 404 is remembered for ten seconds, per process"), on the
+preview, the snapshot and the trade alike. Inside that window the ledger
+answers 404 again without asking market_service. So a market published a
+few seconds after somebody asked about it can still read as not found until
+the window passes. Retrying after ten seconds is enough. Nothing else is
+remembered: a `503` or a `401` is asked again on the next request.
+
 `market_not_published` (409) is defined in `core/errors.py` and mapped like
 every other domain error, and no request can currently reach it.
 `books.ensure_open` raises it only for terms whose `published_at` is null, and
