@@ -5,8 +5,10 @@ import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
 import { useTradeQuote } from '../../hooks/useTradeQuote'
 import { formatCreditsPrecise, unsignedCredits } from '../../utils/formatCredits'
+import { formatPrice } from '../../utils/formatPrice'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
+import { selectableClass } from '../ui/selectableClass'
 
 // Buy and Sell are the same toggle shape with a different active colour.
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
@@ -47,6 +49,8 @@ export default function TradingPanel({ marketId, outcomes }: {
   const visibleLastTrade = lastTradeFor === inputKey ? lastTrade : null
 
   const selectedOutcome = outcomes.find(o => o.id === outcomeId)
+  const priceNow = preview?.prices.find(p => p.outcome_id === outcomeId)
+  const priceAfter = preview?.post_trade_prices.find(p => p.outcome_id === outcomeId)
 
   const submit = async () => {
     if (!preview || submitting) return
@@ -74,10 +78,12 @@ export default function TradingPanel({ marketId, outcomes }: {
         // Same click, same key: get the new price and let the trader
         // confirm again rather than resubmitting the stale version
         // automatically. refetchNow is the same fetch the live preview
-        // uses, so if it fails too, previewError already shows why — no
-        // separate message needed here.
+        // uses, so if it fails too, previewError already shows why — clear
+        // submitError rather than leaving "Getting a fresh quote…" frozen
+        // on screen regardless of how the re-quote turns out.
         setSubmitError(describeTradeError(err))
-        await refetchNow()
+        const freshQuote = await refetchNow()
+        setSubmitError(freshQuote ? 'Prices moved. Check the new quote and confirm again.' : '')
       } else {
         setSubmitError(describeTradeError(err))
         if (isDefiniteRejection(err)) idempotencyKeyRef.current = crypto.randomUUID()
@@ -117,9 +123,7 @@ export default function TradingPanel({ marketId, outcomes }: {
             type="button"
             onClick={() => setOutcomeId(outcome.id)}
             aria-pressed={outcomeId === outcome.id}
-            className={`flex-1 cursor-pointer rounded-control border px-3 py-2.5 text-sm font-medium transition ${
-              outcomeId === outcome.id ? 'border-smu-navy bg-smu-navy text-white' : 'border-smu-navy/20 text-smu-navy hover:border-smu-navy/40'
-            }`}
+            className={`flex-1 cursor-pointer rounded-control border px-3 py-2.5 text-sm font-medium transition ${selectableClass(outcomeId === outcome.id)}`}
           >
             {outcome.label}
           </button>
@@ -162,6 +166,12 @@ export default function TradingPanel({ marketId, outcomes }: {
             <span className="text-muted">Average price</span>
             <span className="text-smu-navy">{preview.average_price}</span>
           </div>
+          {priceNow && priceAfter && (
+            <div className="mt-1 flex justify-between">
+              <span className="text-muted">{selectedOutcome?.label} price</span>
+              <span className="text-smu-navy">{formatPrice(priceNow.price)} → {formatPrice(priceAfter.price)}</span>
+            </div>
+          )}
         </div>
       )}
 

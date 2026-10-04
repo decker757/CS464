@@ -86,6 +86,17 @@ describe('TradingPanel', () => {
     expect(preview).toHaveTextContent('0.5125')
   })
 
+  it('shows how the trade moves the selected outcome\'s price', async () => {
+    mockPreview(previewResponse())
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+
+    await typeQuantity(actor, '10')
+
+    const preview = await screen.findByLabelText('trade preview')
+    expect(preview).toHaveTextContent('50.0% → 52.5%')
+  })
+
   it('does not fetch a preview before the debounce settles', async () => {
     let calls = 0
     server.use(
@@ -105,11 +116,16 @@ describe('TradingPanel', () => {
   })
 
   it('shows Cost for a buy and Proceeds for a sell', async () => {
-    mockPreview(previewResponse({ total: '5.1250' }))
+    mockPreview(previewResponse())
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     renderPanel()
 
+    await typeQuantity(actor, '10')
+    expect(await screen.findByText('Cost')).toBeInTheDocument()
+
+    mockPreview(previewResponse({ total: '5.1250' }))
     await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    await actor.clear(screen.getByLabelText('Quantity (shares)'))
     await typeQuantity(actor, '10')
 
     expect(await screen.findByText('Proceeds')).toBeInTheDocument()
@@ -202,7 +218,11 @@ describe('TradingPanel', () => {
 
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
 
-    expect(await screen.findByText(/prices moved while you were looking/i)).toBeInTheDocument()
+    // The re-quote actually ran and the message moved on from "Getting a
+    // fresh quote…" to say the quote is ready, rather than staying frozen
+    // on the original message regardless of how the re-quote turned out.
+    expect(await screen.findByText(/check the new quote and confirm again/i)).toBeInTheDocument()
+    expect(screen.queryByText(/getting a fresh quote/i)).not.toBeInTheDocument()
     // The re-quote actually ran: a second preview call landed, and the
     // button is enabled again rather than stuck disabled or mid-submit.
     expect(previewCalls).toBe(2)
