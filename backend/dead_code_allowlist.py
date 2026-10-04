@@ -24,3 +24,4 @@ count_by_status
 encode_browse_cursor
 decode_browse_cursor
 MarketPage
+was_open_for_trading_at
