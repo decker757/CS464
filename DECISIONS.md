@@ -1750,16 +1750,17 @@ swallowing a publish failure. `realtime_service` made the same call from the
 other side, and its `/health` reports the bus separately for exactly this
 reason.
 
-**Reversal trigger.** This lapses if publishing stops being hot. If the only
-remaining caller runs once per market, or rarer, the frequency argument above
-inverts and `market_terms`'s per-call client is the cheaper shape again — one
-fewer thing held for the life of the process, and the transport fixed where the
-suite wants it. Nothing planned moves it that way; [T-2] #22 moves it the other.
+**Reversal trigger.** This lapses for a client whose calls stop being hot. If
+the only remaining caller of one runs once per market, or rarer, the frequency
+argument above inverts and a client per call is the cheaper shape for it again:
+one fewer thing held for the life of the process. Nothing planned moves either
+client that way; [T-2] #22 moved the terms client the other.
 
-**Notes.** The ledger now holds two outbound clients with opposite lifetimes and
-opposite reasons, and the reasons are symmetrical rather than inconsistent: both
-are decided by how often the call is made. Anyone adding a third should answer
-the same question before copying either.
+**Notes.** The ledger holds both of its outbound clients — Redis and
+market_service — for the process, opened and closed on the lifespan, for the
+same reason: each is called on every trade. The test is how often the call is
+made, and anyone adding a third client should answer that question before
+copying this shape.
 
 **Note, 2026-09-23 (review of #110).** The frequency that justified
 `market_terms`'s per-call client stopped holding in the same branch that
@@ -4462,7 +4463,8 @@ Move these into the log above when they're settled.
   it holds no row locks across either — a slow market_service costs a trade
   its own latency, not a connection out of a pool of ten, and it serialises
   nothing behind it. #115 moves the gate's release into the gate itself, for
-  every caller, and #114 holds the connection-reuse half. What is still open
+  every caller. The connection-reuse half has landed: the client both calls
+  go through is held for the process (#114). What is still open
   is the ceiling itself. `service/market_terms.py::_TIMEOUT` is five seconds
   on every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the
   budget is currently inherited in substance even though it is written out
