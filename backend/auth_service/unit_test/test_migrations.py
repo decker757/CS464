@@ -9,6 +9,7 @@ would break every later test.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 import shutil
@@ -18,6 +19,7 @@ import pytest
 from sqlalchemy import inspect, text
 
 from core.database import SCHEMA, Base
+from main import create_app
 from migrate import ALEMBIC_INI, main
 from shared.migrating import (
     VERSION_TABLE,
@@ -205,3 +207,17 @@ def test_the_migrate_step_exits_2_without_a_database_url(monkeypatch, capsys) ->
     assert main() == 2
 
     assert "DATABASE_URL is required" in capsys.readouterr().err
+
+
+def test_starting_the_app_creates_no_table(empty_schema) -> None:
+    """Only the migrate step issues DDL. With create_all back in the lifespan, a
+    model change would reach a database with no revision to show for it."""
+
+    async def start_and_stop() -> None:
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            pass
+
+    asyncio.run(start_and_stop())
+
+    assert _tables() == []
