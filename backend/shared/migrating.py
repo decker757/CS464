@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
 import sys
 from collections.abc import Callable
@@ -39,7 +40,8 @@ from alembic import command, context
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import MetaData
+from alembic.script import ScriptDirectory
+from sqlalchemy import MetaData, inspect
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -50,8 +52,31 @@ VERSION_TABLE = "alembic_version"
 # `sqlalchemy.url`: configparser would %-interpolate a URL-encoded password.
 _URL_ATTRIBUTE = "database_url"
 
+_REFUSED_FOR_DRIFT = (
+    "{schema}: this database has tables but no migration history, and they do "
+    "not match the models:\n{differences}\n\n"
+    "It was built before #75 and missed a hand-applied change. Apply the "
+    "missing file from sql/migrations/ as it stood before #75 (git log -- "
+    "sql/migrations/ finds it) and run this again, or start from an empty "
+    "database with `docker compose down -v`, which destroys local data. "
+    "Nothing was changed."
+)
+
+_REFUSED_PAST_BASELINE = (
+    "{schema}: this database has tables but no migration history, and the "
+    "migrations have moved past the baseline it could have been matched "
+    "against. Start from an empty database with `docker compose down -v`, "
+    "which destroys local data. Nothing was changed."
+)
+
 Result = TypeVar("Result")
 DriftCheck = Callable[[Connection], list[str]]
+
+logger = logging.getLogger(__name__)
+
+
+class LegacyDrift(Exception):
+    """A database from before #75 that the migrate step will not adopt. The message says why."""
 
 
 def is_own_name(
@@ -187,6 +212,29 @@ def _alembic_config(alembic_ini: Path, url: str) -> Config:
     return config
 
 
+def _own_tables(connection: Connection, *, schema: str) -> set[str]:
+    return set(inspect(connection).get_table_names(schema=schema))
+
+
+def _adopt_legacy_schema(
+    connection: Connection,
+    *,
+    metadata: MetaData,
+    schema: str,
+    extra_drift: DriftCheck | None,
+) -> None:
+    # The create_all every boot ran before #75, so a database that was only
+    # behind on tables is not drift. Inside the caller's transaction, which a
+    # refusal rolls back, so a refused database keeps none of them. ADR 0020.
+    metadata.create_all(connection)
+    differences = find_drift(
+        connection, metadata=metadata, schema=schema, extra_drift=extra_drift
+    )
+    if differences:
+        listed = "\n".join(f"  - {line}" for line in differences)
+        raise LegacyDrift(_REFUSED_FOR_DRIFT.format(schema=schema, differences=listed))
+
+
 def migrate(
     *,
     alembic_ini: Path,
@@ -195,8 +243,34 @@ def migrate(
     schema: str,
     extra_drift: DriftCheck | None = None,
 ) -> None:
-    """Bring `schema` to head."""
+    """Bring `schema` to head, adopting a database from before #75 first.
+
+    With a version table: upgrade. With none of the service's tables: upgrade
+    from nothing. With tables and no version table, the database predates #75:
+    it gets any missing table, is compared with `metadata`, and is stamped at
+    the baseline if they match. Raises LegacyDrift, having changed nothing, if
+    they do not or if the migrations have moved past the baseline. ADR 0020.
+    """
     config = _alembic_config(alembic_ini, url)
+    tables = run_in_transaction(url, functools.partial(_own_tables, schema=schema))
+    if tables and VERSION_TABLE not in tables:
+        scripts = ScriptDirectory.from_config(config)
+        baseline = scripts.get_base()
+        # Matching the models proves a database is at head, and head is the
+        # baseline only until a second revision exists.
+        if scripts.get_current_head() != baseline:
+            raise LegacyDrift(_REFUSED_PAST_BASELINE.format(schema=schema))
+        run_in_transaction(
+            url,
+            functools.partial(
+                _adopt_legacy_schema,
+                metadata=metadata,
+                schema=schema,
+                extra_drift=extra_drift,
+            ),
+        )
+        command.stamp(config, baseline)
+        logger.info("%s: adopted a database from before #75 at revision %s", schema, baseline)
     command.upgrade(config, "head")
 
 
@@ -207,20 +281,24 @@ def migrate_from_environment(
     schema: str,
     extra_drift: DriftCheck | None = None,
 ) -> int:
-    """`migrate` the database DATABASE_URL names, as an exit code: 0 done, 2 no URL.
+    """`migrate` the database DATABASE_URL names, as an exit code: 0 done, 1 refused, 2 no URL.
 
-    Reads DATABASE_URL alone rather than the service's settings, so the migrate
-    step needs no signing key.
+    A refusal is printed to stderr. Reads DATABASE_URL alone rather than the
+    service's settings, so the migrate step needs no signing key.
     """
     url = os.environ.get("DATABASE_URL")
     if not url:
         print("DATABASE_URL is required and has no default.", file=sys.stderr)
         return 2
-    migrate(
-        alembic_ini=alembic_ini,
-        url=url,
-        metadata=metadata,
-        schema=schema,
-        extra_drift=extra_drift,
-    )
+    try:
+        migrate(
+            alembic_ini=alembic_ini,
+            url=url,
+            metadata=metadata,
+            schema=schema,
+            extra_drift=extra_drift,
+        )
+    except LegacyDrift as refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     return 0
