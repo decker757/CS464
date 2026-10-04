@@ -712,7 +712,7 @@ was wrong:
 {
   "error": {
     "code": "invalid_request",
-    "message": "The request does not match this route's parameters or body; `details` says which part.",
+    "message": "Some of the details in this request aren't valid.",
     "details": [
       { "loc": ["query", "quantity"], "msg": "Input should be greater than 0", "type": "greater_than" }
     ]
