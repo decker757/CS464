@@ -28,7 +28,7 @@ from shared.migrating import (
     migrate,
     run_in_transaction,
 )
-from shared.testing import drop_own_tables, schema_catalog
+from shared.testing import compose_service, drop_own_tables, schema_catalog
 
 # The conftest has pointed DATABASE_URL at the test database by now.
 _URL = os.environ["DATABASE_URL"]
@@ -221,3 +221,16 @@ def test_starting_the_app_creates_no_table(empty_schema) -> None:
     asyncio.run(start_and_stop())
 
     assert _tables() == []
+
+
+def test_compose_starts_auth_only_after_its_migration_succeeds() -> None:
+    """A failed migration stops new code before it serves a request, and the
+    migration runs as the app's own role, never the superuser. ADR 0020."""
+    app = compose_service("auth")
+    migration = compose_service("auth-migrate")
+
+    assert app["depends_on"]["auth-migrate"] == {
+        "condition": "service_completed_successfully"
+    }
+    assert migration["environment"]["DATABASE_URL"] == app["environment"]["DATABASE_URL"]
+    assert migration["command"] == ["python", "migrate.py"]
