@@ -1,0 +1,14 @@
+# Runtime dependencies. Pinned so CI and production resolve identically, and
+# pinned to the same versions as the auth service so one Postgres and one JWT
+# library are in play across the backend.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
+
+# Persistence
+SQLAlchemy[asyncio]==2.0.52
+asyncpg==0.31.0
+
+# Token verification only. This service never signs.
+PyJWT==2.14.0

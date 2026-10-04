@@ -1,0 +1,611 @@
+"""Response contracts.
+
+These generate the OpenAPI schema at /docs, which is the contract Michelle's
+balance display codes against for [B-2] #33.
+
+One request model, `TradeIn`, for the one route that writes: [T-2] #22's
+`POST /ledger/markets/{market_id}/trades`. It carries no account, no amount
+and no leg — `extra="forbid"` refuses a body naming one — which is the answer
+ADR 0009's amendment gives to how a caller authenticates to the write path.
+
+**Amounts are strings, and that is the one deliberate departure from the market
+service**, whose `MarketOut` serialises `liquidity_b` as a JSON number. That was
+right there: the form compares `b` against `max_platform_loss` arithmetically,
+and `"250" + 10` is `"25010"` in a browser. It is wrong here. These are
+balances. A JSON number is an IEEE double by the time any frontend has parsed
+it, `0.1 + 0.2` is famously not `0.3`, and a credit total that is off by a
+floating-point epsilon is a bug report about money. A decimal string is exact,
+and [B-2] #33's "integers with consistent formatting" is something the browser
+can then produce rather than something it has to recover.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+
+from core.pricing import Side
+from model.entities import Entry, TransactionKind
+
+
+class BalanceOut(BaseModel):
+    """What one user holds, as at this request."""
+
+    user_id: uuid.UUID
+    account_id: uuid.UUID | None = Field(
+        description=(
+            "Never null on `/balances/me`. Null on the admin route for an id "
+            "the ledger has never opened an account for, which that route "
+            "does not do on its behalf."
+        ),
+    )
+
+    balance: Decimal = Field(
+        description=(
+            "Available credits, as an exact decimal string. The sum of every "
+            "entry on this account and nothing else — there is no stored "
+            "balance for this to disagree with."
+        ),
+        examples=["1000.0000"],
+    )
+
+    @field_serializer("balance")
+    def _as_string(self, value: Decimal) -> str:
+        """Exact on the wire. See the note at the top of this module."""
+        return str(value)
+
+
+class PortfolioPositionOut(BaseModel):
+    """One outcome the caller still holds, valued at liquidation. [T-4] #24
+
+    `value` is what selling the whole position now would credit — never
+    `quantity * price`. See `GET /ledger/portfolio/me` in
+    `docs/api/ledger-service.md` and ADR 0018 for why.
+    """
+
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    outcome_position: int = Field(
+        ge=0, description="The outcome's order within its market."
+    )
+
+    quantity: Decimal
+    cost_basis: Decimal = Field(
+        description="What this position cost to build, at average cost."
+    )
+    average_entry_price: Decimal = Field(
+        description="cost_basis / quantity, ROUND_HALF_UP at scale 4."
+    )
+    price: Decimal = Field(
+        description=(
+            "The outcome's marginal price — informational only, and equal "
+            "to the snapshot's for the same state_version. Not what `value` "
+            "is computed from."
+        )
+    )
+    value: Decimal = Field(
+        description=(
+            "What selling the whole position now would credit (ADR 0018), "
+            "not quantity * price."
+        )
+    )
+    unrealized_pnl: Decimal = Field(description="value - cost_basis.")
+    state_version: int = Field(
+        description="This market's book version this row was valued at."
+    )
+
+    @field_serializer(
+        "quantity",
+        "cost_basis",
+        "average_entry_price",
+        "price",
+        "value",
+        "unrealized_pnl",
+    )
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class PortfolioOut(BaseModel):
+    """The caller's balance and every position they still hold. [T-4] #24
+
+    `positions_value` is the sum of the positions' `value`, and `net_worth`
+    is `balance + positions_value`, exactly — nothing is rounded after the
+    valuation (ADR 0018).
+    """
+
+    user_id: uuid.UUID
+    account_id: uuid.UUID
+
+    balance: Decimal
+    positions_value: Decimal = Field(description="The sum of the positions' values.")
+    net_worth: Decimal = Field(description="balance + positions_value, exactly.")
+
+    positions: list[PortfolioPositionOut] = Field(
+        description=(
+            "Only outcomes with quantity > 0, ordered by market_id then "
+            "outcome_position. A position sold to zero is not shown."
+        )
+    )
+
+    @field_serializer("balance", "positions_value", "net_worth")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+@dataclass(frozen=True)
+class TradeFields:
+    """The five fields a history row carries for a trade. [T-5] #25.
+
+    All null by default: that is the grant's row, and any kind the history
+    does not recognise. `service/ledger_service.py` fills them in; they live
+    here so `LedgerEntryOut.of` can take them without importing `service`.
+    """
+
+    market_id: uuid.UUID | None = None
+    outcome_id: uuid.UUID | None = None
+    side: Side | None = None
+    quantity: Decimal | None = None
+    average_price: Decimal | None = None
+
+
+class LedgerEntryOut(BaseModel):
+    """One side of one movement, as it was written.
+
+    Nothing here can have changed since: `ledger.entries` is append-only, no
+    code path updates a row, and a trigger refuses the attempt.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    created_at: datetime
+
+    amount: Decimal = Field(
+        description=(
+            "Signed, as an exact decimal string. Negative took credits out of "
+            "this account, positive put them in."
+        ),
+        examples=["1000.0000"],
+    )
+
+    balance_after: Decimal = Field(
+        description=(
+            "What the account held once this entry had landed, as an exact "
+            "decimal string. [4.1] #13's running balance.\n\n"
+            "Derived per read by summing every entry up to and including this "
+            "one — there is no stored column for it to disagree with, and the "
+            "newest entry's value is the same number `/balance` returns. "
+            "Anchored to the entry rather than accumulated from today, so a "
+            "movement arriving while you page cannot change a figure already "
+            "on the screen. Entries are listed in the order they committed, "
+            "so this is always a balance the account actually held (#187)."
+        ),
+        examples=["1000.0000"],
+    )
+
+    transaction_id: uuid.UUID
+    kind: TransactionKind = Field(
+        description=(
+            "Why the credits moved. New values appear as stories land; treat "
+            "an unrecognised one as opaque rather than as an error."
+        ),
+        examples=[TransactionKind.SIGNUP_GRANT],
+    )
+    context: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Movement-specific detail, shaped by `kind`. Render what you "
+            "recognise and ignore the rest."
+        ),
+    )
+
+    market_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Set on a `trade_buy` or `trade_sell` row; `null` on every other "
+            "kind, the grant included. [T-5] #25."
+        ),
+    )
+    outcome_id: uuid.UUID | None = Field(
+        default=None,
+        description="Set alongside `market_id`, and null under the same rule.",
+    )
+    side: Side | None = Field(
+        default=None,
+        description=(
+            "`buy` or `sell`, taken from `kind` rather than from `context`. "
+            "Null on every row that is not a trade."
+        ),
+    )
+    quantity: Decimal | None = Field(
+        default=None,
+        description=(
+            "The trade's quantity, at scale 4 whatever the trader sent. Null "
+            "on every row that is not a trade."
+        ),
+    )
+    average_price: Decimal | None = Field(
+        default=None,
+        description=(
+            "The average fill price, `|amount| ÷ quantity` rounded half-up "
+            "at scale 4 — not the marginal price the portfolio and the "
+            "snapshot report. Null on every row that is not a trade."
+        ),
+    )
+
+    @field_serializer("amount", "balance_after")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("quantity", "average_price")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
+
+    @field_validator("created_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        """Guarantee an explicit offset on the way out.
+
+        The same guard the other three services carry. A driver handing back a
+        naive datetime would make one entry serialise with a trailing Z and
+        another without, leaving the frontend to special-case which.
+        """
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+    @classmethod
+    def of(
+        cls,
+        entry: Entry,
+        *,
+        balance_after: Decimal,
+        trade: TradeFields = TradeFields(),
+    ) -> LedgerEntryOut:
+        """Flatten an entry and the transaction it belongs to into one row.
+
+        The nesting is real — two entries share one transaction — but nobody
+        reading their own history wants it. They want a statement: a date, an
+        amount, what it was for, and what was left. `kind` and `context` are
+        lifted out of the transaction so that a client renders one list rather
+        than walking a tree to find the word "grant".
+
+        `balance_after` and `trade` arrive as arguments rather
+        than being read off the entry, because there is nothing on the entry to
+        read them from: they are derived a page at a time by
+        `service/ledger_service.py`, which is the only layer that knows where
+        in the feed this row sits and what its transaction's `kind` and
+        `context` mean. A `HistoryRow` parameter would read better and would
+        have this module import `service`, which is the one direction the
+        layering forbids. [T-5] #25.
+        """
+        return cls(
+            id=entry.id,
+            created_at=entry.created_at,
+            amount=entry.amount,
+            balance_after=balance_after,
+            transaction_id=entry.transaction_id,
+            kind=entry.transaction.kind,
+            context=entry.transaction.context,
+            market_id=trade.market_id,
+            outcome_id=trade.outcome_id,
+            side=trade.side,
+            quantity=trade.quantity,
+            average_price=trade.average_price,
+        )
+
+
+class OutcomePriceOut(BaseModel):
+    """One outcome's price. [T-1] #21.
+
+    Field for field what `realtime_service`'s `OutcomePrice` puts on the
+    socket — `outcome_id`, `position`, `price` — so a client renders a
+    snapshot, a price frame and this preview with one function rather than
+    three. That includes `price`'s bounds, the one invariant among the three:
+    a price outside [0, 1] is refused on the socket and must not ship here.
+    """
+
+    outcome_id: uuid.UUID
+    position: int = Field(
+        ge=0,
+        description=(
+            "The outcome's order within the market, so a categorical market "
+            "renders the same way twice without a second lookup."
+        ),
+    )
+    price: Decimal = Field(
+        ge=0,
+        le=1,
+        description="The marginal price of one share, as an exact decimal string.",
+        examples=["0.7216"],
+    )
+
+    @field_serializer("price")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class PreviewOut(BaseModel):
+    """What one trade would cost, and how it would move the market. [T-1] #21.
+
+    `state_version` is the quote reference (D-011) and the only one — nothing
+    else here is a second answer to "has this market moved". [T-2] #22
+    compares it, under its own lock, against the version current when a trade
+    is confirmed.
+    """
+
+    market_id: uuid.UUID
+    state_version: int = Field(
+        description=(
+            "The book's own counter, the same one `PriceEvent` and the "
+            "snapshot report. Not a JSON string: it is a count, not money."
+        )
+    )
+
+    side: Side
+    outcome_id: uuid.UUID
+
+    quantity: Decimal = Field(
+        description=(
+            "Echoed back at the scale it arrived with, trailing zeros and "
+            "all (D-038) — `10` comes back as `10`, `10.0000` as `10.0000`. "
+            "It is not normalised to scale 4: this field is how a client "
+            "matches a quote to the keystroke that asked for it. Compare it "
+            "as a decimal rather than as a string — the scale survives the "
+            "round trip, the exact characters do not, so `.5` comes back as "
+            "`0.5` and `10.` as `10`."
+        ),
+        examples=["10.0000"],
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed: negative on a buy, because credits leave the trader; "
+            "positive on a sell, because they arrive. Quantized by the same "
+            "function [T-2] #22 uses to build its legs, buy rounding the "
+            "ceiling and sell the floor, so this is the number that would be "
+            "charged."
+        ),
+        examples=["-7.3152"],
+    )
+    average_price: Decimal = Field(
+        description=(
+            "abs(total) / quantity, from the quantized total, ROUND_HALF_UP "
+            "at scale 4. **Do not render it as a fraction of a credit, and "
+            "do not assume it lies strictly between 0 and 1.** LMSR prices "
+            "are a softmax, so a share is worth under one credit and an "
+            "ordinary trade averages accordingly — but this is derived from "
+            "a total that has already been rounded to a tick, and both ends "
+            "escape. The smallest buy there is, 0.0001 shares, costs a "
+            "fraction of a tick and is charged the whole one (D-039), which "
+            "divides out to exactly 1.0000; on a skewed book the engine's "
+            "last digit can carry a sub-tick cost over a tick boundary "
+            "(D-044) and it reads higher still. At the other end, a large "
+            "buy in a saturated outcome can cost one tick in total and "
+            "divide down to 0.0000. Display only — [T-2] #22 charges "
+            "`total`, never quantity * average_price."
+        ),
+        examples=["0.7315"],
+    )
+
+    prices: list[OutcomePriceOut] = Field(
+        description="The market's current price, every outcome, ordered by position."
+    )
+    post_trade_prices: list[OutcomePriceOut] = Field(
+        description=(
+            "The price of every outcome this trade would leave behind, "
+            "computed from `core/lmsr.py` and not estimated."
+        )
+    )
+
+    @field_serializer("quantity", "total", "average_price")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class TradeIn(BaseModel):
+    """A trade order, a buy or a sell. [T-2] #22, [T-3] #23.
+
+    `extra="forbid"`, and that is the whole of ADR 0009's amendment: the
+    route "takes no account, no amount and no leg", which is only true if a
+    body naming one is refused rather than silently dropped — Pydantic's
+    default is `extra="ignore"`. `total` is in that refusal too, because it
+    is the field a client would most plausibly echo back from a preview.
+
+    `side` is `core.pricing.Side`: anything else is a 422 here rather than a
+    refusal a layer down, and the route passes the enum straight through.
+
+    `state_version` is required, not optional with a default — an optional
+    staleness field would let a client silently opt out of the only
+    staleness protection a trade has.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome_id: uuid.UUID
+    side: Side = Field(
+        description="`buy` or `sell`; anything else is 422."
+    )
+    quantity: Decimal = Field(
+        gt=0,
+        max_digits=18,
+        decimal_places=4,
+        description=(
+            "Shares to trade. At most four decimal places (D-038) — a fifth "
+            "is 422 rather than rounded. At most 18 digits in all, the width "
+            "of `Numeric(18, 4)` and the preview's own ceiling: a quantity "
+            "wider than the column could never be written as a share count."
+        ),
+    )
+    state_version: int = Field(
+        description=(
+            "The `state_version` the preview quoted. Compared, under the "
+            "book's own lock, for strict equality against the market's "
+            "current one; a mismatch either direction is `409 quote_stale`."
+        )
+    )
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=175,
+        description=(
+            "One trade, once, however many times this is sent. The stored "
+            "key is derived — `trade:<user_id>:<market_id>:<this value>` — "
+            "so this string only has to be unique to the caller who sent it. "
+            "Bounded so the derived key always fits `transactions."
+            "idempotency_key`'s column width (255): 80 characters of "
+            "derivation prefix, 175 left for this value."
+        ),
+    )
+
+
+class TradeOut(BaseModel):
+    """What one trade did. [T-2] #22, [T-3] #23.
+
+    Built from `Transaction.context` by `service/trading.py::result_of`, the
+    one function the fresh path and both replay paths all call — so a retry
+    cannot return a different shape from the original, and a retry returns
+    this byte-for-byte.
+
+    Carries no prices. A replayed price was true once and is a lie
+    afterwards, unlike `total`, which is what the trader was charged for
+    ever — prices are the realtime contract's, the `price` frame or the
+    snapshot route beside this one.
+    """
+
+    transaction_id: uuid.UUID
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: Side
+    quantity: Decimal = Field(
+        description=(
+            "Echoed back exactly as it was sent, trailing zeros and all, the "
+            "same as the preview's (D-038) — `10` stays `10`, not `10.0000`. "
+            "A replay compares it numerically, so either spelling is the "
+            "same trade."
+        )
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed and quantized exactly as `PreviewOut.total` is — "
+            "negative on a buy, because credits leave the trader, and "
+            "positive on a sell, because credits arrive. This is the number "
+            "that was charged or paid, the same one the preview quoted."
+        )
+    )
+    state_version: int = Field(
+        description="The book's counter after this trade, not before it."
+    )
+
+    @field_serializer("quantity", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+# One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared
+# separately and field for field the same — same three fields, same bounds,
+# same `str(value)` serializer — with only `OutcomePrice` pinned against
+# `realtime_service` by `test_price_event.py`. Nothing pinned the two local
+# copies against each other, so a bound changed on one would have diverged
+# silently from the other; and `SnapshotOut` used one while `PriceEvent` used
+# the other, which is exactly the pair both docs pages promise are
+# byte-for-byte identical. The alias keeps the name the pin reads and the
+# name the snapshot was written against, over one definition.
+OutcomePrice = OutcomePriceOut
+
+
+class PriceEvent(BaseModel):
+    """A market's price after something moved it. The Redis payload. [F-9] #112.
+
+    The producer's half of the contract `realtime_service/model/schemas.py`
+    defines and validates on the way in with `extra="forbid"`. Copied rather
+    than imported — see `OutcomePrice`'s docstring — and pinned the same way.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    market_id: uuid.UUID
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePrice] = Field(min_length=2)
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        """A naive value is UTC, and leaves with the offset that says so.
+
+        `SnapshotOut` below does the same to its copy of this field. Without
+        it a naive datetime from [T-2] #22 would reach the socket with no
+        offset, and every browser would read it as local time. Naive versus
+        aware has already caused bugs in this repository (CLAUDE.md).
+        """
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class SnapshotOut(BaseModel):
+    """The authoritative price read. [F-9] #112.
+
+    Byte-for-byte the `price` frame `docs/api/realtime-service.md` pins,
+    without its `type` — `market_id`, `state_version`, `prices`,
+    `occurred_at` — so a client renders a snapshot and a price frame with one
+    function.
+    """
+
+    market_id: uuid.UUID
+    # The same constraints `PriceEvent` puts on these two fields. They were
+    # absent here, which made "byte-for-byte the `price` frame" a promise the
+    # models themselves disagreed with: a client validating one shape and
+    # handed the other would accept what the socket refuses. Harmless today
+    # because `book_prices` enforces the floor upstream, and invisible the day
+    # a second caller does not go through it.
+    state_version: int = Field(ge=0)
+    prices: list[OutcomePriceOut] = Field(min_length=2)
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        """`.isoformat()`, the same call `PriceEvent` makes, and for the same
+        reason the docstring above gives.
+
+        Without this pydantic writes its own RFC-3339 form, which spells UTC
+        as a trailing `Z` where `.isoformat()` spells it `+00:00`. Both are
+        valid and they are not the same string, so "byte-for-byte the `price`
+        frame" was false for this one field — and the test that guards it
+        only asserted the offset was present, which is true of both.
+        """
+        return value.isoformat()
+
+
+class LedgerEntryListResponse(BaseModel):
+    """One page of a user's history, newest first."""
+
+    entries: list[LedgerEntryOut]
+
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pass back as `cursor` for the next page. Null means this page is "
+            "the end of the history. Opaque: echo it unmodified rather than "
+            "constructing one."
+        ),
+    )
+
+    has_more: bool = Field(
+        description=(
+            "Whether another page exists. Equivalent to `next_cursor` being "
+            "non-null, and stated so a client can drive a 'load more' control "
+            "without reasoning about the cursor at all."
+        ),
+    )

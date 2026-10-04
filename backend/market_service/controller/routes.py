@@ -1,0 +1,405 @@
+"""HTTP routes for administrators' markets.
+
+Thin: parse, delegate to the service layer, choose a status code. Domain errors
+become JSON in `errors.register_error_handlers`.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Query, Response, status
+
+from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
+from model.entities import MarketStatus
+from model.schemas import (
+    MarketCloseRequest,
+    MarketDraftRequest,
+    MarketListResponse,
+    MarketOut,
+    MarketOverviewResponse,
+    MarketOverviewRowOut,
+    MarketSaveResponse,
+    MarketSummaryOut,
+    OutcomeApprovalRequest,
+    OutcomeProposalRequest,
+    OutcomeRejectionRequest,
+    ValidationProblemOut,
+)
+from service import browsing, market_service
+
+# Every route here requires an administrator; traders read through
+# `controller/public_routes.py`.
+router = APIRouter(prefix="/markets", tags=["markets"])
+
+
+@router.post(
+    "",
+    response_model=MarketSaveResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Save a market as a draft, or submit it",
+    description=(
+        "[1.1] #1. One endpoint for both the form's three-second autosave "
+        "(`status: draft`) and its submit button (`status: submitted`).\n\n"
+        "Idempotent on `draft_key`: send the same client-generated UUID on "
+        "every save for one form and this updates a single market. 201 the "
+        "first time, 200 after that.\n\n"
+        "A draft is never rejected for being incomplete, but the response "
+        "always reports what would block submission. A submission is refused "
+        "with 422 unless that list is empty, and writes nothing when refused.\n\n"
+        "A successful submission appends an entry to the audit log ([4.3] "
+        "#15), in the same transaction, so the two cannot disagree. An "
+        "autosave does not."
+    ),
+    responses={
+        201: {"description": "A market was created for this draft_key."},
+        403: {"description": "Authenticated, but not an administrator."},
+        409: {"description": "An autosave arrived for an already-submitted market."},
+        422: {"description": "Submission refused; `error.details` lists every problem."},
+    },
+)
+async def save_market(
+    payload: MarketDraftRequest,
+    actor: CurrentActor,
+    session: DbSession,
+    response: Response,
+) -> MarketSaveResponse:
+    market, problems, created = await market_service.save(session, actor, payload)
+
+    if created:
+        response.status_code = status.HTTP_201_CREATED
+
+    return MarketSaveResponse(
+        market=MarketOut.model_validate(market),
+        blocking_submission=[
+            ValidationProblemOut(field=p.field, message=p.message) for p in problems
+        ],
+    )
+
+
+@router.post(
+    "/{market_id}/publish",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Publish a submitted market, making it tradeable",
+    description=(
+        "[1.3] #3. Moves a market from `submitted` to `open`, which is the "
+        "status traders browse on.\n\n"
+        "Carries no body. The terms that go live are the terms that were "
+        "submitted, so there is no request that can change a market and expose "
+        "it in the same call.\n\n"
+        "Every rule in the submission checklist is re-run against the clock "
+        "now, because a market submitted last week may have a close time that "
+        "has since passed. A failure is the same `draft_incomplete` 422 the "
+        "submit button returns, with the same `details` list.\n\n"
+        "One way. There is no unpublish, and every later save on this market "
+        "is refused with 409.\n\n"
+        "Appends a `market.published` entry to the audit log ([4.3] #15) in "
+        "the same transaction, so a market cannot become tradeable without a "
+        "record of who made it so."
+    ),
+    responses={
+        403: {"description": "Authenticated, but not an administrator."},
+        404: {"description": "No such market, or it belongs to another administrator."},
+        409: {
+            "description": (
+                "`market_not_submitted` — still a draft, so submit it first. "
+                "`market_already_open` — it is already live."
+            )
+        },
+        422: {"description": "Publish refused; `error.details` lists every problem."},
+    },
+)
+async def publish_market(
+    market_id: uuid.UUID, actor: CurrentActor, session: DbSession
+) -> MarketOut:
+    market = await market_service.publish(session, actor, market_id)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/close",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Close an open market early, with a reason",
+    description=(
+        "[2.3] #7. Stops an `open` market before its `close_time`, moving it "
+        "to `closed`. Trading stops immediately and positions are untouched: "
+        "the market's next move is [3.1] #9's proposed outcome, exactly as if "
+        "it had run to its closing time.\n\n"
+        "`reason` is required and is recorded in the audit log against the "
+        "administrator who closed it ([4.3] #15), in the same transaction, so "
+        "a market cannot stop early without a record of why. It is kept "
+        "nowhere else — it is not a field on the market, and this response "
+        "does not carry it back.\n\n"
+        "**Any administrator may close any market**, unlike the "
+        "creator-scoped routes here. A broken market that only its creator "
+        "can stop is not oversight. The audit entry is what makes that "
+        "accountable.\n\n"
+        "One way. There is no reopen, `close_time` is not rewritten, and every "
+        "later save on this market is refused with 409.\n\n"
+        "A market whose `close_time` has already passed is a `409 "
+        "market_closed`, whether or not the background sweep has written the "
+        "status yet — it has already stopped, and nothing an administrator "
+        "does now stopped it."
+    ),
+    responses={
+        403: {"description": "Authenticated, but not an administrator."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_not_open` — still a draft or submitted, so nothing "
+                "can be traded in it. `market_closed` — it has already "
+                "stopped. `market_pending_resolution` — it stopped and an "
+                "outcome is already proposed. `market_already_approved` — it "
+                "stopped and its outcome is already approved."
+            )
+        },
+        422: {"description": "Close refused; `error.details` names `reason`."},
+    },
+)
+async def close_market_early(
+    market_id: uuid.UUID,
+    payload: MarketCloseRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    market = await market_service.close_early(session, actor, market_id, payload)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/propose-outcome",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Propose the winning outcome of a closed market",
+    description=(
+        "[3.1] #9. Moves a market from `closed` to `pending_resolution`, "
+        "naming the outcome the administrator believes won and the evidence "
+        "for it.\n\n"
+        "Only a `closed` market can be proposed for. A market still accepting "
+        "trades is a `409 market_not_closed` — proposing an outcome for one "
+        "would announce the answer to a question people are still betting "
+        "on.\n\n"
+        "A market whose closing time has just passed may still read "
+        "`\"status\": \"open\"` for a few seconds, because the status column "
+        "is written by a background sweep. It is a `409` until the sweep "
+        "catches up. Nothing can be traded in that window either.\n\n"
+        "`winning_outcome_id` must be one of this market's own `outcomes`, and "
+        "at least one of `evidence_url` and `evidence_note` is required. A "
+        "failure is a `422 proposal_incomplete` carrying the same `details` "
+        "array shape as a refused submission.\n\n"
+        "Nothing is settled here and no credits move. [3.2] #10 asks a second "
+        "administrator to approve or reject; [3.4] #12 pays out.\n\n"
+        "Appends a `market.outcome_proposed` entry to the audit log ([4.3] "
+        "#15) in the same transaction. That entry outlives the columns on the "
+        "market, which a rejection clears."
+    ),
+    responses={
+        403: {"description": "Authenticated, but not an administrator."},
+        404: {"description": "No such market, or it belongs to another administrator."},
+        409: {
+            "description": (
+                "`market_not_closed` — it is still running, so wait. "
+                "`market_pending_resolution` — an outcome has already been "
+                "proposed and is waiting on a second administrator. "
+                "`market_already_approved` — a second administrator has "
+                "already approved one."
+            )
+        },
+        422: {"description": "Proposal refused; `error.details` lists every problem."},
+    },
+)
+async def propose_market_outcome(
+    market_id: uuid.UUID,
+    payload: OutcomeProposalRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    market = await market_service.propose_outcome(session, actor, market_id, payload)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/approve-outcome",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Approve another administrator's proposed outcome",
+    description=(
+        "[3.2] #10. Moves a market from `pending_resolution` to `approved`. "
+        "The proposed winner is now decided; nothing is paid out yet — "
+        "[3.3] #11's dispute window and [3.4] #12's settlement come next.\n\n"
+        "The body names which proposal is being approved — `proposal_id`, "
+        "from the same `GET /markets/{id}` response the reviewer read — and "
+        "nothing else. The approver is agreeing with the proposal and evidence "
+        "already on the market, not adding to them. If that proposal has "
+        "since been rejected and replaced, this is a `409 "
+        "proposal_superseded` and nothing is approved: reload and review the "
+        "one that is waiting.\n\n"
+        "**The administrator who proposed the outcome cannot approve it**, and "
+        "gets a `403 second_administrator_required`. Hide or disable the "
+        "control when `proposed_by_id` is the signed-in user's id — compare "
+        "the id, never `proposed_by_username`. Any other administrator may "
+        "approve, including one who did not create the market.\n\n"
+        "The response carries both identities: `proposed_by_*` stay as they "
+        "were, and `approved_by_id`, `approved_by_username` and `approved_at` "
+        "are set.\n\n"
+        "Appends a `market.outcome_approved` entry to the audit log ([4.3] "
+        "#15) under the approving administrator, in the same transaction."
+    ),
+    responses={
+        403: {
+            "description": (
+                "`not_an_administrator` — a trader. "
+                "`second_administrator_required` — the caller proposed this "
+                "outcome, and a different administrator has to decide it."
+            )
+        },
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_not_pending_resolution` — there is no proposal "
+                "waiting. `market_already_approved` — it has already been "
+                "approved. `proposal_superseded` — `proposal_id` is not the "
+                "proposal waiting now; it was rejected and replaced."
+            )
+        },
+    },
+)
+async def approve_market_outcome(
+    market_id: uuid.UUID,
+    payload: OutcomeApprovalRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    market = await market_service.approve_outcome(session, actor, market_id, payload)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/reject-outcome",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Reject another administrator's proposed outcome, with a reason",
+    description=(
+        "[3.2] #10. Sends a market from `pending_resolution` back to "
+        "`closed`, clearing every `proposed_*` field. The creator may then "
+        "propose again. `closed_at` is unchanged: trading stopped when it "
+        "stopped.\n\n"
+        "`reason` is required and is recorded in the audit log against the "
+        "administrator who rejected the proposal, beside a copy of the "
+        "proposal it cleared, in the same transaction. It is kept nowhere "
+        "else — it is not a field on the market, and this response does not "
+        "carry it back.\n\n"
+        "**The administrator who proposed the outcome cannot reject it "
+        "either**, and gets a `403 second_administrator_required`: a proposer "
+        "withdrawing their own proposal would be a way back to `closed` with "
+        "no second administrator in it. Any other administrator may reject.\n\n"
+        "`proposal_id` must be the proposal the reviewer read, as for "
+        "approval; a rejection written about a proposal that has since been "
+        "replaced is a `409 proposal_superseded` and clears nothing.\n\n"
+        "An `approved` market cannot be rejected; it is a `409 "
+        "market_already_approved`."
+    ),
+    responses={
+        403: {
+            "description": (
+                "`not_an_administrator` — a trader. "
+                "`second_administrator_required` — the caller proposed this "
+                "outcome, and a different administrator has to decide it."
+            )
+        },
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_not_pending_resolution` — there is no proposal "
+                "waiting. `market_already_approved` — it has already been "
+                "approved. `proposal_superseded` — `proposal_id` is not the "
+                "proposal waiting now; it was rejected and replaced."
+            )
+        },
+        422: {"description": "Rejection refused; `error.details` names `reason`."},
+    },
+)
+async def reject_market_outcome(
+    market_id: uuid.UUID,
+    payload: OutcomeRejectionRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    market = await market_service.reject_outcome(session, actor, market_id, payload)
+    return MarketOut.model_validate(market)
+
+
+@router.get(
+    "",
+    response_model=MarketListResponse,
+    summary="List my own markets",
+    description=(
+        "[1.1] #1. Scoped to the calling administrator. Another admin's drafts "
+        "are not here, and neither are anyone else's."
+    ),
+)
+async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListResponse:
+    markets = await market_service.list_for_creator(session, admin.user_id)
+    return MarketListResponse(
+        markets=[MarketSummaryOut.model_validate(m) for m in markets]
+    )
+
+
+@router.get(
+    "/overview",
+    response_model=MarketOverviewResponse,
+    summary="Every market I can see, filtered by status, with counts",
+    description=(
+        "[2.1] #5. Every published market, plus the calling administrator's "
+        "own drafts and submissions; another administrator's are neither "
+        "listed nor counted.\n\n"
+        "`status` is derived from the clock (ADR 0011): a market past its "
+        "`close_time` is `closed` here even before the sweep writes it. "
+        "`counts` has a key for every status, zero when none, over every "
+        "market the caller can see, and ignores the `status` filter, so each "
+        "count equals the length of that status's filtered list.\n\n"
+        "Ordered by soonest `close_time`, markets with none last, then by id."
+    ),
+    responses={403: {"description": "`not_an_administrator` — a trader."}},
+)
+async def market_overview(
+    admin: CurrentAdmin,
+    session: DbSession,
+    status: MarketStatus | None = Query(
+        default=None,
+        description="Restrict the list to one status. Counts are unaffected.",
+    ),
+) -> MarketOverviewResponse:
+    # One clock for the request, so the list and the counts agree. Same as
+    # `public_routes.py`.
+    now = datetime.now(UTC)
+
+    result = await browsing.overview(
+        session, caller_id=admin.user_id, status=status, now=now
+    )
+    return MarketOverviewResponse(
+        markets=[MarketOverviewRowOut.model_validate(card) for card in result.markets],
+        counts=result.counts,
+    )
+
+
+@router.get(
+    "/{market_id}",
+    response_model=MarketOut,
+    summary="Read one of my own markets",
+    description=(
+        "[1.1] #1. Reloads a draft after a page refresh. Returns 404 for a "
+        "market belonging to another administrator, not 403: a 403 would "
+        "confirm that market exists, which is most of what the draft "
+        "visibility rule is meant to hide."
+    ),
+    responses={404: {"description": "No such market, or it is not yours."}},
+)
+async def get_market(
+    market_id: uuid.UUID, admin: CurrentAdmin, session: DbSession
+) -> MarketOut:
+    market = await market_service.get(session, admin.user_id, market_id)
+    return MarketOut.model_validate(market)

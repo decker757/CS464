@@ -1,0 +1,238 @@
+# [5.1] #17 — the whole backend stack with one command.
+# Every environment difference comes from the environment, nothing hardcoded.
+#
+#   docker compose up -d db redis # just the backing services, for tests on the host
+#   docker compose up --build     # the full stack
+
+name: cs464
+
+services:
+  db:
+    image: postgres:17.2-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cs464}
+      # Required. Empty or unset and compose refuses to start, rather than
+      # falling back to a default. The guidance lives in this comment, not in
+      # the value, so secret scanners read the line as a pure interpolation.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:-cs464}
+      # Consumed by sql/00-init.sh to create the per-service login roles.
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?}
+      LEDGER_DB_PASSWORD: ${LEDGER_DB_PASSWORD:?}
+      MARKET_DB_PASSWORD: ${MARKET_DB_PASSWORD:?}
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:?}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # The .sql files mount outside the init directory so the entrypoint does
+      # not run them directly, without the variables they expect. The shim
+      # applies them in order. First initialisation only: re-running means
+      # `docker compose down -v`.
+      - ./sql:/sql:ro
+      - ./sql/00-init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    healthcheck:
+      # `auth` waits on this, so it never starts against a database that is
+      # still initialising.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cs464} -d ${POSTGRES_DB:-cs464}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  auth:
+    build:
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: auth_service/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Connects as auth_svc, not the superuser, so the grants in
+      # sql/02-schemas.sql actually constrain this service.
+      DATABASE_URL: postgresql+asyncpg://auth_svc:${AUTH_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      # Required, same as POSTGRES_PASSWORD above. Copy .env.example to .env
+      # and fill both in.
+      JWT_SECRET: ${JWT_SECRET:?}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${AUTH_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  # [1.1] #1. Owns the market schema, connects as market_svc, and cannot read
+  # auth.users. It recognises an administrator from the signed access token
+  # alone, which is why it needs the same JWT_SECRET and nothing else from auth.
+  market:
+    build:
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: market_service/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://market_svc:${MARKET_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      # The same value the auth service signs with. Under HS256 that means this
+      # service could also mint tokens; ADR 0002 records why that is acceptable
+      # today and what the upgrade is.
+      JWT_SECRET: ${JWT_SECRET:?}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      # [1.2] #2. Optional, unlike the two above: a liquidity parameter is not
+      # a credential, so a default here is a tuning choice rather than a
+      # published secret. An admin overrides it per market.
+      DEFAULT_LIQUIDITY_B: ${DEFAULT_LIQUIDITY_B:-100}
+      # [F-4] #44. How often this replica looks for markets whose closing time
+      # has passed, and whether it looks at all.
+      #
+      # Neither is a correctness knob. A market stops accepting trades when its
+      # close_time passes, which the trade path derives rather than reading off
+      # the status column, so this interval is how stale an admin dashboard's
+      # status counts may be and nothing more. Turning the sweep off does not
+      # make a closed market tradeable again. backend/market_service/service/
+      # closing.py has the argument.
+      CLOSE_SWEEP_SECONDS: ${CLOSE_SWEEP_SECONDS:-10}
+      CLOSE_SWEEP_BATCH: ${CLOSE_SWEEP_BATCH:-100}
+      CLOSE_SWEEP_ENABLED: ${CLOSE_SWEEP_ENABLED:-true}
+    ports:
+      - "${MARKET_PORT:-8001}:8000"
+    restart: unless-stopped
+
+  # [F-1] #41. Owns the ledger schema, connects as ledger_svc, and holds every
+  # credit in the system. Like the market service it cannot read auth.users and
+  # identifies a caller from the signed access token alone, so it needs the same
+  # JWT_SECRET and nothing else from auth.
+  #
+  # Note what is missing: no service depends on this one, and it depends on
+  # none. The starting grant [B-1] #32 is minted here, lazily, on the first read
+  # of a balance — there is no event from the auth service to wait for, and no
+  # window in which a new account's balance is observably wrong.
+  ledger:
+    build:
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: ledger_service/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ledger_svc:${LEDGER_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      # The same value the auth service signs with. Verification only; there is
+      # no encode path in this service and a test asserts one does not appear.
+      JWT_SECRET: ${JWT_SECRET:?}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      # [B-1] #32. Optional, like DEFAULT_LIQUIDITY_B above and unlike the two
+      # required values: a starting grant is a number, not a credential.
+      STARTING_CREDITS: ${STARTING_CREDITS:-1000}
+      # [F-9] #112. The bus the ledger publishes prices to, and the same string
+      # the realtime service below subscribes on — move one, move both. Written
+      # out rather than read from .env: `.env`'s REDIS_URL is the host-side
+      # address the test suites use (localhost), which inside this container
+      # is the container itself.
+      #
+      # No `depends_on: redis`, on purpose. An unreachable bus costs a
+      # broadcast, not a trade, and a ledger that waited for Redis to be
+      # healthy would turn a dead bus into a dead ledger.
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${LEDGER_PORT:-8003}:8000"
+    restart: unless-stopped
+
+  # [4.3] #15. Reads the shared audit log and nothing else. Unlike the two
+  # above it owns no schema: `audit.admin_actions` belongs to the superuser and
+  # is created by sql/02-schemas.sql, because several services append to it and
+  # none of them should be able to define it. This service holds SELECT, the
+  # writers hold INSERT, and nobody anywhere holds UPDATE or DELETE.
+  #
+  # Note what is missing: no service depends on this one. An admin action
+  # writes its own audit entry inside its own database transaction, so a
+  # container that is down, redeploying or removed entirely cannot lose an
+  # entry or fail an action. It is a reader of a table that is already being
+  # written. See docs/adr/0006-audit-log-write-path.md.
+  audit:
+    build:
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: audit_service/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://audit_svc:${AUDIT_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+      # The same value the auth service signs with. Verification only; there is
+      # no encode path in this service and a test asserts one does not appear.
+      JWT_SECRET: ${JWT_SECRET:?}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${AUDIT_PORT:-8002}:8000"
+    restart: unless-stopped
+
+  # [F-2] #42. The pub/sub bus, and the only thing in this stack that is not
+  # Postgres or a Python service.
+  #
+  # Deliberately without persistence. A price event is worth broadcasting for
+  # about as long as it takes to reach a socket, and anything that misses it
+  # recovers by fetching a snapshot rather than by replaying a log — so an RDB
+  # file on disk would be writing down something nobody will ever read back.
+  # It also means this container can be deleted and recreated at any time
+  # without losing anything that existed.
+  redis:
+    image: redis:8.2-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      # `realtime` waits on this, so it never starts against a bus that is
+      # still coming up — though it would survive that anyway; the subscriber
+      # retries with backoff rather than exiting.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # [F-2] #42. Holds the websocket connections and fans each committed trade's
+  # new price out to whoever is watching that market.
+  #
+  # Note what is missing, because it is most of the file above. No DATABASE_URL,
+  # no dependency on `db`, no role in sql/01-roles.sql and no schema in
+  # sql/02-schemas.sql — this is the only backend service that needs nothing
+  # from `sql/` and cannot be broken by a change to it. It owns no data at all:
+  # it holds sockets, and every number it repeats belongs to the service that
+  # published it. ADR 0010 has the argument for why that is what made a fifth
+  # service affordable.
+  #
+  # It does not depend on the trading service either, and will not. The producer
+  # publishes to Redis and never learns whether anybody was listening, which is
+  # what keeps a trade from failing because a websocket server was restarting.
+  realtime:
+    build:
+      # backend/, not the service directory: a build context cannot reach
+      # outside itself, and the image needs backend/shared/. [F-6] #76
+      context: ./backend
+      dockerfile: realtime_service/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # The same value the auth service signs with. Verification only; there is
+      # no encode path in this service and a test asserts one does not appear.
+      JWT_SECRET: ${JWT_SECRET:?}
+      # Does double duty here, and only here. Everywhere else this configures
+      # the CORS middleware; in this service it is ALSO the socket's origin
+      # allowlist, because CORS does not apply to WebSocket handshakes. An
+      # origin missing from this list cannot open a socket.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${REALTIME_PORT:-8004}:8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

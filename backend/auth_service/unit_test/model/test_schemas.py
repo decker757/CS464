@@ -1,0 +1,106 @@
+"""Request and response contracts: the rules the frontend sees as 422s. No database."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+import pytest
+from pydantic import ValidationError
+
+from core.roles import UserRole
+from model.schemas import LoginRequest, RegisterRequest, UserOut
+from unit_test.conftest import VALID_PASSWORD
+
+
+def _payload(**overrides: object) -> dict[str, object]:
+    return {
+        "username": "ernest_t",
+        "email": "ernest@example.com",
+        "password": VALID_PASSWORD,
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize(
+    "raw", ["ERNEST@Example.COM", "  ernest@example.com  ", "Ernest@Example.com"]
+)
+def test_email_is_normalised_to_lowercase(raw: str) -> None:
+    """Uniqueness depends on this, so it is checked here rather than assumed."""
+    assert RegisterRequest(**_payload(email=raw)).email == "ernest@example.com"
+
+
+@pytest.mark.parametrize("username", ["has spaces", "has@symbol", "has.dot", "ab", "x" * 33])
+def test_invalid_usernames_are_refused(username: str) -> None:
+    with pytest.raises(ValidationError):
+        RegisterRequest(**_payload(username=username))
+
+
+@pytest.mark.parametrize(
+    "username", ["ernest_t", "ernest-t", "Ernest123", "a_b-c", "abc", "x" * 32]
+)
+def test_valid_usernames_are_accepted(username: str) -> None:
+    assert RegisterRequest(**_payload(username=username)).username == username
+
+
+@pytest.mark.parametrize("username", [" ab", "ab ", "  ab  "])
+def test_username_length_is_counted_after_the_trim(username: str) -> None:
+    """`" ab"` is three characters as sent and two as stored. #89"""
+    with pytest.raises(ValidationError):
+        RegisterRequest(**_payload(username=username))
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [(" ernest_t ", "ernest_t"), (" " + "x" * 32, "x" * 32)],
+)
+def test_surrounding_spaces_are_trimmed_not_refused(raw: str, stored: str) -> None:
+    """Autofill adds an invisible trailing space. #89
+
+    The second case is 33 characters as sent and a legal 32 once trimmed.
+    """
+    assert RegisterRequest(**_payload(username=raw)).username == stored
+
+
+def test_password_length_follows_the_configured_minimum() -> None:
+    """Exactly at the boundary must pass, one under must not."""
+    from core.config import get_settings
+
+    minimum = get_settings().password_min_length
+
+    assert RegisterRequest(**_payload(password="p" * minimum)).password
+    with pytest.raises(ValidationError):
+        RegisterRequest(**_payload(password="p" * (minimum - 1)))
+
+
+def test_a_malformed_email_is_refused() -> None:
+    """Promised in docs/api/auth-service.md: registration needs a valid address."""
+    with pytest.raises(ValidationError):
+        RegisterRequest(**_payload(email="not-an-email"))
+
+
+def test_login_takes_one_identifier_field() -> None:
+    """One field for username-or-email, so a failure cannot reveal which exists."""
+    assert set(LoginRequest.model_fields) == {"identifier", "password"}
+
+
+def test_user_output_carries_no_secret_fields() -> None:
+    fields = set(UserOut.model_fields)
+
+    assert "password" not in fields
+    assert "password_hash" not in fields
+    assert fields == {"id", "username", "email", "role", "created_at"}
+
+
+def test_a_naive_timestamp_is_stamped_as_utc() -> None:
+    """Guards the contract that every timestamp we emit ends in Z."""
+    out = UserOut(
+        id=uuid.uuid4(),
+        username="ernest_t",
+        email="ernest@example.com",
+        role=UserRole.TRADER,
+        created_at=datetime(2026, 9, 13, 8, 0, 0),
+    )
+
+    assert out.created_at.tzinfo is not None
+    assert out.model_dump_json().count("Z") == 1

@@ -1,0 +1,1266 @@
+# Market service API
+
+Base URL `http://localhost:8001` in development. Interactive docs, generated
+from the code and authoritative if this page ever disagrees, at
+[`/docs`](http://localhost:8001/docs).
+
+Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
+[BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
+[FE][3.1] #52.
+
+A successful submission, publication, early close, outcome proposal, approval
+or rejection also appends an entry to the shared audit log, in the same database
+transaction, so the two can never disagree. An autosave does not, and neither
+does an automatic close — the clock is not an actor. See
+[`audit-service.md`](audit-service.md) and
+[ADR 0006](../adr/0006-audit-log-write-path.md).
+
+Why it is a separate service and how it knows who is an admin:
+[ADR 0003](../adr/0003-market-service-boundary.md). Why one endpoint does both
+autosave and submit: [ADR 0004](../adr/0004-draft-autosave-and-submission.md).
+Why the LMSR engine itself is not in this service:
+[ADR 0005](../adr/0005-trading-service-boundary.md). Why publishing is a
+separate endpoint rather than a third status on the save:
+[ADR 0008](../adr/0008-publishing-a-market.md). Why the clock closes a market
+and a sweep only writes it down:
+[ADR 0011](../adr/0011-market-auto-close.md). Why proposing an outcome gates on
+the status column anyway, and why the evidence is two fields:
+[ADR 0013](../adr/0013-proposing-an-outcome.md). Why an early close does the
+opposite and gates on the clock, and why any administrator may call it:
+[ADR 0014](../adr/0014-closing-a-market-early.md). Why an approved outcome is a
+status of its own, and why the proposer is refused a `403` on both decisions:
+[ADR 0016](../adr/0016-deciding-a-proposal.md).
+
+## Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/markets` | Save a draft, or submit a market |
+| POST | `/markets/{id}/publish` | Publish a submitted market |
+| POST | `/markets/{id}/close` | Close an open market early, with a reason |
+| POST | `/markets/{id}/propose-outcome` | Propose the winner of a closed market |
+| POST | `/markets/{id}/approve-outcome` | Approve another administrator's proposal |
+| POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
+| GET | `/markets` | List my own markets |
+| GET | `/markets/overview` | Every market I can see, by status, with counts |
+| GET | `/markets/{id}` | Read one of my own markets |
+| GET | `/health` | Liveness and readiness probe |
+
+Every `/markets` route requires an **administrator** token. There is no
+unauthenticated read here; the public market API for traders is
+[`/public/markets`](#public-market-api--bex-62), below.
+
+Every route but three is scoped to the administrator who created the market,
+and answers `404` to any other. The exceptions are `POST /markets/{id}/close`,
+which any administrator may call on any open market
+([ADR 0014](../adr/0014-closing-a-market-early.md)), and
+`POST /markets/{id}/approve-outcome` and `/reject-outcome`, which any
+administrator **except the one who proposed** may call
+([ADR 0016](../adr/0016-deciding-a-proposal.md)). In each case the audit entry
+names who acted. Those three answer another administrator's draft or submitted
+market with a `409`, not a `404`: the id is confirmed to exist, and nothing in
+it is shown. ADR 0016.
+
+## The six statuses
+
+| Status | Set by | Traders see it |
+| --- | --- | --- |
+| `draft` | the three-second autosave | no |
+| `submitted` | the submit button | no |
+| `open` | `POST /markets/{id}/publish` | yes |
+| `closed` | the clock at `close_time`, `POST /markets/{id}/close`, or `POST /markets/{id}/reject-outcome` | yes, but not tradeable |
+| `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
+| `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
+
+The path is `draft → submitted → open → closed → pending_resolution →
+approved` and nothing skips a step. Every save on a market past `submitted` is
+a `409`, whatever the request asks for — the terms are final from `open`
+onwards.
+
+Only one transition is ever reversed: [3.2] #10's rejection sends a market from
+`pending_resolution` back to `closed`, with a reason. There is no unpublish, no
+reopen and no un-approve.
+
+`closed` is the only one two different things produce. A market reaches it on
+its own when `close_time` passes, and an administrator can reach it early with
+`POST /markets/{id}/close` ([2.3] #7). The two are the same state in every
+respect — same refusals, same next move — and the only way to tell them apart
+from outside the audit log is that an early close leaves `closed_at` **before**
+`close_time`.
+
+### `close_time` is when trading stops — not `status` — [F-4] #44
+
+**Read this before writing anything that decides whether a market can be
+traded.** A market stops accepting trades the instant `close_time` passes. The
+`closed` status is written a few seconds later by a background sweep, so there
+is a short window in which a market whose closing time has passed still reads
+`"status": "open"`.
+
+That window is not a window in which the market is tradeable. Trading is gated
+on `close_time`, which is exact and needs no job to have run, so a trade in
+that window is refused whatever the status says. What the window affects is
+display and counting.
+
+For a client, the rule is:
+
+```js
+const tradeable = market.status === "open" && new Date(market.close_time) > new Date();
+```
+
+Never `market.status === "open"` on its own. A countdown that hits zero should
+switch the UI to closed immediately rather than waiting for the status to catch
+up on the next fetch — the backend already agrees with the countdown.
+
+**This applies to the admin routes on this page, and not to the public market
+read.** The two projections answer the question differently and both are
+deliberate:
+
+| Response | `status` | Who reads it |
+| --- | --- | --- |
+| `MarketOut`, `MarketSummaryOut` | the raw column | administrators |
+| `MarketOverviewResponse` ([2.1] #5) | **derived** | administrators |
+| `PublicMarketOut`, `PublicMarketSummaryOut` ([BE][X] #62) | **derived** | traders |
+
+An administrator's *single-market* reads want the column. The gap between
+`close_time` and `closed_at` is how you tell whether the sweeper is running, and
+`MarketOut` (`GET /markets/{id}`) is now the one place to read it — so those
+routes hand back what is stored and the snippet above is how you use it.
+
+**`GET /markets/overview` is the exception among the admin routes.** Its
+`status`, its filter and its counts are all derived, exactly as the public read
+derives them, and it carries no raw column beside the derived one. The
+[ADR 0011](../adr/0011-market-auto-close.md) amendment for [2.1] #5 has the
+reason: counts beside a filtered list must agree with the list, and with the
+trade gate at the same instant. Do not apply the snippet above to it.
+
+A trader has no interest in the sweeper. The public read applies the same rule
+server-side, so a market past its `close_time` comes back as `"closed"` even
+before the sweep writes it, and its browse filters and counts agree. **Do not
+apply the snippet above to a public response**: it is already derived, and
+deriving twice is harmless only until somebody changes one of them. The
+derivation only ever makes a market less tradeable — an early close ([2.3] #7)
+leaves `close_time` in the future on purpose, and a market already `closed` is
+never reopened by it.
+
+Amendment on [ADR 0011](../adr/0011-market-auto-close.md), which has the
+argument and the condition under which this would go back to one shape.
+
+## Authentication
+
+Identical to the auth service, because it is the same token.
+
+- **Browser:** the `access_token` cookie the auth service already set. Send
+  `credentials: 'include'` on every call, and make sure this origin is in
+  `CORS_ORIGINS`.
+- **Service:** `Authorization: Bearer <jwt>`. The header wins over the cookie.
+
+This service never queries the auth database. It verifies the signature and
+reads the `role` claim, so:
+
+- A newly promoted admin must **log in again** (or refresh) before their token
+  carries `role: admin`.
+- `401` means the session is gone — send the user to log in.
+- `403` means the session is fine and this account is not an administrator —
+  retrying will not help.
+
+## POST /markets
+
+One endpoint for both the autosave and the submit button. The difference is the
+`status` field.
+
+### Request
+
+```jsonc
+{
+  "draft_key": "3f6b1c62-6a1e-4a1d-9f2f-2a3e4b5c6d7e",  // required
+  "status": "draft",                                     // "draft" | "submitted" only
+
+  "question": "Will Singapore core inflation be below 2% for December 2026?",
+  "description": "Measured on the first published print.",
+
+  "outcomes": [{ "label": "Yes" }, { "label": "No" }],
+
+  "close_time": "2027-01-05T12:00:00Z",
+  "resolution_time": "2027-01-20T12:00:00Z",
+
+  "resolution_criteria": "Resolves YES if the MAS core inflation print for December 2026, as first published, is strictly below 2.0%. Later revisions do not change it.",
+  "resolution_sources": [
+    { "url": "https://www.mas.gov.sg/statistics", "label": "MAS statistics" }
+  ],
+
+  "liquidity_b": 100,        // optional; omit to take the server's default
+  "seed_subsidy": 250        // no default; required to submit
+}
+```
+
+**`draft_key` is the only required field.** Generate one UUID when the create
+form opens:
+
+```js
+const draftKey = crypto.randomUUID();
+```
+
+and send the same value on every save for that form. The server upserts on it,
+so the three-second autosave updates one market rather than creating one per
+tick. Keep it for as long as the form is open; start a new one for a new market.
+
+**`status` defaults to `draft`.** Send `submitted` only from the submit button.
+`open` is **not accepted here** and is a `422` — publishing is
+`POST /markets/{id}/publish`, which carries no terms at all, so that no single
+request can change a market and expose it to traders at the same time.
+
+**Timestamps must carry an offset.** `2027-01-05T12:00:00Z` or
+`2027-01-05T20:00:00+08:00`. A value without one is a 422 rather than a guess,
+because guessing UTC would put a Singapore close time eight hours out.
+
+**`creator_id` in the body is ignored.** The creator is taken from the token.
+
+### Pricing — [1.2] #2
+
+`liquidity_b` is the LMSR liquidity parameter. Higher means each trade moves
+the price less, and the platform's worst-case loss is larger. **Omit it and the
+server applies its configured default** (`DEFAULT_LIQUIDITY_B`, 100 unless
+deployed otherwise), so a market is priceable from the very first autosave and
+the form can show a worst case immediately. Send a value to override it, on that
+save or any later one.
+
+`seed_subsidy` is the mock credits the platform puts up to cover that loss. It
+has **no default** — there is no sensible platform-wide answer to how much a
+particular market is worth underwriting — so it must be filled in before the
+market can be submitted.
+
+Both must be greater than zero if present: `0` or a negative number is a `422`
+even on an autosave. Absence is fine at any point; it is a submission rule, not
+a shape rule.
+
+**Both are bounded by what the column stores** — at most `99999999999999.9999`,
+and at most four decimal places. A larger value or a fifth decimal place is a
+`422` naming the field. The scale matters more than it looks: without it
+`0.00001` would pass, round to `0.0000` in the database, and reload as a market
+that fails its own "greater than zero" rule while the save response still
+reported `0.00001`.
+
+Nothing is charged to anybody. Recording a subsidy does not move credits — that
+is the ledger's job ([F-1] #41) and this service holds no balances.
+
+### Response
+
+`201` the first time a `draft_key` is seen, `200` on every later save.
+
+```jsonc
+{
+  "market": {
+    "id": "410465f3-2852-4833-964b-f42e23b8227c",
+    "draft_key": "3f6b1c62-6a1e-4a1d-9f2f-2a3e4b5c6d7e",
+    "creator_id": "8d136846-bca7-4d19-b693-8cfce410fc8d",
+    "status": "draft",
+    "question": "Will Singapore core inflation be below 2% for December 2026?",
+    "description": null,
+    "outcomes": [
+      { "id": "...", "position": 0, "label": "Yes", "initial_price": 0.5 },
+      { "id": "...", "position": 1, "label": "No",  "initial_price": 0.5 }
+    ],
+    "close_time": null,
+    "resolution_time": null,
+    "resolution_criteria": null,
+    "resolution_sources": [],
+    "liquidity_b": 100.0,
+    "seed_subsidy": 250.0,
+    "created_at": "2026-09-13T14:06:38.907220Z",
+    "updated_at": "2026-09-13T14:06:38.907222Z",
+    "submitted_at": null,
+    "published_at": null,
+    "closed_at": null,
+
+    // derived, read-only — see below
+    "max_platform_loss": 69.31471805599453
+  },
+  "blocking_submission": [
+    { "field": "close_time", "message": "A close time is required." },
+    { "field": "outcomes",   "message": "A market needs at least 2 named outcomes." }
+  ]
+}
+```
+
+**`max_platform_loss` and `initial_price` are derived and read-only.** Sending
+them changes nothing.
+
+`max_platform_loss` is `b × ln(n)` — the most the platform can lose over this
+market's life, whatever traders do. Show it beside `seed_subsidy`; that
+comparison is the whole point of [1.2] #2's second criterion. It is `null` until
+`liquidity_b` is set and at least two outcomes are named.
+
+`initial_price` is what each outcome costs before anyone has traded: `1/n`,
+identical across outcomes, which is the third criterion. It appears as soon as a
+second outcome is named and does not depend on `b`. The values are unrounded so
+they sum to 1 — three outcomes give `0.3333…` each, and formatting is the
+browser's job.
+
+**`n` counts only named outcomes.** A row the admin has added but not yet
+labelled is not an outcome: it gets `initial_price: null` and does not move
+`max_platform_loss`. Two named outcomes beside two empty rows price as `b × ln
+2` and `0.5` apiece, which is the market that will actually submit — the same
+count `blocking_submission` uses. Below two named outcomes both are `null`.
+
+Both are computed server-side so there is one definition. Do not reimplement
+either in the frontend.
+
+All four pricing values come back as JSON **numbers**, not strings, so
+`seed_subsidy` and `max_platform_loss` can be compared and formatted directly.
+
+**`blocking_submission` is the useful part.** A draft is never rejected for
+being incomplete, but every response lists exactly what still stands between it
+and submission, keyed by form field. Array fields are addressed by position —
+`outcomes[1].label`, `resolution_sources[0].url` — so the form can mark
+individual rows. Render these as live hints and there is no need to reimplement
+the rules in the browser. On a successful submission the list is empty.
+
+### Submission rules
+
+A `submitted` request is refused with `422` unless all of these hold. They are
+the acceptance criteria of [1.1] #1.
+
+| Field | Rule |
+| --- | --- |
+| `question` | present, at least 10 characters |
+| `outcomes` | at least 2 named; no blanks; no case-insensitive duplicates; at most 10 |
+| `close_time` | present, strictly in the future |
+| `resolution_time` | present, strictly in the future |
+| `close_time` | strictly before `resolution_time` |
+| `resolution_criteria` | present, at least 10 characters |
+| `resolution_sources` | at least one openable `http`/`https` URL |
+| `liquidity_b` | present and greater than zero (the default satisfies this) |
+| `seed_subsidy` | present and greater than zero |
+
+**A refused submission writes nothing**, including any edits that came with it.
+Nothing is lost: the autosave saves them three seconds later.
+
+`resolution_criteria` is required alongside the URLs on purpose. A source says
+where to look; the criteria say what settles it — first print or revised, and
+what happens if publication slips. That gap is what [3.3] #11's dispute window
+exists to absorb.
+
+## POST /markets/{id}/publish — [1.3] #3
+
+Moves a market from `submitted` to `open`, which is the status traders browse
+on. This is what makes a market tradeable.
+
+**No request body.** The terms that go live are the terms that were submitted.
+Addressed by the market's `id`, not by `draft_key`: this is not a save and it
+cannot create anything.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it
+— not wrapped in `{ "market": ... }`, because there is no `blocking_submission`
+to sit beside. `status` is `open` and `published_at` is set. Repaint from this
+rather than issuing a second `GET`.
+
+### When it is refused
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 404 | `market_not_found` | no such market, or it is not yours | nothing; it is not there |
+| 409 | `market_not_submitted` | it is still a draft | press submit first |
+| 409 | `market_already_open` | it is already live | reload; hide the button |
+| 409 | `market_closed` | it has passed its closing time | reload; it is finished |
+| 422 | `draft_incomplete` | the terms no longer pass | fix the fields in `details` |
+
+**Every submission rule runs again, against the clock now.** That is not
+belt-and-braces. A market is validated at submission against the time it was
+submitted, and `close_time` has to be in the future — so a market that sat
+submitted past its own close time would otherwise go live already closed.
+
+The `422` is the **same** `draft_incomplete` envelope the submit button
+returns, with the same `details` array keyed the same way. A form that already
+renders a refused submission renders a refused publish with no new branch. Only
+the message differs.
+
+**A refused publish writes nothing.** The market stays `submitted`,
+`published_at` stays null, and no audit entry is appended.
+
+### Publishing is one way
+
+Once a market is `open` its terms are frozen. `POST /markets` on it returns
+`409 market_already_open`, whether the request says `draft` or `submitted` —
+which is what stops the autosave, still running behind the publish button, from
+quietly reverting a live market. There is no unpublish.
+
+Once it is `closed` the same save returns `409 market_closed`, and so does a
+publish. That is the same form, still open behind the publish button, still
+ticking when the market's closing time arrived.
+
+### Trader visibility
+
+Publishing sets the status; it does not build the trader-facing list. The
+public browse and detail API is
+[`/public/markets`](#public-market-api--bex-62), below, and it derives
+`status` the same way its default view derives what "open" means — for the
+reason given under "`close_time` is when trading stops" above.
+
+## POST /markets/{id}/close — [2.3] #7
+
+Stops an `open` market before its `close_time` and moves it to `closed`.
+Trading stops the moment this commits. Positions are untouched, and the
+market's next move is the same one it would have had if it had run to its
+closing time: [3.1] #9's proposed outcome.
+
+### Request
+
+```json
+{
+  "reason": "The resolution source retracted its December print, so this question can no longer be settled as written."
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `reason` | required; at least 10 characters after trimming, at most 5000 |
+
+The reason is recorded in the audit log against the administrator who closed
+the market, in the same transaction, so a market cannot stop early without a
+record of why. **It is kept nowhere else.** It is not a field on the market and
+it does not come back in the response — only [4.3] #15's log view can show it.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it:
+
+```json
+{
+  "status": "closed",
+  "close_time": "2027-01-05T12:00:00Z",
+  "closed_at": "2026-09-16T09:14:02.118374Z"
+}
+```
+
+`close_time` is **not** rewritten. It is the closing time that was published and
+that traders read, and the `market.published` audit entry recorded it. A
+`closed_at` earlier than `close_time` is exactly what an early close looks like
+from outside; when the clock closes a market instead, `closed_at` lands a few
+seconds *after* `close_time`.
+
+### Only an open market
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_open` | still a draft or submitted — yours or another administrator's | nothing to stop; publish it or leave it |
+| 409 | `market_closed` | it has already stopped | reload; hide the control |
+| 409 | `market_pending_resolution` | stopped, and an outcome is proposed | reload; show whose proposal is waiting |
+| 409 | `market_already_approved` | stopped, and its outcome is approved | reload; hide the control |
+| 422 | `close_incomplete` | the reason is missing or too short | fix `reason` and resend |
+
+**A market whose closing time has just passed is a `409 market_closed`, even
+while it still reads `"status": "open"`.** This is the opposite of what
+`propose-outcome` does with the same window, and deliberately: that market has
+already stopped trading, the clock stopped it, and accepting a close here would
+file an audit entry saying an administrator did. Nothing is lost — the market
+is closed either way, one sweep later at the outside.
+[ADR 0014](../adr/0014-closing-a-market-early.md) has the full argument.
+
+The `422` is this service's own envelope, the same shape a refused submission
+uses, with a different `code`:
+
+```json
+{
+  "error": {
+    "code": "close_incomplete",
+    "message": "This market cannot be closed without a reason.",
+    "details": [
+      { "field": "reason", "message": "The reason must be at least 10 characters, so that somebody reading the log later can tell what happened." }
+    ]
+  }
+}
+```
+
+A body with no `reason` key at all never reaches this service and comes back as
+FastAPI's `{"detail": [...]}` instead. Branch on the presence of `error`.
+
+**A refused close writes nothing.** The market stays `open`, `closed_at` stays
+null, and no audit entry is appended — so the modal can reopen with whatever
+the administrator had typed.
+
+### Who may close
+
+**Any administrator, including one who did not create the market.** It was the
+first route on this page not scoped to the creator, because a broken market
+that only its author can stop is not oversight. ADR 0007 makes the admin
+tier flat and the audit entry is what keeps that accountable: it names whoever
+reached in, and why.
+
+The read is *not* widened with it. `GET /markets/{id}` still answers `404` to
+another administrator, so an overseer needs the market's id from somewhere
+other than this service — `GET /public/markets`, below, once the market is
+published, or the audit log before that.
+
+### One way
+
+There is no reopen. Every later save on the market is a `409 market_closed`,
+and a second close is the same — `closed_at` keeps saying when trading actually
+stopped.
+
+## POST /markets/{id}/propose-outcome — [3.1] #9
+
+Moves a market from `closed` to `pending_resolution`, naming the outcome the
+administrator believes won and the evidence for it. Nothing is settled here and
+no credits move: [3.2] #10 asks a second administrator to approve or reject,
+and [3.4] #12 pays out.
+
+### Request
+
+```json
+{
+  "winning_outcome_id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f",
+  "evidence_url": "https://www.mas.gov.sg/statistics/cpi-december-2026",
+  "evidence_note": "MAS published December 2026 core inflation at 1.8% on 23 January, below the 2.0% threshold in the resolution criteria."
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `winning_outcome_id` | required; must be the `id` of one of **this** market's `outcomes` |
+| `evidence_url` | full `http`/`https` address, at most 2048 characters |
+| `evidence_note` | at least 10 characters, at most 5000 |
+
+**At least one of `evidence_url` and `evidence_note` is required.** Either
+alone is fine. Whichever is sent has to be usable — a URL that does not parse
+and a two-character note are both refused, even when the other field would have
+satisfied the requirement on its own, because storing a dead link puts one in
+front of [3.3] #11's disputer.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it.
+`status` is `pending_resolution` and seven fields are now set:
+
+```json
+{
+  "status": "pending_resolution",
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7",
+  "proposed_outcome_id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f",
+  "proposed_by_id": "1c9e5d3a-77b2-4f0c-9a1d-5e6f7a8b9c0d",
+  "proposed_by_username": "ernest_t",
+  "proposed_at": "2026-09-16T09:14:02.118374Z",
+  "proposal_evidence_url": "https://www.mas.gov.sg/statistics/cpi-december-2026",
+  "proposal_evidence_note": "MAS published December 2026 core inflation at 1.8% …"
+}
+```
+
+They are null together on every market that has not been proposed for, and set
+together on every market that has. `proposal_id` is new for every proposal —
+a market rejected and proposed for again gets a different one — and is what
+[3.2] #10's approve and reject bodies must send back. `proposed_outcome_id` names a member of the
+same response's `outcomes` array — look the label up there rather than
+expecting it twice.
+
+### Only a closed market
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 404 | `market_not_found` | no such market, or it is not yours | nothing; it is not there |
+| 409 | `market_not_closed` | it is still running | wait; the market has not finished |
+| 409 | `market_pending_resolution` | an outcome is already proposed | reload; show whose proposal is waiting |
+| 409 | `market_already_approved` | an outcome is already proposed and approved | reload; show who approved it |
+| 422 | `proposal_incomplete` | the winner or the evidence is wrong | fix the fields in `details` |
+
+**A market whose closing time has just passed is a `409`.** For a few seconds
+after `close_time`, `status` still reads `"open"` because the sweep has not run
+yet — see "`close_time` is when trading stops" above. Proposing is refused for
+that window. Nothing can be traded in it either, so nothing is lost; the propose
+control simply appears on the next fetch. This is the one place the backend
+gates on the status column rather than on the clock, and
+[ADR 0013](../adr/0013-proposing-an-outcome.md) explains why that is safe here
+and not on the trade path.
+
+The `422` is this service's own envelope, the same shape a refused submission
+uses, with a different `code`:
+
+```json
+{
+  "error": {
+    "code": "proposal_incomplete",
+    "message": "This outcome cannot be proposed yet.",
+    "details": [
+      { "field": "evidence_url", "message": "Enter a full http or https address a trader can open." },
+      { "field": "evidence", "message": "Give a source URL or a written note, so the decision can be checked by somebody who was not in the room." }
+    ]
+  }
+}
+```
+
+`field` is one of `winning_outcome_id`, `evidence_url`, `evidence_note`, or
+`evidence` — the last of which is the pair rather than an input, and belongs
+beside the two evidence fields rather than on either.
+
+**A refused proposal writes nothing.** The market stays `closed`, every
+`proposed_*` field stays null, and no audit entry is appended.
+
+### One proposal at a time
+
+A second proposal is a `409 market_pending_resolution`, not an overwrite. The
+first proposal is what a second administrator is being asked to agree to, and
+replacing it underneath them is the one thing this status exists to prevent.
+The way back to `closed` is [3.2] #10's rejection, which carries a reason —
+see `POST /markets/{id}/reject-outcome` below.
+
+While a market is `pending_resolution` its terms are frozen exactly as they are
+when it is `open`: `POST /markets` on it returns `409
+market_pending_resolution`, and so does a publish.
+
+### Who may propose
+
+The market's creator only. Another administrator gets `404`, not `403`, for the
+reason a 404 is used everywhere else here.
+
+[3.2] #10 did not widen this. It widened the *decision* instead: approving or
+rejecting reads the market whoever created it, and refuses only the proposer.
+Since the proposer is always the creator, every approver is somebody who did
+not create the market.
+
+## POST /markets/{id}/approve-outcome — [3.2] #10
+
+Moves a market from `pending_resolution` to `approved`. A second administrator
+— never the one who proposed — agrees with the proposed winner and its
+evidence. Nothing is paid out and no credits move: [3.3] #11's dispute window
+and [3.4] #12's settlement come next.
+
+### Request
+
+```json
+{
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `proposal_id` | required key; the `proposal_id` of the proposal the administrator reviewed, or `null` for a proposal that has none |
+
+That is the whole body. The approver is agreeing with the proposal already on
+the market, not adding to it; any other field is ignored.
+
+`proposal_id` is a precondition, not information. **Send the id from the data
+the reviewer is looking at**, never one fetched at the moment of the click. If
+that proposal has since been rejected and replaced by a new one, the approval
+is refused as `409 proposal_superseded` instead of approving a proposal the
+reviewer has not read. A body without the key is FastAPI's `422`.
+
+`null` is a value here, not a way to skip the check. A proposal made before
+proposal ids existed reads back `"proposal_id": null`, and its audit entry has
+no `proposal_id`; send `null` to decide it. Sent for any proposal that does
+have an id, `null` is `409 proposal_superseded` like any other id that does not
+match.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it.
+`status` is `approved`, the seven proposal fields are **unchanged**, and three
+more are set:
+
+```json
+{
+  "status": "approved",
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7",
+  "proposed_outcome_id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f",
+  "proposed_by_id": "1c9e5d3a-77b2-4f0c-9a1d-5e6f7a8b9c0d",
+  "proposed_by_username": "ernest_t",
+  "proposed_at": "2026-09-16T09:14:02.118374Z",
+  "proposal_evidence_url": "https://www.mas.gov.sg/statistics/cpi-december-2026",
+  "proposal_evidence_note": "MAS published December 2026 core inflation at 1.8% …",
+  "approved_by_id": "7d2e4f10-3b5a-4c6d-8e9f-0a1b2c3d4e5f",
+  "approved_by_username": "ihsan_b",
+  "approved_at": "2026-09-17T02:40:11.502113Z"
+}
+```
+
+Both identities on one market, which is the story's third acceptance
+criterion. `approved_by_id` never equals `proposed_by_id`. The three
+`approved_*` fields are null together on every market that is not `approved`.
+
+### Only a pending proposal, and not your own
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 403 | `second_administrator_required` | you proposed this outcome | nothing; a different administrator has to decide it |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_pending_resolution` | no proposal is waiting — draft, submitted (yours or another administrator's), open, or closed with none | reload; hide the control |
+| 409 | `market_already_approved` | somebody has already approved it | reload; show who and when |
+| 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
+
+State first, then who is asking, then which proposal. A proposer looking at a
+market somebody else has already approved gets `market_already_approved`, not
+the `403`; a proposer on a stale page still gets the `403`.
+
+**A refused approval writes nothing.** The market stays `pending_resolution`,
+the `approved_*` fields stay null, and no audit entry is appended.
+
+### Who may approve
+
+**Any administrator except the one who proposed.** That includes — necessarily —
+administrators who did not create the market, because only the creator can
+propose. The comparison is on the account id, never the username: a username can
+be changed, and another account can later hold it.
+
+The read is *not* widened with it, as for an early close. `GET /markets/{id}`
+still answers `404` to another administrator. See the notes for the approval
+screen below for how to find a proposal to decide.
+
+### An approval is final here
+
+Every later save, publish, proposal, early close, approval or rejection on the
+market is a `409 market_already_approved`. There is no un-approve; [3.3] #11 is
+where an approved outcome can be disputed.
+
+## POST /markets/{id}/reject-outcome — [3.2] #10
+
+Sends a market from `pending_resolution` back to `closed`, with a reason. Every
+`proposed_*` field is cleared, and the creator may propose again.
+
+### Request
+
+```json
+{
+  "proposal_id": "4f1a9c2e-6b3d-4e8f-a0b1-c2d3e4f5a6b7",
+  "reason": "The MAS print cited is the headline figure, not core inflation; the core figure for December 2026 has not been published yet."
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `proposal_id` | required key; the `proposal_id` of the proposal the administrator reviewed, or `null` for a proposal that has none, as for approval |
+| `reason` | required; at least 10 characters after trimming, at most 5000 |
+
+A rejection quoting a proposal that has since been replaced is refused as
+`409 proposal_superseded` and clears nothing, so a reason written about one
+proposal can never be recorded against another.
+
+The reason is recorded in the audit log against the administrator who rejected
+the proposal, beside a copy of the proposal it cleared, in the same
+transaction. **It is kept nowhere else.** It is not a field on the market and
+it does not come back in the response — only [4.3] #15's log view can show it.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it:
+
+```json
+{
+  "status": "closed",
+  "closed_at": "2026-09-16T09:14:02.118374Z",
+  "proposal_id": null,
+  "proposed_outcome_id": null,
+  "proposed_by_id": null,
+  "proposed_by_username": null,
+  "proposed_at": null,
+  "proposal_evidence_url": null,
+  "proposal_evidence_note": null,
+  "approved_by_id": null,
+  "approved_by_username": null,
+  "approved_at": null
+}
+```
+
+The market is exactly what it was before the proposal. `closed_at` is **not**
+rewritten: it says when trading stopped, and a rejection does not change that.
+Nothing on the market says a proposal was ever rejected; the audit log does.
+
+### When it is refused
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 403 | `second_administrator_required` | you proposed this outcome | nothing; a different administrator has to decide it |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_pending_resolution` | no proposal is waiting — including one somebody else has just rejected, and another administrator's draft or submitted market | reload; hide the control |
+| 409 | `market_already_approved` | it has already been approved, so it is too late to reject | reload; show who approved it |
+| 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
+| 422 | `rejection_incomplete` | the reason is missing or too short | fix `reason` and resend |
+
+State first, then who is asking, then which proposal, then the reason. A
+proposer who sends a one-letter reason gets the `403`, not the `422`, and a
+stale page with a one-letter reason gets the `409`.
+
+The `422` is this service's own envelope:
+
+```json
+{
+  "error": {
+    "code": "rejection_incomplete",
+    "message": "This proposal cannot be rejected without a reason.",
+    "details": [
+      { "field": "reason", "message": "The reason must be at least 10 characters, so that somebody reading the log later can tell what happened." }
+    ]
+  }
+}
+```
+
+A body with no `reason` or no `proposal_id` key at all never reaches this service and comes back as
+FastAPI's `{"detail": [...]}` instead. Branch on the presence of `error`.
+
+**A refused rejection writes nothing.** The market stays `pending_resolution`
+with its proposal intact, and no audit entry is appended.
+
+### Who may reject
+
+**Any administrator except the one who proposed**, compared on the account id,
+as for approval. A proposer cannot withdraw their own proposal this way: that
+would be a path back to `closed` with no second administrator in it, which is
+the thing this story exists to prevent. A proposer who has changed their mind
+asks somebody else to reject it.
+
+## GET /markets
+
+Every market belonging to the calling administrator, most recently updated
+first. A summary, not the whole market:
+
+```json
+{
+  "markets": [
+    {
+      "id": "410465f3-2852-4833-964b-f42e23b8227c",
+      "draft_key": "3f6b1c62-6a1e-4a1d-9f2f-2a3e4b5c6d7e",
+      "status": "draft",
+      "question": "Will Singapore core inflation be below 2% for December 2026?",
+      "close_time": null,
+      "updated_at": "2026-09-13T14:06:38.907222Z"
+    }
+  ]
+}
+```
+
+## GET /markets/overview — [2.1] #5
+
+Every market the calling administrator can see, filtered by status, with a
+count for every status beside the list. Declared before `GET /markets/{id}`, so
+`overview` is never parsed as an id. A trader is refused with
+`403 not_an_administrator`.
+
+```
+GET /markets/overview?status=closed
+```
+
+```json
+{
+  "markets": [
+    {
+      "id": "410465f3-2852-4833-964b-f42e23b8227c",
+      "creator_id": "7c1d5a0e-3b52-4f0a-9d0e-6f2b8a4c1e93",
+      "status": "closed",
+      "question": "Will Singapore core inflation be below 2% for December 2026?",
+      "close_time": "2026-12-31T16:00:00Z"
+    }
+  ],
+  "counts": {
+    "draft": 1,
+    "submitted": 0,
+    "open": 4,
+    "closed": 1,
+    "pending_resolution": 0,
+    "approved": 2
+  }
+}
+```
+
+- **What the caller can see.** Every published market, and the caller's own
+  drafts and submitted markets. Another administrator's draft or submitted
+  market is neither listed nor counted, so two administrators see different
+  `draft` and `submitted` counts, and that is correct.
+- **`status` is derived.** A market past its `close_time` is `closed`, in the
+  list, in the filter and in the counts, even while its stored status still
+  reads `open` ([ADR 0011](../adr/0011-market-auto-close.md)). There is no raw
+  status field. Proposing gates on the stored column (ADR 0013), so for up to
+  one sweep interval a market shown here as `closed` refuses a proposal with
+  `409 market_not_closed`; handle that 409.
+- **`?status=`** accepts any of the six statuses, including `draft` and
+  `submitted`, which the trader filter refuses. Anything else is a `422`.
+  `settled` arrives with [3.4] #12, which adds it to the filter and the counts.
+- **`counts`** is an object of integers keyed by every status, `0` when there
+  are none, over every market the caller can see. **It ignores `?status=`**, so
+  each count equals the length of that status's filtered list and the counts
+  sum to the length of the unfiltered list. Both come from one read at one
+  instant.
+- **Order** is soonest `close_time` first, markets with no `close_time` last,
+  then by `id`, with or without a filter. So the `closed` tab reads oldest
+  close first: the one waiting longest for an administrator. This differs from
+  `GET /public/markets` on purpose.
+- **`creator_id`** is on every row, so the caller can tell their own by
+  comparing it with their own id.
+- Not paged; #104 owns that.
+
+## GET /markets/{id}
+
+The same `market` object POST returns, for reloading a draft after a page
+refresh. Returns `404` for another administrator's market — not `403`, because
+a 403 would confirm that market exists.
+
+## Public market API — [BE][X] #62
+
+The trader-facing read, for [X-1] #34's browse page, [X-2] #35's search and
+filter, and [X-3] #36's market detail page. A separate router at
+`/public/markets`, not a widened guard on `/markets` above — see
+[ADR 0003](../adr/0003-market-service-boundary.md) and D-018 for why one more
+route exists rather than one fewer check.
+
+**Any authenticated account may call these — trader or administrator.** Not
+admin-gated, and not anonymous: every read in this backend authenticates a
+person from a signed access token, and a trader's browse page is not the
+first exception. Retrying will not help a `401`; log in again.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/public/markets` | Browse and search published markets |
+| GET | `/public/markets/{id}` | Read one published market |
+
+### Two schemas, not `MarketOut` and `MarketSummaryOut` reused
+
+`PublicMarketOut` and `PublicMarketSummaryOut` are their own shapes, beside
+the ones the routes above return. Three differences, all deliberate:
+
+- **`liquidity_b` and `seed_subsidy` are decimal strings, not JSON numbers**
+  (D-016). `MarketOut` sends them as floats on purpose, for the admin create
+  form's arithmetic against `max_platform_loss` — `"250" + 10` is `"25010"`
+  in a browser. This endpoint is also where the ledger reads `b` to price a
+  market for the first time (ADR 0005's publish-time handoff), and a JSON
+  number there puts an IEEE double under every price the platform ever
+  quotes. Parse both with a decimal library, never `parseFloat`.
+- **No `creator_id`, no `draft_key`, no `initial_price`** (D-019). Neither of
+  the first two is a trader's business, and `initial_price` is the `q = 0`
+  opening price — simply wrong once a market has traded, with nothing on the
+  response to say so. [X-1] #34 and [X-3] #36's YES/NO prices are not here at
+  all; `q` lives with the ledger (ADR 0005), and the authoritative read is the
+  snapshot endpoint in `docs/api/realtime-service.md`, landing with [F-3] #43
+  and [T-2] #22.
+- **`status` is derived, not the stored column** — see below.
+
+### `status` is derived here, unlike everywhere above
+
+Read "`close_time` is when trading stops" near the top of this page before
+relying on this. A market past its `close_time` is reported `"closed"` here
+even for the few seconds before the background sweep writes CLOSED into the
+column — the opposite of `MarketOut` and `MarketSummaryOut`, which report the
+raw column so an administrator can see whether the sweeper is running.
+
+```js
+// Still both halves, on a public response as well as an admin one:
+const tradeable = market.status === "open" && new Date(market.close_time) > new Date();
+```
+
+**What the derivation removes is sweep lag, not response age.** On an admin
+response the clock check is doing two jobs: covering the seconds between
+`close_time` and the sweep, and covering however long the browser has been
+holding the payload. Deriving server-side retires the first job only. A
+response fetched at 11:59:59 for a market closing at 12:00:00 says `"open"`
+and goes on saying it until something refetches, so a page left open keeps
+its trading controls past the close. [X-3] #36 asks that those be enabled
+only while the market is open, and a countdown hitting zero is the event that
+disables them.
+
+So the derivation buys one thing on this endpoint: `status === "open"` is now
+false the instant the market stops, rather than a few seconds later, and you
+never have to reason about the sweeper. It does not make the payload refresh
+itself.
+
+The derivation only ever makes a market *less* tradeable. An early close
+([2.3] #7) leaves `close_time` in the future on purpose and is never reopened
+by it, and `pending_resolution` and `approved` pass through unchanged.
+[ADR 0011](../adr/0011-market-auto-close.md)'s amendment has the full
+argument for why the split is by audience rather than by rule.
+
+### GET /public/markets
+
+The default view, with no query parameters: **every published market**, the
+ones still trading first and then by soonest closing time within each group.
+
+It is not an open-only list, and that is deliberate. [X-1] #34 asks for two
+things from this view — "open markets ordered by soonest closing time", which
+is about ordering and emphasis, and "open markets are clearly distinguishable
+from closed, pending-resolution, and settled markets", which requires those
+three to be *in* the response. There is nothing to distinguish an open market
+from otherwise. `status=open` is the narrower query a trader gets by choosing
+the first group explicitly.
+
+`status` and `q` narrow this and compose with each other.
+
+| Query parameter | Rule |
+| --- | --- |
+| `status` | one of `open`, `closed`, `pending_resolution`, `approved`; anything else is a `422` |
+| `q` | case-insensitive containment search over the question |
+
+`draft` and `submitted` are never returned, whether asked for by `status` or
+not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
+
+#### Response
+
+`200`, always — an empty result is `{"markets": []}`, never a `404`. [X-1]
+#34's "an appropriate empty state" is the frontend's job once this returns
+nothing to render.
+
+```json
+{
+  "markets": [
+    {
+      "id": "410465f3-2852-4833-964b-f42e23b8227c",
+      "status": "open",
+      "question": "Will Singapore core inflation be below 2% for December 2026?",
+      "close_time": "2027-01-05T12:00:00Z"
+    }
+  ]
+}
+```
+
+### GET /public/markets/{id}
+
+Unscoped — a published market belongs to every trader, not to whoever created
+it. Refuses a draft or a submitted market with the same `404` an unknown id
+gets, so a trader cannot tell "this market never existed" from "this market
+exists but is still a draft", which is most of what [1.1] #1's visibility
+rule is protecting.
+
+#### Response
+
+`200`:
+
+```json
+{
+  "id": "410465f3-2852-4833-964b-f42e23b8227c",
+  "status": "open",
+  "question": "Will Singapore core inflation be below 2% for December 2026?",
+  "description": "Measured on the first published print.",
+  "outcomes": [
+    { "id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f", "position": 0, "label": "Yes" },
+    { "id": "9c5d1e32-3a8b-4b2f-9b1e-2e3f4c5d6a7b", "position": 1, "label": "No" }
+  ],
+  "close_time": "2027-01-05T12:00:00Z",
+  "resolution_time": "2027-01-20T12:00:00Z",
+  "resolution_criteria": "Resolves YES if the MAS core inflation print for December 2026, as first published, is strictly below 2.0%. Later revisions do not change it.",
+  "resolution_sources": [
+    { "id": "c1d2e3f4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "position": 0, "url": "https://www.mas.gov.sg/statistics", "label": "MAS statistics" }
+  ],
+  "liquidity_b": "100.0000",
+  "seed_subsidy": "250.0000",
+  "published_at": "2026-09-13T14:12:03.118374Z",
+  "proposed_outcome_id": null
+}
+```
+
+`proposed_outcome_id` is [X-3] #36's "settled markets display the winning
+outcome". When it is set it names a member of this same response's `outcomes`
+array — look the label up there, the same rule `MarketOut` follows for the
+administrator's view, so the two copies cannot drift.
+
+**It is null until a second administrator has approved the proposal** (D-026),
+and that is the opposite of `MarketOut`, which reports the column whatever the
+status. A market at `pending_resolution` carries one administrator's proposal
+with a second yet to rule on it, and ADR 0016 exists because that ruling can
+go the other way: the reviewer rejects, all seven proposal columns are nulled,
+and the proposer may re-propose a different outcome. Shipping it earlier would
+show every trader a "winning outcome" the platform then reversed, with no
+correction and before [3.3] #11's dispute window exists to contest it.
+
+So `proposed_outcome_id !== null` on this endpoint means decided, and you may
+render it as the result without checking the status first. To show that a
+market is *awaiting* a decision, read `status === "pending_resolution"` — the
+identity of the proposed outcome is not available to a trader until it is
+approved. An administrator who needs the pending value reads `GET
+/markets/{id}` above, or the audit log.
+
+#### When it is refused
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 404 | `market_not_found` | no such market, or it is a draft or a submitted market |
+| 422 | — | FastAPI's own validation error: a malformed id, or an unrecognised `status` |
+
+## Errors
+
+The same envelope the auth service uses, so one parser covers both:
+
+```json
+{ "error": { "code": "not_an_administrator", "message": "This action requires an administrator account." } }
+```
+
+`draft_incomplete`, `proposal_incomplete`, `close_incomplete` and
+`rejection_incomplete` add a `details` array. Nothing else does, and it is additive, so a client that ignores
+it still reads `code` and `message`:
+
+```json
+{
+  "error": {
+    "code": "draft_incomplete",
+    "message": "This market cannot be submitted yet.",
+    "details": [
+      { "field": "close_time", "message": "Close time must be in the future." }
+    ]
+  }
+}
+```
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 403 | `not_an_administrator` | valid session, but a trader |
+| 403 | `second_administrator_required` | the proposer tried to approve or reject their own proposal |
+| 404 | `market_not_found` | no such market, or it is not yours |
+| 409 | `market_not_editable` | an autosave arrived for an already-submitted market |
+| 409 | `market_not_submitted` | publish asked for on a market that is still a draft |
+| 409 | `market_already_open` | a publish or a save arrived for an already-published market |
+| 409 | `market_closed` | a publish, save or early close arrived for a market past its closing time |
+| 409 | `market_not_closed` | an outcome was proposed for a market that is still running |
+| 409 | `market_not_open` | an early close arrived for a market that is not published, whoever created it |
+| 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one |
+| 409 | `market_not_pending_resolution` | an approval or rejection arrived for a market with no proposal waiting, whoever created it |
+| 409 | `market_already_approved` | anything but a read arrived for a market whose outcome is approved |
+| 409 | `proposal_superseded` | an approval or rejection quoted a `proposal_id` that is no longer the proposal waiting |
+| 422 | `draft_incomplete` | submission or publication refused; see `details` |
+| 422 | `proposal_incomplete` | outcome proposal refused; see `details` |
+| 422 | `close_incomplete` | early close refused; see `details` |
+| 422 | `rejection_incomplete` | rejection refused; see `details` |
+| 422 | — | FastAPI's own body-validation error, a different shape |
+
+Note that `market_closed` and `market_not_closed` are not opposites of each
+other in any useful sense — one is a save or publish that arrived too late, the
+other a proposal that arrived too early. They never appear on the same route.
+
+Two kinds of `422` exist and they do not look alike. `draft_incomplete`,
+`proposal_incomplete`, `close_incomplete` and `rejection_incomplete` are ours
+and carry the envelope above. A malformed body — a missing `draft_key`, a missing `reason`, a naive
+timestamp, a non-UUID — is FastAPI's, and comes back as `{"detail": [...]}`.
+Branch on the presence of `error`.
+
+## Notes for [FE][1.1] #45
+
+1. `crypto.randomUUID()` once when the form opens; hold it for the form's life.
+2. Debounce roughly 3 s of inactivity, then POST with `status: "draft"`.
+   Skip the call if nothing changed since the last one.
+3. Paint `blocking_submission` as inline hints. Disable the submit button while
+   it is non-empty and you will never see a 422 from `draft_incomplete`.
+4. On submit, POST the same `draft_key` with `status: "submitted"`.
+5. A `409 market_not_editable` means the market is already submitted — stop the
+   autosave timer. A `409 market_already_open` means it is published: stop the
+   timer and hide the edit controls, because nothing will be accepted again. A
+   `409 market_closed` means the market stopped while the form was open —
+   either its closing time passed or an administrator closed it early ([2.3]
+   #7), possibly a different one; treat both the same way.
+6. Send timestamps as ISO 8601 **with an offset**:
+   `new Date(value).toISOString()` produces one.
+7. `status: "submitted"` is not published. Show the publish control only on a
+   submitted market, and POST to `/markets/{id}/publish` with no body. Sending
+   `status: "open"` to `POST /markets` is a `422`; publishing has its own
+   endpoint so that one call can never both change terms and expose them.
+8. A publish can come back `422 draft_incomplete` even though the market
+   submitted cleanly — most often because its `close_time` has passed in the
+   meantime. Reuse the same `details` renderer you already have; there is no
+   new error shape to handle.
+9. Render `max_platform_loss` beside the subsidy input and let it update on
+   every save. Do not compute `b × ln(n)` in the browser — the server is the
+   one definition, and a second one will drift.
+10. A subsidy smaller than `max_platform_loss` **is allowed** and submits
+    normally. Warn in the UI if you like; do not disable the button for it.
+11. Round pricing inputs to four decimal places before sending, and keep them
+    under `99999999999999.9999`, or the save comes back `422`.
+
+## Notes for [FE][2.3] #56
+
+1. Show the close control only on a market that is genuinely trading:
+   `status === "open"` **and** `close_time` still in the future. It is the same
+   `tradeable` expression as everywhere else on this page — a market whose
+   countdown has hit zero cannot be closed early, because it has already
+   closed.
+2. The modal has one required input. Enable its confirm button at 10 trimmed
+   characters and you will never see a `422 close_incomplete`.
+3. Paint `details` the way you already paint `blocking_submission`: same shape,
+   same keys. There is only ever one entry, on `field: "reason"`.
+4. Say in the modal that the reason goes into the admin log and cannot be
+   edited afterwards. It is the only record of why the market stopped, and
+   nothing in this API will ever read it back — do not build a view that
+   expects `reason` on a market.
+5. Repaint from the `200` response; it is the whole market. `closed_at` is set,
+   `close_time` is unchanged, and the propose control appears on the next fetch
+   in the ordinary way.
+6. A `409 market_closed` means somebody got there first, or the clock did.
+   Reload and drop the control. A `409 market_not_open` means the market was
+   never published and the control should not have been shown.
+7. This is the one control to show on **another** administrator's market. The
+   creator's own routes still answer `404` to everybody else, so drive it from
+   a list you already have rather than from `GET /markets/{id}`.
+8. There is no undo. Confirm destructively — the market cannot be reopened and
+   traders will see it as closed immediately.
+
+## Notes for [FE][3.1] #52
+
+1. Show the propose control only on a market whose `status` is `closed`. A
+   market that is `open` with a `close_time` in the past is **not** ready yet,
+   even though it is no longer tradeable — wait for the next fetch. Do not
+   derive `closed` in the browser for this one; it is the only place on this
+   page where the status column is the right thing to read.
+2. Render the outcome choices from the market's own `outcomes` array and send
+   the chosen `id` as `winning_outcome_id`. Never send a label or an index.
+3. Enable the submit button when a winner is picked **and** at least one of the
+   evidence fields is filled in. Do that and you will never see a
+   `422 proposal_incomplete`.
+4. Paint `details` the way you already paint `blocking_submission`: same shape,
+   same keys. `field: "evidence"` has no input of its own — show it under the
+   pair of evidence fields.
+5. A `409 market_pending_resolution` means somebody got there first. Reload and
+   show `proposed_by_username` and `proposed_at` instead of the form.
+6. Repaint from the `200` response; it is the whole market. There is no need
+   for a follow-up `GET`.
+7. Nothing is resolved yet. Label this state "awaiting approval", not
+   "resolved" — [3.2] #10 can still send it back to `closed`, which clears
+   every `proposed_*` field.
+8. A `409 market_already_approved` means the proposal has been approved since
+   you last fetched. Reload and show `approved_by_username` and `approved_at`.
+
+## Notes for the approval screen — [3.2] #10
+
+There is no `[FE]` sub-issue for this story yet. These are for whoever builds
+the screen.
+
+1. Offer approve and reject only on a market whose `status` is
+   `pending_resolution`.
+2. **Disable both controls when `proposed_by_id` is the signed-in user's `id`**
+   from `GET /auth/me`. That is the story's first acceptance criterion, and the
+   server refuses the request with `403 second_administrator_required` whatever
+   the UI shows. Compare the ids, never `proposed_by_username`. Say why the
+   controls are disabled — "you proposed this; another administrator has to
+   decide it" — rather than hiding them.
+3. Show what is being decided: the winner's label (look `proposed_outcome_id`
+   up in `outcomes`), `proposal_evidence_url` as a link, `proposal_evidence_note`,
+   `proposed_by_username` and `proposed_at`.
+4. **Keep the `proposal_id` of what you rendered in step 3, and send that one**
+   with approve or reject. Do not refetch it when the button is pressed: the
+   check exists for the case where the proposal changed while the reviewer was
+   reading, and a fresh id would pass it against a proposal they have not
+   seen. Send exactly the value you read, **including `null`**: a proposal made
+   before proposal ids existed has none, and `null` is how it is decided.
+   Approve has no other inputs — confirm, then POST `{"proposal_id": ...}`.
+5. The reject modal has one required input. Enable its confirm button at 10
+   trimmed characters and you will never see a `422 rejection_incomplete`. Say
+   in the modal that the reason goes into the admin log, cannot be edited, and
+   that the proposal will be cleared from the market.
+6. Repaint from the `200` response; it is the whole market. After an approval
+   show both identities — `proposed_by_*` and `approved_by_*`. After a
+   rejection the market is `closed` with no proposal, and the creator's propose
+   control comes back.
+7. A `409 market_already_approved` or `409 market_not_pending_resolution` means
+   another administrator decided first. Reload and drop both controls.
+   A `409 proposal_superseded` means the proposal on screen was rejected and a
+   new one made. Reload and show the new proposal, with its new `proposal_id`,
+   for review from the start — do not resend the same decision automatically.
+8. **Finding a proposal to decide.** `GET /markets/{id}` still answers `404`
+   for a market you did not create, and there is no list of other
+   administrators' markets on this service. `GET /public/markets?status=pending_resolution`,
+   below, finds the market id — but its `PublicMarketOut` carries no
+   evidence or proposer identity (D-019), so step 3 still needs
+   `GET /audit/actions?action_type=market.outcome_proposed`
+   on the audit service: `target_id` is the market id, `target_label` the
+   question, `actor_id` the proposer, and `context` carries `proposal_id`, the
+   winner's label and the evidence — enough to render step 3, apply step 2 and
+   send step 4. An entry written before proposal ids existed has no
+   `proposal_id` key: send `null` for it. A `market.outcome_approved` or
+   `market.outcome_rejected` whose `context.proposal_id` matches means that
+   proposal has been decided; match on that rather than `target_id`, because one
+   market can be proposed for more than once. For an entry with no
+   `proposal_id`, a later decision on the same `target_id` carrying
+   `"proposal_id": null` is the match.

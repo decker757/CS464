@@ -1,0 +1,397 @@
+# BACKEND_WORKFLOW.md — Ihsan's working rules
+
+Not a CLAUDE.md. The repo already has one and it stays authoritative.
+Reference this at the start of a session with `@BACKEND_WORKFLOW.md`.
+Where this file and the repo's CLAUDE.md or an ADR disagree, **they win** — tell me
+about the conflict rather than picking one.
+
+---
+
+## Project
+
+**gembet** — play-money prediction market. CS464 capstone, 3 people.
+
+LMSR automated market maker, no order book. Users buy YES/NO shares. Price comes
+from `C(q) = b·ln(Σ e^(qᵢ/b))`; price is its gradient. Winning shares pay 1 credit
+at resolution, losers pay 0. `b` is liquidity; house worst-case loss is `b·ln(n)`.
+
+**Me:** Ihsan (`ihsankoolz`) — backend. Pricing engine, trade path, settlement,
+market read APIs, leaderboard, limit orders.
+**Ernest (`decker757`)** — infra, CI, auth, realtime, market lifecycle, and
+the ledger's money primitives (`posting.py`, `accounts.py`, `grants.py`).
+Reviews every PR, strictly. The rest of `ledger_service` is mine — see
+"`ledger_service` is mine" below, which is the longer version of this line
+and the one to believe if the two ever drift.
+**Michelle (`michelletan2024`)** — React frontend.
+
+## Stack — as it actually is
+
+- Python 3.13, FastAPI, SQLAlchemy 2.0 async, asyncpg, Postgres
+- Five services: `auth_service`, `market_service`, `audit_service`,
+  `ledger_service`, `realtime_service`. Auth, market and ledger each own a schema
+  and connect as their own login role. `audit_service` has a login role and owns
+  no schema: `audit` belongs to the superuser, and `audit_svc` holds SELECT and
+  INSERT on it — INSERT only so its own suite can seed rows (ADR 0006,
+  `sql/02-schemas.sql`). `realtime_service` has no role, no schema and no
+  `DATABASE_URL` (ADR 0010).
+- `backend/shared/` — narrow by ADR 0012. What is in it, and the bar for adding
+  anything, is CLAUDE.md's `backend/shared/` section; don't copy the list here.
+- pytest, `asyncio_mode = auto`, tests run against real Postgres, never SQLite
+- Migrations: hand-written idempotent SQL in `sql/migrations/`. No Alembic yet (#75)
+- Frontend is separate: npm, Vite, React 19, TS. Not mine.
+
+**Read the ADRs before any structural decision.** They exist and they're binding.
+ADR 0012 (what may enter `shared/`) and ADR 0010 are the two that govern my
+work: why the engine stays in `ledger_service` is ADR 0010 and ADR 0012's
+amendment, as CLAUDE.md says — not ADR 0005, whose extraction list is the trap.
+
+### Service layout
+
+```
+backend/<name>_service/
+  controller/   # routes
+  service/      # orchestration
+  core/         # pure logic (ledger: lmsr.py, pricing.py; market: closing.py,
+                # clock.py), errors, and the seams onto shared/ (ADR 0012).
+                # No network clients: see "The terms client lives in
+                # `service/`, not `core/`"
+  model/        # entities
+  main.py       # only file allowed to see everything
+unit_test/
+  core/  model/        # run without a database ("The terms client lives in `service/`, not `core/`", CLAUDE.md)
+  service/  controller/ # need Postgres (CLAUDE.md "Running things")
+  test_import_boundary.py
+# realtime_service is the exception: its whole suite, core/ and model/ included,
+# needs REDIS_URL set, because its conftest raises at import without it.
+```
+
+Import direction is `controller → service → core/model`. Never upward. No test
+enforces that direction. It's a review convention. `test_import_boundary.py`
+enforces only that no service imports another. See "The terms client lives in
+`service/`, not `core/`".
+
+---
+
+## Invariants — never break these
+
+Each of these is CLAUDE.md's or an ADR's; this list is a reminder, and their
+wording wins where the two differ.
+
+1. **Postgres is the only source of truth.** Price is computed from `q` and `b`,
+   never stored as authoritative.
+2. **Nothing that moves money reads Redis.** Redis is display and fan-out only.
+3. **Balances are derived by summing ledger entries.** No cached balance column.
+4. **Every transaction's legs sum to zero.** Globally the ledger sums to zero.
+5. **Money is `Decimal`, `Numeric(18,4)`, and rounds directionally.** No floats in
+   the money path, ever. The ledger's amounts and the public market projection
+   cross the API as decimal strings, not JSON numbers ("`liquidity_b` serialises
+   as a decimal string, never a float" and "Two schemas: `PublicMarketOut` beside
+   an unchanged `MarketOut`" in DECISIONS.md). `MarketOut` deliberately sends
+   JSON numbers, for the reason the second of those gives.
+   - Rounding a cost: "`quantize_cost` takes an unsigned magnitude; the caller
+     applies the sign" in DECISIONS.md.
+   - `ROUND_HALF_UP` at scale 4 is not display-only. `posting._quantize` applies it
+     to every ledger leg, so a retry matches its stored fingerprint — CLAUDE.md's
+     "Reading a balance writes, once per user, ever" says what breaks otherwise.
+     Displayed prices use it too: "The price read exists once, and the price
+     quantizer is in `core/pricing.py`".
+   - Absolute values: "An absolute value on money is `copy_abs()`, never `abs()`".
+6. **The ledger is append-only, enforced by a database trigger.** Don't try to work
+   around it.
+7. **A charged cost is computed under the book lock. A quoted cost is not.**
+   - The trade path's order (replay lookup, then status gate, then book lock) is
+     ADR 0017's.
+   - The preview locks nothing on a warm book: "Preview takes no locks", as scoped
+     by "D-012's "no locks" is the warm path; the first touch locks twice".
+   - If a design charges a cost that was priced outside the trade's lock, it's
+     wrong. Stop and tell me.
+8. **Websocket publish fires after commit, never inside the transaction.**
+9. **`posting.post()` commits, so it is the last call on any path that writes.**
+   Settled by "The book's writes share `posting.post`'s commit, and nothing may
+   follow it" and, for the trade path, CLAUDE.md's "The ledger has one write
+   route, and it takes no money".
+10. **The trade route accepts a trader's own token, and that is not a hole.** Its
+    body names no account, no amount and no leg (ADR 0009's amendment). A new
+    write route that would take an amount or an account from the request needs
+    service-to-service auth first, and that still doesn't exist: stop and ask.
+
+## Open questions — stop and ask, don't guess
+
+- Whether an under-subsidised market should be refused. The pool *is* funded —
+  `books.ensure_open` posts `seed_subsidy` from the PLATFORM account on a
+  market's first touch ([F-7] #96, "Seed subsidy is posted at book creation") —
+  but nothing compares that subsidy against `b·ln(n)`, so a market can be opened whose pool goes negative under
+  ordinary trading. market_service's rule to make, not the ledger's.
+
+**`auth_service` and `realtime_service` are Ernest's — don't modify them without
+asking me first.** They have tests riding on current behaviour.
+
+**`ledger_service` is mine.** The pricing engine, the book handoff, the preview
+and the trade path all live there, and every trading ticket writes to it. Ernest
+built `posting.py`, `accounts.py` and `grants.py` and still reviews changes to
+them — treat those three as his and say so in the PR if you touch one — but the
+service as a whole is no longer off limits.
+
+---
+
+## DECISIONS.md — read it, and append to it
+
+`DECISIONS.md` is the running log of design decisions in my slice. Read it at the
+start of every session, before the ticket. It's the layer under `docs/adr/`:
+decisions that are real but sit below the ADR bar, plus working agreements not yet
+written up.
+
+`docs/adr/` is the authority. If `DECISIONS.md` contradicts an ADR, the ADR wins
+and the entry is wrong — say so rather than following it.
+
+**Append a new entry whenever a session settles any of these:**
+
+- Where code lives, and why it isn't somewhere else
+- A numeric or type contract at a boundary (precision, scale, string vs number)
+- A lock, a transaction boundary, or an ordering rule
+- A schema shape, or a column deliberately not added
+- Something deliberately duplicated, or deliberately not abstracted
+- A safety net deliberately left out
+- Anything where the obvious-looking refactor would be a bug
+
+**Do not append** for routine implementation: a function's internals, a variable
+name, a test that just covers a criterion.
+
+Use the format at the top of the file. Append only — never renumber, never delete.
+A decision that changes gets a new entry, and the old one is marked superseded by
+the new entry's title. The author never writes a number: a new entry stays
+`D-NEW` until its PR merges. Never take the next number from the file.
+
+If a decision is big enough to constrain someone else's work or would be expensive
+to reverse, it needs an ADR, and **writing it is part of the ticket** — a new record
+in `docs/adr/`, or an amendment block on the one whose claim is changing. Two
+conditions on either: it names a **reversal trigger** — the condition under which
+the decision goes back, stated as something testable rather than as a feeling —
+and it cites DECISIONS.md entries **by title, never by number**, because those
+numbers have shifted on merges and an ADR is the permanent record.
+
+Amend rather than supersede when the subject is unchanged and only a claim has
+moved; write a new record when the decision spans more than one existing record's
+subject. Tell Ernest after it lands, in the PR. Don't wait to be asked, and don't
+leave the reasoning only in the PR description.
+
+When a session ends with an unresolved question, add it to the **Open** section at
+the bottom rather than guessing.
+
+Commit log changes with the work they describe, not separately:
+`docs(<service>): record <title>`.
+
+---
+
+## Before starting a ticket — read the board
+
+The board is `github.com/users/decker757/projects/6`. Read the real issue. Don't
+work from my paraphrase of it — I get details wrong.
+
+```bash
+gh issue view 43                                          # body + acceptance criteria
+gh project item-list 6 --owner decker757 --format json    # status, priority, iteration, assignee
+gh issue list --repo decker757/CS464 --state open --assignee ihsankoolz
+gh pr list --repo decker757/CS464 --state all --search "43"
+```
+
+If `gh` lacks the scope: `gh auth refresh -s project,read:project`
+
+Check before writing any code:
+
+- **The acceptance criteria in the issue body are the spec.** They override anything
+  I said in chat.
+- **Sub-issues.** A parent showing `0/1` has a child that may be the actual unit of
+  work. `gh issue view` shows them.
+- **Linked PRs.** Has someone already started this.
+- **Is it actually assigned to me.** If it's Ernest's or Michelle's, stop.
+- **Dependencies named in the body** — "Required by", "Blocked by", "Land before".
+  Follow them and read those issues too.
+- **Board fields** — priority and iteration tell me whether this is even the right
+  ticket to be on.
+
+If the issue body contradicts this file or an ADR, say so and stop. Don't reconcile
+it yourself.
+
+**Read the board, don't write to it.** Linking a PR sets In progress. Merging
+into `dev` does **not** close the issue — GitHub only auto-closes on the default
+branch, `main` — so it never reaches Done by itself; tell me when a PR merges and
+I'll close it. Don't run `gh project item-edit` or `gh issue edit` unless I ask.
+
+The test-writing session gets its acceptance criteria from `gh issue view`, never
+from the implementation.
+
+---
+
+## How to work
+
+**One ticket at a time.** Don't start a second before the first is pushed. If a task
+needs work from another ticket, say so and stop.
+
+**Read before writing.** Read the real code, not what you assume the interface is.
+
+**Small diffs.** Only what the ticket needs. No drive-by refactors, no reformatting
+untouched files, no renames you don't have to make.
+
+**Ask before adding a dependency.**
+
+**Type hints everywhere.** No bare `Any` in the money path.
+
+**Never put real-looking secrets in test files.** GitGuardian runs on every PR and
+has already failed once on a fake password. Use `"<PASSWORD>"` placeholders.
+
+---
+
+## Tests — written by a different agent than the code
+
+Non-negotiable. An agent that writes both marks its own homework: it tests what it
+built rather than what the ticket asked for, and tests bend to fit bugs.
+
+### The sequence
+
+**Step 1 — interface.** I define the public signature and acceptance criteria.
+Nothing else is agreed yet.
+
+**Step 2 — test session.** Fresh session, `/clear` first, or a `Task` subagent.
+Its brief:
+- Read the ticket's acceptance criteria and the public signature only
+- Do **not** read any implementation file for this ticket
+- Do **not** create or modify implementation files
+- Write tests that fail for the right reason (import error or assertion, not syntax)
+- One test per acceptance criterion, named after it
+
+**Step 3 — implementation session.** Fresh session, `/clear` first. Its brief:
+- Read the ticket and the failing tests
+- Make them pass
+- **Do not edit any test file.** If a test looks wrong, stop and tell me — that's a
+  spec disagreement and I decide, not the implementer
+- Don't add new behaviour the tests don't cover
+
+**Step 4 — review.** Third session or me. Are the tests testing the criteria, or
+just the code that got written?
+
+### What tests must cover
+
+The floor is `backend/CLAUDE.md` → Tests: a unit test for each new helper, one
+main-flow test, a failure case asserting the exact error code, and — for anything
+that moves money — a rollback test (the operation's own rollback) and a
+concurrency test (ADR 0015 says what makes it a race). What counts as a test
+worth keeping is the root CLAUDE.md's "Tests earn their place".
+
+`unit_test/core/` and `unit_test/model/` need no database and run fast. Put pure
+logic there.
+
+### What makes a test evidence
+
+- **A refusal test that asserts nothing was written must count before the test's
+  own `session.rollback()`.** A rollback the test runs between the refusal and
+  its counts erases any writes the implementation left pending, so the test
+  passes green over a write-then-raise bug. Under READ COMMITTED a second session
+  sees only committed writes. Count in the request's own session before any
+  rollback, and from a second session for committed ones. Source: @decker757's
+  review on #110, of `test_a_refused_gate_writes_nothing`. This is not the
+  rollback test `backend/CLAUDE.md` asks for, which tests the operation's
+  rollback, not one the test adds.
+- **A validator test must feed the invalid value.**
+- **A race test is evidence only if it fails with its lock or re-check
+  removed** (ADR 0015). Name the line you removed.
+- **A connection-release test probes the session and the pool while the upstream
+  call is stalled.** It must fail with the release removed. A test that only
+  shows the call succeeds proves nothing. For an example, see "The cold path
+  holds no connection across the terms pull".
+
+---
+
+## Git — one branch per ticket, no exceptions
+
+Base is `dev`, never `main`. `dev` moves several times a day; rebase onto it
+before asking for review.
+
+**Start**
+
+```bash
+git checkout dev
+git pull origin dev
+git checkout -b 43-lmsr-pricing-engine
+```
+
+Naming: `<issue>-<slug>`. No `feat/` or `fix/` prefix — CLAUDE.md sets the
+convention and every branch on the remote follows it (`21-cost-preview`,
+`96-market-book-handoff`, `62-market-read-api`).
+One branch per ticket. Never two tickets on one branch, never reuse a merged branch.
+
+**After a squash merge, start a fresh branch from `dev`.** A squash rewrites the
+work into one new commit with no shared ancestry, so `git merge-base --is-ancestor`
+reports the old branch as unmerged and pushing more work to it collides on every
+file. #96 landed this way.
+
+**When Ernest says rebase**
+
+```bash
+git checkout dev
+git pull origin dev
+git checkout 43-lmsr-pricing-engine
+git rebase dev
+# fix conflicts, then stage only the files you resolved
+git add <resolved files>
+git rebase --continue
+git push --force-with-lease
+```
+
+`--force-with-lease`, never plain `--force`.
+
+**Commits — split by layer**
+
+Ernest asked for this explicitly, so he can follow the reasoning.
+
+```bash
+git add backend/ledger_service/core/lmsr.py
+git commit -m "feat(ledger): LMSR cost and price functions"
+
+git add backend/ledger_service/unit_test/core/test_lmsr.py
+git commit -m "test(ledger): property tests for LMSR"
+```
+
+The engine lives in `ledger_service/core/lmsr.py`, not in `shared/`. See ADR 0010
+and ADR 0012's amendment, as CLAUDE.md does.
+
+Format `type(scope): description`. Types: `feat`, `fix`, `test`, `refactor`,
+`chore`, `docs`.
+
+**PR**
+
+```bash
+.venv/Scripts/pytest    # Windows layout; CI runs a bare `pytest`
+git push -u origin 43-lmsr-pricing-engine
+gh pr create --base dev --title "[F-3] LMSR pricing engine (#43)" --body "<Refs|Closes> #43"
+```
+
+Pick the trailer by CLAUDE.md's Branches rule: `Refs #N` while the ticket has
+open sub-issues, `Closes #N` otherwise.
+
+**Before requesting review**
+- All tests pass locally
+- CI green
+- No secrets or real-looking credentials in tests
+- Diff contains only what the ticket needs
+- Commits split by layer
+
+---
+
+## Environment
+
+Everything local. No hosted services, no external APIs. Copy `.env.example` to
+`.env`. Needs `POSTGRES_*`, per-service `*_DB_PASSWORD` and `*_TEST_DATABASE_URL`,
+`JWT_SECRET`, `DEFAULT_LIQUIDITY_B` (100), `STARTING_CREDITS` (1000), `REDIS_URL`,
+`CLOSE_SWEEP_*`, ports.
+
+Migrations are applied by hand:
+`docker compose exec -T db psql ...` against `sql/migrations/`.
+
+**Switching from a #22-or-later branch to an earlier one:** #22's `create_all`
+leaves `ledger.positions` in `cs464_test`, and that breaks the earlier branch's
+`drop_all`. Drop the table:
+
+```bash
+docker compose exec -T db psql -U cs464 -d cs464_test -c "DROP TABLE ledger.positions CASCADE;"
+```

@@ -1,0 +1,38 @@
+-- 0007 — ledger: widen transactions.idempotency_key. [T-2] #22
+--
+-- Widens one column:
+--   idempotency_key  varchar(120) -> varchar(255)
+--
+-- [T-2] #22's trade route stores a derived key,
+-- `trade:<user_id>:<market_id>:<client key>` — 80 characters of prefix
+-- (two UUIDs plus the literal text) before the client's own string even
+-- starts. The two keys this service already generated for itself,
+-- `signup-grant:<user_id>` and `market-open:<market_id>`, are 49 and 48
+-- characters and fit the old width with room to spare; a trade key does
+-- not; the derivation exists precisely so a client key can collide with
+-- one of those namespaces without touching it
+-- (`test_a_client_key_naming_the_grant_namespace_cannot_touch_it`), and a
+-- client key that is itself 49 characters long pushes the combined string
+-- past 120. 255 leaves 175 characters for the client's own string, which
+-- `model/schemas.py::TradeIn.idempotency_key` bounds to at the API layer so
+-- the derived key can never exceed this column regardless of what a client
+-- sends.
+--
+-- This is an ALTER on a column that already exists, so it is invisible to
+-- `create_all`: that only ever issues `CREATE TABLE IF NOT EXISTS`, and
+-- never touches a column already present on a table it finds. Every insert
+-- against a `cs464` predating this change keeps failing with
+-- "value too long for type character varying(120)" on a long enough
+-- derived key until this is applied by hand.
+--
+-- Apply to:  cs464   (the development database)
+-- Not to:    cs464_test — unit_test/conftest.py drops and recreates the
+--            schema from the models on every test, so a suite always
+--            matches model/entities.py. It is only the long-lived database
+--            that drifts.
+--
+--   docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
+--     -f /sql/migrations/0007-ledger-trade-idempotency-key-width.sql
+
+ALTER TABLE ledger.transactions
+  ALTER COLUMN idempotency_key TYPE varchar(255);
