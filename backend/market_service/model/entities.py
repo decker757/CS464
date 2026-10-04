@@ -165,6 +165,18 @@ class MarketOverview:
     counts: dict[MarketStatus, int]
 
 
+@dataclass(frozen=True)
+class MarketPage:
+    """One page of the trader-facing browse list. [X-1] #104.
+
+    `next_cursor` continues after the last market and is None on the last page,
+    an empty one included.
+    """
+
+    markets: list[MarketCard]
+    next_cursor: str | None
+
+
 def displayed_status(
     status: MarketStatus,
     close_time: datetime | None,
