@@ -4,7 +4,8 @@ ADR 0005 named what belongs here and, just as importantly, what does not:
 "Extract when #41 lands, and narrowly: token verification, the settings base,
 and the LMSR engine. Not `core`." This package is the first two of those three,
 plus what later cleared the bar below: the role enum, the cursor format, the
-test env loader, and the audit writer (ADR 0006's #135 amendment).
+test env loader, the audit writer (ADR 0006's #135 amendment), and the
+migration runner (ADR 0020).
 
 **The LMSR engine is not here, and that is deliberate.** [F-3] #43 put it in
 `ledger_service/core/lmsr.py`. ADR 0010 settled that the ledger owns the trade
@@ -24,10 +25,10 @@ divergence between two copies would be a bug rather than a design choice.
 What is deliberately still copied per service, and why:
 
 - **`core/database.py`.** Each service's `Base.metadata` is its own, and that
-  is load-bearing: `unit_test/conftest.py` calls `drop_all` on it, and
-  `create_all` runs against it at boot. One shared `Base` would enrol every
-  service's tables in every other service's metadata, and the first conftest
-  rebuild would try to drop tables its role has no grant on.
+  is load-bearing: `unit_test/conftest.py` calls `drop_all` and `create_all`
+  on it, and the service's migrations compare against it. One shared `Base`
+  would enrol every service's tables in every other service's metadata, and the
+  first conftest rebuild would try to drop tables its role has no grant on.
 - **`controller/transport.py`.** The five copies agree on very little; each
   service reads a different cookie for a different reason, and the realtime
   one is checking a WebSocket origin by hand.
