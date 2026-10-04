@@ -36,8 +36,12 @@ PublicStatusFilter = PublicMarketStatus
     summary="Browse published markets",
     description=(
         "[X-1] #34, [X-2] #35. With no query parameters, the default view: "
-        "**every published market**, the ones still trading first and then "
-        "by soonest closing time within each group. It is not an open-only "
+        "**every published market**: the ones still trading first, soonest "
+        "closing time first; then every other market, whatever its status, "
+        "most recently stopped first — for a market closed early, the moment "
+        "it was closed rather than its `close_time`. Ties come back in `id` "
+        "order. The same order applies under `status` and `q`. It is not an "
+        "open-only "
         "list — [X-1] #34 asks that open markets be clearly distinguishable "
         "from closed, pending-resolution and settled ones, and there is "
         "nothing to distinguish them from if those are missing.\n\n"
