@@ -24,16 +24,16 @@ from core.not_found_cache import NotFoundCache
 # its deletion; whether five seconds is the right budget is open there.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
 
-# D-053: how long a 404 is remembered, which is also the longest a newly
-# published market's first request can still be told it does not exist, and
-# how many ids are remembered at once, so looping random ids stays bounded.
-NOT_FOUND_TTL_SECONDS = 10.0
-NOT_FOUND_MAX_ENTRIES = 10_000
+# How long a 404 is remembered, which is also the longest a newly published
+# market can still be told it does not exist, and how many ids are held at
+# once, so the memory stays bounded. Per process, and only a 404 goes in: a
+# 503, a timeout or a 401 says nothing about the market. DECISIONS.md, "A
+# market_service 404 is remembered for ten seconds, per process".
+_NOT_FOUND_TTL_SECONDS = 10.0
+_NOT_FOUND_MAX_ENTRIES = 10_000
 
-# Per process, not shared (D-053). Only a 404 goes in: a 503, a timeout or a
-# 401 says nothing about the market.
 _recent_not_found = NotFoundCache(
-    ttl_seconds=NOT_FOUND_TTL_SECONDS, max_entries=NOT_FOUND_MAX_ENTRIES
+    ttl_seconds=_NOT_FOUND_TTL_SECONDS, max_entries=_NOT_FOUND_MAX_ENTRIES
 )
 
 
@@ -209,8 +209,9 @@ async def fetch(
     | 404 | `MarketNotFound` | 404 |
     | 401 | `NotAuthenticated` | 401 |
 
-    A 404 is remembered for `NOT_FOUND_TTL_SECONDS`, and a repeat inside that
-    window raises `MarketNotFound` with no call (D-053).
+    A 404 is remembered for ten seconds, and a repeat inside that window
+    raises `MarketNotFound` with no call (DECISIONS.md, "A market_service 404
+    is remembered for ten seconds, per process").
 
     `terms_client` comes from `open_client` and is left open: it is shared
     by every request in the process. Carries what it reads and decides

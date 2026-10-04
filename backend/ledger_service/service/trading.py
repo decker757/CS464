@@ -11,8 +11,8 @@ commits.
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
    hit names a committed, append-only transaction, and a miss is trusted for
-   nothing except declining to skip the gate below. A miss is then rolled
-   back, so the gate's HTTP call holds no pooled connection.
+   nothing except declining to skip the gate below. The gate rolls back the
+   transaction the miss opened, so its HTTP call holds no pooled connection.
 2. The gate, `service/market_status.py::ensure_trading` — one call to
    market_service's public detail endpoint, forwarding the caller's own
    token, refusing `409 market_closed` on anything but a derived status of

@@ -40,12 +40,15 @@ async def ensure_trading(
     only an error code. Every other upstream failure propagates from
     `market_terms.fetch`, so a sick dependency is never read as closed.
 
-    **Call this with nothing pending on the session**: it rolls back before
-    the HTTP call, as `books.ensure_open` does (D-043), which also releases
-    any lock taken before it.
+    **Call this with nothing pending and no row lock held**: the gate runs
+    before the book lock. It rolls back before the HTTP call, as
+    `books.ensure_open` does (D-043), so a lock taken before it would be
+    released mid-request, which ADR 0015 forbids. The assert below catches a
+    pending write and cannot see a `SELECT ... FOR UPDATE`. The rollback also
+    expires every ORM instance the session has loaded.
     """
     # Enforced, not just documented: the rollback would discard a pending
-    # write silently.
+    # write silently. A held lock is the caller's to avoid; see above.
     assert not has_pending_writes(session), (
         "ensure_trading() rolls back before it calls market_service: call it "
         "with nothing pending on the session"
