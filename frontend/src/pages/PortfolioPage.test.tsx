@@ -148,6 +148,24 @@ describe('PortfolioPage', () => {
     expect(calls).toBe(1)
   })
 
+  it('still shows cash, net worth and the other rows when one market fails to load', async () => {
+    // Promise.all would fail the whole page here; Promise.allSettled must not.
+    server.use(http.get(`${MARKET_BASE}/public/markets/mkt-1`, () => HttpResponse.error()))
+    mockMarket('mkt-2', market({ id: 'mkt-2', question: 'Will SMU win SUNIG?', outcomes: [{ id: 'o-win', position: 0, label: 'Yes' }] }))
+    mockPortfolio(portfolio({
+      positions: [
+        portfolio().positions[0],
+        { ...portfolio().positions[0], market_id: 'mkt-2', outcome_id: 'o-win', quantity: '2.0000' },
+      ],
+    }))
+    renderPage()
+
+    expect(await screen.findByText('997 credits')).toBeInTheDocument()
+    expect(screen.getByText('999 credits')).toBeInTheDocument()
+    expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(screen.getByText('Unknown market')).toBeInTheDocument()
+  })
+
   it('links a position to its market detail page', async () => {
     mockPortfolio(portfolio())
     mockMarket('mkt-1', market())
