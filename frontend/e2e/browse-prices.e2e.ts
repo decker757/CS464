@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test'
-import { formatPrice } from '../src/utils/formatPrice'
 import { buy, publishMarket, registerAdmin, registerTrader, snapshot, uniqueName } from './support/backend'
 import { logIn, marketCard } from './support/browser'
 
@@ -12,18 +11,18 @@ test('a browse card shows the price the ledger quotes for that market', async ({
   const trader = await registerTrader('bp_trader')
 
   // Moved off 50/50 first, so the card cannot be showing an opening price.
+  // 50 Yes shares at b = 100 (support/backend.ts) give Yes 0.6225, No 0.3775.
   await buy(trader, market, 'Yes', '50.0000')
   const { prices } = await snapshot(trader, market.id)
   const priceOf = (label: string) => {
     const outcome = market.outcomes.find(candidate => candidate.label === label)
-    const price = prices.find(candidate => candidate.outcome_id === outcome?.id)?.price
-    if (!price) throw new Error(`no ${label} price for ${market.question}`)
-    return price
+    return prices.find(candidate => candidate.outcome_id === outcome?.id)?.price
   }
+  expect(priceOf('Yes')).toBe('0.6225')
+  expect(priceOf('No')).toBe('0.3775')
 
   await logIn(page, trader)
   const card = marketCard(page, market.question)
-  await expect(card.getByLabel('Yes price')).toHaveText(formatPrice(priceOf('Yes')))
-  await expect(card.getByLabel('No price')).toHaveText(formatPrice(priceOf('No')))
-  await expect(card.getByLabel('Yes price')).not.toHaveText('50.0%')
+  await expect(card.getByLabel('Yes price')).toHaveText('62.3%')
+  await expect(card.getByLabel('No price')).toHaveText('37.8%')
 })

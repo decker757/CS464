@@ -107,6 +107,9 @@ async function save(admin: Session, question: string, status: 'draft' | 'submitt
     resolution_time: daysFromNow(45),
     resolution_criteria: 'Resolves YES if the end-to-end test says so.',
     resolution_sources: [{ url: 'https://example.com/source', label: 'Source' }],
+    // Pinned rather than left to the stack's DEFAULT_LIQUIDITY_B, so a test
+    // can assert the exact price a trade moves the market to.
+    liquidity_b: '100',
     seed_subsidy: 250,
   })
   return body.market

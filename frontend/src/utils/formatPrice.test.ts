@@ -24,4 +24,9 @@ describe('formatPrice', () => {
     expect(formatPrice('0.0004')).toBe('0.0%')
     expect(formatPrice('1.0000')).toBe('100.0%')
   })
+
+  // BigInt throws on these, and a throw during render takes the page down.
+  it('shows a dash for anything that is not a plain decimal', () => {
+    expect(formatPrice('1E-4')).toBe('—')
+  })
 })
