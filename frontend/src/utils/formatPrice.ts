@@ -5,7 +5,14 @@
 // Done on the digits rather than through parseFloat: 0.1235 is 0.12349999… as
 // a float, so `(parseFloat(price) * 100).toFixed(1)` shows 12.3% for a price
 // that is exactly halfway to 12.4%. docs/api/realtime-service.md.
+//
+// Anything that is not a plain decimal, like "1E-4", shows "—" rather than
+// letting BigInt throw during render and take the whole page down.
+const PLAIN_DECIMAL = /^\d+(\.\d+)?$/
+
 export function formatPrice(price: string): string {
+  if (!PLAIN_DECIMAL.test(price)) return '—'
+
   const [whole, fraction = ''] = price.split('.')
   const keptDigits = fraction.padEnd(3, '0').slice(0, 3)
   const firstDroppedDigit = fraction[3] ?? '0'
