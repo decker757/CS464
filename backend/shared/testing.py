@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -174,3 +176,36 @@ def compose_service(name: str) -> dict[str, Any]:
 
     compose = (_repo_root() / "docker-compose.yml").read_text(encoding="utf-8")
     return yaml.safe_load(compose)["services"][name]
+
+
+def assert_baseline_downgrades_and_upgrades_again(
+    *, migrate_step: Callable[[], int], alembic_ini: Path, url: str, metadata: Any, schema: str
+) -> None:
+    """The baseline's handwritten downgrade, held to the same standard as its upgrade.
+
+    Migrates, downgrades to base and expects no model table left, then migrates
+    again and expects exactly what `metadata.create_all` builds. The caller
+    empties the schema around it. Nothing else runs a downgrade. [F-5] #75
+    """
+    from alembic import command  # noqa: PLC0415 - see drop_own_tables
+    from sqlalchemy import inspect  # noqa: PLC0415
+
+    from shared.migrating import VERSION_TABLE, _alembic_config, run_in_transaction  # noqa: PLC0415
+
+    def tables() -> list[str]:
+        return run_in_transaction(
+            url, lambda connection: inspect(connection).get_table_names(schema=schema)
+        )
+
+    def catalog() -> dict[str, list[str]]:
+        return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
+
+    assert migrate_step() == 0
+    command.downgrade(_alembic_config(alembic_ini, url), "base")
+    assert set(tables()) <= {VERSION_TABLE}
+
+    assert migrate_step() == 0
+    migrated = catalog()
+    run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
+    run_in_transaction(url, metadata.create_all)
+    assert migrated == catalog()

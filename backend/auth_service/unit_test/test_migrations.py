@@ -16,7 +16,6 @@ import shutil
 import uuid
 
 import pytest
-from alembic import command
 from sqlalchemy import inspect, text
 
 from core.database import SCHEMA, Base
@@ -25,12 +24,16 @@ from migrate import ALEMBIC_INI, main
 from shared.migrating import (
     VERSION_TABLE,
     LegacyDrift,
-    _alembic_config,
     find_drift,
     migrate,
     run_in_transaction,
 )
-from shared.testing import compose_service, drop_own_tables, schema_catalog
+from shared.testing import (
+    assert_baseline_downgrades_and_upgrades_again,
+    compose_service,
+    drop_own_tables,
+    schema_catalog,
+)
 
 # The conftest has pointed DATABASE_URL at the test database by now.
 _URL = os.environ["DATABASE_URL"]
@@ -129,21 +132,13 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
 
 
 def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> None:
-    """The downgrade is handwritten and nothing else runs it, so it is held to
-    the same standard as the upgrade: it removes every model table, and the
-    schema it leaves can be migrated back to exactly the models."""
-    assert main() == 0
-    config = _alembic_config(ALEMBIC_INI, _URL)
-
-    command.downgrade(config, "base")
-
-    assert set(_tables()) <= {VERSION_TABLE}
-
-    assert main() == 0
-    migrated = _catalog()
-    _empty_the_schema()
-    run_in_transaction(_URL, Base.metadata.create_all)
-    assert migrated == _catalog()
+    assert_baseline_downgrades_and_upgrades_again(
+        migrate_step=main,
+        alembic_ini=ALEMBIC_INI,
+        url=_URL,
+        metadata=Base.metadata,
+        schema=SCHEMA,
+    )
 
 
 def test_a_legacy_schema_that_matches_the_models_is_stamped_and_keeps_its_rows(
