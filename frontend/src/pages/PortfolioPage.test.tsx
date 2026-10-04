@@ -84,14 +84,17 @@ function renderPage() {
 }
 
 describe('PortfolioPage', () => {
-  it('shows cash, positions value and net worth as whole numbers', async () => {
+  it('shows cash, positions value and net worth at full precision, so they add up', async () => {
+    // formatCredits alone would truncate each to a whole number - 997, 2 and
+    // 999 - which do not sum correctly and would show "0 credits" for a
+    // positions value under 1.
     mockPortfolio(portfolio())
     mockMarket('mkt-1', market())
     renderPage()
 
-    expect(await screen.findByText('997 credits')).toBeInTheDocument()
-    expect(screen.getByText('2 credits')).toBeInTheDocument()
-    expect(screen.getByText('999 credits')).toBeInTheDocument()
+    expect(await screen.findByText('997.4687 credits')).toBeInTheDocument()
+    expect(screen.getByText('2.5312 credits')).toBeInTheDocument()
+    expect(screen.getByText('999.9999 credits')).toBeInTheDocument()
   })
 
   it('shows each position with its market question and outcome label', async () => {
@@ -115,22 +118,43 @@ describe('PortfolioPage', () => {
     expect(screen.getByText('2.5625')).toBeInTheDocument()
   })
 
-  it('shows unrealized P&L in red with a minus sign for a loss', async () => {
+  it('shows the server\'s own value, not quantity times price', async () => {
+    // ADR 0018 / [T-4] #24: value is a liquidation figure, never
+    // quantity × price. Pick a price that gives a different, wrong answer
+    // if the page ever starts computing it client-side: 5 shares at 0.6000
+    // would be 3.0000, not the 2.5312 the server actually quotes.
+    mockPortfolio(portfolio({ positions: [{ ...portfolio().positions[0], price: '0.6000' }] }))
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    expect(await screen.findByText('2.5312')).toBeInTheDocument()
+    expect(screen.queryByText('3.0000')).not.toBeInTheDocument()
+  })
+
+  it('shows unrealized P&L with a minus sign for a loss', async () => {
     mockPortfolio(portfolio())
     mockMarket('mkt-1', market())
     renderPage()
 
-    const pnl = await screen.findByText('-0.0313')
-    expect(pnl).toHaveClass('text-danger')
+    expect(await screen.findByText('-0.0313')).toBeInTheDocument()
   })
 
-  it('shows unrealized P&L in green with a plus sign for a gain', async () => {
+  it('shows unrealized P&L with a plus sign for a gain', async () => {
     mockPortfolio(portfolio({ positions: [{ ...portfolio().positions[0], unrealized_pnl: '1.5000' }] }))
     mockMarket('mkt-1', market())
     renderPage()
 
-    const pnl = await screen.findByText('+1.5000')
-    expect(pnl).toHaveClass('text-success')
+    expect(await screen.findByText('+1.5000')).toBeInTheDocument()
+  })
+
+  it('shows unrealized P&L of exactly zero with no sign', async () => {
+    // A fresh position's P&L is zero, not a gain (ADR 0018 / [T-4] #24).
+    mockPortfolio(portfolio({ positions: [{ ...portfolio().positions[0], unrealized_pnl: '0.0000' }] }))
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    expect(await screen.findByText('0.0000')).toBeInTheDocument()
+    expect(screen.queryByText('+0.0000')).not.toBeInTheDocument()
   })
 
   it('fetches each distinct market only once across multiple positions in it', async () => {
@@ -160,8 +184,8 @@ describe('PortfolioPage', () => {
     }))
     renderPage()
 
-    expect(await screen.findByText('997 credits')).toBeInTheDocument()
-    expect(screen.getByText('999 credits')).toBeInTheDocument()
+    expect(await screen.findByText('997.4687 credits')).toBeInTheDocument()
+    expect(screen.getByText('999.9999 credits')).toBeInTheDocument()
     expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(screen.getByText('Unknown market')).toBeInTheDocument()
   })
