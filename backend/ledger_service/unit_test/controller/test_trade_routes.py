@@ -15,14 +15,10 @@ no leg, so the debited account is not an input and the amount is not an input.
 That claim is only true if the body is refused when it tries to name one,
 which is what `test_a_body_naming_an_account_is_refused` holds.
 
-**Two things about the 422s.** FastAPI's own validation — a missing
-`state_version`, a quantity at five decimal places, `side: "sell"`, an unknown
-field — does not pass through `controller/errors.py`, so those responses carry
-`{"detail": [...]}` rather than the `{"error": {"code": ...}}` envelope every
-other service uses. That is pre-existing: the preview route has behaved this
-way since [T-1] #21. These tests assert the **status only** and deliberately
-do not pin the body, so that a later ticket unifying the envelope does not
-have to edit them.
+**The validation 422s assert the status only.** A missing `state_version`, a
+quantity at five decimal places or an unknown field all answer
+`invalid_request` in the envelope, and `test_validation_envelope.py` owns that
+shape for every route at once.
 
 **The cold path is stubbed at `market_terms.fetch` rather than at a
 transport**, the same way `test_snapshot_routes.py` and

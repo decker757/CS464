@@ -7,6 +7,7 @@ status codes and lets the service layer raise plain exceptions.
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from core.errors import (
@@ -15,11 +16,41 @@ from core.errors import (
     LedgerError,
     QuoteStale,
 )
+from model.schemas import ErrorOut, InvalidFieldOut, ValidationErrorOut
 
 _log = logging.getLogger(__name__)
 
+# Plain English: the frontend shows `error.message` to a person when it has
+# nothing better. `details` is for the code, not the reader.
+_INVALID_REQUEST_MESSAGE = "Some of the details in this request aren't valid."
+
+
+def _invalid_fields_of(exc: RequestValidationError) -> list[InvalidFieldOut]:
+    # `loc`, `msg` and `type` only. `ctx` can hold a Decimal or an exception
+    # instance, which JSON cannot encode, and copying it turns a 422 into a
+    # 500. `input` would echo the request back, which nobody asked for.
+    return [
+        InvalidFieldOut(loc=list(error["loc"]), msg=error["msg"], type=error["type"])
+        for error in exc.errors()
+    ]
+
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def _respond_to_invalid_request(
+        _: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # The same envelope as `LedgerError` below, so a route answers 422 in
+        # one shape whichever layer refused the request. #117.
+        body = ValidationErrorOut(
+            error=ErrorOut(
+                code="invalid_request",
+                message=_INVALID_REQUEST_MESSAGE,
+                details=_invalid_fields_of(exc),
+            )
+        )
+        return JSONResponse(status_code=422, content=body.model_dump(mode="json"))
+
     @app.exception_handler(LedgerError)
     async def _handle(_: Request, exc: LedgerError) -> JSONResponse:
         # The same envelope the other three services use, so the frontend
