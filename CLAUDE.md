@@ -294,14 +294,17 @@ their own balance and history, permanently. The rule belongs in the caller: a
 reused key naming different money is a bug for a trade and an edit for a grant,
 and only the caller knows which.
 
-**The ledger has one write route, and it takes no money.**
+**The ledger has two write routes, and neither takes money.**
 `POST /ledger/markets/{id}/trades` ([T-2] #22) accepts a trader's own token,
 which is safe only because the body names no account, no amount and no leg:
 `TradeIn` is `extra="forbid"`, the debited account comes from the token's
-`sub`, and the price is computed under the book lock. A write route that took
-an amount or an account from the request would be a route for minting yourself
-credits, and would first have to answer how a *service* proves it is a service.
-ADR 0009's amendment.
+`sub`, and the price is computed under the book lock.
+`POST /ledger/markets/{id}/settlement` ([3.4] #12) takes an administrator's
+token and an empty body: the winner comes from market_service, and the holders
+and amounts come from the ledger's own positions under the book lock. A write
+route that took an outcome, an amount or an account from the request would be a
+route for minting yourself credits, and would first have to answer how a
+*service* proves it is a service. ADR 0009's two amendments, ADR 0019.
 
 `posting.post` commits, so on the trade path it is the last call, and
 everything the trade writes is still pending when it runs. Two rules follow.
@@ -592,6 +595,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0016** deciding a proposal, by any admin but the proposer, with APPROVED as a status
 - **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first
 - **0018** positions are valued at liquidation, not at the marginal price
+- **0019** settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 
 Three known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
