@@ -81,6 +81,35 @@ describe('BalanceContext', () => {
     expect(await screen.findByText('failed')).toBeInTheDocument()
   })
 
+  it('does not let a slow, older request overwrite a newer one that already answered', async () => {
+    // Stand-in for a trade: refetch() is called twice in quick succession
+    // (the initial mount's, then a trade's), and the first one's reply is
+    // slow enough to land after the second's.
+    let resolveFirst!: (value: Response) => void
+    let callCount = 0
+    server.use(
+      http.get(`${LEDGER_BASE}/ledger/balances/me`, () => {
+        callCount += 1
+        if (callCount === 1) {
+          return new Promise<Response>(resolve => { resolveFirst = resolve })
+        }
+        return HttpResponse.json({ user_id: alice.id, account_id: 'acc-1', balance: '995.0000' })
+      }),
+    )
+    const actor = userEvent.setup()
+    renderWithUser(alice)
+    await screen.findByText('no balance')
+
+    await actor.click(screen.getByRole('button', { name: /refetch/i }))
+    await waitFor(() => expect(screen.getByText('995.0000')).toBeInTheDocument())
+
+    // The slow first reply (the stale pre-trade balance) arrives last; it
+    // must not replace the newer one already on screen.
+    resolveFirst(await HttpResponse.json({ user_id: alice.id, account_id: 'acc-1', balance: '1000.0000' }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(screen.getByText('995.0000')).toBeInTheDocument()
+  })
+
   it('does not show one user\'s balance for another user signed in on the same session', async () => {
     mockBalance(alice, '1000.0000')
     const { rerender } = render(

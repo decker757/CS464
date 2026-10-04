@@ -95,9 +95,49 @@ describe('AppNavbar', () => {
     expect(screen.getByText('PredictSMU')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /log out/i })).not.toBeInTheDocument()
   })
+
+  it('shows the formatted balance once it has loaded', () => {
+    render(
+      <AuthContext.Provider value={{ user: trader, login: () => {}, logout: vi.fn() }}>
+        <BalanceContext.Provider value={{ balance: '1000.0000', refetch: async () => {} }}>
+          <MemoryRouter initialEntries={['/markets']}>
+            <AppNavbar />
+          </MemoryRouter>
+        </BalanceContext.Provider>
+      </AuthContext.Provider>,
+    )
+
+    expect(screen.getByText('1,000 credits')).toBeInTheDocument()
+  })
+
+  it('shows nothing for the balance while it is still loading', () => {
+    // undefined — the renderNavbar default — must not be confused with a
+    // failed load; it should simply not render yet.
+    renderNavbar(trader)
+    expect(screen.queryByLabelText('available balance')).not.toBeInTheDocument()
+  })
+
+  it('shows Balance unavailable when the load has failed', () => {
+    render(
+      <AuthContext.Provider value={{ user: trader, login: () => {}, logout: vi.fn() }}>
+        <BalanceContext.Provider value={{ balance: null, refetch: async () => {} }}>
+          <MemoryRouter initialEntries={['/markets']}>
+            <AppNavbar />
+          </MemoryRouter>
+        </BalanceContext.Provider>
+      </AuthContext.Provider>,
+    )
+
+    expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
+  })
 })
 
 describe('AppNavbar — logging out', () => {
+  it('shows the real balance fetched through BalanceProvider, not just a stubbed one', async () => {
+    renderInApp()
+    expect(await screen.findByText('1,000 credits')).toBeInTheDocument()
+  })
+
   it('ends the session', async () => {
     const actor = userEvent.setup()
     renderInApp()
