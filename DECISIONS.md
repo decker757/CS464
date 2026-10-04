@@ -1532,8 +1532,9 @@ reason against the decision today.
 before its own call to market_service, as `ensure_open` does, so the trade
 path's separate rollback after the replay lookup is gone. Its evidence is
 `test_the_gate_holds_no_connection_while_market_service_is_slow`, which fails
-with that rollback removed. The unbounded calls for an unresolvable id are
-D-053.
+with that rollback removed. Repeated calls for the same unresolvable id are
+bounded by "A market_service 404 is remembered for ten seconds, per process";
+calls for distinct unknown ids are not, and are listed under Open.
 
 ---
 
@@ -4413,24 +4414,27 @@ reverts by #12 landing.
 
 ---
 
-### D-053 — A market_service 404 is remembered in-process for ten seconds, at most 10,000 at once
+### D-NEW — A market_service 404 is remembered for ten seconds, per process
 
 **Date:** 2026-10-04 · **Ticket:** #115 · **Status:** active
 
 **Decision.** `market_terms.fetch` remembers every market id market_service
 answered `404` for, and a repeat inside the window raises `MarketNotFound`
 with no HTTP call. The window is **10 seconds**
-(`NOT_FOUND_TTL_SECONDS`). At most **10,000** ids are held at once
-(`NOT_FOUND_MAX_ENTRIES`), and the oldest is forgotten first. Only a 404 goes
+(`_NOT_FOUND_TTL_SECONDS`). At most **10,000** ids are held at once
+(`_NOT_FOUND_MAX_ENTRIES`), and the oldest is forgotten first. Only a 404 goes
 in. A 503, a timeout or a 401 is never remembered. The memory is a
 `core/not_found_cache.py::NotFoundCache` held by `service/market_terms.py`,
 one per process.
 
 **Why.** A well-formed id that market_service does not know never gets a
 book, so every request for it took the cold path again: one outbound call per
-request, with no bound on how many a trader could make by looping random
-UUIDs (D-043's last paragraph left this open). Since ADR 0017 the gate makes
-the same call on every non-replay trade. The memory sits in `fetch` rather
+request, however often the same id was repeated ("The cold path holds no
+connection across the terms pull" left this open). Since ADR 0017 the gate
+makes the same call on every non-replay trade. This bounds repeats of the
+**same** unknown id to one call per window. It does nothing for **distinct**
+ids: each new random UUID is still one call to market_service, and only a
+rate limit closes that (see Open). The memory sits in `fetch` rather
 than in either caller, so the gate and `books.ensure_open` are both covered,
 and a 404 one of them saw spares the other its call.
 
@@ -4460,19 +4464,24 @@ deliberately optional in this service (D-047): a Redis outage must not change
 what a trade is told. *Postgres.* A table of ids that are not markets, written
 on the request path by the one service that holds no grant to know what a
 market is, and cleaned by something. It would also take a connection, which
-is the resource D-043 and #115 exist to stop holding across this call.
+is the resource "The cold path holds no connection across the terms pull"
+and #115 exist to stop holding across this call.
 *Holding it on `app.state` beside the terms client* (D-047's shape). That
 means another argument through six functions for state that, unlike a client,
-needs no closing. The suite gets a fresh instance per test through an autouse
-fixture instead (`unit_test/conftest.py::not_found_clock`), which also hands
-it a clock the test moves. *A third-party TTL cache.* A dependency for
+needs no closing. The suite empties the production instance per test through
+an autouse fixture instead (`unit_test/conftest.py::not_found_clock`), which
+also puts it on a clock the test moves, so its real window and bound are the
+ones tested. *A third-party TTL cache.* A dependency for
 twenty lines of the standard library.
 
 **Accepted.** A 404 for a market that *has* a book is market_service
 answering wrongly, and the gate turns it into `503 market_terms_unavailable`
 (ADR 0017). It is remembered like any other 404, so the gate keeps answering
 503 for up to ten seconds after market_service recovers. That is the same
-window, on a state that is already a market_service fault.
+window, on a state that is already a market_service fault. The gate does not
+forget the entry when it finds a book, because that would need a second way
+into the memory, written from a branch outside `fetch`, for a rare incident
+whose whole cost is ten seconds of a 503 the client is told to retry.
 
 **Reversal trigger.** Enough replicas that a looped id reaches market_service
 `replicas / 10` times a second and that matters. Or a publish that has to be
@@ -4484,6 +4493,14 @@ ledger rather than the ledger remembering.
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
+
+- **Calls to market_service for distinct unknown market ids are unbounded.**
+  "A market_service 404 is remembered for ten seconds, per process" stops a
+  repeated id from reaching market_service more than once per window, and
+  nothing else. A trader looping fresh random UUIDs still makes one outbound
+  call per request, through the preview, the snapshot or the trade. Only a
+  rate limit closes that, per caller or per process, and nobody has decided
+  where one belongs.
 
 - **`occurred_at` for a market that has never traded.** The realtime contract
   defines it only as the time of the event. `state_changed_at` set at handoff is a

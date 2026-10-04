@@ -712,7 +712,8 @@ three of them —
 — for the reason its own section gives: both routes share the same cold
 path.
 
-**A `404 market_not_found` is remembered for ten seconds** (D-053), on the
+**A `404 market_not_found` is remembered for ten seconds** (DECISIONS.md,
+"A market_service 404 is remembered for ten seconds, per process"), on the
 preview, the snapshot and the trade alike. Inside that window the ledger
 answers 404 again without asking market_service. So a market published a
 few seconds after somebody asked about it can still read as not found until
