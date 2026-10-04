@@ -4,6 +4,7 @@ Browse ([X-1] #34), search and filter ([X-2] #35), detail ([X-3] #36), and the
 per-status counts [2.1] #5 will reuse (D-020). Every filter, count and status
 here derives from the clock through `service/closing.py`, never from the status
 column alone (ADR 0011, D-022). No prices: `q` lives with the ledger (ADR 0005).
+Each browse card names its outcomes (#214), so a card never guesses a label.
 """
 
 from __future__ import annotations
@@ -20,8 +21,10 @@ from model.entities import (
     PUBLIC_STATUSES,
     AdminMarketCard,
     TRADER_FACING_STATUS,
+    CardOutcome,
     Market,
     MarketCard,
+    MarketOutcome,
     MarketOverview,
     MarketStatus,
     displayed_status,
@@ -116,6 +119,35 @@ def _browse_order(now: datetime) -> tuple[ColumnElement[object], ...]:
     )
 
 
+async def _list_outcomes_by_market(
+    session: AsyncSession, market_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[CardOutcome]]:
+    """The outcomes of every market in `market_ids`, in position order. #214.
+
+    One query for the whole page, not one per market. Columns, not entities,
+    for the reason `browse` gives. No ids is no query.
+    """
+    if not market_ids:
+        return {}
+
+    stmt = (
+        select(
+            MarketOutcome.market_id,
+            MarketOutcome.id,
+            MarketOutcome.position,
+            MarketOutcome.label,
+        )
+        .where(MarketOutcome.market_id.in_(market_ids))
+        .order_by(MarketOutcome.market_id, MarketOutcome.position)
+    )
+
+    outcomes_by_market: dict[uuid.UUID, list[CardOutcome]] = {}
+    for row in (await session.execute(stmt)).all():
+        outcome = CardOutcome(id=row.id, position=row.position, label=row.label)
+        outcomes_by_market.setdefault(row.market_id, []).append(outcome)
+    return outcomes_by_market
+
+
 async def browse(
     session: AsyncSession,
     *,
@@ -130,7 +162,8 @@ async def browse(
     case-insensitive search over the question and composes with `status`.
     Nothing found is `[]`, never an error. `now` is the request's clock, passed
     by the controller so the filter and the displayed status read one instant
-    (D-025).
+    (D-025). Two statements whatever the page size: the markets, then all
+    their outcomes (#214).
     """
     now = now or datetime.now(UTC)
     # Columns, not entities. Nothing enters the identity map, so a browse
@@ -150,6 +183,11 @@ async def browse(
 
     stmt = stmt.order_by(*_browse_order(now))
 
+    rows = (await session.execute(stmt)).all()
+    outcomes_by_market = await _list_outcomes_by_market(
+        session, [row.id for row in rows]
+    )
+
     # Derived here, before projection, not in a validator: FastAPI
     # re-validates the response without the request's clock. D-025, D-027.
     return [
@@ -158,8 +196,9 @@ async def browse(
             status=displayed_status(row.status, row.close_time, now=now),
             question=row.question,
             close_time=row.close_time,
+            outcomes=tuple(outcomes_by_market.get(row.id, [])),
         )
-        for row in (await session.execute(stmt)).all()
+        for row in rows
     ]
 
 
