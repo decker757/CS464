@@ -24,7 +24,31 @@ Never imported by the realtime or audit services, which have no Alembic.
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import functools
+import os
+import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, TypeVar
+
+from alembic import command, context
+from alembic.autogenerate import compare_metadata
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from sqlalchemy import MetaData
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
+
+VERSION_TABLE = "alembic_version"
+
+# Where `_alembic_config` hands the URL to env.py. An attribute, not
+# `sqlalchemy.url`: configparser would %-interpolate a URL-encoded password.
+_URL_ATTRIBUTE = "database_url"
+
+Result = TypeVar("Result")
+DriftCheck = Callable[[Connection], list[str]]
 
 
 def is_own_name(
@@ -66,3 +90,134 @@ def describe_drift(differences: list[Any]) -> list[str]:
         else:
             lines.append(_describe_change(difference))
     return lines
+
+
+def _migration_engine(url: str) -> AsyncEngine:
+    # search_path=public: see the module docstring. NullPool: every use is one
+    # short piece of work, and a pool would outlive its event loop.
+    return create_async_engine(
+        url,
+        poolclass=NullPool,
+        connect_args={"server_settings": {"search_path": "public"}},
+    )
+
+
+async def _run_async(url: str, work: Callable[[Connection], Result]) -> Result:
+    engine = _migration_engine(url)
+    try:
+        async with engine.begin() as connection:
+            return await connection.run_sync(work)
+    finally:
+        await engine.dispose()
+
+
+def run_in_transaction(url: str, work: Callable[[Connection], Result]) -> Result:
+    """Run `work` on one connection in one transaction, committed if it returns.
+
+    Rolled back if it raises. Starts its own event loop, so it is for
+    synchronous callers only. The search_path is `public`, so `work` names
+    every table with its schema.
+    """
+    return asyncio.run(_run_async(url, work))
+
+
+def _context_options(metadata: MetaData, schema: str) -> dict[str, Any]:
+    return {
+        "target_metadata": metadata,
+        "version_table_schema": schema,
+        "include_schemas": True,
+        "include_name": functools.partial(is_own_name, schema=schema),
+        "compare_type": True,
+        "compare_server_default": True,
+    }
+
+
+def find_drift(
+    connection: Connection,
+    *,
+    metadata: MetaData,
+    schema: str,
+    extra_drift: DriftCheck | None = None,
+) -> list[str]:
+    """Every way `schema` differs from `metadata`, one line each; empty when they match.
+
+    compare_metadata, plus whatever `extra_drift` finds that it cannot see.
+    """
+    migration_context = MigrationContext.configure(
+        connection, opts=_context_options(metadata, schema)
+    )
+    lines = describe_drift(compare_metadata(migration_context, metadata))
+    if extra_drift is not None:
+        lines.extend(extra_drift(connection))
+    return lines
+
+
+def _run_migrations(connection: Connection, *, metadata: MetaData, schema: str) -> None:
+    context.configure(connection=connection, **_context_options(metadata, schema))
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_env(*, metadata: MetaData, schema: str) -> None:
+    """The body of a service's `migrations/env.py`: run Alembic's command online.
+
+    The URL comes from `_alembic_config`, or from DATABASE_URL for the `alembic`
+    command line. Raises RuntimeError in offline (`--sql`) mode or with no URL.
+    Leaves logging alone: Alembic's usual `fileConfig` disables every existing
+    logger, and the suites' `caplog` reads several.
+    """
+    if context.is_offline_mode():
+        raise RuntimeError(
+            "Offline (--sql) migrations are not supported; run against a database."
+        )
+    url = context.config.attributes.get(_URL_ATTRIBUTE) or os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL is required and has no default.")
+    run_in_transaction(
+        url, functools.partial(_run_migrations, metadata=metadata, schema=schema)
+    )
+
+
+def _alembic_config(alembic_ini: Path, url: str) -> Config:
+    config = Config(str(alembic_ini))
+    config.attributes[_URL_ATTRIBUTE] = url
+    return config
+
+
+def migrate(
+    *,
+    alembic_ini: Path,
+    url: str,
+    metadata: MetaData,
+    schema: str,
+    extra_drift: DriftCheck | None = None,
+) -> None:
+    """Bring `schema` to head."""
+    config = _alembic_config(alembic_ini, url)
+    command.upgrade(config, "head")
+
+
+def migrate_from_environment(
+    *,
+    alembic_ini: Path,
+    metadata: MetaData,
+    schema: str,
+    extra_drift: DriftCheck | None = None,
+) -> int:
+    """`migrate` the database DATABASE_URL names, as an exit code: 0 done, 2 no URL.
+
+    Reads DATABASE_URL alone rather than the service's settings, so the migrate
+    step needs no signing key.
+    """
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        print("DATABASE_URL is required and has no default.", file=sys.stderr)
+        return 2
+    migrate(
+        alembic_ini=alembic_ini,
+        url=url,
+        metadata=metadata,
+        schema=schema,
+        extra_drift=extra_drift,
+    )
+    return 0
