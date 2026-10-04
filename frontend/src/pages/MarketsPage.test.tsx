@@ -204,4 +204,33 @@ describe('MarketsPage', () => {
     expect(within(card).getByLabelText('Draw price')).toHaveTextContent('20.0%')
     expect(within(card).queryByLabelText('Yes price')).not.toBeInTheDocument()
   })
+
+  // A price goes beside the outcome its id names, not the one at the same
+  // place in the array: listed in reverse, each still lands on its own label.
+  // An outcome the snapshot does not name shows a dash, and only that one.
+  it('matches each price to its outcome by id', async () => {
+    const final = {
+      id: 'e5', status: 'open', question: 'Lakers or Celtics?', close_time: '2099-06-01T00:00:00Z',
+      outcomes: outcomesFor('e5', ['Lakers', 'Celtics', 'Draw']),
+    }
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final] })),
+      http.get(SNAPSHOT, () => HttpResponse.json({
+        market_id: 'e5',
+        state_version: 3,
+        prices: [
+          { outcome_id: 'e5-1', position: 1, price: '0.3000' },
+          { outcome_id: 'e5-0', position: 0, price: '0.7000' },
+        ],
+        occurred_at: '2026-09-15T09:12:44.318000+00:00',
+      })),
+    )
+    renderPage()
+    await screen.findByText('Lakers or Celtics?')
+    const card = cardFor('Lakers or Celtics?')
+
+    expect(await within(card).findByLabelText('Lakers price')).toHaveTextContent('70.0%')
+    expect(within(card).getByLabelText('Celtics price')).toHaveTextContent('30.0%')
+    expect(within(card).getByLabelText('Draw price')).toHaveTextContent('—')
+  })
 })
