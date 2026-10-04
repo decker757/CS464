@@ -12,10 +12,6 @@ interface MarketCardProps {
   prices?: OutcomePrice[]
 }
 
-// GET /public/markets carries no outcome labels, so a card names the outcomes
-// at positions 0 and 1 the way the create form fills them in by default.
-const OUTCOME_LABELS = ['Yes', 'No']
-
 export default function MarketCard({ market, prices }: MarketCardProps) {
   return (
     <Link to={`/markets/${market.id}`} className="block">
@@ -25,13 +21,16 @@ export default function MarketCard({ market, prices }: MarketCardProps) {
           <span className="text-right text-xs text-subtle">{formatCloseTime(market.status, market.close_time)}</span>
         </div>
         <p className="text-[15px] leading-normal font-semibold text-smu-navy">{market.question}</p>
-        <div className="mt-4 flex gap-2">
-          {OUTCOME_LABELS.map((label, position) => {
-            const outcomePrice = prices?.find(price => price.position === position)
+        {/* Wraps onto more rows for a market with many outcomes (up to ten). */}
+        <div className="mt-4 flex flex-wrap gap-2">
+          {market.outcomes.map(outcome => {
+            const outcomePrice = prices?.find(price => price.outcome_id === outcome.id)
             return (
-              <div key={label} className="flex flex-1 items-center justify-between rounded-control bg-smu-cream px-3 py-2">
-                <span className="text-xs font-semibold tracking-[0.5px] text-muted uppercase">{label}</span>
-                <span aria-label={`${label} price`} className="text-sm font-bold text-smu-navy">
+              <div key={outcome.id} className="flex min-w-[120px] flex-1 items-center justify-between gap-2 rounded-control bg-smu-cream px-3 py-2">
+                <span title={outcome.label} className="truncate text-xs font-semibold tracking-[0.5px] text-muted uppercase">
+                  {outcome.label}
+                </span>
+                <span aria-label={`${outcome.label} price`} className="shrink-0 text-sm font-bold text-smu-navy">
                   {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
                 </span>
               </div>
