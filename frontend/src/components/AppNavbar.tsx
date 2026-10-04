@@ -44,9 +44,9 @@ export default function AppNavbar() {
               </Link>
             </>
           )}
-          {balance != null && (
+          {balance !== undefined && (
             <span aria-label="available balance" className="text-sm font-semibold text-smu-gold">
-              {formatCredits(balance)} credits
+              {balance === null ? 'Balance unavailable' : `${formatCredits(balance)} credits`}
             </span>
           )}
           <span className="text-sm text-white/75">{user.username}</span>
