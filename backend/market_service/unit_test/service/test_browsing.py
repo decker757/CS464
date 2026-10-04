@@ -21,11 +21,13 @@ from service import browsing, market_service
 from unit_test.conftest import approved_market as _approved_market
 from unit_test.conftest import (
     actor,
+    close_request,
     closed_market,
     draft_request,
     overdue_market,
     proposed_market,
     published_market,
+    published_market_closing_at,
 )
 
 
@@ -347,6 +349,88 @@ async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_op
     assert stopped.id in ids
     assert not _closing_says_open(stopped)
     assert ids.index(still_open.id) < ids.index(stopped.id)
+
+
+# --- #105: stopped markets, most recently stopped first ---------------------
+async def test_stopped_markets_list_most_recently_stopped_first_whatever_their_status(
+    session: AsyncSession,
+) -> None:
+    """#105: one rule for every status that is not trading, newest first.
+
+    The approved market stopped longest ago and sorts last: it gets no place
+    of its own. Created oldest first, so `close_time ASC` and insertion order
+    both give the reverse. DECISIONS.md, "Stopped markets sort by when trading
+    stopped".
+    """
+    creator = actor()
+    # Ids held as they are created; each sweep expires the session.
+    approved_id = (
+        await _approved_market(session, creator, overdue_by=timedelta(days=3))
+    ).id
+    closed_id = (
+        await closed_market(session, creator, overdue_by=timedelta(days=1))
+    ).id
+    pending_id = (
+        await proposed_market(session, creator, overdue_by=timedelta(hours=2))
+    ).id
+    unswept_id = (await overdue_market(session, creator)).id
+
+    listed = await browsing.browse(session)
+
+    assert _ids(listed) == [unswept_id, pending_id, closed_id, approved_id]
+
+
+async def test_an_early_closed_market_sorts_by_when_it_was_closed_not_its_close_time(
+    session: AsyncSession,
+) -> None:
+    """#105, ADR 0014: closed by hand a day ago, with 30 days left on its
+    `close_time`, it sorts between markets that stopped an hour and two days ago.
+
+    Sorting on `close_time` alone puts it first. Sorting on `closed_at` alone
+    puts the two-days-ago market above it, because the sweep stamped that one's
+    `closed_at` just now; so both columns are needed.
+    """
+    creator = actor()
+    a_day_ago = datetime.now(UTC) - timedelta(days=1)
+    two_days_ago_id = (
+        await closed_market(session, creator, overdue_by=timedelta(days=2))
+    ).id
+    early_id = (await _open_market(session, timedelta(days=30))).id
+    await market_service.close_early(
+        session, actor(), early_id, close_request(), now=a_day_ago
+    )
+    an_hour_ago_id = (
+        await overdue_market(session, creator, overdue_by=timedelta(hours=1))
+    ).id
+
+    listed = await browsing.browse(session)
+
+    assert _ids(listed) == [an_hour_ago_id, early_id, two_days_ago_id]
+
+
+@pytest.mark.parametrize(
+    "viewed_after_the_close", [False, True], ids=["still_trading", "stopped"]
+)
+async def test_markets_sharing_a_close_time_list_lower_id_first_in_either_group(
+    session: AsyncSession, viewed_after_the_close: bool
+) -> None:
+    """#105: "the `id` tiebreaker is preserved in both groups".
+
+    Six markets closing at one instant, viewed before it and after it.
+    Probabilistic on purpose, as the overview's tie test is: drop `id` from
+    the ORDER BY and Postgres tends to return the tie in insertion order,
+    which matches sorted order about 1 time in 720.
+    """
+    shared_close = datetime.now(UTC) + timedelta(days=2)
+    tied = [
+        (await published_market_closing_at(session, actor(), shared_close)).id
+        for _ in range(6)
+    ]
+    now = shared_close + timedelta(days=1 if viewed_after_the_close else -1)
+
+    listed = await browsing.browse(session, now=now)
+
+    assert _ids(listed) == sorted(tied)
 
 
 # --- [2.1] #5's counts, which #62 says to build once ----------------------

@@ -4395,6 +4395,50 @@ reverts by #12 landing.
 
 ---
 
+### D-NEW — Stopped markets sort by when trading stopped
+
+**Date:** 2026-10-04 · **Ticket:** #105 · **Status:** active
+
+**Decision.** `GET /public/markets` keeps still-trading markets first, by
+`close_time ASC`. Every other market — closed, pending resolution, approved,
+and stopped-but-unswept — follows, by `LEAST(close_time, closed_at) DESC`:
+most recently stopped first. `id ASC` breaks ties in both groups. Which group a
+market is in comes from `open_for_trading(now)` (D-022), never from the status
+column. The same order applies under every `status` filter and search.
+
+**Why.** A trader scrolling past the open markets wants recent results, not
+ones from six months ago. `LEAST` is when trading actually stopped, read from
+the two columns that record it. Swept, that is `close_time`, because the sweep
+writes `closed_at` a little later. Unswept, `closed_at` is NULL and Postgres's
+`LEAST` skips it. Closed early ([2.3] #7, ADR 0014), it is `closed_at`, which
+is before a `close_time` that is still in the future. Sorting on `close_time`
+alone would put an early-closed market at the top of the stopped group for
+weeks. Sorting on `closed_at` alone would be wrong the other way. The sweep
+stamps `closed_at` when it runs, so a market whose `close_time` passed days ago
+and was swept just now would sort as if it had only just stopped. An unswept
+market has no `closed_at` at all, and Postgres sorts NULLs first under `DESC`.
+
+**Rejected.** *Approved markets at the top of the stopped group*, because they
+are about to pay out. That is a second rule rather than a special case of
+this one, and a trader who wants them already has `status=approved`, which
+isolates them. *An order per status*: more rules to learn and nothing yet that
+earns one. *This order on the admin overview*: see "The admin overview orders
+by soonest close, missing close times last, then id; #105's order is the
+trader browse's".
+
+**Notes.** The two sort keys are `CASE` expressions in
+`service/browsing.py`, each NULL outside its own group, so each sorts only its
+own markets. The public card carries `close_time` and not `closed_at`, so a
+client that re-sorts by `close_time` misplaces an early-closed market;
+`docs/api/market-service.md` tells the frontend to keep the server's order.
+Keyset pagination ([X-1] #104) must encode this order: the group, the group's
+own key (`close_time` while trading, the stop time after), and `id`, with the
+key compared ascending in the first group and descending in the second. #104's
+criterion lists `close_time` as the middle key, which no longer holds for the
+second group.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.

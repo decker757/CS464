@@ -434,9 +434,12 @@ async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
     )
 
 
-async def approved_market(session, creator: Actor) -> Market:
-    """An approved market, standing in for "settled" until [3.4] #12."""
-    market = await proposed_market(session, creator)
+async def approved_market(session, creator: Actor, **overrides: object) -> Market:
+    """An approved market, standing in for "settled" until [3.4] #12.
+
+    Overrides are `proposed_market`'s.
+    """
+    market = await proposed_market(session, creator, **overrides)
     return await market_service.approve_outcome(
         session, actor(), market.id, approval_request(market.proposal_id)
     )

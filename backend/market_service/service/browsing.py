@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
-from sqlalchemy import ColumnElement, and_, not_, or_, select
+from sqlalchemy import ColumnElement, and_, case, func, not_, null, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MarketNotFound
@@ -78,6 +78,44 @@ def _status_matches(status: MarketStatus, now: datetime) -> ColumnElement[bool]:
     return Market.status == status
 
 
+def _close_time_while_trading(
+    still_trading: ColumnElement[bool],
+) -> ColumnElement[datetime | None]:
+    """A still-trading market's sort key: when it will close. NULL for the rest."""
+    return case((still_trading, Market.close_time))
+
+
+def _when_trading_stopped(
+    still_trading: ColumnElement[bool],
+) -> ColumnElement[datetime | None]:
+    """A stopped market's sort key: when trading stopped. NULL while trading.
+
+    The earlier of `close_time` and `closed_at`; Postgres's LEAST skips a NULL.
+    Swept, that is `close_time`, since the sweep writes `closed_at` a little
+    later. Unswept, `closed_at` is NULL, so `close_time`. Closed early, it is
+    `closed_at`, which comes before its `close_time` (ADR 0014).
+    """
+    stopped_at = func.least(Market.close_time, Market.closed_at)
+    return case((still_trading, null()), else_=stopped_at)
+
+
+def _browse_order(now: datetime) -> tuple[ColumnElement[object], ...]:
+    """Still-trading first, soonest close first; then most recently stopped first.
+
+    The group comes from the clock, not the status column (D-022). Each group's
+    key is NULL in the other, so it sorts only its own markets. `Market.id`
+    last makes the order total, so ties do not reshuffle between refreshes.
+    DECISIONS.md, "Stopped markets sort by when trading stopped".
+    """
+    still_trading = open_for_trading(now)
+    return (
+        still_trading.desc(),
+        _close_time_while_trading(still_trading).asc(),
+        _when_trading_stopped(still_trading).desc(),
+        Market.id.asc(),
+    )
+
+
 async def browse(
     session: AsyncSession,
     *,
@@ -87,11 +125,12 @@ async def browse(
 ) -> list[MarketCard]:
     """Every market a trader may see, filtered and searched. [X-1] #34, [X-2] #35.
 
-    With no `status`, every published market: still-trading first, then by
-    soonest close (D-022). `query` is a case-insensitive search over the
-    question and composes with `status`. Nothing found is `[]`, never an
-    error. `now` is the request's clock, passed by the controller so the
-    filter and the displayed status read one instant (D-025).
+    With no `status`, every published market: still-trading first by soonest
+    close, then the rest by most recently stopped (D-022, #105). `query` is a
+    case-insensitive search over the question and composes with `status`.
+    Nothing found is `[]`, never an error. `now` is the request's clock, passed
+    by the controller so the filter and the displayed status read one instant
+    (D-025).
     """
     now = now or datetime.now(UTC)
     # Columns, not entities. Nothing enters the identity map, so a browse
@@ -109,11 +148,7 @@ async def browse(
     if search:
         stmt = stmt.where(_question_contains(search))
 
-    # `Market.id` last makes the order total, so markets sharing a close time
-    # do not reshuffle between refreshes.
-    stmt = stmt.order_by(
-        open_for_trading(now).desc(), Market.close_time.asc(), Market.id.asc()
-    )
+    stmt = stmt.order_by(*_browse_order(now))
 
     # Derived here, before projection, not in a validator: FastAPI
     # re-validates the response without the request's clock. D-025, D-027.
