@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { formatPrice } from '../src/utils/formatPrice'
 import { buy, publishMarket, registerAdmin, registerTrader, snapshot, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
 
@@ -30,6 +31,7 @@ test("a trader's market page moves when someone else buys", async ({ page }) => 
   const after = await snapshot(buyer, market.id)
   const yes = market.outcomes.find(outcome => outcome.label === 'Yes')
   const expected = after.prices.find(price => price.outcome_id === yes?.id)
-  await expect(yesPrice).toHaveText(`${(Number(expected?.price) * 100).toFixed(1)}%`)
+  if (!expected) throw new Error(`no Yes price for ${market.question}`)
+  await expect(yesPrice).toHaveText(formatPrice(expected.price))
   await expect(yesPrice).not.toHaveText('50.0%')
 })
