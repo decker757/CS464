@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+from typing import Any
 
 # Marker files that identify the repository root. Searched for upward rather
 # than reached by a fixed number of `parents[...]` hops: a hop count is correct
@@ -95,3 +96,15 @@ def list_cross_service_imports(service: str) -> list[str]:
             if match.group(1) != service:
                 offenders.append(f"{path.relative_to(service_root)}: {match.group(0).strip()}")
     return offenders
+
+
+def compose_service(name: str) -> dict[str, Any]:
+    """One service's block from `docker-compose.yml`, parsed rather than pattern-matched.
+
+    PyYAML arrives with `uvicorn[standard]` in every service; the shared suite
+    never calls this.
+    """
+    import yaml  # noqa: PLC0415
+
+    compose = (_repo_root() / "docker-compose.yml").read_text(encoding="utf-8")
+    return yaml.safe_load(compose)["services"][name]
