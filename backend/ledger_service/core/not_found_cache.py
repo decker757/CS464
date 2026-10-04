@@ -1,4 +1,6 @@
-"""Market ids market_service recently answered 404 for. #115, D-053.
+"""Market ids market_service recently answered 404 for. #115
+
+DECISIONS.md: "A market_service 404 is remembered for ten seconds, per process".
 
 Pure and in-process: an ordered map from id to expiry, bounded, on a clock the
 caller can replace. `service/market_terms.py` holds the one instance and says
