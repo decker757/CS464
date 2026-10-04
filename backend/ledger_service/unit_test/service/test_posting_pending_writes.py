@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.trade_fixtures import (
     TIMEOUT,
     Upstream,
@@ -69,7 +70,7 @@ async def _seed_with_a_dirty_outcome(session: AsyncSession):
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     user, platform = await _seed(session)
     outcome = (
@@ -330,7 +331,7 @@ async def test_a_lost_first_touch_race_still_opens_one_book(
                     own,
                     upstream.market_id,
                     access_token=token(),
-                    transport=upstream.transport,
+                    terms_client=terms_client_over(upstream.transport),
                 )
             except Exception as exc:  # noqa: BLE001 - the assertion is below
                 return exc
@@ -360,7 +361,7 @@ async def test_a_warm_second_touch_never_reaches_post(
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     async def explode(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -372,7 +373,7 @@ async def test_a_warm_second_touch_never_reaches_post(
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     assert book.market_id == upstream.market_id

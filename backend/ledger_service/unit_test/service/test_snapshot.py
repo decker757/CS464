@@ -32,7 +32,7 @@ from unit_test.book_fixtures import (
     warm,
     writes,
 )
-from unit_test.conftest import mint_token, strip_outcomes
+from unit_test.conftest import mint_token, strip_outcomes, terms_client_over
 
 
 def _snapshot_service():
@@ -56,7 +56,9 @@ async def _read(
         session,
         upstream.market_id,
         access_token=access_token if access_token is not None else fresh_token(),
-        transport=upstream.transport if transport is None else transport,
+        terms_client=terms_client_over(
+            upstream.transport if transport is None else transport
+        ),
     )
 
 
@@ -148,7 +150,7 @@ async def test_a_never_traded_markets_occurred_at_is_its_opened_at(
         session,
         upstream.market_id,
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     await session.commit()
 
@@ -449,7 +451,7 @@ async def test_the_snapshot_and_the_preview_quote_the_same_price_strings(
         side=Side.BUY,
         quantity=Decimal("1.0000"),
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     assert [(p.outcome_id, p.position, str(p.price)) for p in snap.prices] == [

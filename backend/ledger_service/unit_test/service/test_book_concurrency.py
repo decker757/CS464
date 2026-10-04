@@ -24,7 +24,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 
 def _books():
@@ -126,7 +126,7 @@ async def _race(
                     own,
                     market_id,
                     access_token=mint_token(uuid.uuid4()),
-                    transport=upstream.transport(),
+                    terms_client=terms_client_over(upstream.transport()),
                 )
             except Exception as exc:  # noqa: BLE001 - the assertion is the caller's
                 return exc
@@ -331,7 +331,7 @@ async def test_only_the_callers_that_raced_the_first_touch_fetch_the_terms(
         session,
         market_id,
         access_token=mint_token(uuid.uuid4()),
-        transport=upstream.transport(),
+        terms_client=terms_client_over(upstream.transport()),
     )
 
     assert upstream.calls == during_the_race

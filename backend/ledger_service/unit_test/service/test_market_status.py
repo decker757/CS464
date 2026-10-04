@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine, get_session_factory
 from model.entities import Account, Entry, Transaction
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 
 def _status():
@@ -143,7 +143,7 @@ async def _gate(
         session,
         upstream.market_id,
         access_token=access_token if access_token is not None else _token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
 
@@ -154,7 +154,7 @@ async def _warm(session: AsyncSession, upstream: _Upstream):
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     upstream.calls = 0
     upstream.tokens.clear()
@@ -409,7 +409,7 @@ async def test_a_market_s_first_trade_asks_twice_and_every_later_one_once(
         await _gate(session, upstream, access_token=token)
         await _books().ensure_open(
             session, upstream.market_id, access_token=token,
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
         )
 
     await trade_prelude()

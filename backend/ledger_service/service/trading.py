@@ -309,7 +309,7 @@ async def execute(
     idempotency_key: str,
     access_token: str,
     redis_client: redis.Redis,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> TradeResult:
     """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
     key already named.
@@ -353,13 +353,13 @@ async def execute(
     # 2. The gate. Refuses `MarketClosed`, `MarketTermsUnavailable` or
     # `MarketNotFound` before anything below writes a thing.
     await market_status.ensure_trading(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     # 3. The book, opened and funded on a market's first touch only. Commits
     # internally when it writes, so it must finish before the lock below.
     await books.ensure_open(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     # 4. The trader's starting grant, same shape, same reason.

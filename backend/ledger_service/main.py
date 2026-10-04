@@ -18,6 +18,7 @@ from controller.errors import register_error_handlers
 from controller.routes import router as ledger_router
 from core.config import get_settings
 from core.database import create_all, dispose_engine
+from service import market_terms
 
 # Imported for its side effect: registering the mappers on Base, and the
 # append-only trigger on `ledger.entries`, before create_all runs. Do not rely
@@ -51,7 +52,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )
-        yield
+
+        # One market_service client for the process too, because the gate
+        # calls it on every trade that is not a replay (ADR 0017, D-047).
+        # `async with` closes it before the `finally`.
+        async with market_terms.open_client() as terms_client:
+            app.state.terms_client = terms_client
+            yield
     finally:
         # Nested so a failing `aclose()` cannot skip the disposal: a leaked
         # engine is every asyncpg connection this process opened.

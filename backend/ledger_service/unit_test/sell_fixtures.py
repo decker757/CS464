@@ -39,6 +39,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.trade_fixtures import (
     B,
     QUANTUM,
@@ -95,7 +96,7 @@ async def open_at_zero(session: AsyncSession, upstream: Upstream):
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     upstream.calls = 0
     upstream.tokens.clear()

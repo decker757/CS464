@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.sell_fixtures import (
     HELD,
     REMAINING_QUANTITY,
@@ -108,7 +109,10 @@ async def test_selling_moves_the_sold_price_down_and_every_other_up(
     what a client was looking at, and what it is then told."""
     upstream, seller = await _market(session)
     before = await snapshot_module().snapshot(
-        session, upstream.market_id, access_token=token(), transport=upstream.transport
+        session,
+        upstream.market_id,
+        access_token=token(),
+        terms_client=terms_client_over(upstream.transport),
     )
     recorder = Recorder()
 

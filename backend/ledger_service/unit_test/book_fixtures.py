@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 QUANTUM = Decimal("0.0001")
 B = Decimal("100.0000")
@@ -130,7 +130,7 @@ class TermsStub:
         else:
             published_at = None
 
-        async def fake(market_id, *, access_token, transport=None):  # noqa: ANN001
+        async def fake(market_id, *, access_token, terms_client=None):  # noqa: ANN001
             self.calls += 1
             self.tokens.append(access_token)
             if self._raises is not None:
@@ -188,7 +188,7 @@ async def warm(
         session,
         upstream.market_id,
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     await set_q(session, upstream, q)
     upstream.calls = 0

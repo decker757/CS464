@@ -28,7 +28,7 @@ async def ensure_trading(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> None:
     """Raise if this market is not open for trading. Otherwise return `None`.
 
@@ -46,7 +46,7 @@ async def ensure_trading(
     """
     try:
         terms = await market_terms.fetch(
-            market_id, access_token=access_token, transport=transport
+            market_id, access_token=access_token, terms_client=terms_client
         )
     except MarketNotFound as not_found:
         book = await books.find(session, market_id)

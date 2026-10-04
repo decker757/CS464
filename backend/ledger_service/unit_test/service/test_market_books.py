@@ -25,7 +25,7 @@ from model.entities import (
 )
 from core.database import get_engine
 from service import accounts, posting
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 
 def _books():
@@ -127,7 +127,7 @@ async def _open(session: AsyncSession, upstream: _Upstream, **kwargs):
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
         **kwargs,
     )
 
@@ -350,7 +350,7 @@ async def test_the_book_survives_a_market_service_that_has_since_gone_down(
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=httpx.MockTransport(dead),
+        terms_client=terms_client_over(httpx.MockTransport(dead)),
     )
 
     assert book.liquidity_b == _B
@@ -418,7 +418,7 @@ async def test_an_unreachable_market_service_leaves_nothing_behind(
             session,
             market_id,
             access_token=_token(),
-            transport=httpx.MockTransport(dead),
+            terms_client=terms_client_over(httpx.MockTransport(dead)),
         )
 
     await session.rollback()
@@ -586,7 +586,7 @@ async def test_no_connection_is_held_while_the_terms_are_fetched(
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=httpx.MockTransport(handler),
+        terms_client=terms_client_over(httpx.MockTransport(handler)),
     )
 
     assert observed["in_transaction"] is False, (

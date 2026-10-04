@@ -1,7 +1,8 @@
 """The terms pull: `GET /public/markets/{id}` on market_service. [F-7] #96, D-008, D-031.
 
-Forwards the caller's own bearer token (D-018). `transport` is injectable so
-the suite drives the real request and parsing through `httpx.MockTransport`.
+Forwards the caller's own bearer token (D-018). The client is passed in, one
+for the process (#114), and `open_client` takes a transport, so the suite
+drives the real request and parsing through `httpx.MockTransport`.
 """
 
 from __future__ import annotations
@@ -164,11 +165,27 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         raise MarketTermsUnavailable from exc
 
 
+def open_client(
+    *, transport: httpx.AsyncBaseTransport | None = None
+) -> httpx.AsyncClient:
+    """The client every terms pull goes through: market_service's base URL
+    and D-030's timeout. The caller closes it.
+
+    `main.py`'s lifespan opens one for the process (#114). `transport` is the
+    suite's seam: it wraps an `httpx.MockTransport` in the same client.
+    """
+    return httpx.AsyncClient(
+        base_url=get_settings().market_service_url,
+        transport=transport,
+        timeout=_TIMEOUT,
+    )
+
+
 async def fetch(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> MarketTerms:
     """The market's terms, or the error D-030 and ADR 0017 map a failure to.
 
@@ -179,29 +196,21 @@ async def fetch(
     | 404 | `MarketNotFound` | 404 |
     | 401 | `NotAuthenticated` | 401 |
 
-    Carries what it reads and decides nothing on it (ADR 0017): null or
-    unpriceable terms and a status that is not open are all handed back.
+    `terms_client` comes from `open_client` and is left open: it is shared
+    by every request in the process. Carries what it reads and decides
+    nothing on it (ADR 0017): null or unpriceable terms and a status that is
+    not open are all handed back.
     """
-    settings = get_settings()
-
-    # A client per call pays a fresh handshake on every trade (D-047's note).
-    # Known cost: the fix, one lifespan-held client, is #114, because it moves
-    # the seam this module's and `test_market_status.py`'s tests drive.
-    async with httpx.AsyncClient(
-        base_url=settings.market_service_url,
-        transport=transport,
-        timeout=_TIMEOUT,
-    ) as client:
-        try:
-            response = await client.get(
-                f"/public/markets/{market_id}",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        # `RequestError`, not `TransportError`, which misses
-        # `httpx.DecodingError` (a lying `Content-Encoding`). Everything under
-        # `RequestError` means the dependency failed: a 503.
-        except httpx.RequestError as exc:
-            raise MarketTermsUnavailable from exc
+    try:
+        response = await terms_client.get(
+            f"/public/markets/{market_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    # `RequestError`, not `TransportError`, which misses
+    # `httpx.DecodingError` (a lying `Content-Encoding`). Everything under
+    # `RequestError` means the dependency failed: a 503.
+    except httpx.RequestError as exc:
+        raise MarketTermsUnavailable from exc
 
     if response.status_code == 404:
         raise MarketNotFound

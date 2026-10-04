@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_session_factory
 from model.entities import Account, AccountKind, Entry, Transaction, TransactionKind
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 
 def _preview():
@@ -105,7 +105,7 @@ async def _warm(session: AsyncSession, upstream: _Upstream) -> None:
         session,
         upstream.market_id,
         access_token=mint_token(uuid.uuid4()),
-        transport=upstream.transport(),
+        terms_client=terms_client_over(upstream.transport()),
     )
     outcome = _entities().MarketOutcome
     for position, value in enumerate(_Q):
@@ -128,7 +128,7 @@ async def _quote(session: AsyncSession, upstream: _Upstream, *, outcome: int = 0
         side=_pricing().Side.BUY,
         quantity=_QUANTITY,
         access_token=mint_token(uuid.uuid4()),
-        transport=upstream.transport(),
+        terms_client=terms_client_over(upstream.transport()),
     )
 
 

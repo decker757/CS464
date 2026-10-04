@@ -17,6 +17,9 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from unit_test.conftest import terms_client_over
+
+
 def _terms():
     """Imported inside each test, so a missing name fails one test rather than
     collection (D-007)."""
@@ -104,7 +107,9 @@ async def test_liquidity_b_arrives_as_the_exact_decimal_that_was_sent() -> None:
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(body=_terms_body(liquidity_b=str(exact))),
+        terms_client=terms_client_over(
+            _responds(body=_terms_body(liquidity_b=str(exact)))
+        ),
     )
 
     assert terms.liquidity_b == exact
@@ -118,7 +123,9 @@ async def test_seed_subsidy_arrives_as_the_exact_decimal_too() -> None:
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(body=_terms_body(seed_subsidy=str(exact))),
+        terms_client=terms_client_over(
+            _responds(body=_terms_body(seed_subsidy=str(exact)))
+        ),
     )
 
     assert terms.seed_subsidy == exact
@@ -134,7 +141,9 @@ async def test_a_json_number_in_the_response_is_still_read_exactly() -> None:
         return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
 
     terms = await _terms().fetch(
-        _MARKET_ID, access_token=_token(), transport=httpx.MockTransport(handler)
+        _MARKET_ID,
+        access_token=_token(),
+        terms_client=terms_client_over(httpx.MockTransport(handler)),
     )
 
     assert terms.liquidity_b == exact
@@ -143,7 +152,7 @@ async def test_a_json_number_in_the_response_is_still_read_exactly() -> None:
 async def test_the_outcomes_arrive_with_their_ids_and_positions() -> None:
     """`ledger.market_outcomes` is keyed on these two and stores no label."""
     terms = await _terms().fetch(
-        _MARKET_ID, access_token=_token(), transport=_responds()
+        _MARKET_ID, access_token=_token(), terms_client=terms_client_over(_responds())
     )
 
     assert [(o.outcome_id, o.position) for o in terms.outcomes] == [
@@ -156,10 +165,25 @@ async def test_the_outcomes_arrive_with_their_ids_and_positions() -> None:
 async def test_published_at_is_carried_through() -> None:
     """The ledger reads publication from the field, not from the 200."""
     terms = await _terms().fetch(
-        _MARKET_ID, access_token=_token(), transport=_responds()
+        _MARKET_ID, access_token=_token(), terms_client=terms_client_over(_responds())
     )
 
     assert terms.published_at == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+
+
+# --- #114: the client is the process's, not the call's ---------------------
+async def test_a_fetch_goes_through_the_client_it_is_given_and_leaves_it_open() -> None:
+    """The client is shared for the life of the process, so a fetch that
+    closed it (an `async with client:`) would break every later trade, and a
+    fetch that built its own would pay the handshake #114 removes."""
+    seen: list[httpx.Request] = []
+    client = _terms().open_client(transport=_responds(record=seen))
+
+    await _terms().fetch(_MARKET_ID, access_token=_token(), terms_client=client)
+    await _terms().fetch(_MARKET_ID, access_token=_token(), terms_client=client)
+
+    assert len(seen) == 2, "a fetch did not go through the client it was given"
+    assert not client.is_closed
 
 
 # --- the request this client makes ----------------------------------------
@@ -171,7 +195,9 @@ async def test_the_trader_s_token_is_forwarded_as_a_bearer_header() -> None:
     seen: list[httpx.Request] = []
 
     await _terms().fetch(
-        _MARKET_ID, access_token=token, transport=_responds(record=seen)
+        _MARKET_ID,
+        access_token=token,
+        terms_client=terms_client_over(_responds(record=seen)),
     )
 
     assert len(seen) == 1
@@ -183,7 +209,9 @@ async def test_it_asks_the_public_detail_endpoint_for_that_market() -> None:
     seen: list[httpx.Request] = []
 
     await _terms().fetch(
-        _MARKET_ID, access_token=_token(), transport=_responds(record=seen)
+        _MARKET_ID,
+        access_token=_token(),
+        terms_client=terms_client_over(_responds(record=seen)),
     )
 
     assert seen[0].url.path == f"/public/markets/{_MARKET_ID}"
@@ -199,7 +227,9 @@ async def test_the_request_carries_an_explicit_timeout() -> None:
     seen: list[httpx.Request] = []
 
     await _terms().fetch(
-        _MARKET_ID, access_token=_token(), transport=_responds(record=seen)
+        _MARKET_ID,
+        access_token=_token(),
+        terms_client=terms_client_over(_responds(record=seen)),
     )
 
     timeout = seen[0].extensions.get("timeout")
@@ -216,7 +246,7 @@ async def test_a_connection_error_is_unavailable_not_a_crash() -> None:
         await _terms().fetch(
             _MARKET_ID,
             access_token=_token(),
-            transport=_raises(httpx.ConnectError("nope")),
+            terms_client=terms_client_over(_raises(httpx.ConnectError("nope"))),
         )
 
 
@@ -226,7 +256,7 @@ async def test_a_timeout_is_unavailable() -> None:
         await _terms().fetch(
             _MARKET_ID,
             access_token=_token(),
-            transport=_raises(httpx.ReadTimeout("slow")),
+            terms_client=terms_client_over(_raises(httpx.ReadTimeout("slow"))),
         )
 
 
@@ -237,7 +267,9 @@ async def test_an_upstream_server_error_is_unavailable(status_code: int) -> None
         await _terms().fetch(
             _MARKET_ID,
             access_token=_token(),
-            transport=_responds(status_code, body={"detail": "boom"}),
+            terms_client=terms_client_over(
+                _responds(status_code, body={"detail": "boom"})
+            ),
         )
 
 
@@ -248,7 +280,9 @@ async def test_an_upstream_404_is_not_unavailable() -> None:
         await _terms().fetch(
             _MARKET_ID,
             access_token=_token(),
-            transport=_responds(404, body={"code": "market_not_found"}),
+            terms_client=terms_client_over(
+                _responds(404, body={"code": "market_not_found"})
+            ),
         )
 
 
@@ -259,7 +293,9 @@ async def test_an_upstream_401_propagates_as_not_authenticated() -> None:
         await _terms().fetch(
             _MARKET_ID,
             access_token=_token(),
-            transport=_responds(401, body={"code": "invalid_token"}),
+            terms_client=terms_client_over(
+                _responds(401, body={"code": "invalid_token"})
+            ),
         )
 
 
@@ -290,7 +326,9 @@ async def test_a_malformed_body_is_unavailable_rather_than_a_crash(
 
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
-            _MARKET_ID, access_token=_token(), transport=httpx.MockTransport(handler)
+            _MARKET_ID,
+            access_token=_token(),
+            terms_client=terms_client_over(httpx.MockTransport(handler)),
         )
 
 
@@ -339,7 +377,9 @@ async def test_valid_json_that_is_not_a_market_is_unavailable(
     """
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
-            _MARKET_ID, access_token=_token(), transport=_responds(body=body)
+            _MARKET_ID,
+            access_token=_token(),
+            terms_client=terms_client_over(_responds(body=body)),
         )
 
 
@@ -351,7 +391,9 @@ async def test_a_true_liquidity_b_is_refused_rather_than_read_as_one() -> None:
         await _terms().fetch(
             _MARKET_ID,
             access_token=_token(),
-            transport=_responds(body=_terms_body(liquidity_b=True)),
+            terms_client=terms_client_over(
+                _responds(body=_terms_body(liquidity_b=True))
+            ),
         )
 
 
@@ -362,7 +404,9 @@ async def test_a_body_for_a_different_market_is_refused() -> None:
         await _terms().fetch(
             _MARKET_ID,
             access_token=_token(),
-            transport=_responds(body=_terms_body(id=str(uuid.uuid4()))),
+            terms_client=terms_client_over(
+                _responds(body=_terms_body(id=str(uuid.uuid4())))
+            ),
         )
 
 
@@ -379,7 +423,7 @@ async def test_fetch_does_not_refuse_a_market_that_is_not_open(
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(body=_terms_body(status=status)),
+        terms_client=terms_client_over(_responds(body=_terms_body(status=status))),
     )
 
     assert terms.status == status
@@ -391,7 +435,7 @@ async def test_a_null_liquidity_b_is_carried_rather_than_refused() -> None:
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(body=_terms_body(liquidity_b=None)),
+        terms_client=terms_client_over(_responds(body=_terms_body(liquidity_b=None))),
     )
 
     assert terms.liquidity_b is None
@@ -403,7 +447,7 @@ async def test_a_null_seed_subsidy_is_carried_rather_than_refused() -> None:
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(body=_terms_body(seed_subsidy=None)),
+        terms_client=terms_client_over(_responds(body=_terms_body(seed_subsidy=None))),
     )
 
     assert terms.seed_subsidy is None
@@ -434,7 +478,7 @@ async def test_an_unpriceable_outcome_list_is_carried_rather_than_refused(
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(body=_terms_body(outcomes=outcomes)),
+        terms_client=terms_client_over(_responds(body=_terms_body(outcomes=outcomes))),
     )
 
     assert len(terms.outcomes) == len(outcomes)
@@ -458,7 +502,9 @@ async def test_a_status_that_is_not_a_string_is_unavailable(
     """
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
-            _MARKET_ID, access_token=_token(), transport=_responds(body=body)
+            _MARKET_ID,
+            access_token=_token(),
+            terms_client=terms_client_over(_responds(body=body)),
         )
 
 
@@ -483,7 +529,7 @@ async def test_a_ten_outcome_market_still_parses() -> None:
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(body=_terms_body(outcomes=outcomes)),
+        terms_client=terms_client_over(_responds(body=_terms_body(outcomes=outcomes))),
     )
 
     assert len(terms.outcomes) == 10
@@ -495,10 +541,12 @@ async def test_the_close_time_is_not_what_decides_anything_here() -> None:
     terms = await _terms().fetch(
         _MARKET_ID,
         access_token=_token(),
-        transport=_responds(
-            body=_terms_body(
-                status="closed",
-                close_time=(datetime.now(UTC) - timedelta(days=7)).isoformat(),
+        terms_client=terms_client_over(
+            _responds(
+                body=_terms_body(
+                    status="closed",
+                    close_time=(datetime.now(UTC) - timedelta(days=7)).isoformat(),
+                )
             )
         ),
     )
