@@ -16,6 +16,7 @@ import shutil
 import uuid
 
 import pytest
+from alembic import command
 from sqlalchemy import inspect, text
 
 from core.database import SCHEMA, Base
@@ -24,6 +25,7 @@ from migrate import ALEMBIC_INI, main
 from shared.migrating import (
     VERSION_TABLE,
     LegacyDrift,
+    _alembic_config,
     find_drift,
     migrate,
     run_in_transaction,
@@ -126,6 +128,24 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
     ) in migrated["indexes"]
 
 
+def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> None:
+    """The downgrade is handwritten and nothing else runs it, so it is held to
+    the same standard as the upgrade: it removes every model table, and the
+    schema it leaves can be migrated back to exactly the models."""
+    assert main() == 0
+    config = _alembic_config(ALEMBIC_INI, _URL)
+
+    command.downgrade(config, "base")
+
+    assert set(_tables()) <= {VERSION_TABLE}
+
+    assert main() == 0
+    migrated = _catalog()
+    _empty_the_schema()
+    run_in_transaction(_URL, Base.metadata.create_all)
+    assert migrated == _catalog()
+
+
 def test_a_legacy_schema_that_matches_the_models_is_stamped_and_keeps_its_rows(
     empty_schema,
 ) -> None:
@@ -201,7 +221,7 @@ def test_a_legacy_schema_is_refused_once_the_migrations_pass_the_baseline(
 
 def test_the_migrate_step_exits_2_without_a_database_url(monkeypatch, capsys) -> None:
     """Compose starts the service only once its migrate step exits 0, and the
-    code is how a person tells a missing setting (2) from a refused database (1)."""
+    code is how a person tells a missing setting (2) from a refused or failed one (1)."""
     monkeypatch.delenv("DATABASE_URL")
 
     assert main() == 2
@@ -234,3 +254,6 @@ def test_compose_starts_auth_only_after_its_migration_succeeds() -> None:
     }
     assert migration["environment"]["DATABASE_URL"] == app["environment"]["DATABASE_URL"]
     assert migration["command"] == ["python", "migrate.py"]
+    assert "://auth_svc:" in migration["environment"]["DATABASE_URL"]
+    assert migration["restart"] == "no"
+    assert "JWT_SECRET" not in migration["environment"]

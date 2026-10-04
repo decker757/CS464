@@ -281,10 +281,11 @@ def migrate_from_environment(
     schema: str,
     extra_drift: DriftCheck | None = None,
 ) -> int:
-    """`migrate` the database DATABASE_URL names, as an exit code: 0 done, 1 refused, 2 no URL.
+    """`migrate` the database DATABASE_URL names, as an exit code: 0 done, 1 refused or failed, 2 no URL.
 
-    A refusal is printed to stderr. Reads DATABASE_URL alone rather than the
-    service's settings, so the migrate step needs no signing key.
+    A refusal is printed to stderr; any other error exits 1 with its
+    traceback. Reads DATABASE_URL alone rather than the service's settings, so
+    the migrate step needs no signing key.
     """
     url = os.environ.get("DATABASE_URL")
     if not url:
