@@ -555,7 +555,7 @@ async def test_the_close_time_is_not_what_decides_anything_here() -> None:
     assert terms.published_at is not None
 
 
-# --- #115, D-053: a 404 is remembered for a while, and nothing else is -----
+# --- #115: a 404 is remembered for a while, and nothing else is ----------
 class _Upstream:
     """market_service answering one way at a time, through one client, and
     counting the calls that reach it."""
@@ -590,7 +590,7 @@ async def test_a_repeat_404_within_the_window_makes_no_call(
 
     with pytest.raises(_errors().MarketNotFound):
         await upstream.fetch()
-    not_found_clock.now += _terms().NOT_FOUND_TTL_SECONDS - 0.001
+    not_found_clock.now += 10.0 - 0.001
     with pytest.raises(_errors().MarketNotFound):
         await upstream.fetch()
 
@@ -601,14 +601,14 @@ async def test_a_market_published_after_its_404_is_served_once_the_window_passes
     not_found_clock: ManualClock,
 ) -> None:
     """A draft is a 404 today and a published market tomorrow. Inside the
-    window it still reads as missing, which is the delay D-053 accepts; at the
+    window it still reads as missing, the delay DECISIONS.md accepts; at the
     end of it the next request asks again and gets the terms."""
     upstream = _Upstream(404)
     with pytest.raises(_errors().MarketNotFound):
         await upstream.fetch()
 
     upstream.status_code = 200
-    not_found_clock.now += _terms().NOT_FOUND_TTL_SECONDS - 0.001
+    not_found_clock.now += 10.0 - 0.001
     with pytest.raises(_errors().MarketNotFound):
         await upstream.fetch()
 
@@ -644,19 +644,23 @@ async def test_only_a_404_is_remembered(
 
 
 async def test_the_memory_is_bounded_and_forgets_the_oldest_first() -> None:
-    """Looping random well-formed ids cannot grow it past its bound. One past
-    the bound, the first id is asked about again and the last is not."""
+    """The production memory holds exactly 10,000 ids. One past that, the
+    oldest is asked about again and the 10,000 after it are not: a larger
+    bound keeps the oldest, a smaller one loses the second oldest."""
     upstream = _Upstream(404)
-    ids = [uuid.uuid4() for _ in range(_terms().NOT_FOUND_MAX_ENTRIES + 1)]
+    ids = [uuid.uuid4() for _ in range(10_000 + 1)]
     for market_id in ids:
         with pytest.raises(_errors().MarketNotFound):
             await upstream.fetch(market_id)
     calls_after_filling = upstream.calls
 
-    with pytest.raises(_errors().MarketNotFound):
-        await upstream.fetch(ids[-1])
-    assert upstream.calls == calls_after_filling, "the newest id was forgotten"
+    # The newest and the second oldest first: asking about the oldest again
+    # remembers it, which would evict the second oldest.
+    for kept in (ids[-1], ids[1]):
+        with pytest.raises(_errors().MarketNotFound):
+            await upstream.fetch(kept)
+    assert upstream.calls == calls_after_filling, "the bound is below 10,000"
 
     with pytest.raises(_errors().MarketNotFound):
         await upstream.fetch(ids[0])
-    assert upstream.calls == calls_after_filling + 1, "the oldest id was kept"
+    assert upstream.calls == calls_after_filling + 1, "the bound is above 10,000"

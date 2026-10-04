@@ -1,4 +1,6 @@
-"""The memory of market ids market_service answered 404 for. #115, D-053.
+"""The memory of market ids market_service answered 404 for. #115
+
+DECISIONS.md: "A market_service 404 is remembered for ten seconds, per process".
 
 Pure, no database: the clock is passed in, so expiry is tested by moving it
 rather than by sleeping. `test_market_terms.py` tests the cache as `fetch`

@@ -118,25 +118,23 @@ class ManualClock:
 
 @pytest.fixture(autouse=True)
 def not_found_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
-    """A fresh 404 memory for every test, on a clock the test moves. D-053.
+    """The production 404 memory, emptied for this test and put on a clock
+    the test moves. DECISIONS.md, "A market_service 404 is remembered for ten
+    seconds, per process".
 
     The memory lasts as long as the process, so without this one test's 404
-    would answer another test's fetch of the same id. Built from
-    `market_terms`'s own window and bound, so those are what is tested.
+    would answer another test's fetch of the same id. The object itself is
+    kept, not replaced, so its real window and bound are what the tests see.
+    Both patches are undone after the test.
     """
-    from core.not_found_cache import NotFoundCache  # noqa: PLC0415
+    from collections import OrderedDict  # noqa: PLC0415
+
     from service import market_terms  # noqa: PLC0415
 
     clock = ManualClock()
-    monkeypatch.setattr(
-        market_terms,
-        "_recent_not_found",
-        NotFoundCache(
-            ttl_seconds=market_terms.NOT_FOUND_TTL_SECONDS,
-            max_entries=market_terms.NOT_FOUND_MAX_ENTRIES,
-            clock=clock,
-        ),
-    )
+    memory = market_terms._recent_not_found
+    monkeypatch.setattr(memory, "_expiry_by_id", OrderedDict())
+    monkeypatch.setattr(memory, "_clock", clock)
     return clock
 
 

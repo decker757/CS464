@@ -512,7 +512,7 @@ async def test_a_404_on_a_market_with_no_book_is_not_found(
 async def test_a_404_the_gate_saw_spares_the_cold_path_its_call(
     session: AsyncSession,
 ) -> None:
-    """D-053: the memory sits in `market_terms.fetch`, so both callers share
+    """The memory sits in `market_terms.fetch`, so both callers share
     it. A trade on an unpublished id, retried, asks market_service once."""
     upstream = _Upstream(status="open", status_code=404)
     upstream.body = {"code": "market_not_found"}

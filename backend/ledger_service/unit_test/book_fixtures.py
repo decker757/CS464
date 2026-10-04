@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Protocol
 
 import httpx
 import pytest
@@ -109,16 +110,19 @@ class Upstream:
         return httpx.MockTransport(handler)
 
 
+class CountsCalls(Protocol):
+    """What `Stalled` needs from a stand-in market service."""
+
+    calls: int
+    body: Any
+
+
 class Stalled:
     """A market service that records what the caller holds on every call, then
-    stalls until `release`. D-043's test shape.
-
-    `upstream` is any stand-in with a `calls` counter and a `body` to answer
-    with; `test_market_status.py`'s own `_Upstream` has both.
-    """
+    stalls until `release`. D-043's test shape."""
 
     def __init__(
-        self, upstream: Upstream, probe: Callable[[], dict[str, object]]
+        self, upstream: CountsCalls, probe: Callable[[], dict[str, object]]
     ) -> None:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
