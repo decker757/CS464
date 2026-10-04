@@ -53,9 +53,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )
 
-        # One market_service client for the process too (#114, D-047's
-        # frequency test): the gate calls it on every trade that is not a
-        # replay (ADR 0017). `async with` closes it before the `finally`.
+        # One market_service client for the process too, because the gate
+        # calls it on every trade that is not a replay (ADR 0017, D-047).
+        # `async with` closes it before the `finally`.
         async with market_terms.open_client() as terms_client:
             app.state.terms_client = terms_client
             yield
