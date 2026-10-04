@@ -8,6 +8,7 @@ ADR 0011.
 
 `is_open_for_trading` answers for an entity in memory, `open_for_trading` as a
 WHERE clause. Neither depends on the sweeper having run.
+`was_open_for_trading_at` answers the historical question a paged browse asks.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ColumnElement, and_, func, select, update
+from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.closing import trading_is_open
@@ -49,6 +50,21 @@ def open_for_trading(now: datetime | None = None) -> ColumnElement[bool]:
     return and_(
         Market.status == MarketStatus.OPEN,
         Market.close_time > (now or func.now()),
+    )
+
+
+def was_open_for_trading_at(as_of: datetime) -> ColumnElement[bool]:
+    """Was a published market still trading at `as_of`? A WHERE clause. #104.
+
+    Time only, unlike `open_for_trading`: a status written after `as_of` cannot
+    move the answer, so a market closed early between two page reads keeps its
+    group. Sound because every exit from OPEN stamps `closed_at` and nothing
+    clears it. A draft reads True, so apply `_visible()` first. DECISIONS.md,
+    "The public browse pages by keyset, grouped by the first page's clock".
+    """
+    return and_(
+        Market.close_time > as_of,
+        or_(Market.closed_at.is_(None), Market.closed_at > as_of),
     )
 
 
