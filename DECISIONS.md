@@ -1770,6 +1770,15 @@ by this entry's own test it should be held for the process. It is not yet:
 `httpx.AsyncClient` as the follow-up, #114, which is its own ticket because it moves
 the seam two test modules drive through.
 
+**Note, 2026-10-04 (#114).** Done, the same way as the Redis client. `main.py`'s
+lifespan opens one terms client with `market_terms.open_client()` and closes
+it on shutdown; `controller/dependencies.py` exposes it as `TermsClient`, and
+each route hands it down to `market_terms.fetch(..., terms_client=...)`. The
+seam moved from construction to the call, as it did for `publish`: the suite
+passes `open_client(transport=httpx.MockTransport(...))`, so the real base
+URL, `_TIMEOUT` and request building still run under test. Both outbound
+clients are now held for the process, for the same reason.
+
 ---
 
 ### D-048 — `PriceEvent` is copied into the ledger, and held to its original by a source-reading test
