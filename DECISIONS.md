@@ -1527,6 +1527,14 @@ nothing is pending to discard, and the book row lock is taken after
 `ensure_open` returns. The objection is the reversal trigger above, not a
 reason against the decision today.
 
+**Note, 2026-10-04 (#115).** The scope above now covers the gate too.
+`market_status.ensure_trading` asserts nothing is pending and rolls back
+before its own call to market_service, as `ensure_open` does, so the trade
+path's separate rollback after the replay lookup is gone. Its evidence is
+`test_the_gate_holds_no_connection_while_market_service_is_slow`, which fails
+with that rollback removed. The unbounded calls for an unresolvable id are
+D-053.
+
 ---
 
 ### D-044 — A cost exactly on a tick can round one tick against the trader, or toward them on a sell
@@ -4405,6 +4413,74 @@ reverts by #12 landing.
 
 ---
 
+### D-053 — A market_service 404 is remembered in-process for ten seconds, at most 10,000 at once
+
+**Date:** 2026-10-04 · **Ticket:** #115 · **Status:** active
+
+**Decision.** `market_terms.fetch` remembers every market id market_service
+answered `404` for, and a repeat inside the window raises `MarketNotFound`
+with no HTTP call. The window is **10 seconds**
+(`NOT_FOUND_TTL_SECONDS`). At most **10,000** ids are held at once
+(`NOT_FOUND_MAX_ENTRIES`), and the oldest is forgotten first. Only a 404 goes
+in. A 503, a timeout or a 401 is never remembered. The memory is a
+`core/not_found_cache.py::NotFoundCache` held by `service/market_terms.py`,
+one per process.
+
+**Why.** A well-formed id that market_service does not know never gets a
+book, so every request for it took the cold path again: one outbound call per
+request, with no bound on how many a trader could make by looping random
+UUIDs (D-043's last paragraph left this open). Since ADR 0017 the gate makes
+the same call on every non-replay trade. The memory sits in `fetch` rather
+than in either caller, so the gate and `books.ensure_open` are both covered,
+and a 404 one of them saw spares the other its call.
+
+*The window* is the price, and it is paid by exactly one person: whoever asks
+about a market in the ten seconds after it is published, having asked about
+it once just before. A draft or submitted market is a 404 because
+`get_published` makes it indistinguishable from a missing one. So a permanent
+entry would 404 a real market for the life of the process. Ten seconds is
+short enough that nobody waits for it in practice, and long enough to turn a
+tight loop into one call per ten seconds per id.
+
+*The bound* is about memory, not correctness. An entry is a UUID and a float,
+so 10,000 of them is about two megabytes. Forgetting one early costs one
+more call to market_service, never a wrong answer. Every entry gets the same
+window, so insertion order is also expiry order, and an `OrderedDict` gives
+both expiry and eviction from one end.
+
+*Only a 404* because the other failures are facts about the dependency or
+the caller, not about the market (D-030). Remembering a 503 would keep a
+recovered market_service refused for ten seconds. Remembering a 401 would
+refuse a different trader's valid token.
+
+**Rejected.** *Redis.* Shared memory across replicas would save at most one
+call per replica per window, and it would put a network round trip and a new
+failure mode in front of the call it exists to save. The bus is also
+deliberately optional in this service (D-047): a Redis outage must not change
+what a trade is told. *Postgres.* A table of ids that are not markets, written
+on the request path by the one service that holds no grant to know what a
+market is, and cleaned by something. It would also take a connection, which
+is the resource D-043 and #115 exist to stop holding across this call.
+*Holding it on `app.state` beside the terms client* (D-047's shape). That
+means another argument through six functions for state that, unlike a client,
+needs no closing. The suite gets a fresh instance per test through an autouse
+fixture instead (`unit_test/conftest.py::not_found_clock`), which also hands
+it a clock the test moves. *A third-party TTL cache.* A dependency for
+twenty lines of the standard library.
+
+**Accepted.** A 404 for a market that *has* a book is market_service
+answering wrongly, and the gate turns it into `503 market_terms_unavailable`
+(ADR 0017). It is remembered like any other 404, so the gate keeps answering
+503 for up to ten seconds after market_service recovers. That is the same
+window, on a state that is already a market_service fault.
+
+**Reversal trigger.** Enough replicas that a looped id reaches market_service
+`replicas / 10` times a second and that matters. Or a publish that has to be
+tradable the instant it lands, which would need market_service to tell the
+ledger rather than the ledger remembering.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
@@ -4457,14 +4533,13 @@ Move these into the log above when they're settled.
   call to market_service holds a database connection or a row lock any more:
   `books.ensure_open` rolls back the read that found no book before it calls
   out ("The cold path holds no connection across the terms pull"), and
-  [T-2] #22's trade path rolls back after its replay lookup misses, before
-  `market_status.ensure_trading` calls the same client on every non-replay
-  trade. #22 takes the book row lock only after both calls have returned, so
+  `market_status.ensure_trading` does the same before it calls the same
+  client on every non-replay trade (#115). #22 takes the book row lock only
+  after both calls have returned, so
   it holds no row locks across either — a slow market_service costs a trade
   its own latency, not a connection out of a pool of ten, and it serialises
-  nothing behind it. #115 moves the gate's release into the gate itself, for
-  every caller. The connection-reuse half has landed: the client both calls
-  go through is held for the process (#114). What is still open
+  nothing behind it. The connection-reuse half has landed too: the client
+  both calls go through is held for the process (#114). What is still open
   is the ceiling itself. `service/market_terms.py::_TIMEOUT` is five seconds
   on every phase, which is exactly `httpx.DEFAULT_TIMEOUT_CONFIG` — so the
   budget is currently inherited in substance even though it is written out
