@@ -161,6 +161,19 @@ jobs:
           psql -v ON_ERROR_STOP=1 "$ADMIN_URL" \
             -v db_name=cs464_test -f sql/02-schemas.sql
 
+      # [F-5] #75. The step compose runs before each app, run here against the
+      # empty CI database as the service's own role, so a revision that cannot
+      # apply under production grants fails the job before the suite starts.
+      # The suite then rebuilds the schema from the models per test, and its
+      # unit_test/test_migrations.py holds the two together. A list rather than
+      # a matrix value, because a new matrix key would rename every job (see
+      # the header).
+      - name: Migrate the test database
+        if: contains(fromJSON('["auth_service"]'), matrix.service)
+        env:
+          PYTHONPATH: ..
+        run: python migrate.py
+
       # Minted per run and never stored. Nothing it signs outlives the job, so
       # there is no key-shaped string to commit.
       - name: Generate a throwaway signing key

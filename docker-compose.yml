@@ -40,6 +40,25 @@ services:
       retries: 10
       start_period: 10s
 
+  # [F-5] #75. Brings the auth schema to head and exits; `auth` starts only if
+  # this exited 0, so a migration that fails stops new code before it serves a
+  # request. The app's own image and role: no superuser, and no signing key,
+  # because the step only issues DDL. ADR 0020.
+  auth-migrate:
+    build:
+      context: ./backend
+      dockerfile: auth_service/Dockerfile
+    command: ["python", "migrate.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://auth_svc:${AUTH_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+    # The image's HEALTHCHECK probes the API, which this container never serves.
+    healthcheck:
+      disable: true
+    restart: "no"
+
   auth:
     build:
       # backend/, not the service directory: a build context cannot reach
@@ -49,6 +68,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      auth-migrate:
+        condition: service_completed_successfully
     environment:
       # Connects as auth_svc, not the superuser, so the grants in
       # sql/02-schemas.sql actually constrain this service.

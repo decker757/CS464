@@ -14,6 +14,10 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
 
 # Marker files that identify the repository root. Searched for upward rather
 # than reached by a fixed number of `parents[...]` hops: a hop count is correct
@@ -95,3 +99,78 @@ def list_cross_service_imports(service: str) -> list[str]:
             if match.group(1) != service:
                 offenders.append(f"{path.relative_to(service_root)}: {match.group(0).strip()}")
     return offenders
+
+
+# [F-5] #75. Everything Postgres prints about one schema, for the migration
+# guard tests: what compare_metadata sees and what it cannot (CHECK
+# constraints, partial-index predicates, sort order, triggers). The version
+# table is left out, because only a migrated schema has one.
+_SCHEMA_CATALOG_QUERIES = {
+    "columns": """
+        SELECT table_name || '.' || column_name || ' ' || data_type
+               || coalesce('(' || character_maximum_length || ')', '')
+               || coalesce('(' || numeric_precision || ',' || numeric_scale || ')', '')
+               || ' nullable=' || is_nullable
+               || ' default=' || coalesce(column_default, '')
+          FROM information_schema.columns
+         WHERE table_schema = :schema AND table_name <> 'alembic_version'
+    """,
+    "indexes": """
+        SELECT indexdef
+          FROM pg_indexes
+         WHERE schemaname = :schema AND tablename <> 'alembic_version'
+    """,
+    "constraints": """
+        SELECT c.relname || ' ' || con.conname || ' ' || pg_get_constraintdef(con.oid)
+          FROM pg_constraint con
+          JOIN pg_class c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = :schema AND c.relname <> 'alembic_version'
+    """,
+    "triggers": """
+        SELECT pg_get_triggerdef(t.oid)
+          FROM pg_trigger t
+          JOIN pg_class c ON c.oid = t.tgrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = :schema AND NOT t.tgisinternal
+    """,
+}
+
+
+def drop_own_tables(connection: Connection, schema: str) -> None:
+    """Drop every table in `schema`, the migration version table included.
+
+    For the migration guard tests, which need a schema with nothing in it.
+    Run as the service's own role, which owns every table it can see there.
+    """
+    # Imported here: the realtime suite imports this module and has no SQLAlchemy.
+    from sqlalchemy import inspect, text  # noqa: PLC0415
+
+    for table in inspect(connection).get_table_names(schema=schema):
+        connection.execute(text(f'DROP TABLE IF EXISTS "{schema}"."{table}" CASCADE'))
+
+
+def schema_catalog(connection: Connection, schema: str) -> dict[str, list[str]]:
+    """Columns, indexes, constraints and triggers in `schema`, as Postgres prints them.
+
+    Each list is sorted, so two schemas built in a different order compare equal.
+    """
+    from sqlalchemy import text  # noqa: PLC0415 - see drop_own_tables
+
+    catalog: dict[str, list[str]] = {}
+    for kind, query in _SCHEMA_CATALOG_QUERIES.items():
+        rows = connection.execute(text(query), {"schema": schema}).scalars()
+        catalog[kind] = sorted(rows)
+    return catalog
+
+
+def compose_service(name: str) -> dict[str, Any]:
+    """One service's block from `docker-compose.yml`, parsed rather than pattern-matched.
+
+    PyYAML arrives with `uvicorn[standard]` in every service; the shared suite
+    never calls this.
+    """
+    import yaml  # noqa: PLC0415
+
+    compose = (_repo_root() / "docker-compose.yml").read_text(encoding="utf-8")
+    return yaml.safe_load(compose)["services"][name]
