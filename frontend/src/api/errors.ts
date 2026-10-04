@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { formatCreditsPrecise } from '../utils/formatCredits'
 
 export interface ApiError {
   error: {
@@ -6,7 +7,8 @@ export interface ApiError {
     message: string
     // Most codes list field-by-field messages. A handful of ledger trade
     // codes (quote_stale, insufficient_funds, insufficient_shares_held) send
-    // a flat object instead — read those with tradeErrorDetails, not this.
+    // a flat object instead, and invalid_request's details are pydantic's own
+    // {loc, msg, type} — read those with tradeErrorDetails, not this.
     details?: { field: string; message: string }[]
   }
 }
@@ -78,6 +80,7 @@ const TRADE_FIXED_MESSAGES: Record<string, string> = {
   proceeds_below_tick: 'That quantity would pay out less than the smallest amount this market can pay. Try a larger quantity.',
   insufficient_shares_outstanding: 'Nobody holds enough shares of this outcome yet for a sell this size.',
   market_not_found: 'This market is not available.',
+  invalid_request: "That quantity isn't valid.",
 }
 
 /** What the trader should do about a failed preview or trade (ledger-service.md). */
@@ -86,7 +89,9 @@ export function describeTradeError(err: unknown): string {
   if (!code) return GENERIC_ERROR
   const details = tradeErrorDetails(err)
   if (code === 'quote_stale') return 'Prices moved while you were looking. Getting a fresh quote…'
-  if (code === 'insufficient_funds') return `You have ${details.balance} credits, but this trade needs ${details.required}.`
+  if (code === 'insufficient_funds' && typeof details.balance === 'string' && typeof details.required === 'string') {
+    return `You have ${formatCreditsPrecise(details.balance)} credits, but this trade needs ${formatCreditsPrecise(details.required)}.`
+  }
   if (code === 'insufficient_shares_held') return `You hold ${details.held} shares, but this sell asks for ${details.requested}.`
   return TRADE_FIXED_MESSAGES[code] ?? GENERIC_ERROR
 }

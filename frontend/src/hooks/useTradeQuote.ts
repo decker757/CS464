@@ -5,17 +5,17 @@ import { previewTrade, type TradePreview, type TradeSide } from '../api/ledgerAp
 const PREVIEW_DEBOUNCE_MS = 300
 
 // What is wrong with the quantity field, if anything — checked client-side
-// so a malformed value never reaches the preview or the trade, where it
-// would come back as FastAPI's own {"detail": [...]} shape rather than this
-// app's {"error": {...}} envelope (ledger-service.md's quantity rule, D-038:
-// > 0, at most 4 decimal places, at most 18 digits in all).
+// so a malformed value never reaches the preview or the trade, where the
+// ledger would reject it as invalid_request instead (ledger-service.md's
+// quantity rule, D-038: > 0, at most 4 decimal places, at most 18 digits in
+// all).
 function quantityError(raw: string): string | undefined {
   const trimmed = raw.trim()
   if (!trimmed) return undefined
   const match = /^(\d+)(?:\.(\d+))?$/.exec(trimmed)
   if (!match) return 'Enter a number.'
   const [, wholePart, fractionPart = ''] = match
-  if (Number(trimmed) <= 0) return 'Must be greater than zero.'
+  if (!/[1-9]/.test(trimmed)) return 'Must be greater than zero.'
   if (fractionPart.length > 4) return 'At most 4 decimal places.'
   if (wholePart.length + fractionPart.length > 18) return 'That quantity is too large.'
   return undefined
