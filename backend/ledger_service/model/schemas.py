@@ -609,3 +609,50 @@ class LedgerEntryListResponse(BaseModel):
             "without reasoning about the cursor at all."
         ),
     )
+
+
+class InvalidFieldOut(BaseModel):
+    """One part of a request that failed validation, as pydantic reported it."""
+
+    loc: list[str | int] = Field(
+        description=(
+            "Where the problem is: the part of the request first, then the "
+            "field, e.g. `[\"query\", \"quantity\"]`, `[\"path\", "
+            "\"market_id\"]` or `[\"body\", \"side\"]`."
+        ),
+    )
+    msg: str = Field(description="A sentence for a person. Do not parse it.")
+    type: str = Field(
+        description=(
+            "pydantic's stable name for the problem, e.g. `greater_than` or "
+            "`extra_forbidden`. Branch on this rather than on `msg`."
+        ),
+    )
+
+
+class ErrorOut(BaseModel):
+    """The inside of the envelope every ledger error carries."""
+
+    code: str = Field(
+        description=(
+            "Stable and `snake_case`. `invalid_request` when the request did "
+            "not match the route's parameters or body; a route's own 422 "
+            "codes are listed in its description."
+        ),
+        examples=["invalid_request"],
+    )
+    message: str
+    details: list[InvalidFieldOut] | None = Field(
+        default=None,
+        description=(
+            "On `invalid_request`, every part of the request that was wrong. "
+            "Absent on a route's own 422 codes."
+        ),
+    )
+
+
+class ValidationErrorOut(BaseModel):
+    """Every ledger 422, whichever layer refused the request: `invalid_request`
+    with `details`, or one of the route's own codes without them."""
+
+    error: ErrorOut
