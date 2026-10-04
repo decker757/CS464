@@ -21,22 +21,22 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.goto(`/markets/${market.id}`)
 
   const balance = page.getByLabel('available balance')
-  const before = await balance.textContent()
 
   await page.getByRole('button', { name: 'Yes', exact: true }).click()
   await page.getByLabel('Quantity (shares)').fill('10')
   await expect(page.getByLabel('trade preview')).toBeVisible()
   await page.getByRole('button', { name: /^buy yes$/i }).click()
 
-  await expect(page.getByText(/bought 10 yes/i)).toBeVisible()
-  await expect(balance).not.toHaveText(before ?? '')
+  await expect(page.getByText('Bought 10 Yes for 8.8592 credits.')).toBeVisible()
+  await expect(balance).toHaveText('991 credits')
 
   await page.getByRole('button', { name: /^sell$/i }).click()
   await page.getByLabel('Quantity (shares)').fill('4')
   await expect(page.getByLabel('trade preview')).toBeVisible()
   await page.getByRole('button', { name: /^sell yes$/i }).click()
 
-  await expect(page.getByText(/sold 4 yes/i)).toBeVisible()
+  await expect(page.getByText('Sold 4 Yes for 3.5557 credits.')).toBeVisible()
+  await expect(balance).toHaveText('994 credits')
 
   await page.getByLabel('Quantity (shares)').fill('100')
   await expect(page.getByLabel('trade preview')).toBeVisible()
