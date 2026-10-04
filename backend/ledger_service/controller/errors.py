@@ -20,10 +20,9 @@ from model.schemas import ErrorOut, InvalidFieldOut, ValidationErrorOut
 
 _log = logging.getLogger(__name__)
 
-_INVALID_REQUEST_MESSAGE = (
-    "The request does not match this route's parameters or body; "
-    "`details` says which part."
-)
+# Plain English: the frontend shows `error.message` to a person when it has
+# nothing better. `details` is for the code, not the reader.
+_INVALID_REQUEST_MESSAGE = "Some of the details in this request aren't valid."
 
 
 def _invalid_fields_of(exc: RequestValidationError) -> list[InvalidFieldOut]:
