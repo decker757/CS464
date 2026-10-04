@@ -4413,8 +4413,10 @@ writes `closed_at` a little later. Unswept, `closed_at` is NULL and Postgres's
 `LEAST` skips it. Closed early ([2.3] #7, ADR 0014), it is `closed_at`, which
 is before a `close_time` that is still in the future. Sorting on `close_time`
 alone would put an early-closed market at the top of the stopped group for
-weeks. Sorting on `closed_at` alone would put a market the sweep has not
-reached yet at the end of it.
+weeks. Sorting on `closed_at` alone would be wrong the other way. The sweep
+stamps `closed_at` when it runs, so a market whose `close_time` passed days ago
+and was swept just now would sort as if it had only just stopped. An unswept
+market has no `closed_at` at all, and Postgres sorts NULLs first under `DESC`.
 
 **Rejected.** *Approved markets at the top of the stopped group*, because they
 are about to pay out. That is a second rule rather than a special case of
