@@ -9,10 +9,13 @@ and two adoption rules would adopt a database the third refuses. ADR 0012's bar.
 Two things here are load-bearing and not obvious.
 
 Every connection sets `search_path` to `public`, never the service's schema.
-When the compared schema is the connection's default, SQLAlchemy reflects its
-foreign keys without a schema while the models name one, and compare_metadata
-reports every foreign key as dropped and re-added. Checked against Alembic
-1.20.0 on all three services' models.
+sql/02-schemas.sql gives each role `search_path = <its own schema>`, and Alembic
+reports the connection's default schema as None. `is_own_name` reads None as
+`public` and leaves it out, so without the override the service's whole schema
+is invisible and every model table reads as missing (add_table, add_index).
+Mapping None to the service's schema instead would reflect its foreign keys
+without a schema while the models name one, and every foreign key would come
+back dropped and re-added (checked against Alembic 1.20.0).
 
 compare_metadata cannot see CHECK constraints, partial-index predicates or
 triggers. Each service's guard tests compare those through the catalog, and
