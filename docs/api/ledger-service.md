@@ -683,7 +683,7 @@ Errors:
 | 422 | `quantity_too_large` | A buy whose cost, or whose resulting shares outstanding, is above `99999999999999.9999` — the same two bounds the preview refuses at (D-040). |
 | 422 | `cost_below_tick` | A buy whose cost rounds to `0.0000` at the ledger's scale, so real shares would be charged nothing (D-041). |
 | 422 | `proceeds_below_tick` | A sell whose proceeds round to `0.0000`. Ask for more. |
-| 422 | — | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. FastAPI's own validation; carries `{"detail": [...]}` rather than the `{"error": {...}}` envelope, matching the preview route's query-string validation. |
+| 422 | `invalid_request` | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. `error.details` names each field; see [Errors](#errors). |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
 
@@ -700,7 +700,29 @@ The same envelope as the other three services:
 | 400 | `malformed_cursor` | `cursor` was not one this service issued |
 | 401 | `invalid_token` | Missing, malformed or expired access token |
 | 403 | `not_an_administrator` | Valid token, wrong role |
-| 422 | — | FastAPI's own validation, e.g. `limit=0` |
+| 422 | `invalid_request` | The request does not match the route's parameters or body, e.g. `limit=0`, a path id that is not a UUID, or an extra field in a trade body |
+
+**Every 422 is in this envelope**, whichever layer refused the request — each
+route's own codes and `invalid_request` alike — so a client parses one
+shape. `invalid_request` alone adds `error.details`, one item per field that
+was wrong:
+
+```jsonc
+// GET /ledger/markets/{market_id}/preview?outcome_id=...&side=buy&quantity=0
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "The request does not match this route's parameters or body; `details` says which part.",
+    "details": [
+      { "loc": ["query", "quantity"], "msg": "Input should be greater than 0", "type": "greater_than" }
+    ]
+  }
+}
+```
+
+`loc` is where the problem is — `query`, `path` or `body` first, then the
+field. Branch on `type`, which is pydantic's stable name for the problem; `msg`
+is for a person. Nothing else from pydantic's error is passed on.
 
 The preview route above adds eight more of its own — `market_not_found`
 (404), `insufficient_shares_outstanding` (409), `unknown_outcome` (422),
