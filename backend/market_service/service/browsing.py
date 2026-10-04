@@ -78,12 +78,16 @@ def _status_matches(status: MarketStatus, now: datetime) -> ColumnElement[bool]:
     return Market.status == status
 
 
-def _close_time_while_trading(now: datetime) -> ColumnElement[datetime | None]:
+def _close_time_while_trading(
+    still_trading: ColumnElement[bool],
+) -> ColumnElement[datetime | None]:
     """A still-trading market's sort key: when it will close. NULL for the rest."""
-    return case((open_for_trading(now), Market.close_time))
+    return case((still_trading, Market.close_time))
 
 
-def _when_trading_stopped(now: datetime) -> ColumnElement[datetime | None]:
+def _when_trading_stopped(
+    still_trading: ColumnElement[bool],
+) -> ColumnElement[datetime | None]:
     """A stopped market's sort key: when trading stopped. NULL while trading.
 
     The earlier of `close_time` and `closed_at`; Postgres's LEAST skips a NULL.
@@ -92,7 +96,7 @@ def _when_trading_stopped(now: datetime) -> ColumnElement[datetime | None]:
     `closed_at`, which comes before its `close_time` (ADR 0014).
     """
     stopped_at = func.least(Market.close_time, Market.closed_at)
-    return case((open_for_trading(now), null()), else_=stopped_at)
+    return case((still_trading, null()), else_=stopped_at)
 
 
 def _browse_order(now: datetime) -> tuple[ColumnElement[object], ...]:
@@ -101,12 +105,13 @@ def _browse_order(now: datetime) -> tuple[ColumnElement[object], ...]:
     The group comes from the clock, not the status column (D-022). Each group's
     key is NULL in the other, so it sorts only its own markets. `Market.id`
     last makes the order total, so ties do not reshuffle between refreshes.
-    "Stopped markets sort by when trading stopped".
+    DECISIONS.md, "Stopped markets sort by when trading stopped".
     """
+    still_trading = open_for_trading(now)
     return (
-        open_for_trading(now).desc(),
-        _close_time_while_trading(now).asc(),
-        _when_trading_stopped(now).desc(),
+        still_trading.desc(),
+        _close_time_while_trading(still_trading).asc(),
+        _when_trading_stopped(still_trading).desc(),
         Market.id.asc(),
     )
 
@@ -122,9 +127,10 @@ async def browse(
 
     With no `status`, every published market: still-trading first by soonest
     close, then the rest by most recently stopped (D-022, #105). `query` is a
-    case-insensitive search over the question and composes with `status`. Nothing found is `[]`, never an
-    error. `now` is the request's clock, passed by the controller so the
-    filter and the displayed status read one instant (D-025).
+    case-insensitive search over the question and composes with `status`.
+    Nothing found is `[]`, never an error. `now` is the request's clock, passed
+    by the controller so the filter and the displayed status read one instant
+    (D-025).
     """
     now = now or datetime.now(UTC)
     # Columns, not entities. Nothing enters the identity map, so a browse
