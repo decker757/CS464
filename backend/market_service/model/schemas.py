@@ -577,7 +577,13 @@ class PublicMarketSummaryOut(_UtcTimestamps):
 
 
 class PublicMarketListResponse(BaseModel):
+    """One page of the browse list. [X-1] #34, #104.
+
+    `next_cursor` is null on the last page, an empty one included.
+    """
+
     markets: list[PublicMarketSummaryOut]
+    next_cursor: str | None
 
 
 # --- the administrator's overview. [2.1] #5 --------------------------------
