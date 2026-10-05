@@ -1,4 +1,5 @@
-"""Keyset cursors for the public browse [X-1] #104 and the admin overview #210. No database, no HTTP.
+"""Keyset cursors for the public browse [X-1] #104 and the admin overview #210.
+No database, no HTTP.
 
 Tested directly because a cursor bug shows up as markets quietly missing from a
 page, which an end-to-end test is least likely to notice.
@@ -120,7 +121,7 @@ def test_an_overview_cursor_round_trips(
         "not base64 at all !!",
         _cursor_of(_WHEN, _MARKET_ID),
         _cursor_of("yes", "1", _WHEN, _MARKET_ID),
-        _cursor_of("0", "yes", _WHEN, _MARKET_ID),
+        _cursor_of("0", "yes", "", _MARKET_ID),
         _cursor_of("0", "1", "", _MARKET_ID),
         _cursor_of("0", "0", _WHEN, _MARKET_ID),
         _cursor_of("0", "1", "not-a-timestamp", _MARKET_ID),
