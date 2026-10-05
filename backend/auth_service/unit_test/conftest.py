@@ -10,7 +10,14 @@ from __future__ import annotations
 import os
 import secrets
 
-from shared.testing import load_repo_env
+import pytest
+
+# Before the first import of shared.testing: pytest rewrites asserts only in
+# modules it sees imported after this call, so without it the shared helpers'
+# asserts fail with no diff.
+pytest.register_assert_rewrite("shared.testing")
+
+from shared.testing import load_repo_env  # noqa: E402
 
 
 # Before any project module is imported: `get_settings` is cached on first call.
