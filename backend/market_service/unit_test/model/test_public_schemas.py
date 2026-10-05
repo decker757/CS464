@@ -79,10 +79,13 @@ class _FakePublishedMarket:
 
         # `proposed` defaults to what the status implies on a real row. Force it
         # to test the gate at OPEN or CLOSED, or there is nothing to hide.
-        # Compared by value so this module still imports before SETTLED exists.
         if proposed is None:
-            proposed = status.value in ("pending_resolution", "approved", "settled")
-        approved = status.value in ("approved", "settled")
+            proposed = status in (
+                MarketStatus.PENDING_RESOLUTION,
+                MarketStatus.APPROVED,
+                MarketStatus.SETTLED,
+            )
+        approved = status in (MarketStatus.APPROVED, MarketStatus.SETTLED)
 
         self.proposal_id = uuid.uuid4() if proposed else None
         self.proposed_outcome_id = self.outcomes[0].id if proposed else None
@@ -204,16 +207,15 @@ def test_an_early_closed_market_is_not_reopened_by_the_derivation() -> None:
     assert payload["status"] == MarketStatus.CLOSED.value
 
 
-# Values, not members: SETTLED is resolved inside the test, so its absence
-# fails that one case instead of the module's collection.
-@pytest.mark.parametrize("value", ["pending_resolution", "approved", "settled"])
-def test_a_resolving_status_is_reported_as_it_stands(value: str) -> None:
+@pytest.mark.parametrize(
+    "status",
+    [MarketStatus.PENDING_RESOLUTION, MarketStatus.APPROVED, MarketStatus.SETTLED],
+)
+def test_a_resolving_status_is_reported_as_it_stands(status: MarketStatus) -> None:
     """[X-3] #36 renders these apart from a plain closed market; do not flatten them."""
-    status = MarketStatus(value)
-
     payload = _detail_json(status=status, closes_in=timedelta(days=30))
 
-    assert payload["status"] == value
+    assert payload["status"] == status.value
 
 
 # --- timestamps -----------------------------------------------------------
@@ -235,13 +237,13 @@ def test_a_pending_proposal_is_not_shown_to_a_trader() -> None:
     assert payload["proposed_outcome_id"] is None
 
 
-@pytest.mark.parametrize("value", ["approved", "settled"])
-def test_a_decided_outcome_is_shown(value: str) -> None:
+@pytest.mark.parametrize("status", [MarketStatus.APPROVED, MarketStatus.SETTLED])
+def test_a_decided_outcome_is_shown(status: MarketStatus) -> None:
     """The other half: once a second administrator agrees, the winner is public,
     and stays public once settled ([3.4] #12)."""
-    payload = _detail_json(status=MarketStatus(value))
+    payload = _detail_json(status=status)
 
-    assert payload["status"] == value
+    assert payload["status"] == status.value
     assert payload["proposed_outcome_id"] is not None
 
 

@@ -49,7 +49,9 @@ async def _publish(session: AsyncSession, creator: Actor, market: Market) -> obj
 
 
 async def _close_early(session: AsyncSession, creator: Actor, market: Market) -> object:
-    return await market_service.close_early(session, actor(), market.id, close_request())
+    return await market_service.close_early(
+        session, actor(), market.id, close_request()
+    )
 
 
 async def _propose(session: AsyncSession, creator: Actor, market: Market) -> object:

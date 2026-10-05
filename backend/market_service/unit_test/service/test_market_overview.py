@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
@@ -344,10 +344,10 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
     for every other status.
 
     The window is patched to an hour, so the injected clock ten days ahead is
-    past the edge whatever the environment configures. Fails with SETTLED
-    left out of `DECIDED_STATUSES`, or with the flag missing from the rows.
+    past the edge whatever the environment configures. Fails with the settled
+    half of the rule dropped, or with the flag missing from the rows.
     """
-    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 3600, raising=False)
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 3600)
     decided = {population.ids["approved"], population.ids["settled"]}
 
     rows, _ = await _overview(session, population.caller, now=population.now)
@@ -357,25 +357,27 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
         assert row.settleable is (row.id in decided), row
 
 
-async def test_an_overview_rows_settleable_turns_true_at_the_edge(
-    session: AsyncSession,
+@pytest.mark.parametrize(
+    "keep_approved_at", [True, False], ids=["approved_a_moment_ago", "no_approved_at"]
+)
+async def test_a_settled_rows_settleable_stays_true_whatever_the_window(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, keep_approved_at: bool
 ) -> None:
-    """The same inclusive edge as the public detail, on the overview's clock.
+    """[3.4] #12: a row's `settleable` "stays true once the market is
+    `settled`", under a window raised to its 30-day ceiling and read a moment
+    after approval, and with no `approved_at` at all.
 
-    Fails with `>` in place of `>=`, or with the five-minute gap dropped.
+    Fails with SETTLED put through the time rule, or the null check.
     """
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 2592000)
     caller = actor()
-    market_id = (await approved_market(session, caller)).id
-    approved_at = await session.scalar(
-        select(Market.approved_at).where(Market.id == market_id)
-    )
-    window = timedelta(seconds=get_settings().dispute_window_seconds)
-    edge = approved_at + window + timedelta(minutes=5)
+    market_id = (await settled_market(session, caller)).id
+    if not keep_approved_at:
+        await session.execute(
+            update(Market).where(Market.id == market_id).values(approved_at=None)
+        )
+        await session.commit()
 
-    before, _ = await _overview(
-        session, caller, now=edge - timedelta(microseconds=1)
-    )
-    at, _ = await _overview(session, caller, now=edge)
+    rows, _ = await _overview(session, caller, now=datetime.now(UTC))
 
-    assert [row.settleable for row in before] == [False]
-    assert [row.settleable for row in at] == [True]
+    assert [(row.id, row.settleable) for row in rows] == [(market_id, True)]

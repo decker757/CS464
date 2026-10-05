@@ -15,8 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_session_factory
 from model.entities import Market, MarketOutcome
 from service.audit import Actor
-from unit_test.conftest import closed_market, proposed_before_ids, proposed_market
-from unit_test.conftest import settled_market
+from unit_test.conftest import (
+    closed_market,
+    proposed_before_ids,
+    proposed_market,
+    settled_market,
+)
 from unit_test.conftest import approval_terms as _approval
 from unit_test.conftest import close_terms as _close
 from unit_test.conftest import market_json as _payload

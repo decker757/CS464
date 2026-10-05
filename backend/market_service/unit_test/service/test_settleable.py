@@ -3,8 +3,9 @@
 The ledger reads this flag rather than recomputing it ("Settlement waits for
 `settleable`, which market_service derives from `approved_at`"). The rule,
 from "`settleable` is a pure function in `core/`, inclusive at its edge, true
-once settled, false without `approved_at`": the status is decided, `approved_at`
-is set, and `now >= approved_at + window + 5 minutes`. Every case hands
+once settled, false without `approved_at`": a settled market always is; an
+approved one is once `approved_at` is set and `now >= approved_at + window + 5
+minutes`; nothing else is. Every case hands
 `get_published` its clock and reads the flag off `PublicMarketOut`, which is
 what the ledger is sent.
 """
@@ -102,7 +103,7 @@ async def test_the_window_length_is_read_from_settings(
     Patched on the cached settings to ten minutes, far from the 24-hour
     default. Fails if the window is hard-coded, or read once at import.
     """
-    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 600, raising=False)
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 600)
     market_id = (await approved_market(session, actor())).id
     edge = await _approved_at(session, market_id) + timedelta(seconds=600) + _GAP
 
@@ -126,6 +127,16 @@ async def _pending_with_stale_approval(
     return market_id
 
 
+async def _closed_with_stale_approval(
+    session: AsyncSession, creator: Actor
+) -> uuid.UUID:
+    """Sent back ([3.3] #11): APPROVED returns to CLOSED, and `approved_at` may
+    survive. A plain CLOSED market has a null one and would not notice."""
+    market_id = (await closed_market(session, creator)).id
+    await _set_approved_at(session, market_id, datetime.now(UTC) - _STALE)
+    return market_id
+
+
 async def _approved(session: AsyncSession, creator: Actor) -> uuid.UUID:
     return (await approved_market(session, creator)).id
 
@@ -144,6 +155,7 @@ _Build = Callable[[AsyncSession, Actor], Awaitable[uuid.UUID]]
         # with the status half of the rule removed.
         (_open_with_stale_approval, timedelta(hours=1), False),
         (_pending_with_stale_approval, timedelta(hours=1), False),
+        (_closed_with_stale_approval, timedelta(hours=1), False),
         # The window has ended; the five-minute gap has not.
         (_approved, -timedelta(minutes=1), False),
         (_approved, timedelta(hours=1), True),
@@ -152,6 +164,7 @@ _Build = Callable[[AsyncSession, Actor], Awaitable[uuid.UUID]]
     ids=[
         "open_with_stale_approved_at",
         "pending_with_stale_approved_at",
+        "closed_with_stale_approved_at",
         "approved_inside_the_gap",
         "approved_after_the_gap",
         "settled",
@@ -163,8 +176,8 @@ async def test_settleable_by_status(
     """[3.4] #12: true from the edge, "stays true once the market is
     `settled`, and is false for every other status".
 
-    `settled` fails with SETTLED left out of `DECIDED_STATUSES`; the stale
-    rows fail with the status half of the rule dropped.
+    `settled` fails with the settled half of the rule dropped; the stale
+    rows fail with the approved half dropped.
     """
     market_id = await build(session, actor())
     edge = _edge(await _approved_at(session, market_id))
@@ -172,20 +185,24 @@ async def test_settleable_by_status(
     assert await _settleable(session, market_id, edge + after_edge) is expected
 
 
-async def test_a_closed_market_left_with_an_approved_at_is_not_settleable(
-    session: AsyncSession,
+@pytest.mark.parametrize(
+    "keep_approved_at", [True, False], ids=["approved_a_moment_ago", "no_approved_at"]
+)
+async def test_a_settled_market_is_settleable_whatever_the_window(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, keep_approved_at: bool
 ) -> None:
-    """A send-back ([3.3] #11) returns APPROVED to CLOSED and may leave
-    `approved_at` set. Long past any window, it still must not pay.
+    """[3.4] #12: `settleable` "stays true once the market is `settled`". A
+    window raised to its 30-day ceiling, read a moment after approval, must not
+    turn it back to false, and neither may a null `approved_at`.
 
-    Fails with the `DECIDED_STATUSES` half of the rule dropped. A plain
-    CLOSED market has a null `approved_at` and would not notice.
+    Fails with SETTLED put through the time rule, or the null check.
     """
-    market_id = (await closed_market(session, actor())).id
-    await _set_approved_at(session, market_id, datetime.now(UTC) - _STALE)
-    edge = _edge(await _approved_at(session, market_id))
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 2592000)
+    market_id = (await settled_market(session, actor())).id
+    if not keep_approved_at:
+        await _set_approved_at(session, market_id, None)
 
-    assert await _settleable(session, market_id, edge + timedelta(days=1)) is False
+    assert await _settleable(session, market_id, datetime.now(UTC)) is True
 
 
 async def test_an_approved_market_with_no_approved_at_is_not_settleable(
