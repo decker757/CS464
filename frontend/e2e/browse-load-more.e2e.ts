@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { logIn, marketCard } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [X-1] #104: the browse page's Load more against the real keyset paging. Two
 // things are added to each request on the way out, so the test does not depend
@@ -20,15 +20,7 @@ test('Load more adds the next page of markets and repeats none', async ({ page }
   await publishMarket(admin, thirdQuestion, undefined, { closesInHours: 26 })
   const trader = await registerTrader('lm_trader')
 
-  await page.route(
-    url => url.pathname === '/public/markets',
-    route => {
-      const url = new URL(route.request().url())
-      url.searchParams.set('limit', String(PAGE_SIZE))
-      url.searchParams.set('q', run)
-      return route.continue({ url: url.toString() })
-    },
-  )
+  await setQueryParams(page, '/public/markets', { limit: String(PAGE_SIZE), q: run })
   await logIn(page, trader)
 
   await expect(marketCard(page, firstQuestion)).toBeVisible()
