@@ -42,7 +42,7 @@ status of its own, and why the proposer is refused a `403` on both decisions:
 | POST | `/markets/{id}/approve-outcome` | Approve another administrator's proposal |
 | POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
 | GET | `/markets` | List my own markets |
-| GET | `/markets/overview` | Every market I can see, by status, with counts |
+| GET | `/markets/overview` | Every market I can see, a page at a time, by status, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
 
@@ -828,15 +828,15 @@ first. A summary, not the whole market:
 }
 ```
 
-## GET /markets/overview — [2.1] #5
+## GET /markets/overview — [2.1] #5, #210
 
-Every market the calling administrator can see, filtered by status, with a
-count for every status beside the list. Declared before `GET /markets/{id}`, so
-`overview` is never parsed as an id. A trader is refused with
-`403 not_an_administrator`.
+One page of the markets the calling administrator can see, filtered by status,
+with a count for every status over all of them. Declared before
+`GET /markets/{id}`, so `overview` is never parsed as an id. A trader is
+refused with `403 not_an_administrator`.
 
 ```
-GET /markets/overview?status=closed
+GET /markets/overview?status=closed&limit=50
 ```
 
 ```json
@@ -857,7 +857,8 @@ GET /markets/overview?status=closed
     "closed": 1,
     "pending_resolution": 0,
     "approved": 2
-  }
+  },
+  "next_cursor": null
 }
 ```
 
@@ -875,17 +876,61 @@ GET /markets/overview?status=closed
   `submitted`, which the trader filter refuses. Anything else is a `422`.
   `settled` arrives with [3.4] #12, which adds it to the filter and the counts.
 - **`counts`** is an object of integers keyed by every status, `0` when there
-  are none, over every market the caller can see. **It ignores `?status=`**, so
-  each count equals the length of that status's filtered list and the counts
-  sum to the length of the unfiltered list. Both come from one read at one
-  instant.
+  are none, over **every market the caller can see — every page, not just this
+  one**. It ignores `?status=` and `cursor`, so each count equals the length of
+  that status's whole filtered list and the counts sum to the length of the
+  whole unfiltered list. An "All" total is the sum of the counts, not the
+  length of `markets`. The page and the counts are two reads in one
+  transaction at `REPEATABLE READ`, so they describe the same snapshot of the
+  data, and both judge `status` by the same instant.
 - **Order** is soonest `close_time` first, markets with no `close_time` last,
   then by `id`, with or without a filter. So the `closed` tab reads oldest
   close first: the one waiting longest for an administrator. This differs from
-  `GET /public/markets` on purpose.
+  `GET /public/markets` on purpose. Settled markets sort last, after all of
+  those, once [3.4] #12 adds `settled`.
 - **`creator_id`** is on every row, so the caller can tell their own by
   comparing it with their own id.
-- Not paged; #210 owns that.
+
+| Query parameter | Rule |
+| --- | --- |
+| `status` | one of the six statuses above; anything else is a `422` |
+| `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
+| `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
+
+### Paging
+
+Paged by keyset (#210). Send the previous response's `next_cursor` back as
+`cursor`, with the same `status` and `limit`, for the next page.
+`next_cursor: null` means there is nothing after this page, including when the
+page is empty. The cursor is opaque: do not build or edit one.
+
+Pages read in turn do not repeat or skip a market that kept its place:
+
+- The order does not read the clock. A market whose `close_time` passes while
+  you page keeps its place, and its `status` reads `closed` on whatever page it
+  appears. Under `status=open` it is left out of later pages, because it no
+  longer matches; under `status=closed` it is missing if it sorts before the
+  point you have reached.
+- A market published after the first page appears on a later page if it sorts
+  after the point you have reached, and not at all if it sorts before it.
+- Two moves the order cannot see. A draft's `close_time` changes as its
+  creator edits it, so a draft edited while you page can appear twice or be
+  missed. Once `settled` exists, a market settled while you page moves to the
+  end and can appear twice. Show each `id` once, and start again without a
+  cursor for an exact list.
+
+The cursor does not record `status`. Changing the filter and sending an old
+cursor is not an error, but it continues from a position in the old list;
+start again without a cursor instead.
+
+### When it is refused
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 403 | `not_an_administrator` | a trader |
+| 422 | — | `status` is not one of the six, or `limit` is below 1 |
 
 ## GET /markets/{id}
 
@@ -1180,7 +1225,7 @@ it still reads `code` and `message`:
 | Status | `code` | When |
 | --- | --- | --- |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
-| 400 | `malformed_cursor` | a browse `cursor` was not one this service issued |
+| 400 | `malformed_cursor` | a browse or overview `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | valid session, but a trader |
 | 403 | `second_administrator_required` | the proposer tried to approve or reject their own proposal |
 | 404 | `market_not_found` | no such market, or it is not yours |

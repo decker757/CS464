@@ -122,7 +122,7 @@ alembic.ini, migrations/    this schema's Alembic history [F-5]
 
 controller/                 the HTTP boundary. No business rules live here.
     routes.py               the four endpoints
-    dependencies.py         DbSession, the token guard, the admin guard
+    dependencies.py         DbSession, the token guard, the admin guard, the paging parameters
     transport.py            cookie and bearer extraction. Read-only.
     errors.py               the one mapping from domain error to status code
 
@@ -136,7 +136,7 @@ service/                    business rules. Raises domain errors, knows no HTTP.
 
 core/                       this service's own plumbing
     config.py               settings, read from the environment once
-    paging.py               keyset cursors for the browse and the overview [X-1] #104, #210
+    paging.py               keyset cursors and the page size for the browse and the overview [X-1] #104, #210
     database.py             engine, session factory, session dependency
     clock.py                one function: normalise a datetime to UTC
     security.py             the only file that touches jwt. Verify only.
