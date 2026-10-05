@@ -601,7 +601,12 @@ class MarketOverviewRowOut(_UtcTimestamps):
 
 
 class MarketOverviewResponse(BaseModel):
-    """Rows for the chosen filter, and a count for every status regardless of it."""
+    """One page of rows for the chosen filter, and a count for every status over
+    every page, regardless of the filter. [2.1] #5, #210.
+
+    `next_cursor` is null on the last page, an empty one included.
+    """
 
     markets: list[MarketOverviewRowOut]
     counts: dict[MarketStatus, int]
+    next_cursor: str | None
