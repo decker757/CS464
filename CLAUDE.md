@@ -19,8 +19,10 @@ backend/audit_service/    reading the shared admin action log     [4.3]
 backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
 backend/shared/           the only code services import from each other [F-6]
+backend/*/migrations/     auth, market and ledger: each schema's own Alembic
+                          history, applied by that service's migrate.py [F-5]
 sql/                      roles, schemas and grants for the shared Postgres
-sql/migrations/         hand-applied ALTERs for databases from before Alembic ([F-5] #75)
+sql/migrations/         0002 only: a login role, and 02-schemas.sql re-run
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
 DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
@@ -52,13 +54,17 @@ specifies them.
 ```bash
 cp .env.example .env          # fill in every blank; compose refuses to start otherwise
 docker compose up --build     # auth :8000, market :8001, audit :8002,
-                              # ledger :8003, realtime :8004
+                              # ledger :8003, realtime :8004; auth-migrate,
+                              # market-migrate and ledger-migrate run first
 ```
 
 ```bash
 cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
+
+cd backend/auth_service       # or market_service, ledger_service
+PYTHONPATH=.. .venv/bin/python migrate.py   # what <svc>-migrate runs; needs DATABASE_URL
 
 cd backend/realtime_service   # the exception: no database, wants Redis
 .venv/bin/pytest              # needs `docker compose up -d redis`
@@ -90,32 +96,66 @@ for itself because the password is not in the repository. Roles are
 cluster-wide; schemas and grants are per database, so apply it to `cs464` and
 to `cs464_test` if yours predates the change.
 
-**Adding a column does not reach a database that already has the table.**
-No service calls `create_all` at startup any more (auth, market and ledger run
-Alembic; the audit service owns no table). Before #75 it only ever issued
-CREATE TABLE IF NOT EXISTS, so a new column in `model/entities.py` never
-reached an existing database and the service died on every request with
-`column ... does not exist`, which read like a code bug and was not one. [1.2]
-#2 hit this on both the dev and the test database. A model change now needs an
-Alembic revision, below.
+**A model change needs an Alembic revision, and no app creates a table.**
+auth, market and ledger each keep an Alembic history in `migrations/`, with its
+version table in the service's own schema, run as the service's own role.
+`docker compose up` runs `auth-migrate`, `market-migrate` and `ledger-migrate`
+(`python migrate.py`, in the app's own image) and starts each app only if its
+step exits 0. Nothing in `main.py` issues DDL, and the audit service owns no
+table. ADR 0020.
 
-**Auth, market and ledger are on Alembic as of #75's third PR.** For a new
-column on any of them, add a revision
-(`cd backend/auth_service && PYTHONPATH=.. .venv/bin/alembic revision -m "..."`,
-likewise in `market_service` and `ledger_service`) rather than a
-`sql/migrations` file; the `auth-migrate`, `market-migrate` and
-`ledger-migrate` compose steps apply it before the service starts. There are no
-hand-applied ALTERs left except `sql/migrations/0002` (roles and grants, above).
-ADR 0020 lands with #75's last PR.
+Before #75 each service called `create_all` at startup, which only ever issues
+CREATE TABLE IF NOT EXISTS: a new column reached a fresh database and never an
+existing one, and the service then died on every request with `column ... does
+not exist`, which read like a code bug and was not one. [1.2] #2 hit this on
+both the dev and the test database. So a new column, index or constraint in
+`model/entities.py` is half a change until it has a revision:
 
-Hand-applied files do **not** belong in `sql/` itself. `00-init.sh` names its
-two files explicitly and runs only on first initialisation of the volume, so a
-file added there would never run on the database that needs it — and on a fresh
-volume it runs before any service exists, when there is no table to alter.
+```bash
+cd backend/market_service        # or auth_service, ledger_service: then AUTH_ or LEDGER_ below
+.venv/bin/pytest unit_test/test_migrations.py   # red for now; leaves the test schema empty
+export DATABASE_URL="$(grep '^MARKET_TEST_DATABASE_URL=' ../../.env | cut -d= -f2-)"
+PYTHONPATH=.. .venv/bin/python migrate.py       # that empty schema, to the current head
+.venv/bin/alembic revision --autogenerate --rev-id 0002 -m "what changed"
+# read every line of migrations/versions/0002_what_changed.py, then:
+.venv/bin/pytest unit_test/test_migrations.py   # green once the revision and the models agree
+```
 
-The test databases handle themselves: `unit_test/conftest.py` drops and
-recreates the schema per test, so a model change is picked up automatically
-there. The long-lived `cs464` database is brought to head by the migrate steps.
+Read what autogenerate wrote: it is a starting point. It cannot see CHECK
+constraints, partial-index predicates or triggers (ADR 0020 lists them), so
+write those by hand; `test_migrations.py` compares the Postgres catalog too and
+fails on any it missed. Number revisions in sequence with `--rev-id`. Two
+branches that both add `0002` give Alembic two heads, and the migrate step
+fails until the later one is renumbered and its `down_revision` pointed at the
+other. The long-lived `cs464` gets the revision on the next
+`docker compose up --build`.
+
+The first revision after a service's baseline also turns red every test in
+that service's `test_migrations.py` with `legacy` in its name, and that is not
+the new revision's fault: they pin the adoption below, which ends at the second
+revision by design (ADR 0020). What replaces them is part of that pull request.
+
+The suites build their schema from the models, not from the migrations, and
+`test_migrations.py` is what holds the two together (ADR 0020). Market's and
+ledger's `unit_test/conftest.py` drop and recreate the schema per test, so a
+model change reaches `cs464_test` by itself. Auth's creates what is missing and
+then truncates, which is quicker and never alters a table that is already
+there: if an auth test fails with `column ... does not exist` after a model
+change, run `.venv/bin/pytest unit_test/test_migrations.py` once, which leaves
+the schema empty, and the next run builds it fresh.
+
+A database from before #75 is adopted by its migrate step. If its tables match
+the models, it is stamped at the baseline. If it missed one of the hand-applied
+files `sql/migrations/` used to hold, the step refuses, names the missing
+column, index or type, changes nothing, and prints the two git commands that
+recover the deleted file. That works only while each service's baseline is its
+newest revision. After that, the answer is `docker compose down -v`, which
+destroys local data.
+
+`sql/migrations/` keeps only `0002`, the roles-and-grants file above, and a
+file like it does **not** belong in `sql/` itself: `00-init.sh` names its two
+files explicitly and runs only on first initialisation of the volume, so a file
+added there would never run on the database that needs it.
 
 **Tests run against Postgres, not SQLite**, each suite as its own service role
 under production grants, from its own `<SERVICE>_TEST_DATABASE_URL`. The two
@@ -213,8 +253,9 @@ clear and the log loses the only copy.
 **A decision names the proposal, because the lock cannot.** Approve and reject
 both require the `proposal_id` the reviewer read, and `_proposal_to_decide`
 refuses any other as `409 proposal_superseded` after the identity check. The
-key is required and the value nullable: a proposal pending before
-`sql/migrations/0006` has no id and is decided by quoting null. Do not
+key is required and the value nullable: a proposal pending since before the
+`proposal_id` column existed ([3.2] #10) has no id and is decided by quoting
+null. Do not
 "fix" that with a backfill — a generated id lives only on a row the reviewer
 cannot read, so it would strand exactly the proposals it was meant to rescue. The
 row lock only serialises decisions that overlap. A reject-and-repropose that
@@ -248,9 +289,8 @@ docker compose exec -T db psql -U cs464 -d cs464 \
       WHERE conrelid = 'market.markets'::regclass;"
 ```
 
-A new *column* is the usual story and needs an Alembic revision
-(`alembic revision` in `backend/market_service`). [1.3] #3 added one member and
-one column, and only the column needed a migration.
+A new *column* is the usual story and needs an Alembic revision, as above.
+[1.3] #3 added one member and one column, and only the column needed DDL.
 
 **Replacing a child collection in SQLAlchemy needs its own flush.** Within one
 flush the INSERTs for the new rows are issued before the DELETEs for the
@@ -333,9 +373,10 @@ logged separately, because a market can sit submitted for a week and only the
 second of the two put anything in front of a trader.
 
 **`audit.admin_actions` must never be added to a service's `Base.metadata`.**
-Everything mapped there is created and dropped by `unit_test/conftest.py` per
-test, and would land in the next autogenerated Alembic revision. Either against
-this table fails — no service has CREATE or DROP on the audit schema. Writers
+Everything mapped there is created by `unit_test/conftest.py` per test and by
+the migrate step when it adopts a database from before #75, and would land in
+the next autogenerated revision. Any of those against this table fails — no
+service has CREATE or DROP on the audit schema. Writers
 declare it as a standalone `Table` on its own `MetaData` (see
 `backend/shared/audit.py`); the audit service maps it but never creates it.
 
@@ -353,8 +394,11 @@ beside it and `PYTHONPATH=/app` makes the import resolve the way it does in a
 checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 
 It holds token verification, the settings base, the role enum, the cursor
-format, the audit writer and the test helpers (the env loader and the
-import-boundary scan). That is the whole list, and ADR 0012 spends
+format, the audit writer, the migration runner (`shared/migrating.py`, ADR
+0020) and the test helpers in `shared/testing.py` (the env loader, the
+import-boundary scan, and the migration guard tests' `schema_catalog`,
+`drop_own_tables`, `build_like_before_75`, the two `assert_...` round trips and
+`compose_service`). That is the whole list, and ADR 0012 spends
 most of its length on what was left copied and why — `core/database.py` above
 all, because one shared `Base` would enrol every service's tables in every
 other service's metadata and the first conftest `drop_all` would hit a table
@@ -590,11 +634,16 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0016** deciding a proposal, by any admin but the proposer, with APPROVED as a status
 - **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first
 - **0018** positions are valued at liquidation, not at the marginal price
+- **0020** migrations by Alembic, per service, run as a one-off step
 
-Three known constraints recorded there. Logout cannot revoke an already-issued
+Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
 cookie is not sent cross-site, so the frontend and API must share a registrable
-domain or the scheme changes before [5.3] #19. And the audit log's atomicity
+domain or the scheme changes before [5.3] #19. The audit log's atomicity
 holds only while every service shares one database: split them and the service
 that moves needs an outbox and a relay, which is the machinery ADR 0006 exists
-to avoid paying for while it is unnecessary.
+to avoid paying for while it is unnecessary. And the migrate step runs once per
+deploy, never once per replica: it takes no lock, so two copies at once fail
+loudly and the replica whose step lost does not start. Compose already runs one
+per service; #19's pipeline must run it as its own job before the app rolls
+out (ADR 0020).

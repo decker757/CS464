@@ -148,8 +148,9 @@ The runner imports no service. Each service binds it to its own `Base.metadata`
 and `SCHEMA` in two small files, `migrations/env.py` and `migrate.py`. Those two
 are composition roots, like `main.py`, so they import `shared` directly. There
 is no `core/` seam for them, because the binding needs `model`, and every
-service's `model/entities.py` already imports `core.database`. A `core/` module
-that imported `model` back would be an import cycle.
+service's `model/entities.py` already imports `core.database`. A seam in
+`core/` that imported `model` would make `core` and `model` import each other,
+`model` through `core.database`.
 
 ### What Alembic's comparison cannot see
 
@@ -173,8 +174,9 @@ each service's `requirements.txt`.
   at all.** The guard tests cover them by comparing the Postgres catalog
   (`information_schema.columns`, `pg_indexes`, `pg_get_constraintdef`,
   `pg_get_triggerdef`) of a migrated schema with a model-built one, which
-  checks sort order a second time as part of each index definition. Market's also asserts `ix_markets_due_close`'s predicate by
-  name, and the ledger's asserts its append-only trigger by name.
+  checks sort order a second time as part of each index definition. Market's
+  also asserts `ix_markets_due_close`'s predicate by name, and the ledger's
+  asserts its append-only trigger by name.
 
 Adoption checks the ledger's append-only trigger by hand, through the runner's
 `extra_drift` hook, and refuses a ledger that has lost it. It does not check
