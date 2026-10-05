@@ -799,7 +799,7 @@ async def test_each_page_reads_only_its_own_markets_outcomes_in_one_query(
         await _walk(session, limit=2)
 
     outcome_reads = [
-        statement for statement in statements if "market_outcomes" in statement
+        statement for statement in statements if "market_outcomes" in statement.sql
     ]
     assert [sorted(read.parameters) for read in outcome_reads] == [
         sorted([first, second]),
