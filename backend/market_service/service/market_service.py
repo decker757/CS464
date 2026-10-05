@@ -1,5 +1,5 @@
-"""A market's lifecycle: save, submit, publish, close early, propose, approve, reject.
-[1.1] #1, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10.
+"""A market's lifecycle: save, submit, publish, close early, propose, approve, reject, settle.
+[1.1] #1, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.4] #12.
 
 The automatic close is in `service/closing.py`, and what each audit entry
 carries is in `service/market_audit.py`. Every function takes the caller as an
@@ -19,12 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import get_settings
 from core.errors import (
     CloseIncomplete,
+    DisputeWindowOpen,
     DraftIncomplete,
     MarketAlreadyApproved,
     MarketAlreadyOpen,
     MarketAlreadySettled,
     MarketClosed,
     MarketError,
+    MarketNotApproved,
     MarketNotClosed,
     MarketNotEditable,
     MarketNotFound,
@@ -49,6 +51,7 @@ from model.schemas import (
 from service import market_audit
 from service.audit import Actor
 from service.closing import is_open_for_trading
+from service.settling import settleable
 from service.validation import (
     problems_blocking_close,
     problems_blocking_proposal,
@@ -601,6 +604,53 @@ async def reject_outcome(
     await market_audit.record_rejection(
         session, actor, market, rejection.reason.strip(), snapshot, now
     )
+    await session.commit()
+
+    return market
+
+
+async def settle(
+    session: AsyncSession,
+    actor: Actor,
+    market_id: uuid.UUID,
+    *,
+    now: datetime | None = None,
+) -> Market:
+    """Move an approved, settleable market to SETTLED, and commit. [3.4] #12.
+
+    ADR 0019, step 5: the ledger's last step, after its payouts commit. Any
+    administrator may call it. Locks the market row. A market already SETTLED
+    is returned unwritten and unlogged. Raises `MarketNotApproved` for any
+    other status short of APPROVED, and `DisputeWindowOpen` before the market
+    is settleable. Pays nobody.
+    """
+    # Locked: the ledger's retry racing its first attempt must log one flip.
+    # ADR 0015.
+    market = await get_any(session, market_id, for_update=True)
+
+    # Before the clock: a repeat writes nothing, so there is nothing to stamp,
+    # and a raised window must not refuse a market already paid. Do not answer
+    # it `market_already_settled`; a repeat is how the ledger repairs a failed
+    # last step. DECISIONS.md, "The settle step checks in a fixed order".
+    if market.status is MarketStatus.SETTLED:
+        return market
+    if market.status is not MarketStatus.APPROVED:
+        raise MarketNotApproved
+
+    # Postgres's clock after the lock, never the request's, so the edge agrees
+    # with send-back's whatever a replica's clock says. DECISIONS.md, "The
+    # settle step's window check reads `clock_timestamp()` after the row lock".
+    now = now or await _database_now(session)
+
+    if not settleable(market.status, market.approved_at, now=now):
+        raise DisputeWindowOpen
+
+    market.status = MarketStatus.SETTLED
+
+    # One write with its audit entry, so a direct call is observed. ADR 0006,
+    # ADR 0019's amendment.
+    await session.flush()
+    await market_audit.record_marked_settled(session, actor, market, now)
     await session.commit()
 
     return market
