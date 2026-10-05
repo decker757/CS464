@@ -38,7 +38,7 @@ function proposedAction(overrides: Record<string, unknown> = {}) {
 }
 
 function mockPendingMarkets(markets: Record<string, unknown>[]) {
-  server.use(http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets })))
+  server.use(http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets, next_cursor: null })))
 }
 
 function mockAuditActions(actions: Record<string, unknown>[]) {
@@ -70,6 +70,27 @@ describe('ProposalsPage', () => {
     expect(await screen.findByText('Will it rain?')).toBeInTheDocument()
     expect(screen.getByText(/proposed by ernest_t/i)).toBeInTheDocument()
     expect(screen.getByText(/winner: Yes/i)).toBeInTheDocument()
+  })
+
+  // #104 paged the browse list: a pending proposal on a later page must still be listed.
+  it('shows a pending market from a later page of the list', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, ({ request }) =>
+        new URL(request.url).searchParams.get('cursor') === 'page-2'
+          ? HttpResponse.json({
+              markets: [{ id: 'mkt-2', status: 'pending_resolution', question: 'Will it snow?', close_time: '2025-01-01T00:00:00Z' }],
+              next_cursor: null,
+            })
+          : HttpResponse.json({
+              markets: [{ id: 'mkt-1', status: 'pending_resolution', question: 'Will it rain?', close_time: '2025-01-01T00:00:00Z' }],
+              next_cursor: 'page-2',
+            }),
+      ),
+    )
+    mockAuditActions([proposedAction(), proposedAction({ id: 'a2', target_id: 'mkt-2', target_label: 'Will it snow?' })])
+    renderPage()
+    expect(await screen.findByText('Will it snow?')).toBeInTheDocument()
+    expect(screen.getByText('Will it rain?')).toBeInTheDocument()
   })
 
   it('shows a Review link for another admin\'s proposal, and navigates on click', async () => {
