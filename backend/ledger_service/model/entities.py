@@ -557,7 +557,8 @@ class Position(Base):
 # The message is assembled with `||` rather than RAISE's `%` placeholder,
 # which is what `sql/02-schemas.sql` uses. Not a style preference: SQLAlchemy
 # runs every DDL string through Python's `%` interpolation before sending it,
-# so a literal percent sign in the body raises at create_all time. Doubling it
+# so a literal percent sign in the body raises whenever the DDL runs: in the
+# suite's rebuild and in the baseline migration alike. Doubling it
 # would work and would also be the kind of thing somebody quietly un-doubles
 # while editing the SQL.
 

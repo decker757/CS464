@@ -104,9 +104,10 @@ def list_cross_service_imports(service: str) -> list[str]:
 
 
 # [F-5] #75. Everything Postgres prints about one schema, for the migration
-# guard tests: what compare_metadata sees and what it cannot (CHECK
-# constraints, partial-index predicates, sort order, triggers). The version
-# table is left out, because only a migrated schema has one.
+# guard tests: what compare_metadata cannot see (CHECK constraints,
+# partial-index predicates, triggers), and a second check of what it can, such
+# as an index's sort order (ADR 0020). The version table is left out, because
+# only a migrated schema has one.
 _SCHEMA_CATALOG_QUERIES = {
     "columns": """
         SELECT table_name || '.' || column_name || ' ' || data_type
@@ -179,7 +180,12 @@ def compose_service(name: str) -> dict[str, Any]:
 
 
 def assert_baseline_downgrades_and_upgrades_again(
-    *, migrate_step: Callable[[], int], alembic_ini: pathlib.Path, url: str, metadata: MetaData, schema: str
+    *,
+    migrate_step: Callable[[], int],
+    alembic_ini: pathlib.Path,
+    url: str,
+    metadata: MetaData,
+    schema: str,
 ) -> None:
     """The baseline's handwritten downgrade, held to the same standard as its upgrade.
 
@@ -190,7 +196,7 @@ def assert_baseline_downgrades_and_upgrades_again(
     from alembic import command  # noqa: PLC0415 - see drop_own_tables
     from sqlalchemy import inspect  # noqa: PLC0415
 
-    from shared.migrating import VERSION_TABLE, _alembic_config, run_in_transaction  # noqa: PLC0415
+    from shared.migrating import VERSION_TABLE, alembic_config, run_in_transaction  # noqa: PLC0415
 
     def tables() -> list[str]:
         return run_in_transaction(
@@ -201,7 +207,7 @@ def assert_baseline_downgrades_and_upgrades_again(
         return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
 
     assert migrate_step() == 0
-    command.downgrade(_alembic_config(alembic_ini, url), "base")
+    command.downgrade(alembic_config(alembic_ini, url), "base")
     assert set(tables()) <= {VERSION_TABLE}
 
     assert migrate_step() == 0

@@ -22,8 +22,15 @@ docker compose up -d db                    # from the repo root
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env          # the copy in this directory, not the root one
+DATABASE_URL="$(grep '^DATABASE_URL=' .env | cut -d= -f2-)" PYTHONPATH=.. .venv/bin/python migrate.py
 .venv/bin/uvicorn app:app --reload
 ```
+
+The service creates no tables, so run its migrate step once before the first
+start, and again after pulling a new revision. `migrate.py` reads
+`DATABASE_URL` from the environment only, not from `.env`, hence the prefix.
+`docker compose up --build auth-migrate` from the repo root does the same in a
+container.
 
 Interactive API docs at http://localhost:8000/docs. That page is the contract
 for the frontend sub-issues #46, #47 and #48.
@@ -115,6 +122,8 @@ Errors share one shape, so the frontend parses a single case:
 
 ```
 main.py                     create_app(), and nothing else
+migrate.py                  the auth-migrate step: the schema to head, or refuse
+alembic.ini, migrations/    this schema's Alembic history [F-5]
 
 controller/                 the HTTP boundary. No business rules live here.
     routes.py               the five endpoints
@@ -220,5 +229,7 @@ Changing the boundary means editing `sql/02-schemas.sql`, and
 `docker compose down -v` to re-run it, which destroys development data.
 
 **The schema comes from Alembic, not `create_all`.** The `auth-migrate`
-compose step (`python migrate.py`) brings the `auth` schema to head before the
-service starts, and the service itself issues no DDL. [F-5] #75.
+compose step (`python migrate.py`, as `auth_svc`) brings the `auth` schema to
+head before the service starts, and the service itself issues no DDL. A model
+change needs a revision in `migrations/versions/`; root `CLAUDE.md` has the
+commands. [F-5] #75, ADR 0020.

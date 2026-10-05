@@ -23,7 +23,7 @@ from sqlalchemy.exc import DBAPIError
 from core.database import SCHEMA, Base
 from main import create_app
 from migrate import ALEMBIC_INI, main
-from shared.migrating import VERSION_TABLE, _alembic_config, run_in_transaction
+from shared.migrating import VERSION_TABLE, alembic_config, run_in_transaction
 from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
     assert_migrating_an_empty_schema_builds_the_models,
@@ -114,7 +114,7 @@ def test_the_downgrade_leaves_no_trigger_function_behind(empty_schema) -> None:
     tables does not take it with them."""
     assert main() == 0
 
-    command.downgrade(_alembic_config(ALEMBIC_INI, _URL), "base")
+    command.downgrade(alembic_config(ALEMBIC_INI, _URL), "base")
 
     left = run_in_transaction(
         _URL,
@@ -125,6 +125,9 @@ def test_the_downgrade_leaves_no_trigger_function_behind(empty_schema) -> None:
     assert left is None
 
 
+# Adoption ends at this service's first revision after 0001 (ADR 0020). That PR
+# deletes the matches, missing-table and drift `legacy` tests below and keeps one
+# test that a `_build_like_before_75()` schema is refused as past the baseline.
 def test_a_legacy_schema_that_matches_the_models_is_stamped_and_keeps_its_rows(
     empty_schema,
 ) -> None:

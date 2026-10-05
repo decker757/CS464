@@ -50,7 +50,7 @@ ALTER ROLE market_svc IN DATABASE :"db_name" SET search_path = market;
 --             This is what makes the log append-only: there is no path to
 --             remove a row, rather than merely no endpoint that does it.
 --
--- The table is created here rather than by a service's create_all, for two
+-- The table is created here rather than by a service's migrations, for two
 -- reasons. No writer has CREATE on this schema, so none of them could make it.
 -- And it is shared infrastructure: if one service owned its definition, that
 -- service would have to be deployed before anyone else could be audited.
