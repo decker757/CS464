@@ -127,6 +127,7 @@ service/                    business rules. Raises domain errors, knows no HTTP.
 
 core/                       this service's own plumbing
     config.py               settings, read from the environment once
+    paging.py               keyset cursors for the public browse [X-1] #104
     database.py             engine, session factory, session dependency
     clock.py                one function: normalise a datetime to UTC
     security.py             the only file that touches jwt. Verify only.

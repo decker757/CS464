@@ -4454,7 +4454,8 @@ Keyset pagination ([X-1] #104) must encode this order: the group, the group's
 own key (`close_time` while trading, the stop time after), and `id`, with the
 key compared ascending in the first group and descending in the second. #104's
 criterion lists `close_time` as the middle key, which no longer holds for the
-second group.
+second group. How the groups hold under paging, with the clock moving between
+reads: "The public browse pages by keyset, grouped by the first page's clock".
 
 ---
 
@@ -4531,6 +4532,74 @@ whose whole cost is ten seconds of a 503 the client is told to retry.
 `replicas / 10` times a second and that matters. Or a publish that has to be
 tradable the instant it lands, which would need market_service to tell the
 ledger rather than the ledger remembering.
+
+---
+
+### D-NEW — The public browse pages by keyset, grouped by the first page's clock
+
+**Date:** 2026-10-04 · **Ticket:** #104 · **Status:** active
+
+**Decision.** `GET /public/markets` returns at most `limit` markets and a
+`next_cursor`. The cursor carries four fields: `as_of`, the first page's
+instant; which group the last market was in at `as_of`; its key in that group
+(`close_time` while trading, `LEAST(close_time, closed_at)` once stopped); and
+its id. Every later page groups and compares as of that `as_of`, through
+`service/closing.py::was_open_for_trading_at`, which reads only `close_time`
+and `closed_at`. The `status` filter and the status on each card still read the
+request's own clock (D-025). The cursor does not bind `q` or `status`.
+
+**Why.** Keyset, not OFFSET, for the audit feed's reason: a market published
+between two reads would shift an OFFSET window, showing one market twice and
+hiding another. The order has two groups and the clock moves markets between
+them, so a cursor read against a moving clock would regroup a market whose
+close passed between two reads: listed once while trading and again among the
+stopped. Freezing the grouping instant ends that.
+
+The grouping predicate is time-only because an early close ([2.3] #7, ADR 0014)
+writes `status = closed` at once, and `open_for_trading(as_of)` reads the
+status: under a frozen `as_of` it would still regroup a market closed by hand
+between reads. The time-only test is stable. Every exit from OPEN stamps
+`closed_at` (the sweep and `close_early`) and nothing clears it (a rejection
+leaves it, ADR 0016). Both group keys are fixed once a market is in its group:
+`close_time` is frozen at publication (ADR 0008), and a stop time cannot move
+once trading has stopped, since a sweep's `closed_at` is never before
+`close_time` and an early close after `close_time` is refused (ADR 0014).
+
+The filter and displayed status stay on the real clock so a market that closed
+mid-browse shows its true status. Under `status=open` it drops out of later
+pages: a correct non-match, never a repeat.
+
+Under `status=closed` the same move runs the other way. A market whose
+`close_time` passes mid-browse is still in the trading group under the frozen
+clock, but the filter now matches it, so it is never shown on a later page. It
+is neither shown twice nor shifted: it is missing from the walk, as a market
+inserted ahead of the cursor is. A fresh first page lists it.
+
+**Rejected.** *OFFSET*: repeats and skips under inserts. *Grouping by
+`open_for_trading(as_of)`*: an early close between reads lists a market twice.
+*Grouping by each request's own clock*: a market whose `close_time` passes
+between reads is listed twice. *Binding `q` and `status` into the cursor*: the
+order is the same under every filter, so a position means the same under all
+of them; refusing an old cursor under a new filter would only add an error.
+*The four-field shape in `shared/paging.py`*: one caller, below ADR 0012's bar;
+`shared/` gained only the N-field primitives its two-field cursor is now built
+on.
+
+**Supersedes** the grouping sentence of "Stopped markets sort by when trading
+stopped" (#105): group membership comes from `was_open_for_trading_at(as_of)`,
+not `open_for_trading(now)`.
+
+**Notes.** At `as_of = now` the two predicates agree on every published market,
+so a first page is exactly #105's order; `test_closing.py` asserts it. A draft
+reads True under the time-only predicate, which is why `browse` applies
+`_visible()` first. `as_of` is the container's clock and an early close stamps
+Postgres's (#179), so a close in the milliseconds of skew between them could
+regroup one market for a reader whose first page fell in that window; accepted
+for a display read, as D-025 accepts the same skew. Page sizes are the audit
+feed's settings and defaults, 50 and 200, clamped rather than refused. A bad
+cursor is the same `400 malformed_cursor` the audit, auth and ledger services
+answer ("A cursor is decoded before the query runs"). Paging the admin
+overview is a sibling ticket.
 
 ---
 
