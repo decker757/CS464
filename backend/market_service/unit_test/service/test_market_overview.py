@@ -291,7 +291,7 @@ async def test_the_list_and_the_counts_come_from_one_statement(
     with recorded_statements() as statements:
         await _overview(session, population.caller, now=population.now)
 
-    market_reads = [s for s in statements if _READS_MARKETS.search(s)]
+    market_reads = [s for s in statements if _READS_MARKETS.search(s.sql)]
     assert len(market_reads) == 1, market_reads
 
 

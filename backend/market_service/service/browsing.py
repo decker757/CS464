@@ -13,10 +13,22 @@ import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
-from sqlalchemy import ColumnElement, and_, case, func, not_, null, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    Row,
+    and_,
+    case,
+    func,
+    not_,
+    null,
+    or_,
+    select,
+    tuple_,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MarketNotFound
+from core.paging import BrowsePosition, decode_browse_cursor, encode_browse_cursor
 from model.entities import (
     PUBLIC_STATUSES,
     AdminMarketCard,
@@ -26,10 +38,11 @@ from model.entities import (
     MarketCard,
     MarketOutcome,
     MarketOverview,
+    MarketPage,
     MarketStatus,
     displayed_status,
 )
-from service.closing import open_for_trading
+from service.closing import open_for_trading, was_open_for_trading_at
 
 # The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
 # doubling is Python's, not SQL's.
@@ -88,34 +101,100 @@ def _close_time_while_trading(
     return case((still_trading, Market.close_time))
 
 
+def _stopped_at() -> ColumnElement[datetime]:
+    """When trading stopped: the earlier of `close_time` and `closed_at`.
+
+    Postgres's LEAST skips a NULL. Swept, that is `close_time`, since the sweep
+    writes `closed_at` a little later. Unswept, `closed_at` is NULL, so
+    `close_time`. Closed early, it is `closed_at`, which comes before its
+    `close_time` (ADR 0014).
+    """
+    return func.least(
+        Market.close_time, Market.closed_at, type_=Market.close_time.type
+    )
+
+
 def _when_trading_stopped(
     still_trading: ColumnElement[bool],
 ) -> ColumnElement[datetime | None]:
-    """A stopped market's sort key: when trading stopped. NULL while trading.
-
-    The earlier of `close_time` and `closed_at`; Postgres's LEAST skips a NULL.
-    Swept, that is `close_time`, since the sweep writes `closed_at` a little
-    later. Unswept, `closed_at` is NULL, so `close_time`. Closed early, it is
-    `closed_at`, which comes before its `close_time` (ADR 0014).
-    """
-    stopped_at = func.least(Market.close_time, Market.closed_at)
-    return case((still_trading, null()), else_=stopped_at)
+    """A stopped market's sort key: when trading stopped. NULL while trading."""
+    return case((still_trading, null()), else_=_stopped_at())
 
 
-def _browse_order(now: datetime) -> tuple[ColumnElement[object], ...]:
+def _browse_order(
+    still_trading: ColumnElement[bool],
+) -> tuple[ColumnElement[object], ...]:
     """Still-trading first, soonest close first; then most recently stopped first.
 
-    The group comes from the clock, not the status column (D-022). Each group's
+    `still_trading` is `was_open_for_trading_at(as_of)`, built once by `browse`:
+    the group comes from the clock, not the status column (D-022). Each group's
     key is NULL in the other, so it sorts only its own markets. `Market.id`
     last makes the order total, so ties do not reshuffle between refreshes.
     DECISIONS.md, "Stopped markets sort by when trading stopped".
     """
-    still_trading = open_for_trading(now)
     return (
         still_trading.desc(),
         _close_time_while_trading(still_trading).asc(),
         _when_trading_stopped(still_trading).desc(),
         Market.id.asc(),
+    )
+
+
+def _sort_key(still_trading: ColumnElement[bool]) -> ColumnElement[datetime]:
+    """A market's key in its own group, the one a cursor records.
+
+    Exactly one of the two group keys is not NULL for any market.
+    """
+    return func.coalesce(
+        _close_time_while_trading(still_trading), _when_trading_stopped(still_trading)
+    )
+
+
+def _after_a_trading_market(
+    position: BrowsePosition, still_trading: ColumnElement[bool]
+) -> ColumnElement[bool]:
+    """Every market `_browse_order` puts after `position`, one that was trading:
+    the rest of the trading group, then every stopped market."""
+    later_in_group = tuple_(Market.close_time, Market.id) > tuple_(
+        position.sort_at, position.market_id
+    )
+    return or_(and_(still_trading, later_in_group), not_(still_trading))
+
+
+def _after_a_stopped_market(
+    position: BrowsePosition, still_trading: ColumnElement[bool]
+) -> ColumnElement[bool]:
+    """Every market `_browse_order` puts after `position`, one that had stopped:
+    the rest of the stopped group.
+
+    Not a row comparison: the key sorts descending and `id` ascending.
+    """
+    stopped_at = _stopped_at()
+    later_in_group = or_(
+        stopped_at < position.sort_at,
+        and_(stopped_at == position.sort_at, Market.id > position.market_id),
+    )
+    return and_(not_(still_trading), later_in_group)
+
+
+def _after(
+    position: BrowsePosition, still_trading: ColumnElement[bool]
+) -> ColumnElement[bool]:
+    """Every market `_browse_order` puts after `position`."""
+    if position.is_open:
+        return _after_a_trading_market(position, still_trading)
+    return _after_a_stopped_market(position, still_trading)
+
+
+def _cursor_after(row: Row, as_of: datetime) -> str:
+    """The cursor that continues the list after `row`, grouped as of `as_of`."""
+    return encode_browse_cursor(
+        BrowsePosition(
+            as_of=as_of,
+            is_open=row.still_trading,
+            sort_at=row.sort_at,
+            market_id=row.id,
+        )
     )
 
 
@@ -151,26 +230,47 @@ async def _list_outcomes_by_market(
 async def browse(
     session: AsyncSession,
     *,
+    limit: int,
     query: str | None = None,
     status: MarketStatus | None = None,
     now: datetime | None = None,
-) -> list[MarketCard]:
-    """Every market a trader may see, filtered and searched. [X-1] #34, [X-2] #35.
+    cursor: str | None = None,
+) -> MarketPage:
+    """One page of the markets a trader may see. [X-1] #34, [X-2] #35, #104.
 
     With no `status`, every published market: still-trading first by soonest
     close, then the rest by most recently stopped (D-022, #105). `query` is a
     case-insensitive search over the question and composes with `status`.
-    Nothing found is `[]`, never an error. `now` is the request's clock, passed
-    by the controller so the filter and the displayed status read one instant
-    (D-025). Two statements whatever the page size: the markets, then all
-    their outcomes (#214).
+    Nothing found is an empty page, never an error. At most `limit` markets;
+    `next_cursor` is None on the last page. Every later page groups and
+    compares as of the first page's clock, which the cursor carries. Raises
+    `MalformedCursor` for a cursor this service did not issue. `now` is the
+    request's clock, passed by the controller so the filter and the displayed
+    status read one instant (D-025). Two statements per page whatever its
+    size: the markets, then all their outcomes (#214).
     """
     now = now or datetime.now(UTC)
+    # Decoded before the query, so a bad value is a 400 rather than a driver
+    # error. DECISIONS.md, "A cursor is decoded before the query runs".
+    after = decode_browse_cursor(cursor) if cursor is not None else None
+
+    # Later pages group by the first page's instant, or a market that stops
+    # trading mid-browse is listed twice. The filter and the displayed status
+    # still read `now` (D-025). DECISIONS.md, "The public browse pages by
+    # keyset, grouped by the first page's clock".
+    as_of = after.as_of if after is not None else now
+    still_trading = was_open_for_trading_at(as_of)
+
     # Columns, not entities. Nothing enters the identity map, so a browse
     # cannot hand a later `get_published` in this session a market whose
     # outcomes are marked loaded and empty. Do not go back to `noload()`. D-027.
     stmt = select(
-        Market.id, Market.status, Market.question, Market.close_time
+        Market.id,
+        Market.status,
+        Market.question,
+        Market.close_time,
+        still_trading.label("still_trading"),
+        _sort_key(still_trading).label("sort_at"),
     ).where(_visible())
 
     if status is not None:
@@ -181,16 +281,23 @@ async def browse(
     if search:
         stmt = stmt.where(_question_contains(search))
 
-    stmt = stmt.order_by(*_browse_order(now))
+    if after is not None:
+        stmt = stmt.where(_after(after, still_trading))
 
+    # One row past the page says whether another exists, without a COUNT.
+    stmt = stmt.order_by(*_browse_order(still_trading)).limit(limit + 1)
     rows = (await session.execute(stmt)).all()
+
+    # Trimmed before the outcomes are read, so they are this page's only.
+    shown = rows[:limit]
+    next_cursor = _cursor_after(shown[-1], as_of) if len(rows) > limit else None
     outcomes_by_market = await _list_outcomes_by_market(
-        session, [row.id for row in rows]
+        session, [row.id for row in shown]
     )
 
     # Derived here, before projection, not in a validator: FastAPI
     # re-validates the response without the request's clock. D-025, D-027.
-    return [
+    cards = [
         MarketCard(
             id=row.id,
             status=displayed_status(row.status, row.close_time, now=now),
@@ -198,8 +305,9 @@ async def browse(
             close_time=row.close_time,
             outcomes=tuple(outcomes_by_market.get(row.id, [])),
         )
-        for row in rows
+        for row in shown
     ]
+    return MarketPage(markets=cards, next_cursor=next_cursor)
 
 
 async def get_published(
