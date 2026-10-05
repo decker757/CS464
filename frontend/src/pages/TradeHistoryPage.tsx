@@ -7,6 +7,7 @@ import Button from '../components/ui/Button'
 import PageTitle from '../components/ui/PageTitle'
 import { HeaderCell, NumberCell } from '../components/ui/Table'
 import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
+import { formatPrice } from '../utils/formatPrice'
 import { labelsFor, loadMarketsById } from '../utils/marketLabels'
 
 interface EntryRow extends LedgerEntry {
@@ -118,6 +119,7 @@ export default function TradeHistoryPage() {
                   <HeaderCell>Date</HeaderCell>
                   <HeaderCell>Activity</HeaderCell>
                   <HeaderCell align="right">Quantity</HeaderCell>
+                  <HeaderCell align="right">Avg. price</HeaderCell>
                   <HeaderCell align="right">Amount</HeaderCell>
                   <HeaderCell align="right">Balance after</HeaderCell>
                 </tr>
@@ -128,6 +130,7 @@ export default function TradeHistoryPage() {
                     <td className="px-5 py-3 text-muted">{new Date(row.created_at).toLocaleString()}</td>
                     <td className="px-5 py-3"><EntryDescription row={row} /></td>
                     <NumberCell>{row.quantity ?? '—'}</NumberCell>
+                    <NumberCell>{row.average_price ? formatPrice(row.average_price) : '—'}</NumberCell>
                     <NumberCell>
                       <span className={amountColor(row.amount)}>{formatCreditsPrecise(row.amount)}</span>
                     </NumberCell>

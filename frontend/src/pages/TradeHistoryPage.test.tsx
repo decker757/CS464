@@ -111,7 +111,7 @@ function mockTwoPages(secondPage: () => Response | Promise<Response>) {
 }
 
 describe('TradeHistoryPage', () => {
-  it('shows a trade row with its market question, outcome, quantity, amount and balance after', async () => {
+  it('shows a trade row with its market question, outcome, quantity, average price, amount and balance after', async () => {
     mockEntries([entry()])
     mockMarket('mkt-1', market())
     renderPage()
@@ -119,18 +119,22 @@ describe('TradeHistoryPage', () => {
     expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
     expect(screen.getByText('Buy Yes')).toBeInTheDocument()
     expect(screen.getByText('5.0000')).toBeInTheDocument()
+    // average_price is the average fill price (ledger-service.md), shown as
+    // a percentage like every other price on screen.
+    expect(screen.getByText('50.6%')).toBeInTheDocument()
     expect(screen.getByText('-2.5313')).toBeInTheDocument()
     expect(screen.getByText('997.4687')).toBeInTheDocument()
   })
 
-  it('shows the starting grant as a generic row, with no market link and a dash for quantity', async () => {
+  it('shows the starting grant as a generic row, with no market link and a dash for quantity and average price', async () => {
     mockEntries([grantEntry()])
     renderPage()
 
     expect(await screen.findByText('Starting grant')).toBeInTheDocument()
     // amount and balance_after are both 1,000.0000 for a brand-new grant.
     expect(screen.getAllByText('1,000.0000')).toHaveLength(2)
-    expect(screen.getByText('—')).toBeInTheDocument()
+    // quantity and average_price are both null on a non-trade row.
+    expect(screen.getAllByText('—')).toHaveLength(2)
     expect(within(screen.getByRole('table')).queryByRole('link')).not.toBeInTheDocument()
   })
 
