@@ -20,6 +20,7 @@ from migrate import ALEMBIC_INI, main
 from shared.migrating import VERSION_TABLE, find_drift, run_in_transaction
 from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
+    compose_service,
     drop_own_tables,
     schema_catalog,
 )
@@ -157,3 +158,19 @@ def test_starting_the_app_creates_no_table(empty_schema) -> None:
     asyncio.run(start_and_stop())
 
     assert _tables() == []
+
+
+def test_compose_starts_market_only_after_its_migration_succeeds() -> None:
+    """A failed migration stops new code before it serves a request, and the
+    migration runs as the app's own role, never the superuser. ADR 0020."""
+    app = compose_service("market")
+    migration = compose_service("market-migrate")
+
+    assert app["depends_on"]["market-migrate"] == {
+        "condition": "service_completed_successfully"
+    }
+    assert migration["environment"]["DATABASE_URL"] == app["environment"]["DATABASE_URL"]
+    assert migration["command"] == ["python", "migrate.py"]
+    assert "://market_svc:" in migration["environment"]["DATABASE_URL"]
+    assert migration["restart"] == "no"
+    assert "JWT_SECRET" not in migration["environment"]
