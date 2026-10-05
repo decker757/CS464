@@ -1,9 +1,10 @@
 """The trader-facing read of a market. [BE][X] #62.
 
 Browse ([X-1] #34), search and filter ([X-2] #35), detail ([X-3] #36), and the
-per-status counts [2.1] #5 will reuse (D-020). Every filter, count and status
-here derives from the clock through `service/closing.py`, never from the status
-column alone (ADR 0011, D-022). No prices: `q` lives with the ledger (ADR 0005).
+per-status counts (D-020), which the admin overview ([2.1] #5) reuses, as it
+does the status filter. Every filter, count and status here derives from the
+clock through `service/closing.py`, never from the status column alone
+(ADR 0011, D-022). No prices: `q` lives with the ledger (ADR 0005).
 Each browse card names its outcomes (#214), so a card never guesses a label.
 """
 
@@ -89,7 +90,7 @@ def _stopped_but_unswept(now: datetime) -> ColumnElement[bool]:
 
 
 def _status_matches(status: MarketStatus, now: datetime) -> ColumnElement[bool]:
-    """What "status = X" means to a trader.
+    """What "status = X" means, to a trader browsing and to the admin overview.
 
     OPEN is `open_for_trading()`. CLOSED also takes a market the sweep has not
     reached yet, or it would vanish from every filter until the sweep runs.

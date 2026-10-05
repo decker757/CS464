@@ -3,7 +3,7 @@
 Every published market plus the caller's own drafts and submissions, with
 per-status counts beside the list. Status, filter and counts all derive from
 the clock (ADR 0011, as amended by #5). #210 pages the list by keyset, settled
-markets last, and reads the counts in the same REPEATABLE READ snapshot
+markets last, and reads its counts in the same REPEATABLE READ snapshot
 ("The admin overview pages by keyset, settled markets last, and reads its
 counts in the same REPEATABLE READ snapshot"). The clock is always injected:
 `now` sits ten days ahead of the real clock, so any half that reads its own
