@@ -326,7 +326,8 @@ In the history, a row of kind `settlement` fills `market_id`, `outcome_id` and
 `quantity`; `side` and `average_price` are `null`. A holder of only losing
 shares has no entry, so they have no row.
 
-The overview sinks settled markets to the end of its unfiltered view. Its counts
+The overview sinks settled markets to the end of its unfiltered view, an order
+built in [2.1] #210's paging and switched on once SETTLED exists. Its counts
 are unchanged in meaning. `PublicMarketStatus` and `MarketStatus` gain
 `settled` in one commit, as ADR 0017's last section requires. `DECIDED_STATUSES`
 gains SETTLED, so the public detail keeps showing the winner, and step 1 can

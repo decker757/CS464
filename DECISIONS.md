@@ -4959,6 +4959,12 @@ would break "the counts sum to the markets visible".
 **Rejected.** *Excluding settled markets from the unfiltered view*: the counts
 and the list would then disagree.
 
+**Notes.** [2.1] #210 builds this order, into its paging and its cursor, so the
+cursor format does not change when SETTLED arrives. It is switched off until
+SETTLED exists (#227). Whichever of #210 and #227 merges second switches it on,
+in one line. If #210 records the order in an entry of its own, the two must
+agree.
+
 **Reversal trigger.** A second terminal status.
 
 ---
@@ -5017,10 +5023,11 @@ market_service's code beyond that, CLAUDE.md requires the extraction into
 
 **Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
 
-**Decision.** Each PR says `Refs #12`; PR 7 says `Closes #12`. Each part
-targets the one below it. From PR 2 on, each branch is named
-`12-settlement-<n>-<slug>`. PR 1 (#227) keeps `12-settled-status`, because
-renaming a pull request's head branch closes the pull request.
+**Decision.** Each PR says `Refs #12` until the last PR that completes #12's
+criteria, which says `Closes #12`. Each part targets the one below it. From
+PR 2 on, each branch is named `12-settlement-<n>-<slug>`. PR 1 (#227) keeps
+`12-settled-status`, because renaming a pull request's head branch closes the
+pull request.
 
 | # | Contents | On | Reviewer first |
 | --- | --- | --- | --- |
@@ -5031,7 +5038,13 @@ renaming a pull request's head branch closes the pull request.
 | 4 | `posting.post_all` | 3 | decker757 (`posting.py`) |
 | 5 | `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade and window-boundary tests | 4 | |
 | 6 | controller route, error codes, `docs/api/ledger-service.md` | 5 | |
-| 7 | reads: portfolio, history, overview sink; mark the three entries #12 fulfils as history | 6 | |
+| 7 | reads: portfolio, history; mark the three entries #12 fulfils as history | 6 | |
+
+The settled-last order is built by [2.1] #210's paging, switched off until
+SETTLED exists. Whichever of #210 and #227 merges second switches it on, in one
+line, with its test: a settled market sorts last in the unfiltered overview,
+across a page boundary. If #210's switch lands after PR 7, PR 7 says
+`Refs #12`, and #12 is closed when the switch merges.
 
 PR 1 builds `settleable`. [3.3] #11 builds send-back and the countdown on
 it, and #12 does not wait for #11.
