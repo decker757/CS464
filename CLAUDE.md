@@ -151,12 +151,17 @@ change, run `.venv/bin/pytest unit_test/test_migrations.py` once, which leaves
 the schema empty, and the next run builds it fresh.
 
 A database from before #75 is adopted by its migrate step. If its tables match
-the models, it is stamped at the baseline. If it missed one of the hand-applied
-files `sql/migrations/` used to hold, the step refuses, names the missing
-column, index or type, changes nothing, and prints the two git commands that
-recover the deleted file. That works only while each service's baseline is its
-newest revision. After that, the answer is `docker compose down -v`, which
-destroys local data.
+the models, it is stamped at the baseline. If not, the step refuses, names
+every missing column, index or type, and changes nothing. Most likely the
+database missed one of the hand-applied files `sql/migrations/` used to hold,
+and the refusal prints three steps that recover it from git history: `git log`
+for the commit that deleted them, `git grep -l <name>` for the file that adds
+each missing name, and `git show` piped into `psql` to apply it
+(`sql/migrations/README.md` walks through them). If no file names it (anything
+in auth, or the ledger's append-only trigger), the answer is
+`docker compose down -v`, which destroys local data. Git recovery also works
+only while each service's baseline is its newest revision; after that,
+`down -v` is the only answer.
 
 `sql/migrations/` keeps only `0002`, the roles-and-grants file above, and a
 file like it does **not** belong in `sql/` itself: `00-init.sh` names its two
