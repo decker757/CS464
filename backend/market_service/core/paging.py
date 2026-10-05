@@ -1,5 +1,5 @@
-"""Keyset cursors for the market lists: the public browse [X-1] #104 and the
-admin overview [2.1] #210.
+"""Keyset cursors and the page size for the market lists: the public browse
+[X-1] #104 and the admin overview [2.1] #210.
 
 The format is `shared/paging.py`'s (ADR 0012); this reads its fields as a
 position in one list or the other and turns a None into `MalformedCursor`.
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from core.clock import as_utc
+from core.config import get_settings
 from core.errors import MalformedCursor
 from shared import paging as _shared
 
@@ -139,3 +140,12 @@ def decode_overview_cursor(cursor: str) -> OverviewPosition:
         )
     except ValueError as error:
         raise MalformedCursor from error
+
+
+def page_size_of(limit: int | None) -> int:
+    """The page size for a requested `limit`: the default when none, the
+    ceiling when more. Clamped rather than refused, as the audit feed and the
+    user list do: a caller asking for more than the ceiling wants as much as it
+    can get."""
+    settings = get_settings()
+    return min(limit or settings.default_page_size, settings.max_page_size)
