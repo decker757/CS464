@@ -599,8 +599,10 @@ async def _three_trading_and_three_stopped(session: AsyncSession) -> list[uuid.U
     """Both groups, each with a tie on its sort key: the boundaries #104 must survive.
 
     Trading: one closing in a day, two sharing a close in two days. Stopped:
-    two closed by hand at one instant an hour ago, and one the clock closed a
-    day ago. Returns their ids in the order `browse` must list them, ties by
+    two closed by hand at one instant an hour ago, and one whose close passed a
+    day ago that no sweep has written down (`closed_at` NULL, `status` still
+    open), so a page boundary crosses a market whose stop time is its
+    `close_time`. Returns their ids in the order `browse` must list them, ties by
     lower id first (#105).
     """
     soonest_close = datetime.now(UTC) + timedelta(days=1)
@@ -621,15 +623,15 @@ async def _three_trading_and_three_stopped(session: AsyncSession) -> list[uuid.U
             session, actor(), market_id, close_request(), now=an_hour_ago
         )
         tied_stopped_ids.append(market_id)
-    swept_id = (
-        await closed_market(session, actor(), overdue_by=timedelta(days=1))
+    unswept_id = (
+        await overdue_market(session, actor(), overdue_by=timedelta(days=1))
     ).id
 
     return [
         soonest_id,
         *sorted(tied_trading_ids),
         *sorted(tied_stopped_ids),
-        swept_id,
+        unswept_id,
     ]
 
 
