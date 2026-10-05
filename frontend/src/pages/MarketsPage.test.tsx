@@ -66,7 +66,7 @@ describe('MarketsPage', () => {
   it('shows a card for each market returned by the API', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: mockMarkets }),
+        HttpResponse.json({ markets: mockMarkets, next_cursor: null }),
       ),
     )
     renderPage()
@@ -77,7 +77,7 @@ describe('MarketsPage', () => {
   it('shows status badges for each market', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: mockMarkets }),
+        HttpResponse.json({ markets: mockMarkets, next_cursor: null }),
       ),
     )
     renderPage()
@@ -97,6 +97,7 @@ describe('MarketsPage', () => {
             id: 'c3', status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z',
             outcomes: outcomesFor('c3', ['Yes', 'No']),
           }],
+          next_cursor: null,
         }),
       ),
     )
@@ -108,7 +109,7 @@ describe('MarketsPage', () => {
   it('shows an empty state when no markets are returned', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: [] }),
+        HttpResponse.json({ markets: [], next_cursor: null }),
       ),
     )
     renderPage()
@@ -126,7 +127,7 @@ describe('MarketsPage', () => {
   it('navigates to the market detail page when a card is clicked', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: [mockMarkets[0]] }),
+        HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null }),
       ),
     )
     const actor = userEvent.setup()
@@ -138,7 +139,7 @@ describe('MarketsPage', () => {
   // [X-1] #126 AC 1 and AC 3. 0.1235 is a price a float would show as 12.3%.
   it("shows each card's YES/NO prices from that market's snapshot", async () => {
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
       http.get(SNAPSHOT, ({ params }) =>
         params.id === 'a1'
           ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
@@ -162,7 +163,7 @@ describe('MarketsPage', () => {
   // anyone else's price, with it.
   it('shows a dash for a price that cannot be loaded, and still shows the market', async () => {
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
       http.get(SNAPSHOT, ({ params }) =>
         params.id === 'a1'
           ? HttpResponse.json(
@@ -192,7 +193,7 @@ describe('MarketsPage', () => {
       outcomes: outcomesFor('d4', ['Lakers', 'Celtics', 'Draw']),
     }
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final] })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
       http.get(SNAPSHOT, () => HttpResponse.json(snapshotFor('d4', ['0.5000', '0.3000', '0.2000']))),
     )
     renderPage()
@@ -214,7 +215,7 @@ describe('MarketsPage', () => {
       outcomes: outcomesFor('e5', ['Lakers', 'Celtics', 'Draw']),
     }
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final] })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
       http.get(SNAPSHOT, () => HttpResponse.json({
         market_id: 'e5',
         state_version: 3,
