@@ -4357,9 +4357,9 @@ every row, so the counts need their own statement and the read moves to
 REPEATABLE READ to keep one snapshot. The test's mutation is "read the counts
 in a separate statement", and it must fail under that mutation.
 
-**Superseded in part (#210)** by "The admin overview pages by keyset, settled
-markets last, and reads its counts in the same REPEATABLE READ snapshot": the
-reversal trigger fired. The clock is still read once.
+*Superseded in part 2026-10-05 by #210: "The admin overview pages by keyset,
+settled markets last, and reads its counts in the same REPEATABLE READ
+snapshot". The reversal trigger fired; the clock is still read once.*
 
 ---
 
@@ -4389,9 +4389,9 @@ browse*: the criterion asks for close time, not grouping.
 would pile up at the top of the unfiltered view, so [3.4] #12 decides whether
 that view sinks or excludes terminal statuses.
 
-**Reversal trigger decided (#210)** by "The admin overview pages by keyset,
-settled markets last, and reads its counts in the same REPEATABLE READ
-snapshot": settled markets sort last, built before SETTLED exists.
+*Reversal trigger decided 2026-10-05 by #210: "The admin overview pages by
+keyset, settled markets last, and reads its counts in the same REPEATABLE READ
+snapshot". Settled markets sort last, built before SETTLED exists.*
 
 ---
 
@@ -4609,8 +4609,9 @@ for a display read, as D-025 accepts the same skew. Page sizes are the audit
 feed's settings and defaults, 50 and 200, clamped rather than refused; the
 route applies them, clamped rather than refused. A bad
 cursor is the same `400 malformed_cursor` the audit, auth and ledger services
-answer ("A cursor is decoded before the query runs"). Paging the admin
-overview is a sibling ticket.
+answer ("A cursor is decoded before the query runs"). The admin overview is
+paged by "The admin overview pages by keyset, settled markets last, and reads
+its counts in the same REPEATABLE READ snapshot" (#210).
 
 ---
 
