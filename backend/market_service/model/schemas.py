@@ -546,6 +546,11 @@ class PublicMarketOut(_UtcTimestamps):
     # administrator has agreed. D-026.
     proposed_outcome_id: uuid.UUID | None
 
+    # [3.4] #12. Stamped by `get_published` onto the market, like `status`
+    # above, and required with no default: the ledger pays out on it, and a
+    # missing flag must not read as true. ADR 0019.
+    settleable: bool
+
     @model_validator(mode="after")
     def _hide_an_undecided_proposal(self) -> PublicMarketOut:
         """Hide a proposed winner until it is decided. D-026.
@@ -592,6 +597,7 @@ class MarketOverviewRowOut(_UtcTimestamps):
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    settleable: bool
 
 
 class MarketOverviewResponse(BaseModel):
