@@ -129,6 +129,11 @@ export async function saveDraft(admin: Session, question: string, options: { clo
   return save(admin, question, 'draft', undefined, options.closesInHours)
 }
 
+/** Submitted and not published, closing in thirty days. Only its creator sees it ([1.1] #1). */
+export async function submitMarket(admin: Session, question: string): Promise<Market> {
+  return save(admin, question, 'submitted')
+}
+
 /**
  * Submitted and published: open to traders, closing in thirty days unless told
  * otherwise. Outcomes Yes and No unless named.
