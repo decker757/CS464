@@ -4599,7 +4599,7 @@ Postgres's (#179), so a close in the milliseconds of skew between them could
 regroup one market for a reader whose first page fell in that window; accepted
 for a display read, as D-025 accepts the same skew. Page sizes are the audit
 feed's settings and defaults, 50 and 200, clamped rather than refused; the
-route applies them in #104's third PR. A bad
+route applies them, clamped rather than refused. A bad
 cursor is the same `400 malformed_cursor` the audit, auth and ledger services
 answer ("A cursor is decoded before the query runs"). Paging the admin
 overview is a sibling ticket.
