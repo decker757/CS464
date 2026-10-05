@@ -219,6 +219,6 @@ to any of them.
 Changing the boundary means editing `sql/02-schemas.sql`, and
 `docker compose down -v` to re-run it, which destroys development data.
 
-**Schema creation is `create_all`, not migrations.** Fine while this service
-owns its database alone. Move to Alembic when #41 shares it, because two
-services issuing `create_all` against one database will race.
+**The schema comes from Alembic, not `create_all`.** The `auth-migrate`
+compose step (`python migrate.py`) brings the `auth` schema to head before the
+service starts, and the service itself issues no DDL. [F-5] #75.

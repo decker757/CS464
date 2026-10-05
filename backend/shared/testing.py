@@ -14,6 +14,12 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sqlalchemy import MetaData
+    from sqlalchemy.engine import Connection
 
 # Marker files that identify the repository root. Searched for upward rather
 # than reached by a fixed number of `parents[...]` hops: a hop count is correct
@@ -95,3 +101,155 @@ def list_cross_service_imports(service: str) -> list[str]:
             if match.group(1) != service:
                 offenders.append(f"{path.relative_to(service_root)}: {match.group(0).strip()}")
     return offenders
+
+
+# [F-5] #75. Everything Postgres prints about one schema, for the migration
+# guard tests: what compare_metadata sees and what it cannot (CHECK
+# constraints, partial-index predicates, sort order, triggers). The version
+# table is left out, because only a migrated schema has one.
+_SCHEMA_CATALOG_QUERIES = {
+    "columns": """
+        SELECT table_name || '.' || column_name || ' ' || data_type
+               || coalesce('(' || character_maximum_length || ')', '')
+               || coalesce('(' || numeric_precision || ',' || numeric_scale || ')', '')
+               || ' nullable=' || is_nullable
+               || ' default=' || coalesce(column_default, '')
+          FROM information_schema.columns
+         WHERE table_schema = :schema AND table_name <> 'alembic_version'
+    """,
+    "indexes": """
+        SELECT indexdef
+          FROM pg_indexes
+         WHERE schemaname = :schema AND tablename <> 'alembic_version'
+    """,
+    "constraints": """
+        SELECT c.relname || ' ' || con.conname || ' ' || pg_get_constraintdef(con.oid)
+          FROM pg_constraint con
+          JOIN pg_class c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = :schema AND c.relname <> 'alembic_version'
+    """,
+    "triggers": """
+        SELECT pg_get_triggerdef(t.oid)
+          FROM pg_trigger t
+          JOIN pg_class c ON c.oid = t.tgrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = :schema AND NOT t.tgisinternal
+    """,
+}
+
+
+def drop_own_tables(connection: Connection, schema: str) -> None:
+    """Drop every table in `schema`, the migration version table included.
+
+    For the migration guard tests, which need a schema with nothing in it.
+    Run as the service's own role, which owns every table it can see there.
+    """
+    # Imported here: the realtime suite imports this module and has no SQLAlchemy.
+    from sqlalchemy import inspect, text  # noqa: PLC0415
+
+    for table in inspect(connection).get_table_names(schema=schema):
+        connection.execute(text(f'DROP TABLE IF EXISTS "{schema}"."{table}" CASCADE'))
+
+
+def schema_catalog(connection: Connection, schema: str) -> dict[str, list[str]]:
+    """Columns, indexes, constraints and triggers in `schema`, as Postgres prints them.
+
+    Each list is sorted, so two schemas built in a different order compare equal.
+    """
+    from sqlalchemy import text  # noqa: PLC0415 - see drop_own_tables
+
+    catalog: dict[str, list[str]] = {}
+    for kind, query in _SCHEMA_CATALOG_QUERIES.items():
+        rows = connection.execute(text(query), {"schema": schema}).scalars()
+        catalog[kind] = sorted(rows)
+    return catalog
+
+
+def compose_service(name: str) -> dict[str, Any]:
+    """One service's block from `docker-compose.yml`, parsed rather than pattern-matched.
+
+    PyYAML arrives with `uvicorn[standard]` in every service; the shared suite
+    never calls this.
+    """
+    import yaml  # noqa: PLC0415
+
+    compose = (_repo_root() / "docker-compose.yml").read_text(encoding="utf-8")
+    return yaml.safe_load(compose)["services"][name]
+
+
+def assert_baseline_downgrades_and_upgrades_again(
+    *, migrate_step: Callable[[], int], alembic_ini: pathlib.Path, url: str, metadata: MetaData, schema: str
+) -> None:
+    """The baseline's handwritten downgrade, held to the same standard as its upgrade.
+
+    Migrates, downgrades to base and expects no model table left, then migrates
+    again and expects exactly what `metadata.create_all` builds. The caller
+    empties the schema around it. Nothing else runs a downgrade. [F-5] #75
+    """
+    from alembic import command  # noqa: PLC0415 - see drop_own_tables
+    from sqlalchemy import inspect  # noqa: PLC0415
+
+    from shared.migrating import VERSION_TABLE, _alembic_config, run_in_transaction  # noqa: PLC0415
+
+    def tables() -> list[str]:
+        return run_in_transaction(
+            url, lambda connection: inspect(connection).get_table_names(schema=schema)
+        )
+
+    def catalog() -> dict[str, list[str]]:
+        return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
+
+    assert migrate_step() == 0
+    command.downgrade(_alembic_config(alembic_ini, url), "base")
+    assert set(tables()) <= {VERSION_TABLE}
+
+    assert migrate_step() == 0
+    migrated = catalog()
+    run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
+    run_in_transaction(url, metadata.create_all)
+    assert migrated == catalog()
+
+
+def build_like_before_75(url: str, metadata: MetaData, *statements: str) -> None:
+    """The schema as every boot before #75 left it, then `statements` against it."""
+    from sqlalchemy import text  # noqa: PLC0415 - see drop_own_tables
+
+    from shared.migrating import run_in_transaction  # noqa: PLC0415
+
+    def build(connection: Connection) -> None:
+        metadata.create_all(connection)
+        for statement in statements:
+            connection.execute(text(statement))
+
+    run_in_transaction(url, build)
+
+
+def assert_migrating_an_empty_schema_builds_the_models(
+    *, migrate_step: Callable[[], int], url: str, metadata: MetaData, schema: str
+) -> dict[str, list[str]]:
+    """The baseline, held to the models. Returns the migrated catalog.
+
+    Migrates twice, because compose runs the step on every `up` and the second
+    run must be a no-op. Expects no drift and exactly what `metadata.create_all`
+    builds. The caller empties the schema around it and asserts what only its
+    own service has (a special index) against the returned catalog. [F-5] #75
+    """
+    from shared.migrating import find_drift, run_in_transaction  # noqa: PLC0415
+
+    def catalog() -> dict[str, list[str]]:
+        return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
+
+    assert migrate_step() == 0
+    assert migrate_step() == 0
+    migrated = catalog()
+    drift = run_in_transaction(
+        url, lambda connection: find_drift(connection, metadata=metadata, schema=schema)
+    )
+
+    run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
+    run_in_transaction(url, metadata.create_all)
+
+    assert drift == []
+    assert migrated == catalog()
+    return migrated

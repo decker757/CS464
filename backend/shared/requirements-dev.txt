@@ -4,4 +4,9 @@
 # five services use, so the verifier is tested against the PyJWT they run.
 PyJWT==2.14.0
 
+# [F-5] #75. shared/migrating.py: the migration runner's pure parts are tested
+# here; the parts that need a database are tested in each service's suite.
+SQLAlchemy[asyncio]==2.0.52
+alembic==1.20.0
+
 pytest==9.1.1

@@ -9,6 +9,10 @@ email-validator==2.3.0
 SQLAlchemy[asyncio]==2.0.52
 asyncpg==0.31.0
 
+# [F-5] #75. Schema migrations, run by `auth-migrate` before the app starts.
+# In the runtime image because the migrate step is this image. ADR 0020.
+alembic==1.20.0
+
 # Password hashing and tokens
 argon2-cffi==25.1.0
 PyJWT==2.14.0

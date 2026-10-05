@@ -19,3 +19,8 @@ connection_count
 # delete it and supersede D-020 is being decided on #194.
 count_by_status
 
+
+# Alembic calls these by name in every migrations/versions/*.py; nothing
+# imports them. [F-5] #75.
+upgrade
+downgrade

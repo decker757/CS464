@@ -4,8 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
+import { WithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
 import MarketsPage from './MarketsPage'
 
@@ -47,14 +47,14 @@ function cardFor(question: string): HTMLElement {
 function renderPage() {
   return render(
     <StrictMode>
-      <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
+      <WithProviders user={trader}>
         <MemoryRouter initialEntries={['/markets']}>
           <Routes>
             <Route path="/markets" element={<MarketsPage />} />
             <Route path="/markets/:id" element={<p>market detail</p>} />
           </Routes>
         </MemoryRouter>
-      </AuthContext.Provider>
+      </WithProviders>
     </StrictMode>,
   )
 }
