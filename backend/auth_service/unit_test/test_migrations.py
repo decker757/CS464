@@ -16,7 +16,6 @@ import shutil
 import uuid
 
 import pytest
-from alembic import command
 from sqlalchemy import inspect, text
 
 from core.database import SCHEMA, Base
@@ -25,12 +24,16 @@ from migrate import ALEMBIC_INI, main
 from shared.migrating import (
     VERSION_TABLE,
     LegacyDrift,
-    _alembic_config,
-    find_drift,
     migrate,
     run_in_transaction,
 )
-from shared.testing import compose_service, drop_own_tables, schema_catalog
+from shared.testing import (
+    assert_baseline_downgrades_and_upgrades_again,
+    assert_migrating_an_empty_schema_builds_the_models,
+    build_like_before_75,
+    compose_service,
+    drop_own_tables,
+)
 
 # The conftest has pointed DATABASE_URL at the test database by now.
 _URL = os.environ["DATABASE_URL"]
@@ -53,10 +56,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     pass
 '''
-
-
-def _catalog() -> dict[str, list[str]]:
-    return run_in_transaction(_URL, lambda connection: schema_catalog(connection, SCHEMA))
 
 
 def _empty_the_schema() -> None:
@@ -83,14 +82,7 @@ def _version() -> str:
 
 
 def _build_like_before_75(*statements: str) -> None:
-    """The schema as every boot before #75 left it, then `statements` against it."""
-
-    def build(connection) -> None:
-        Base.metadata.create_all(connection)
-        for statement in statements:
-            connection.execute(text(statement))
-
-    run_in_transaction(_URL, build)
+    build_like_before_75(_URL, Base.metadata, *statements)
 
 
 @pytest.fixture
@@ -107,19 +99,9 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
     Twice, because compose runs the step on every `up` and the second run must
     be a no-op.
     """
-    assert main() == 0
-    assert main() == 0
-    migrated = _catalog()
-    drift = run_in_transaction(
-        _URL,
-        lambda connection: find_drift(connection, metadata=Base.metadata, schema=SCHEMA),
+    migrated = assert_migrating_an_empty_schema_builds_the_models(
+        migrate_step=main, url=_URL, metadata=Base.metadata, schema=SCHEMA
     )
-
-    _empty_the_schema()
-    run_in_transaction(_URL, Base.metadata.create_all)
-
-    assert drift == []
-    assert migrated == _catalog()
     # Case-insensitive usernames, which SQLite once let through. Also proves
     # the catalog the comparison above relies on is not empty.
     assert (
@@ -129,21 +111,13 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
 
 
 def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> None:
-    """The downgrade is handwritten and nothing else runs it, so it is held to
-    the same standard as the upgrade: it removes every model table, and the
-    schema it leaves can be migrated back to exactly the models."""
-    assert main() == 0
-    config = _alembic_config(ALEMBIC_INI, _URL)
-
-    command.downgrade(config, "base")
-
-    assert set(_tables()) <= {VERSION_TABLE}
-
-    assert main() == 0
-    migrated = _catalog()
-    _empty_the_schema()
-    run_in_transaction(_URL, Base.metadata.create_all)
-    assert migrated == _catalog()
+    assert_baseline_downgrades_and_upgrades_again(
+        migrate_step=main,
+        alembic_ini=ALEMBIC_INI,
+        url=_URL,
+        metadata=Base.metadata,
+        schema=SCHEMA,
+    )
 
 
 def test_a_legacy_schema_that_matches_the_models_is_stamped_and_keeps_its_rows(

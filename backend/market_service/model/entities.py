@@ -327,8 +327,8 @@ class Market(Base):
         Index("ix_markets_creator_updated", "creator_id", "updated_at"),
         # [F-4] #44. The close sweep's working set: partial on open markets and
         # keyed on `close_time`, so the sweep is an ordered scan that stops at
-        # its limit. ADR 0011. The predicate is spelled out because
-        # sql/migrations/0004 must match it literally; change both together.
+        # its limit. ADR 0011. The predicate is spelled out because the
+        # baseline revision repeats it literally; changing it needs a revision.
         Index("ix_markets_due_close", "close_time", postgresql_where=text("status = 'open'")),
     )
 

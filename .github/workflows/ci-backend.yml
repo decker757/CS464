@@ -169,7 +169,7 @@ jobs:
       # a matrix value, because a new matrix key would rename every job (see
       # the header).
       - name: Migrate the test database
-        if: contains(fromJSON('["auth_service"]'), matrix.service)
+        if: contains(fromJSON('["auth_service", "market_service"]'), matrix.service)
         env:
           PYTHONPATH: ..
         run: python migrate.py
