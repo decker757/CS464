@@ -7,6 +7,7 @@ empties this service's schema before and after itself.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -14,6 +15,7 @@ import pytest
 from sqlalchemy import inspect, text
 
 from core.database import SCHEMA, Base
+from main import create_app
 from migrate import ALEMBIC_INI, main
 from shared.migrating import VERSION_TABLE, find_drift, run_in_transaction
 from shared.testing import (
@@ -141,3 +143,17 @@ def test_a_legacy_schema_that_missed_0004_and_0006_is_refused_naming_both(
     assert "add_column market.markets.proposal_id" in refusal
     assert "add_index market.markets: ix_markets_due_close" in refusal
     assert VERSION_TABLE not in _tables()
+
+
+def test_starting_the_app_creates_no_table(empty_schema) -> None:
+    """Only the migrate step issues DDL. With create_all back in the lifespan, a
+    model change would reach a database with no revision to show for it."""
+
+    async def start_and_stop() -> None:
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            pass
+
+    asyncio.run(start_and_stop())
+
+    assert _tables() == []
