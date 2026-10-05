@@ -98,11 +98,12 @@ automatically and an existing one never. The service then dies on
 every request with `column ... does not exist`, which reads like a code bug and
 is not one. [1.2] #2 hit this on both the dev and the test database.
 
-**Auth is on Alembic as of #224.** For a new auth column, add a revision
-(`cd backend/auth_service && PYTHONPATH=.. .venv/bin/alembic revision -m "..."`)
-rather than a `sql/migrations` file; the `auth-migrate` compose step applies it.
-Market and ledger still work the way described here until #75's later PRs, and
-ADR 0020 lands with the last of them.
+**Auth and market are on Alembic as of #224 and #75's second PR.** For a new
+column on either, add a revision
+(`cd backend/auth_service && PYTHONPATH=.. .venv/bin/alembic revision -m "..."`,
+likewise in `market_service`) rather than a `sql/migrations` file; the
+`auth-migrate` and `market-migrate` compose steps apply it. Ledger still works
+the way described here until #75's third PR, and ADR 0020 lands with the last.
 
 Write an idempotent `ALTER TABLE` in `sql/migrations/` and apply it by hand:
 
