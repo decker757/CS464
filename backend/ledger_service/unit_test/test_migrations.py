@@ -28,6 +28,7 @@ from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
     assert_migrating_an_empty_schema_builds_the_models,
     build_like_before_75,
+    compose_service,
     drop_own_tables,
 )
 
@@ -185,3 +186,22 @@ def test_starting_the_app_creates_no_table(empty_schema) -> None:
     asyncio.run(start_and_stop())
 
     assert _tables() == []
+
+
+def test_compose_starts_the_ledger_only_after_its_migration_succeeds() -> None:
+    """A failed migration stops new code before it serves a request, and the
+    migration runs as the app's own role, never the superuser. ADR 0020."""
+    app = compose_service("ledger")
+    migration = compose_service("ledger-migrate")
+    environment = migration["environment"]
+
+    assert app["depends_on"]["ledger-migrate"] == {
+        "condition": "service_completed_successfully"
+    }
+    assert environment["DATABASE_URL"] == app["environment"]["DATABASE_URL"]
+    assert migration["command"] == ["python", "migrate.py"]
+    assert "://ledger_svc:" in environment["DATABASE_URL"]
+    assert migration["restart"] == "no"
+    assert "JWT_SECRET" not in environment
+    assert "REDIS_URL" not in environment
+    assert "MARKET_SERVICE_URL" not in environment
