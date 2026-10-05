@@ -4687,8 +4687,9 @@ counts are `count_by_status`, widened to the caller's scope, over every market
 the caller can see whatever the filter and the cursor. The status filter is
 the browse's `_status_matches`, in the query. The cursor does not bind
 `status`. Until [3.4] #12 adds SETTLED (#227), `_is_settled` is constant false
-and every market is in group 0. The route's `limit`, `cursor` and
-`next_cursor` land with #210's controller PR.
+and every market is in group 0. `GET /markets/overview` takes `limit` and
+`cursor` and returns `next_cursor`, with the browse's page sizes (50 and 200,
+clamped rather than refused).
 
 **Why.** Keyset rather than OFFSET for the browse's reason ("The public browse
 pages by keyset, grouped by the first page's clock"). Settled markets are

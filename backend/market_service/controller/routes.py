@@ -11,8 +11,14 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Query, Response, status
 
-from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
-from core.config import get_settings
+from controller.dependencies import (
+    CurrentActor,
+    CurrentAdmin,
+    DbSession,
+    PageCursor,
+    PageLimit,
+)
+from core.paging import page_size_of
 from model.entities import MarketStatus
 from model.schemas import (
     MarketCloseRequest,
@@ -352,19 +358,35 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
 @router.get(
     "/overview",
     response_model=MarketOverviewResponse,
-    summary="Every market I can see, filtered by status, with counts",
+    summary="Every market I can see, a page at a time, filtered by status, with counts",
     description=(
-        "[2.1] #5. Every published market, plus the calling administrator's "
-        "own drafts and submissions; another administrator's are neither "
-        "listed nor counted.\n\n"
+        "[2.1] #5, #210. Every published market, plus the calling "
+        "administrator's own drafts and submissions; another administrator's "
+        "are neither listed nor counted.\n\n"
         "`status` is derived from the clock (ADR 0011): a market past its "
         "`close_time` is `closed` here even before the sweep writes it. "
         "`counts` has a key for every status, zero when none, over every "
-        "market the caller can see, and ignores the `status` filter, so each "
-        "count equals the length of that status's filtered list.\n\n"
-        "Ordered by soonest `close_time`, markets with none last, then by id."
+        "market the caller can see — every page, not this one — and ignores "
+        "the `status` filter, so each count equals the length of that "
+        "status's whole filtered list. The page and the counts are read from "
+        "one snapshot.\n\n"
+        "Ordered by soonest `close_time`, markets with none last, then by id. "
+        "Settled markets sort last, after all of those, once [3.4] #12 adds "
+        "`settled`.\n\n"
+        "Paged by keyset (#210). Send `next_cursor` back as `cursor`, with the "
+        "same `status` and `limit`, to continue; null means there is nothing "
+        "after this page. `limit` defaults to the server's page size (50) and "
+        "a value above its maximum (200) is clamped."
     ),
-    responses={403: {"description": "`not_an_administrator` — a trader."}},
+    responses={
+        400: {
+            "description": (
+                "`malformed_cursor` — `cursor` was not one this service issued."
+            )
+        },
+        403: {"description": "`not_an_administrator` — a trader."},
+        422: {"description": "`status` is not one of the six, or `limit` is below 1."},
+    },
 )
 async def market_overview(
     admin: CurrentAdmin,
@@ -373,6 +395,8 @@ async def market_overview(
         default=None,
         description="Restrict the list to one status. Counts are unaffected.",
     ),
+    limit: PageLimit = None,
+    cursor: PageCursor = None,
 ) -> MarketOverviewResponse:
     # One clock for the request, so the list and the counts agree. Same as
     # `public_routes.py`.
@@ -381,15 +405,15 @@ async def market_overview(
     result = await browsing.overview(
         session,
         caller_id=admin.user_id,
-        # Up to the ceiling, until #210's controller PR gives this route
-        # `limit` and `cursor`.
-        limit=get_settings().max_page_size,
+        limit=page_size_of(limit),
         status=status,
         now=now,
+        cursor=cursor,
     )
     return MarketOverviewResponse(
         markets=[MarketOverviewRowOut.model_validate(card) for card in result.markets],
         counts=result.counts,
+        next_cursor=result.next_cursor,
     )
 
 
