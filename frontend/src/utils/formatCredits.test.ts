@@ -52,19 +52,12 @@ describe('formatCreditsPrecise', () => {
     expect(formatCreditsPrecise('5.12349')).toBe('5.1234')
   })
 
-  it('shows the minus sign on a negative value whether or not showSign is set', () => {
+  it('keeps the minus sign on a negative value', () => {
     expect(formatCreditsPrecise('-0.0313')).toBe('-0.0313')
-    expect(formatCreditsPrecise('-0.0313', { showSign: true })).toBe('-0.0313')
   })
 
-  it('adds a plus sign to a positive value only when showSign is set', () => {
-    expect(formatCreditsPrecise('2.5312')).toBe('2.5312')
-    expect(formatCreditsPrecise('2.5312', { showSign: true })).toBe('+2.5312')
-  })
-
-  it('shows no sign on zero even with showSign set', () => {
-    // Zero is neither a gain nor a loss.
-    expect(formatCreditsPrecise('0.0000', { showSign: true })).toBe('0.0000')
+  it('shows a dash for anything that is not a plain decimal', () => {
+    expect(formatCreditsPrecise('1E-4')).toBe('—')
   })
 })
 

@@ -92,7 +92,9 @@ export function describeTradeError(err: unknown): string {
   if (code === 'insufficient_funds' && typeof details.balance === 'string' && typeof details.required === 'string') {
     return `You have ${formatCreditsPrecise(details.balance)} credits, but this trade needs ${formatCreditsPrecise(details.required)}.`
   }
-  if (code === 'insufficient_shares_held') return `You hold ${details.held} shares, but this sell asks for ${details.requested}.`
+  if (code === 'insufficient_shares_held' && typeof details.held === 'string' && typeof details.requested === 'string') {
+    return `You hold ${details.held} shares, but this sell asks for ${details.requested}.`
+  }
   return TRADE_FIXED_MESSAGES[code] ?? GENERIC_ERROR
 }
 

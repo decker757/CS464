@@ -35,14 +35,12 @@ export function formatCredits(balance: string): string {
 // as written rather than rounding a parsed float. BigInt is exact over the
 // whole-number part, same as formatCredits; the four decimal digits are
 // joined on afterwards since BigInt has no fractional part to keep.
-export function formatCreditsPrecise(value: string, { showSign = false } = {}): string {
+export function formatCreditsPrecise(value: string): string {
   if (!PLAIN_SIGNED_DECIMAL.test(value)) return '—'
 
   const { digits, isNegative } = splitSign(value)
   const [wholeRaw, fractionRaw = ''] = digits.split('.')
   const integerPart = BigInt(wholeRaw || '0').toLocaleString('en-US')
   const fractionPart = (fractionRaw + '0000').slice(0, 4)
-  const isZero = /^0*$/.test(wholeRaw) && /^0*$/.test(fractionRaw)
-  const sign = isNegative ? '-' : (showSign && !isZero) ? '+' : ''
-  return `${sign}${integerPart}.${fractionPart}`
+  return `${isNegative ? '-' : ''}${integerPart}.${fractionPart}`
 }
