@@ -16,9 +16,9 @@ from core.clock import as_utc
 from core.errors import MalformedCursor
 from shared import paging as _shared
 
-_FIELD_COUNT = 4
-_TRADING = "1"
-_STOPPED = "0"
+_BROWSE_FIELD_COUNT = 4
+_TRUE = "1"
+_FALSE = "0"
 
 
 @dataclass(frozen=True)
@@ -35,20 +35,25 @@ class BrowsePosition:
     market_id: uuid.UUID
 
 
+def _flag(value: bool) -> str:
+    """A bool as its cursor field."""
+    return _TRUE if value else _FALSE
+
+
 def _flag_of(text: str) -> bool:
-    """`is_open` from its field. Strict: anything but the two flags is refused."""
-    if text == _TRADING:
+    """A bool from its cursor field. Strict: anything but the two flags is refused."""
+    if text == _TRUE:
         return True
-    if text == _STOPPED:
+    if text == _FALSE:
         return False
-    raise ValueError(f"not a group flag: {text!r}")
+    raise ValueError(f"not a 0/1 flag: {text!r}")
 
 
 def encode_browse_cursor(position: BrowsePosition) -> str:
     """The position just after `position.market_id`, as an opaque string."""
     return _shared.encode_fields(
         position.as_of.isoformat(),
-        _TRADING if position.is_open else _STOPPED,
+        _flag(position.is_open),
         position.sort_at.isoformat(),
         str(position.market_id),
     )
@@ -61,7 +66,7 @@ def decode_browse_cursor(cursor: str) -> BrowsePosition:
     difference. A naive timestamp is read as UTC, or it would raise inside the
     query instead of here.
     """
-    fields = _shared.decode_fields(cursor, count=_FIELD_COUNT)
+    fields = _shared.decode_fields(cursor, count=_BROWSE_FIELD_COUNT)
     if fields is None:
         raise MalformedCursor
 
