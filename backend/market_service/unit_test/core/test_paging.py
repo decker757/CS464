@@ -26,7 +26,7 @@ def _cursor_of(*fields: str) -> str:
 
 @pytest.mark.parametrize("is_open", [True, False], ids=["trading", "stopped"])
 def test_a_browse_cursor_round_trips(is_open: bool) -> None:
-    """Exactly, microseconds and offset included, or a page repeats or skips a
+    """Exactly, microseconds included, or a page repeats or skips a
     market. Both groups, so an encoder that always writes one flag fails."""
     singapore = timezone(timedelta(hours=8))
     position = BrowsePosition(
@@ -62,7 +62,7 @@ def test_a_browse_cursor_round_trips(is_open: bool) -> None:
 )
 def test_anything_this_service_did_not_issue_is_one_error(bad: str) -> None:
     """Every kind of bad value is one MalformedCursor, never a ValueError that
-    would surface as a 500. Review Focus 4."""
+    would surface as a 500."""
     with pytest.raises(MalformedCursor):
         decode_browse_cursor(bad)
 
@@ -76,5 +76,5 @@ def test_a_naive_timestamp_in_a_cursor_is_read_as_utc() -> None:
 
     position = decode_browse_cursor(cursor)
 
-    assert position.as_of.tzinfo is not None
-    assert position.sort_at.tzinfo is not None
+    assert position.as_of == datetime(2026, 10, 4, 9, 15, tzinfo=UTC)
+    assert position.sort_at == datetime(2026, 10, 1, tzinfo=UTC)

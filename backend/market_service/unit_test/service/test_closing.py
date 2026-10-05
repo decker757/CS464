@@ -150,7 +150,7 @@ async def test_the_paging_predicate_agrees_with_the_live_one_at_now(
     0011's unswept gap and early closes that later gained a proposal or had one
     rejected: a rejection keeps `closed_at` (ADR 0016), which is what keeps the
     time-only answer right. Drafts and submitted markets legitimately disagree
-    (the time-only rule reads them as trading) and `browse` filters them out
+    (the time-only rule may read them as trading) and `browse` filters them out
     first, so they are absent on purpose.
     """
     creator = actor()

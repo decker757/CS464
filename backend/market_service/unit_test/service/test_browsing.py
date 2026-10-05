@@ -173,15 +173,6 @@ async def test_open_closed_and_pending_markets_are_distinguishable(
     assert listed[approved_id].status is MarketStatus.APPROVED
 
 
-async def test_a_view_that_matches_nothing_is_an_empty_list_not_an_error(
-    session: AsyncSession,
-) -> None:
-    """[X-1] #34's empty state needs `[]`, not an error."""
-    await _open_market(session)
-
-    assert await _browse(session, query="nothing matches this") == []
-
-
 # --- #214: each card names its outcomes -----------------------------------
 async def test_a_card_carries_every_outcome_with_its_label_in_position_order(
     session: AsyncSession,
@@ -595,7 +586,9 @@ async def test_markets_sharing_a_close_time_list_lower_id_first_in_either_group(
 
 
 # --- #104: one page at a time, by keyset ----------------------------------
-async def _three_trading_and_three_stopped(session: AsyncSession) -> list[uuid.UUID]:
+async def _both_groups_with_ties(
+    session: AsyncSession,
+) -> list[uuid.UUID]:
     """Both groups, each with a tie on its sort key: the boundaries #104 must survive.
 
     Trading: one closing in a day, two sharing a close in two days. Stopped:
@@ -603,8 +596,8 @@ async def _three_trading_and_three_stopped(session: AsyncSession) -> list[uuid.U
     ago and the sweep wrote down (`closed_at` a moment after `close_time`), and
     one whose close passed a day ago that no sweep has written down
     (`closed_at` NULL, `status` still open). A page boundary crosses both ways
-    a stop time is derived from `close_time`. Returns their ids in the order `browse` must list them, ties by
-    lower id first (#105).
+    a stop time is derived from `close_time`. Returns their ids in the order
+    `browse` must list them, ties by lower id first (#105).
     """
     soonest_close = datetime.now(UTC) + timedelta(days=1)
     soonest_id = (
@@ -655,7 +648,7 @@ async def test_pages_read_in_turn_list_every_market_once_in_the_browse_order(
 ) -> None:
     """#104: "pages concatenate to the unpaged order", with a page boundary
     inside each group, inside each tie, and exactly between the two groups."""
-    expected = await _three_trading_and_three_stopped(session)
+    expected = await _both_groups_with_ties(session)
 
     assert _ids(await _walk(session, limit=limit)) == expected
 
@@ -675,7 +668,8 @@ async def test_a_full_last_page_offers_no_cursor(session: AsyncSession) -> None:
 async def test_an_empty_result_is_an_empty_page_with_no_cursor(
     session: AsyncSession,
 ) -> None:
-    """#104: "Empty is not an error", and there is nothing to continue from."""
+    """#104: "Empty is not an error", and there is nothing to continue from.
+    [X-1] #34's empty state needs an empty list, not an error."""
     await _open_market(session)
 
     page = await browsing.browse(session, limit=2, query="nothing matches this")
@@ -795,10 +789,14 @@ async def test_under_status_open_a_market_whose_close_passes_mid_browse_drops_ou
 async def test_under_status_closed_a_market_that_stops_mid_browse_is_never_listed_twice(
     session: AsyncSession,
 ) -> None:
-    """#104: one market's close passes between the reads, another is closed by
-    hand. Both match the filter on later pages but sit in the trading group at
-    the first page's instant, so neither appears: missing from the walk, as an
-    insert ahead of the cursor is, and never a repeat."""
+    """#104: pins the DECISIONS promise ("The public browse pages by keyset,
+    grouped by the first page's clock"): a market whose close passes, or that
+    is closed by hand, between two reads is missing from the walk, as an
+    insert ahead of the cursor is, and never a repeat.
+
+    It does not by itself prove the frozen clock: it stays green with grouping
+    on the real `now`. `..._keep_the_first_pages_grouping` is the test that
+    fails without the freeze."""
     just_stopped = (await overdue_market(session, actor())).id
     stopped_long_ago = (
         await overdue_market(session, actor(), overdue_by=timedelta(days=2))
@@ -839,7 +837,11 @@ async def test_under_status_closed_later_pages_keep_the_first_pages_grouping(
     while `close_time` and `closed_at` still put them in the trading group at
     its instant. Grouped by a later clock instead, the market on page one
     falls into the stopped group, which follows the cursor, and is listed
-    again."""
+    again.
+
+    The backdated first read stands in for the clock-skew window in the
+    DECISIONS entry's Notes; on one consistent clock a market closed by hand
+    cannot match the filter and still be in the trading group."""
     first = (await _open_market(session, timedelta(days=1))).id
     second = (await _open_market(session, timedelta(days=2))).id
     for market_id in (first, second):
