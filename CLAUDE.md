@@ -20,7 +20,7 @@ backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
 backend/shared/           the only code services import from each other [F-6]
 sql/                      roles, schemas and grants for the shared Postgres
-sql/migrations/         hand-applied ALTERs, until Alembic ([F-5] #75)
+sql/migrations/         hand-applied ALTERs for databases from before Alembic ([F-5] #75)
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
 DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
@@ -91,37 +91,31 @@ cluster-wide; schemas and grants are per database, so apply it to `cs464` and
 to `cs464_test` if yours predates the change.
 
 **Adding a column does not reach a database that already has the table.**
-Only the ledger service still calls `create_all` at startup (auth and market
-run Alembic; the audit service owns no table), and that only ever issues CREATE TABLE IF NOT
-EXISTS, so a new column in `model/entities.py` reaches a fresh database
-automatically and an existing one never. The service then dies on
-every request with `column ... does not exist`, which reads like a code bug and
-is not one. [1.2] #2 hit this on both the dev and the test database.
+No service calls `create_all` at startup any more (auth, market and ledger run
+Alembic; the audit service owns no table). Before #75 it only ever issued
+CREATE TABLE IF NOT EXISTS, so a new column in `model/entities.py` never
+reached an existing database and the service died on every request with
+`column ... does not exist`, which read like a code bug and was not one. [1.2]
+#2 hit this on both the dev and the test database. A model change now needs an
+Alembic revision, below.
 
-**Auth and market are on Alembic as of #224 and #75's second PR.** For a new
-column on either, add a revision
+**Auth, market and ledger are on Alembic as of #75's third PR.** For a new
+column on any of them, add a revision
 (`cd backend/auth_service && PYTHONPATH=.. .venv/bin/alembic revision -m "..."`,
-likewise in `market_service`) rather than a `sql/migrations` file; the
-`auth-migrate` and `market-migrate` compose steps apply it. Ledger still works
-the way described here until #75's third PR, and ADR 0020 lands with the last.
+likewise in `market_service` and `ledger_service`) rather than a
+`sql/migrations` file; the `auth-migrate`, `market-migrate` and
+`ledger-migrate` compose steps apply it before the service starts. There are no
+hand-applied ALTERs left except `sql/migrations/0002` (roles and grants, above).
+ADR 0020 lands with #75's last PR.
 
-For ledger: write an idempotent `ALTER TABLE` in `sql/migrations/` and apply
-it by hand:
-
-```bash
-docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
-  -f /sql/migrations/0001-market-lmsr-parameters.sql
-```
-
-These do **not** belong in `sql/` itself. `00-init.sh` names its two files
-explicitly and runs only on first initialisation of the volume, so a file added
-there would never run on the database that needs it — and on a fresh volume it
-runs before any service exists, when there is no table to alter.
+Hand-applied files do **not** belong in `sql/` itself. `00-init.sh` names its
+two files explicitly and runs only on first initialisation of the volume, so a
+file added there would never run on the database that needs it — and on a fresh
+volume it runs before any service exists, when there is no table to alter.
 
 The test databases handle themselves: `unit_test/conftest.py` drops and
 recreates the schema per test, so a model change is picked up automatically
-there. It is the long-lived `cs464` database that drifts. [F-5] #75 replaces
-all of this with Alembic.
+there. The long-lived `cs464` database is brought to head by the migrate steps.
 
 **Tests run against Postgres, not SQLite**, each suite as its own service role
 under production grants, from its own `<SERVICE>_TEST_DATABASE_URL`. The two
@@ -255,8 +249,7 @@ docker compose exec -T db psql -U cs464 -d cs464 \
 ```
 
 A new *column* is the usual story and needs an Alembic revision
-(`alembic revision` in `backend/market_service`); the ledger keeps the
-hand-applied `ALTER TABLE` until #75's third PR. [1.3] #3 added one member and
+(`alembic revision` in `backend/market_service`). [1.3] #3 added one member and
 one column, and only the column needed a migration.
 
 **Replacing a child collection in SQLAlchemy needs its own flush.** Within one
@@ -316,9 +309,12 @@ would grant a duplicate's shares against one payment. Lock order is the book
 row, then the accounts.
 
 **`ledger.entries` is append-only via a trigger that ships with the table.**
-`model/entities.py` attaches it as an `after_create` DDL event, so it is
-installed by `create_all` and by the per-test schema rebuild alike. Do not move
-it into `sql/`: these are the service's own tables, so the first conftest
+`model/entities.py` attaches it as an `after_create` DDL event, which installs
+it for the per-test schema rebuild; the Alembic baseline runs the same two DDL
+objects itself with `op.execute` for real databases. Editing the trigger SQL
+therefore changes only fresh databases and the test rebuild: an existing
+database needs a new Alembic revision carrying its own copy of the SQL. Do not
+move it into `sql/`: these are the service's own tables, so the first conftest
 rebuild would drop the trigger and never restore it. It is one step weaker than
 the audit log's, because `ledger_svc` owns this table and could drop its own
 trigger; the README says so and names the upgrade.
@@ -337,12 +333,11 @@ logged separately, because a market can sit submitted for a week and only the
 second of the two put anything in front of a trader.
 
 **`audit.admin_actions` must never be added to a service's `Base.metadata`.**
-Everything mapped there is created by `create_all` at startup and dropped by
-`unit_test/conftest.py` per test. Either against this table fails — no service
-has CREATE or DROP on the audit schema — and the service dies at boot. Writers
+Everything mapped there is created and dropped by `unit_test/conftest.py` per
+test, and would land in the next autogenerated Alembic revision. Either against
+this table fails — no service has CREATE or DROP on the audit schema. Writers
 declare it as a standalone `Table` on its own `MetaData` (see
-`backend/shared/audit.py`); the audit service maps it but has no
-`create_all` at all.
+`backend/shared/audit.py`); the audit service maps it but never creates it.
 
 **A writing service cannot read the log it writes to, including in its own
 tests.** It holds INSERT and no SELECT, so that no service can read another's

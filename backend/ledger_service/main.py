@@ -17,13 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from controller.errors import register_error_handlers
 from controller.routes import router as ledger_router
 from core.config import get_settings
-from core.database import create_all, dispose_engine
+from core.database import dispose_engine
 from service import market_terms
-
-# Imported for its side effect: registering the mappers on Base, and the
-# append-only trigger on `ledger.entries`, before create_all runs. Do not rely
-# on another module pulling it in transitively.
-from model import entities  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,14 +31,11 @@ _REDIS_TIMEOUT_SECONDS = 5.0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Setup sits inside the `try`: `create_all()` opens the engine, and any
-    # failure after that (Postgres unreachable, a mistyped REDIS_URL) would
-    # otherwise leak its pool for the life of the process.
+    # Setup sits inside the `try`, so a failure partway (a mistyped REDIS_URL)
+    # still reaches the disposal below. No DDL here: `ledger-migrate`
+    # (migrate.py) brought the schema to head before this process started.
+    # ADR 0020.
     try:
-        # Safe while this service alone owns the ledger schema. Move to
-        # Alembic before the first column change against data worth keeping.
-        await create_all()
-
         # One client for the process (D-047). `from_url` dials lazily, so an
         # unreachable Redis does not stop boot, but parses eagerly, so a
         # mistyped REDIS_URL does (D-051).
