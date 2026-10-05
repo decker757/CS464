@@ -24,15 +24,15 @@ from migrate import ALEMBIC_INI, main
 from shared.migrating import (
     VERSION_TABLE,
     LegacyDrift,
-    find_drift,
     migrate,
     run_in_transaction,
 )
 from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
+    assert_migrating_an_empty_schema_builds_the_models,
+    build_like_before_75,
     compose_service,
     drop_own_tables,
-    schema_catalog,
 )
 
 # The conftest has pointed DATABASE_URL at the test database by now.
@@ -56,10 +56,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     pass
 '''
-
-
-def _catalog() -> dict[str, list[str]]:
-    return run_in_transaction(_URL, lambda connection: schema_catalog(connection, SCHEMA))
 
 
 def _empty_the_schema() -> None:
@@ -86,14 +82,7 @@ def _version() -> str:
 
 
 def _build_like_before_75(*statements: str) -> None:
-    """The schema as every boot before #75 left it, then `statements` against it."""
-
-    def build(connection) -> None:
-        Base.metadata.create_all(connection)
-        for statement in statements:
-            connection.execute(text(statement))
-
-    run_in_transaction(_URL, build)
+    build_like_before_75(_URL, Base.metadata, *statements)
 
 
 @pytest.fixture
@@ -110,19 +99,9 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
     Twice, because compose runs the step on every `up` and the second run must
     be a no-op.
     """
-    assert main() == 0
-    assert main() == 0
-    migrated = _catalog()
-    drift = run_in_transaction(
-        _URL,
-        lambda connection: find_drift(connection, metadata=Base.metadata, schema=SCHEMA),
+    migrated = assert_migrating_an_empty_schema_builds_the_models(
+        migrate_step=main, url=_URL, metadata=Base.metadata, schema=SCHEMA
     )
-
-    _empty_the_schema()
-    run_in_transaction(_URL, Base.metadata.create_all)
-
-    assert drift == []
-    assert migrated == _catalog()
     # Case-insensitive usernames, which SQLite once let through. Also proves
     # the catalog the comparison above relies on is not empty.
     assert (

@@ -15,10 +15,10 @@ import os
 import pathlib
 import re
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from sqlalchemy import MetaData
     from sqlalchemy.engine import Connection
 
 # Marker files that identify the repository root. Searched for upward rather
@@ -179,7 +179,7 @@ def compose_service(name: str) -> dict[str, Any]:
 
 
 def assert_baseline_downgrades_and_upgrades_again(
-    *, migrate_step: Callable[[], int], alembic_ini: Path, url: str, metadata: Any, schema: str
+    *, migrate_step: Callable[[], int], alembic_ini: pathlib.Path, url: str, metadata: MetaData, schema: str
 ) -> None:
     """The baseline's handwritten downgrade, held to the same standard as its upgrade.
 
@@ -209,3 +209,47 @@ def assert_baseline_downgrades_and_upgrades_again(
     run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
     run_in_transaction(url, metadata.create_all)
     assert migrated == catalog()
+
+
+def build_like_before_75(url: str, metadata: MetaData, *statements: str) -> None:
+    """The schema as every boot before #75 left it, then `statements` against it."""
+    from sqlalchemy import text  # noqa: PLC0415 - see drop_own_tables
+
+    from shared.migrating import run_in_transaction  # noqa: PLC0415
+
+    def build(connection: Connection) -> None:
+        metadata.create_all(connection)
+        for statement in statements:
+            connection.execute(text(statement))
+
+    run_in_transaction(url, build)
+
+
+def assert_migrating_an_empty_schema_builds_the_models(
+    *, migrate_step: Callable[[], int], url: str, metadata: MetaData, schema: str
+) -> dict[str, list[str]]:
+    """The baseline, held to the models. Returns the migrated catalog.
+
+    Migrates twice, because compose runs the step on every `up` and the second
+    run must be a no-op. Expects no drift and exactly what `metadata.create_all`
+    builds. The caller empties the schema around it and asserts what only its
+    own service has (a special index) against the returned catalog. [F-5] #75
+    """
+    from shared.migrating import find_drift, run_in_transaction  # noqa: PLC0415
+
+    def catalog() -> dict[str, list[str]]:
+        return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
+
+    assert migrate_step() == 0
+    assert migrate_step() == 0
+    migrated = catalog()
+    drift = run_in_transaction(
+        url, lambda connection: find_drift(connection, metadata=metadata, schema=schema)
+    )
+
+    run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
+    run_in_transaction(url, metadata.create_all)
+
+    assert drift == []
+    assert migrated == catalog()
+    return migrated

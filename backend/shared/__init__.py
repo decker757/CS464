@@ -5,8 +5,9 @@ ADR 0005 named what belongs here and, just as importantly, what does not:
 and the LMSR engine. Not `core`." This package is the first two of those three,
 plus what later cleared the bar below: the role enum, the cursor format, the
 test env loader, the test helpers (the import-boundary scan, the
-migration guard tests' `schema_catalog` and `drop_own_tables`, and
-`compose_service`), the audit writer (ADR 0006's #135 amendment), and the
+migration guard tests' `schema_catalog`, `drop_own_tables`,
+`build_like_before_75`, `assert_migrating_an_empty_schema_builds_the_models`
+and `assert_baseline_downgrades_and_upgrades_again`, and `compose_service`), the audit writer (ADR 0006's #135 amendment), and the
 migration runner (ADR 0020).
 
 **The LMSR engine is not here, and that is deliberate.** [F-3] #43 put it in
