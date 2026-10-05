@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, and_, case, func, not_, null, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.config import get_settings
 from core.errors import MarketNotFound
-from core.settling import is_settleable
 from model.entities import (
     PUBLIC_STATUSES,
     AdminMarketCard,
@@ -32,6 +30,7 @@ from model.entities import (
     displayed_status,
 )
 from service.closing import open_for_trading
+from service.settling import settleable
 
 # The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
 # doubling is Python's, not SQL's.
@@ -50,25 +49,6 @@ def _visible() -> ColumnElement[bool]:
     such as SETTLED would then be trader-visible the moment it was declared.
     """
     return Market.status.in_(PUBLIC_STATUSES)
-
-
-def _settleable(
-    status: MarketStatus, approved_at: datetime | None, now: datetime
-) -> bool:
-    """The `settleable` flag for one market, against the request's clock. [3.4] #12.
-
-    Stamped before projection and never a computed field, for the reason
-    `get_published` gives. Reads the stored status: only OPEN ever displays as
-    something else, and OPEN is neither approved nor settled. `now` is the
-    request's clock ("`settleable` reads the request's one Python clock").
-    """
-    return is_settleable(
-        approved=status is MarketStatus.APPROVED,
-        settled=status is MarketStatus.SETTLED,
-        approved_at=approved_at,
-        window=timedelta(seconds=get_settings().dispute_window_seconds),
-        now=now,
-    )
 
 
 def _question_contains(query: str) -> ColumnElement[bool]:
@@ -247,7 +227,7 @@ async def get_published(
         TRADER_FACING_STATUS,
         displayed_status(market.status, market.close_time, now=now),
     )
-    market.settleable = _settleable(market.status, market.approved_at, now)
+    market.settleable = settleable(market.status, market.approved_at, now=now)
     return market
 
 
@@ -318,7 +298,7 @@ async def overview(
             status=displayed_status(row.status, row.close_time, now=now),
             question=row.question,
             close_time=row.close_time,
-            settleable=_settleable(row.status, row.approved_at, now),
+            settleable=settleable(row.status, row.approved_at, now=now),
         )
         for row in (await session.execute(stmt)).all()
     ]
