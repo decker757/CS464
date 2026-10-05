@@ -67,7 +67,7 @@ and, authoritatively, at `/docs`.
 
 ```
 core/       config, engine, token verification, errors, keyset cursors
-model/      entities.py (the three tables), schemas.py (the wire contract)
+model/      entities.py (the ledger tables), schemas.py (the wire contract)
 service/    accounts.py, posting.py, grants.py, ledger_service.py
 controller/ routes, dependencies, error mapping, token transport
 ```
