@@ -91,8 +91,8 @@ cluster-wide; schemas and grants are per database, so apply it to `cs464` and
 to `cs464_test` if yours predates the change.
 
 **Adding a column does not reach a database that already has the table.**
-The auth and market services call `create_all` at startup (the audit service
-does not; it owns no table), and that only ever issues CREATE TABLE IF NOT
+Only the ledger service still calls `create_all` at startup (auth and market
+run Alembic; the audit service owns no table), and that only ever issues CREATE TABLE IF NOT
 EXISTS, so a new column in `model/entities.py` reaches a fresh database
 automatically and an existing one never. The service then dies on
 every request with `column ... does not exist`, which reads like a code bug and
@@ -105,7 +105,8 @@ likewise in `market_service`) rather than a `sql/migrations` file; the
 `auth-migrate` and `market-migrate` compose steps apply it. Ledger still works
 the way described here until #75's third PR, and ADR 0020 lands with the last.
 
-Write an idempotent `ALTER TABLE` in `sql/migrations/` and apply it by hand:
+For ledger: write an idempotent `ALTER TABLE` in `sql/migrations/` and apply
+it by hand:
 
 ```bash
 docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
@@ -253,9 +254,10 @@ docker compose exec -T db psql -U cs464 -d cs464 \
       WHERE conrelid = 'market.markets'::regclass;"
 ```
 
-A new *column* is the usual story and still needs a hand-applied `ALTER TABLE`,
-as below. [1.3] #3 added one member and one column, and only the column needed
-`sql/migrations/0003-market-published-at.sql`.
+A new *column* is the usual story and needs an Alembic revision
+(`alembic revision` in `backend/market_service`); the ledger keeps the
+hand-applied `ALTER TABLE` until #75's third PR. [1.3] #3 added one member and
+one column, and only the column needed a migration.
 
 **Replacing a child collection in SQLAlchemy needs its own flush.** Within one
 flush the INSERTs for the new rows are issued before the DELETEs for the
