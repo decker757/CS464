@@ -24,3 +24,21 @@ export async function getMarketSnapshot(marketId: string): Promise<PriceState> {
   const res = await api.get<PriceState>(`${LEDGER_BASE}/ledger/markets/${marketId}/snapshot`)
   return res.data
 }
+
+export interface Balance {
+  user_id: string
+  account_id: string
+  // A decimal string, not a JSON number (ledger-service.md). Format with
+  // formatCredits; never parseFloat it.
+  balance: string
+}
+
+/**
+ * The signed-in user's available balance ([B-2] #33). The first call for a
+ * user also mints their starting credits (ledger-service.md) — there is no
+ * separate grant step on the frontend's side.
+ */
+export async function getMyBalance(): Promise<Balance> {
+  const res = await api.get<Balance>(`${LEDGER_BASE}/ledger/balances/me`)
+  return res.data
+}

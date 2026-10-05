@@ -3,8 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import { AuthContext } from '../../context/AuthContext'
 import type { User } from '../../context/AuthContext'
+import { WithProviders } from '../../test/renderWithProviders'
 import { server } from '../../test/server'
 import ProposalsPage from './ProposalsPage'
 
@@ -51,14 +51,14 @@ function mockAuditActions(actions: Record<string, unknown>[]) {
 
 function renderPage() {
   return render(
-    <AuthContext.Provider value={{ user: admin, login: () => {}, logout: async () => {} }}>
+    <WithProviders user={admin}>
       <MemoryRouter initialEntries={['/admin/proposals']}>
         <Routes>
           <Route path="/admin/proposals" element={<ProposalsPage />} />
           <Route path="/admin/markets/:id/decide-outcome" element={<p>decide outcome</p>} />
         </Routes>
       </MemoryRouter>
-    </AuthContext.Provider>,
+    </WithProviders>,
   )
 }
 

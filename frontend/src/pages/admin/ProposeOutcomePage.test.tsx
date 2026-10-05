@@ -3,8 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import { AuthContext } from '../../context/AuthContext'
 import type { User } from '../../context/AuthContext'
+import { WithProviders } from '../../test/renderWithProviders'
 import { server } from '../../test/server'
 import ProposeOutcomePage from './ProposeOutcomePage'
 
@@ -61,14 +61,14 @@ const APPROVED = {
 
 function renderPage(id = 'mkt-1') {
   return render(
-    <AuthContext.Provider value={{ user: admin, login: () => {}, logout: async () => {} }}>
+    <WithProviders user={admin}>
       <MemoryRouter initialEntries={[`/admin/markets/${id}/propose-outcome`]}>
         <Routes>
           <Route path="/admin/markets/:id/propose-outcome" element={<ProposeOutcomePage />} />
           <Route path="/admin/markets" element={<p>markets list</p>} />
         </Routes>
       </MemoryRouter>
-    </AuthContext.Provider>,
+    </WithProviders>,
   )
 }
 
