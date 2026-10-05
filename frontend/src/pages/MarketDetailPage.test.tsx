@@ -2,9 +2,9 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
 import { server } from '../test/server'
+import { WithProviders } from '../test/renderWithProviders'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
@@ -50,14 +50,14 @@ afterEach(() => {
 
 function renderPage(marketId = 'mkt-abc') {
   return render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
+    <WithProviders user={trader}>
       <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
         <Routes>
           <Route path="/markets/:id" element={<MarketDetailPage />} />
           <Route path="/markets" element={<p>markets list</p>} />
         </Routes>
       </MemoryRouter>
-    </AuthContext.Provider>,
+    </WithProviders>,
   )
 }
 
@@ -69,9 +69,9 @@ function renderMovableRouter(marketId: string) {
     { initialEntries: [`/markets/${marketId}`] },
   )
   render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
+    <WithProviders user={trader}>
       <RouterProvider router={router} />
-    </AuthContext.Provider>,
+    </WithProviders>,
   )
   return router
 }

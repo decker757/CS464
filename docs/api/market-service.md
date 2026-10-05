@@ -885,7 +885,7 @@ GET /markets/overview?status=closed
   `GET /public/markets` on purpose.
 - **`creator_id`** is on every row, so the caller can tell their own by
   comparing it with their own id.
-- Not paged; #104 owns that.
+- Not paged; #210 owns that.
 
 ## GET /markets/{id}
 
@@ -1003,14 +1003,46 @@ the first group explicitly.
 | --- | --- |
 | `status` | one of `open`, `closed`, `pending_resolution`, `approved`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
+| `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
+| `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
 `draft` and `submitted` are never returned, whether asked for by `status` or
 not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
 
+#### Paging
+
+The list is paged by keyset ([X-1] #104). Send the previous response's
+`next_cursor` back as `cursor`, with the same `q`, `status` and `limit`, for
+the next page. `next_cursor: null` means there is nothing after this page,
+including when the page is empty. The cursor is opaque: do not build or edit
+one.
+
+Pages read in turn never repeat a market, and never skip one that was there
+throughout, even while markets are published and closed between reads:
+
+- Which markets count as "still trading" is fixed at the moment the first page
+  was read, and the cursor carries that moment. A market that stops trading
+  while you page keeps its place in the order. It is not listed a second time
+  among the stopped markets.
+- Its `status` is always read now, so that market shows `closed` on whatever
+  page it appears. Under `status=open` it is left out of later pages, because
+  it no longer matches.
+- Under `status=closed` the move runs the other way. A market that stops
+  trading mid-browse is still in the trading group at the first page's instant
+  but now matches the filter, so it is missing from every later page until you
+  fetch a fresh first page. It is never repeated.
+- A market published after the first page appears on a later page if it sorts
+  after the point you have reached, and not at all if it sorts before it.
+  Start again without a cursor to see everything as of now.
+
+The cursor does not record `q` or `status`. Changing either and sending an
+old cursor is not an error, but it continues from a position in the old list;
+start again without a cursor instead.
+
 #### Response
 
-`200`, always — an empty result is `{"markets": []}`, never a `404`. [X-1]
-#34's "an appropriate empty state" is the frontend's job once this returns
+`200`, always — an empty result is `{"markets": [], "next_cursor": null}`,
+never a `404`. [X-1] #34's "an appropriate empty state" is the frontend's job once this returns
 nothing to render.
 
 ```json
@@ -1037,7 +1069,8 @@ nothing to render.
         { "id": "2b8a4f3e-6d5c-4a1f-8e9d-8c7b6a5f4e3d", "position": 2, "label": "Another team" }
       ]
     }
-  ]
+  ],
+  "next_cursor": "MjAyNi0xMC0wNFQwOToxNTowMCswMDowMHwxfDIwMjctMDYtMDFUMDA6MDA6MDArMDA6MDB8NWQyYTllMDQtN2IzMS00YzhlLWE2ZjItM2U5YjFjN2QwYTU4"
 }
 ```
 
@@ -1047,6 +1080,14 @@ returns — so a card can name each outcome without fetching the detail per row.
 A market has two or more outcomes with any labels; render the labels given
 rather than assuming `Yes` and `No`. Like the rest of this response, it
 carries no prices.
+
+#### When it is refused
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 422 | — | `status` is not an accepted value, `q` is too long or holds a NUL, or `limit` is below 1 |
 
 ### GET /public/markets/{id}
 
@@ -1139,6 +1180,7 @@ it still reads `code` and `message`:
 | Status | `code` | When |
 | --- | --- | --- |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 400 | `malformed_cursor` | a browse `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | valid session, but a trader |
 | 403 | `second_administrator_required` | the proposer tried to approve or reject their own proposal |
 | 404 | `market_not_found` | no such market, or it is not yours |

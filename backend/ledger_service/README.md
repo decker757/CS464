@@ -23,8 +23,8 @@ docker compose up --build        # this service on http://localhost:8003/docs
 
 Nothing in `sql/` needs to change and no `docker compose down -v` is required.
 `ledger_svc` and the `ledger` schema have been in `sql/01-roles.sql` and
-`sql/02-schemas.sql` since #67, a sprint ahead of need, and the three tables are
-created by `create_all` at startup.
+`sql/02-schemas.sql` since #67, a sprint ahead of need, and the tables are
+created by the `ledger-migrate` compose step (Alembic) before this service starts.
 
 ## Tests
 
@@ -67,7 +67,7 @@ and, authoritatively, at `/docs`.
 
 ```
 core/       config, engine, token verification, errors, keyset cursors
-model/      entities.py (the three tables), schemas.py (the wire contract)
+model/      entities.py (the ledger tables), schemas.py (the wire contract)
 service/    accounts.py, posting.py, grants.py, ledger_service.py
 controller/ routes, dependencies, error mapping, token transport
 ```
@@ -191,15 +191,16 @@ will, in the same transaction as the payouts it records. ADR 0006.
 | `STARTING_CREDITS` | no | Defaults to 1000. Not a credential. |
 | `CORS_ORIGINS` | no | Comma-separated. Exact origins, never `*`. |
 
-## Schema creation is `create_all`, not migrations
+## Schema creation is Alembic
 
-Fine while this service owns its schema alone, and it is the same bet the auth
-and market services make. It is a worse bet here than there, because this is the
-fourth service issuing DDL at startup against one Postgres and because the data
-is money.
+The `ledger-migrate` compose step runs `python migrate.py` as `ledger_svc` and
+`ledger` starts only if it exited 0. The service itself issues no DDL. A new
+column needs a revision (`PYTHONPATH=.. .venv/bin/alembic revision -m "..."`),
+not a file in `sql/migrations/`.
 
-`CLAUDE.md`, the root README and `sql/migrations/README.md` all said Alembic
-would arrive with this ticket. It did not — retrofitting four services' startup
-and conftests is a change of its own size — and it has its own issue instead.
-Until then, a new column here needs a hand-applied `ALTER TABLE` in
-`sql/migrations/`, exactly as the market service's did.
+A database from before #75 has tables and no history. `migrate.py` adopts it at
+revision `0001` if it matches the models, and otherwise refuses and names what
+differs (most likely `idempotency_key` still at 120 characters: apply
+`sql/migrations/0007` with the `psql` command in its header). It also refuses
+one whose `ledger.entries` lost its append-only trigger. Read the log with
+`docker compose logs ledger-migrate`.

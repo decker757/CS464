@@ -165,6 +165,18 @@ class MarketOverview:
     counts: dict[MarketStatus, int]
 
 
+@dataclass(frozen=True)
+class MarketPage:
+    """One page of the trader-facing browse list. [X-1] #104.
+
+    `next_cursor` continues after the last market and is None on the last page,
+    an empty one included.
+    """
+
+    markets: list[MarketCard]
+    next_cursor: str | None
+
+
 def displayed_status(
     status: MarketStatus,
     close_time: datetime | None,
@@ -327,8 +339,8 @@ class Market(Base):
         Index("ix_markets_creator_updated", "creator_id", "updated_at"),
         # [F-4] #44. The close sweep's working set: partial on open markets and
         # keyed on `close_time`, so the sweep is an ordered scan that stops at
-        # its limit. ADR 0011. The predicate is spelled out because
-        # sql/migrations/0004 must match it literally; change both together.
+        # its limit. ADR 0011. The predicate is spelled out because the
+        # baseline revision repeats it literally; changing it needs a revision.
         Index("ix_markets_due_close", "close_time", postgresql_where=text("status = 'open'")),
     )
 

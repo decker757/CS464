@@ -83,6 +83,23 @@ services:
       - "${AUTH_PORT:-8000}:8000"
     restart: unless-stopped
 
+  # [F-5] #75. Brings the market schema to head and exits; `market` starts only
+  # if this exited 0. Same shape and reasons as `auth-migrate`. ADR 0020.
+  market-migrate:
+    build:
+      context: ./backend
+      dockerfile: market_service/Dockerfile
+    command: ["python", "migrate.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://market_svc:${MARKET_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+    # The image's HEALTHCHECK probes the API, which this container never serves.
+    healthcheck:
+      disable: true
+    restart: "no"
+
   # [1.1] #1. Owns the market schema, connects as market_svc, and cannot read
   # auth.users. It recognises an administrator from the signed access token
   # alone, which is why it needs the same JWT_SECRET and nothing else from auth.
@@ -95,6 +112,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      market-migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://market_svc:${MARKET_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
       # The same value the auth service signs with. Under HS256 that means this
@@ -122,13 +141,33 @@ services:
       - "${MARKET_PORT:-8001}:8000"
     restart: unless-stopped
 
+  # [F-5] #75. Brings the ledger schema to head and exits; `ledger` starts only
+  # if this exited 0. Same shape and reasons as `auth-migrate`. It also refuses
+  # a database from before #75 whose entries lost their append-only trigger.
+  # ADR 0020.
+  ledger-migrate:
+    build:
+      context: ./backend
+      dockerfile: ledger_service/Dockerfile
+    command: ["python", "migrate.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ledger_svc:${LEDGER_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+    # The image's HEALTHCHECK probes the API, which this container never serves.
+    healthcheck:
+      disable: true
+    restart: "no"
+
   # [F-1] #41. Owns the ledger schema, connects as ledger_svc, and holds every
   # credit in the system. Like the market service it cannot read auth.users and
   # identifies a caller from the signed access token alone, so it needs the same
   # JWT_SECRET and nothing else from auth.
   #
-  # Note what is missing: no service depends on this one, and it depends on
-  # none. The starting grant [B-1] #32 is minted here, lazily, on the first read
+  # Note what is missing: no service depends on this one, and it depends on no
+  # other service, only on its own migrate step above. The starting grant
+  # [B-1] #32 is minted here, lazily, on the first read
   # of a balance — there is no event from the auth service to wait for, and no
   # window in which a new account's balance is observably wrong.
   ledger:
@@ -140,6 +179,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      ledger-migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://ledger_svc:${LEDGER_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
       # The same value the auth service signs with. Verification only; there is

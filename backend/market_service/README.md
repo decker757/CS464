@@ -127,6 +127,7 @@ service/                    business rules. Raises domain errors, knows no HTTP.
 
 core/                       this service's own plumbing
     config.py               settings, read from the environment once
+    paging.py               keyset cursors for the public browse [X-1] #104
     database.py             engine, session factory, session dependency
     clock.py                one function: normalise a datetime to UTC
     security.py             the only file that touches jwt. Verify only.
@@ -203,6 +204,7 @@ The visible consequence is that `markets.creator_id` names a row in
 `auth.users` and is **not** a foreign key. A market can outlive its creator's
 account and no cascade will clean it up. ADR 0003 has the argument.
 
-**Schema creation is `create_all`, not migrations.** Two services now issue it
-against one database. They touch disjoint schemas so they do not race, but this
-is the last change that gets away with it. Alembic should arrive with [F-5] #75.
+**The schema comes from Alembic, not `create_all`.** The `market-migrate`
+compose step runs `migrate.py` as `market_svc` and `market` starts only if it
+exited 0. A new column is a revision under `migrations/versions/`, not a
+`sql/migrations` file. [F-5] #75.

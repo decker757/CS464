@@ -101,18 +101,6 @@ def has_pending_writes(session: AsyncSession) -> bool:
     )
 
 
-async def create_all() -> None:
-    """Create this service's tables, and with them the append-only trigger on
-    `ledger.entries` (an `after_create` event, ADR 0009).
-
-    Callers must import `model.entities` first; core must not reach up into
-    `model` to do it. Becomes Alembic before a column changes on a table
-    holding data worth keeping.
-    """
-    async with get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 async def dispose_engine() -> None:
     global _engine, _session_factory
     if _engine is not None:

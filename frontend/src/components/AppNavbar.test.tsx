@@ -2,24 +2,27 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
-import { AuthContext, AuthProvider } from '../context/AuthContext'
+import { describe, expect, it } from 'vitest'
+import { AuthProvider } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
+import { BalanceProvider } from '../context/BalanceContext'
 import { server } from '../test/server'
+import { WithProviders } from '../test/renderWithProviders'
 import AppNavbar from './AppNavbar'
 import ProtectedRoute from './ProtectedRoute'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 const admin: User = { id: '2', username: 'bob', email: 'bob@smu.edu.sg', role: 'admin', created_at: '2026-01-01' }
 
-/** The navbar on its own, for what it renders. */
-function renderNavbar(user: User | null | undefined) {
+/** The navbar on its own, for what it renders. `balance` defaults to
+ * undefined (still loading); pass it to test the loaded and failed states. */
+function renderNavbar(user: User | null | undefined, balance?: string | null) {
   render(
-    <AuthContext.Provider value={{ user, login: () => {}, logout: vi.fn() }}>
+    <WithProviders user={user} balance={balance}>
       <MemoryRouter initialEntries={['/markets']}>
         <AppNavbar />
       </MemoryRouter>
-    </AuthContext.Provider>,
+    </WithProviders>,
   )
 }
 
@@ -36,23 +39,28 @@ function renderInApp() {
   server.use(
     http.get('http://localhost:8000/auth/me', () => HttpResponse.json(trader)),
     http.post('http://localhost:8000/auth/logout', () => HttpResponse.json({ message: 'Logged out.' })),
+    http.get('http://localhost:8003/ledger/balances/me', () =>
+      HttpResponse.json({ user_id: trader.id, account_id: 'acc-1', balance: '1000.0000' }),
+    ),
   )
   render(
     <AuthProvider>
-      <MemoryRouter initialEntries={['/markets']}>
-        <Routes>
-          <Route
-            path="/markets"
-            element={
-              <ProtectedRoute>
-                <AppNavbar />
-              </ProtectedRoute>
-            }
-          />
-          <Route path="/" element={<p>landing page</p>} />
-          <Route path="/login" element={<p>login page</p>} />
-        </Routes>
-      </MemoryRouter>
+      <BalanceProvider>
+        <MemoryRouter initialEntries={['/markets']}>
+          <Routes>
+            <Route
+              path="/markets"
+              element={
+                <ProtectedRoute>
+                  <AppNavbar />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/" element={<p>landing page</p>} />
+            <Route path="/login" element={<p>login page</p>} />
+          </Routes>
+        </MemoryRouter>
+      </BalanceProvider>
     </AuthProvider>,
   )
 }
@@ -86,6 +94,23 @@ describe('AppNavbar', () => {
 
     expect(screen.getByText('PredictSMU')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /log out/i })).not.toBeInTheDocument()
+  })
+
+  it('shows nothing for the balance while it is still loading', () => {
+    // undefined — the renderNavbar default — must not be confused with a
+    // failed load; it should simply not render yet.
+    renderNavbar(trader)
+    expect(screen.queryByLabelText('available balance')).not.toBeInTheDocument()
+  })
+
+  it('shows Balance unavailable when the load has failed', () => {
+    renderNavbar(trader, null)
+    expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
+  })
+
+  it('shows the real balance fetched through BalanceProvider, not just a stubbed one', async () => {
+    renderInApp()
+    expect(await screen.findByText('1,000 credits')).toBeInTheDocument()
   })
 })
 

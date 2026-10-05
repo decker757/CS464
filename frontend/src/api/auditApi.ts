@@ -1,4 +1,5 @@
 import api from './axios'
+import { fetchAllPages } from './paging'
 
 // Same pattern as marketApi.ts and ledgerApi.ts: an absolute URL on the
 // shared `api` instance, so the refresh interceptor and withCredentials come along.
@@ -33,12 +34,8 @@ export async function listActions(params?: { action_type?: string; actor_id?: st
 
 /** Every entry of one action_type, walking every page (audit-service.md's keyset paging). */
 export async function listAllActions(actionType: string): Promise<AdminAction[]> {
-  const actions: AdminAction[] = []
-  let cursor: string | undefined
-  do {
+  return fetchAllPages(async cursor => {
     const page = await listActions({ action_type: actionType, cursor, limit: 200 })
-    actions.push(...page.actions)
-    cursor = page.next_cursor ?? undefined
-  } while (cursor)
-  return actions
+    return { items: page.actions, nextCursor: page.next_cursor }
+  })
 }
