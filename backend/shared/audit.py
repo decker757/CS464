@@ -10,8 +10,8 @@ amendment. Three details are load-bearing:
 - The id is generated in Python. A server default would need RETURNING, which
   needs SELECT, which no writer holds.
 - `admin_actions` sits on its own `MetaData` and must never join any service's
-  `Base.metadata`: `create_all` and the test rebuild would issue DDL against a
-  table no service role may create or drop, and the service would die at boot.
+  `Base.metadata`: the migrate step and the test rebuild would issue DDL against
+  a table no service role may create or drop, and both would fail.
 
 What differs by design stays in each service: its `AdminAction` vocabulary in
 `model/audit.py`, and the `source_service` it reports in `core/audit.py`.
