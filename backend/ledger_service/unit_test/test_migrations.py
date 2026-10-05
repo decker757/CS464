@@ -11,6 +11,7 @@ refusing a database from before #75 that has lost it. ADR 0009.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -20,6 +21,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
 
 from core.database import SCHEMA, Base
+from main import create_app
 from migrate import ALEMBIC_INI, main
 from shared.migrating import VERSION_TABLE, _alembic_config, run_in_transaction
 from shared.testing import (
@@ -169,3 +171,17 @@ def test_a_legacy_schema_without_the_append_only_trigger_is_refused(
 
     assert "missing trigger ledger.entries: entries_append_only" in capsys.readouterr().err
     assert VERSION_TABLE not in _tables()
+
+
+def test_starting_the_app_creates_no_table(empty_schema) -> None:
+    """Only the migrate step issues DDL. With create_all back in the lifespan, a
+    model change would reach a database with no revision to show for it."""
+
+    async def start_and_stop() -> None:
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            pass
+
+    asyncio.run(start_and_stop())
+
+    assert _tables() == []
