@@ -18,6 +18,8 @@ export function usePricesForMarkets(marketIds: string[]): Map<string, OutcomePri
   // A market counts as answered when its request settles, not when it is sent:
   // a request the cleanup cancelled must be sent again, and StrictMode cancels
   // the first mount's requests on purpose.
+  // Assumes the market list only grows (Load more appends). A filter or search
+  // that replaces the list must reset this set, or its new cards stay unpriced.
   const answeredIds = useRef(new Set<string>())
 
   useEffect(() => {
