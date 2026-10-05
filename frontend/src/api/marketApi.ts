@@ -171,19 +171,30 @@ export interface MarketOverviewRow {
   close_time: string | null
 }
 
-export interface MarketOverview {
+interface MarketOverviewResponse {
   markets: MarketOverviewRow[]
   counts: Record<MarketSummaryOut['status'], number>
+  next_cursor: string | null
+}
+
+export interface MarketOverview {
+  markets: MarketOverviewRow[]
+  /** Over every market the caller can see, not only this page. */
+  counts: Record<MarketSummaryOut['status'], number>
+  /** Pass back as `cursor` for the next page; null on the last page. */
+  nextCursor: string | null
 }
 
 /**
- * Every market the calling administrator can see — all published ones plus
- * their own drafts and submissions — soonest close first, with a count per
- * status read at the same instant ([2.1] #5, market-service.md, GET /markets/overview).
+ * One page of the markets the calling administrator can see — all published
+ * ones plus their own drafts and submissions — in the server's order, under
+ * `status` if given, with a count per status over all of them read in the same
+ * snapshot ([2.1] #5, #210, market-service.md, GET /markets/overview).
  */
-export async function getMarketOverview(): Promise<MarketOverview> {
-  const res = await api.get<MarketOverview>(`${MARKET_BASE}/markets/overview`)
-  return res.data
+export async function getMarketOverview(params?: { status?: MarketSummaryOut['status']; cursor?: string }): Promise<MarketOverview> {
+  const res = await api.get<MarketOverviewResponse>(`${MARKET_BASE}/markets/overview`, { params })
+  // `?? null`: a backend older than #210 sends no next_cursor at all.
+  return { markets: res.data.markets, counts: res.data.counts, nextCursor: res.data.next_cursor ?? null }
 }
 
 /** One of the calling administrator's own markets, with the raw status column (market-service.md, GET /markets/{id}). */
