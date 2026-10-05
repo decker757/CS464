@@ -7,6 +7,7 @@ import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
+import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
 import { formatPrice } from '../utils/formatPrice'
@@ -31,15 +32,6 @@ function closedMessage(status: MarketStatus): string {
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
   return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
-}
-
-function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <p className="mb-1 text-xs font-semibold tracking-[0.5px] text-subtle uppercase">{label}</p>
-      {children}
-    </div>
-  )
 }
 
 export default function MarketDetailPage() {
