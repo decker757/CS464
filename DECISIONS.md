@@ -4614,6 +4614,63 @@ overview is a sibling ticket.
 
 ---
 
+### D-NEW — The suites rebuild from the models per test, and guard tests hold the migrations to them
+
+**Date:** 2026-10-04 · **Ticket:** #75 · **Status:** active
+
+**Decision.** Each `unit_test/conftest.py` still builds its schema from
+`Base.metadata`, as before #75: market and ledger drop and recreate it, auth
+creates what is missing and empties the tables. None of them runs the
+migrations. Instead, each of auth, market and ledger has a
+`unit_test/test_migrations.py` that migrates an empty schema and checks the
+result is exactly what the models build, through Alembic's comparison and
+through the Postgres catalog. Market and ledger also assert by name what
+Alembic's comparison cannot see: `ix_markets_due_close`'s predicate and the
+append-only trigger.
+
+**Why.** #75's scope said "conftest migrates to head". Migrating per test runs
+every revision for every database test, and that cost grows with every revision
+added. A rebuild from the models costs the same forever. What a migrate-per-test
+suite would catch, the migrations disagreeing with the models, the guard tests
+catch directly, once per run.
+
+**Rejected.** *Migrating per test*, which makes every test slower forever to
+learn what one guard test says. *Migrating once per session and emptying the
+tables per test.* The ledger's append-only trigger refuses TRUNCATE and
+DELETE on `ledger.entries`, so the ledger could be emptied that way only by
+disabling the trigger the suite exists to exercise (`ledger_svc` owns the
+table and could). And unless the session fixture also emptied the schema
+first, a test database already at head would ignore a revision edited after it
+ran: the version table says it is current, so nothing runs again. The market
+and ledger conftests drop and rebuild so that a new column reaches the test
+database, and that would quietly stop being true.
+
+**Notes.** CI still runs `migrate.py` against its empty test database before
+the suite, as the service's own role, so a revision that cannot apply under the
+real grants fails the job. ADR 0020 says when this reverses.
+
+---
+
+### D-NEW — The migrate step reads DATABASE_URL alone, not the service's settings
+
+**Date:** 2026-10-04 · **Ticket:** #75 · **Status:** active
+
+**Decision.** `shared.migrating.migrate_from_environment` reads
+`DATABASE_URL` straight from the environment, and exits 2 if it is missing.
+Compose gives each `<svc>-migrate` that one variable and nothing else.
+
+**Why.** The services' `Settings` also require `JWT_SECRET`. A step that only
+issues DDL has no use for a signing key, and every container that holds one is
+one more place it can leak from.
+
+**Rejected.** *Using `core.config.get_settings()`*, which puts the signing key
+in one more container for the sake of one shared parse of a single URL.
+
+**Notes.** Each service's `test_compose_starts_..._only_after_its_migration_succeeds`
+asserts that `JWT_SECRET` is not in its migrate step's environment. ADR 0020.
+
+---
+
 ### D-NEW — The admin overview pages by keyset, settled markets last, and reads its counts in the same REPEATABLE READ snapshot
 
 **Date:** 2026-10-05 · **Ticket:** #210 · **Status:** active
@@ -4766,6 +4823,7 @@ Move these into the log above when they're settled.
   outstanding check is a backstop on the trade route"). But that backstop is
   the only guard, and `C(q)` over a negative `q` returns a number rather than
   failing. Adding the CHECK is a constraint on an existing table, so it needs
-  a hand-applied file in `sql/migrations/` against `cs464`. Whether that is
+  an Alembic revision in the ledger's `migrations/versions/`, written by hand,
+  since autogenerate cannot see a CHECK (ADR 0020). Whether that is
   worth it, and whether [3.4] #12 should land it since it is the next writer
   of `q`, is undecided.

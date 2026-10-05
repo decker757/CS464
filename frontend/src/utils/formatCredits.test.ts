@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCredits } from './formatCredits'
+import { formatCredits, formatCreditsPrecise, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -36,5 +36,37 @@ describe('formatCredits', () => {
 
   it('shows a dash for anything that is not a plain decimal', () => {
     expect(formatCredits('1E-4')).toBe('—')
+  })
+})
+
+describe('formatCreditsPrecise', () => {
+  it('keeps all four decimal places with thousands separators', () => {
+    expect(formatCreditsPrecise('1234.5678')).toBe('1,234.5678')
+  })
+
+  it('pads a shorter fractional part with zeros', () => {
+    expect(formatCreditsPrecise('5.1')).toBe('5.1000')
+  })
+
+  it('does not round a fifth decimal place; it truncates', () => {
+    expect(formatCreditsPrecise('5.12349')).toBe('5.1234')
+  })
+
+  it('keeps the minus sign on a negative value', () => {
+    expect(formatCreditsPrecise('-0.0313')).toBe('-0.0313')
+  })
+
+  it('shows a dash for anything that is not a plain decimal', () => {
+    expect(formatCreditsPrecise('1E-4')).toBe('—')
+  })
+})
+
+describe('unsignedCredits', () => {
+  it('drops a leading minus sign', () => {
+    expect(unsignedCredits('-5.1250')).toBe('5.1250')
+  })
+
+  it('leaves a positive value unchanged', () => {
+    expect(unsignedCredits('5.1250')).toBe('5.1250')
   })
 })

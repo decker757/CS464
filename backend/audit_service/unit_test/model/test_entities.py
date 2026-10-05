@@ -1,7 +1,7 @@
 """The read model against the table it describes. [4.3] #15
 
 `model/entities.py` hand-describes a table sql/02-schemas.sql owns, and only
-this file stops the two drifting until [F-5] #75.
+this file stops the two drifting; ADR 0020 left that table in sql/.
 """
 
 from __future__ import annotations

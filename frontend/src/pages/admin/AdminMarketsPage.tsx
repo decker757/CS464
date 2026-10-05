@@ -5,6 +5,7 @@ import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
 import PageTitle from '../../components/ui/PageTitle'
 import { buttonClass } from '../../components/ui/buttonClass'
+import { selectableClass } from '../../components/ui/selectableClass'
 import StatusBadge from '../../components/markets/StatusBadge'
 import { STATUS_CONFIG, formatCloseTime, type AdminMarketStatus } from '../../components/markets/marketStatus'
 import { useAuth } from '../../context/AuthContext'
@@ -56,11 +57,7 @@ export default function AdminMarketsPage() {
               role="tab"
               aria-selected={active}
               onClick={() => setFilter(f)}
-              className={`cursor-pointer rounded-full border px-4 py-1.5 text-[13px] font-semibold transition ${
-                active
-                  ? 'border-smu-navy bg-smu-navy text-white'
-                  : 'border-smu-navy/20 text-smu-navy hover:border-smu-navy/40'
-              }`}
+              className={`cursor-pointer rounded-full border px-4 py-1.5 text-[13px] font-semibold transition ${selectableClass(active)}`}
             >
               {filterLabel(f)} <span className={active ? 'text-white/70' : 'text-subtle'}>{count}</span>
             </button>
