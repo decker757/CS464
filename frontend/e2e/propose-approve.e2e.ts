@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { closeEarly, publishMarket, registerAdmin, uniqueName } from './support/backend'
-import { logIn, marketCard } from './support/browser'
+import { loadUntilShown, logIn, marketCard } from './support/browser'
 
 // [3.1] #9 and [3.2] #10, across market_service and the audit log the
 // proposals page reads: one admin proposes, a second approves.
@@ -14,7 +14,9 @@ test('one admin proposes an outcome and a second admin approves it', async ({ br
   const proposerPage = await proposerContext.newPage()
   await logIn(proposerPage, proposer)
   await proposerPage.goto('/admin/markets')
-  await marketCard(proposerPage, market.question).getByRole('link', { name: 'Propose Outcome' }).click()
+  // Paged (#210), and earlier runs fill the list: load until this market is shown.
+  const card = await loadUntilShown(proposerPage, market.question)
+  await card.getByRole('link', { name: 'Propose Outcome' }).click()
   await proposerPage.getByRole('button', { name: 'Yes', exact: true }).click()
   await proposerPage.getByLabel('Written note').fill('The end-to-end source says yes, so Yes wins.')
   await proposerPage.getByRole('button', { name: 'Propose Outcome' }).click()
