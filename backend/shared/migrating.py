@@ -55,11 +55,18 @@ _URL_ATTRIBUTE = "database_url"
 _REFUSED_FOR_DRIFT = (
     "{schema}: this database has tables but no migration history, and they do "
     "not match the models:\n{differences}\n\n"
-    "It was built before #75 and missed a hand-applied change. Apply the "
-    "missing file from sql/migrations/ as it stood before #75 (git log -- "
-    "sql/migrations/ finds it) and run this again, or start from an empty "
-    "database with `docker compose down -v`, which destroys local data. "
-    "Nothing was changed."
+    "It was built before #75 and missed one of the hand-applied files that "
+    "sql/migrations/ used to hold. They are deleted now and kept in git "
+    "history. From the repository root, list them under the commit that "
+    "deleted them:\n\n"
+    "    git log --diff-filter=D --name-only --format=%h -- sql/migrations/\n\n"
+    "Apply the file whose name matches what is missing above, with that "
+    "commit's id in place of <commit> and the file's name in place of "
+    "<file>:\n\n"
+    "    git show <commit>^:sql/migrations/<file> | docker compose exec -T db "
+    "psql -U cs464 -d cs464 -v ON_ERROR_STOP=1\n\n"
+    "then run `docker compose up` again. Or start from an empty database with "
+    "`docker compose down -v`, which destroys local data. Nothing was changed."
 )
 
 _REFUSED_PAST_BASELINE = (
