@@ -85,9 +85,8 @@ export default function AdminMarketsPage() {
             ))}
           </div>
 
-          {/* A failed Load more leaves the cursor as it was, so the alert never needs it null. */}
           {hasMore && (
-            <LoadMoreMarkets isLoading={isLoadingMore} hasFailed={loadMoreFailed} onLoadMore={loadMore} />
+            <LoadMoreMarkets isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} onLoadMore={loadMore} />
           )}
         </>
       )}

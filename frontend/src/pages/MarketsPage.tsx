@@ -36,9 +36,8 @@ export default function MarketsPage() {
             {markets.map((market) => <MarketCard key={market.id} market={market} prices={pricesByMarket.get(market.id)} />)}
           </div>
 
-          {/* A failed Load more leaves the cursor as it was, so the alert never needs it null. */}
           {hasMore && (
-            <LoadMoreMarkets isLoading={isLoadingMore} hasFailed={loadMoreFailed} onLoadMore={loadMore} />
+            <LoadMoreMarkets isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} onLoadMore={loadMore} />
           )}
         </>
       )}
