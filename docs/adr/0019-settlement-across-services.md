@@ -1,8 +1,8 @@
 # ADR 0019: Settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 
-- **Status:** Accepted
+- **Status:** Proposed
 - **Date:** 2026-10-04
-- **Affects:** [3.4] #12, [FE][3.4] #216, [3.3] #11, [4.4] #16, [T-4] #24, [T-5] #25, [2.1] #5, [L-1] #38, [L-3] #40, ADR 0006, ADR 0007, ADR 0009, ADR 0011, ADR 0015, ADR 0016, ADR 0017, ADR 0018
+- **Affects:** [3.4] #12, [FE][3.4] #216, [3.3] #11, [4.4] #16, [T-4] #24, [T-5] #25, [2.1] #5, [L-1] #38, [L-3] #40, [F-5] #75, [BE] #221, ADR 0006, ADR 0007, ADR 0009, ADR 0011, ADR 0015, ADR 0016, ADR 0017, ADR 0018
 - **Implemented in:** nothing yet. This record precedes [3.4] #12, which is the first code that has to obey it.
 
 ## Context
@@ -36,10 +36,14 @@ Five constraints were already fixed before this record:
 An administrator calls `POST /ledger/markets/{id}/settlement` with an empty
 body, authenticated as `CurrentAdmin`. The ledger then:
 
-1. Reads `status` and `proposed_outcome_id` from
-   `GET /public/markets/{id}`, forwarding the administrator's token. It
+1. Reads `status`, `proposed_outcome_id` and `settleable` from
+   `GET /public/markets/{id}` through `market_terms.fetch`, on the
+   process-wide client (#114), forwarding the administrator's token. It
    accepts `approved` or `settled` and refuses anything else with
-   `409 market_not_approved`.
+   `409 market_not_approved`. An `approved` market that is not `settleable`
+   is refused with `409 dispute_window_open`. A 404 remembered from the last
+   ten seconds is answered without a call, and maps by the book like any
+   other 404.
 2. Opens the book if it is cold (`books.ensure_open`, its own earlier commit).
 3. Takes the book row lock and looks for a settlement record. If one exists,
    nothing is written, and the recorded outcome governs: what market_service
@@ -48,8 +52,9 @@ body, authenticated as `CurrentAdmin`. The ledger then:
    record and the audit entry, and commits all of them once.
 5. Calls `POST /markets/{id}/settle` on market_service with the
    administrator's token. That route moves APPROVED to SETTLED, answers `200`
-   without writing on a market already SETTLED, and refuses anything else
-   with `409 market_not_approved`.
+   without writing on a market already SETTLED, refuses an APPROVED market
+   that is not `settleable` with `409 dispute_window_open`, and refuses
+   anything else with `409 market_not_approved`.
 
 `SETTLED → SETTLED` is `200` with no write on both services. That makes the
 whole request safe to repeat, and a repeat is how every partial failure is
@@ -105,10 +110,44 @@ executes a decision two people have already made, and it chooses nothing.
 declined it and #16 is closed.
 
 > **Reversal trigger:** a resolver role is added to `UserRole`. Settlement
-> then moves to that role, in both services' guards. Or [3.3] #11 lands: its
-> "window expired" becomes a second condition on who may settle and when. That
-> condition is market_service's to state and the ledger's to read in step 1,
-> not to recompute.
+> then moves to that role, in both services' guards.
+
+### Settlement waits for the dispute window, and five minutes more
+
+[3.3] #11 gives every approval a dispute window. While it is open, any
+administrator may send the result back: the market returns to CLOSED, and the
+decision is redone through propose and approve. A settlement inside the window
+would pay before anyone could send it back, so the window would decide nothing.
+
+market_service decides both edges, on its own clock, from `approved_at`, the
+way the clock decides closing (ADR 0011):
+
+- send-back is allowed until `window_ends_at`;
+- settlement is allowed from `window_ends_at` plus five minutes.
+
+It exposes the second as `settleable` on the public detail. The ledger reads
+the flag in step 1 and does not recompute it, since two clocks deciding one
+boundary would disagree at it. market_service's settle route refuses the same
+way, so a direct call cannot settle mid-window either. `settleable` gets no
+default in `MarketTerms`, for the reason `status` has none: a missing flag
+read as true would pay out on a market still in its window.
+
+**The five minutes are a judgement call.** The gap exists for the race named
+in the next section, and its size is not derived from anything.
+market_service sets no statement, transaction or request timeout, so nothing
+bounds how long a send-back that passed its clock check can take to commit.
+Five minutes is far longer than any request that completes, and short beside
+a 24-hour window.
+
+*Rejected:*
+- *No gap, with settlement allowed from `window_ends_at`.* That is the race.
+- *A "settling" claim in market_service that locks the row before the
+  payment.* It needs a new status, and a write in market_service before the
+  ledger's, which is a dual write, for the same result the gap already gives.
+
+> **Reversal trigger:** a statement or transaction timeout is set on
+> market_service. The gap must then exceed it, and can be sized from it
+> rather than chosen.
 
 ### Neither outbound call holds a database connection
 
@@ -128,26 +167,41 @@ book.
 > commit and step 5, or before step 1. The connection-release tests fail on
 > that change, and the step must move rather than the test.
 
-### APPROVED is read before the lock, and that is safe because APPROVED's only exit is SETTLED
+### APPROVED is read before the lock, and that is safe because send-back and settlement never overlap
 
 The status is read in step 1, before the book lock. ADR 0015's rule doesn't
 reach it, for the reason ADR 0017 gives: the ledger's lock holds nothing still
 in market_service's database.
 
-The read is also *stable*. In market_service, every write path refuses an
-APPROVED market:
+The read is also *stable*. APPROVED has two exits:
+
+- **SETTLED**, which the ledger also accepts.
+- **Back to CLOSED, by send-back** ([3.3] #11), and only until
+  `window_ends_at`.
+
+Every other write path in market_service refuses an APPROVED market:
 
 - save and publish: `_refuse_if_frozen`
 - close early and propose: `_refuse_if_resolving`
 - approve and reject: `_proposal_to_decide`
 
-The sweep touches only OPEN markets. So an `approved` answer cannot become false
-before the payout, except by becoming `settled`, which the ledger also accepts.
+The sweep touches only OPEN markets. The ledger acts only on an answer that is
+both `approved` and `settleable`, and `settleable` starts five minutes after
+send-back ends. So by the time a settlement can read it, no send-back can
+start, and one that started in time has had five minutes to commit.
 
-> **Reversal trigger:** any new transition out of APPROVED. [3.3] #11's
-> dispute window is the likeliest: if a dispute can return an approved market
-> to PENDING_RESOLUTION or CLOSED, then reading the status before the lock is
-> no longer safe.
+**The race the gap closes.** Without it, settlement would open at the instant
+send-back closes. A send-back checks the clock just before `window_ends_at`
+and commits just after. A settlement reads the public detail in between. The
+send-back has not committed, so the read sees `approved` and `settleable`,
+and the ledger pays the old winner. The send-back then commits and the market
+is CLOSED, but the settlement record is already written, and "On a repeat,
+the recorded outcome governs" keeps it. The old winner is paid and recorded
+for good, for a result that was sent back.
+
+> **Reversal trigger:** any further transition out of APPROVED, or send-back
+> allowed past `window_ends_at`. Either makes reading the status before the
+> lock unsafe again.
 
 ### The result is a record, and positions and `q` are never written
 
@@ -331,9 +385,19 @@ irrelevant to correctness, and the check that would object does not exist.
 input by input. Neither route takes money from its caller.
 
 **market_service gains a route, a status member and no migration.** SETTLED is
-a Python change (CLAUDE.md, "A market's status is a Python enum"). The
-settlement record is a new table, which `create_all` creates on every database,
-so it needs no hand-applied file.
+a Python change (CLAUDE.md, "A market's status is a Python enum").
+`settleable` is derived from `approved_at`, which already exists, so it is no
+column either.
+
+**The settlement record needs an Alembic revision.** It is a new table, and
+[F-5] #75 moves the ledger's schema to Alembic. Whichever of this stack's
+ledger-model PR and #75's ledger PR merges second adds the revision for
+`ledger.market_settlements`.
+
+**Voiding a market ([BE] #221) is not designed here.** It is a later user of
+`posting.post_all` and of the settlement record. `outcome_id` on the record is
+non-null, because a settlement always has a winner, so a void may need a
+record shape of its own.
 
 **The leaderboard sees settlement for free.** [L-1] #38 reads the portfolio's
 `net_worth`, which now counts a settled market once. [L-3] #40's "recalculated

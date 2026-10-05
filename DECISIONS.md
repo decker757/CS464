@@ -4539,11 +4539,11 @@ ledger rather than the ledger remembering.
 **Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
 
 **Decision.** An administrator calls `POST /ledger/markets/{id}/settlement`
-with an empty body. The ledger reads the market's status and approved outcome
-from the public detail, opens the book if it is cold, pays everyone under the
-book lock, and commits. Only then does it call `POST /markets/{id}/settle` on
-market_service, forwarding the administrator's token. Both services answer a
-repeat with `200` and write nothing. ADR 0019.
+with an empty body. The ledger reads the market's status, approved outcome
+and `settleable` from the public detail, opens the book if it is cold, pays
+everyone under the book lock, and commits. Only then does it call
+`POST /markets/{id}/settle` on market_service, forwarding the administrator's
+token. Both services answer a repeat with `200` and write nothing. ADR 0019.
 
 **Why.** No transaction can span both services, so something has to come
 second. With the money first, the worst partial state is "paid, still shown as
@@ -4614,9 +4614,9 @@ closed.
 and settlement makes none.
 
 **Reversal trigger.** A resolver role is added to `UserRole`: settlement then
-moves to that role on both routes. Or [3.3] #11 lands: its "window expired" is
-a second condition on who may settle and when, which market_service states and
-the ledger reads in its status read, and does not recompute.
+moves to that role on both routes. *When* any administrator may settle is a
+separate entry, "Settlement waits for `settleable`, which market_service
+derives from `approved_at`".
 
 ---
 
@@ -4645,25 +4645,35 @@ step moves rather than the test.
 
 ---
 
-### D-NEW — APPROVED is read before the book lock, because APPROVED's only exit is SETTLED
+### D-NEW — APPROVED is read before the book lock, because send-back and settlement never overlap
 
 **Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
 
-**Decision.** The ledger trusts an `approved` answer read before it locks.
+**Decision.** The ledger trusts an `approved` and `settleable` answer read
+before it locks.
 
 **Why.** ADR 0017 already argues that the ledger's lock holds nothing still in
-market_service. The read is also stable. Every write path in market_service
+market_service. The read is also stable. APPROVED has two exits: SETTLED,
+which the ledger accepts too, and back to CLOSED by send-back ([3.3] #11),
+which ends at `window_ends_at`. Every other write path in market_service
 refuses an APPROVED market: save and publish through the frozen table, close
 early and propose through the resolution table, approve and reject through
-`_proposal_to_decide`. The sweep touches only OPEN markets. So `approved` can
-only become `settled`, and the ledger accepts that too.
+`_proposal_to_decide`. The sweep touches only OPEN markets. Settlement starts
+five minutes after send-back ends, so no send-back can start once `settleable`
+is readable, and one that started in time has had five minutes to commit.
+
+The gap is for one race. A send-back checks the clock just before
+`window_ends_at` and commits just after. A settlement's unlocked read lands in
+between, sees `approved` and `settleable`, and pays the old winner. The
+send-back then commits, but the settlement record is written, and "On a
+repeat, the recorded outcome governs" keeps the old winner paid and recorded
+for good.
 
 **Rejected.** *Re-reading the status after the commit*: it would close no
 window, since the read is remote, and it would cost a second call.
 
-**Reversal trigger.** Any new transition out of APPROVED. [3.3] #11's dispute
-window is the likeliest, since a dispute may return a market to an earlier
-status.
+**Reversal trigger.** Any further transition out of APPROVED, or send-back
+allowed past `window_ends_at`.
 
 ---
 
@@ -4675,8 +4685,9 @@ status.
 `outcome_id`, with `(market_id, outcome_id)` a composite foreign key into
 `market_outcomes`, and `settled_at`. It is read under the book lock by settlement, which writes nothing if
 the row exists, and by the trade path, which then refuses
-`409 market_closed`. Positions and `q` are untouched. It is a new table, so
-`create_all` creates it and no migration is needed.
+`409 market_closed`. Positions and `q` are untouched. It is a new table, and
+whichever of this stack's ledger-model PR and [F-5] #75's ledger PR merges
+second adds its Alembic revision.
 
 **Why.** It keeps a record of what was held and paid. It keeps "Shares
 outstanding equal the sum of positions, so the outstanding check is a backstop
@@ -4689,8 +4700,8 @@ settlement.
 **Rejected.**
 - *Zeroing positions*: it loses the record, and the portfolio would have
   nothing to show.
-- *A `settled_at` column on `market_books`*: a hand-applied migration, and a
-  status on a table ADR 0017 keeps status-free.
+- *A `settled_at` column on `market_books`*: a status on a table ADR 0017
+  keeps status-free.
 - *Relying on the status gate alone*: it refuses before the lock, not under
   it.
 - *Storing what it paid (a total, a holder count, the residue)*: a stored sum
@@ -4701,6 +4712,10 @@ settlement.
 **Reversal trigger.** A reader that needs a settled market's shares to read as
 zero and cannot join the record, or any path that could reopen a settled
 market.
+
+**Notes.** [BE] #221's void and refund is a later user of `post_all` and of
+this record, and is not designed here. `outcome_id` is non-null, because a
+settlement always has a winner, so a void may need a record shape of its own.
 
 ---
 
@@ -4936,13 +4951,16 @@ named `12-settlement-<n>-<slug>` and targets the one below it.
 | # | Contents | On | Reviewer first |
 | --- | --- | --- | --- |
 | 0 | docs: ADR 0019, the ADR 0009 and 0017 amendments, these entries, CLAUDE.md, the ADR README | `dev` | decker757 |
-| 1 | market: SETTLED in `MarketStatus` and `PublicMarketStatus`, `DECIDED_STATUSES`, `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS`, `_proposal_to_decide`, `409 market_already_settled` | 0 | decker757 |
-| 2 | market: `POST /markets/{id}/settle`, `docs/api/market-service.md` | 1 | decker757 |
+| 1 | market: SETTLED in `MarketStatus` and `PublicMarketStatus`, `DECIDED_STATUSES`, `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS`, `_proposal_to_decide`, `409 market_already_settled`; `settleable` on the public detail, from `approved_at`, the window length setting (24 h default) and the five-minute gap | 0 | decker757 |
+| 2 | market: `POST /markets/{id}/settle` with `409 dispute_window_open`, `docs/api/market-service.md` | 1 | decker757 |
 | 3 | ledger model: `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`, `market_settlements`, the ledger's audit seam | 2 | |
 | 4 | `posting.post_all` | 3 | decker757 (`posting.py`) |
-| 5 | `service/settlement.py`, the settle POST on the `market_terms` client, the trade path's latch, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle and settle-vs-trade tests | 4 | |
+| 5 | `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade and window-boundary tests | 4 | |
 | 6 | controller route, error codes, `docs/api/ledger-service.md` | 5 | |
 | 7 | reads: portfolio, history, overview sink; mark the three entries #12 fulfils as history | 6 | |
+
+PR 1 builds `settleable`. [3.3] #11 builds send-back and the countdown on
+it, and #12 does not wait for #11.
 
 **Why.** CLAUDE.md: one layer or one behaviour per PR, each green on its own.
 Docs go first so that review of the design comes before review of the code.
@@ -4953,6 +4971,59 @@ is his. PR 4 touches `posting.py`, which is his file.
 the design would be argued in code review.
 
 **Reversal trigger.** Review asks for a different split.
+
+---
+
+### D-NEW — Settlement waits for `settleable`, which market_service derives from `approved_at`
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** market_service derives, on its own clock, from `approved_at`:
+send-back is allowed until `window_ends_at`, and settlement from
+`window_ends_at` plus five minutes. It exposes the second as `settleable` on
+the public detail. The ledger reads it in its status read and refuses an
+`approved` market that is not `settleable` with `409 dispute_window_open`.
+`POST /markets/{id}/settle` refuses the same, so a direct call cannot settle
+mid-window. ADR 0019.
+
+**Why.** [3.3] #11's window exists so that a wrong winner can be sent back
+before anyone is paid. A settlement inside it would make the window decide
+nothing. One clock decides both edges, the way the clock decides closing (ADR
+0011), and the ledger reads the answer rather than recomputing it, because
+two clocks deciding one boundary disagree at it. `settleable` gets no default
+in `MarketTerms`, for the reason `status` has none.
+
+**Rejected.** *The ledger computing the window from `approved_at`*: a second
+clock on the boundary, and a copy of #11's window length in the ledger's
+settings.
+
+**Reversal trigger.** None expected while #11's window exists.
+
+---
+
+### D-NEW — Settlement opens five minutes after send-back closes
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` turns true five minutes after `window_ends_at`, not
+at it.
+
+**Why.** A send-back that checks the clock just before `window_ends_at` and
+commits just after is invisible to a settlement's unlocked read in between.
+Without a gap, that settlement pays the old winner, and the record keeps it
+for good. Five minutes is a judgement call: market_service sets no statement,
+transaction or request timeout, so nothing bounds how long such a send-back
+takes. It is far longer than any request that completes, and short beside a
+24-hour window.
+
+**Rejected.**
+- *No gap*: the race above.
+- *A "settling" claim in market_service that locks the row before the
+  payment*: a new status, and a write in market_service before the ledger's,
+  which is a dual write, for the same result the gap gives.
+
+**Reversal trigger.** A statement or transaction timeout is set on
+market_service. The gap must then exceed it.
 
 ---
 
