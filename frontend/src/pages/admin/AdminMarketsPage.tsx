@@ -1,13 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { getMarketOverview, type MarketOverview } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
-import Card from '../../components/ui/Card'
 import PageTitle from '../../components/ui/PageTitle'
-import { buttonClass } from '../../components/ui/buttonClass'
 import { selectableClass } from '../../components/ui/selectableClass'
-import StatusBadge from '../../components/markets/StatusBadge'
-import { STATUS_CONFIG, formatCloseTime, type AdminMarketStatus } from '../../components/markets/marketStatus'
+import AdminMarketRow from '../../components/markets/AdminMarketRow'
+import { STATUS_CONFIG, type AdminMarketStatus } from '../../components/markets/marketStatus'
 import { useAuth } from '../../context/AuthContext'
 
 type StatusFilter = AdminMarketStatus | 'all'
@@ -75,31 +72,9 @@ export default function AdminMarketsPage() {
 
       {!loading && !error && visibleMarkets.length > 0 && (
         <div className="flex flex-col gap-3">
-          {visibleMarkets.map(market => {
-            // Only the creator can act on a market, e.g. propose its outcome.
-            const isMine = market.creator_id === user?.id
-            return (
-              <Card key={market.id} className="flex items-center justify-between gap-4 px-6 py-4">
-                <div className="min-w-0">
-                  <p className="truncate text-[15px] font-semibold text-smu-navy">
-                    {market.question ?? <span className="italic text-subtle">Untitled market</span>}
-                  </p>
-                  <p className="mt-1 text-xs text-subtle">
-                    {formatCloseTime(market.status, market.close_time)}
-                    {isMine && ' · Created by you'}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  {isMine && market.status === 'closed' && (
-                    <Link to={`/admin/markets/${market.id}/propose-outcome`} className={buttonClass('outline', 'xs')}>
-                      Propose Outcome
-                    </Link>
-                  )}
-                  <StatusBadge status={market.status} />
-                </div>
-              </Card>
-            )
-          })}
+          {visibleMarkets.map(market => (
+            <AdminMarketRow key={market.id} market={market} isMine={market.creator_id === user?.id} />
+          ))}
         </div>
       )}
     </AppLayout>
