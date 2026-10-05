@@ -4540,9 +4540,8 @@ ledger rather than the ledger remembering.
 **Date:** 2026-10-04 · **Ticket:** #104 · **Status:** active
 
 **Decision.** `browse` returns at most `limit` markets and a keyset cursor
-for the next page. The route's `limit`, `cursor` and `next_cursor` land with
-#104's third PR; until then `GET /public/markets` still asks for the largest
-page and exposes no cursor. The cursor carries four fields: `as_of`, the first page's
+for the next page. `GET /public/markets` takes `limit` and `cursor` and returns
+`next_cursor`. The cursor carries four fields: `as_of`, the first page's
 instant; which group the last market was in at `as_of`; its key in that group
 (`close_time` while trading, `LEAST(close_time, closed_at)` once stopped); and
 its id. Every later page groups and compares as of that `as_of`, through

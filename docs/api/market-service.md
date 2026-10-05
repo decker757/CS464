@@ -1003,13 +1003,41 @@ the first group explicitly.
 | --- | --- |
 | `status` | one of `open`, `closed`, `pending_resolution`, `approved`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
+| `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
+| `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
 `draft` and `submitted` are never returned, whether asked for by `status` or
 not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
 
+#### Paging
+
+The list is paged by keyset ([X-1] #104). Send the previous response's
+`next_cursor` back as `cursor`, with the same `q`, `status` and `limit`, for
+the next page. `next_cursor: null` means there is nothing after this page,
+including when the page is empty. The cursor is opaque: do not build or edit
+one.
+
+Pages read in turn never repeat a market, and never skip one that was there
+throughout, even while markets are published and closed between reads:
+
+- Which markets count as "still trading" is fixed at the moment the first page
+  was read, and the cursor carries that moment. A market that stops trading
+  while you page keeps its place in the order. It is not listed a second time
+  among the stopped markets.
+- Its `status` is always read now, so that market shows `closed` on whatever
+  page it appears. Under `status=open` it is left out of later pages, because
+  it no longer matches.
+- A market published after the first page appears on a later page if it sorts
+  after the point you have reached, and not at all if it sorts before it.
+  Start again without a cursor to see everything as of now.
+
+The cursor does not record `q` or `status`. Changing either and sending an
+old cursor is not an error, but it continues from a position in the old list;
+start again without a cursor instead.
+
 #### Response
 
-`200`, always — an empty result is `{"markets": []}`, never a `404`. [X-1]
+`200`, always — an empty result is `{"markets": [], "next_cursor": null}`, never a `404`. [X-1]
 #34's "an appropriate empty state" is the frontend's job once this returns
 nothing to render.
 
@@ -1037,7 +1065,8 @@ nothing to render.
         { "id": "2b8a4f3e-6d5c-4a1f-8e9d-8c7b6a5f4e3d", "position": 2, "label": "Another team" }
       ]
     }
-  ]
+  ],
+  "next_cursor": "MjAyNi0xMC0wNFQwOToxNTowMCswMDowMHwxfDIwMjctMDEtMDVUMTI6MDA6MDArMDA6MDB8NDEwNDY1ZjMtMjg1Mi00ODMzLTk2NGItZjQyZTIzYjgyMjdj"
 }
 ```
 
@@ -1047,6 +1076,13 @@ returns — so a card can name each outcome without fetching the detail per row.
 A market has two or more outcomes with any labels; render the labels given
 rather than assuming `Yes` and `No`. Like the rest of this response, it
 carries no prices.
+
+#### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
+| `422` | — | `status` is not an accepted value, `q` is too long or holds a NUL, or `limit` is below 1 |
 
 ### GET /public/markets/{id}
 
