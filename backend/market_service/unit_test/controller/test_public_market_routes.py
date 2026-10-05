@@ -282,6 +282,7 @@ async def test_an_empty_result_is_200_with_an_empty_list(
 
     assert response.status_code == 200
     assert response.json()["markets"] == []
+    assert response.json()["next_cursor"] is None
 
 
 # --- paging, #104 ---------------------------------------------------------
@@ -290,7 +291,9 @@ async def test_next_cursor_continues_the_list_and_is_null_on_the_last_page(
 ) -> None:
     """#104's contract: send `next_cursor` back as `cursor`; null is the end.
     The wiring only; the order and the rows are `test_browsing.py`'s job."""
-    created = {str((await _published(session)).id) for _ in range(3)}
+    created = set()
+    for _ in range(3):
+        created.add(str((await _published(session)).id))
 
     first = (
         await client.get(_LIST, params={"limit": 2}, headers=trader_headers)
