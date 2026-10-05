@@ -15,7 +15,7 @@ export default function MarketsPage() {
 
   useEffect(() => {
     listMarkets()
-      .then(setMarkets)
+      .then(page => setMarkets(page.markets))
       .catch(() => setError(true))
       .finally(() => setLoading(false))
   }, [])
