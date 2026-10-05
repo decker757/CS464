@@ -87,6 +87,9 @@ def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> 
     )
 
 
+# Adoption ends at this service's first revision after 0001 (ADR 0020). That PR
+# deletes the matches, missing-table and drift `legacy` tests below and keeps one
+# test that a `_build_like_before_75()` schema is refused as past the baseline.
 def test_a_legacy_schema_that_matches_the_models_is_stamped_and_keeps_its_rows(
     empty_schema,
 ) -> None:
