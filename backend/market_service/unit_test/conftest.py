@@ -456,7 +456,7 @@ async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
 
 
 async def approved_market(session, creator: Actor, **overrides: object) -> Market:
-    """An approved market, standing in for "settled" until [3.4] #12.
+    """A market whose proposal a second administrator has approved. [3.2] #10.
 
     Overrides are `proposed_market`'s.
     """
@@ -464,6 +464,24 @@ async def approved_market(session, creator: Actor, **overrides: object) -> Marke
     return await market_service.approve_outcome(
         session, actor(), market.id, approval_request(market.proposal_id)
     )
+
+
+async def settled_market(session, creator: Actor, **overrides: object) -> Market:
+    """The same approved market, moved to SETTLED. [3.4] #12.
+
+    Written with `update(Market)` because nothing else reaches SETTLED until
+    PR 2's `POST /markets/{id}/settle`; switch to the route then. Overrides
+    are `proposed_market`'s. Returns the market reloaded from the database.
+    """
+    market_id = (await approved_market(session, creator, **overrides)).id
+    await session.execute(
+        update(Market)
+        .where(Market.id == market_id)
+        .values(status=MarketStatus.SETTLED)
+    )
+    await session.commit()
+    session.expire_all()
+    return await market_service.get(session, creator.id, market_id)
 
 
 async def proposed_before_ids(session, actor: Actor) -> Market:

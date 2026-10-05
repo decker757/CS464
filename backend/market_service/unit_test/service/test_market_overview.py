@@ -16,9 +16,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model.entities import MarketStatus
+from core.config import get_settings
+from model.entities import Market, MarketStatus
 from service import browsing, market_service
 from service.audit import Actor
 from unit_test.conftest import (
@@ -29,6 +31,7 @@ from unit_test.conftest import (
     proposed_market,
     published_market_closing_at,
     recorded_statements,
+    settled_market,
 )
 
 # A statement that reads the markets table, and not `market_outcomes`.
@@ -103,6 +106,7 @@ async def population(session: AsyncSession) -> _Population:
         "swept_closed": (await closed_market(session, caller)).id,
         "pending": (await proposed_market(session, caller)).id,
         "approved": (await approved_market(session, caller)).id,
+        "settled": (await settled_market(session, caller)).id,
     }
     return _Population(caller=caller, now=now, ids=ids)
 
@@ -314,3 +318,64 @@ async def test_a_market_closing_exactly_at_the_injected_now_is_closed_in_both_li
     assert rows[0].status == MarketStatus.CLOSED
     assert counts[MarketStatus.CLOSED] == 1
     assert counts[MarketStatus.OPEN] == 0
+
+
+# --- [3.4] #12: settled, and settleable on each row --------------------------
+async def test_the_settled_filter_lists_only_settled_markets(
+    session: AsyncSession, population: _Population
+) -> None:
+    """[3.4] #12: "`settled` appears in [2.1] #5's overview filter and
+    zero-filled counts". The population's approved market is the decoy."""
+    rows, counts = await _overview(
+        session, population.caller, status=MarketStatus.SETTLED, now=population.now
+    )
+
+    assert _ids(rows) == [population.ids["settled"]]
+    assert counts[MarketStatus.SETTLED] == 1
+
+
+async def test_each_rows_settleable_follows_the_public_details_rule(
+    session: AsyncSession,
+    population: _Population,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[3.4] #12: each row carries `settleable` "by the same rule as the public
+    detail": true past the edge for approved, still true once settled, false
+    for every other status.
+
+    The window is patched to an hour, so the injected clock ten days ahead is
+    past the edge whatever the environment configures. Fails with SETTLED
+    left out of `DECIDED_STATUSES`, or with the flag missing from the rows.
+    """
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 3600, raising=False)
+    decided = {population.ids["approved"], population.ids["settled"]}
+
+    rows, _ = await _overview(session, population.caller, now=population.now)
+
+    assert rows, "the population must be listed for this to mean anything"
+    for row in rows:
+        assert row.settleable is (row.id in decided), row
+
+
+async def test_an_overview_rows_settleable_turns_true_at_the_edge(
+    session: AsyncSession,
+) -> None:
+    """The same inclusive edge as the public detail, on the overview's clock.
+
+    Fails with `>` in place of `>=`, or with the five-minute gap dropped.
+    """
+    caller = actor()
+    market_id = (await approved_market(session, caller)).id
+    approved_at = await session.scalar(
+        select(Market.approved_at).where(Market.id == market_id)
+    )
+    window = timedelta(seconds=get_settings().dispute_window_seconds)
+    edge = approved_at + window + timedelta(minutes=5)
+
+    before, _ = await _overview(
+        session, caller, now=edge - timedelta(microseconds=1)
+    )
+    at, _ = await _overview(session, caller, now=edge)
+
+    assert [row.settleable for row in before] == [False]
+    assert [row.settleable for row in at] == [True]

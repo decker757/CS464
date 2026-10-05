@@ -13,11 +13,18 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model.entities import MarketStatus
+from core.config import get_settings
+from model.entities import Market, MarketStatus
 from service.audit import Actor
-from unit_test.conftest import overdue_market, published_market_closing_at
+from unit_test.conftest import (
+    approved_market,
+    overdue_market,
+    published_market_closing_at,
+    settled_market,
+)
 
 # The one place the path is written.
 _OVERVIEW = "/markets/overview"
@@ -105,17 +112,24 @@ async def test_an_unknown_status_filter_is_422(
     assert _status_error_is_on_the_query(response.json())
 
 
-async def test_settled_is_422_until_3_4_12_adds_it__delete_when_12_lands(
-    client: AsyncClient, admin_headers: dict[str, str]
+async def test_settled_is_an_accepted_overview_filter(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
 ) -> None:
-    """"Settled is #12's filter and count, not #5's". Delete this test when
-    [3.4] #12 adds SETTLED to `MarketStatus`; it will then be a 200."""
+    """[3.4] #12: "`settled` appears in [2.1] #5's overview filter". The literal
+    string, so it fails while `MarketStatus` lacks the member; the approved
+    decoy fails a filter that matches every decided market."""
+    await approved_market(session, _admin(admin_id))
+    settled_id = (await settled_market(session, _admin(admin_id))).id
+
     response = await client.get(
         _OVERVIEW, params={"status": "settled"}, headers=admin_headers
     )
 
-    assert response.status_code == 422
-    assert _status_error_is_on_the_query(response.json())
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["markets"]] == [str(settled_id)]
 
 
 # --- what reaches the wire -------------------------------------------------
@@ -184,6 +198,46 @@ async def test_the_controllers_clock_reaches_both_the_list_and_the_counts(
     assert [row["status"] for row in payload["markets"]] == [MarketStatus.CLOSED.value]
     assert payload["counts"][MarketStatus.CLOSED.value] == 1
     assert payload["counts"][MarketStatus.OPEN.value] == 0
+
+
+async def test_each_rows_settleable_follows_the_controllers_clock(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[3.4] #12: each row carries `settleable` "on the clock the overview
+    already reads once for its list and counts". D-027's re-validation too.
+
+    Approved a moment ago, so the real clock reads false. At the edge the
+    route's clock reads true, one second earlier false. Fails if the service
+    reads `datetime.now(UTC)` instead of the `now` it is handed.
+    """
+    import controller.routes as routes  # noqa: PLC0415
+
+    market_id = (await approved_market(session, _admin(admin_id))).id
+    approved_at = await session.scalar(
+        select(Market.approved_at).where(Market.id == market_id)
+    )
+    window = timedelta(seconds=get_settings().dispute_window_seconds)
+    edge = approved_at + window + timedelta(minutes=5)
+
+    route_clock = {"now": edge}
+
+    class _RouteClock:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return route_clock["now"]
+
+    monkeypatch.setattr(routes, "datetime", _RouteClock)
+
+    at_the_edge = (await client.get(_OVERVIEW, headers=admin_headers)).json()
+    route_clock["now"] = edge - timedelta(seconds=1)
+    just_before = (await client.get(_OVERVIEW, headers=admin_headers)).json()
+
+    assert [row["settleable"] for row in at_the_edge["markets"]] == [True]
+    assert [row["settleable"] for row in just_before["markets"]] == [False]
 
 
 # --- the two older lists did not move --------------------------------------

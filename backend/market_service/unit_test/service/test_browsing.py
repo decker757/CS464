@@ -30,6 +30,7 @@ from unit_test.conftest import (
     published_market,
     published_market_closing_at,
     recorded_statements,
+    settled_market,
 )
 
 
@@ -357,11 +358,18 @@ async def test_an_unknown_market_is_refused(session: AsyncSession) -> None:
         await browsing.get_published(session, uuid.uuid4())
 
 
-async def test_an_approved_market_carries_its_winning_outcome(
-    session: AsyncSession,
+@pytest.mark.parametrize(
+    "decided_market",
+    [_approved_market, settled_market],
+    ids=["approved", "settled"],
+)
+async def test_a_decided_market_carries_its_winning_outcome(
+    session: AsyncSession, decided_market
 ) -> None:
-    """[X-3] #36: the winner, by id into the market's own `outcomes`."""
-    market = await _approved_market(session, actor())
+    """[X-3] #36: the winner, by id into the market's own `outcomes`. [3.4] #12:
+    "A settled market's public detail shows its winning outcome". The settled
+    case fails with SETTLED left out of `DECIDED_STATUSES`, or of `_visible`."""
+    market = await decided_market(session, actor())
 
     detail = await browsing.get_published(session, market.id)
 
@@ -668,3 +676,23 @@ async def test_the_browse_card_carries_the_derived_status_not_the_column(
 
     assert listed[stopped_id].status is MarketStatus.CLOSED
     assert not hasattr(listed[stopped_id], "raw_status")
+
+
+# --- [3.4] #12: settled is a status a trader can browse and filter on -------
+async def test_a_settled_market_is_listed_and_filterable_as_settled(
+    session: AsyncSession,
+) -> None:
+    """[3.4] #12: `settled` "is an accepted status on the trader browse".
+
+    Fails with SETTLED left out of `_visible`'s allowlist (not listed), or
+    out of the status filter. The approved market is the decoy.
+    """
+    approved_id = (await _approved_market(session, actor())).id
+    settled_id = (await settled_market(session, actor())).id
+
+    listed = {card.id: card for card in await browsing.browse(session)}
+    filtered = await browsing.browse(session, status=MarketStatus.SETTLED)
+
+    assert listed[settled_id].status is MarketStatus.SETTLED
+    assert listed[approved_id].status is MarketStatus.APPROVED
+    assert _ids(filtered) == [settled_id]
