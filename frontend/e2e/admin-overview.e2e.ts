@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { closeEarly, publishMarket, registerAdmin, saveDraft, uniqueName } from './support/backend'
-import { loadUntilShown, logIn, marketCard } from './support/browser'
+import { loadUntilShown, logIn, marketCard, selectTab } from './support/browser'
 
 // [2.1] #5 through GET /markets/overview. Counts are not asserted here: other
 // tests create markets at the same time, and both sides unit-test the counts.
@@ -25,11 +25,11 @@ test('an admin sees every published market, only their own drafts, and can propo
   await expect(theirCard).toBeVisible()
   await expect(theirCard).not.toContainText('Created by you')
 
-  await page.getByRole('tab', { name: /^draft/i }).click()
+  await selectTab(page, /^draft/i)
   await expect(marketCard(page, myDraft.question)).toContainText('Created by you')
   await expect(page.getByText(theirDraft.question)).toHaveCount(0)
 
-  await page.getByRole('tab', { name: /^closed/i }).click()
+  await selectTab(page, /^closed/i)
   const closedCard = await loadUntilShown(page, closed.question)
   await expect(closedCard.getByRole('link', { name: 'Propose Outcome' })).toBeVisible()
   await expect(page.getByText(mine.question)).toHaveCount(0)

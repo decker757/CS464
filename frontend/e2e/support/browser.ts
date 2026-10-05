@@ -23,7 +23,9 @@ export function marketCard(page: Page, question: string): Locator {
 /**
  * The card for `question` on the admin markets list, clicking Load more until
  * it is shown or there is nothing left to load. The list is paged ([2.1] #210),
- * and a database earlier runs have filled holds more than one page.
+ * and a database earlier runs have filled holds more than one page. Call it
+ * right after opening the page, or after `selectTab`, never after a bare tab
+ * click (see `selectTab`).
  */
 export async function loadUntilShown(page: Page, question: string): Promise<Locator> {
   const card = marketCard(page, question)
@@ -31,8 +33,9 @@ export async function loadUntilShown(page: Page, question: string): Promise<Loca
   // While a page is on its way the button reads "Loading…", so "Load more"
   // is briefly absent; wait it out rather than read that as the last page.
   const loadingMore = page.getByRole('button', { name: 'Loading…' })
-  // The tabs render in the same pass as "Loading markets…", so once they are
-  // visible the first page is either loading or loaded, never not yet asked for.
+  // On a fresh page the tabs render in the same pass as "Loading markets…", so
+  // once they are visible the first page is loading or loaded. After a tab
+  // change, selectTab has already waited for that tab's first page to answer.
   await expect(page.getByRole('tablist')).toBeVisible()
   await expect(page.getByText('Loading markets…')).toHaveCount(0)
   while ((await card.count()) === 0 && (await loadMore.count()) > 0) {
@@ -56,4 +59,21 @@ export async function setQueryParams(page: Page, pathname: string, params: Recor
       return route.continue({ url: url.toString() })
     },
   )
+}
+
+/**
+ * Clicks a status tab on the admin markets list and waits for the answer to the
+ * first-page request it sends. For a moment after the click the old tab's rows,
+ * Load more included, are still on screen, and a Load more clicked then belongs
+ * to the old list. The new tab's request is sent by the same effect that
+ * resets its list to "Loading markets…" (usePagedMarkets). That render is
+ * queued before the request leaves, and the answer needs a round trip, so by
+ * the time it has answered the old rows are gone and what loadUntilShown
+ * reads is the new tab's list. A timing argument, not a strict ordering, but
+ * one with a network round trip of margin.
+ */
+export async function selectTab(page: Page, name: RegExp): Promise<void> {
+  const answered = page.waitForResponse(response => new URL(response.url()).pathname === '/markets/overview')
+  await page.getByRole('tab', { name }).click()
+  await answered
 }
