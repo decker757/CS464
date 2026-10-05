@@ -245,8 +245,39 @@ class MarketNotPendingResolution(MarketError):
     )
 
 
+class MarketNotApproved(MarketError):
+    """A settle arrived for a market whose outcome is not approved. [3.4] #12.
+
+    One code for every status short of APPROVED, because the ledger is the
+    only caller and maps this one alone. ADR 0019, step 5.
+    """
+
+    status_code = 409
+    code = "market_not_approved"
+    message = (
+        "Only a market whose outcome has been approved can be settled. This "
+        "one has not been approved."
+    )
+
+
+class DisputeWindowOpen(MarketError):
+    """A settle arrived for an approved market that is not yet settleable. [3.4] #12.
+
+    409: the market is in the wrong state, and waiting fixes it. Settlement
+    opens five minutes after the dispute window ends, judged on Postgres's
+    clock. ADR 0019.
+    """
+
+    status_code = 409
+    code = "dispute_window_open"
+    message = (
+        "This market's outcome can still be disputed. It can be settled five "
+        "minutes after its dispute window ends."
+    )
+
+
 class MarketAlreadyApproved(MarketError):
-    """Any write or decision arrived for a market whose outcome is approved. [3.2] #10.
+    """Any write but settle arrived for a market whose outcome is approved. [3.2] #10.
 
     Checked before who is asking, so the proposer is told it is approved.
     ADR 0016.
@@ -261,7 +292,7 @@ class MarketAlreadyApproved(MarketError):
 
 
 class MarketAlreadySettled(MarketError):
-    """Any write or decision arrived for a market that is SETTLED. [3.4] #12.
+    """Any write but settle arrived for a market that is SETTLED. [3.4] #12.
 
     The message says the market is settled and nothing about payouts: SETTLED
     here does not prove the ledger paid, because the settle route can be
