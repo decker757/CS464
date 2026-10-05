@@ -4539,8 +4539,10 @@ ledger rather than the ledger remembering.
 
 **Date:** 2026-10-04 · **Ticket:** #104 · **Status:** active
 
-**Decision.** `GET /public/markets` returns at most `limit` markets and a
-`next_cursor`. The cursor carries four fields: `as_of`, the first page's
+**Decision.** `browse` returns at most `limit` markets and a keyset cursor
+for the next page. The route's `limit`, `cursor` and `next_cursor` land with
+#104's third PR; until then `GET /public/markets` still asks for the largest
+page and exposes no cursor. The cursor carries four fields: `as_of`, the first page's
 instant; which group the last market was in at `as_of`; its key in that group
 (`close_time` while trading, `LEAST(close_time, closed_at)` once stopped); and
 its id. Every later page groups and compares as of that `as_of`, through
@@ -4569,11 +4571,12 @@ The filter and displayed status stay on the real clock so a market that closed
 mid-browse shows its true status. Under `status=open` it drops out of later
 pages: a correct non-match, never a repeat.
 
-Under `status=closed` the same move runs the other way. A market whose
-`close_time` passes mid-browse is still in the trading group under the frozen
-clock, but the filter now matches it, so it is never shown on a later page. It
-is neither shown twice nor shifted: it is missing from the walk, as a market
-inserted ahead of the cursor is. A fresh first page lists it.
+Under `status=closed` the same move runs the other way. A market that stops
+trading mid-browse, whether its `close_time` passes or an administrator closes
+it early, is still in the trading group at the frozen `as_of`, but the filter
+now matches it, so it is absent from every later page. It is never shown twice
+and nothing shifts: it is missing from the walk, as a market inserted ahead of
+the cursor is. A fresh first page lists it.
 
 **Rejected.** *OFFSET*: repeats and skips under inserts. *Grouping by
 `open_for_trading(as_of)`*: an early close between reads lists a market twice.
@@ -4596,7 +4599,8 @@ reads True under the time-only predicate, which is why `browse` applies
 Postgres's (#179), so a close in the milliseconds of skew between them could
 regroup one market for a reader whose first page fell in that window; accepted
 for a display read, as D-025 accepts the same skew. Page sizes are the audit
-feed's settings and defaults, 50 and 200, clamped rather than refused. A bad
+feed's settings and defaults, 50 and 200, clamped rather than refused; the
+route applies them in #104's third PR. A bad
 cursor is the same `400 malformed_cursor` the audit, auth and ledger services
 answer ("A cursor is decoded before the query runs"). Paging the admin
 overview is a sibling ticket.
