@@ -30,10 +30,13 @@ from unit_test.conftest import (
     EVIDENCE_NOTE,
     EVIDENCE_URL,
     REJECTION_REASON,
+    approved_market,
     closed_market,
+    database_now,
     proposed_before_ids,
     proposed_market,
     published_market,
+    time_until_settleable,
 )
 from unit_test.conftest import actor as _actor
 from unit_test.conftest import approval_request as _approval
@@ -799,6 +802,70 @@ async def test_a_decision_names_the_proposal_entry_it_decided(
     assert proposed == [str(second), str(first)]
     assert rejected["context"]["proposal_id"] == str(first)
     assert approved["context"]["proposal_id"] == str(second)
+
+
+# --- settling [3.4] #12 ---------------------------------------------------
+async def test_a_settle_flip_is_recorded(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """[3.4] #12: the settle step "appends one `market.marked_settled` entry
+    ... when it moves APPROVED to SETTLED", carrying "the acting
+    administrator, the market, the proposal it settled on (as
+    `market.outcome_approved` carries it), no reason, and an `occurred_at`
+    from the clock its window check read". ADR 0019's amendment.
+
+    `now` is pinned to the edge, an instant already past: an entry stamped
+    from a second clock read, `func.now()` or Python lands later and fails.
+    """
+    proposer, approver = _actor(), _actor(username="ihsan_b")
+    settler = _actor(username="michelle_t")
+    opens = await database_now(session)
+    market = await approved_market(
+        session, proposer, approver=approver, approved_at=opens - time_until_settleable()
+    )
+
+    await market_service.settle(session, settler, market.id, now=opens)
+
+    entries = await _entries(audit_reader, settler)
+    assert len(entries) == 1
+
+    entry = entries[0]
+    assert entry["action_type"] == "market.marked_settled"
+    assert entry["actor_id"] == settler.id
+    assert entry["actor_username"] == "michelle_t"
+    assert entry["actor_role"] == "admin"
+    assert entry["target_type"] == "market"
+    assert entry["target_id"] == market.id
+    assert entry["reason"] is None
+    assert entry["occurred_at"] == opens
+
+    approval = next(
+        e for e in await _entries(audit_reader, approver)
+        if e["action_type"] == AdminAction.MARKET_OUTCOME_APPROVED.value
+    )
+    assert entry["context"] == approval["context"]
+
+
+async def test_a_repeat_settle_records_nothing(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """[3.4] #12: "A call on a market already SETTLED appends nothing." The
+    same administrator settles twice, so a second entry would sit beside the
+    first under one actor."""
+    settler = _actor()
+    opens = await database_now(session)
+    market = await approved_market(
+        session, _actor(), approved_at=opens - time_until_settleable()
+    )
+
+    await market_service.settle(session, settler, market.id)
+    await market_service.settle(session, settler, market.id)
+
+    flips = [
+        e for e in await _entries(audit_reader, settler)
+        if e["action_type"] == "market.marked_settled"
+    ]
+    assert len(flips) == 1
 
 
 # --- what does not get recorded -------------------------------------------
