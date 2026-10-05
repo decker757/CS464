@@ -190,7 +190,7 @@ def assert_baseline_downgrades_and_upgrades_again(
     from alembic import command  # noqa: PLC0415 - see drop_own_tables
     from sqlalchemy import inspect  # noqa: PLC0415
 
-    from shared.migrating import VERSION_TABLE, _alembic_config, run_in_transaction  # noqa: PLC0415
+    from shared.migrating import VERSION_TABLE, alembic_config, run_in_transaction  # noqa: PLC0415
 
     def tables() -> list[str]:
         return run_in_transaction(
@@ -201,7 +201,7 @@ def assert_baseline_downgrades_and_upgrades_again(
         return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
 
     assert migrate_step() == 0
-    command.downgrade(_alembic_config(alembic_ini, url), "base")
+    command.downgrade(alembic_config(alembic_ini, url), "base")
     assert set(tables()) <= {VERSION_TABLE}
 
     assert migrate_step() == 0

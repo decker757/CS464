@@ -23,7 +23,7 @@ from sqlalchemy.exc import DBAPIError
 from core.database import SCHEMA, Base
 from main import create_app
 from migrate import ALEMBIC_INI, main
-from shared.migrating import VERSION_TABLE, _alembic_config, run_in_transaction
+from shared.migrating import VERSION_TABLE, alembic_config, run_in_transaction
 from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
     assert_migrating_an_empty_schema_builds_the_models,
@@ -114,7 +114,7 @@ def test_the_downgrade_leaves_no_trigger_function_behind(empty_schema) -> None:
     tables does not take it with them."""
     assert main() == 0
 
-    command.downgrade(_alembic_config(ALEMBIC_INI, _URL), "base")
+    command.downgrade(alembic_config(ALEMBIC_INI, _URL), "base")
 
     left = run_in_transaction(
         _URL,

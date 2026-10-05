@@ -48,7 +48,7 @@ from sqlalchemy.pool import NullPool
 
 VERSION_TABLE = "alembic_version"
 
-# Where `_alembic_config` hands the URL to env.py. An attribute, not
+# Where `alembic_config` hands the URL to env.py. An attribute, not
 # `sqlalchemy.url`: configparser would %-interpolate a URL-encoded password.
 _URL_ATTRIBUTE = "database_url"
 
@@ -189,7 +189,7 @@ def _run_migrations(connection: Connection, *, metadata: MetaData, schema: str) 
 def run_env(*, metadata: MetaData, schema: str) -> None:
     """The body of a service's `migrations/env.py`: run Alembic's command online.
 
-    The URL comes from `_alembic_config`, or from DATABASE_URL for the `alembic`
+    The URL comes from `alembic_config`, or from DATABASE_URL for the `alembic`
     command line. Raises RuntimeError in offline (`--sql`) mode or with no URL.
     Leaves logging alone: Alembic's usual `fileConfig` disables every existing
     logger, and the suites' `caplog` reads several.
@@ -206,7 +206,11 @@ def run_env(*, metadata: MetaData, schema: str) -> None:
     )
 
 
-def _alembic_config(alembic_ini: Path, url: str) -> Config:
+def alembic_config(alembic_ini: Path, url: str) -> Config:
+    """Alembic's config for `alembic_ini`, carrying `url` to `run_env`.
+
+    For `alembic.command` calls; the guard tests use it to downgrade.
+    """
     config = Config(str(alembic_ini))
     config.attributes[_URL_ATTRIBUTE] = url
     return config
@@ -251,7 +255,7 @@ def migrate(
     the baseline if they match. Raises LegacyDrift, having changed nothing, if
     they do not or if the migrations have moved past the baseline. ADR 0020.
     """
-    config = _alembic_config(alembic_ini, url)
+    config = alembic_config(alembic_ini, url)
     tables = run_in_transaction(url, functools.partial(_own_tables, schema=schema))
     if tables and VERSION_TABLE not in tables:
         scripts = ScriptDirectory.from_config(config)
