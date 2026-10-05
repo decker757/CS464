@@ -379,28 +379,18 @@ async def _every_boundary(
     return [swept, past_close, in_one_day, *sorted(tied), *sorted(undated)]
 
 
-@pytest.mark.parametrize(
-    "limit",
-    [1, 3, 4, 5],
-    ids=[
-        "every_row",
-        "inside_the_undated_run",
-        "inside_the_tie",
-        "between_dated_and_undated",
-    ],
-)
 async def test_pages_read_in_turn_list_every_market_once_in_the_overview_order(
-    session: AsyncSession, limit: int
+    session: AsyncSession,
 ) -> None:
     """#210: "The order is … close_time ASC NULLS LAST, id ASC", and "a page
-    boundary inside the drafts can be named". Seven markets, so a boundary
-    falls inside the tie, inside the undated drafts, and exactly between the
-    dated and the undated."""
+    boundary inside the drafts can be named". One market a page, so a cursor
+    is cut at every boundary: inside the tie, inside the undated drafts, and
+    exactly between the dated and the undated."""
     caller = actor()
     now = _injected_now()
     expected = await _every_boundary(session, caller, now)
 
-    assert _ids(await _walk(session, caller, limit=limit, now=now)) == expected
+    assert _ids(await _walk(session, caller, limit=1, now=now)) == expected
 
 
 async def test_every_page_carries_the_counts_of_every_market_not_of_the_page(
