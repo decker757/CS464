@@ -5,7 +5,7 @@ from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
 Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
-[BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
+[3.4] #12 (the `settled` status and `settleable`), [BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
 [FE][3.1] #52.
 
 A successful submission, publication, early close, outcome proposal, approval
@@ -61,7 +61,7 @@ names who acted. Those three answer another administrator's draft or submitted
 market with a `409`, not a `404`: the id is confirmed to exist, and nothing in
 it is shown. ADR 0016.
 
-## The six statuses
+## The seven statuses
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
@@ -71,15 +71,18 @@ it is shown. ADR 0016.
 | `closed` | the clock at `close_time`, `POST /markets/{id}/close`, or `POST /markets/{id}/reject-outcome` | yes, but not tradeable |
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 | `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
+| `settled` | the market being settled ([3.4] #12); the status alone does not prove the ledger paid ([ADR 0019](../adr/0019-settlement-across-services.md)) | yes, with the winning outcome |
 
 The path is `draft → submitted → open → closed → pending_resolution →
-approved` and nothing skips a step. Every save on a market past `submitted` is
+approved → settled` and nothing skips a step. Every save on a market past `submitted` is
 a `409`, whatever the request asks for — the terms are final from `open`
 onwards.
 
 Only one transition is ever reversed: [3.2] #10's rejection sends a market from
 `pending_resolution` back to `closed`, with a reason. There is no unpublish, no
-reopen and no un-approve.
+reopen and no un-approve. `settled` is final: every write on a settled market is
+a `409 market_already_settled`, and the message says the market is settled and
+nothing about payouts.
 
 `closed` is the only one two different things produce. A market reaches it on
 its own when `close_time` passes, and an administrator can reach it early with
@@ -364,6 +367,7 @@ rather than issuing a second `GET`.
 | 409 | `market_not_submitted` | it is still a draft | press submit first |
 | 409 | `market_already_open` | it is already live | reload; hide the button |
 | 409 | `market_closed` | it has passed its closing time | reload; it is finished |
+| 409 | `market_already_settled` | it has been settled | reload; it is finished |
 | 422 | `draft_incomplete` | the terms no longer pass | fix the fields in `details` |
 
 **Every submission rule runs again, against the clock now.** That is not
@@ -449,6 +453,7 @@ seconds *after* `close_time`.
 | 409 | `market_closed` | it has already stopped | reload; hide the control |
 | 409 | `market_pending_resolution` | stopped, and an outcome is proposed | reload; show whose proposal is waiting |
 | 409 | `market_already_approved` | stopped, and its outcome is approved | reload; hide the control |
+| 409 | `market_already_settled` | stopped, and settled | reload; hide the control |
 | 422 | `close_incomplete` | the reason is missing or too short | fix `reason` and resend |
 
 **A market whose closing time has just passed is a `409 market_closed`, even
@@ -562,6 +567,7 @@ expecting it twice.
 | 409 | `market_not_closed` | it is still running | wait; the market has not finished |
 | 409 | `market_pending_resolution` | an outcome is already proposed | reload; show whose proposal is waiting |
 | 409 | `market_already_approved` | an outcome is already proposed and approved | reload; show who approved it |
+| 409 | `market_already_settled` | it has been settled | reload; hide the control |
 | 422 | `proposal_incomplete` | the winner or the evidence is wrong | fix the fields in `details` |
 
 **A market whose closing time has just passed is a `409`.** For a few seconds
@@ -686,6 +692,7 @@ criterion. `approved_by_id` never equals `proposed_by_id`. The three
 | 404 | `market_not_found` | no such market | nothing; it is not there |
 | 409 | `market_not_pending_resolution` | no proposal is waiting — draft, submitted (yours or another administrator's), open, or closed with none | reload; hide the control |
 | 409 | `market_already_approved` | somebody has already approved it | reload; show who and when |
+| 409 | `market_already_settled` | it has been settled | reload; hide the control |
 | 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
 
 State first, then who is asking, then which proposal. A proposer looking at a
@@ -773,6 +780,7 @@ Nothing on the market says a proposal was ever rejected; the audit log does.
 | 404 | `market_not_found` | no such market | nothing; it is not there |
 | 409 | `market_not_pending_resolution` | no proposal is waiting — including one somebody else has just rejected, and another administrator's draft or submitted market | reload; hide the control |
 | 409 | `market_already_approved` | it has already been approved, so it is too late to reject | reload; show who approved it |
+| 409 | `market_already_settled` | it has been settled, so it is too late to reject | reload; hide the control |
 | 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
 | 422 | `rejection_incomplete` | the reason is missing or too short | fix `reason` and resend |
 
@@ -847,7 +855,8 @@ GET /markets/overview?status=closed
       "creator_id": "7c1d5a0e-3b52-4f0a-9d0e-6f2b8a4c1e93",
       "status": "closed",
       "question": "Will Singapore core inflation be below 2% for December 2026?",
-      "close_time": "2026-12-31T16:00:00Z"
+      "close_time": "2026-12-31T16:00:00Z",
+      "settleable": false
     }
   ],
   "counts": {
@@ -856,7 +865,8 @@ GET /markets/overview?status=closed
     "open": 4,
     "closed": 1,
     "pending_resolution": 0,
-    "approved": 2
+    "approved": 2,
+    "settled": 0
   }
 }
 ```
@@ -871,9 +881,15 @@ GET /markets/overview?status=closed
   status field. Proposing gates on the stored column (ADR 0013), so for up to
   one sweep interval a market shown here as `closed` refuses a proposal with
   `409 market_not_closed`; handle that 409.
-- **`?status=`** accepts any of the six statuses, including `draft` and
-  `submitted`, which the trader filter refuses. Anything else is a `422`.
-  `settled` arrives with [3.4] #12, which adds it to the filter and the counts.
+- **`?status=`** accepts any of the seven statuses, including `draft` and
+  `submitted`, which the trader filter refuses, and `settled`. Anything else is
+  a `422`.
+- **`settleable`** ([3.4] #12) is a boolean on every row, so the settle control
+  can be hidden until a click could succeed. It is `true` from five minutes
+  after the dispute window ends, stays `true` once the market is `settled`, and
+  is `false` for every other status and for a market with no `approved_at`. It
+  is derived against the same instant as the list and the counts, so a row's
+  `status` and `settleable` never disagree.
 - **`counts`** is an object of integers keyed by every status, `0` when there
   are none, over every market the caller can see. **It ignores `?status=`**, so
   each count equals the length of that status's filtered list and the counts
@@ -962,7 +978,8 @@ itself.
 
 The derivation only ever makes a market *less* tradeable. An early close
 ([2.3] #7) leaves `close_time` in the future on purpose and is never reopened
-by it, and `pending_resolution` and `approved` pass through unchanged.
+by it, and `pending_resolution`, `approved` and `settled` pass through
+unchanged.
 [ADR 0011](../adr/0011-market-auto-close.md)'s amendment has the full
 argument for why the split is by audience rather than by rule.
 
@@ -976,8 +993,8 @@ ones still trading first.
 1. Markets still trading, **soonest `close_time` first** — the one about to
    stop is at the top.
 2. Every other market, **most recently stopped first** — whatever its status,
-   so `closed`, `pending_resolution` and `approved` share one ordering and an
-   approved market gets no place of its own. "Stopped" is when trading
+   so `closed`, `pending_resolution`, `approved` and `settled` share one
+   ordering and an approved or settled market gets no place of its own. "Stopped" is when trading
    actually stopped: `close_time` for a market the clock closed, and the
    moment of the close for one an administrator closed early ([2.3] #7), whose
    `close_time` is still in the future.
@@ -1001,7 +1018,7 @@ the first group explicitly.
 
 | Query parameter | Rule |
 | --- | --- |
-| `status` | one of `open`, `closed`, `pending_resolution`, `approved`; anything else is a `422` |
+| `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
 
 `draft` and `submitted` are never returned, whether asked for by `status` or
@@ -1079,9 +1096,17 @@ rule is protecting.
   "liquidity_b": "100.0000",
   "seed_subsidy": "250.0000",
   "published_at": "2026-09-13T14:12:03.118374Z",
-  "proposed_outcome_id": null
+  "proposed_outcome_id": null,
+  "settleable": false
 }
 ```
+
+`settleable` ([3.4] #12) is a boolean, always present. It is `true` from five
+minutes after the dispute window ends, stays `true` once the market is
+`settled`, and is `false` for every other status and for a market with no
+`approved_at`. The ledger reads it before paying out and does not recompute
+it, so a client that shows a settle control should do the same and not work it
+out from `approved_at`.
 
 `proposed_outcome_id` is [X-3] #36's "settled markets display the winning
 outcome". When it is set it names a member of this same response's `outcomes`
@@ -1097,8 +1122,9 @@ and the proposer may re-propose a different outcome. Shipping it earlier would
 show every trader a "winning outcome" the platform then reversed, with no
 correction and before [3.3] #11's dispute window exists to contest it.
 
-So `proposed_outcome_id !== null` on this endpoint means decided, and you may
-render it as the result without checking the status first. To show that a
+So `proposed_outcome_id !== null` on this endpoint means decided (`approved`
+or `settled`), and you may render it as the result without checking the status
+first. To show that a
 market is *awaiting* a decision, read `status === "pending_resolution"` — the
 identity of the proposed outcome is not available to a trader until it is
 approved. An administrator who needs the pending value reads `GET
@@ -1151,6 +1177,7 @@ it still reads `code` and `message`:
 | 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one |
 | 409 | `market_not_pending_resolution` | an approval or rejection arrived for a market with no proposal waiting, whoever created it |
 | 409 | `market_already_approved` | anything but a read arrived for a market whose outcome is approved |
+| 409 | `market_already_settled` | anything but a read arrived for a settled market. Checked before who is asking, so a proposer is told it is settled |
 | 409 | `proposal_superseded` | an approval or rejection quoted a `proposal_id` that is no longer the proposal waiting |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | `proposal_incomplete` | outcome proposal refused; see `details` |

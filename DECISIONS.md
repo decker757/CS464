@@ -5097,7 +5097,8 @@ zero, it reopens the race that entry closes.
 
 **Decision.** `settleable` is true when the status is in `DECIDED_STATUSES`,
 `approved_at` is not null, and `now >= approved_at + window + 5 minutes`.
-It is a pure function in `core/` that takes the market's status, its
+It is a pure function in `core/` that takes whether the market's status is
+decided (`core/` cannot import `model/`, as with `trading_is_open`), its
 `approved_at`, the window and `now`. `service/` stamps it onto the projection
 before it is built. It is never a computed field or a validator.
 

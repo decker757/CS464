@@ -361,6 +361,9 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
         "`counts` has a key for every status, zero when none, over every "
         "market the caller can see, and ignores the `status` filter, so each "
         "count equals the length of that status's filtered list.\n\n"
+        "Each row's `settleable` ([3.4] #12) is derived against the same "
+        "instant: true from five minutes after the dispute window ends, "
+        "still true once `settled`, false otherwise.\n\n"
         "Ordered by soonest `close_time`, markets with none last, then by id."
     ),
     responses={403: {"description": "`not_an_administrator` — a trader."}},
