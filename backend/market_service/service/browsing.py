@@ -10,7 +10,7 @@ Each browse card names its outcomes (#214), so a card never guesses a label.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import (
@@ -18,6 +18,7 @@ from sqlalchemy import (
     Row,
     and_,
     case,
+    false,
     func,
     not_,
     null,
@@ -28,7 +29,14 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MarketNotFound
-from core.paging import BrowsePosition, decode_browse_cursor, encode_browse_cursor
+from core.paging import (
+    BrowsePosition,
+    OverviewPosition,
+    decode_browse_cursor,
+    decode_overview_cursor,
+    encode_browse_cursor,
+    encode_overview_cursor,
+)
 from model.entities import (
     PUBLIC_STATUSES,
     AdminMarketCard,
@@ -333,6 +341,129 @@ async def get_published(
     return market
 
 
+# --- the administrator's overview. [2.1] #5, #210 --------------------------
+# Its two groups, in order: every market still in play, then the settled ones.
+# Settled markets are finished, and an action queue ordered by oldest close
+# would otherwise put every one of them first.
+_ACTIVE_GROUP = 0
+_SETTLED_GROUP = 1
+
+
+def _visible_to_admin(caller_id: uuid.UUID) -> ColumnElement[bool]:
+    """Every market an administrator may see: published, plus their own
+    drafts and submissions. [2.1] #5.
+
+    An allowlist plus ownership, like `_visible`: a new status is not visible
+    to everyone by default.
+    """
+    return or_(_visible(), Market.creator_id == caller_id)
+
+
+def _is_settled() -> ColumnElement[bool]:
+    """Is the market settled? Decides its overview group. #210.
+
+    Constant false until [3.4] #12 adds `MarketStatus.SETTLED` (#227). Then
+    the body is `return Market.status == MarketStatus.SETTLED`, and nothing
+    else changes: the order, the keyset and the cursor carry the group already.
+    """
+    return false()
+
+
+def _overview_group() -> ColumnElement[int]:
+    """0 for a market still in play, 1 for a settled one, which sorts last.
+
+    A CASE rather than the boolean: until SETTLED exists the boolean renders
+    as `false`, and Postgres refuses `ORDER BY false` as a non-integer constant.
+    """
+    return case((_is_settled(), _SETTLED_GROUP), else_=_ACTIVE_GROUP)
+
+
+def _overview_order() -> tuple[ColumnElement[object], ...]:
+    """Settled last; then soonest close, none last; then id.
+
+    "The admin overview orders by soonest close, missing close times last,
+    then id", with #210's group in front. Nothing here reads the clock, so a
+    market keeps its place while the clock closes it.
+    """
+    return (
+        _overview_group().asc(),
+        Market.close_time.asc().nulls_last(),
+        Market.id.asc(),
+    )
+
+
+def _after_a_dated_market(position: OverviewPosition) -> ColumnElement[bool]:
+    """In `position`'s group, every market after it when it has a close time:
+    the rest of the dated markets, then every one with no close time."""
+    later_dated = tuple_(Market.close_time, Market.id) > tuple_(
+        position.close_time, position.market_id
+    )
+    return or_(later_dated, Market.close_time.is_(None))
+
+
+def _after_an_undated_market(position: OverviewPosition) -> ColumnElement[bool]:
+    """In `position`'s group, every market after it when it has no close time:
+    the rest of the undated markets, by id."""
+    return and_(Market.close_time.is_(None), Market.id > position.market_id)
+
+
+def _after_in_overview(position: OverviewPosition) -> ColumnElement[bool]:
+    """Every market `_overview_order` puts after `position`: the rest of its
+    group, then every later group."""
+    group = _overview_group()
+    position_group = _SETTLED_GROUP if position.settled else _ACTIVE_GROUP
+    if position.close_time is None:
+        rest_of_group = _after_an_undated_market(position)
+    else:
+        rest_of_group = _after_a_dated_market(position)
+    return or_(group > position_group, and_(group == position_group, rest_of_group))
+
+
+def _overview_cursor_after(row: Row) -> str:
+    """The cursor that continues the overview after `row`."""
+    return encode_overview_cursor(
+        OverviewPosition(
+            settled=row.overview_group == _SETTLED_GROUP,
+            close_time=row.close_time,
+            market_id=row.id,
+        )
+    )
+
+
+async def _list_overview_rows(
+    session: AsyncSession,
+    *,
+    caller_id: uuid.UUID,
+    limit: int,
+    status: MarketStatus | None,
+    now: datetime,
+    after: OverviewPosition | None,
+) -> Sequence[Row]:
+    """Up to `limit + 1` overview rows after `after`, in the overview's order.
+
+    The status filter is the browse's (`_status_matches`), in the query and
+    so before the limit. Columns, not entities, for the reason `browse` gives.
+    """
+    stmt = select(
+        Market.id,
+        Market.creator_id,
+        Market.status,
+        Market.question,
+        Market.close_time,
+        _overview_group().label("overview_group"),
+    ).where(_visible_to_admin(caller_id))
+
+    if status is not None:
+        stmt = stmt.where(_status_matches(status, now))
+
+    if after is not None:
+        stmt = stmt.where(_after_in_overview(after))
+
+    # One row past the page says whether another exists, without a COUNT.
+    stmt = stmt.order_by(*_overview_order()).limit(limit + 1)
+    return (await session.execute(stmt)).all()
+
+
 def _tally(
     statuses: Iterable[MarketStatus], seeded: Iterable[MarketStatus]
 ) -> dict[MarketStatus, int]:
@@ -344,22 +475,35 @@ def _tally(
 
 
 async def count_by_status(
-    session: AsyncSession, *, now: datetime | None = None
+    session: AsyncSession,
+    *,
+    now: datetime | None = None,
+    caller_id: uuid.UUID | None = None,
 ) -> dict[MarketStatus, int]:
-    """Markets per displayed status, over what a trader can see. [2.1] #5, D-020.
+    """Markets per displayed status. [2.1] #5, D-020.
 
-    Derived like `browse`, so a count never disagrees with the list beside it
-    (D-024). DRAFT and SUBMITTED are not counted.
+    With no `caller_id`, over what a trader can see, zero-filled over the
+    statuses a trader can see; DRAFT and SUBMITTED are not counted. With one,
+    over what that administrator can see, zero-filled over every status: the
+    overview's counts (#210). Derived like `browse`, so a count never disagrees
+    with the list beside it (D-024).
     """
     now = now or datetime.now(UTC)
 
+    if caller_id is None:
+        scope = _visible()
+        seeded: Iterable[MarketStatus] = PUBLIC_STATUSES
+    else:
+        scope = _visible_to_admin(caller_id)
+        seeded = MarketStatus
+
     # Columns, not entities, for the reason `browse` gives.
-    stmt = select(Market.status, Market.close_time).where(_visible())
+    stmt = select(Market.status, Market.close_time).where(scope)
 
     rows = (await session.execute(stmt)).all()
     return _tally(
         (displayed_status(status, close_time, now=now) for status, close_time in rows),
-        seeded=PUBLIC_STATUSES,
+        seeded=seeded,
     )
 
 
@@ -367,31 +511,51 @@ async def overview(
     session: AsyncSession,
     *,
     caller_id: uuid.UUID,
+    limit: int,
     status: MarketStatus | None = None,
     now: datetime,
+    cursor: str | None = None,
 ) -> MarketOverview:
-    """Every market an administrator can see, with per-status counts. [2.1] #5.
+    """One page of what an administrator can see, with counts over all of it. [2.1] #5, #210.
 
-    Published markets plus the caller's own drafts and submissions. One
-    statement and one `now`, so the list and the counts describe the same
-    instant; do not read the counts separately. The counts cover everything
-    visible and ignore `status`. Ordered by soonest close, none last, then id.
-    D-NEW entries for #5, ADR 0011's #5 amendment.
+    Published markets plus the caller's own drafts and submissions: settled
+    last, then soonest close with none last, then id. At most `limit`;
+    `next_cursor` is None on the last page. The counts cover every market the
+    caller can see, whatever `status` and `cursor` say. The page and the
+    counts are two statements in one REPEATABLE READ transaction, so they
+    describe one snapshot, and read one `now` (D-025). Raises `MalformedCursor`
+    for a cursor this service did not issue, and `InvalidRequestError` if the
+    session already has a transaction open. Commits its own read-only
+    transaction. DECISIONS.md, "The admin overview pages by keyset, settled
+    markets last, and reads its counts in the same REPEATABLE READ snapshot".
     """
-    # Columns, not entities, for the reason `browse` gives. An allowlist plus
-    # ownership: a new status is not visible to everyone by default.
-    stmt = (
-        select(
-            Market.id,
-            Market.creator_id,
-            Market.status,
-            Market.question,
-            Market.close_time,
-        )
-        .where(or_(_visible(), Market.creator_id == caller_id))
-        .order_by(Market.close_time.asc().nulls_last(), Market.id.asc())
-    )
+    # Decoded before the query, so a bad value is a 400 rather than a driver
+    # error. DECISIONS.md, "A cursor is decoded before the query runs".
+    after = decode_overview_cursor(cursor) if cursor is not None else None
 
+    # `begin()` refuses a session already in a transaction, where the level can
+    # no longer be set; `connection(execution_options=...)` alone would only
+    # warn and read at READ COMMITTED. The level resets when the connection
+    # goes back to the pool.
+    async with session.begin():
+        await session.connection(
+            execution_options={"isolation_level": "REPEATABLE READ"}
+        )
+        rows = await _list_overview_rows(
+            session,
+            caller_id=caller_id,
+            limit=limit,
+            status=status,
+            now=now,
+            after=after,
+        )
+        counts = await count_by_status(session, now=now, caller_id=caller_id)
+
+    shown = rows[:limit]
+    next_cursor = _overview_cursor_after(shown[-1]) if len(rows) > limit else None
+
+    # Derived here, before projection, not in a validator: FastAPI
+    # re-validates the response without the request's clock. D-025, D-027.
     cards = [
         AdminMarketCard(
             id=row.id,
@@ -400,9 +564,6 @@ async def overview(
             question=row.question,
             close_time=row.close_time,
         )
-        for row in (await session.execute(stmt)).all()
+        for row in shown
     ]
-
-    counts = _tally((card.status for card in cards), seeded=MarketStatus)
-    listed = [card for card in cards if status is None or card.status == status]
-    return MarketOverview(markets=listed, counts=counts)
+    return MarketOverview(markets=cards, counts=counts, next_cursor=next_cursor)

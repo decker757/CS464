@@ -1,16 +1,17 @@
-"""The admin market overview, through the service layer. [2.1] #5.
+"""The admin market overview, through the service layer. [2.1] #5, #210.
 
 Every published market plus the caller's own drafts and submissions, with
 per-status counts beside the list. Status, filter and counts all derive from
-the clock (ADR 0011, as amended by #5), and list and counts share one clock
-and one statement ("The overview's list and counts share one clock and one
-statement"). The clock is always injected: `now` sits ten days ahead of the
-real clock, so any half that reads its own clock disagrees with it.
+the clock (ADR 0011, as amended by #5). #210 pages the list by keyset, settled
+markets last, and reads the counts in the same REPEATABLE READ snapshot
+("The admin overview pages by keyset, settled markets last, and reads its
+counts in the same REPEATABLE READ snapshot"). The clock is always injected:
+`now` sits ten days ahead of the real clock, so any half that reads its own
+clock disagrees with it.
 """
 
 from __future__ import annotations
 
-import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -18,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model.entities import MarketStatus
+from model.entities import MarketOverview, MarketStatus
 from service import browsing, market_service
 from service.audit import Actor
 from unit_test.conftest import (
@@ -28,14 +29,39 @@ from unit_test.conftest import (
     draft_request,
     proposed_market,
     published_market_closing_at,
-    recorded_statements,
 )
 
-# A statement that reads the markets table, and not `market_outcomes`.
-_READS_MARKETS = re.compile(r"\bmarkets\b")
+# More than any test here creates, so a test about order or counts reads one page.
+_ONE_PAGE = 1000
 
 
 # --- the one place the assumed signature is written ------------------------
+async def _page(
+    session: AsyncSession,
+    caller: Actor,
+    *,
+    limit: int = _ONE_PAGE,
+    status: MarketStatus | None = None,
+    now: datetime,
+    cursor: str | None = None,
+) -> MarketOverview:
+    """One overview page as `caller` sees it at `now`.
+
+    Commits first. A request's session arrives with no transaction open, and
+    `overview` refuses one that has, where REPEATABLE READ could no longer be
+    set; the fixtures here leave one open after their last read.
+    """
+    await session.commit()
+    return await browsing.overview(
+        session,
+        caller_id=caller.id,
+        limit=limit,
+        status=status,
+        now=now,
+        cursor=cursor,
+    )
+
+
 async def _overview(
     session: AsyncSession,
     caller: Actor,
@@ -43,11 +69,9 @@ async def _overview(
     status: MarketStatus | None = None,
     now: datetime,
 ) -> tuple[list, dict[MarketStatus, int]]:
-    """The overview's rows and counts, as `caller` sees them at `now`."""
-    result = await browsing.overview(
-        session, caller_id=caller.id, status=status, now=now
-    )
-    return result.markets, result.counts
+    """The overview's rows and counts on one page, as `caller` sees them at `now`."""
+    page = await _page(session, caller, status=status, now=now)
+    return page.markets, page.counts
 
 
 # --- helpers --------------------------------------------------------------
@@ -137,7 +161,8 @@ async def test_on_an_empty_database_every_status_counts_zero(
     """[2.1] #5: "Counts are shown for every status, zero when none".
 
     Exact equality, so a count seeded from the trader-visible statuses
-    alone, as `count_by_status` is, fails for lacking draft and submitted.
+    alone, as `count_by_status` is with no caller, fails for lacking draft
+    and submitted.
     """
     rows, counts = await _overview(session, actor(), now=_injected_now())
 
@@ -277,24 +302,7 @@ async def test_markets_sharing_a_close_time_come_back_lower_id_first(
     assert _ids(rows) == sorted(tied)
 
 
-# --- one statement, one clock ----------------------------------------------
-async def test_the_list_and_the_counts_come_from_one_statement(
-    session: AsyncSession, population: _Population
-) -> None:
-    """[2.1] #5: "The counts and the list describe the same instant".
-
-    Under READ COMMITTED each statement takes its own snapshot, so a publish
-    committing between two reads splits the counts from the list. Fails when
-    the counts are read in a separate statement. "The overview's list and
-    counts share one clock and one statement".
-    """
-    with recorded_statements() as statements:
-        await _overview(session, population.caller, now=population.now)
-
-    market_reads = [s for s in statements if _READS_MARKETS.search(s.sql)]
-    assert len(market_reads) == 1, market_reads
-
-
+# --- one clock -------------------------------------------------------------
 async def test_a_market_closing_exactly_at_the_injected_now_is_closed_in_both_list_and_counts(
     session: AsyncSession,
 ) -> None:

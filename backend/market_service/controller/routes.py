@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Query, Response, status
 
 from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
+from core.config import get_settings
 from model.entities import MarketStatus
 from model.schemas import (
     MarketCloseRequest,
@@ -378,7 +379,13 @@ async def market_overview(
     now = datetime.now(UTC)
 
     result = await browsing.overview(
-        session, caller_id=admin.user_id, status=status, now=now
+        session,
+        caller_id=admin.user_id,
+        # Up to the ceiling, until #210's controller PR gives this route
+        # `limit` and `cursor`.
+        limit=get_settings().max_page_size,
+        status=status,
+        now=now,
     )
     return MarketOverviewResponse(
         markets=[MarketOverviewRowOut.model_validate(card) for card in result.markets],
