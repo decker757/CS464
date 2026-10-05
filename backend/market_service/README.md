@@ -110,6 +110,8 @@ Full request and response shapes: [`docs/api/market-service.md`](../../docs/api/
 
 ```
 main.py                     create_app(), and nothing else
+migrate.py                  the market-migrate step: the schema to head, or refuse
+alembic.ini, migrations/    this schema's Alembic history [F-5]
 
 controller/                 the HTTP boundary. No business rules live here.
     routes.py               the four endpoints
@@ -205,5 +207,6 @@ account and no cascade will clean it up. ADR 0003 has the argument.
 
 **The schema comes from Alembic, not `create_all`.** The `market-migrate`
 compose step runs `migrate.py` as `market_svc` and `market` starts only if it
-exited 0. A new column is a revision under `migrations/versions/`, not a
-`sql/migrations` file. [F-5] #75.
+exited 0. A model change is a revision under `migrations/versions/`; root
+`CLAUDE.md` has the commands. The baseline folds in the hand-applied ALTERs
+`sql/migrations/` used to hold. [F-5] #75, ADR 0020.
