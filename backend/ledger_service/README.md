@@ -23,7 +23,7 @@ docker compose up --build        # this service on http://localhost:8003/docs
 
 Nothing in `sql/` needs to change and no `docker compose down -v` is required.
 `ledger_svc` and the `ledger` schema have been in `sql/01-roles.sql` and
-`sql/02-schemas.sql` since #67, a sprint ahead of need, and the three tables are
+`sql/02-schemas.sql` since #67, a sprint ahead of need, and the tables are
 created by the `ledger-migrate` compose step (Alembic) before this service starts.
 
 ## Tests
