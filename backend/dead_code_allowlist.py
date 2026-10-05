@@ -15,10 +15,6 @@ reset_hub
 subscriber_count
 connection_count
 
-# No production caller since [2.1] #5 built its own overview. Whether to
-# delete it and supersede D-020 is being decided on #194.
-count_by_status
-
 
 # Alembic calls these by name in every migrations/versions/*.py; nothing
 # imports them. [F-5] #75.

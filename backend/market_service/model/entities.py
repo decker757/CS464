@@ -159,10 +159,15 @@ class AdminMarketCard:
 
 @dataclass(frozen=True)
 class MarketOverview:
-    """The overview's rows and per-status counts, read against one clock."""
+    """One page of the overview's rows, and per-status counts over every row. [2.1] #5, #210.
+
+    Read in one snapshot against one clock. `next_cursor` continues after the
+    last row and is None on the last page, an empty one included.
+    """
 
     markets: list[AdminMarketCard]
     counts: dict[MarketStatus, int]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True)
