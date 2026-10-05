@@ -4748,6 +4748,7 @@ Move these into the log above when they're settled.
   outstanding check is a backstop on the trade route"). But that backstop is
   the only guard, and `C(q)` over a negative `q` returns a number rather than
   failing. Adding the CHECK is a constraint on an existing table, so it needs
-  a hand-applied file in `sql/migrations/` against `cs464`. Whether that is
+  an Alembic revision in the ledger's `migrations/versions/`, written by hand,
+  since autogenerate cannot see a CHECK (ADR 0020). Whether that is
   worth it, and whether [3.4] #12 should land it since it is the next writer
   of `q`, is undecided.

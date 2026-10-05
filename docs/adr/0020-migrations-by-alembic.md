@@ -227,7 +227,10 @@ image with a different command.
 
 **A pre-#75 database must be migrated before the second revision lands.** Once
 any service has a revision after `0001`, adoption ends for that service, and a
-database that was never migrated can only be rebuilt.
+database that was never migrated can only be rebuilt. That service's adoption
+tests go with it: the pull request that adds its first revision deletes the
+matches, missing-table and drift tests, and keeps one test that a schema built
+like before #75 is refused as past the baseline, against the real history.
 
 ## Alternatives rejected
 

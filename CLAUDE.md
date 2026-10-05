@@ -60,11 +60,12 @@ docker compose up --build     # auth :8000, market :8001, audit :8002,
 
 ```bash
 cd backend/auth_service       # or market_service, audit_service, ledger_service
+.venv/bin/pip install -r requirements-dev.txt   # again after pulling #75 (Alembic)
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
 
 cd backend/auth_service       # or market_service, ledger_service
-PYTHONPATH=.. .venv/bin/python migrate.py   # what <svc>-migrate runs; needs DATABASE_URL
+DATABASE_URL=<its role's URL> PYTHONPATH=.. .venv/bin/python migrate.py   # <svc>-migrate's job
 
 cd backend/realtime_service   # the exception: no database, wants Redis
 .venv/bin/pytest              # needs `docker compose up -d redis`
@@ -114,11 +115,11 @@ both the dev and the test database. So a new column, index or constraint in
 ```bash
 cd backend/market_service        # or auth_service, ledger_service: then AUTH_ or LEDGER_ below
 .venv/bin/pytest unit_test/test_migrations.py   # red for now; leaves the test schema empty
-export DATABASE_URL="$(grep '^MARKET_TEST_DATABASE_URL=' ../../.env | cut -d= -f2-)"
-PYTHONPATH=.. .venv/bin/python migrate.py       # that empty schema, to the current head
-.venv/bin/alembic revision --autogenerate --rev-id 0002 -m "what changed"
+TEST_DB="$(grep '^MARKET_TEST_DATABASE_URL=' ../../.env | cut -d= -f2-)"   # not exported
+DATABASE_URL="$TEST_DB" PYTHONPATH=.. .venv/bin/python migrate.py   # empty schema to current head
+DATABASE_URL="$TEST_DB" .venv/bin/alembic revision --autogenerate --rev-id 0002 -m "what changed"
 # read every line of migrations/versions/0002_what_changed.py, then:
-.venv/bin/pytest unit_test/test_migrations.py   # green once the revision and the models agree
+.venv/bin/pytest unit_test/test_migrations.py   # green, bar a first revision's legacy tests
 ```
 
 Read what autogenerate wrote: it is a starting point. It cannot see CHECK
@@ -131,9 +132,14 @@ other. The long-lived `cs464` gets the revision on the next
 `docker compose up --build`.
 
 The first revision after a service's baseline also turns red every test in
-that service's `test_migrations.py` with `legacy` in its name, and that is not
-the new revision's fault: they pin the adoption below, which ends at the second
-revision by design (ADR 0020). What replaces them is part of that pull request.
+that service's `test_migrations.py` with `legacy` in its name. They pin the
+adoption below, which ends at the second revision by design (ADR 0020), so in
+that pull request delete the service's matches, missing-table and drift
+`legacy` tests, and keep exactly one: a schema built by
+`_build_like_before_75()` is refused with "moved past the baseline", against
+the real history. In auth that means rewriting
+`test_a_legacy_schema_is_refused_once_the_migrations_pass_the_baseline`, whose
+fake `0002` would collide with the real one.
 
 The suites build their schema from the models, not from the migrations, and
 `test_migrations.py` is what holds the two together (ADR 0020). Market's and

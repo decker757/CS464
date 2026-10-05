@@ -32,8 +32,15 @@ docker compose up -d db                    # from the repo root
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env          # the copy in this directory, not the root one
+DATABASE_URL="$(grep '^DATABASE_URL=' .env | cut -d= -f2-)" PYTHONPATH=.. .venv/bin/python migrate.py
 .venv/bin/uvicorn main:app --reload --port 8001
 ```
+
+The service creates no tables, so run its migrate step once before the first
+start, and again after pulling a new revision. `migrate.py` reads
+`DATABASE_URL` from the environment only, not from `.env`, hence the prefix.
+`docker compose up --build market-migrate` from the repo root does the same in a
+container.
 
 ## Getting an admin account
 

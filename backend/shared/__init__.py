@@ -4,11 +4,11 @@ ADR 0005 named what belongs here and, just as importantly, what does not:
 "Extract when #41 lands, and narrowly: token verification, the settings base,
 and the LMSR engine. Not `core`." This package is the first two of those three,
 plus what later cleared the bar below: the role enum, the cursor format, the
-test env loader, the test helpers (the import-boundary scan, the
-migration guard tests' `schema_catalog`, `drop_own_tables`,
-`build_like_before_75`, `assert_migrating_an_empty_schema_builds_the_models`
-and `assert_baseline_downgrades_and_upgrades_again`, and `compose_service`), the audit writer (ADR 0006's #135 amendment), and the
-migration runner (ADR 0020).
+test env loader, the test helpers (the import-boundary scan, the migration
+guard tests' `schema_catalog`, `drop_own_tables`, `build_like_before_75`,
+`assert_migrating_an_empty_schema_builds_the_models` and
+`assert_baseline_downgrades_and_upgrades_again`, and `compose_service`), the
+audit writer (ADR 0006's #135 amendment), and the migration runner (ADR 0020).
 
 **The LMSR engine is not here, and that is deliberate.** [F-3] #43 put it in
 `ledger_service/core/lmsr.py`. ADR 0010 settled that the ledger owns the trade
@@ -29,7 +29,8 @@ What is deliberately still copied per service, and why:
 
 - **`core/database.py`.** Each service's `Base.metadata` is its own, and that
   is load-bearing: `unit_test/conftest.py` calls `create_all` on it (market's
-  and ledger's `drop_all` first), and the service's migrations compare against it. One shared `Base`
+  and ledger's `drop_all` first), and the service's migrations compare
+  against it. One shared `Base`
   would enrol every service's tables in every other service's metadata, and the
   first conftest rebuild would try to drop tables its role has no grant on.
 - **`controller/transport.py`.** The five copies agree on very little; each
