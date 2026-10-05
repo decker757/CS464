@@ -1,13 +1,13 @@
 """When a decided market may be settled, stated once. [3.4] #12, ADR 0019.
 
-In `core/` so `service/` can stamp the answer onto every projection. Takes a
-`bool` rather than a `MarketStatus` because `core/` may not import `model/`,
+In `core/` so `service/` can stamp the answer onto every projection. Takes
+`bool`s rather than a `MarketStatus` because `core/` may not import `model/`,
 the same shape as `core/closing.py`.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from core.clock import as_utc
 
@@ -19,21 +19,23 @@ SETTLEMENT_GAP = timedelta(minutes=5)
 
 
 def is_settleable(
-    status_is_decided: bool,
-    approved_at: datetime | None,
     *,
+    approved: bool,
+    settled: bool,
+    approved_at: datetime | None,
     window: timedelta,
-    now: datetime | None = None,
+    now: datetime,
 ) -> bool:
     """May this market be paid out, as of `now`?
 
-    True once `now` reaches `approved_at + window + SETTLEMENT_GAP`, edge
-    included. Fails closed: a market that is not decided, or has no
-    `approved_at`, is never settleable, whatever its `approved_at` says.
-    Settled markets count as decided, so the flag never flickers back and a
-    market settled with no payout can still be repaired.
+    A settled market always is, whatever the window, so the flag never goes
+    back to false. An approved one is once `now` reaches `approved_at + window
+    + SETTLEMENT_GAP`, edge included. Fails closed: any other status, or an
+    approved market with no `approved_at`, is not settleable.
     """
-    if not status_is_decided or approved_at is None:
+    if settled:
+        return True
+    if not approved or approved_at is None:
         return False
     opens_at = as_utc(approved_at) + window + SETTLEMENT_GAP
-    return as_utc(now or datetime.now(UTC)) >= opens_at
+    return as_utc(now) >= opens_at
