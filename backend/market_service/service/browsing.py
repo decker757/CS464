@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import ColumnElement, and_, case, func, not_, null, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
 from core.errors import MarketNotFound
+from core.settling import is_settleable
 from model.entities import (
+    DECIDED_STATUSES,
     PUBLIC_STATUSES,
     AdminMarketCard,
     TRADER_FACING_STATUS,
@@ -48,6 +51,23 @@ def _visible() -> ColumnElement[bool]:
     such as SETTLED would then be trader-visible the moment it was declared.
     """
     return Market.status.in_(PUBLIC_STATUSES)
+
+
+def _settleable(
+    status: MarketStatus, approved_at: datetime | None, now: datetime
+) -> bool:
+    """The `settleable` flag for one market, against the request's clock. [3.4] #12.
+
+    Stamped before projection and never a computed field, for the reason
+    `get_published` gives. Reads the stored status: only OPEN ever displays as
+    something else, and OPEN is not decided.
+    """
+    return is_settleable(
+        MarketStatus(status) in DECIDED_STATUSES,
+        approved_at,
+        window=timedelta(seconds=get_settings().dispute_window_seconds),
+        now=now,
+    )
 
 
 def _question_contains(query: str) -> ColumnElement[bool]:
@@ -211,7 +231,11 @@ async def get_published(
     unknown id. Do not swap in `market_service.get_any`: [1.1] #1's draft
     invisibility would go with no test failing. The derived status goes on an
     unmapped attribute, never on `status`; see `TRADER_FACING_STATUS`. D-027.
+    `settleable` goes beside it, against the same `now`, for the same reason:
+    a computed field would re-run on a clock it cannot see. [3.4] #12.
     """
+    now = now or datetime.now(UTC)
+
     stmt = select(Market).where(Market.id == market_id, _visible())
     market = (await session.execute(stmt)).scalar_one_or_none()
     if market is None:
@@ -222,6 +246,7 @@ async def get_published(
         TRADER_FACING_STATUS,
         displayed_status(market.status, market.close_time, now=now),
     )
+    market.settleable = _settleable(market.status, market.approved_at, now)
     return market
 
 
@@ -279,6 +304,7 @@ async def overview(
             Market.status,
             Market.question,
             Market.close_time,
+            Market.approved_at,
         )
         .where(or_(_visible(), Market.creator_id == caller_id))
         .order_by(Market.close_time.asc().nulls_last(), Market.id.asc())
@@ -291,6 +317,7 @@ async def overview(
             status=displayed_status(row.status, row.close_time, now=now),
             question=row.question,
             close_time=row.close_time,
+            settleable=_settleable(row.status, row.approved_at, now),
         )
         for row in (await session.execute(stmt)).all()
     ]
