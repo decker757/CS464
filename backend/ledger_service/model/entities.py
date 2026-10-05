@@ -560,6 +560,7 @@ class Position(Base):
 # so a literal percent sign in the body raises at create_all time. Doubling it
 # would work and would also be the kind of thing somebody quietly un-doubles
 # while editing the SQL.
+
 # The trigger's name, which migrate.py checks a database from before #75 for.
 APPEND_ONLY_TRIGGER = "entries_append_only"
 
