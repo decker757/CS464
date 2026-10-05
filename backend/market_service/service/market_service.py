@@ -96,7 +96,7 @@ def _refuse_if_frozen(market: Market) -> None:
 
 
 def _refuse_if_resolving(market: Market) -> None:
-    """Raise if an outcome has already been proposed for this market, approved or settled.
+    """Raise if an outcome is already proposed for this market, approved or settled.
 
     `close_early` and `propose_outcome` call this before their other state
     gates, which would otherwise answer `market_closed` or `market_not_closed`:
@@ -498,10 +498,11 @@ async def _proposal_to_decide(
 
     Shared by approve and reject so they cannot drift. The order is the
     contract: the unscoped row lock, then state (`MarketAlreadyApproved`,
-    `MarketAlreadySettled`, `MarketNotPendingResolution`), then identity against `proposed_by_id` —
-    never the username or `creator_id` (`SecondAdministratorRequired`), then
-    the quoted `proposal_id` (`ProposalSuperseded`). A null id matches only a
-    proposal made before ids existed.
+    `MarketAlreadySettled`, `MarketNotPendingResolution`), then identity
+    against `proposed_by_id` — never the username or `creator_id`
+    (`SecondAdministratorRequired`), then the quoted `proposal_id`
+    (`ProposalSuperseded`). A null id matches only a proposal made before ids
+    existed.
     """
     market = await get_any(session, market_id, for_update=True)
 

@@ -20,7 +20,6 @@ from core.config import get_settings
 from core.errors import MarketNotFound
 from core.settling import is_settleable
 from model.entities import (
-    DECIDED_STATUSES,
     PUBLIC_STATUSES,
     AdminMarketCard,
     TRADER_FACING_STATUS,
@@ -60,11 +59,13 @@ def _settleable(
 
     Stamped before projection and never a computed field, for the reason
     `get_published` gives. Reads the stored status: only OPEN ever displays as
-    something else, and OPEN is not decided.
+    something else, and OPEN is neither approved nor settled. `now` is the
+    request's clock ("`settleable` reads the request's one Python clock").
     """
     return is_settleable(
-        MarketStatus(status) in DECIDED_STATUSES,
-        approved_at,
+        approved=status is MarketStatus.APPROVED,
+        settled=status is MarketStatus.SETTLED,
+        approved_at=approved_at,
         window=timedelta(seconds=get_settings().dispute_window_seconds),
         now=now,
     )
