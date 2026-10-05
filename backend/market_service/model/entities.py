@@ -117,19 +117,29 @@ TRADER_FACING_STATUS = "trader_facing_status"
 
 
 @dataclass(frozen=True)
+class CardOutcome:
+    """One outcome on a browse card: what a trader needs to name it. #214."""
+
+    id: uuid.UUID
+    position: int
+    label: str
+
+
+@dataclass(frozen=True)
 class MarketCard:
     """One row of the trader-facing browse list. [X-1] #34, D-027.
 
-    Built from a column select, so it loads no children, never enters the
+    Built from column selects, so it loads no children, never enters the
     identity map and cannot be flushed. `status` is the derived value, with
     deliberately no raw one beside it. Frozen: it is an answer computed
-    against one clock.
+    against one clock. `outcomes` is in position order. #214.
     """
 
     id: uuid.UUID
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    outcomes: tuple[CardOutcome, ...]
 
 
 @dataclass(frozen=True)

@@ -11,8 +11,8 @@ commits.
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
    hit names a committed, append-only transaction, and a miss is trusted for
-   nothing except declining to skip the gate below. A miss is then rolled
-   back, so the gate's HTTP call holds no pooled connection.
+   nothing except declining to skip the gate below. The gate rolls back the
+   transaction the miss opened, so its HTTP call holds no pooled connection.
 2. The gate, `service/market_status.py::ensure_trading` — one call to
    market_service's public detail endpoint, forwarding the caller's own
    token, refusing `409 market_closed` on anything but a derived status of
@@ -85,7 +85,6 @@ import redis.asyncio as redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import has_pending_writes
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientSharesHeld,
@@ -309,7 +308,7 @@ async def execute(
     idempotency_key: str,
     access_token: str,
     redis_client: redis.Redis,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> TradeResult:
     """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
     key already named.
@@ -336,30 +335,19 @@ async def execute(
     if pre_gate is not None:
         return pre_gate
 
-    # "The cold path holds no connection across the terms pull", for the
-    # gate. The lookup above autobegan a transaction nothing ends, and the
-    # gate's first act is an HTTP call — so without this, one pooled
-    # connection sits `idle in transaction` for up to the terms timeout on
-    # every trade that is not a replay. Rolling back discards nothing: a miss
-    # loaded nothing, nothing is pending and no lock is held yet, and a miss
-    # is trusted for nothing below. #115 carries the release inside the gate
-    # itself, for every caller.
-    assert not has_pending_writes(session), (
-        "trading.execute() rolls back before the gate: nothing may be "
-        "pending on the session when it is called"
-    )
-    await session.rollback()
-
     # 2. The gate. Refuses `MarketClosed`, `MarketTermsUnavailable` or
-    # `MarketNotFound` before anything below writes a thing.
+    # `MarketNotFound` before anything below writes a thing. It rolls back
+    # the transaction the lookup above autobegan before it calls out (D-043),
+    # which discards nothing: a miss loaded nothing, nothing is pending, no
+    # lock is held yet, and a miss is trusted for nothing below.
     await market_status.ensure_trading(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     # 3. The book, opened and funded on a market's first touch only. Commits
     # internally when it writes, so it must finish before the lock below.
     await books.ensure_open(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     # 4. The trader's starting grant, same shape, same reason.

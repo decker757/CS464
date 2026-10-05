@@ -97,16 +97,19 @@ function daysFromNow(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
 }
 
-async function save(admin: Session, question: string, status: 'draft' | 'submitted'): Promise<MarketOut> {
+async function save(admin: Session, question: string, status: 'draft' | 'submitted', outcomeLabels = ['Yes', 'No']): Promise<MarketOut> {
   const body = await call<{ market: MarketOut }>('POST', `${MARKET_URL}/markets`, admin.accessToken, {
     draft_key: randomUUID(),
     status,
     question,
-    outcomes: [{ label: 'Yes' }, { label: 'No' }],
+    outcomes: outcomeLabels.map(label => ({ label })),
     close_time: daysFromNow(30),
     resolution_time: daysFromNow(45),
     resolution_criteria: 'Resolves YES if the end-to-end test says so.',
     resolution_sources: [{ url: 'https://example.com/source', label: 'Source' }],
+    // Pinned rather than left to the stack's DEFAULT_LIQUIDITY_B, so a test
+    // can assert the exact price a trade moves the market to.
+    liquidity_b: '100',
     seed_subsidy: 250,
   })
   return body.market
@@ -116,9 +119,9 @@ export async function saveDraft(admin: Session, question: string): Promise<Marke
   return save(admin, question, 'draft')
 }
 
-/** Submitted and published: open to traders, closing in thirty days. */
-export async function publishMarket(admin: Session, question: string): Promise<Market> {
-  const submitted = await save(admin, question, 'submitted')
+/** Submitted and published: open to traders, closing in thirty days. Outcomes Yes and No unless named. */
+export async function publishMarket(admin: Session, question: string, outcomeLabels?: string[]): Promise<Market> {
+  const submitted = await save(admin, question, 'submitted', outcomeLabels)
   return call<MarketOut>('POST', `${MARKET_URL}/markets/${submitted.id}/publish`, admin.accessToken)
 }
 

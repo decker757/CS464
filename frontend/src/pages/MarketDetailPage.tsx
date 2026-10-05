@@ -8,6 +8,7 @@ import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
+import { formatPrice } from '../utils/formatPrice'
 
 // setTimeout overflows a 32-bit int at ~24.8 days; a close further out than
 // that gets no timer, since the page will be refetched long before then.
@@ -18,10 +19,6 @@ function formatDate(iso: string) {
     day: 'numeric', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   })
-}
-
-function formatPrice(price: string): string {
-  return `${(parseFloat(price) * 100).toFixed(1)}%`
 }
 
 // Why trading is closed, for a market that cannot be traded right now.

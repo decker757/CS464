@@ -35,6 +35,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.sell_fixtures import (
     AT_ZERO,
     BASIS,
@@ -135,7 +136,7 @@ async def test_a_sell_credits_exactly_the_total_the_preview_quoted(
         side=pricing().Side.SELL,
         quantity=SOLD,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     before = await balance_of_user(session, user_id)
 
@@ -805,7 +806,7 @@ async def test_the_preview_quotes_a_sell_the_trade_refuses_held(
         side=pricing().Side.SELL,
         quantity=SOLD,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     assert quote.total == PROCEEDS
 

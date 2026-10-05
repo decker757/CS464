@@ -12,20 +12,24 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MarketNotFound
-from model.entities import Market, MarketStatus
+from model.entities import Market, MarketCard, MarketOutcome, MarketStatus
 from core.database import get_session_factory
 from service import browsing, market_service
 from unit_test.conftest import approved_market as _approved_market
 from unit_test.conftest import (
     actor,
+    close_request,
     closed_market,
     draft_request,
     overdue_market,
     proposed_market,
     published_market,
+    published_market_closing_at,
+    recorded_statements,
 )
 
 
@@ -56,6 +60,44 @@ async def _open_market(
 def _ids(cards: list[object]) -> list[uuid.UUID]:
     """The ids of `browse`'s cards, in order."""
     return [card.id for card in cards]
+
+
+def _outcomes_named(*labels: str) -> list[dict[str, str]]:
+    """A market's outcomes, as the create form sends them, in this order."""
+    return [{"label": label} for label in labels]
+
+
+def _labels(card: MarketCard) -> list[str]:
+    """A card's outcome labels, in the order the card carries them."""
+    return [outcome.label for outcome in card.outcomes]
+
+
+async def _move_outcome(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    from_position: int,
+    to_position: int,
+) -> None:
+    """Give one outcome a new position, which also rewrites its row."""
+    await session.execute(
+        update(MarketOutcome)
+        .where(
+            MarketOutcome.market_id == market_id,
+            MarketOutcome.position == from_position,
+        )
+        .values(position=to_position)
+    )
+
+
+async def _outcome_ids(session: AsyncSession, market_id: uuid.UUID) -> list[uuid.UUID]:
+    """A market's outcome ids as stored, in position order."""
+    stmt = (
+        select(MarketOutcome.id)
+        .where(MarketOutcome.market_id == market_id)
+        .order_by(MarketOutcome.position)
+    )
+    return list((await session.scalars(stmt)).all())
 
 
 # --- [X-1] #34: browse ----------------------------------------------------
@@ -98,6 +140,87 @@ async def test_a_view_that_matches_nothing_is_an_empty_list_not_an_error(
     await _open_market(session)
 
     assert await browsing.browse(session, query="nothing matches this") == []
+
+
+# --- #214: each card names its outcomes -----------------------------------
+async def test_a_card_carries_every_outcome_with_its_label_in_position_order(
+    session: AsyncSession,
+) -> None:
+    """#214: a three-way market returns all three, in position order.
+
+    Written alphabetically, then the first and last swap positions, so neither
+    the order the rows were written in nor the labels' order is the answer.
+    """
+    market_id = (
+        await _open_market(
+            session, outcomes=_outcomes_named("Bucks", "Celtics", "Lakers")
+        )
+    ).id
+    await _move_outcome(session, market_id, from_position=0, to_position=99)
+    await _move_outcome(session, market_id, from_position=2, to_position=0)
+    await _move_outcome(session, market_id, from_position=99, to_position=2)
+    await session.commit()
+
+    [card] = await browsing.browse(session)
+
+    assert [(outcome.position, outcome.label) for outcome in card.outcomes] == [
+        (0, "Lakers"),
+        (1, "Celtics"),
+        (2, "Bucks"),
+    ]
+
+
+async def test_each_card_carries_only_its_own_outcomes(session: AsyncSession) -> None:
+    """#214: one query serves the whole page, so its rows must be split by market."""
+    basketball_id = (
+        await _open_market(
+            session, timedelta(days=1), outcomes=_outcomes_named("Lakers", "Celtics")
+        )
+    ).id
+    weather_id = (
+        await _open_market(
+            session, timedelta(days=2), outcomes=_outcomes_named("Sun", "Rain", "Haze")
+        )
+    ).id
+
+    cards = {card.id: card for card in await browsing.browse(session)}
+
+    assert _labels(cards[basketball_id]) == ["Lakers", "Celtics"]
+    assert _labels(cards[weather_id]) == ["Sun", "Rain", "Haze"]
+    assert [outcome.id for outcome in cards[basketball_id].outcomes] == (
+        await _outcome_ids(session, basketball_id)
+    )
+    assert [outcome.id for outcome in cards[weather_id].outcomes] == (
+        await _outcome_ids(session, weather_id)
+    )
+
+
+async def test_a_browse_reads_every_markets_outcomes_in_one_query(
+    session: AsyncSession,
+) -> None:
+    """#214: "one extra query for the whole page", not one per market.
+
+    Three markets, so a query per market would be four statements.
+    """
+    for closes_in_days in (1, 2, 3):
+        await _open_market(session, timedelta(days=closes_in_days))
+
+    with recorded_statements() as statements:
+        cards = await browsing.browse(session)
+
+    assert len(cards) == 3
+    assert len(statements) == 2, statements
+
+
+async def test_an_empty_browse_does_not_query_for_outcomes(
+    session: AsyncSession,
+) -> None:
+    """#214: with no markets on the page there is nothing to fetch outcomes for."""
+    with recorded_statements() as statements:
+        cards = await browsing.browse(session)
+
+    assert cards == []
+    assert len(statements) == 1, statements
 
 
 # --- [X-2] #35: search and filter -----------------------------------------
@@ -347,6 +470,88 @@ async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_op
     assert stopped.id in ids
     assert not _closing_says_open(stopped)
     assert ids.index(still_open.id) < ids.index(stopped.id)
+
+
+# --- #105: stopped markets, most recently stopped first ---------------------
+async def test_stopped_markets_list_most_recently_stopped_first_whatever_their_status(
+    session: AsyncSession,
+) -> None:
+    """#105: one rule for every status that is not trading, newest first.
+
+    The approved market stopped longest ago and sorts last: it gets no place
+    of its own. Created oldest first, so `close_time ASC` and insertion order
+    both give the reverse. DECISIONS.md, "Stopped markets sort by when trading
+    stopped".
+    """
+    creator = actor()
+    # Ids held as they are created; each sweep expires the session.
+    approved_id = (
+        await _approved_market(session, creator, overdue_by=timedelta(days=3))
+    ).id
+    closed_id = (
+        await closed_market(session, creator, overdue_by=timedelta(days=1))
+    ).id
+    pending_id = (
+        await proposed_market(session, creator, overdue_by=timedelta(hours=2))
+    ).id
+    unswept_id = (await overdue_market(session, creator)).id
+
+    listed = await browsing.browse(session)
+
+    assert _ids(listed) == [unswept_id, pending_id, closed_id, approved_id]
+
+
+async def test_an_early_closed_market_sorts_by_when_it_was_closed_not_its_close_time(
+    session: AsyncSession,
+) -> None:
+    """#105, ADR 0014: closed by hand a day ago, with 30 days left on its
+    `close_time`, it sorts between markets that stopped an hour and two days ago.
+
+    Sorting on `close_time` alone puts it first. Sorting on `closed_at` alone
+    puts the two-days-ago market above it, because the sweep stamped that one's
+    `closed_at` just now; so both columns are needed.
+    """
+    creator = actor()
+    a_day_ago = datetime.now(UTC) - timedelta(days=1)
+    two_days_ago_id = (
+        await closed_market(session, creator, overdue_by=timedelta(days=2))
+    ).id
+    early_id = (await _open_market(session, timedelta(days=30))).id
+    await market_service.close_early(
+        session, actor(), early_id, close_request(), now=a_day_ago
+    )
+    an_hour_ago_id = (
+        await overdue_market(session, creator, overdue_by=timedelta(hours=1))
+    ).id
+
+    listed = await browsing.browse(session)
+
+    assert _ids(listed) == [an_hour_ago_id, early_id, two_days_ago_id]
+
+
+@pytest.mark.parametrize(
+    "viewed_after_the_close", [False, True], ids=["still_trading", "stopped"]
+)
+async def test_markets_sharing_a_close_time_list_lower_id_first_in_either_group(
+    session: AsyncSession, viewed_after_the_close: bool
+) -> None:
+    """#105: "the `id` tiebreaker is preserved in both groups".
+
+    Six markets closing at one instant, viewed before it and after it.
+    Probabilistic on purpose, as the overview's tie test is: drop `id` from
+    the ORDER BY and Postgres tends to return the tie in insertion order,
+    which matches sorted order about 1 time in 720.
+    """
+    shared_close = datetime.now(UTC) + timedelta(days=2)
+    tied = [
+        (await published_market_closing_at(session, actor(), shared_close)).id
+        for _ in range(6)
+    ]
+    now = shared_close + timedelta(days=1 if viewed_after_the_close else -1)
+
+    listed = await browsing.browse(session, now=now)
+
+    assert _ids(listed) == sorted(tied)
 
 
 # --- [2.1] #5's counts, which #62 says to build once ----------------------

@@ -10,18 +10,20 @@ so a missing name fails one test rather than collection (D-007).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Protocol
 
 import httpx
 import pytest
 from sqlalchemy import event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 QUANTUM = Decimal("0.0001")
 B = Decimal("100.0000")
@@ -108,6 +110,38 @@ class Upstream:
         return httpx.MockTransport(handler)
 
 
+class CountsCalls(Protocol):
+    """What `Stalled` needs from a stand-in market service."""
+
+    calls: int
+    body: Any
+
+
+class Stalled:
+    """A market service that records what the caller holds on every call, then
+    stalls until `release`. D-043's test shape."""
+
+    def __init__(
+        self, upstream: CountsCalls, probe: Callable[[], dict[str, object]]
+    ) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.seen: list[dict[str, object]] = []
+        self._upstream = upstream
+        self._probe = probe
+
+    @property
+    def transport(self) -> httpx.MockTransport:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self._upstream.calls += 1
+            self.seen.append(self._probe())
+            self.entered.set()
+            await self.release.wait()
+            return httpx.Response(200, json=self._upstream.body)
+
+        return httpx.MockTransport(handler)
+
+
 class TermsStub:
     """A stub for `market_terms.fetch`, for route tests, which cannot hand a
     route a transport. Records what it was asked.
@@ -130,7 +164,7 @@ class TermsStub:
         else:
             published_at = None
 
-        async def fake(market_id, *, access_token, transport=None):  # noqa: ANN001
+        async def fake(market_id, *, access_token, terms_client=None):  # noqa: ANN001
             self.calls += 1
             self.tokens.append(access_token)
             if self._raises is not None:
@@ -188,7 +222,7 @@ async def warm(
         session,
         upstream.market_id,
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     await set_q(session, upstream, q)
     upstream.calls = 0

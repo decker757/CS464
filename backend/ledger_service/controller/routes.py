@@ -38,6 +38,7 @@ from controller.dependencies import (
     CurrentUser,
     DbSession,
     RedisClient,
+    TermsClient,
 )
 from core.config import get_settings
 from core.pricing import Side
@@ -52,6 +53,7 @@ from model.schemas import (
     SnapshotOut,
     TradeIn,
     TradeOut,
+    ValidationErrorOut,
 )
 from service import (
     ledger_service,
@@ -94,6 +96,16 @@ _ENTRIES_DESCRIPTION = (
     "not shift the pages under you. Send back `next_cursor` unmodified to "
     "continue; a null one means you have reached the end."
 )
+
+
+def _invalid_request(description: str) -> dict[str, object]:
+    """A route's 422 entry: its own description, the one envelope. #117
+
+    Without the model, `/docs` describes FastAPI's `HTTPValidationError`,
+    which this service never sends: `errors.py` answers every 422 as
+    `ValidationErrorOut`.
+    """
+    return {"model": ValidationErrorOut, "description": description}
 
 
 def _page_size(limit: int | None) -> int:
@@ -177,6 +189,7 @@ async def my_balance(user: CurrentUser, session: DbSession) -> BalanceOut:
     responses={
         400: {"description": "`cursor` was not one this service issued."},
         401: {"description": "Missing, malformed or expired access token."},
+        422: _invalid_request("`invalid_request`: `limit` below 1."),
     },
 )
 async def my_entries(
@@ -262,6 +275,7 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
     responses={
         401: {"description": "Missing, malformed or expired access token."},
         403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request("`invalid_request`: `user_id` is not a UUID."),
     },
 )
 async def user_balance(
@@ -285,6 +299,9 @@ async def user_balance(
         400: {"description": "`cursor` was not one this service issued."},
         401: {"description": "Missing, malformed or expired access token."},
         403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request(
+            "`invalid_request`: `user_id` is not a UUID, or `limit` below 1."
+        ),
     },
 )
 async def user_entries(
@@ -318,15 +335,14 @@ async def user_entries(
                 "This sell is larger than the outcome's shares outstanding."
             )
         },
-        422: {
-            "description": (
-                "A malformed query string, an `outcome_id` that is not this "
-                "market's, a quantity whose cost or resulting shares "
-                "outstanding exceed what the ledger can store, or a trade "
-                "whose total rounds to nothing (D-041): `proceeds_below_tick` "
-                "on a sell, `cost_below_tick` on a buy."
-            )
-        },
+        422: _invalid_request(
+            "`invalid_request`: a malformed query string. "
+            "`unknown_outcome`: an `outcome_id` that is not this market's. "
+            "`quantity_too_large`: a quantity whose cost or resulting shares "
+            "outstanding exceed what the ledger can store. A trade whose "
+            "total rounds to nothing (D-041): `proceeds_below_tick` on a "
+            "sell, `cost_below_tick` on a buy."
+        ),
         500: {
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
@@ -345,6 +361,7 @@ async def preview_trade(
     side: Side,
     quantity: PreviewQuantity,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
 ) -> PreviewOut:
     result = await preview_service.quote(
@@ -354,6 +371,7 @@ async def preview_trade(
         side=side,
         quantity=quantity,
         access_token=access_token,
+        terms_client=terms_client,
     )
     return PreviewOut(
         market_id=result.market_id,
@@ -401,7 +419,7 @@ _SNAPSHOT_DESCRIPTION = (
     responses={
         401: {"description": "Missing, malformed or expired access token."},
         404: {"description": "No such market."},
-        422: {"description": "`market_id` is not a UUID."},
+        422: _invalid_request("`invalid_request`: `market_id` is not a UUID."),
         500: {
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
@@ -414,10 +432,11 @@ _SNAPSHOT_DESCRIPTION = (
 async def market_snapshot(
     market_id: uuid.UUID,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
 ) -> SnapshotOut:
     result = await snapshot_service.snapshot(
-        session, market_id, access_token=access_token
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
     return SnapshotOut(
         market_id=result.market_id,
@@ -483,16 +502,14 @@ _TRADE_DESCRIPTION = (
                 "different trade."
             )
         },
-        422: {
-            "description": (
-                "A malformed body, an extra field, `side` other than "
-                "\"buy\" or \"sell\", a quantity at five decimal places, "
-                "<= 0 or wider than 18 digits; `unknown_outcome`; "
-                "`quantity_too_large`; `cost_below_tick` on a buy whose "
-                "cost rounds to nothing; `proceeds_below_tick` on a sell "
-                "whose proceeds round to nothing (D-041)."
-            )
-        },
+        422: _invalid_request(
+            "`invalid_request`: a malformed body, an extra field, `side` "
+            "other than \"buy\" or \"sell\", a quantity at five decimal "
+            "places, <= 0 or wider than 18 digits. `unknown_outcome`; "
+            "`quantity_too_large`; `cost_below_tick` on a buy whose cost "
+            "rounds to nothing; `proceeds_below_tick` on a sell whose "
+            "proceeds round to nothing (D-041)."
+        ),
         500: {
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
@@ -515,6 +532,7 @@ async def execute_trade(
     body: TradeIn,
     user: CurrentUser,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
     redis: RedisClient,
 ) -> TradeOut:
@@ -528,6 +546,7 @@ async def execute_trade(
         state_version=body.state_version,
         idempotency_key=body.idempotency_key,
         access_token=access_token,
+        terms_client=terms_client,
         redis_client=redis,
     )
     return TradeOut(

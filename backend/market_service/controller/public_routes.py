@@ -36,11 +36,15 @@ PublicStatusFilter = PublicMarketStatus
     summary="Browse published markets",
     description=(
         "[X-1] #34, [X-2] #35. With no query parameters, the default view: "
-        "**every published market**, the ones still trading first and then "
-        "by soonest closing time within each group. It is not an open-only "
-        "list — [X-1] #34 asks that open markets be clearly distinguishable "
-        "from closed, pending-resolution and settled ones, and there is "
-        "nothing to distinguish them from if those are missing.\n\n"
+        "**every published market**: the ones still trading first, soonest "
+        "closing time first; then every other market, whatever its status, "
+        "most recently stopped first — for a market closed early, the moment "
+        "it was closed rather than its `close_time`. Ties come back in `id` "
+        "order. The same order applies under `status` and `q`. It is not an "
+        "open-only list — [X-1] #34 asks that open markets be clearly "
+        "distinguishable from closed, pending-resolution and settled ones, "
+        "and there is nothing to distinguish them from if those are "
+        "missing.\n\n"
         "`status` narrows to one of `open`, `closed`, `pending_resolution` "
         "or `approved`; `status=open` is the narrower query a trader gets by "
         "choosing the first group explicitly. `draft` and `submitted` are "
@@ -50,7 +54,12 @@ PublicStatusFilter = PublicMarketStatus
         "background sweep writes it down (ADR 0011), so `status=open` never "
         "includes one and `status=closed` does. In the default view it is "
         "present, labelled `closed`, and sorted behind whatever is still "
-        "trading."
+        "trading.\n\n"
+        "Each market carries its `outcomes` as `{id, position, label}`, "
+        "ordered by `position` — the same shape the detail read returns — "
+        "so a card can name every outcome without a detail fetch per row "
+        "(#214). A market has two or more, with any labels; do not assume "
+        "`Yes` and `No`."
     ),
     responses={
         422: {

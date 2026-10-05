@@ -37,7 +37,7 @@ import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 ZERO = Decimal(0)
 QUANTUM = Decimal("0.0001")
@@ -295,7 +295,9 @@ async def buy(
         idempotency_key=client_key,
         access_token=access_token if access_token is not None else token(),
         redis_client=redis_client if redis_client is not None else Recorder(),
-        transport=upstream.transport if transport is None else transport,
+        terms_client=terms_client_over(
+            upstream.transport if transport is None else transport
+        ),
     )
 
 
@@ -333,7 +335,7 @@ async def warm(
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     await set_q(session, upstream, q)
     upstream.calls = 0

@@ -47,13 +47,15 @@ os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 # grants weaker than they are. ADR 0006.
 _audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 
+from collections.abc import Iterator  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from sqlalchemy import NullPool, update  # noqa: E402
+from sqlalchemy import NullPool, event, update  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -124,6 +126,25 @@ def mint_token(
 
 def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint_token(user_id, role)}"}
+
+
+@contextmanager
+def recorded_statements() -> Iterator[list[str]]:
+    """Every SQL statement this service's engine sends while the block runs.
+
+    For tests that pin how many queries a read costs, not what it returns.
+    """
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
+        statements.append(statement)
+
+    sync_engine = get_engine().sync_engine
+    event.listen(sync_engine, "before_cursor_execute", _record)
+    try:
+        yield statements
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _record)
 
 
 def actor(username: str = "ernest_t", role: str = "admin") -> Actor:
@@ -441,9 +462,12 @@ async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
     )
 
 
-async def approved_market(session, creator: Actor) -> Market:
-    """An approved market, standing in for "settled" until [3.4] #12."""
-    market = await proposed_market(session, creator)
+async def approved_market(session, creator: Actor, **overrides: object) -> Market:
+    """An approved market, standing in for "settled" until [3.4] #12.
+
+    Overrides are `proposed_market`'s.
+    """
+    market = await proposed_market(session, creator, **overrides)
     return await market_service.approve_outcome(
         session, actor(), market.id, approval_request(market.proposal_id)
     )

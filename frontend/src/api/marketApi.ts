@@ -10,6 +10,8 @@ export interface PublicMarketSummary {
   status: 'open' | 'closed' | 'pending_resolution' | 'approved'
   question: string
   close_time: string
+  /** Every outcome, in position order (#214). */
+  outcomes: PublicOutcome[]
 }
 
 export async function listMarkets(params?: { status?: string; q?: string }): Promise<PublicMarketSummary[]> {

@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 import pytest
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine
@@ -27,6 +27,7 @@ from unit_test.book_fixtures import (
     Q,
     QUANTUM,
     SUBSIDY,
+    Stalled,
     Upstream,
     book_row,
     books,
@@ -40,7 +41,11 @@ from unit_test.book_fixtures import (
     warm,
     writes,
 )
-from unit_test.conftest import strip_outcomes
+from unit_test.conftest import (
+    idle_in_transaction,
+    strip_outcomes,
+    terms_client_over,
+)
 
 
 def _preview():
@@ -84,7 +89,9 @@ async def _quote(
         side=_pricing().Side(side),
         quantity=quantity,
         access_token=access_token if access_token is not None else fresh_token(),
-        transport=upstream.transport if transport is None else transport,
+        terms_client=terms_client_over(
+            upstream.transport if transport is None else transport
+        ),
     )
 
 
@@ -591,7 +598,7 @@ async def test_an_unknown_outcome_id_is_refused_as_unknown_outcome(
             side=_pricing().Side.BUY,
             quantity=_QUANTITY,
             access_token=fresh_token(),
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
         )
 
     assert raised.value.code == "unknown_outcome"
@@ -614,7 +621,7 @@ async def test_an_unknown_outcome_on_a_cold_market_leaves_the_funded_book_behind
             side=_pricing().Side.BUY,
             quantity=_QUANTITY,
             access_token=fresh_token(),
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
         )
     assert raised.value.code == "unknown_outcome"
 
@@ -842,7 +849,7 @@ async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> Non
         side="buy",
         quantity=_QUANTITY,
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     assert raw.total == enum.total
@@ -851,48 +858,6 @@ async def test_a_raw_string_buy_is_priced_as_a_buy(session: AsyncSession) -> Non
 # =========================================================================
 # The cold path's connection, and damaged books
 # =========================================================================
-class _Stalled:
-    """A market service that records what the caller holds on every call, then
-    stalls until `release`."""
-
-    def __init__(
-        self, upstream: Upstream, probe: Callable[[], dict[str, object]]
-    ) -> None:
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-        self.seen: list[dict[str, object]] = []
-        self._upstream = upstream
-        self._probe = probe
-
-    @property
-    def transport(self) -> httpx.MockTransport:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            self._upstream.calls += 1
-            self.seen.append(self._probe())
-            self.entered.set()
-            await self.release.wait()
-            return httpx.Response(200, json=self._upstream.body)
-
-        return httpx.MockTransport(handler)
-
-
-async def _idle_in_transaction() -> int:
-    """Backends of this role in this database sitting `idle in transaction`,
-    from Postgres's own view."""
-    async with get_engine().connect() as conn:
-        return (
-            await conn.execute(
-                text(
-                    "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() "
-                    "AND usename = current_user "
-                    "AND state = 'idle in transaction' "
-                    "AND pid <> pg_backend_pid()"
-                )
-            )
-        ).scalar_one()
-
-
 async def test_a_cold_preview_holds_no_connection_while_market_service_is_slow(
     session: AsyncSession,
 ) -> None:
@@ -903,7 +868,7 @@ async def test_a_cold_preview_holds_no_connection_while_market_service_is_slow(
     """
     upstream = Upstream()
     pool = get_engine().pool
-    stalled = _Stalled(
+    stalled = Stalled(
         upstream,
         lambda: {
             "session in a transaction": session.in_transaction(),
@@ -915,7 +880,7 @@ async def test_a_cold_preview_holds_no_connection_while_market_service_is_slow(
     try:
         async with asyncio.timeout(10):
             await stalled.entered.wait()
-        idle = await _idle_in_transaction()
+        idle = await idle_in_transaction()
     finally:
         stalled.release.set()
         quote = await task
