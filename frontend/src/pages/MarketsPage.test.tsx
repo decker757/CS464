@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -41,16 +42,31 @@ function cardFor(question: string): HTMLElement {
   return card
 }
 
+// Under StrictMode, as main.tsx renders the app: its double mount is what a
+// price hook that marks a market fetched too early gets wrong.
 function renderPage() {
   return render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <MemoryRouter initialEntries={['/markets']}>
-        <Routes>
-          <Route path="/markets" element={<MarketsPage />} />
-          <Route path="/markets/:id" element={<p>market detail</p>} />
-        </Routes>
-      </MemoryRouter>
-    </AuthContext.Provider>,
+    <StrictMode>
+      <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
+        <MemoryRouter initialEntries={['/markets']}>
+          <Routes>
+            <Route path="/markets" element={<MarketsPage />} />
+            <Route path="/markets/:id" element={<p>market detail</p>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </StrictMode>,
+  )
+}
+
+// #104: page one carries a cursor; the request quoting it gets page two.
+function mockTwoPages(secondPage: () => Response | Promise<Response>) {
+  server.use(
+    http.get(`${MARKET_BASE}/public/markets`, ({ request }) =>
+      new URL(request.url).searchParams.get('cursor') === 'page-2'
+        ? secondPage()
+        : HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: 'page-2' }),
+    ),
   )
 }
 
@@ -233,5 +249,126 @@ describe('MarketsPage', () => {
     expect(await within(card).findByLabelText('Lakers price')).toHaveTextContent('70.0%')
     expect(within(card).getByLabelText('Celtics price')).toHaveTextContent('30.0%')
     expect(within(card).getByLabelText('Draw price')).toHaveTextContent('—')
+  })
+
+  // [X-1] #104: Load more appends the next page, keeps the first, and goes
+  // away when the server says there is nothing after it.
+  it('appends the next page when Load more is clicked', async () => {
+    mockTwoPages(() => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null }))
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    expect(screen.queryByText('Will inflation fall below 2%?')).not.toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    expect(await screen.findByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.getByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+  })
+
+  // [X-1] #104: "Error on load-more keeps already-shown cards", and the
+  // trader can try again.
+  it('keeps the cards already shown when loading more fails, and loads them on a retry', async () => {
+    let secondPageRequests = 0
+    mockTwoPages(() => {
+      secondPageRequests += 1
+      return secondPageRequests === 1
+        ? HttpResponse.error()
+        : HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })
+    })
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn't load more markets/i)
+    expect(screen.getByText('Will SMU win SUNIG?')).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    expect(await screen.findByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // #104 Review Focus 2: a double click must not fetch, or append, a page twice.
+  it('asks for the next page once however fast Load more is clicked', async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let secondPageRequests = 0
+    mockTwoPages(async () => {
+      secondPageRequests += 1
+      await held
+      return HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })
+    })
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.dblClick(screen.getByRole('button', { name: /load more/i }))
+    release()
+
+    expect(await screen.findByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.getAllByText('Will inflation fall below 2%?')).toHaveLength(1)
+    expect(secondPageRequests).toBe(1)
+  })
+
+  // StrictMode (on in main.tsx) asks for page one twice. Its first answer
+  // arriving late must not replace the list after Load more has added to it.
+  it('keeps the appended page when the first mount\'s answer arrives late', async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let firstPageRequests = 0
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, async ({ request }) => {
+        if (new URL(request.url).searchParams.get('cursor') === 'page-2') {
+          return HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })
+        }
+        firstPageRequests += 1
+        if (firstPageRequests === 1) await held
+        return HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: 'page-2' })
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+    await screen.findByText('Will inflation fall below 2%?')
+
+    release()
+
+    // Long enough for the held answer to land and render, if it is going to.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+  })
+
+  // #104 amendment D: the cards already on screen have their prices; Load
+  // more asks the ledger only about the markets it added.
+  it('fetches prices only for the markets Load more adds', async () => {
+    const snapshotRequests: string[] = []
+    mockTwoPages(() => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null }))
+    server.use(
+      http.get(SNAPSHOT, ({ params }) => {
+        snapshotRequests.push(String(params.id))
+        return params.id === 'a1'
+          ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
+          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000']))
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    expect(await within(cardFor('Will SMU win SUNIG?')).findByLabelText('Yes price')).toHaveTextContent('12.4%')
+    snapshotRequests.length = 0
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    await screen.findByText('Will inflation fall below 2%?')
+    expect(await within(cardFor('Will inflation fall below 2%?')).findByLabelText('Yes price')).toHaveTextContent('70.0%')
+    expect(snapshotRequests).toEqual(['b2'])
+    // The first card keeps the price it already had.
+    expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('12.4%')
   })
 })
