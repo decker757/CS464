@@ -49,6 +49,32 @@ with `pythonpath = . ..`.
 | `shared/paging.py` | 2 copies | One cursor format, two readers |
 | `shared/testing.py` | 5 copies, byte-identical | Test plumbing, no runtime surface |
 
+> **Amended by [F-5] #75.** Two additions to this table, and so to "the whole
+> list" in CLAUDE.md.
+>
+> **`shared/migrating.py`** is the Alembic runner: the body of every
+> `migrations/env.py`, the filter that limits a migration to its own schema,
+> and the adoption of a database from before #75. auth, market and ledger must
+> run these identically, and a divergence would be a bug. A filter that let the
+> `audit` schema in would offer to drop a table no service may touch, and two
+> adoption rules would adopt a database the third refuses. It imports no
+> service. It has no `core/` seam either: each service's `migrations/env.py`
+> and `migrate.py` bind it to their own metadata, and those are composition
+> roots like `main.py`, because the binding needs `model`.
+>
+> **`shared/testing.py`** gains the migration guard tests' helpers:
+> `schema_catalog`, `drop_own_tables`, `build_like_before_75`,
+> `assert_migrating_an_empty_schema_builds_the_models`,
+> `assert_baseline_downgrades_and_upgrades_again` and `compose_service`. The
+> three suites would otherwise hold three copies of one check. It is still test
+> plumbing with no runtime surface.
+>
+> `core/database.py` stays copied, and the reason below is now stronger. Boot
+> no longer runs `create_all`, but the migrate step's adoption and the guard
+> tests both call `metadata.create_all` as the service's own role. One shared
+> `Base` would have them try to create every other service's tables, in schemas
+> that role cannot write. ADR 0020.
+
 The LMSR engine is the third thing ADR 0005 named. It does not exist yet and
 lands with [F-3] #43, into this package.
 
