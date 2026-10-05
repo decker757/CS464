@@ -4556,11 +4556,14 @@ catch directly, once per run.
 
 **Rejected.** *Migrating per test*, which makes every test slower forever to
 learn what one guard test says. *Migrating once per session and emptying the
-tables per test.* The ledger cannot be emptied that way: its append-only
-trigger refuses TRUNCATE and DELETE on `ledger.entries`, which is why its
-conftest drops and rebuilds. And a test database already at head ignores a
-revision that was edited after it ran, which is the stale schema the market and
-ledger conftests drop and rebuild to avoid.
+tables per test.* The ledger's append-only trigger refuses TRUNCATE and
+DELETE on `ledger.entries`, so the ledger could be emptied that way only by
+disabling the trigger the suite exists to exercise (`ledger_svc` owns the
+table and could). And unless the session fixture also emptied the schema
+first, a test database already at head would ignore a revision edited after it
+ran: the version table says it is current, so nothing runs again. The market
+and ledger conftests drop and rebuild so that a new column reaches the test
+database, and that would quietly stop being true.
 
 **Notes.** CI still runs `migrate.py` against its empty test database before
 the suite, as the service's own role, so a revision that cannot apply under the

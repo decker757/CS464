@@ -60,7 +60,9 @@ with `pythonpath = . ..`.
 > adoption rules would adopt a database the third refuses. It imports no
 > service. It has no `core/` seam either: each service's `migrations/env.py`
 > and `migrate.py` bind it to their own metadata, and those are composition
-> roots like `main.py`, because the binding needs `model`.
+> roots like `main.py`, because the binding needs `model` and `model` already
+> imports `core`. That is not a loosening of the seam rule below: nothing under
+> `service/` or `model/` imports `shared`, still.
 >
 > **`shared/testing.py`** gains the migration guard tests' helpers:
 > `schema_catalog`, `drop_own_tables`, `build_like_before_75`,

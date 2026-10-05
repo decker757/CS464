@@ -74,8 +74,10 @@ This is a known constraint, and #19 inherits it. The migrate step takes no
 lock. Two copies running at the same time against one database are not
 coordinated.
 
-What happens if they do: where two runs collide, the one that loses fails on a
-duplicate object (a table the other run has just created) and exits non-zero. No
+What happens if they do: where two runs collide, the one that loses fails,
+either on a duplicate object (a table the other run has just created) or on
+Alembic's check that it updated exactly one version row. Either way it exits
+non-zero and its transaction is rolled back. No
 interleaving stamps a schema that did not match the models, because a stamp
 only ever follows a comparison that found no differences. So the failure is
 loud and safe, but it is still a failure: compose starts an app only after its
@@ -145,8 +147,9 @@ adoption rules would adopt a database that the third refuses. That clears ADR
 The runner imports no service. Each service binds it to its own `Base.metadata`
 and `SCHEMA` in two small files, `migrations/env.py` and `migrate.py`. Those two
 are composition roots, like `main.py`, so they import `shared` directly. There
-is no `core/` seam for them, because the binding needs `model`, and `core` may
-not import `model`.
+is no `core/` seam for them, because the binding needs `model`, and every
+service's `model/entities.py` already imports `core.database`. A `core/` module
+that imported `model` back would be an import cycle.
 
 ### What Alembic's comparison cannot see
 
@@ -162,14 +165,15 @@ each service's `requirements.txt`.
   the `search_path` without its schema, while the models name one, so every
   foreign key comes back as dropped and re-added. So every migration connection sets
   `search_path` to `public`, and all three services then compare clean.
-- **Non-native enums** compare as the plain `varchar(n)` they are, and
-  **functional indexes** such as `lower(username)` are compared by expression.
-  Neither needs help.
-- **CHECK constraints, partial-index predicates, index sort order and triggers
-  are not compared at all.** The guard tests cover them by comparing the
-  Postgres catalog (`information_schema.columns`, `pg_indexes`,
-  `pg_get_constraintdef`, `pg_get_triggerdef`) of a migrated schema with a
-  model-built one. Market's also asserts `ix_markets_due_close`'s predicate by
+- **Non-native enums** compare as the plain `varchar(n)` they are,
+  **functional indexes** such as `lower(username)` are compared by expression,
+  and an index's **sort order** (`DESC`, `NULLS FIRST`) is compared too.
+  None of them needs help.
+- **CHECK constraints, partial-index predicates and triggers are not compared
+  at all.** The guard tests cover them by comparing the Postgres catalog
+  (`information_schema.columns`, `pg_indexes`, `pg_get_constraintdef`,
+  `pg_get_triggerdef`) of a migrated schema with a model-built one, which
+  checks sort order a second time as part of each index definition. Market's also asserts `ix_markets_due_close`'s predicate by
   name, and the ledger's asserts its append-only trigger by name.
 
 Adoption checks the ledger's append-only trigger by hand, through the runner's
@@ -257,8 +261,9 @@ step concurrently: compose runs one per service. It is the first thing to add
 if #19's platform cannot run it once.
 
 **A `core/` seam for the runner, like every other shared module.** Rejected
-because the seam would need to import `model` to bind the metadata, and `core`
-may not import `model`. `env.py` and `migrate.py` are composition roots instead.
+because the seam would have to import `model` to bind the metadata, and every
+service's `model/entities.py` already imports `core.database`, so the two would
+import each other. `env.py` and `migrate.py` are composition roots instead.
 
 ---
 
@@ -272,7 +277,10 @@ may not import `model`. `env.py` and `migrate.py` are composition roots instead.
 > shows the guard is not enough. Also when a revision does data work the
 > models cannot express, since a rebuild from the models would never run it.
 >
-> **The adoption path is deleted** once no database from before #75 remains
-> anywhere. The test is #19's first deploy having run the step against every
-> environment. It stops adopting by itself when a second revision lands, but
-> the code stays until then.
+> **The adoption path is deleted** once no database from before #75 remains.
+> Those databases are the team's own local `cs464` and `cs464_test`, not any
+> deployed one: nothing is deployed yet, and every environment #19 creates
+> will start after #75. So the test is either of two things. Every teammate's
+> development database has run its migrate step once. Or every service's
+> history has a second revision, at which point adoption refuses every
+> database it finds and the path is dead code.
