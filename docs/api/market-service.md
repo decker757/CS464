@@ -885,11 +885,12 @@ GET /markets/overview?status=closed
   `submitted`, which the trader filter refuses, and `settled`. Anything else is
   a `422`.
 - **`settleable`** ([3.4] #12) is a boolean on every row, so the settle control
-  can be hidden until a click could succeed. It is `true` from five minutes
-  after the dispute window ends, stays `true` once the market is `settled`, and
-  is `false` for every other status and for a market with no `approved_at`. It
-  is derived against the same instant as the list and the counts, so a row's
-  `status` and `settleable` never disagree.
+  can be hidden until a click could succeed. It is `true` on an `approved`
+  market from five minutes after the dispute window ends, and always `true` on
+  a `settled` one, whatever the window. It is `false` for every other status
+  and for an `approved` market with no `approved_at`. It is derived against the
+  same instant as the list and the counts, so a row's `status` and
+  `settleable` never disagree.
 - **`counts`** is an object of integers keyed by every status, `0` when there
   are none, over every market the caller can see. **It ignores `?status=`**, so
   each count equals the length of that status's filtered list and the counts
@@ -1101,12 +1102,12 @@ rule is protecting.
 }
 ```
 
-`settleable` ([3.4] #12) is a boolean, always present. It is `true` from five
-minutes after the dispute window ends, stays `true` once the market is
-`settled`, and is `false` for every other status and for a market with no
-`approved_at`. The ledger reads it before paying out and does not recompute
-it, so a client that shows a settle control should do the same and not work it
-out from `approved_at`.
+`settleable` ([3.4] #12) is a boolean, always present. It is `true` on an
+`approved` market from five minutes after the dispute window ends, and always
+`true` on a `settled` one, whatever the window. It is `false` for every other
+status and for an `approved` market with no `approved_at`. The ledger reads it
+before paying out and does not recompute it, so a client that shows a settle
+control should do the same and not work it out from `approved_at`.
 
 `proposed_outcome_id` is [X-3] #36's "settled markets display the winning
 outcome". When it is set it names a member of this same response's `outcomes`

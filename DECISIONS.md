@@ -5095,22 +5095,25 @@ zero, it reopens the race that entry closes.
 
 **Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
 
-**Decision.** `settleable` is true when the status is in `DECIDED_STATUSES`,
-`approved_at` is not null, and `now >= approved_at + window + 5 minutes`.
-It is a pure function in `core/` that takes whether the market's status is
-decided (`core/` cannot import `model/`, as with `trading_is_open`), its
-`approved_at`, the window and `now`. `service/` stamps it onto the projection
-before it is built. It is never a computed field or a validator.
+**Decision.** `settleable` is always true on a SETTLED market. On an APPROVED
+market it is true when `approved_at` is not null and `now >= approved_at +
+window + 5 minutes`. It is false on every other status. It is a pure
+function in `core/`, `is_settleable(*, approved, settled, approved_at,
+window, now)`, which takes whether the status is APPROVED and whether it is
+SETTLED as two bools (`core/` cannot import `model/`, as with
+`trading_is_open`). `service/` stamps it onto the projection before it is
+built. It is never a computed field or a validator.
 
 **Why.**
 - *Inclusive*, because #12's boundary test settles a market whose window
   ended "five minutes ago or more". Send-back's edge is exclusive, so no
   instant is both.
-- *True on SETTLED*, because the flag is monotonic: once true it never goes
-  back, so no reader sees it flicker. It also keeps the repair path open: #12
-  settles a market market_service reports as `settled` with no recorded
-  settlement "exactly as if it were `approved`", and that reading requires
-  `settleable`.
+- *True on SETTLED, whatever the window*, so the flag is monotonic: once
+  true it never goes back, even if `dispute_window_seconds` is raised later,
+  and no reader sees it flicker. The overview and [FE] #216 then read one
+  consistent flag. It is not what keeps the repair path open. The ledger
+  reads `settleable` only on an `approved` market and accepts a `settled` one
+  whatever the flag says (ADR 0019, step 1).
 - *False on a null `approved_at`*, because the flag fails closed. Approval
   always stamps it, so a null is damage, and the safe answer to damage is not
   to pay.
@@ -5124,12 +5127,14 @@ before it is built. It is never a computed field or a validator.
 - *A computed field*: the re-validation bug above.
 - *A stored column*: a second authority for something the clock already
   answers (ADR 0011), and a migration ADR 0019 says this needs none of.
-- *False on SETTLED*: a market settled by a direct call could never be
-  repaired, because the ledger would see it as not `settleable`.
-- *`status == APPROVED`* in place of `DECIDED_STATUSES`: the same stranding.
+- *False on SETTLED*: the flag would go back to false, and the overview
+  would disagree with itself about a market it already paid.
+- *Testing `DECIDED_STATUSES`* in place of naming APPROVED and SETTLED: a
+  status added to that table for its own reasons (#221's void) would become
+  settleable by accident. SETTLED also went through the time rule
+  that way, so raising the window turned a settled market false.
 
-**Reversal trigger.** A status joins `DECIDED_STATUSES` that must not pay
-out (#221's void). The rule must then name the statuses it means.
+**Reversal trigger.** A third status that should pay out.
 
 ---
 
@@ -5193,29 +5198,6 @@ is a contract nobody has asked for.
 
 **Reversal trigger.** #11 adds a countdown that needs the instant on list
 views.
-
----
-
-### D-NEW — `docs/api/market-service.md`'s status lists, filter notes and `settleable` land in PR 1
-
-**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
-
-**Decision.** PR 1 updates `docs/api/market-service.md`: `settled` in the
-status lists and filter notes, and `settleable` on the public detail and the
-overview row. PR 2 documents only `POST /markets/{id}/settle`.
-
-**Why.** PR 1 changes that contract: a new status value on the browse, the
-detail and the overview, and a new field. CLAUDE.md treats a schema change
-as a contract change, and the docs have to land with it, not one PR later.
-
-**Rejected.** *All of it in PR 2*, as "Settlement lands as a stack of eight
-PRs, docs first" currently lists: the contract would be wrong for the
-lifetime of PR 1.
-
-**Notes.** The stack entry's PR 1 and PR 2 rows get corrected on #220 when
-that record's status flips to Accepted, not here.
-
-**Reversal trigger.** None. It follows from where the contract change is.
 
 ---
 
