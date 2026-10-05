@@ -14,7 +14,7 @@ import { selectableClass } from '../ui/selectableClass'
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
   const activeClass = activeColor === 'success' ? 'border-success bg-success/10 text-success' : 'border-danger bg-danger/10 text-danger'
   return `flex-1 cursor-pointer rounded-control border py-2.5 text-sm font-semibold transition ${
-    active ? activeClass : 'border-smu-navy/20 text-smu-navy hover:border-smu-navy/40'
+    active ? activeClass : selectableClass(false)
   }`
 }
 
@@ -164,7 +164,7 @@ export default function TradingPanel({ marketId, outcomes }: {
           </div>
           <div className="mt-1 flex justify-between">
             <span className="text-muted">Average price</span>
-            <span className="text-smu-navy">{preview.average_price}</span>
+            <span className="text-smu-navy">{formatPrice(preview.average_price)}</span>
           </div>
           {priceNow && priceAfter && (
             <div className="mt-1 flex justify-between">

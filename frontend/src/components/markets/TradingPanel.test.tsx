@@ -83,18 +83,21 @@ describe('TradingPanel', () => {
 
     const preview = await screen.findByLabelText('trade preview')
     expect(preview).toHaveTextContent('5.1250 credits')
-    expect(preview).toHaveTextContent('0.5125')
+    expect(preview).toHaveTextContent('51.3%')
   })
 
   it('shows how the trade moves the selected outcome\'s price', async () => {
-    mockPreview(previewResponse())
+    mockPreview(previewResponse({ outcome_id: 'o-no' }))
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     renderPanel()
 
+    // Yes is both the default and first in the outcomes list, so selecting
+    // No catches a preview that reads prices[0] instead of matching by id.
+    await actor.click(screen.getByRole('button', { name: 'No' }))
     await typeQuantity(actor, '10')
 
     const preview = await screen.findByLabelText('trade preview')
-    expect(preview).toHaveTextContent('50.0% → 52.5%')
+    expect(preview).toHaveTextContent('50.0% → 47.5%')
   })
 
   it('does not fetch a preview before the debounce settles', async () => {
@@ -236,12 +239,19 @@ describe('TradingPanel', () => {
     expect(secondBody).toMatchObject({ state_version: 2, idempotency_key: firstKey })
   })
 
-  it('shows the balance and amount needed on insufficient_funds', async () => {
-    mockPreview(previewResponse())
+  it('clears "Getting a fresh quote…" rather than leaving it on screen when the re-quote itself fails', async () => {
+    let previewCalls = 0
+    server.use(
+      http.get(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/preview`, () => {
+        previewCalls += 1
+        if (previewCalls === 1) return HttpResponse.json(previewResponse({ state_version: 1 }))
+        return HttpResponse.json({ error: { code: 'market_closed', message: 'Closed.' } }, { status: 409 })
+      }),
+    )
     server.use(
       http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
         HttpResponse.json(
-          { error: { code: 'insufficient_funds', message: 'Not enough.', details: { balance: '5.0000', required: '5.1250' } } },
+          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
           { status: 409 },
         ),
       ),
@@ -253,7 +263,31 @@ describe('TradingPanel', () => {
 
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
 
-    expect(await screen.findByText(/you have 5\.0000 credits, but this trade needs 5\.1250/i)).toBeInTheDocument()
+    // previewError already explains the failed re-quote; submitError must
+    // not also show the now-stale "Getting a fresh quote…".
+    await screen.findByText(/this market has closed/i)
+    expect(screen.queryByText(/getting a fresh quote/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/check the new quote and confirm again/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the balance and amount needed on insufficient_funds, formatted like everywhere else', async () => {
+    mockPreview(previewResponse())
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
+        HttpResponse.json(
+          { error: { code: 'insufficient_funds', message: 'Not enough.', details: { balance: '1234.5678', required: '5.1250' } } },
+          { status: 409 },
+        ),
+      ),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+
+    expect(await screen.findByText(/you have 1,234\.5678 credits, but this trade needs 5\.1250/i)).toBeInTheDocument()
   })
 
   it('shows what is held and what was asked for on insufficient_shares_held', async () => {
@@ -433,6 +467,16 @@ describe('TradingPanel', () => {
 
     expect(await screen.findByText(/pay out less than the smallest amount/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
+  })
+
+  it('tells the trader the quantity is not valid on invalid_request', async () => {
+    mockPreviewError('invalid_request', 'Invalid.', 422)
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+
+    await typeQuantity(actor, '10')
+
+    expect(await screen.findByText(/that quantity isn't valid/i)).toBeInTheDocument()
   })
 
   it('disables submit while no valid quantity is entered', () => {
