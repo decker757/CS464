@@ -184,6 +184,26 @@ describe('AdminMarketsPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
   })
 
+  // #235: a new filter starts a new list, so the old list's failure does not
+  // hide the new one's rows.
+  it('shows the new filter\'s rows after the first page failed under the old one', async () => {
+    server.use(
+      http.get(OVERVIEW, ({ request }) =>
+        new URL(request.url).searchParams.get('status') === 'open'
+          ? HttpResponse.json({ markets: [mockMarkets[3]], counts: ONE_OF_EACH, next_cursor: null })
+          : HttpResponse.error(),
+      ),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByRole('alert')
+
+    await actor.click(tab(/^open/i))
+
+    expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('does not show a future closing date on a market closed early', async () => {
     // An admin can close a market before its close_time, and close_time stays
     // in the future — so the row must go by the status, not only the clock.
@@ -374,14 +394,15 @@ describe('AdminMarketsPage', () => {
     expect(cursors.at(-1)).toBeNull()
   })
 
-  // A page asked for under the old filter must not land under the new one.
+  // A page asked for under the old filter must not land under the new one, and
+  // the new filter's own Load more is not left waiting on it.
   it('drops a page that arrives after the status filter changed', async () => {
     const { held, release } = holdUntilReleased()
     server.use(
       http.get(OVERVIEW, async ({ request }) => {
         const params = new URL(request.url).searchParams
         if (params.get('status') === 'open') {
-          return HttpResponse.json({ markets: [mockMarkets[3]], counts: ONE_OF_EACH, next_cursor: null })
+          return HttpResponse.json({ markets: [mockMarkets[3]], counts: ONE_OF_EACH, next_cursor: 'open-2' })
         }
         if (params.get('cursor') === 'page-2') {
           await held
@@ -397,11 +418,39 @@ describe('AdminMarketsPage', () => {
     await actor.click(tab(/^open/i))
     await screen.findByText('Will SMU win SUNIG?')
 
+    expect(screen.getByRole('button', { name: /load more/i })).toBeEnabled()
+
     release()
 
     // Long enough for the held page to land and render, if it is going to.
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(screen.queryByText('Will it rain?')).not.toBeInTheDocument()
+  })
+
+  // #235: a failed Load more belongs to the list it was for; a new filter's
+  // list starts without its alert.
+  it('clears a failed Load more\'s alert when the status filter changes', async () => {
+    server.use(
+      http.get(OVERVIEW, ({ request }) => {
+        const params = new URL(request.url).searchParams
+        if (params.get('status') === 'open') {
+          return HttpResponse.json({ markets: [mockMarkets[3]], counts: ONE_OF_EACH, next_cursor: 'open-2' })
+        }
+        if (params.get('cursor') === 'page-2') return HttpResponse.error()
+        return HttpResponse.json(PAGE_ONE)
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will inflation fall below 2%?')
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn't load more markets/i)
+
+    await actor.click(tab(/^open/i))
+
+    expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   // DECISIONS.md, "The admin overview pages by keyset, settled markets last, …":
