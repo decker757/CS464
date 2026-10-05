@@ -6,15 +6,30 @@ interface MarketPage {
   nextCursor: string | null
 }
 
-interface PagedMarkets<Market> {
-  /** Every page loaded so far, in the server's order. */
+interface PagedMarkets<Market, Page> {
+  /** Every page loaded so far, in the server's order, each market once. */
   markets: Market[]
+  /**
+   * The last page that arrived for this list or an earlier one, for what a page
+   * carries beside its rows (the admin overview's counts). Kept while the list
+   * starts again, so those do not blank out while page one is on its way.
+   */
+  latestPage: Page | null
   hasMore: boolean
   isLoading: boolean
   hasError: boolean
   isLoadingMore: boolean
   loadMoreFailed: boolean
   loadMore: () => void
+}
+
+// A market a later page repeats stays where it was first shown. The admin
+// overview can repeat one: a draft edited, or a market settled, between two
+// page reads (DECISIONS.md, "The admin overview pages by keyset, settled markets
+// last, …"). The public browse never does, so there this changes nothing.
+function appendUnseen<Market extends { id: string }>(shown: Market[], page: Market[]): Market[] {
+  const shownIds = new Set(shown.map(market => market.id))
+  return [...shown, ...page.filter(market => !shownIds.has(market.id))]
 }
 
 // A keyset-paged market list behind a "Load more" button ([X-1] #104). Page one
@@ -24,10 +39,11 @@ interface PagedMarkets<Market> {
 // server's order is the order (market-service.md).
 export function usePagedMarkets<Page extends MarketPage>(
   fetchPage: (cursor: string | undefined) => Promise<Page>,
-): PagedMarkets<Page['markets'][number]> {
+): PagedMarkets<Page['markets'][number], Page> {
   type Market = Page['markets'][number]
 
   const [markets, setMarkets] = useState<Market[]>([])
+  const [latestPage, setLatestPage] = useState<Page | null>(null)
   // Where the next page starts; null once the server says there is none.
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -54,6 +70,7 @@ export function usePagedMarkets<Page extends MarketPage>(
       .then(page => {
         if (!isCurrent()) return
         setMarkets(page.markets)
+        setLatestPage(page)
         setNextCursor(page.nextCursor)
       })
       .catch(() => { if (isCurrent()) setHasError(true) })
@@ -70,7 +87,8 @@ export function usePagedMarkets<Page extends MarketPage>(
     fetchPage(nextCursor)
       .then(page => {
         if (!isCurrent()) return
-        setMarkets(previous => [...previous, ...page.markets])
+        setMarkets(previous => appendUnseen(previous, page.markets))
+        setLatestPage(page)
         setNextCursor(page.nextCursor)
       })
       // The rows already shown stay; so does the button, so the user can retry.
@@ -78,5 +96,5 @@ export function usePagedMarkets<Page extends MarketPage>(
       .finally(() => { if (isCurrent()) setIsLoadingMore(false) })
   }
 
-  return { markets, hasMore: nextCursor !== null, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore }
+  return { markets, latestPage, hasMore: nextCursor !== null, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore }
 }

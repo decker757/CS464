@@ -39,12 +39,19 @@ function renderPage() {
   )
 }
 
-// GET /markets/overview, with the counts the server would send for these rows:
-// every status present, zero when none.
+// GET /markets/overview as the server answers it: the rows under `?status=`
+// (every row without one), on one page, with counts over every row whatever
+// the filter: every status present, zero when none.
 function mockList(markets: MarketOverviewRow[]) {
   const counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0 }
   for (const market of markets) counts[market.status] += 1
-  server.use(http.get(`${MARKET_BASE}/markets/overview`, () => HttpResponse.json({ markets, counts })))
+  server.use(
+    http.get(`${MARKET_BASE}/markets/overview`, ({ request }) => {
+      const status = new URL(request.url).searchParams.get('status')
+      const rows = status === null ? markets : markets.filter(market => market.status === status)
+      return HttpResponse.json({ markets: rows, counts, next_cursor: null })
+    }),
+  )
 }
 
 describe('AdminMarketsPage', () => {
@@ -106,7 +113,7 @@ describe('AdminMarketsPage', () => {
 
     await actor.click(screen.getByRole('tab', { name: /open/i }))
 
-    expect(screen.getByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(screen.queryByText('Will inflation fall below 2%?')).not.toBeInTheDocument()
     expect(screen.queryByText('Untitled draft')).not.toBeInTheDocument()
   })
