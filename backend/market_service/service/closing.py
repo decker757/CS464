@@ -59,7 +59,7 @@ def was_open_for_trading_at(as_of: datetime) -> ColumnElement[bool]:
     Time only, unlike `open_for_trading`: a status written after `as_of` cannot
     move the answer, so a market closed early between two page reads keeps its
     group. Sound because every exit from OPEN stamps `closed_at` and nothing
-    clears it. A draft reads True, so apply `_visible()` first. DECISIONS.md,
+    clears it. A draft may read True, so apply `_visible()` first. DECISIONS.md,
     "The public browse pages by keyset, grouped by the first page's clock".
     """
     return and_(

@@ -4594,7 +4594,7 @@ not `open_for_trading(now)`.
 
 **Notes.** At `as_of = now` the two predicates agree on every published market,
 so a first page is exactly #105's order; `test_closing.py` asserts it. A draft
-reads True under the time-only predicate, which is why `browse` applies
+may read True under the time-only predicate, which is why `browse` applies
 `_visible()` first. `as_of` is the container's clock and an early close stamps
 Postgres's (#179), so a close in the milliseconds of skew between them could
 regroup one market for a reader whose first page fell in that window; accepted
