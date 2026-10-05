@@ -4945,14 +4945,16 @@ market_service's code beyond that, CLAUDE.md requires the extraction into
 
 **Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
 
-**Decision.** Each PR says `Refs #12`; PR 7 says `Closes #12`. Each part is
-named `12-settlement-<n>-<slug>` and targets the one below it.
+**Decision.** Each PR says `Refs #12`; PR 7 says `Closes #12`. Each part
+targets the one below it. From PR 2 on, each branch is named
+`12-settlement-<n>-<slug>`. PR 1 (#227) keeps `12-settled-status`, because
+renaming a pull request's head branch closes the pull request.
 
 | # | Contents | On | Reviewer first |
 | --- | --- | --- | --- |
 | 0 | docs: ADR 0019, the ADR 0009 and 0017 amendments, these entries, CLAUDE.md, the ADR README | `dev` | decker757 |
-| 1 | market: SETTLED in `MarketStatus` and `PublicMarketStatus`, `DECIDED_STATUSES`, `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS`, `_proposal_to_decide`, `409 market_already_settled`; `settleable` on the public detail, from `approved_at`, the window length setting (24 h default) and the five-minute gap | 0 | decker757 |
-| 2 | market: `POST /markets/{id}/settle` with `409 dispute_window_open`, `docs/api/market-service.md` | 1 | decker757 |
+| 1 | market: SETTLED in `MarketStatus` and `PublicMarketStatus`, `DECIDED_STATUSES`, `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS`, `_proposal_to_decide`, `409 market_already_settled`; `settleable` on the public detail, from `approved_at`, the window length setting (24 h default) and the five-minute gap; `settleable` on each admin overview row; `docs/api/market-service.md`'s status and `settleable` edits | 0 | decker757 |
+| 2 | market: `POST /markets/{id}/settle` with `409 dispute_window_open`, and the settle route's section of `docs/api/market-service.md` | 1 | decker757 |
 | 3 | ledger model: `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`, `market_settlements`, the ledger's audit seam | 2 | |
 | 4 | `posting.post_all` | 3 | decker757 (`posting.py`) |
 | 5 | `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade and window-boundary tests | 4 | |
@@ -4969,6 +4971,11 @@ is his. PR 4 touches `posting.py`, which is his file.
 
 **Rejected.** *One PR*: a reviewer could not follow it. *Code before the ADR*:
 the design would be argued in code review.
+
+**Notes.** A PR that changes a contract carries its docs, so
+`docs/api/market-service.md`'s status and `settleable` edits land in PR 1,
+not PR 2. PR 1 is the one that adds `settled` to the browse, the detail and
+the overview, and adds the field.
 
 **Reversal trigger.** Review asks for a different split.
 
@@ -5022,8 +5029,10 @@ takes. It is far longer than any request that completes, and short beside a
   payment*: a new status, and a write in market_service before the ledger's,
   which is a dual write, for the same result the gap gives.
 
-**Reversal trigger.** A statement or transaction timeout is set on
-market_service. The gap must then exceed it.
+**Reversal trigger.** A statement or transaction timeout is added to
+market_service under [5.3] #19, the deploy pipeline. That bounds how long a
+send-back can take, so the gap can shrink, as long as it still exceeds the
+timeout.
 
 ---
 

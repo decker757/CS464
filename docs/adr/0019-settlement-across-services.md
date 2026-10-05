@@ -1,6 +1,6 @@
 # ADR 0019: Settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-04
 - **Affects:** [3.4] #12, [FE][3.4] #216, [3.3] #11, [4.4] #16, [T-4] #24, [T-5] #25, [2.1] #5, [L-1] #38, [L-3] #40, [F-5] #75, [BE] #221, ADR 0006, ADR 0007, ADR 0009, ADR 0011, ADR 0015, ADR 0016, ADR 0017, ADR 0018
 - **Implemented in:** nothing yet. This record precedes [3.4] #12, which is the first code that has to obey it.
