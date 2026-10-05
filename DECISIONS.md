@@ -4357,6 +4357,10 @@ every row, so the counts need their own statement and the read moves to
 REPEATABLE READ to keep one snapshot. The test's mutation is "read the counts
 in a separate statement", and it must fail under that mutation.
 
+**Superseded in part (#210)** by "The admin overview pages by keyset, settled
+markets last, and reads its counts in the same REPEATABLE READ snapshot": the
+reversal trigger fired. The clock is still read once.
+
 ---
 
 ### D-NEW — The admin overview orders by soonest close, missing close times last, then id; #105's order is the trader browse's
@@ -4384,6 +4388,10 @@ browse*: the criterion asks for close time, not grouping.
 **Notes.** Reversal trigger: SETTLED exists. Settled markets are terminal and
 would pile up at the top of the unfiltered view, so [3.4] #12 decides whether
 that view sinks or excludes terminal statuses.
+
+**Reversal trigger decided (#210)** by "The admin overview pages by keyset,
+settled markets last, and reads its counts in the same REPEATABLE READ
+snapshot": settled markets sort last, built before SETTLED exists.
 
 ---
 
@@ -4603,6 +4611,73 @@ route applies them, clamped rather than refused. A bad
 cursor is the same `400 malformed_cursor` the audit, auth and ledger services
 answer ("A cursor is decoded before the query runs"). Paging the admin
 overview is a sibling ticket.
+
+---
+
+### D-NEW — The admin overview pages by keyset, settled markets last, and reads its counts in the same REPEATABLE READ snapshot
+
+**Date:** 2026-10-05 · **Ticket:** #210 · **Status:** active
+
+**Decision.** `overview` returns at most `limit` markets and a keyset cursor.
+The order is a group, then `close_time ASC NULLS LAST`, then `id ASC`: group 1
+is a settled market and group 0 every other, so settled markets come last. The
+cursor carries four fields on `shared/paging.py`'s format: the group, whether
+the market has a close time, the close time (empty when it has none) and the
+id. Nothing in the order reads the clock. The page and the counts are two
+statements in one transaction at REPEATABLE READ, reading one `now`. The
+counts are `count_by_status`, widened to the caller's scope, over every market
+the caller can see whatever the filter and the cursor. The status filter is
+the browse's `_status_matches`, in the query. The cursor does not bind
+`status`. Until [3.4] #12 adds SETTLED (#227), `_is_settled` is constant false
+and every market is in group 0. The route's `limit`, `cursor` and
+`next_cursor` land with #210's controller PR.
+
+**Why.** Keyset rather than OFFSET for the browse's reason ("The public browse
+pages by keyset, grouped by the first page's clock"). Settled markets are
+finished, and an action queue ordered by oldest close would put every one of
+them first; "The admin overview orders by soonest close…" left that to #12,
+and #12's plan wanted the sink, so it is built here and the cursor format does
+not change when SETTLED lands. A draft's close time can be null, so the cursor
+records the nulls-last group as well as the value, and a page boundary between
+two undated drafts can be named. Paged, the list is no longer every row, so
+the counts need their own statement; REPEATABLE READ gives both statements one
+snapshot, which is the reversal trigger "The overview's list and counts share
+one clock and one statement" recorded. A read-only REPEATABLE READ transaction
+cannot fail with a serialization error, so nothing retries. The level is set
+by `session.begin()` and then `session.connection(execution_options=...)`:
+`begin()` raises on a session with a transaction already open, where
+`connection(...)` alone would only warn and read at READ COMMITTED. A route's
+session arrives with none open.
+
+**Rejected.** *Tallying the page*: the counts of fifty rows, not of every
+market. *One statement*, with the counts as a window function or a scalar
+subquery: derives the status in SQL, the copy D-024 and "One clock per
+request…" refuse. *A frozen `as_of`, as the browse has*: nothing in this order
+reads the clock. *Ordering by the boolean itself*: Postgres refuses
+`ORDER BY false` ("non-integer constant in ORDER BY"), and `false` is what the
+boolean is until SETTLED exists. *Binding `status` into the cursor*: the
+browse's reason.
+
+**Supersedes** the one-statement half of "The overview's list and counts share
+one clock and one statement" (one clock stays), and decides the reversal
+trigger of "The admin overview orders by soonest close, missing close times
+last, then id; #105's order is the trader browse's": settled sinks.
+
+**Notes.** Two moves the order cannot see are accepted, not engineered around.
+Autosave changes a draft's `close_time`, so a draft edited between two page
+reads can be listed twice or missed until a fresh first page; freezing drafts
+would break autosave. Once SETTLED exists, a market settled between two page
+reads changes group in the unfiltered view the same way. The admin page shows
+an id once (#235). The status filter and each row's status read the request's
+clock (D-025), so under `status=open` a market whose close passes mid-scroll
+drops out of later pages, and under `status=closed` one that sorts before the
+cursor is missing until a fresh first page. `_status_matches` and the Python
+derivation differ only for an OPEN market with no close time, which
+publication makes unreachable ("A NULL `close_time` on an OPEN market means
+two different things", under Open below): it is counted closed and listed
+under neither filter. `count_by_status` has a production caller again, so its
+dead-code allowlist entry goes. When #227 lands, `_is_settled` returns
+`Market.status == MarketStatus.SETTLED`.
 
 ---
 
