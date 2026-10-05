@@ -599,10 +599,11 @@ async def _three_trading_and_three_stopped(session: AsyncSession) -> list[uuid.U
     """Both groups, each with a tie on its sort key: the boundaries #104 must survive.
 
     Trading: one closing in a day, two sharing a close in two days. Stopped:
-    two closed by hand at one instant an hour ago, and one whose close passed a
-    day ago that no sweep has written down (`closed_at` NULL, `status` still
-    open), so a page boundary crosses a market whose stop time is its
-    `close_time`. Returns their ids in the order `browse` must list them, ties by
+    two closed by hand at one instant an hour ago, one the clock closed two days
+    ago and the sweep wrote down (`closed_at` a moment after `close_time`), and
+    one whose close passed a day ago that no sweep has written down
+    (`closed_at` NULL, `status` still open). A page boundary crosses both ways
+    a stop time is derived from `close_time`. Returns their ids in the order `browse` must list them, ties by
     lower id first (#105).
     """
     soonest_close = datetime.now(UTC) + timedelta(days=1)
@@ -623,6 +624,9 @@ async def _three_trading_and_three_stopped(session: AsyncSession) -> list[uuid.U
             session, actor(), market_id, close_request(), now=an_hour_ago
         )
         tied_stopped_ids.append(market_id)
+    swept_id = (
+        await closed_market(session, actor(), overdue_by=timedelta(days=2))
+    ).id
     unswept_id = (
         await overdue_market(session, actor(), overdue_by=timedelta(days=1))
     ).id
@@ -632,6 +636,7 @@ async def _three_trading_and_three_stopped(session: AsyncSession) -> list[uuid.U
         *sorted(tied_trading_ids),
         *sorted(tied_stopped_ids),
         unswept_id,
+        swept_id,
     ]
 
 
@@ -785,6 +790,77 @@ async def test_under_status_open_a_market_whose_close_passes_mid_browse_drops_ou
 
     assert _ids(page_one.markets) == [first]
     assert _ids(rest) == [later]
+
+
+async def test_under_status_closed_a_market_that_stops_mid_browse_is_never_listed_twice(
+    session: AsyncSession,
+) -> None:
+    """#104: one market's close passes between the reads, another is closed by
+    hand. Both match the filter on later pages but sit in the trading group at
+    the first page's instant, so neither appears: missing from the walk, as an
+    insert ahead of the cursor is, and never a repeat."""
+    just_stopped = (await overdue_market(session, actor())).id
+    stopped_long_ago = (
+        await overdue_market(session, actor(), overdue_by=timedelta(days=2))
+    ).id
+    crossing = (await _open_market(session, timedelta(days=1))).id
+    closed_by_hand = (await _open_market(session, timedelta(days=5))).id
+    first_read = datetime.now(UTC)
+
+    page_one = await browsing.browse(
+        session, limit=1, status=MarketStatus.CLOSED, now=first_read
+    )
+    await market_service.close_early(
+        session,
+        actor(),
+        closed_by_hand,
+        close_request(),
+        now=first_read + timedelta(minutes=1),
+    )
+    rest = await _walk(
+        session,
+        limit=1,
+        cursor=page_one.next_cursor,
+        status=MarketStatus.CLOSED,
+        now=first_read + timedelta(days=3),
+    )
+
+    listed = [*_ids(page_one.markets), *_ids(rest)]
+    assert listed == [just_stopped, stopped_long_ago]
+    assert crossing not in listed
+    assert closed_by_hand not in listed
+
+
+async def test_under_status_closed_later_pages_keep_the_first_pages_grouping(
+    session: AsyncSession,
+) -> None:
+    """#104: the filter reads the request's clock and the grouping the cursor's.
+    Both markets are closed by hand, so `status` matches at the first read
+    while `close_time` and `closed_at` still put them in the trading group at
+    its instant. Grouped by a later clock instead, the market on page one
+    falls into the stopped group, which follows the cursor, and is listed
+    again."""
+    first = (await _open_market(session, timedelta(days=1))).id
+    second = (await _open_market(session, timedelta(days=2))).id
+    for market_id in (first, second):
+        await market_service.close_early(
+            session, actor(), market_id, close_request(), now=datetime.now(UTC)
+        )
+    first_read = datetime.now(UTC) - timedelta(hours=1)
+
+    page_one = await browsing.browse(
+        session, limit=1, status=MarketStatus.CLOSED, now=first_read
+    )
+    rest = await _walk(
+        session,
+        limit=1,
+        cursor=page_one.next_cursor,
+        status=MarketStatus.CLOSED,
+        now=first_read + timedelta(days=3),
+    )
+
+    assert _ids(page_one.markets) == [first]
+    assert _ids(rest) == [second]
 
 
 async def test_each_page_reads_only_its_own_markets_outcomes_in_one_query(
