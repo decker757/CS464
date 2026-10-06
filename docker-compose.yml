@@ -142,9 +142,7 @@ services:
     restart: unless-stopped
 
   # [F-5] #75. Brings the ledger schema to head and exits; `ledger` starts only
-  # if this exited 0. Same shape and reasons as `auth-migrate`. It also refuses
-  # a database from before #75 whose entries lost their append-only trigger.
-  # ADR 0020.
+  # if this exited 0. Same shape and reasons as `auth-migrate`. ADR 0020.
   ledger-migrate:
     build:
       context: ./backend

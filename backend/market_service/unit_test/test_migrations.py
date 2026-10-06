@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-import uuid
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect
 
 from core.database import SCHEMA, Base
 from main import create_app
@@ -21,14 +20,12 @@ from shared.migrating import VERSION_TABLE, run_in_transaction
 from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
     assert_migrating_an_empty_schema_builds_the_models,
-    build_like_before_75,
     compose_service,
     drop_own_tables,
 )
 
 # The conftest has pointed DATABASE_URL at the test database by now.
 _URL = os.environ["DATABASE_URL"]
-_BASELINE = "0001"
 
 
 def _empty_the_schema() -> None:
@@ -39,19 +36,6 @@ def _tables() -> list[str]:
     return run_in_transaction(
         _URL, lambda connection: inspect(connection).get_table_names(schema=SCHEMA)
     )
-
-
-def _version() -> str:
-    return run_in_transaction(
-        _URL,
-        lambda connection: connection.execute(
-            text(f"SELECT version_num FROM {SCHEMA}.{VERSION_TABLE}")
-        ).scalar_one(),
-    )
-
-
-def _build_like_before_75(*statements: str) -> None:
-    build_like_before_75(_URL, Base.metadata, *statements)
 
 
 @pytest.fixture
@@ -87,45 +71,16 @@ def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> 
     )
 
 
-# Adoption ends at this service's first revision after 0001 (ADR 0020). That PR
-# deletes the matches, missing-table and drift `legacy` tests below and keeps one
-# test that a `_build_like_before_75()` schema is refused as past the baseline.
-def test_a_legacy_schema_that_matches_the_models_is_stamped_and_keeps_its_rows(
-    empty_schema,
-) -> None:
-    market_id = uuid.uuid4()
-    _build_like_before_75(
-        "INSERT INTO market.markets (id, creator_id, draft_key) "
-        f"VALUES ('{market_id}', '{uuid.uuid4()}', '{uuid.uuid4()}')"
-    )
-
-    assert main() == 0
-
-    kept = run_in_transaction(
-        _URL,
-        lambda connection: connection.execute(
-            text("SELECT status FROM market.markets WHERE id = :id"), {"id": market_id}
-        ).scalar_one(),
-    )
-    assert _version() == _BASELINE
-    assert kept == "draft"
-
-
-def test_a_legacy_schema_that_missed_0004_and_0006_is_refused_naming_both(
-    empty_schema, capsys
-) -> None:
-    """The two shapes a missed hand-applied file leaves: a column (0006's
-    proposal_id) and an index (0004's ix_markets_due_close)."""
-    _build_like_before_75(
-        "ALTER TABLE market.markets DROP COLUMN proposal_id",
-        "DROP INDEX market.ix_markets_due_close",
-    )
+def test_a_schema_from_before_75_is_refused_and_left_as_it_was(empty_schema, capsys) -> None:
+    """Tables and no migration history: the migrations cannot know what such a
+    database holds, so the step changes nothing and says to start from empty.
+    ADR 0020."""
+    # What every boot before #75 left behind.
+    run_in_transaction(_URL, Base.metadata.create_all)
 
     assert main() == 1
 
-    refusal = capsys.readouterr().err
-    assert "add_column market.markets.proposal_id" in refusal
-    assert "add_index market.markets: ix_markets_due_close" in refusal
+    assert "docker compose down -v" in capsys.readouterr().err
     assert VERSION_TABLE not in _tables()
 
 

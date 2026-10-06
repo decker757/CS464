@@ -140,6 +140,19 @@ _SCHEMA_CATALOG_QUERIES = {
 }
 
 
+def _find_drift(connection: Connection, *, metadata: MetaData, schema: str) -> list[Any]:
+    """Every difference Alembic's comparison finds between `schema` and `metadata`."""
+    from alembic.autogenerate import compare_metadata  # noqa: PLC0415 - see drop_own_tables
+    from alembic.migration import MigrationContext  # noqa: PLC0415
+
+    from shared.migrating import context_options  # noqa: PLC0415
+
+    migration_context = MigrationContext.configure(
+        connection, opts=context_options(metadata, schema)
+    )
+    return compare_metadata(migration_context, metadata)
+
+
 def drop_own_tables(connection: Connection, schema: str) -> None:
     """Drop every table in `schema`, the migration version table included.
 
@@ -217,20 +230,6 @@ def assert_baseline_downgrades_and_upgrades_again(
     assert migrated == catalog()
 
 
-def build_like_before_75(url: str, metadata: MetaData, *statements: str) -> None:
-    """The schema as every boot before #75 left it, then `statements` against it."""
-    from sqlalchemy import text  # noqa: PLC0415 - see drop_own_tables
-
-    from shared.migrating import run_in_transaction  # noqa: PLC0415
-
-    def build(connection: Connection) -> None:
-        metadata.create_all(connection)
-        for statement in statements:
-            connection.execute(text(statement))
-
-    run_in_transaction(url, build)
-
-
 def assert_migrating_an_empty_schema_builds_the_models(
     *, migrate_step: Callable[[], int], url: str, metadata: MetaData, schema: str
 ) -> dict[str, list[str]]:
@@ -241,7 +240,7 @@ def assert_migrating_an_empty_schema_builds_the_models(
     builds. The caller empties the schema around it and asserts what only its
     own service has (a special index) against the returned catalog. [F-5] #75
     """
-    from shared.migrating import find_drift, run_in_transaction  # noqa: PLC0415
+    from shared.migrating import run_in_transaction  # noqa: PLC0415
 
     def catalog() -> dict[str, list[str]]:
         return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
@@ -250,7 +249,7 @@ def assert_migrating_an_empty_schema_builds_the_models(
     assert migrate_step() == 0
     migrated = catalog()
     drift = run_in_transaction(
-        url, lambda connection: find_drift(connection, metadata=metadata, schema=schema)
+        url, lambda connection: _find_drift(connection, metadata=metadata, schema=schema)
     )
 
     run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
