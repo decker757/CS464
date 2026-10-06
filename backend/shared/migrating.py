@@ -47,10 +47,11 @@ VERSION_TABLE = "alembic_version"
 _URL_ATTRIBUTE = "database_url"
 
 _REFUSED_WITHOUT_HISTORY = (
-    "{schema}: this database has tables but no migration history, so it was "
-    "built before #75, and the migrate step no longer adopts one of those "
-    "(ADR 0020). Start from an empty database with `docker compose down -v`, "
-    "which destroys local data. Nothing was changed."
+    "{schema}: this database has tables but no migration history, so something "
+    "other than the migrations built it, most likely a boot from before #75. "
+    "The migrate step cannot know what it holds (ADR 0020). Start from an "
+    "empty database with `docker compose down -v`, which destroys local data. "
+    "Nothing was changed."
 )
 
 Result = TypeVar("Result")

@@ -25,4 +25,3 @@ def test_only_the_services_own_schema_is_compared(
     name: str, type_: str, expected: bool
 ) -> None:
     assert is_own_name(name, type_, {}, schema="auth") is expected
-

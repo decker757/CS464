@@ -140,6 +140,19 @@ _SCHEMA_CATALOG_QUERIES = {
 }
 
 
+def _find_drift(connection: Connection, *, metadata: MetaData, schema: str) -> list[Any]:
+    """Every difference Alembic's comparison finds between `schema` and `metadata`."""
+    from alembic.autogenerate import compare_metadata  # noqa: PLC0415 - see drop_own_tables
+    from alembic.migration import MigrationContext  # noqa: PLC0415
+
+    from shared.migrating import context_options  # noqa: PLC0415
+
+    migration_context = MigrationContext.configure(
+        connection, opts=context_options(metadata, schema)
+    )
+    return compare_metadata(migration_context, metadata)
+
+
 def drop_own_tables(connection: Connection, schema: str) -> None:
     """Drop every table in `schema`, the migration version table included.
 
@@ -215,19 +228,6 @@ def assert_baseline_downgrades_and_upgrades_again(
     run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
     run_in_transaction(url, metadata.create_all)
     assert migrated == catalog()
-
-
-def _find_drift(connection: Connection, *, metadata: MetaData, schema: str) -> list[Any]:
-    """Every difference Alembic's comparison finds between `schema` and `metadata`."""
-    from alembic.autogenerate import compare_metadata  # noqa: PLC0415 - see drop_own_tables
-    from alembic.migration import MigrationContext  # noqa: PLC0415
-
-    from shared.migrating import context_options  # noqa: PLC0415
-
-    migration_context = MigrationContext.configure(
-        connection, opts=context_options(metadata, schema)
-    )
-    return compare_metadata(migration_context, metadata)
 
 
 def assert_migrating_an_empty_schema_builds_the_models(
