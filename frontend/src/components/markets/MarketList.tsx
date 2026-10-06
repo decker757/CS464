@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import { listMarkets, type PublicMarketSummary } from '../../api/marketApi'
-import type { Page } from '../../api/paging'
+import { listMarkets, type PublicMarketPage, type PublicMarketSummary } from '../../api/marketApi'
 import { usePagedList } from '../../hooks/usePagedList'
 import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import LoadMoreControl from '../ui/LoadMoreControl'
@@ -13,15 +12,21 @@ interface MarketListProps {
   status: StatusFilter | null
 }
 
+const pagedMarketsOptions = {
+  itemsOf: (page: PublicMarketPage) => page.markets,
+  nextCursorOf: (page: PublicMarketPage) => page.nextCursor,
+  idOf: (market: PublicMarketSummary) => market.id,
+}
+
 // One search and one status, from its first page on. A different search or
 // status is a different list: the page gives this a new `key`, so the paging
 // state and the prices start over (usePricesForMarkets says to do exactly that).
 export default function MarketList({ query, status }: MarketListProps) {
-  const fetchMarketPage = useCallback(async (cursor: string | undefined): Promise<Page<PublicMarketSummary>> => {
-    const page = await listMarkets({ cursor, q: query || undefined, status: status ?? undefined })
-    return { items: page.markets, nextCursor: page.nextCursor }
-  }, [query, status])
-  const { items: markets, nextCursor, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchMarketPage)
+  const fetchMarketPage = useCallback(
+    (cursor: string | undefined) => listMarkets({ cursor, q: query || undefined, status: status ?? undefined }),
+    [query, status],
+  )
+  const { items: markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchMarketPage, pagedMarketsOptions)
   // Memoised so the prices are fetched when the list changes, not on every render.
   const marketIds = useMemo(() => markets.map(market => market.id), [markets])
   const pricesByMarket = usePricesForMarkets(marketIds)
@@ -45,13 +50,9 @@ export default function MarketList({ query, status }: MarketListProps) {
             {markets.map((market) => <MarketCard key={market.id} market={market} prices={pricesByMarket.get(market.id)} />)}
           </div>
 
-          <LoadMoreControl
-            hasMore={nextCursor !== null}
-            isLoadingMore={isLoadingMore}
-            loadMoreFailed={loadMoreFailed}
-            noun="markets"
-            onLoadMore={loadMore}
-          />
+          {hasMore && (
+            <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="markets" onLoadMore={loadMore} />
+          )}
         </>
       )}
     </>
