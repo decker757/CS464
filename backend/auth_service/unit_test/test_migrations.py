@@ -11,51 +11,23 @@ from __future__ import annotations
 
 import asyncio
 import os
-import pathlib
-import shutil
-import uuid
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect
 
 from core.database import SCHEMA, Base
 from main import create_app
 from migrate import ALEMBIC_INI, main
-from shared.migrating import (
-    VERSION_TABLE,
-    LegacyDrift,
-    migrate,
-    run_in_transaction,
-)
+from shared.migrating import VERSION_TABLE, run_in_transaction
 from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
     assert_migrating_an_empty_schema_builds_the_models,
-    build_like_before_75,
     compose_service,
     drop_own_tables,
 )
 
 # The conftest has pointed DATABASE_URL at the test database by now.
 _URL = os.environ["DATABASE_URL"]
-_SERVICE_DIR = pathlib.Path(__file__).resolve().parents[1]
-_BASELINE = "0001"
-
-_SECOND_REVISION = '''\
-"""A revision after the baseline, for one test only."""
-
-revision = "0002"
-down_revision = "0001"
-branch_labels = None
-depends_on = None
-
-
-def upgrade() -> None:
-    pass
-
-
-def downgrade() -> None:
-    pass
-'''
 
 
 def _empty_the_schema() -> None:
@@ -66,23 +38,6 @@ def _tables() -> list[str]:
     return run_in_transaction(
         _URL, lambda connection: inspect(connection).get_table_names(schema=SCHEMA)
     )
-
-
-def _has_version_table() -> bool:
-    return VERSION_TABLE in _tables()
-
-
-def _version() -> str:
-    return run_in_transaction(
-        _URL,
-        lambda connection: connection.execute(
-            text(f"SELECT version_num FROM {SCHEMA}.{VERSION_TABLE}")
-        ).scalar_one(),
-    )
-
-
-def _build_like_before_75(*statements: str) -> None:
-    build_like_before_75(_URL, Base.metadata, *statements)
 
 
 @pytest.fixture
@@ -120,80 +75,17 @@ def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> 
     )
 
 
-# Adoption ends at this service's first revision after 0001 (ADR 0020). That PR
-# deletes the matches, missing-table and drift `legacy` tests below and keeps one
-# test that a `_build_like_before_75()` schema is refused as past the baseline.
-def test_a_legacy_schema_that_matches_the_models_is_stamped_and_keeps_its_rows(
-    empty_schema,
-) -> None:
-    user_id = uuid.uuid4()
-    _build_like_before_75(
-        "INSERT INTO auth.users (id, username, email, password_hash, is_suspended) "
-        f"VALUES ('{user_id}', 'legacy_user', 'legacy@example.com', 'not-a-real-hash', false)"
-    )
-
-    assert main() == 0
-
-    kept = run_in_transaction(
-        _URL,
-        lambda connection: connection.execute(
-            text("SELECT username FROM auth.users WHERE id = :id"), {"id": user_id}
-        ).scalar_one(),
-    )
-    assert _version() == _BASELINE
-    assert kept == "legacy_user"
-
-
-def test_a_legacy_schema_missing_a_whole_table_gets_it_and_is_stamped(empty_schema) -> None:
-    """Every boot before #75 ran create_all, so a database that is only behind
-    on tables is what the old code would have fixed by starting. ADR 0020."""
-    _build_like_before_75("DROP TABLE auth.refresh_tokens")
-
-    assert main() == 0
-
-    assert _version() == _BASELINE
-    assert "refresh_tokens" in _tables()
-
-
-def test_a_drifted_legacy_schema_is_refused_and_left_as_it_was(empty_schema, capsys) -> None:
-    """A database that missed a hand-applied ALTER: refused, naming the column,
-    with nothing stamped and the table the check created rolled back."""
-    _build_like_before_75(
-        "ALTER TABLE auth.users DROP COLUMN is_suspended",
-        "DROP TABLE auth.refresh_tokens",
-    )
+def test_a_schema_from_before_75_is_refused_and_left_as_it_was(empty_schema, capsys) -> None:
+    """Tables and no migration history: the migrations cannot know what such a
+    database holds, so the step changes nothing and says to start from empty.
+    ADR 0020."""
+    # What every boot before #75 left behind.
+    run_in_transaction(_URL, Base.metadata.create_all)
 
     assert main() == 1
 
-    assert "add_column auth.users.is_suspended" in capsys.readouterr().err
-    assert not _has_version_table()
-    assert "refresh_tokens" not in _tables()
-
-
-def test_a_legacy_schema_is_refused_once_the_migrations_pass_the_baseline(
-    empty_schema, tmp_path
-) -> None:
-    """Matching the models proves head, and head is the baseline only until a
-    second revision exists; a stamp at the baseline would then claim changes
-    the database never had. ADR 0020."""
-    shutil.copytree(
-        _SERVICE_DIR / "migrations",
-        tmp_path / "migrations",
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
-    shutil.copy(ALEMBIC_INI, tmp_path / "alembic.ini")
-    (tmp_path / "migrations" / "versions" / "0002_later.py").write_text(_SECOND_REVISION)
-    _build_like_before_75()
-
-    with pytest.raises(LegacyDrift, match="moved past the baseline"):
-        migrate(
-            alembic_ini=tmp_path / "alembic.ini",
-            url=_URL,
-            metadata=Base.metadata,
-            schema=SCHEMA,
-        )
-
-    assert not _has_version_table()
+    assert "docker compose down -v" in capsys.readouterr().err
+    assert VERSION_TABLE not in _tables()
 
 
 def test_the_migrate_step_exits_2_without_a_database_url(monkeypatch, capsys) -> None:
