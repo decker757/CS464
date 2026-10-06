@@ -210,8 +210,7 @@ class Transaction(Base):
     # (`signup-grant:<uuid>`, 49 characters) to prove the derivation confines
     # a collision to one caller. 120 truncates that combination; 255 leaves
     # room for a client key longer than any of this service's own namespaced
-    # keys with margin to spare. The baseline revision carries 255; a database
-    # from before #75 still at 120 is refused by migrate.py, naming this column.
+    # keys with margin to spare. The baseline revision carries 255.
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
     # A hash of the legs, so a replayed key can be told from a reused one.
@@ -562,7 +561,6 @@ class Position(Base):
 # would work and would also be the kind of thing somebody quietly un-doubles
 # while editing the SQL.
 
-# The trigger's name, which migrate.py checks a database from before #75 for.
 APPEND_ONLY_TRIGGER = "entries_append_only"
 
 # One copy of this SQL, run in two places: by the `after_create` events below,
