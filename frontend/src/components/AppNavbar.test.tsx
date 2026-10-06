@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { AuthProvider } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
 import { BalanceProvider } from '../context/BalanceContext'
+import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
 import { WithProviders } from '../test/renderWithProviders'
 import AppNavbar from './AppNavbar'
@@ -148,13 +149,15 @@ describe('AppNavbar — logging out', () => {
   })
 
   it('disables the control while the request is in flight', async () => {
-    let release!: () => void
-    const pending = new Promise<Response>((resolve) => {
-      release = () => resolve(HttpResponse.json({ message: 'Logged out.' }))
-    })
+    const { held, release } = holdUntilReleased()
     const actor = userEvent.setup()
     renderInApp()
-    server.use(http.post('http://localhost:8000/auth/logout', () => pending))
+    server.use(
+      http.post('http://localhost:8000/auth/logout', async () => {
+        await held
+        return HttpResponse.json({ message: 'Logged out.' })
+      }),
+    )
     await screen.findByText('alice')
 
     await actor.click(screen.getByRole('button', { name: /log out/i }))
