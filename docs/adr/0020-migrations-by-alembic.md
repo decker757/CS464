@@ -105,6 +105,9 @@ hold the migrations to them", has the trade.
 
 ### A database from before #75 is adopted, for now
 
+> Deleted on 2026-10-06 by #236; such a database is now refused. See the note
+> at the end.
+
 `migrate.py` finds the service's schema in one of three states:
 
 - **It has a version table.** Upgrade to head.
@@ -178,8 +181,8 @@ each service's `requirements.txt`.
   also asserts `ix_markets_due_close`'s predicate by name, and the ledger's
   asserts its append-only trigger by name.
 
-Adoption checks the ledger's append-only trigger by hand, through the runner's
-`extra_drift` hook, and refuses a ledger that has lost it. It does not check
+Adoption (deleted by #236) checked the ledger's append-only trigger by hand,
+through the runner's `extra_drift` hook, and refuses a ledger that has lost it. It does not check
 `ix_markets_due_close`'s predicate. A database from before #75 got that index
 either from `create_all`, which builds the model's, or from
 `sql/migrations/0004`, which spelled the same predicate.
@@ -225,7 +228,8 @@ first, or `docker compose down -v`.
 **Each app image carries Alembic**, because the migrate container is the app's
 image with a different command.
 
-**A pre-#75 database must be migrated before the second revision lands.** Once
+**A pre-#75 database must be migrated before the second revision lands.**
+(Superseded by #236, below: it must be migrated before #236 merges.) Once
 any service has a revision after `0001`, adoption ends for that service, and a
 database that was never migrated can only be rebuilt. That service's adoption
 tests go with it: the pull request that adds its first revision deletes the
@@ -289,3 +293,22 @@ import each other. `env.py` and `migrate.py` are composition roots instead.
 > development database has run its migrate step once. Or every service's
 > history has a second revision, at which point adoption refuses every
 > database it finds and the path is dead code.
+
+---
+
+> **2026-10-06, #236: the adoption path is deleted.** The test above for
+> deleting it is #236's checklist. A schema with the service's tables and no
+> `alembic_version` is now refused outright, with only the
+> `docker compose down -v` message, and nothing is changed. The migrations
+> cannot know what such a database holds, so there is nothing to recover in
+> place.
+>
+> Gone with it: the comparison with the models on the migrate path, the
+> git-history recovery its refusal printed (`sql/migrations/README.md` and
+> CLAUDE.md drop it too), and the ledger's `extra_drift` trigger check, whose
+> only caller was adoption. The ledger's guard tests still assert the trigger
+> by its definition and by what it refuses. `migrate()` no longer takes the
+> metadata, which only adoption read; `env.py` still binds it. The drift
+> comparison the guard tests use moved into `shared/testing.py`, which no
+> image carries. Each service keeps one test that a schema built the way every
+> boot before #75 left it is refused.

@@ -199,10 +199,6 @@ The `ledger-migrate` compose step runs `python migrate.py` as `ledger_svc` and
 change needs a revision in `migrations/versions/`; root `CLAUDE.md` has the
 commands. ADR 0020.
 
-A database from before #75 has tables and no history. `migrate.py` adopts it at
-revision `0001` if it matches the models, and otherwise refuses and names what
-differs (most likely `idempotency_key` still at 120 characters, which
-`sql/migrations/0007` widened before #75 deleted it; the refusal prints the git
-commands that recover it). It also refuses
-one whose `ledger.entries` lost its append-only trigger. Read the log with
-`docker compose logs ledger-migrate`.
+A database from before #75 has tables and no history, and `migrate.py` refuses
+it and changes nothing; `docker compose down -v` starts it again, and destroys
+local data. Read the log with `docker compose logs ledger-migrate`.
