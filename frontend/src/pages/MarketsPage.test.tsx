@@ -99,9 +99,10 @@ describe('MarketsPage', () => {
     )
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
-    expect(screen.getByText('Open')).toBeInTheDocument()
+    // Scoped to the cards: the status filter buttons carry the same words.
+    expect(within(cardFor('Will SMU win SUNIG?')).getByText('Open')).toBeInTheDocument()
     // A past close_time also renders "Closed" in the timestamp slot, so two elements match.
-    expect(screen.getAllByText('Closed').length).toBeGreaterThanOrEqual(1)
+    expect(within(cardFor('Will inflation fall below 2%?')).getAllByText('Closed').length).toBeGreaterThanOrEqual(1)
   })
 
   it('does not show a future closing date on a market closed early', async () => {
@@ -369,5 +370,105 @@ describe('MarketsPage', () => {
     expect(snapshotRequests).toEqual(['b2'])
     // The first card keeps the price it already had.
     expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('12.4%')
+  })
+
+  // [X-2] #35: the server does the searching and the filtering (market-service.md),
+  // so this stand-in applies q and status the way it does and the test follows
+  // what the trader sees, not just what was sent.
+  describe('search and filters', () => {
+    function mockSearchableMarkets() {
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets`, ({ request }) => {
+          const params = new URL(request.url).searchParams
+          const q = params.get('q')?.toLowerCase()
+          const status = params.get('status')
+          const matching = mockMarkets.filter(market =>
+            (!q || market.question.toLowerCase().includes(q)) && (!status || market.status === status),
+          )
+          return HttpResponse.json({ markets: matching, next_cursor: null })
+        }),
+      )
+    }
+
+    it('narrows the list to markets whose question matches the search', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'inflation{Enter}')
+
+      await waitFor(() => expect(screen.queryByText('Will SMU win SUNIG?')).not.toBeInTheDocument())
+      expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    })
+
+    it('narrows the list to one status', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+
+      await actor.click(screen.getByRole('button', { name: 'Open' }))
+
+      await waitFor(() => expect(screen.queryByText('Will inflation fall below 2%?')).not.toBeInTheDocument())
+      expect(screen.getByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    })
+
+    it('applies a search and a status together', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+
+      await actor.click(screen.getByRole('button', { name: 'Open' }))
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'inflation{Enter}')
+
+      // The one open market does not mention inflation, and the one that does is closed.
+      expect(await screen.findByText(/no markets match these filters/i)).toBeInTheDocument()
+    })
+
+    it('shows the active filters and clears them one at a time or all at once', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+      const active = () => screen.queryByRole('group', { name: /active filters/i })
+      expect(active()).not.toBeInTheDocument()
+
+      await actor.click(screen.getByRole('button', { name: 'Closed' }))
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'inflation{Enter}')
+      expect(within(active()!).getByText('Search: inflation ×')).toBeInTheDocument()
+      expect(within(active()!).getByText('Status: Closed ×')).toBeInTheDocument()
+
+      await actor.click(screen.getByRole('button', { name: 'Clear search' }))
+      expect(within(active()!).queryByText('Search: inflation ×')).not.toBeInTheDocument()
+      expect(screen.getByRole('searchbox', { name: /search markets/i })).toHaveValue('')
+
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'smu{Enter}')
+      await actor.click(screen.getByRole('button', { name: 'Clear all' }))
+
+      expect(active()).not.toBeInTheDocument()
+      expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
+      expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    })
+
+    it('starts a new search from the first page, not from the cursor of the old list', async () => {
+      const cursorsSeen: (string | null)[] = []
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets`, ({ request }) => {
+          const params = new URL(request.url).searchParams
+          cursorsSeen.push(params.get('cursor'))
+          return HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: params.get('q') ? null : 'page-2' })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByRole('button', { name: /load more/i })
+
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'smu{Enter}')
+
+      await waitFor(() => expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument())
+      expect(cursorsSeen.at(-1)).toBeNull()
+    })
   })
 })
