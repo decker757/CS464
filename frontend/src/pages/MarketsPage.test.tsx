@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -166,12 +166,12 @@ describe('MarketsPage', () => {
     await screen.findByText('Will SMU win SUNIG?')
 
     const open = cardFor('Will SMU win SUNIG?')
-    expect(await within(open).findByLabelText('Yes price')).toHaveTextContent('12.4%')
+    await waitFor(() => expect(within(open).getByLabelText('Yes price')).toHaveTextContent('12.4%'))
     expect(within(open).getByLabelText('No price')).toHaveTextContent('87.7%')
 
     // A closed market still has a last price, and shows it.
     const closed = cardFor('Will inflation fall below 2%?')
-    expect(await within(closed).findByLabelText('Yes price')).toHaveTextContent('70.0%')
+    await waitFor(() => expect(within(closed).getByLabelText('Yes price')).toHaveTextContent('70.0%'))
     expect(within(closed).getByLabelText('No price')).toHaveTextContent('30.0%')
   })
 
@@ -193,7 +193,7 @@ describe('MarketsPage', () => {
     await screen.findByText('Will SMU win SUNIG?')
 
     const closed = cardFor('Will inflation fall below 2%?')
-    expect(await within(closed).findByLabelText('Yes price')).toHaveTextContent('70.0%')
+    await waitFor(() => expect(within(closed).getByLabelText('Yes price')).toHaveTextContent('70.0%'))
 
     const failed = cardFor('Will SMU win SUNIG?')
     expect(within(failed).getByText('Will SMU win SUNIG?')).toBeInTheDocument()
@@ -216,7 +216,7 @@ describe('MarketsPage', () => {
     await screen.findByText('Who wins the NBA Finals?')
     const card = cardFor('Who wins the NBA Finals?')
 
-    expect(await within(card).findByLabelText('Lakers price')).toHaveTextContent('50.0%')
+    await waitFor(() => expect(within(card).getByLabelText('Lakers price')).toHaveTextContent('50.0%'))
     expect(within(card).getByLabelText('Celtics price')).toHaveTextContent('30.0%')
     expect(within(card).getByLabelText('Draw price')).toHaveTextContent('20.0%')
     expect(within(card).queryByLabelText('Yes price')).not.toBeInTheDocument()
@@ -246,7 +246,7 @@ describe('MarketsPage', () => {
     await screen.findByText('Lakers or Celtics?')
     const card = cardFor('Lakers or Celtics?')
 
-    expect(await within(card).findByLabelText('Lakers price')).toHaveTextContent('70.0%')
+    await waitFor(() => expect(within(card).getByLabelText('Lakers price')).toHaveTextContent('70.0%'))
     expect(within(card).getByLabelText('Celtics price')).toHaveTextContent('30.0%')
     expect(within(card).getByLabelText('Draw price')).toHaveTextContent('—')
   })
@@ -360,13 +360,13 @@ describe('MarketsPage', () => {
     const actor = userEvent.setup()
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
-    expect(await within(cardFor('Will SMU win SUNIG?')).findByLabelText('Yes price')).toHaveTextContent('12.4%')
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('12.4%'))
     snapshotRequests.length = 0
 
     await actor.click(screen.getByRole('button', { name: /load more/i }))
 
     await screen.findByText('Will inflation fall below 2%?')
-    expect(await within(cardFor('Will inflation fall below 2%?')).findByLabelText('Yes price')).toHaveTextContent('70.0%')
+    await waitFor(() => expect(within(cardFor('Will inflation fall below 2%?')).getByLabelText('Yes price')).toHaveTextContent('70.0%'))
     expect(snapshotRequests).toEqual(['b2'])
     // The first card keeps the price it already had.
     expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('12.4%')
