@@ -5,6 +5,7 @@ import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { User } from '../context/AuthContext'
+import { holdUntilReleased } from '../test/holdUntilReleased'
 import { WithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
 import MarketsPage from './MarketsPage'
@@ -294,8 +295,7 @@ describe('MarketsPage', () => {
 
   // #104 Review Focus 2: a double click must not fetch, or append, a page twice.
   it('asks for the next page once however fast Load more is clicked', async () => {
-    let release!: () => void
-    const held = new Promise<void>(resolve => { release = resolve })
+    const { held, release } = holdUntilReleased()
     let secondPageRequests = 0
     mockTwoPages(async () => {
       secondPageRequests += 1
@@ -317,8 +317,7 @@ describe('MarketsPage', () => {
   // StrictMode (on in main.tsx) asks for page one twice. Its first answer
   // arriving late must not replace the list after Load more has added to it.
   it('keeps the appended page when the first mount\'s answer arrives late', async () => {
-    let release!: () => void
-    const held = new Promise<void>(resolve => { release = resolve })
+    const { held, release } = holdUntilReleased()
     let firstPageRequests = 0
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, async ({ request }) => {
