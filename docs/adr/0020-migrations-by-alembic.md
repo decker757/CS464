@@ -147,6 +147,9 @@ between them would be a bug rather than a design choice. A filter that let the
 adoption rules would adopt a database that the third refuses. That clears ADR
 0012's bar for `shared/`, and ADR 0012 carries an amendment adding it.
 
+> Since #236 the runner holds no adoption rule, and `migrate.py` binds only the
+> `SCHEMA`; `env.py` still binds `Base.metadata`. See the note at the end.
+
 The runner imports no service. Each service binds it to its own `Base.metadata`
 and `SCHEMA` in two small files, `migrations/env.py` and `migrate.py`. Those two
 are composition roots, like `main.py`, so they import `shared` directly. There
@@ -181,11 +184,11 @@ each service's `requirements.txt`.
   also asserts `ix_markets_due_close`'s predicate by name, and the ledger's
   asserts its append-only trigger by name.
 
-Adoption (deleted by #236) checked the ledger's append-only trigger by hand,
-through the runner's `extra_drift` hook, and refuses a ledger that has lost it. It does not check
-`ix_markets_due_close`'s predicate. A database from before #75 got that index
-either from `create_all`, which builds the model's, or from
-`sql/migrations/0004`, which spelled the same predicate.
+Adoption, until #236 deleted it, checked the ledger's append-only trigger by
+hand, through the runner's `extra_drift` hook, and refused a ledger that had
+lost it. It did not check `ix_markets_due_close`'s predicate. A database from
+before #75 got that index either from `create_all`, which builds the model's,
+or from `sql/migrations/0004`, which spelled the same predicate.
 
 ### The ledger's trigger SQL is shared, so editing it needs a new revision
 
@@ -205,7 +208,8 @@ a revision of its own, with its own copy of the SQL.
 `0002` stays. It creates a login role and re-runs `sql/02-schemas.sql`, and no
 service's history can own either of those. The other six files, 0001 and
 0003–0007, are folded into the baselines and deleted in #75's last pull request.
-They remain in git history, which is where the adoption refusal points.
+They remain in git history, which is where the adoption refusal pointed until
+#236.
 
 ## Consequences
 
@@ -228,13 +232,11 @@ first, or `docker compose down -v`.
 **Each app image carries Alembic**, because the migrate container is the app's
 image with a different command.
 
-**A pre-#75 database must be migrated before the second revision lands.**
-(Superseded by #236, below: it must be migrated before #236 merges.) Once
-any service has a revision after `0001`, adoption ends for that service, and a
-database that was never migrated can only be rebuilt. That service's adoption
-tests go with it: the pull request that adds its first revision deletes the
-matches, missing-table and drift tests, and keeps one test that a schema built
-like before #75 is refused as past the baseline, against the real history.
+**A pre-#75 database had to be migrated before the second revision landed.**
+Once any service had a revision after `0001`, adoption would end for that
+service, and a database that was never migrated could only be rebuilt. #236
+ended adoption for all three first, so this is now history: see the note at
+the end.
 
 ## Alternatives rejected
 
@@ -297,7 +299,10 @@ import each other. `env.py` and `migrate.py` are composition roots instead.
 ---
 
 > **2026-10-06, #236: the adoption path is deleted.** The test above for
-> deleting it is #236's checklist. A schema with the service's tables and no
+> deleting it is tracked as #236's checklist, one box per teammate's
+> development database. Whoever merges #236 confirms it first; a database the
+> checklist missed is refused, and `docker compose down -v` rebuilds it with
+> its local data lost. A schema with the service's tables and no
 > `alembic_version` is now refused outright, with only the
 > `docker compose down -v` message, and nothing is changed. The migrations
 > cannot know what such a database holds, so there is nothing to recover in
