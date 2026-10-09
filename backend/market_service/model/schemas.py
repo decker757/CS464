@@ -388,8 +388,8 @@ class MarketOut(_UtcTimestamps):
 
     # --- the proposed outcome. [3.1] #9 -------------------------------------
     # All null or all set, together with `pending_resolution` or `approved`,
-    # with one exception: a proposal pending since before
-    # sql/migrations/0006 has `proposal_id` null, and is decided by sending
+    # with one exception: a proposal pending since before the `proposal_id`
+    # column existed ([3.2] #10) has it null, and is decided by sending
     # the null back. `proposal_id` is what approve and reject send back: read
     # it from the response the reviewer is looking at, never a later fetch
     # (ADR 0016).
@@ -601,7 +601,12 @@ class MarketOverviewRowOut(_UtcTimestamps):
 
 
 class MarketOverviewResponse(BaseModel):
-    """Rows for the chosen filter, and a count for every status regardless of it."""
+    """One page of rows for the chosen filter, and a count for every status over
+    every page, regardless of the filter. [2.1] #5, #210.
+
+    `next_cursor` is null on the last page, an empty one included.
+    """
 
     markets: list[MarketOverviewRowOut]
     counts: dict[MarketStatus, int]
+    next_cursor: str | None

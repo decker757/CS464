@@ -4357,6 +4357,10 @@ every row, so the counts need their own statement and the read moves to
 REPEATABLE READ to keep one snapshot. The test's mutation is "read the counts
 in a separate statement", and it must fail under that mutation.
 
+*Superseded in part 2026-10-05 by #210: "The admin overview pages by keyset,
+settled markets last, and reads its counts in the same REPEATABLE READ
+snapshot". The reversal trigger fired; the clock is still read once.*
+
 ---
 
 ### D-NEW — The admin overview orders by soonest close, missing close times last, then id; #105's order is the trader browse's
@@ -4384,6 +4388,10 @@ browse*: the criterion asks for close time, not grouping.
 **Notes.** Reversal trigger: SETTLED exists. Settled markets are terminal and
 would pile up at the top of the unfiltered view, so [3.4] #12 decides whether
 that view sinks or excludes terminal statuses.
+
+*Reversal trigger decided 2026-10-05 by #210: "The admin overview pages by
+keyset, settled markets last, and reads its counts in the same REPEATABLE READ
+snapshot". Settled markets sort last, built before SETTLED exists.*
 
 ---
 
@@ -4601,8 +4609,134 @@ for a display read, as D-025 accepts the same skew. Page sizes are the audit
 feed's settings and defaults, 50 and 200, clamped rather than refused; the
 route applies them, clamped rather than refused. A bad
 cursor is the same `400 malformed_cursor` the audit, auth and ledger services
-answer ("A cursor is decoded before the query runs"). Paging the admin
-overview is a sibling ticket.
+answer ("A cursor is decoded before the query runs"). The admin overview is
+paged by "The admin overview pages by keyset, settled markets last, and reads
+its counts in the same REPEATABLE READ snapshot" (#210).
+
+---
+
+### D-NEW — The suites rebuild from the models per test, and guard tests hold the migrations to them
+
+**Date:** 2026-10-04 · **Ticket:** #75 · **Status:** active
+
+**Decision.** Each `unit_test/conftest.py` still builds its schema from
+`Base.metadata`, as before #75: market and ledger drop and recreate it, auth
+creates what is missing and empties the tables. None of them runs the
+migrations. Instead, each of auth, market and ledger has a
+`unit_test/test_migrations.py` that migrates an empty schema and checks the
+result is exactly what the models build, through Alembic's comparison and
+through the Postgres catalog. Market and ledger also assert by name what
+Alembic's comparison cannot see: `ix_markets_due_close`'s predicate and the
+append-only trigger.
+
+**Why.** #75's scope said "conftest migrates to head". Migrating per test runs
+every revision for every database test, and that cost grows with every revision
+added. A rebuild from the models costs the same forever. What a migrate-per-test
+suite would catch, the migrations disagreeing with the models, the guard tests
+catch directly, once per run.
+
+**Rejected.** *Migrating per test*, which makes every test slower forever to
+learn what one guard test says. *Migrating once per session and emptying the
+tables per test.* The ledger's append-only trigger refuses TRUNCATE and
+DELETE on `ledger.entries`, so the ledger could be emptied that way only by
+disabling the trigger the suite exists to exercise (`ledger_svc` owns the
+table and could). And unless the session fixture also emptied the schema
+first, a test database already at head would ignore a revision edited after it
+ran: the version table says it is current, so nothing runs again. The market
+and ledger conftests drop and rebuild so that a new column reaches the test
+database, and that would quietly stop being true.
+
+**Notes.** CI still runs `migrate.py` against its empty test database before
+the suite, as the service's own role, so a revision that cannot apply under the
+real grants fails the job. ADR 0020 says when this reverses.
+
+---
+
+### D-NEW — The migrate step reads DATABASE_URL alone, not the service's settings
+
+**Date:** 2026-10-04 · **Ticket:** #75 · **Status:** active
+
+**Decision.** `shared.migrating.migrate_from_environment` reads
+`DATABASE_URL` straight from the environment, and exits 2 if it is missing.
+Compose gives each `<svc>-migrate` that one variable and nothing else.
+
+**Why.** The services' `Settings` also require `JWT_SECRET`. A step that only
+issues DDL has no use for a signing key, and every container that holds one is
+one more place it can leak from.
+
+**Rejected.** *Using `core.config.get_settings()`*, which puts the signing key
+in one more container for the sake of one shared parse of a single URL.
+
+**Notes.** Each service's `test_compose_starts_..._only_after_its_migration_succeeds`
+asserts that `JWT_SECRET` is not in its migrate step's environment. ADR 0020.
+
+---
+
+### D-NEW — The admin overview pages by keyset, settled markets last, and reads its counts in the same REPEATABLE READ snapshot
+
+**Date:** 2026-10-05 · **Ticket:** #210 · **Status:** active
+
+**Decision.** `overview` returns at most `limit` markets and a keyset cursor.
+The order is a group, then `close_time ASC NULLS LAST`, then `id ASC`: group 1
+is a settled market and group 0 every other, so settled markets come last. The
+cursor carries four fields on `shared/paging.py`'s format: the group, whether
+the market has a close time, the close time (empty when it has none) and the
+id. Nothing in the order reads the clock. The page and the counts are two
+statements in one transaction at REPEATABLE READ, reading one `now`. The
+counts are `count_by_status`, widened to the caller's scope, over every market
+the caller can see whatever the filter and the cursor. The status filter is
+the browse's `_status_matches`, in the query. The cursor does not bind
+`status`. Until [3.4] #12 adds SETTLED (#227), `_is_settled` is constant false
+and every market is in group 0. `GET /markets/overview` takes `limit` and
+`cursor` and returns `next_cursor`, with the browse's page sizes (50 and 200,
+clamped rather than refused).
+
+**Why.** Keyset rather than OFFSET for the browse's reason ("The public browse
+pages by keyset, grouped by the first page's clock"). Settled markets are
+finished, and an action queue ordered by oldest close would put every one of
+them first; "The admin overview orders by soonest close…" left that to #12,
+and #12's plan wanted the sink, so it is built here and the cursor format does
+not change when SETTLED lands. A draft's close time can be null, so the cursor
+records the nulls-last group as well as the value, and a page boundary between
+two undated drafts can be named. Paged, the list is no longer every row, so
+the counts need their own statement; REPEATABLE READ gives both statements one
+snapshot, which is the reversal trigger "The overview's list and counts share
+one clock and one statement" recorded. A read-only REPEATABLE READ transaction
+cannot fail with a serialization error, so nothing retries. The level is set
+by `session.begin()` and then `session.connection(execution_options=...)`:
+`begin()` raises on a session with a transaction already open, where
+`connection(...)` alone would only warn and read at READ COMMITTED. A route's
+session arrives with none open.
+
+**Rejected.** *Tallying the page*: the counts of fifty rows, not of every
+market. *One statement*, with the counts as a window function or a scalar
+subquery: derives the status in SQL, the copy D-024 and "One clock per
+request…" refuse. *A frozen `as_of`, as the browse has*: nothing in this order
+reads the clock. *Ordering by the boolean itself*: Postgres refuses
+`ORDER BY false` ("non-integer constant in ORDER BY"), and `false` is what the
+boolean is until SETTLED exists. *Binding `status` into the cursor*: the
+browse's reason.
+
+**Supersedes** the one-statement half of "The overview's list and counts share
+one clock and one statement" (one clock stays), and decides the reversal
+trigger of "The admin overview orders by soonest close, missing close times
+last, then id; #105's order is the trader browse's": settled sinks.
+
+**Notes.** Two moves the order cannot see are accepted, not engineered around.
+Autosave changes a draft's `close_time`, so a draft edited between two page
+reads can be listed twice or missed until a fresh first page; freezing drafts
+would break autosave. Once SETTLED exists, a market settled between two page
+reads changes group in the unfiltered view the same way. The admin page shows
+an id once (#235). The status filter and each row's status read the request's
+clock (D-025), so under `status=open` a market whose close passes mid-scroll
+drops out of later pages, and under `status=closed` one that sorts before the
+cursor is missing until a fresh first page. `_status_matches` and the Python
+derivation differ only for an OPEN market with no close time, which
+publication makes unreachable ("A NULL `close_time` on an OPEN market means
+two different things", under Open below): it is counted closed and listed
+under neither filter. `count_by_status` has a production caller again, so its
+dead-code allowlist entry goes. When #227 lands, `_is_settled` returns
+`Market.status == MarketStatus.SETTLED`.
 
 ---
 
@@ -5206,6 +5340,7 @@ Move these into the log above when they're settled.
   outstanding check is a backstop on the trade route"). But that backstop is
   the only guard, and `C(q)` over a negative `q` returns a number rather than
   failing. Adding the CHECK is a constraint on an existing table, so it needs
-  a hand-applied file in `sql/migrations/` against `cs464`. Whether that is
+  an Alembic revision in the ledger's `migrations/versions/`, written by hand,
+  since autogenerate cannot see a CHECK (ADR 0020). Whether that is
   worth it, and whether [3.4] #12 should land it since it is the next writer
   of `q`, is undecided.

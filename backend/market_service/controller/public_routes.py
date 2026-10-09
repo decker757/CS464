@@ -11,8 +11,8 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Query
 
-from controller.dependencies import CurrentUser, DbSession
-from core.config import get_settings
+from controller.dependencies import CurrentUser, DbSession, PageCursor, PageLimit
+from core.paging import page_size_of
 from model.entities import MarketStatus, PublicMarketStatus
 from model.schemas import (
     MAX_QUESTION_LENGTH,
@@ -104,30 +104,16 @@ async def browse_markets(
             "every published market with the ones still trading first."
         ),
     ),
-    limit: int | None = Query(
-        default=None,
-        ge=1,
-        description=(
-            "Markets per page. Defaults to the server's page size and is "
-            "capped by its maximum: a larger value is clamped, not refused."
-        ),
-    ),
-    cursor: str | None = Query(
-        default=None,
-        description="The `next_cursor` from the previous page, unmodified.",
-    ),
+    limit: PageLimit = None,
+    cursor: PageCursor = None,
 ) -> PublicMarketListResponse:
     # One clock for the request, so filtering and the displayed status agree.
     # D-025, D-027.
     now = datetime.now(UTC)
 
-    settings = get_settings()
-    # Clamped, not refused, as the audit feed and the user list do.
-    page_size = min(limit or settings.default_page_size, settings.max_page_size)
-
     page = await browsing.browse(
         session,
-        limit=page_size,
+        limit=page_size_of(limit),
         query=q,
         status=MarketStatus(status) if status else None,
         now=now,

@@ -37,7 +37,7 @@ and the one to believe if the two ever drift.
 - `backend/shared/` — narrow by ADR 0012. What is in it, and the bar for adding
   anything, is CLAUDE.md's `backend/shared/` section; don't copy the list here.
 - pytest, `asyncio_mode = auto`, tests run against real Postgres, never SQLite
-- Migrations: hand-written idempotent SQL in `sql/migrations/`. No Alembic yet (#75)
+- Migrations: Alembic per schema-owning service (`migrations/`, `migrate.py`), run by compose as `<svc>-migrate` before each app. ADR 0020
 - Frontend is separate: npm, Vite, React 19, TS. Not mine.
 
 **Read the ADRs before any structural decision.** They exist and they're binding.
@@ -385,8 +385,10 @@ Everything local. No hosted services, no external APIs. Copy `.env.example` to
 `JWT_SECRET`, `DEFAULT_LIQUIDITY_B` (100), `STARTING_CREDITS` (1000), `REDIS_URL`,
 `CLOSE_SWEEP_*`, ports.
 
-Migrations are applied by hand:
-`docker compose exec -T db psql ...` against `sql/migrations/`.
+Migrations run as `<svc>-migrate` on every `docker compose up`. A model change
+needs a revision; root `CLAUDE.md` has the commands. Switching the dev database
+to a branch whose history lacks its revision fails that step with "Can't locate
+revision": `alembic downgrade` from the newer branch first, or `down -v`.
 
 **Switching from a #22-or-later branch to an earlier one:** #22's `create_all`
 leaves `ledger.positions` in `cs464_test`, and that breaks the earlier branch's

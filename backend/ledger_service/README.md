@@ -141,7 +141,8 @@ them and a single `IN (...) ORDER BY ... FOR UPDATE` can still deadlock.
 **Append-only is a trigger, and it is one step weaker than the audit log's.**
 `model/entities.py` attaches a statement-level trigger to `ledger.entries` as an
 `after_create` DDL event, so it ships with the table everywhere the table ships
-— including `unit_test/conftest.py`, which rebuilds the schema per test. A
+— including `unit_test/conftest.py`, which rebuilds the schema per test — and
+the baseline revision runs the same DDL, so the migrate step installs it too. A
 trigger written into `sql/` instead would be dropped by the first rebuild and
 never come back.
 
@@ -194,13 +195,14 @@ will, in the same transaction as the payouts it records. ADR 0006.
 ## Schema creation is Alembic
 
 The `ledger-migrate` compose step runs `python migrate.py` as `ledger_svc` and
-`ledger` starts only if it exited 0. The service itself issues no DDL. A new
-column needs a revision (`PYTHONPATH=.. .venv/bin/alembic revision -m "..."`),
-not a file in `sql/migrations/`.
+`ledger` starts only if it exited 0. The service itself issues no DDL. A model
+change needs a revision in `migrations/versions/`; root `CLAUDE.md` has the
+commands. ADR 0020.
 
 A database from before #75 has tables and no history. `migrate.py` adopts it at
 revision `0001` if it matches the models, and otherwise refuses and names what
-differs (most likely `idempotency_key` still at 120 characters: apply
-`sql/migrations/0007` with the `psql` command in its header). It also refuses
+differs (most likely `idempotency_key` still at 120 characters, which
+`sql/migrations/0007` widened before #75 deleted it; the refusal prints the git
+commands that recover it). It also refuses
 one whose `ledger.entries` lost its append-only trigger. Read the log with
 `docker compose logs ledger-migrate`.

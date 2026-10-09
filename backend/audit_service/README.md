@@ -67,7 +67,8 @@ running under weaker grants than production, which is exactly what
 **`unit_test/model/test_entities.py` is load-bearing.** This service describes
 a table it does not own, with no `create_all` to reconcile the two, so those
 tests are the only thing keeping `model/entities.py` in step with
-`sql/02-schemas.sql` until [F-5] #75 brings Alembic.
+`sql/02-schemas.sql`. [F-5] #75 left the audit table in `sql/` on purpose
+(ADR 0020), so that stays true.
 
 ## Layout
 

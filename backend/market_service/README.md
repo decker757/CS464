@@ -32,8 +32,15 @@ docker compose up -d db                    # from the repo root
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env          # the copy in this directory, not the root one
+DATABASE_URL="$(grep '^DATABASE_URL=' .env | cut -d= -f2-)" PYTHONPATH=.. .venv/bin/python migrate.py
 .venv/bin/uvicorn main:app --reload --port 8001
 ```
+
+The service creates no tables, so run its migrate step once before the first
+start, and again after pulling a new revision. `migrate.py` reads
+`DATABASE_URL` from the environment only, not from `.env`, hence the prefix.
+`docker compose up --build market-migrate` from the repo root does the same in a
+container.
 
 ## Getting an admin account
 
@@ -110,10 +117,12 @@ Full request and response shapes: [`docs/api/market-service.md`](../../docs/api/
 
 ```
 main.py                     create_app(), and nothing else
+migrate.py                  the market-migrate step: the schema to head, or refuse
+alembic.ini, migrations/    this schema's Alembic history [F-5]
 
 controller/                 the HTTP boundary. No business rules live here.
     routes.py               the four endpoints
-    dependencies.py         DbSession, the token guard, the admin guard
+    dependencies.py         DbSession, the token guard, the admin guard, the paging parameters
     transport.py            cookie and bearer extraction. Read-only.
     errors.py               the one mapping from domain error to status code
 
@@ -127,7 +136,7 @@ service/                    business rules. Raises domain errors, knows no HTTP.
 
 core/                       this service's own plumbing
     config.py               settings, read from the environment once
-    paging.py               keyset cursors for the public browse [X-1] #104
+    paging.py               keyset cursors and the page size for the browse and the overview [X-1] #104, #210
     database.py             engine, session factory, session dependency
     clock.py                one function: normalise a datetime to UTC
     security.py             the only file that touches jwt. Verify only.
@@ -206,5 +215,6 @@ account and no cascade will clean it up. ADR 0003 has the argument.
 
 **The schema comes from Alembic, not `create_all`.** The `market-migrate`
 compose step runs `migrate.py` as `market_svc` and `market` starts only if it
-exited 0. A new column is a revision under `migrations/versions/`, not a
-`sql/migrations` file. [F-5] #75.
+exited 0. A model change is a revision under `migrations/versions/`; root
+`CLAUDE.md` has the commands. The baseline folds in the hand-applied ALTERs
+`sql/migrations/` used to hold. [F-5] #75, ADR 0020.

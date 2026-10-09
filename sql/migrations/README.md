@@ -1,47 +1,13 @@
-# Migrations
+# sql/migrations
 
-Changes to a schema that **already exists**. Applied by hand, not by the
-Postgres entrypoint.
+One file, and it is not a schema migration.
 
-## Why these are not in `sql/`
-
-`sql/00-init.sh` runs once, on first initialisation of the data volume, and it
-names `01-roles.sql` and `02-schemas.sql` explicitly. A file added beside them
-would never run on a database that already exists, which is the only situation
-a migration is for. On a fresh volume it would be worse than useless: the
-entrypoint runs before any service starts, so `market.markets` does not exist
-yet and an `ALTER TABLE` against it fails.
-
-Tables are created by SQLAlchemy's `create_all` at service startup. That only
-ever issues `CREATE TABLE IF NOT EXISTS`, so it creates a missing table and
-never touches one that is already there. A new column therefore reaches a fresh
-database automatically and an existing one not at all, and the service then
-fails every request with `column ... does not exist` on a model change that is
-perfectly correct.
-
-These files close that gap until [F-5] #75 brings Alembic, which is where this
-directory is headed. [F-1] #41 was meant to and did not: the ledger's schema
-and role had been in `sql/` since #67, so it needed no migration to land, and
-retrofitting four services was a change of its own size.
-
-## Applying them
-
-Against the development database, in filename order:
-
-```bash
-docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
-  -f /sql/migrations/0001-market-lmsr-parameters.sql
-```
-
-`sql/` is already mounted at `/sql` in the db container, so no copying is
-needed. Re-running is safe: every file here must be idempotent
-(`IF NOT EXISTS`), because nothing records which have been applied.
-
-Some need extra variables. `0002` creates a login role, so it needs the
-password and the database name, and unlike `0001` it belongs on the test
-database too if yours predates it — the audit table lives in `sql/` rather than
-in a service's `create_all`, so a `cs464_test` created before [4.3] #15 does
-not have it and no conftest will add it:
+`0002-audit-admin-actions.sql` creates the `audit_svc` login role and re-runs
+`sql/02-schemas.sql`, for a database that predates [4.3] #15. Roles are
+cluster-wide and the password is not in the repository. The audit table, its
+trigger and every grant belong to the superuser rather than to any service, so
+no service's migration history can own them (ADR 0006, ADR 0020). Apply it by
+hand, to `cs464` and to `cs464_test` if yours predates it:
 
 ```bash
 docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
@@ -49,22 +15,62 @@ docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1 \
   -f /sql/migrations/0002-audit-admin-actions.sql
 ```
 
-The **test** databases usually need nothing. `unit_test/conftest.py` drops and
-recreates the schema from the models on every test, so a suite always matches
-`model/entities.py`, and it is only the long-lived `cs464` database that
-drifts.
+`AUDIT_DB_PASSWORD` must match the value in the repo-root `.env`. For the test
+database, change both `cs464`s after `-d` and `db_name=` to `cs464_test`.
 
-The exception is anything created by `sql/` rather than by a model, because no
-conftest rebuilds that. `audit.admin_actions` is the first of these: it is
-owned by the superuser and appears in `sql/02-schemas.sql`, so a `cs464_test`
-from before [4.3] #15 is missing it and stays missing it. Say so in the file
-when a migration is in that category.
+## Where schema changes go now
 
-## Adding one
+Each service that owns a schema (auth, market, ledger) keeps its history in
+`backend/<service>/migrations/`, and compose runs `<service>-migrate` before
+the service starts. A model change needs a revision. Root `CLAUDE.md` has the
+commands, and ADR 0020 has the decision.
 
-Name it `NNNN-<service>-<what-changed>.sql`, make every statement idempotent,
-say which ticket it came from, and state which databases it belongs on.
+## If a migrate step refuses your database
 
-If the change is already written idempotently in `sql/02-schemas.sql`, prefer
-`\i /sql/02-schemas.sql` over copying the statements across. `0002` does that,
-and it is why there is only one definition of the audit table to keep in step.
+`0001` and `0003` to `0007` were hand-applied ALTERs that nothing recorded.
+[F-5] #75 folded them into the baselines and deleted them. A development
+database from before #75 that missed one is refused by its migrate step, which
+names the missing column, index or type and changes nothing. Read the refusal
+with `docker compose logs market-migrate` (or `auth-migrate`, `ledger-migrate`).
+
+The files are still in git history. From the repository root, find the
+commit that deleted them:
+
+```bash
+git log --diff-filter=D --format=%h -- sql/migrations/
+```
+
+The file names describe features, not columns, so look the file up by what is missing.
+For each line of the refusal, take the last name on it (after its final `.` or
+`:`, so `liquidity_b` from `add_column market.markets.liquidity_b`) and put it
+in place of `<name>`, with the commit in place of `<commit>`:
+
+```bash
+git grep -l <name> <commit>^ -- sql/migrations/
+```
+
+That prints one or more lines like
+`<commit>^:sql/migrations/0001-market-lmsr-parameters.sql`. Apply each, in
+number order, with the printed line in place of `<file>`:
+
+```bash
+git show <file> | docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1
+```
+
+Every one of those files is idempotent, so applying one twice, or applying all
+of a service's files in number order, does no harm. Then run
+`docker compose up` again.
+
+Nothing in git history fixes an auth refusal, or a ledger that lost its
+append-only trigger: those need `docker compose down -v`, which destroys local
+data.
+
+The recovery above works only while each service's baseline is its newest
+revision. After that, the answer is `docker compose down -v`, which destroys local data.
+
+## Why this is not in `sql/` itself
+
+`sql/00-init.sh` runs once, on first initialisation of the data volume, and it
+names `01-roles.sql` and `02-schemas.sql` explicitly. A file added beside them
+would never run on a database that already exists, which is the only situation
+a file here is for.
