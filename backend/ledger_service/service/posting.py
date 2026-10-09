@@ -65,7 +65,7 @@ def _quantize(amount: Decimal) -> Decimal:
     return amount.quantize(_QUANTUM, rounding=ROUND_HALF_UP)
 
 
-def _quantized(legs: list[Leg]) -> list[Leg]:
+def _quantized_legs(legs: list[Leg]) -> list[Leg]:
     """The same legs with every amount rounded to the column's scale."""
     return [Leg(account=leg.account, amount=_quantize(leg.amount)) for leg in legs]
 
@@ -166,7 +166,8 @@ def _transaction_of(
 ) -> tuple[Transaction, list[Entry]]:
     """The transaction and one entry per leg, all carrying `stamp`.
 
-    Builds only: the caller adds, flushes and commits.
+    Builds only: the caller adds, flushes and commits. It returns the entries
+    as well as the transaction so `post` keeps its explicit `add_all`.
     """
     transaction = Transaction(
         kind=kind,
@@ -229,7 +230,7 @@ async def post(
     the newest entry on its accounts, whichever is later. Assert on the
     returned transaction's `occurred_at`.
     """
-    legs = _quantized(legs)
+    legs = _quantized_legs(legs)
 
     _require_balanced(legs)
     fingerprint = _fingerprint(kind, legs)
