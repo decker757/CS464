@@ -303,8 +303,8 @@ async def mark_settled(
     else, including `httpx.RequestError`. The response body is never read, and
     the 404 cache is neither consulted nor fed: a 404 here comes from a market
     whose book exists. Logs the failure at ERROR, the only 503 in the service
-    that is, because it leaves money moved and the market unmarked until a
-    person repeats the request. DECISIONS.md, "`market_terms.mark_settled`
+    logged above WARNING, because it leaves money moved and the market unmarked
+    until a person repeats the request. DECISIONS.md, "`market_terms.mark_settled`
     accepts only a `200`".
     """
     try:
