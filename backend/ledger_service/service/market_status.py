@@ -39,7 +39,8 @@ async def read_terms(
     is wrong) and `MarketNotFound` if not (ADR 0017). That `books.find` is
     unlocked: ADR 0015 locks reads that decide a write, and this one decides
     only an error code. Every other upstream failure propagates from
-    `market_terms.fetch`, so a sick dependency is never read as anything else.
+    `market_terms.fetch`, so a failing dependency always surfaces as its own
+    error.
 
     **Call this with nothing pending and no row lock held.** It rolls back
     before the HTTP call, as `books.ensure_open` does (D-043), so a lock taken
