@@ -4923,6 +4923,14 @@ market.
 this record, and is not designed here. `outcome_id` is non-null, because a
 settlement always has a winner, so a void may need a record shape of its own.
 
+*Superseded in part 2026-10-09 by [3.4] #12: the table's name, `outcome_id`'s
+nullability, `settled_at`, and the Notes' "a void may need a record shape of
+its own". See "`ledger.market_results` is one record per finished market, with
+a `kind`" below, and ADR 0019's amendment of 2026-10-09. The latch, its readers
+under the book lock, the untouched positions and `q`, and the rejected
+alternatives stand. `ledger.market_settlements` elsewhere in this file now
+means `ledger.market_results`.*
+
 ---
 
 ### D-NEW — On a repeat, the recorded outcome governs
@@ -5206,6 +5214,10 @@ not PR 2. PR 1 is the one that adds `settled` to the browse, the detail and
 the overview, and adds the field.
 
 **Reversal trigger.** Review asks for a different split.
+
+*Superseded in part 2026-10-09 by [3.4] #12: rows 3 and 5 of the table. See
+"PR 3 of the settlement stack holds the table, and the audit seam lands with
+its caller in PR 5" below. The other rows, the naming and the order stand.*
 
 ---
 
@@ -5605,6 +5617,136 @@ this check refuses it. The route then answers `409 dispute_window_open`, the
 ledger answers `503 settlement_unconfirmed`, and a retry completes the
 settlement. That is the designed outcome, not a reason to move this check to
 Python's clock.
+
+---
+
+### D-NEW — `ledger.market_results` is one record per finished market, with a `kind`
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The settlement record is `ledger.market_results`:
+
+- `market_id`: the primary key, and a foreign key into `market_books`.
+- `kind`: a non-native enum, `settled` only for now.
+- `outcome_id`: nullable, still a composite foreign key with `market_id` into
+  `market_outcomes`, with `CHECK ((kind = 'settled') = (outcome_id IS NOT NULL))`.
+- `recorded_at`.
+
+Neither key has an `ON DELETE`. The trade latch and the settlement read any
+row, under the book lock, and never filter on `kind`. `MarketResult` is an ORM
+class, so the record stays an ORM add staged before the audit insert (ADR
+0019's first trap).
+
+**Why.** [BE] #221's decision 3. One record per finished market is one latch
+for every ending, and the primary key stops a market from being both settled
+and voided. Taking the shape now means the latch, the settlement and the
+portfolio's join are written against it once. A rename costs two docs edits
+today, and a revision plus every reader later. The plain foreign key exists
+because Postgres skips a composite key when `outcome_id` is null.
+
+**Rejected.**
+- *A separate table for voids*: two latches for every reader, and nothing in
+  the database stops a market ending both ways.
+- *Deferring everything but the name*: cheap DDL either way, but readers would
+  be written against a shape that later changes under them.
+
+**Reversal trigger.** #221 closes without a void, or voids get a table of
+their own. A revision then drops `kind` and restores `NOT NULL` on
+`outcome_id`.
+
+**Notes.** These wait for #221's revision: `reason` and `voided_by`, their
+CHECK clauses, and `409 market_already_voided`. Nothing writes them yet, and
+nullable columns are cheap to add later. Until a non-settled kind exists, no
+test can exercise the plain foreign key or the CHECK's non-settled half;
+`test_migrations.py`'s catalog comparison is what holds them to the models.
+`kind` has no CHECK on its values, like every non-native enum here; the paired
+CHECK is what constrains it. `recorded_at` has no default, like
+`market_books.opened_at`: the settlement supplies it.
+
+---
+
+### D-NEW — `ledger.market_results` carries no append-only trigger
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `ledger.market_results` is written once per market and never
+updated, and nothing enforces that at the database. It does not get
+`ledger.entries`' trigger or one of its own.
+
+**Why.**
+- The primary key already refuses a second row for a market.
+- If a row were deleted, money still could not move twice. A second
+  settlement derives the same `settlement:{market_id}:{user_id}` and
+  `settlement_residue:{market_id}` keys. It reaches posting's replay with the
+  re-staged record pending, and is refused as `pending_writes_on_replay`. The
+  trade path's status gate also still refuses a market market_service reports
+  as settled.
+- A trigger needs either `reject_mutation` changed, whose message names
+  `ledger.entries`, or a second function. Both need SQL in a revision of their
+  own ("The ledger's trigger SQL is shared, so editing it needs a new
+  revision", ADR 0020), for a table nothing writes twice.
+
+**Rejected.**
+- *Reusing `reject_mutation`*: its message would name the wrong table, and
+  changing it is a revision.
+- *A second trigger function*: a second copy of trigger SQL, guarding against
+  a write no code makes.
+
+**Reversal trigger.** Any code path that updates or deletes a row of
+`ledger.market_results`.
+
+**Notes.** Unlike `ledger.positions`, nothing updates this table, and unlike
+`ledger.entries`, it holds no money. The money is in the entries, and the
+trigger there still guards it. The replay claim above depends on `posting`'s
+current behaviour; recheck it when PR 4's `post_all` lands.
+
+---
+
+### D-NEW — PR 3 of the settlement stack holds the table, and the audit seam lands with its caller in PR 5
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** PR 3 holds:
+
+- `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`
+- `ledger.market_results` and revision `0002`
+- one `dead_code_allowlist.py` line for `MarketResult`
+- the migration-test edits
+- `docs/api/ledger-service.md`'s kinds line
+
+PR 5 gains the ledger's audit seam (`core/audit.py`, `model/audit.py`,
+`service/audit.py`). It also decides whether `service/audit.py` is a third
+copy or an extraction, and deletes the allowlist line once the trade latch and
+the settlement read `MarketResult`.
+
+**Why.** The dead-code check matches by name. In PR 3, the seam's `record` and
+`AdminAction` would count as used through market_service's identically named
+ones, so untested code would pass unseen. In PR 5, the seam lands with its
+caller and with the test of #12's audit criterion. `MarketResult` has no
+reader until PR 5 either, and an allowlist line says so where the check can
+see it.
+
+**Rejected.**
+- *Folding PR 3 into PR 5*: PR 5 is already the stack's largest.
+- *The trade latch in PR 3, as `MarketResult`'s caller*: #12's test notes ask
+  for the settle-against-trade race test to fail with the under-lock lookup
+  removed, and for the PR to name that line. The latch and that test belong in
+  one diff, and in PR 3 the latch would guard a state nothing can create.
+
+**Reversal trigger.** Review of PR 3 refuses an allowlist entry for planned
+code. The trade latch then moves into PR 3.
+
+**Notes.** Rows 3 and 5 of the stack table now read:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 3 | ledger model: `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`, `ledger.market_results` and revision `0002`, the allowlist line for `MarketResult`, the migration-test edits, `docs/api/ledger-service.md`'s kinds line | 2 | |
+| 5 | the ledger's audit seam, `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, the allowlist line removed, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade, window-boundary and audit tests | 4 | |
+
+No commit in PR 3 fails the suite. The adoption tests a second revision ends
+are deleted first. The model and revision `0002` then land in one commit,
+because either alone fails the migration guard. The kept refusal test comes
+after them, word for word as #246's, so the two branches' hunks agree.
 
 ---
 
