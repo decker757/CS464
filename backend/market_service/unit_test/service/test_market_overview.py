@@ -1,26 +1,30 @@
-"""The admin market overview, through the service layer. [2.1] #5.
+"""The admin market overview, through the service layer. [2.1] #5, #210.
 
 Every published market plus the caller's own drafts and submissions, with
 per-status counts beside the list. Status, filter and counts all derive from
-the clock (ADR 0011, as amended by #5), and list and counts share one clock
-and one statement ("The overview's list and counts share one clock and one
-statement"). The clock is always injected: `now` sits ten days ahead of the
-real clock, so any half that reads its own clock disagrees with it.
+the clock (ADR 0011, as amended by #5). #210 pages the list by keyset, settled
+markets last, and reads its counts in the same REPEATABLE READ snapshot
+("The admin overview pages by keyset, settled markets last, and reads its
+counts in the same REPEATABLE READ snapshot"). The clock is always injected:
+`now` sits ten days ahead of the real clock, so any half that reads its own
+clock disagrees with it.
 """
 
 from __future__ import annotations
 
-import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
-from model.entities import Market, MarketStatus
+from core.database import get_session_factory
+from core.errors import MalformedCursor
+from model.entities import Market, MarketOverview, MarketStatus
 from service import browsing, market_service
 from service.audit import Actor
 from unit_test.conftest import (
@@ -30,15 +34,43 @@ from unit_test.conftest import (
     draft_request,
     proposed_market,
     published_market_closing_at,
-    recorded_statements,
     settled_market,
 )
 
-# A statement that reads the markets table, and not `market_outcomes`.
-_READS_MARKETS = re.compile(r"\bmarkets\b")
+# More than any test here creates, so a test about order or counts reads one page.
+_ONE_PAGE = 1000
+
+# A walk longer than this means a cursor that never advances.
+_MOST_PAGES = 50
 
 
 # --- the one place the assumed signature is written ------------------------
+async def _page(
+    session: AsyncSession,
+    caller: Actor,
+    *,
+    limit: int = _ONE_PAGE,
+    status: MarketStatus | None = None,
+    now: datetime,
+    cursor: str | None = None,
+) -> MarketOverview:
+    """One overview page as `caller` sees it at `now`.
+
+    Commits first. A request's session arrives with no transaction open, and
+    `overview` refuses one that has, where REPEATABLE READ could no longer be
+    set; the fixtures here leave one open after their last read.
+    """
+    await session.commit()
+    return await browsing.overview(
+        session,
+        caller_id=caller.id,
+        limit=limit,
+        status=status,
+        now=now,
+        cursor=cursor,
+    )
+
+
 async def _overview(
     session: AsyncSession,
     caller: Actor,
@@ -46,11 +78,34 @@ async def _overview(
     status: MarketStatus | None = None,
     now: datetime,
 ) -> tuple[list, dict[MarketStatus, int]]:
-    """The overview's rows and counts, as `caller` sees them at `now`."""
-    result = await browsing.overview(
-        session, caller_id=caller.id, status=status, now=now
-    )
-    return result.markets, result.counts
+    """The overview's rows and counts on one page, as `caller` sees them at `now`."""
+    page = await _page(session, caller, status=status, now=now)
+    return page.markets, page.counts
+
+
+async def _walk(
+    session: AsyncSession,
+    caller: Actor,
+    *,
+    limit: int,
+    now: datetime,
+    status: MarketStatus | None = None,
+    cursor: str | None = None,
+) -> list:
+    """Every row from `cursor` on, following `next_cursor` to the end.
+
+    Bounded, so a cursor that never advances fails the test instead of hanging it.
+    """
+    rows: list = []
+    for _ in range(_MOST_PAGES):
+        page = await _page(
+            session, caller, limit=limit, status=status, now=now, cursor=cursor
+        )
+        rows.extend(page.markets)
+        cursor = page.next_cursor
+        if cursor is None:
+            return rows
+    pytest.fail(f"next_cursor was still set after {_MOST_PAGES} pages")
 
 
 # --- helpers --------------------------------------------------------------
@@ -141,7 +196,8 @@ async def test_on_an_empty_database_every_status_counts_zero(
     """[2.1] #5: "Counts are shown for every status, zero when none".
 
     Exact equality, so a count seeded from the trader-visible statuses
-    alone, as `count_by_status` is, fails for lacking draft and submitted.
+    alone, as `count_by_status` is with no caller, fails for lacking draft
+    and submitted.
     """
     rows, counts = await _overview(session, actor(), now=_injected_now())
 
@@ -281,24 +337,7 @@ async def test_markets_sharing_a_close_time_come_back_lower_id_first(
     assert _ids(rows) == sorted(tied)
 
 
-# --- one statement, one clock ----------------------------------------------
-async def test_the_list_and_the_counts_come_from_one_statement(
-    session: AsyncSession, population: _Population
-) -> None:
-    """[2.1] #5: "The counts and the list describe the same instant".
-
-    Under READ COMMITTED each statement takes its own snapshot, so a publish
-    committing between two reads splits the counts from the list. Fails when
-    the counts are read in a separate statement. "The overview's list and
-    counts share one clock and one statement".
-    """
-    with recorded_statements() as statements:
-        await _overview(session, population.caller, now=population.now)
-
-    market_reads = [s for s in statements if _READS_MARKETS.search(s)]
-    assert len(market_reads) == 1, market_reads
-
-
+# --- one clock -------------------------------------------------------------
 async def test_a_market_closing_exactly_at_the_injected_now_is_closed_in_both_list_and_counts(
     session: AsyncSession,
 ) -> None:
@@ -318,6 +357,255 @@ async def test_a_market_closing_exactly_at_the_injected_now_is_closed_in_both_li
     assert rows[0].status == MarketStatus.CLOSED
     assert counts[MarketStatus.CLOSED] == 1
     assert counts[MarketStatus.OPEN] == 0
+
+
+# --- #210: one page at a time, by keyset ----------------------------------
+async def _every_boundary(
+    session: AsyncSession, caller: Actor, now: datetime
+) -> list[uuid.UUID]:
+    """Every boundary a cursor must cross, in the order the overview lists them.
+
+    A market the sweep closed (its close time is the real clock, the earliest
+    here), one past its close but unswept, one closing in a day, two sharing a
+    close in two days, and two drafts with no close time. Ties come back lower
+    id first, in the dated run and in the undated run alike.
+    """
+    swept = (await closed_market(session, caller)).id
+    past_close = await _open_until(session, caller, now - timedelta(hours=1))
+    in_one_day = await _open_until(session, caller, now + timedelta(days=1))
+    shared_close = now + timedelta(days=2)
+    tied = [await _open_until(session, caller, shared_close) for _ in range(2)]
+    undated = [
+        await _draft(session, caller, close_time=None, resolution_time=None)
+        for _ in range(2)
+    ]
+    return [swept, past_close, in_one_day, *sorted(tied), *sorted(undated)]
+
+
+async def test_pages_read_in_turn_list_every_market_once_in_the_overview_order(
+    session: AsyncSession,
+) -> None:
+    """#210: "The order is … close_time ASC NULLS LAST, id ASC", and "a page
+    boundary inside the drafts can be named". One market a page, so a cursor
+    is cut at every boundary: inside the tie, inside the undated drafts, and
+    exactly between the dated and the undated."""
+    caller = actor()
+    now = _injected_now()
+    expected = await _every_boundary(session, caller, now)
+
+    assert _ids(await _walk(session, caller, limit=1, now=now)) == expected
+
+
+async def test_every_page_carries_the_counts_of_every_market_not_of_the_page(
+    session: AsyncSession,
+) -> None:
+    """#210's spec: "`counts` still covers every market the admin can see …
+    not the page". The same on page two as on page one: neither the limit nor
+    the cursor reaches the counts."""
+    caller = actor()
+    now = _injected_now()
+    for days in (1, 2, 3):
+        await _open_until(session, caller, now + timedelta(days=days))
+    await _draft(session, caller)
+
+    first = await _page(session, caller, limit=1, now=now)
+    second = await _page(session, caller, limit=1, now=now, cursor=first.next_cursor)
+
+    for page in (first, second):
+        assert len(page.markets) == 1
+        assert page.counts[MarketStatus.OPEN] == 3
+        assert page.counts[MarketStatus.DRAFT] == 1
+
+
+async def test_a_status_filter_fills_each_page_with_its_own_markets(
+    session: AsyncSession,
+) -> None:
+    """#210: the filter runs in the query, before the limit. Filtered after it,
+    as the unpaged overview did in Python, page one here would be the closed
+    market, dropped, and nothing."""
+    caller = actor()
+    now = _injected_now()
+    await _open_until(session, caller, now - timedelta(hours=1))
+    in_one_day = await _open_until(session, caller, now + timedelta(days=1))
+    in_two_days = await _open_until(session, caller, now + timedelta(days=2))
+
+    first = await _page(session, caller, limit=1, status=MarketStatus.OPEN, now=now)
+    rest = await _walk(
+        session,
+        caller,
+        limit=1,
+        status=MarketStatus.OPEN,
+        now=now,
+        cursor=first.next_cursor,
+    )
+
+    assert _ids(first.markets) == [in_one_day]
+    assert _ids(rest) == [in_two_days]
+
+
+async def test_a_full_last_page_offers_no_cursor(session: AsyncSession) -> None:
+    """#210: "`next_cursor` null on the last page". Two markets at `limit=2` is
+    the case a `len(rows) == limit` check gets wrong."""
+    caller = actor()
+    now = _injected_now()
+    await _open_until(session, caller, now + timedelta(days=1))
+    await _open_until(session, caller, now + timedelta(days=2))
+
+    page = await _page(session, caller, limit=2, now=now)
+
+    assert len(page.markets) == 2
+    assert page.next_cursor is None
+
+
+async def test_a_filter_that_matches_nothing_is_an_empty_page_with_no_cursor(
+    session: AsyncSession,
+) -> None:
+    """#210: "empty result is not an error", and there is nothing to continue from."""
+    caller = actor()
+    now = _injected_now()
+    await _open_until(session, caller, now + timedelta(days=1))
+
+    page = await _page(session, caller, limit=2, status=MarketStatus.APPROVED, now=now)
+
+    assert page.markets == []
+    assert page.next_cursor is None
+
+
+async def test_a_cursor_this_service_did_not_issue_is_refused(
+    session: AsyncSession,
+) -> None:
+    """#210: "malformed cursor is 400 malformed_cursor", raised here as the
+    domain error the controller turns into that response."""
+    with pytest.raises(MalformedCursor):
+        await _page(
+            session, actor(), limit=2, now=_injected_now(), cursor="made-this-up"
+        )
+
+
+async def test_a_market_published_between_two_page_reads_causes_no_skip_and_no_repeat(
+    session: AsyncSession,
+) -> None:
+    """#210: keyset, not OFFSET. A market added ahead of the cursor is not shown
+    and shifts nothing; one added behind it is shown in its place."""
+    caller = actor()
+    now = _injected_now()
+    first = await _open_until(session, caller, now + timedelta(days=1))
+    second = await _open_until(session, caller, now + timedelta(days=2))
+    third = await _open_until(session, caller, now + timedelta(days=3))
+    fourth = await _open_until(session, caller, now + timedelta(days=4))
+
+    page_one = await _page(session, caller, limit=2, now=now)
+    await _open_until(session, caller, now + timedelta(hours=12))
+    behind_the_cursor = await _open_until(
+        session, caller, now + timedelta(days=2, hours=12)
+    )
+    rest = await _walk(session, caller, limit=2, now=now, cursor=page_one.next_cursor)
+
+    assert _ids(page_one.markets) == [first, second]
+    assert _ids(rest) == [behind_the_cursor, third, fourth]
+
+
+async def test_a_market_whose_close_passes_between_two_page_reads_keeps_its_place(
+    session: AsyncSession,
+) -> None:
+    """#210's spec: "No frozen clock: the order does not depend on 'still
+    trading', so a market closing between page reads keeps its position".
+    Page two is read on a later clock, at which the first two have closed: no
+    market is repeated, and the later page's statuses and counts read its own
+    clock (D-025)."""
+    caller = actor()
+    now = _injected_now()
+    first = await _open_until(session, caller, now + timedelta(days=1))
+    second = await _open_until(session, caller, now + timedelta(days=2))
+    third = await _open_until(session, caller, now + timedelta(days=3))
+
+    page_one = await _page(session, caller, limit=2, now=now)
+    later = now + timedelta(days=2, hours=12)
+    page_two = await _page(session, caller, limit=2, now=later, cursor=page_one.next_cursor)
+
+    assert _ids(page_one.markets) == [first, second]
+    assert _ids(page_two.markets) == [third]
+    assert page_two.next_cursor is None
+    assert page_two.counts[MarketStatus.CLOSED] == 2
+    assert page_two.counts[MarketStatus.OPEN] == 1
+
+
+# --- #210: settled markets sort last --------------------------------------
+async def test_settled_markets_sort_last_and_a_cursor_crosses_into_their_group(
+    session: AsyncSession,
+) -> None:
+    """#210: "settled markets last … The cursor carries the group from day one".
+
+    The settled markets are made first, so their close times (the real clock)
+    precede everything else's and, without the group, they would lead. One
+    market a page, so the cursor is cut between the two groups and inside the
+    settled one. Fails if the group is missing from the ORDER BY, from the
+    keyset, or from the cursor (a cursor that always says "not settled" repeats
+    the first settled market until the walk gives up).
+    """
+    caller = actor()
+    now = _injected_now()
+    first_settled = (await settled_market(session, caller)).id
+    second_settled = (await settled_market(session, caller)).id
+    approved = (await approved_market(session, caller)).id
+    still_open = await _open_until(session, caller, now + timedelta(days=1))
+
+    walked = await _walk(session, caller, limit=1, now=now)
+
+    assert _ids(walked) == [approved, still_open, first_settled, second_settled]
+
+
+# --- #210: the page and the counts read one snapshot ----------------------
+async def test_the_page_and_the_counts_read_one_snapshot(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#210: "The per-status counts get their own statement, and the read runs
+    at REPEATABLE READ so the counts and the list still come from one snapshot".
+
+    Another session publishes and commits a market between the overview's two
+    statements, whichever runs first. At READ COMMITTED the second statement
+    sees it, and the list and the counts disagree. Fails with the isolation
+    level removed from `overview`.
+    """
+    caller = actor()
+    now = _injected_now()
+    listed = await _open_until(session, caller, now + timedelta(days=1))
+    await session.commit()
+
+    real_execute = session.execute
+    published_elsewhere = False
+
+    async def execute_then_publish_elsewhere(*args: object, **kwargs: object):
+        nonlocal published_elsewhere
+        result = await real_execute(*args, **kwargs)
+        if not published_elsewhere:
+            published_elsewhere = True
+            async with get_session_factory()() as other:
+                await _open_until(other, caller, now + timedelta(days=2))
+        return result
+
+    monkeypatch.setattr(session, "execute", execute_then_publish_elsewhere)
+
+    page = await browsing.overview(session, caller_id=caller.id, limit=50, now=now)
+
+    assert published_elsewhere
+    assert _ids(page.markets) == [listed]
+    assert page.counts[MarketStatus.OPEN] == 1
+
+
+async def test_the_overview_refuses_a_session_with_a_transaction_already_open(
+    session: AsyncSession,
+) -> None:
+    """REPEATABLE READ can only be set before a transaction's first statement.
+    Inside one already open, `overview` raises rather than reading at READ
+    COMMITTED with only a warning, which would split the counts from the list
+    with nothing failing. A route's session arrives with none open."""
+    await session.execute(select(1))
+
+    with pytest.raises(InvalidRequestError):
+        await browsing.overview(
+            session, caller_id=uuid.uuid4(), limit=1, now=_injected_now()
+        )
 
 
 # --- [3.4] #12: settled, and settleable on each row --------------------------

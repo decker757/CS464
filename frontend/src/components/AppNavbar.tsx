@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useBalance } from '../context/BalanceContext'
+import { formatCredits } from '../utils/formatCredits'
 import TopBar from './layout/TopBar'
 import Button from './ui/Button'
 import { buttonClass } from './ui/buttonClass'
 
 export default function AppNavbar() {
   const { user, logout } = useAuth()
+  const { balance } = useBalance()
   const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = async () => {
@@ -28,6 +31,9 @@ export default function AppNavbar() {
     <TopBar>
       {user && (
         <div className="flex items-center gap-4">
+          <Link to="/portfolio" className="text-sm text-white/75 hover:text-white">
+            Portfolio
+          </Link>
           {user.role === 'admin' && (
             <>
               <Link to="/admin/markets" className="text-sm text-white/75 hover:text-white">
@@ -40,6 +46,11 @@ export default function AppNavbar() {
                 + New Market
               </Link>
             </>
+          )}
+          {balance !== undefined && (
+            <span aria-label="available balance" className="text-sm font-semibold text-smu-gold">
+              {balance === null ? 'Balance unavailable' : `${formatCredits(balance)} credits`}
+            </span>
           )}
           <span className="text-sm text-white/75">{user.username}</span>
           <Button variant="outlineOnNavy" size="sm" onClick={handleLogout} disabled={loggingOut}>

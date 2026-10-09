@@ -9,7 +9,9 @@ import { logIn, marketCard } from './support/browser'
 test('a browse card shows each outcome by name, with the price the ledger quotes for it', async ({ page }) => {
   const admin = await registerAdmin('bp_admin')
   // Not Yes and No, so the card cannot be showing labels of its own.
-  const market = await publishMarket(admin, `Will ${uniqueName('browse')} be priced?`, ['Lakers', 'Celtics'])
+  // Closing within the hour, so soonest-first puts it on the first page however
+  // many markets earlier runs left open ([X-1] #104 paged the list).
+  const market = await publishMarket(admin, `Will ${uniqueName('browse')} be priced?`, ['Lakers', 'Celtics'], { closesInHours: 1 })
   const trader = await registerTrader('bp_trader')
 
   // Moved off 50/50 first, so the card cannot be showing an opening price.

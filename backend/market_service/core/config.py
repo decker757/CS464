@@ -51,6 +51,13 @@ class Settings(ServiceSettings):
     # `core/settling.py`, not a setting. ADR 0019.
     dispute_window_seconds: int = Field(default=86400, gt=0, le=2592000)
 
+    # --- Paging [X-1] #104, #210 ------------------------------------------
+    # The public browse and the admin overview are bounded, with the audit
+    # feed's and the user list's defaults and for their reason. DECISIONS.md,
+    # "The audit feed's page sizes are settings, not constants".
+    default_page_size: int = Field(default=50, gt=0)
+    max_page_size: int = Field(default=200, gt=0)
+
 
 @lru_cache
 def get_settings() -> Settings:

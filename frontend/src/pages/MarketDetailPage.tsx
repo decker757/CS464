@@ -4,8 +4,10 @@ import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
 import StatusBadge from '../components/markets/StatusBadge'
+import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
+import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
 import { formatPrice } from '../utils/formatPrice'
@@ -30,15 +32,6 @@ function closedMessage(status: MarketStatus): string {
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
   return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
-}
-
-function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <p className="mb-1 text-xs font-semibold tracking-[0.5px] text-subtle uppercase">{label}</p>
-      {children}
-    </div>
-  )
 }
 
 export default function MarketDetailPage() {
@@ -162,21 +155,7 @@ export default function MarketDetailPage() {
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
-              <div>
-                <div className="flex gap-2.5">
-                  {market.outcomes.map(outcome => (
-                    <button
-                      key={outcome.id}
-                      type="button"
-                      disabled
-                      className="flex-1 cursor-not-allowed rounded-control border border-smu-navy/20 bg-smu-cream p-3 text-sm font-semibold text-smu-navy opacity-60"
-                    >
-                      Buy {outcome.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-2.5 text-xs text-subtle">Trading coming soon.</p>
-              </div>
+              <TradingPanel marketId={market.id} outcomes={market.outcomes} />
             ) : (
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
             )}

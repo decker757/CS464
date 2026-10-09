@@ -2,9 +2,9 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
 import { server } from '../test/server'
+import { WithProviders } from '../test/renderWithProviders'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
@@ -50,14 +50,14 @@ afterEach(() => {
 
 function renderPage(marketId = 'mkt-abc') {
   return render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
+    <WithProviders user={trader}>
       <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
         <Routes>
           <Route path="/markets/:id" element={<MarketDetailPage />} />
           <Route path="/markets" element={<p>markets list</p>} />
         </Routes>
       </MemoryRouter>
-    </AuthContext.Provider>,
+    </WithProviders>,
   )
 }
 
@@ -69,9 +69,9 @@ function renderMovableRouter(marketId: string) {
     { initialEntries: [`/markets/${marketId}`] },
   )
   render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
+    <WithProviders user={trader}>
       <RouterProvider router={router} />
-    </AuthContext.Provider>,
+    </WithProviders>,
   )
   return router
 }
@@ -158,11 +158,12 @@ describe('MarketDetailPage', () => {
     expect(screen.queryByText(/^Closes \d/)).not.toBeInTheDocument()
   })
 
-  it('shows trading controls for open markets', async () => {
+  it('shows the trading panel for open markets', async () => {
+    // The panel's own behaviour (preview, submit, error handling) is
+    // TradingPanel.test.tsx's job; this just checks it is the thing shown.
     renderPage()
-    expect(await screen.findByRole('button', { name: /buy yes/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /buy no/i })).toBeInTheDocument()
-    expect(screen.getByText('Trading coming soon.')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /^buy$/i })).toBeInTheDocument()
+    expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
   })
 
   it('shows trading closed message for closed markets', async () => {

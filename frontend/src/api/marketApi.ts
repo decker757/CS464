@@ -1,4 +1,5 @@
 import api from './axios'
+import { fetchAllPages } from './paging'
 
 // Market service lives on a different port. Passing an absolute URL to the
 // shared `api` instance means it inherits the same refresh interceptor and
@@ -14,9 +15,33 @@ export interface PublicMarketSummary {
   outcomes: PublicOutcome[]
 }
 
-export async function listMarkets(params?: { status?: string; q?: string }): Promise<PublicMarketSummary[]> {
-  const res = await api.get<{ markets: PublicMarketSummary[] }>(`${MARKET_BASE}/public/markets`, { params })
-  return res.data.markets
+interface PublicMarketListResponse {
+  markets: PublicMarketSummary[]
+  next_cursor: string | null
+}
+
+interface PublicMarketPage {
+  markets: PublicMarketSummary[]
+  /** Pass back as `cursor` for the next page; null on the last page. */
+  nextCursor: string | null
+}
+
+/**
+ * One page of the browse list, in the server's order: trading first, then most
+ * recently stopped (market-service.md, GET /public/markets). Keep that order.
+ */
+export async function listMarkets(params?: { status?: string; q?: string; cursor?: string; limit?: number }): Promise<PublicMarketPage> {
+  const res = await api.get<PublicMarketListResponse>(`${MARKET_BASE}/public/markets`, { params })
+  // `?? null`: a backend older than #104 sends no next_cursor at all.
+  return { markets: res.data.markets, nextCursor: res.data.next_cursor ?? null }
+}
+
+/** Every market matching `params`, walking every page. */
+export async function listAllMarkets(params?: { status?: string; q?: string }): Promise<PublicMarketSummary[]> {
+  return fetchAllPages(async cursor => {
+    const page = await listMarkets({ ...params, cursor, limit: 200 })
+    return { items: page.markets, nextCursor: page.nextCursor }
+  })
 }
 
 export interface PublicOutcome {
@@ -146,19 +171,30 @@ export interface MarketOverviewRow {
   close_time: string | null
 }
 
-export interface MarketOverview {
+interface MarketOverviewResponse {
   markets: MarketOverviewRow[]
   counts: Record<MarketSummaryOut['status'], number>
+  next_cursor: string | null
+}
+
+export interface MarketOverview {
+  markets: MarketOverviewRow[]
+  /** Over every market the caller can see, not only this page. */
+  counts: Record<MarketSummaryOut['status'], number>
+  /** Pass back as `cursor` for the next page; null on the last page. */
+  nextCursor: string | null
 }
 
 /**
- * Every market the calling administrator can see — all published ones plus
- * their own drafts and submissions — soonest close first, with a count per
- * status read at the same instant ([2.1] #5, market-service.md, GET /markets/overview).
+ * One page of the markets the calling administrator can see — all published
+ * ones plus their own drafts and submissions — in the server's order, under
+ * `status` if given, with a count per status over all of them read in the same
+ * snapshot ([2.1] #5, #210, market-service.md, GET /markets/overview).
  */
-export async function getMarketOverview(): Promise<MarketOverview> {
-  const res = await api.get<MarketOverview>(`${MARKET_BASE}/markets/overview`)
-  return res.data
+export async function getMarketOverview(params?: { status?: MarketSummaryOut['status']; cursor?: string }): Promise<MarketOverview> {
+  const res = await api.get<MarketOverviewResponse>(`${MARKET_BASE}/markets/overview`, { params })
+  // `?? null`: a backend older than #210 sends no next_cursor at all.
+  return { markets: res.data.markets, counts: res.data.counts, nextCursor: res.data.next_cursor ?? null }
 }
 
 /** One of the calling administrator's own markets, with the raw status column (market-service.md, GET /markets/{id}). */

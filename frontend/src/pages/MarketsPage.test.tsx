@@ -1,10 +1,12 @@
-import { render, screen, within } from '@testing-library/react'
+import { StrictMode } from 'react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { AuthContext } from '../context/AuthContext'
 import type { User } from '../context/AuthContext'
+import { holdUntilReleased } from '../test/holdUntilReleased'
+import { WithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
 import MarketsPage from './MarketsPage'
 
@@ -41,16 +43,31 @@ function cardFor(question: string): HTMLElement {
   return card
 }
 
+// Under StrictMode, as main.tsx renders the app: its double mount is what a
+// price hook that marks a market fetched too early gets wrong.
 function renderPage() {
   return render(
-    <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <MemoryRouter initialEntries={['/markets']}>
-        <Routes>
-          <Route path="/markets" element={<MarketsPage />} />
-          <Route path="/markets/:id" element={<p>market detail</p>} />
-        </Routes>
-      </MemoryRouter>
-    </AuthContext.Provider>,
+    <StrictMode>
+      <WithProviders user={trader}>
+        <MemoryRouter initialEntries={['/markets']}>
+          <Routes>
+            <Route path="/markets" element={<MarketsPage />} />
+            <Route path="/markets/:id" element={<p>market detail</p>} />
+          </Routes>
+        </MemoryRouter>
+      </WithProviders>
+    </StrictMode>,
+  )
+}
+
+// #104: page one carries a cursor; the request quoting it gets page two.
+function mockTwoPages(secondPage: () => Response | Promise<Response>) {
+  server.use(
+    http.get(`${MARKET_BASE}/public/markets`, ({ request }) =>
+      new URL(request.url).searchParams.get('cursor') === 'page-2'
+        ? secondPage()
+        : HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: 'page-2' }),
+    ),
   )
 }
 
@@ -66,7 +83,7 @@ describe('MarketsPage', () => {
   it('shows a card for each market returned by the API', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: mockMarkets }),
+        HttpResponse.json({ markets: mockMarkets, next_cursor: null }),
       ),
     )
     renderPage()
@@ -77,7 +94,7 @@ describe('MarketsPage', () => {
   it('shows status badges for each market', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: mockMarkets }),
+        HttpResponse.json({ markets: mockMarkets, next_cursor: null }),
       ),
     )
     renderPage()
@@ -97,6 +114,7 @@ describe('MarketsPage', () => {
             id: 'c3', status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z',
             outcomes: outcomesFor('c3', ['Yes', 'No']),
           }],
+          next_cursor: null,
         }),
       ),
     )
@@ -108,7 +126,7 @@ describe('MarketsPage', () => {
   it('shows an empty state when no markets are returned', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: [] }),
+        HttpResponse.json({ markets: [], next_cursor: null }),
       ),
     )
     renderPage()
@@ -126,7 +144,7 @@ describe('MarketsPage', () => {
   it('navigates to the market detail page when a card is clicked', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>
-        HttpResponse.json({ markets: [mockMarkets[0]] }),
+        HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null }),
       ),
     )
     const actor = userEvent.setup()
@@ -138,7 +156,7 @@ describe('MarketsPage', () => {
   // [X-1] #126 AC 1 and AC 3. 0.1235 is a price a float would show as 12.3%.
   it("shows each card's YES/NO prices from that market's snapshot", async () => {
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
       http.get(SNAPSHOT, ({ params }) =>
         params.id === 'a1'
           ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
@@ -149,12 +167,12 @@ describe('MarketsPage', () => {
     await screen.findByText('Will SMU win SUNIG?')
 
     const open = cardFor('Will SMU win SUNIG?')
-    expect(await within(open).findByLabelText('Yes price')).toHaveTextContent('12.4%')
+    await waitFor(() => expect(within(open).getByLabelText('Yes price')).toHaveTextContent('12.4%'))
     expect(within(open).getByLabelText('No price')).toHaveTextContent('87.7%')
 
     // A closed market still has a last price, and shows it.
     const closed = cardFor('Will inflation fall below 2%?')
-    expect(await within(closed).findByLabelText('Yes price')).toHaveTextContent('70.0%')
+    await waitFor(() => expect(within(closed).getByLabelText('Yes price')).toHaveTextContent('70.0%'))
     expect(within(closed).getByLabelText('No price')).toHaveTextContent('30.0%')
   })
 
@@ -162,7 +180,7 @@ describe('MarketsPage', () => {
   // anyone else's price, with it.
   it('shows a dash for a price that cannot be loaded, and still shows the market', async () => {
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
       http.get(SNAPSHOT, ({ params }) =>
         params.id === 'a1'
           ? HttpResponse.json(
@@ -176,7 +194,7 @@ describe('MarketsPage', () => {
     await screen.findByText('Will SMU win SUNIG?')
 
     const closed = cardFor('Will inflation fall below 2%?')
-    expect(await within(closed).findByLabelText('Yes price')).toHaveTextContent('70.0%')
+    await waitFor(() => expect(within(closed).getByLabelText('Yes price')).toHaveTextContent('70.0%'))
 
     const failed = cardFor('Will SMU win SUNIG?')
     expect(within(failed).getByText('Will SMU win SUNIG?')).toBeInTheDocument()
@@ -192,14 +210,14 @@ describe('MarketsPage', () => {
       outcomes: outcomesFor('d4', ['Lakers', 'Celtics', 'Draw']),
     }
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final] })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
       http.get(SNAPSHOT, () => HttpResponse.json(snapshotFor('d4', ['0.5000', '0.3000', '0.2000']))),
     )
     renderPage()
     await screen.findByText('Who wins the NBA Finals?')
     const card = cardFor('Who wins the NBA Finals?')
 
-    expect(await within(card).findByLabelText('Lakers price')).toHaveTextContent('50.0%')
+    await waitFor(() => expect(within(card).getByLabelText('Lakers price')).toHaveTextContent('50.0%'))
     expect(within(card).getByLabelText('Celtics price')).toHaveTextContent('30.0%')
     expect(within(card).getByLabelText('Draw price')).toHaveTextContent('20.0%')
     expect(within(card).queryByLabelText('Yes price')).not.toBeInTheDocument()
@@ -214,7 +232,7 @@ describe('MarketsPage', () => {
       outcomes: outcomesFor('e5', ['Lakers', 'Celtics', 'Draw']),
     }
     server.use(
-      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final] })),
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
       http.get(SNAPSHOT, () => HttpResponse.json({
         market_id: 'e5',
         state_version: 3,
@@ -229,8 +247,127 @@ describe('MarketsPage', () => {
     await screen.findByText('Lakers or Celtics?')
     const card = cardFor('Lakers or Celtics?')
 
-    expect(await within(card).findByLabelText('Lakers price')).toHaveTextContent('70.0%')
+    await waitFor(() => expect(within(card).getByLabelText('Lakers price')).toHaveTextContent('70.0%'))
     expect(within(card).getByLabelText('Celtics price')).toHaveTextContent('30.0%')
     expect(within(card).getByLabelText('Draw price')).toHaveTextContent('—')
+  })
+
+  // [X-1] #104: Load more appends the next page, keeps the first, and goes
+  // away when the server says there is nothing after it.
+  it('appends the next page when Load more is clicked', async () => {
+    mockTwoPages(() => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null }))
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    expect(screen.queryByText('Will inflation fall below 2%?')).not.toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    expect(await screen.findByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.getByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+  })
+
+  // [X-1] #104: "Error on load-more keeps already-shown cards", and the
+  // trader can try again.
+  it('keeps the cards already shown when loading more fails, and loads them on a retry', async () => {
+    let secondPageRequests = 0
+    mockTwoPages(() => {
+      secondPageRequests += 1
+      return secondPageRequests === 1
+        ? HttpResponse.error()
+        : HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })
+    })
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn't load more markets/i)
+    expect(screen.getByText('Will SMU win SUNIG?')).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    expect(await screen.findByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // #104 Review Focus 2: a double click must not fetch, or append, a page twice.
+  it('asks for the next page once however fast Load more is clicked', async () => {
+    const { held, release } = holdUntilReleased()
+    let secondPageRequests = 0
+    mockTwoPages(async () => {
+      secondPageRequests += 1
+      await held
+      return HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })
+    })
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.dblClick(screen.getByRole('button', { name: /load more/i }))
+    release()
+
+    expect(await screen.findByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.getAllByText('Will inflation fall below 2%?')).toHaveLength(1)
+    expect(secondPageRequests).toBe(1)
+  })
+
+  // StrictMode (on in main.tsx) asks for page one twice. Its first answer
+  // arriving late must not replace the list after Load more has added to it.
+  it('keeps the appended page when the first mount\'s answer arrives late', async () => {
+    const { held, release } = holdUntilReleased()
+    let firstPageRequests = 0
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, async ({ request }) => {
+        if (new URL(request.url).searchParams.get('cursor') === 'page-2') {
+          return HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })
+        }
+        firstPageRequests += 1
+        if (firstPageRequests === 1) await held
+        return HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: 'page-2' })
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+    await screen.findByText('Will inflation fall below 2%?')
+
+    release()
+
+    // Long enough for the held answer to land and render, if it is going to.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+  })
+
+  // #104 amendment D: the cards already on screen have their prices; Load
+  // more asks the ledger only about the markets it added.
+  it('fetches prices only for the markets Load more adds', async () => {
+    const snapshotRequests: string[] = []
+    mockTwoPages(() => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null }))
+    server.use(
+      http.get(SNAPSHOT, ({ params }) => {
+        snapshotRequests.push(String(params.id))
+        return params.id === 'a1'
+          ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
+          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000']))
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('12.4%'))
+    snapshotRequests.length = 0
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    await screen.findByText('Will inflation fall below 2%?')
+    await waitFor(() => expect(within(cardFor('Will inflation fall below 2%?')).getByLabelText('Yes price')).toHaveTextContent('70.0%'))
+    expect(snapshotRequests).toEqual(['b2'])
+    // The first card keeps the price it already had.
+    expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('12.4%')
   })
 })

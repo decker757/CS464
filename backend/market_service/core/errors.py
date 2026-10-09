@@ -335,3 +335,16 @@ class ProposalSuperseded(MarketError):
         "The proposal you reviewed has been replaced by a newer one. Reload the "
         "market and review the proposal that is waiting now."
     )
+
+
+class MalformedCursor(MarketError):
+    """[X-1] #104 - the `cursor` parameter did not come from a previous response.
+
+    Refused rather than restarting from page one, which would loop a client
+    forever. Same status, code and message as the audit, auth and ledger
+    services'.
+    """
+
+    status_code = 400
+    code = "malformed_cursor"
+    message = "Pass back the `next_cursor` from the previous response, unmodified."

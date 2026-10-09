@@ -1,6 +1,6 @@
 # ADR 0019: Settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-04
 - **Affects:** [3.4] #12, [FE][3.4] #216, [3.3] #11, [4.4] #16, [T-4] #24, [T-5] #25, [2.1] #5, [L-1] #38, [L-3] #40, [F-5] #75, [BE] #221, ADR 0006, ADR 0007, ADR 0009, ADR 0011, ADR 0015, ADR 0016, ADR 0017, ADR 0018
 - **Implemented in:** nothing yet. This record precedes [3.4] #12, which is the first code that has to obey it.
@@ -326,7 +326,8 @@ In the history, a row of kind `settlement` fills `market_id`, `outcome_id` and
 `quantity`; `side` and `average_price` are `null`. A holder of only losing
 shares has no entry, so they have no row.
 
-The overview sinks settled markets to the end of its unfiltered view. Its counts
+The overview sinks settled markets to the end of its unfiltered view, an order
+built in [2.1] #210's paging and switched on once SETTLED exists. Its counts
 are unchanged in meaning. `PublicMarketStatus` and `MarketStatus` gain
 `settled` in one commit, as ADR 0017's last section requires. `DECIDED_STATUSES`
 gains SETTLED, so the public detail keeps showing the winner, and step 1 can
