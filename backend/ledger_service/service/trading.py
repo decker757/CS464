@@ -95,7 +95,6 @@ from core.lmsr import prices as lmsr_prices
 from core.pricing import QUANTUM, Side, release_basis, trade_cost_of
 from model.entities import (
     Account,
-    MarketBook,
     MarketOutcome,
     Position,
     Transaction,
@@ -212,12 +211,6 @@ async def _replay_if_present(
     if not _matches(existing, outcome_id=outcome_id, side=side, quantity=quantity):
         raise IdempotencyKeyReused
     return result_of(existing)
-
-
-async def _lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
-    """"Lock order: book row before account rows" — the wider lock, first."""
-    stmt = select(MarketBook).where(MarketBook.market_id == market_id).with_for_update()
-    return (await session.execute(stmt)).scalar_one()
 
 
 async def _read_outcomes(
@@ -355,7 +348,7 @@ async def execute(
 
     # 5. The book row, locked — the wider lock, ahead of the account locks
     # `posting.post` takes inside it.
-    book = await _lock_book(session, market_id)
+    book = await books.lock_book(session, market_id)
 
     # 6. The re-check. Nothing below this line has written anything yet, so a
     # hit here still costs nothing to return.
