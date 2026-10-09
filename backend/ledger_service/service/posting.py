@@ -65,6 +65,11 @@ def _quantize(amount: Decimal) -> Decimal:
     return amount.quantize(_QUANTUM, rounding=ROUND_HALF_UP)
 
 
+def _quantized(legs: list[Leg]) -> list[Leg]:
+    """The same legs with every amount rounded to the column's scale."""
+    return [Leg(account=leg.account, amount=_quantize(leg.amount)) for leg in legs]
+
+
 def _require_balanced(legs: list[Leg]) -> None:
     """Refuse legs that do not sum to zero, fewer than two legs, or a zero leg
     (which `ck_entries_amount_nonzero` refuses anyway). ADR 0009.
@@ -150,6 +155,40 @@ async def _stamp_after_newest(
     return stamp
 
 
+def _transaction_of(
+    *,
+    kind: TransactionKind,
+    idempotency_key: str,
+    fingerprint: str,
+    legs: list[Leg],
+    context: dict[str, Any] | None,
+    stamp: datetime,
+) -> tuple[Transaction, list[Entry]]:
+    """The transaction and one entry per leg, all carrying `stamp`.
+
+    Builds only: the caller adds, flushes and commits.
+    """
+    transaction = Transaction(
+        kind=kind,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
+        occurred_at=stamp,
+        context=context,
+    )
+    entries = [
+        # created_at copied from the transaction, not defaulted per row, so
+        # both legs share one timestamp and a history page cannot split them.
+        Entry(
+            transaction=transaction,
+            account_id=leg.account.id,
+            amount=leg.amount,
+            created_at=stamp,
+        )
+        for leg in legs
+    ]
+    return transaction, entries
+
+
 async def find_by_idempotency_key(
     session: AsyncSession, idempotency_key: str
 ) -> Transaction | None:
@@ -190,7 +229,7 @@ async def post(
     the newest entry on its accounts, whichever is later. Assert on the
     returned transaction's `occurred_at`.
     """
-    legs = [Leg(account=leg.account, amount=_quantize(leg.amount)) for leg in legs]
+    legs = _quantized(legs)
 
     _require_balanced(legs)
     fingerprint = _fingerprint(kind, legs)
@@ -227,29 +266,19 @@ async def post(
         session, {leg.account.id for leg in legs}, now or datetime.now(UTC)
     )
 
-    transaction = Transaction(
+    transaction, entries = _transaction_of(
         kind=kind,
         idempotency_key=idempotency_key,
-        request_fingerprint=fingerprint,
-        occurred_at=stamp,
+        fingerprint=fingerprint,
+        legs=legs,
         context=context,
+        stamp=stamp,
     )
 
     try:
         async with session.begin_nested():
             session.add(transaction)
-            session.add_all(
-                # created_at copied from the transaction, not defaulted per
-                # row, so both legs share one timestamp and a history page
-                # cannot split them.
-                Entry(
-                    transaction=transaction,
-                    account_id=leg.account.id,
-                    amount=leg.amount,
-                    created_at=stamp,
-                )
-                for leg in legs
-            )
+            session.add_all(entries)
             await session.flush()
     except IntegrityError:
         # A race on one key that the account locks did not queue, so the legs
