@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import ColumnElement, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -532,32 +532,27 @@ async def test_a_market_whose_close_passes_between_two_page_reads_keeps_its_plac
 
 # --- #210: settled markets sort last --------------------------------------
 async def test_settled_markets_sort_last_and_a_cursor_crosses_into_their_group(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    session: AsyncSession,
 ) -> None:
     """#210: "settled markets last … The cursor carries the group from day one".
 
-    No market can be settled until [3.4] #12 adds the status (#227), so this
-    swaps the one predicate the group reads for "is approved". The approved
-    markets closed first (the real clock), so without the group they would
-    lead. Fails if the group is missing from the ORDER BY, from the keyset, or
-    from the cursor (a cursor that always says "not settled" repeats the first
-    approved market until the walk gives up). When #227 lands, build two real
-    settled markets here and drop the swap.
+    The settled markets are made first, so their close times (the real clock)
+    precede everything else's and, without the group, they would lead. One
+    market a page, so the cursor is cut between the two groups and inside the
+    settled one. Fails if the group is missing from the ORDER BY, from the
+    keyset, or from the cursor (a cursor that always says "not settled" repeats
+    the first settled market until the walk gives up).
     """
     caller = actor()
     now = _injected_now()
-    first_approved = (await approved_market(session, caller)).id
-    second_approved = (await approved_market(session, caller)).id
+    first_settled = (await settled_market(session, caller)).id
+    second_settled = (await settled_market(session, caller)).id
+    approved = (await approved_market(session, caller)).id
     still_open = await _open_until(session, caller, now + timedelta(days=1))
-
-    def approved_stands_in_for_settled() -> ColumnElement[bool]:
-        return Market.status == MarketStatus.APPROVED
-
-    monkeypatch.setattr(browsing, "_is_settled", approved_stands_in_for_settled)
 
     walked = await _walk(session, caller, limit=1, now=now)
 
-    assert _ids(walked) == [still_open, first_approved, second_approved]
+    assert _ids(walked) == [approved, still_open, first_settled, second_settled]
 
 
 # --- #210: the page and the counts read one snapshot ----------------------
