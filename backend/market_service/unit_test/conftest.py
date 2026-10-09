@@ -493,6 +493,11 @@ def time_until_settleable() -> timedelta:
     return timedelta(seconds=get_settings().dispute_window_seconds) + SETTLEMENT_GAP
 
 
+def settleable_edge(approved_at: datetime) -> datetime:
+    """The first instant settlement is allowed for a market approved at `approved_at`."""
+    return approved_at + time_until_settleable()
+
+
 async def settled_market(session, creator: Actor, **overrides: object) -> Market:
     """The same market, approved long enough ago to settle, then settled. [3.4] #12.
 

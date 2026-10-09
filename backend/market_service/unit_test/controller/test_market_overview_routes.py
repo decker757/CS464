@@ -16,13 +16,13 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.config import get_settings
 from model.entities import Market, MarketStatus
 from service.audit import Actor
 from unit_test.conftest import (
     approved_market,
     overdue_market,
     published_market_closing_at,
+    settleable_edge,
     settled_market,
 )
 
@@ -220,8 +220,7 @@ async def test_each_rows_settleable_follows_the_controllers_clock(
     approved_at = await session.scalar(
         select(Market.approved_at).where(Market.id == market_id)
     )
-    window = timedelta(seconds=get_settings().dispute_window_seconds)
-    edge = approved_at + window + timedelta(minutes=5)
+    edge = settleable_edge(approved_at)
 
     route_clock = {"now": edge}
 

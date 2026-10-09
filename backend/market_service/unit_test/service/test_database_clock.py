@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from service import market_service
@@ -20,6 +20,7 @@ from unit_test.conftest import (
     approval_request,
     close_request,
     closed_market,
+    database_now,
     draft_request,
     proposal_request,
     proposed_market,
@@ -46,10 +47,6 @@ def _put_the_container_clock_an_hour_behind(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(market_service, "datetime", _AnHourBehind, raising=False)
 
 
-async def _database_clock(session: AsyncSession) -> datetime:
-    return (await session.execute(select(func.clock_timestamp()))).scalar_one()
-
-
 async def test_a_proposal_right_after_the_sweep_is_stamped_after_the_close(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -68,7 +65,7 @@ async def test_a_proposal_right_after_the_sweep_is_stamped_after_the_close(
 async def test_a_submission_is_stamped_by_the_database(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    before = await _database_clock(session)
+    before = await database_now(session)
     _put_the_container_clock_an_hour_behind(monkeypatch)
 
     market, _, _ = await market_service.save(
@@ -85,7 +82,7 @@ async def test_a_publication_is_stamped_by_the_database(
     market, _, _ = await market_service.save(
         session, actor, draft_request(status="submitted")
     )
-    before = await _database_clock(session)
+    before = await database_now(session)
     _put_the_container_clock_an_hour_behind(monkeypatch)
 
     published = await market_service.publish(session, actor, market.id)
@@ -98,7 +95,7 @@ async def test_an_early_close_is_stamped_by_the_database(
 ) -> None:
     actor = _actor()
     market = await published_market(session, actor)
-    before = await _database_clock(session)
+    before = await database_now(session)
     _put_the_container_clock_an_hour_behind(monkeypatch)
 
     closed = await market_service.close_early(session, actor, market.id, close_request())
@@ -110,7 +107,7 @@ async def test_an_approval_is_stamped_by_the_database(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     market = await proposed_market(session, _actor())
-    before = await _database_clock(session)
+    before = await database_now(session)
     _put_the_container_clock_an_hour_behind(monkeypatch)
 
     approved = await market_service.approve_outcome(
@@ -127,7 +124,7 @@ async def test_a_rejection_is_logged_at_the_database_time(
     """A rejection clears its stamps, so the audit entry's is the only one."""
     market = await proposed_market(session, _actor())
     rejecter = _actor(username="second_admin")
-    before = await _database_clock(session)
+    before = await database_now(session)
     _put_the_container_clock_an_hour_behind(monkeypatch)
 
     await market_service.reject_outcome(
