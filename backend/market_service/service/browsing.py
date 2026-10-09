@@ -19,7 +19,6 @@ from sqlalchemy import (
     Row,
     and_,
     case,
-    false,
     func,
     not_,
     null,
@@ -369,18 +368,18 @@ def _visible_to_admin(caller_id: uuid.UUID) -> ColumnElement[bool]:
 def _is_settled() -> ColumnElement[bool]:
     """Is the market settled? Decides its overview group. #210.
 
-    Constant false until [3.4] #12 adds `MarketStatus.SETTLED` (#227). Then
-    the body is `return Market.status == MarketStatus.SETTLED`, and nothing
-    else changes: the order, the keyset and the cursor carry the group already.
+    Switched on by [3.4] #12 (#227), which added `MarketStatus.SETTLED`. The
+    order, the keyset and the cursor carried the group already, so this is the
+    only line that changed.
     """
-    return false()
+    return Market.status == MarketStatus.SETTLED
 
 
 def _overview_group() -> ColumnElement[int]:
     """0 for a market still in play, 1 for a settled one, which sorts last.
 
-    A CASE rather than the boolean: until SETTLED exists the boolean renders
-    as `false`, and Postgres refuses `ORDER BY false` as a non-integer constant.
+    A CASE rather than the boolean, so the group is an integer: the keyset
+    compares it with the cursor's group, and the cursor reads it back.
     """
     return case((_is_settled(), _SETTLED_GROUP), else_=_ACTIVE_GROUP)
 
