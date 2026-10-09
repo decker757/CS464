@@ -30,6 +30,7 @@ the controller becomes the right status and the right code.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -114,6 +115,8 @@ class _Market:
                     "liquidity_b": str(B),
                     "seed_subsidy": str(SUBSIDY),
                     "published_at": "2026-09-01T09:00:00Z",
+                    "proposed_outcome_id": None,
+                    "settleable": False,
                     "outcomes": [
                         {"id": str(o), "position": i, "label": f"Outcome {i}"}
                         for i, o in enumerate(self.outcomes)
@@ -179,6 +182,8 @@ class _Terms:
                     for i, o in enumerate(market.outcomes)
                 ],
                 status=self.status,
+                proposed_outcome_id=None,
+                settleable=False,
             )
 
         monkeypatch.setattr(market_terms, "fetch", fake)
@@ -625,6 +630,35 @@ async def test_an_unreachable_market_service_is_503(
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "market_terms_unavailable"
+
+
+async def test_market_terms_unavailable_is_logged_at_warning_not_error(
+    trade_client,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """DECISIONS.md: `settlement_unconfirmed` is the only 503 logged above
+    WARNING. A market_service restart answers every trade with this one, and
+    at ERROR it would bury the 5xx that mean our own data is wrong.
+    """
+    client, _ = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms(raises=_errors().MarketTermsUnavailable()).install(monkeypatch, market)
+
+    with caplog.at_level(logging.DEBUG):
+        response = await client.post(
+            _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
+        )
+
+    assert response.status_code == 503
+    assert any(
+        record.levelno == logging.WARNING
+        and "market_terms_unavailable" in record.getMessage()
+        for record in caplog.records
+    ), "the 503 was not logged at WARNING"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 async def test_a_market_that_does_not_exist_is_404(
