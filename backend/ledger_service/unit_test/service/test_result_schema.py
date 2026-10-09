@@ -21,10 +21,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SCHEMA
+from unit_test.market_fixtures import market_with_outcomes
 
-# The stored value the CHECK compares against. A string rather than the enum
-# member, which no document names; SQLAlchemy's non-native Enum accepts it.
-SETTLED = "settled"
+LIQUIDITY_B = Decimal("100.0000")
 
 
 def _entities():
@@ -35,45 +34,10 @@ def _entities():
     return entities
 
 
-async def _market(session: AsyncSession) -> tuple[uuid.UUID, list[uuid.UUID]]:
-    """A book with two outcomes, flushed so a result can reference them.
-    Returns the market id and its outcome ids."""
-    entities = _entities()
-    market_id = uuid.uuid4()
-
-    pool = entities.Account(kind=entities.AccountKind.MARKET_POOL, owner_id=market_id)
-    session.add(pool)
-    await session.flush()
-
-    now = datetime.now(UTC)
-    session.add(
-        entities.MarketBook(
-            market_id=market_id,
-            liquidity_b=Decimal("100.0000"),
-            seed_subsidy=Decimal("250.0000"),
-            pool_account_id=pool.id,
-            state_version=0,
-            state_changed_at=now,
-            opened_at=now,
-        )
-    )
-    await session.flush()
-
-    outcome_ids = [uuid.uuid4(), uuid.uuid4()]
-    for position, outcome_id in enumerate(outcome_ids):
-        session.add(
-            entities.MarketOutcome(
-                market_id=market_id, outcome_id=outcome_id, position=position
-            )
-        )
-    await session.flush()
-    return market_id, outcome_ids
-
-
 def _result(market_id: uuid.UUID, outcome_id: uuid.UUID | None):
     return _entities().MarketResult(
         market_id=market_id,
-        kind=SETTLED,
+        kind=_entities().ResultKind.SETTLED,
         outcome_id=outcome_id,
         recorded_at=datetime.now(UTC),
     )
@@ -107,7 +71,7 @@ async def test_a_settled_result_naming_one_of_its_markets_outcomes_is_accepted(
     """The row settlement writes. Also red if the CHECK is inverted, if the
     enum stores member names rather than values, or if the composite key's
     columns are crossed."""
-    market_id, outcome_ids = await _market(session)
+    market_id, outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
 
     session.add(_result(market_id, outcome_ids[0]))
     await session.flush()
@@ -128,7 +92,7 @@ async def test_a_second_result_for_the_same_market_is_refused(
 ) -> None:
     """The primary key on `market_id` stops a market ending twice, even with a
     different winner: a unique on `(market_id, outcome_id)` would accept this."""
-    market_id, outcome_ids = await _market(session)
+    market_id, outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
     session.add(_result(market_id, outcome_ids[0]))
     await session.flush()
     primary_key = await _primary_key_name(session)
@@ -147,7 +111,7 @@ async def test_a_settled_result_with_no_outcome_is_refused(
 ) -> None:
     """A settlement always names its winner. Refused by the paired CHECK, not
     by a NOT NULL: `outcome_id` stays nullable for a void ([BE] #221)."""
-    market_id, _ = await _market(session)
+    market_id, _ = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
 
     session.add(_result(market_id, None))
 
@@ -163,8 +127,8 @@ async def test_a_result_naming_another_markets_outcome_is_refused(
 ) -> None:
     """The winner must be one of this market's outcomes. Both markets have
     books, so only the composite key can refuse it."""
-    market_id, _ = await _market(session)
-    _, other_outcome_ids = await _market(session)
+    market_id, _ = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
+    _, other_outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
 
     session.add(_result(market_id, other_outcome_ids[0]))
 
