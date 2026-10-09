@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getMyEntries, type LedgerEntry } from '../api/ledgerApi'
 import type { PublicMarketDetail } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
-import Button from '../components/ui/Button'
+import LoadMoreControl from '../components/ui/LoadMoreControl'
 import PageTitle from '../components/ui/PageTitle'
 import { HeaderCell, NumberCell } from '../components/ui/Table'
+import { usePagedList } from '../hooks/usePagedList'
 import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
 import { formatPrice } from '../utils/formatPrice'
 import { labelsFor, loadMarketsById } from '../utils/marketLabels'
@@ -15,12 +15,33 @@ interface EntryRow extends LedgerEntry {
   outcomeLabel: string
 }
 
+interface EntryPage {
+  entries: EntryRow[]
+  next_cursor: string | null
+}
+
 function toRow(entry: LedgerEntry, markets: Map<string, PublicMarketDetail>): EntryRow {
   // Only a trade row names a market; everything else (the grant, and any
   // kind this app does not recognise) gets the "unknown" fallback, which is
   // never shown since those rows render no market link (ledger-service.md).
   const labels = entry.market_id ? labelsFor(entry.market_id, entry.outcome_id ?? '', markets) : { question: '', outcomeLabel: '' }
   return { ...entry, ...labels }
+}
+
+// Module-level, so it keeps its identity and the list is fetched once. Joins
+// each page's market questions and outcome labels before handing the page to
+// usePagedList, which only knows how to walk pages, not how to build a row.
+async function fetchHistoryPage(cursor: string | undefined): Promise<EntryPage> {
+  const page = await getMyEntries({ cursor })
+  const marketIds = page.entries.flatMap(entry => entry.market_id ? [entry.market_id] : [])
+  const markets = await loadMarketsById(marketIds)
+  return { entries: page.entries.map(entry => toRow(entry, markets)), next_cursor: page.next_cursor }
+}
+
+const pagedHistoryOptions = {
+  itemsOf: (page: EntryPage) => page.entries,
+  nextCursorOf: (page: EntryPage) => page.next_cursor,
+  idOf: (row: EntryRow) => row.id,
 }
 
 // An amount of exactly zero cannot happen on a real row today, but the
@@ -56,61 +77,21 @@ function EntryDescription({ row }: { row: EntryRow }) {
 }
 
 export default function TradeHistoryPage() {
-  const [rows, setRows] = useState<EntryRow[]>([])
-  const [nextCursor, setNextCursor] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
-  const [isLoadingMore, setIsLoadingMore] = useState(false)
-  const [loadMoreFailed, setLoadMoreFailed] = useState(false)
-
-  useEffect(() => {
-    // StrictMode mounts twice; only the second mount's answer is kept, so a
-    // late first answer cannot replace a list Load more has added to.
-    let ignored = false
-    getMyEntries()
-      .then(async page => {
-        if (ignored) return
-        const marketIds = page.entries.flatMap(e => e.market_id ? [e.market_id] : [])
-        const markets = await loadMarketsById(marketIds)
-        if (ignored) return
-        setRows(page.entries.map(e => toRow(e, markets)))
-        setNextCursor(page.next_cursor)
-      })
-      .catch(() => { if (!ignored) setError(true) })
-      .finally(() => { if (!ignored) setLoading(false) })
-    return () => { ignored = true }
-  }, [])
-
-  function handleLoadMore() {
-    if (!nextCursor) return
-    setIsLoadingMore(true)
-    setLoadMoreFailed(false)
-    getMyEntries({ cursor: nextCursor })
-      .then(async page => {
-        const marketIds = page.entries.flatMap(e => e.market_id ? [e.market_id] : [])
-        const markets = await loadMarketsById(marketIds)
-        // Appended, never re-sorted: the server's order is the order (ledger-service.md).
-        setRows(previous => [...previous, ...page.entries.map(e => toRow(e, markets))])
-        setNextCursor(page.next_cursor)
-      })
-      // The rows already shown stay; the button stays too, so the trader can retry.
-      .catch(() => setLoadMoreFailed(true))
-      .finally(() => setIsLoadingMore(false))
-  }
+  const { items: rows, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchHistoryPage, pagedHistoryOptions)
 
   return (
     <AppLayout width="max-w-[1100px]">
       <PageTitle className="mb-8">Trade History</PageTitle>
 
-      {loading && <p className="text-sm text-muted">Loading history…</p>}
+      {isLoading && <p className="text-sm text-muted">Loading history…</p>}
 
-      {error && <p role="alert" className="text-sm text-danger">Failed to load history. Please try again.</p>}
+      {hasError && <p role="alert" className="text-sm text-danger">Failed to load history. Please try again.</p>}
 
-      {!loading && !error && rows.length === 0 && (
+      {!isLoading && !hasError && rows.length === 0 && (
         <p className="text-sm text-muted">No activity yet. Visit the markets page to start trading.</p>
       )}
 
-      {!loading && !error && rows.length > 0 && (
+      {!isLoading && !hasError && rows.length > 0 && (
         <>
           <div className="overflow-x-auto rounded-2xl border border-smu-gold/15 bg-white shadow-card">
             <table className="w-full text-left text-sm">
@@ -141,16 +122,8 @@ export default function TradeHistoryPage() {
             </table>
           </div>
 
-          {loadMoreFailed && (
-            <p role="alert" className="mt-6 text-sm text-danger">Couldn't load more history. Please try again.</p>
-          )}
-
-          {nextCursor && (
-            <div className="mt-8 flex justify-center">
-              <Button variant="outline" size="md" onClick={handleLoadMore} disabled={isLoadingMore}>
-                {isLoadingMore ? 'Loading…' : 'Load more'}
-              </Button>
-            </div>
+          {hasMore && (
+            <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="history" onLoadMore={loadMore} />
           )}
         </>
       )}
