@@ -97,6 +97,8 @@ class _Upstream:
             "liquidity_b": None if liquidity_b is None else str(liquidity_b),
             "seed_subsidy": None if seed_subsidy is None else str(seed_subsidy),
             "published_at": published_at,
+            "proposed_outcome_id": None,
+            "settleable": False,
             # Raw dicts pass straight through, for a malformed outcome list.
             # `is not None`, not truthiness: `outcomes=[]` must stay empty.
             "outcomes": (

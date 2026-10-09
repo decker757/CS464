@@ -138,6 +138,28 @@ class MarketTermsUnavailable(LedgerError):
     message = "Could not read this market's terms right now. Try again shortly."
 
 
+class SettlementUnconfirmed(LedgerError):
+    """The payouts committed and market_service was not told. [3.4] #12.
+
+    Raised for every answer to the settle call but a `200`, and for a call
+    that never got an answer. Money has moved and the market is not marked
+    SETTLED, so every failure means the same thing and has the same remedy:
+    the administrator repeats the request, which writes nothing in the ledger.
+    A 401 or a 404 mapped as `MarketTermsUnavailable` maps them would say that
+    nothing happened. DECISIONS.md, "`market_terms.mark_settled` accepts only
+    a `200`".
+
+    503 because the dependency did not confirm, and a repeat is the fix.
+    """
+
+    status_code = 503
+    code = "settlement_unconfirmed"
+    message = (
+        "The payouts were made, but the market could not be marked settled. "
+        "Repeat the request."
+    )
+
+
 class MarketClosed(LedgerError):
     """This market is not open for trading. [F-8] #109, ADR 0017.
 

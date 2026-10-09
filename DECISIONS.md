@@ -5239,6 +5239,12 @@ row 4a, making nine PRs. See "PR 4a extracts `post`'s helpers ahead of
 `post_all`, as its own refactor" below. The other rows, the naming and the
 order stand.*
 
+*Superseded in part 2026-10-09 by [3.4] #12: row 5, as "PR 3 of the
+settlement stack holds the table…" left it. It is now rows 5a, 5b and 5,
+making eleven PRs. See "PR 5 lands as three PRs: 5a extracts, 5b extends the
+terms client, 5 settles" below. The other rows, the naming and the order
+stand.*
+
 ---
 
 ### D-NEW — Settlement waits for `settleable`, which market_service derives from `approved_at`
@@ -5541,6 +5547,11 @@ close, approve and reject return it.
 beside an unchanged `MarketOut`"). The ledger reads none of its money fields,
 so no float reaches the money path.
 
+*Corrected 2026-10-09 by [3.4] #12: the ledger reads the status code only.
+Every answer but `200` is `503 settlement_unconfirmed`, whatever its error
+code. See "`market_terms.mark_settled` accepts only a `200`, and every other
+answer is `503 settlement_unconfirmed`, logged at ERROR" below.*
+
 ---
 
 ### D-NEW — The settle step checks in a fixed order, and SETTLED answers before the clock is read
@@ -5778,6 +5789,9 @@ legacy adoption tests a second revision ends, and the history's table-set test,
 until the next commit updates them, as #246's did. That commit deletes the
 adoption tests and adds the kept refusal test, word for word as #246's, so the
 two branches' hunks agree.
+
+*Row 5 above is superseded 2026-10-09: see "PR 5 lands as three PRs: 5a
+extracts, 5b extends the terms client, 5 settles" below.*
 
 ---
 
@@ -6119,6 +6133,198 @@ keep their numbers. The table gains one row, and row 4's "On" changes:
 | --- | --- | --- | --- |
 | 4a | posting: `_quantized_legs` and `_transaction_of` extracted from `post`, no behaviour change | 3 | decker757 (`posting.py`) |
 | 4 | `posting.post_all`, `Movement`, `MalformedBatch`, `docs/api/ledger-service.md`'s `malformed_batch` line | 4a | decker757 (`posting.py`) |
+
+---
+
+### D-NEW — PR 5 lands as three PRs: 5a extracts, 5b extends the terms client, 5 settles
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** PR 5 of the settlement stack becomes three PRs, each saying
+`Refs #12`:
+
+- **5a** (#251, `12-settlement-5a-helpers`), on PR 4 (#250): a refactor that
+  extracts `books.lock_book` and `market_status.read_terms`.
+- **5b** (`12-settlement-5b-terms-client`), on 5a: `proposed_outcome_id` and
+  `settleable` on `MarketTerms`, and `market_terms.mark_settled`.
+- **5**, on 5b: the settlement service, the trade path's latch, the audit
+  seam and their tests.
+
+**Why.** CLAUDE.md says a refactor never shares a PR with a behaviour change,
+so 5a stands alone. 5b changes what every pull accepts, the trade path's
+included, so a reviewer should see that change on its own rather than inside
+the settlement diff. "PR 3 of the settlement stack holds the table, and the
+audit seam lands with its caller in PR 5" already calls PR 5 the stack's
+largest. This follows the precedent of "PR 4a extracts `post`'s helpers ahead
+of `post_all`, as its own refactor".
+
+**Rejected.**
+- *5a inside PR 5*: a reviewer could not tell which lines of the trade path
+  moved and which changed.
+- *5b inside PR 5*: the trade path's new 503 would be reviewed among the race
+  tests, and the client's parse cases would sit beside the payout's.
+- *Renumbering PRs 5 to 7*: named `5a` and `5b`, as `4a` was, so PRs 6 and 7
+  keep their numbers.
+
+**Notes.** The stack now has eleven PRs. Row 5 of the table, as "PR 3 of the
+settlement stack holds the table…" left it, is replaced by three rows:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 5a | ledger: `books.lock_book` and `market_status.read_terms` extracted, `ensure_trading` still returning `None`, no behaviour change | 4 | |
+| 5b | ledger: `proposed_outcome_id` and `settleable` on `MarketTerms`, parsed strictly; `market_terms.mark_settled` and `SettlementUnconfirmed`; the allowlist line for `mark_settled`; their tests | 5a | |
+| 5 | the ledger's audit seam, `service/settlement.py`, the trade path's latch, the three allowlist lines removed, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade, window-boundary and audit tests | 5b | |
+
+---
+
+### D-NEW — PR 5a extracts `books.lock_book` and `market_status.read_terms` ahead of settlement, as its own refactor
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The book lock moves from `trading._lock_book` to
+`books.lock_book`. The body of `ensure_trading` up to the status comparison
+moves into `market_status.read_terms`: the pending-writes assert, the
+rollback, the fetch, and the 404 mapped by whether a book exists.
+`ensure_trading` calls `read_terms` and still returns `None`. There is no
+behaviour change. The SQL of a warm buy, a cold buy, a gate refusal and both
+404 branches is identical before and after.
+
+**Why.** Settlement needs both. PR 5 would otherwise add the second copy of
+the book lock, and of the rule that a 404 on a market with a book is
+`MarketTermsUnavailable` (ADR 0017). CLAUDE.md says the PR that would add a
+second copy extracts it instead. `ensure_trading` keeps returning `None`
+because ADR 0017 says that handing fresh terms to the trade path is one
+refactor away from pricing off a wire `liquidity_b`. That would break ADR
+0005's rule that `b` crosses once, at publish, as an immutable snapshot.
+Settlement takes its terms from `read_terms`, and the trade path never does.
+
+**Rejected.**
+- *`ensure_trading` returning `MarketTerms`, so settlement could call it*:
+  the reason above, and settlement would then be asking the open-or-not
+  question it never asks.
+- *Settlement calling `market_terms.fetch` and mapping the 404 itself*: that
+  is the second copy.
+- *The extraction inside PR 5*: see "PR 5 lands as three PRs: 5a extracts,
+  5b extends the terms client, 5 settles" above.
+
+**Notes.** No test assertion changes. The sell race's docstring now names
+`books.lock_book` as the line it is evidence for.
+
+---
+
+### D-NEW — `MarketTerms` carries `proposed_outcome_id` and `settleable`, parsed strictly on every pull
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `MarketTerms` gains `proposed_outcome_id: uuid.UUID | None` and
+`settleable: bool`, with no defaults. `_parse` reads both keys by index, so a
+missing key is a malformed body:
+
+- `settleable` must be a JSON boolean.
+- `proposed_outcome_id` is null or a uuid string, read through `_to_uuid`.
+
+Any failure is `503 market_terms_unavailable`, on every pull: the trade gate,
+a first touch through `books.ensure_open`, and settlement. The client carries
+both fields and decides on neither (ADR 0017).
+
+**Why.** This is how the contract is already parsed: `published_at` is read
+by index because the contract always sends the key. market_service sends
+both fields on every public detail, since PR 1 (#227). A body missing one
+therefore comes from a broken deploy, and the client fails closed on that,
+as it does for a missing `status`.
+
+A `settleable` that is not a real boolean is refused rather than coerced.
+`"false"` is truthy, and reading it as true would pay out inside the dispute
+window, which is why ADR 0019 gives `settleable` no default.
+
+Positive reads are never cached. Only a 404 is remembered ("A market_service
+404 is remembered for ten seconds, per process"), so settlement always reads
+both fields fresh.
+
+**Rejected.**
+- *Lenient parsing, with settlement refusing a missing value itself*: the
+  trade path would then depend on nothing new, but one client would parse in
+  two styles.
+- *A default on either field*: `settleable=False` hides a broken deploy as a
+  window that never closes, and `settleable=True` pays out mid-window.
+
+**Notes.**
+- Deploy order matters. A ledger running 5b against a market_service from
+  before PR 1 answers 503 to every trade. The stack's order prevents that,
+  because PR 1 sits below 5b.
+- ADR 0017 is amended: its list of what stays in `_parse` grows by two fields
+  that the trade path does not read.
+- The trade route's `503` row in `docs/api/ledger-service.md` needs no edit.
+  A malformed body was already a 503 there, and still is.
+
+---
+
+### D-NEW — `market_terms.mark_settled` accepts only a `200`, and every other answer is `503 settlement_unconfirmed`, logged at ERROR
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `mark_settled(market_id, *, access_token, terms_client) -> None`
+sits in `service/market_terms.py`. It sends `POST /markets/{id}/settle` with
+no body, forwards the administrator's token, and uses the process-wide terms
+client, which carries the timeout from "Upstream failures map to 503, 404 and
+401, and the timeout is explicit".
+
+- A `200` returns `None`.
+- Everything else raises `SettlementUnconfirmed` (`core/errors.py`, `503`,
+  `settlement_unconfirmed`): a 401, 403, 404 or 409 (`market_not_approved`
+  or `dispute_window_open`), any other 4xx, any 5xx, and any
+  `httpx.RequestError`, a timeout included.
+- The response body is never read, whether the call succeeded or failed.
+
+The failure is logged at ERROR, with the market id and what came back (the
+status code, or the exception's class). It is the only 503 in the service
+logged above WARNING.
+
+**Why.**
+- **One failure meaning.** The call runs only after the payouts committed
+  (ADR 0019, step 5), so every failure means the same thing: money has moved
+  and the market is not marked. The remedy is the same too: repeat the
+  request. Mapping a 401 to `invalid_token`, or a 404 to `market_not_found`,
+  would tell an administrator that nothing happened. A 401 would also send
+  the frontend to the login screen with no sign that anyone was paid.
+- **The body is not needed.** "The settle step answers `200` with
+  `MarketOut`, the same for the flip and for a repeat" makes the status code
+  the whole answer. `MarketOut`'s money fields are JSON numbers, so not
+  reading the body also keeps any float off the money path.
+- **A timeout after sending does no harm.** If market_service committed, the
+  retry gets `200` for SETTLED to SETTLED and writes nothing.
+- **Why ERROR.** Every other 503 means the dependency is unwell, and the next
+  request retries on its own. This one leaves a state that lasts until a
+  person repeats the request. `controller/errors.py` keeps 503s at WARNING so
+  that a market_service restart does not bury real errors. At WARNING, this
+  line would be buried among exactly those.
+
+**Rejected.**
+- *Mapping answers as `fetch` does, by the table in "Upstream failures map to
+  503, 404 and 401, and the timeout is explicit"*: it reuses codes that mean
+  nothing happened.
+- *Reading the error code to pick between refusals*: no refusal here changes
+  what the administrator should do.
+- *Retrying inside `mark_settled`*: the window-edge `409` needs minutes, not
+  milliseconds, and a loop would hold the administrator's request open. A
+  repeat from the administrator already retries, and writes nothing in the
+  ledger.
+- *Logging in the error handler*: the handler sees only the code, not what
+  market_service answered.
+
+**Notes.**
+- `mark_settled` does not consult or feed the 404 cache. A 404 here comes
+  from a market whose book exists, so it says nothing about whether the
+  market exists.
+- The handler still logs its WARNING for the 503, so a failure writes two
+  lines. That is accepted, because only the ERROR line names the cause.
+- `mark_settled` has no caller until PR 5. Until then
+  `backend/dead_code_allowlist.py` carries one line for it, in the existing
+  format, and PR 5 deletes it.
+
+**Reversal trigger.** market_service learns of settlement some other way, and
+step 5 goes. The function and the error go with it ("A settlement whose last
+step fails answers `503 settlement_unconfirmed`").
 
 ---
 
