@@ -35,7 +35,7 @@ the same job, so `ensure_` means the same thing in every file:
 | `get` | fetch by id, raise `...NotFound` if missing | `market_service.get` |
 | `find_` | fetch, return `None` if missing | `_find_by_draft_key` |
 | `list_` | fetch many | `list_for_creator` |
-| `lock_` | `SELECT ... FOR UPDATE` and return the row | `trading._lock_book` |
+| `lock_` | `SELECT ... FOR UPDATE` and return the row | `books.lock_book` |
 | `ensure_` | idempotent: create or check if needed, no-op otherwise | `grants.ensure_granted` |
 | `refuse_if_` | raise a domain error, return nothing | `_refuse_if_frozen` |
 | `is_` / `has_` / `can_` | return a bool, no side effects | `is_open_for_trading` |

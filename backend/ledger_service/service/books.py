@@ -187,3 +187,13 @@ async def ensure_open(
     )
 
     return book
+
+
+async def lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
+    """This market's book, row-locked. Raises `NoResultFound` if it has none.
+
+    "Lock order: book row before account rows": the wider lock, taken before
+    any account lock, on every path that writes a market's money.
+    """
+    stmt = select(MarketBook).where(MarketBook.market_id == market_id).with_for_update()
+    return (await session.execute(stmt)).scalar_one()
