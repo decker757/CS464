@@ -151,6 +151,7 @@ would let a stale audit schema abort a working admin action.
 | `market.outcome_proposed` | market_service | [3.1] #9 |
 | `market.outcome_approved` | market_service | [3.2] #10 |
 | `market.outcome_rejected` | market_service | [3.2] #10 |
+| `market.marked_settled` | market_service | [3.4] #12 |
 
 Treat an unrecognised value as opaque rather than as an error: a newer service
 may be writing an action type this build has never heard of.
@@ -174,6 +175,17 @@ waiting on them: `target_id` is the market, `actor_id` the proposer, and
 `market.outcome_proposed` entry written before [3.2] #10 has no `proposal_id`
 key; that proposal has none, and the request quotes `null`. A decision on it
 records `"proposal_id": null`. See [`market-service.md`](market-service.md).
+
+`market.marked_settled` is written by market_service's
+`POST /markets/{id}/settle` when it moves a market from `approved` to
+`settled`, and never on a repeat against a market already settled. It is
+under the settling administrator, with no `reason`, and carries the proposal
+the market settled on in the same eight `context` keys as
+`market.outcome_approved`. Its `occurred_at` is the database time the settle
+step's window check read. The ledger's own `market.settled` entry, written
+with the payouts, comes before it in a normal settlement; a
+`market.marked_settled` with no `market.settled` before it for the same market
+is the trace of a direct call that paid nobody (ADR 0019's amendment).
 
 Note what is **not** logged, and will not be:
 
