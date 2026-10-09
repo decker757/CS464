@@ -246,6 +246,72 @@ data this service owns, so it still makes no call to market_service.
 > as zero and cannot join the record, or any path that would reopen a settled
 > market.
 
+> **Amended 2026-10-09 by [3.4] #12. The record is `ledger.market_results`,
+> shaped for more than one ending.** The section above names the table
+> `ledger.market_settlements`, makes `outcome_id` non-null and calls the
+> timestamp `settled_at`. All three claims are replaced. The latch, its two
+> readers under the book lock, the untouched positions and `q`, and the
+> rejected alternatives still hold.
+>
+> One row per finished market:
+>
+> - `market_id`: the primary key, and a foreign key into `market_books`.
+> - `kind`: a non-native enum. Its only value is `settled` until [BE] #221
+>   adds another.
+> - `outcome_id`: nullable, and `(market_id, outcome_id)` is still a
+>   composite foreign key into `market_outcomes`.
+>   `CHECK ((kind = 'settled') = (outcome_id IS NOT NULL))` makes it the
+>   winner on a settled row and absent on any other.
+> - `recorded_at`: supplied by the settlement, with no default.
+>
+> Neither key has an `ON DELETE`, and the table has no append-only trigger.
+>
+> The plain foreign key exists because Postgres skips a composite key when
+> any of its columns is null. Without it, a row with no outcome could name a
+> market the ledger holds no book for.
+>
+> **Readers never filter on `kind`.** Any row is the latch. A trade that
+> finds one is refused `409 market_closed`, and a settlement that finds one
+> writes nothing. A reader that filtered on `settled` would let a trade
+> through on a market that ended some other way.
+>
+> The reason is [BE] #221's proposal to void a market. One record per
+> finished market is one latch for every way a market can end, and the
+> primary key stops a market from ending two ways. Renaming before any
+> reader exists costs two docs edits. After the readers land, it costs a
+> revision and every reader.
+>
+> Two passages under Consequences no longer hold:
+>
+> - The revision is the ledger's `0002`, in this stack's ledger-model PR,
+>   because #75 merged first. It creates `ledger.market_results`.
+> - `outcome_id` is no longer non-null, so a void needs no record shape of
+>   its own.
+>
+> Every other mention of `ledger.market_settlements` in this record,
+> including the 2026-10-05 amendment's, now means `ledger.market_results`.
+>
+> *Rejected:*
+> - *A separate table for voids.* Every reader would check two latches, and
+>   nothing in the database would stop a market from being both settled and
+>   voided.
+> - *The name now, and the shape when #221 lands.* The DDL is cheap either
+>   way. But the latch, the settlement and the portfolio would be written
+>   against a shape that later changes under them.
+>
+> Not decided here: `reason` and `voided_by`, their CHECK clauses,
+> `409 market_already_voided`, and a second exit from APPROVED. That exit
+> trips the reversal trigger of "APPROVED is read before the lock, and that is
+> safe because send-back and settlement never overlap". All of these belong to
+> #221's own record and revision.
+>
+> DECISIONS.md: "`ledger.market_results` is one record per finished market,
+> with a `kind`" and "`ledger.market_results` carries no append-only trigger".
+>
+> **Reversal trigger:** #221 closes without a void, or voids get a table of
+> their own. A revision then drops `kind` and restores `NOT NULL` on
+> `outcome_id`.
+
 ### One transaction, through `posting.post_all`
 
 Each winner's payout is its own `Transaction` of kind `SETTLEMENT`, keyed
@@ -447,6 +513,8 @@ ledger-model PR and #75's ledger PR merges second adds the revision for
 `posting.post_all` and of the settlement record. `outcome_id` on the record is
 non-null, because a settlement always has a winner, so a void may need a
 record shape of its own.
+
+> *Amended 2026-10-09: see the amendment under "The result is a record".*
 
 **The leaderboard sees settlement for free.** [L-1] #38 reads the portfolio's
 `net_worth`, which now counts a settled market once. [L-3] #40's "recalculated

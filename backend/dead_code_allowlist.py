@@ -20,3 +20,6 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
+
+# [3.4] #12 PR 5: the trade latch and settlement read it; delete this line there
+MarketResult
