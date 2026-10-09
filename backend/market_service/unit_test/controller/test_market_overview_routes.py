@@ -17,6 +17,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
 from model.entities import Market, MarketStatus
 from service.audit import Actor
 from unit_test.conftest import (
