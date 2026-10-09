@@ -362,6 +362,25 @@ class PendingWritesOnReplay(LedgerError):
     )
 
 
+class MalformedBatch(LedgerError):
+    """`posting.post_all` was handed no movements, or one key twice.
+    [3.4] #12.
+
+    "An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500":
+    the server builds every movement and every key, and the settlement
+    request has no body to fix, so this is a bug in the server like
+    `PendingWritesOnReplay`, and takes its status. Raised before any SQL, so
+    nothing is locked and nothing the caller has pending is committed.
+    """
+
+    status_code = 500
+    code = "malformed_batch"
+    message = (
+        "A batch of movements was empty or named one idempotency key twice. "
+        "This is a bug in this service, not in the request."
+    )
+
+
 class UnbalancedTransaction(LedgerError):
     """The legs do not sum to zero, so this is not a movement of credits.
 
