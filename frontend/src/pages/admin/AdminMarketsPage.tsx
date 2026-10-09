@@ -1,13 +1,13 @@
 import { useCallback, useState } from 'react'
-import { getMarketOverview, type MarketOverview } from '../../api/marketApi'
+import { getMarketOverview, type MarketOverview, type MarketOverviewRow } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
+import AdminMarketRow from '../../components/markets/AdminMarketRow'
+import { STATUS_CONFIG, type AdminMarketStatus } from '../../components/markets/marketStatus'
+import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
 import { selectableClass } from '../../components/ui/selectableClass'
-import AdminMarketRow from '../../components/markets/AdminMarketRow'
-import LoadMoreMarkets from '../../components/markets/LoadMoreMarkets'
-import { STATUS_CONFIG, type AdminMarketStatus } from '../../components/markets/marketStatus'
 import { useAuth } from '../../context/AuthContext'
-import { usePagedMarkets } from '../../hooks/usePagedMarkets'
+import { usePagedList } from '../../hooks/usePagedList'
 
 type StatusFilter = AdminMarketStatus | 'all'
 type StatusCounts = MarketOverview['counts']
@@ -28,6 +28,12 @@ function countFor(filter: StatusFilter, counts: StatusCounts | undefined): numbe
   return total
 }
 
+const pagedOverviewOptions = {
+  itemsOf: (page: MarketOverview) => page.markets,
+  nextCursorOf: (page: MarketOverview) => page.nextCursor,
+  idOf: (market: MarketOverviewRow) => market.id,
+}
+
 // [2.1] #5, #235: the server decides which markets an admin may see, their
 // status (from the clock, so a market past its close time is already closed),
 // the order, the filter and the counts. The page asks for one status and one
@@ -37,13 +43,13 @@ export default function AdminMarketsPage() {
   const [filter, setFilter] = useState<StatusFilter>('all')
   // A new filter is a new list from page one: a cursor continues only the list
   // it came from, so the rows and the cursor are cleared, and a page still on
-  // its way for the old filter is dropped when it arrives (usePagedMarkets).
+  // its way for the old filter is dropped when it arrives (usePagedList).
   const fetchPage = useCallback(
     (cursor: string | undefined) =>
       getMarketOverview({ status: filter === 'all' ? undefined : filter, cursor }),
     [filter],
   )
-  const { markets, latestPage, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedMarkets(fetchPage)
+  const { items: markets, latestPage, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchPage, pagedOverviewOptions)
   // The latest response's counts, Load more's included.
   const counts = latestPage?.counts
 
@@ -86,7 +92,7 @@ export default function AdminMarketsPage() {
           </div>
 
           {hasMore && (
-            <LoadMoreMarkets isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} onLoadMore={loadMore} />
+            <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="markets" onLoadMore={loadMore} />
           )}
         </>
       )}
