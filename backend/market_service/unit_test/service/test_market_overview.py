@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import ColumnElement, select
+from sqlalchemy import select, update
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
 from core.database import get_session_factory
 from core.errors import MalformedCursor
 from model.entities import Market, MarketOverview, MarketStatus
@@ -33,6 +34,7 @@ from unit_test.conftest import (
     draft_request,
     proposed_market,
     published_market_closing_at,
+    settled_market,
 )
 
 # More than any test here creates, so a test about order or counts reads one page.
@@ -159,6 +161,7 @@ async def population(session: AsyncSession) -> _Population:
         "swept_closed": (await closed_market(session, caller)).id,
         "pending": (await proposed_market(session, caller)).id,
         "approved": (await approved_market(session, caller)).id,
+        "settled": (await settled_market(session, caller)).id,
     }
     return _Population(caller=caller, now=now, ids=ids)
 
@@ -529,32 +532,27 @@ async def test_a_market_whose_close_passes_between_two_page_reads_keeps_its_plac
 
 # --- #210: settled markets sort last --------------------------------------
 async def test_settled_markets_sort_last_and_a_cursor_crosses_into_their_group(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    session: AsyncSession,
 ) -> None:
     """#210: "settled markets last … The cursor carries the group from day one".
 
-    No market can be settled until [3.4] #12 adds the status (#227), so this
-    swaps the one predicate the group reads for "is approved". The approved
-    markets closed first (the real clock), so without the group they would
-    lead. Fails if the group is missing from the ORDER BY, from the keyset, or
-    from the cursor (a cursor that always says "not settled" repeats the first
-    approved market until the walk gives up). When #227 lands, build two real
-    settled markets here and drop the swap.
+    The settled markets are made first, so their close times (the real clock)
+    precede everything else's and, without the group, they would lead. One
+    market a page, so the cursor is cut between the two groups and inside the
+    settled one. Fails if the group is missing from the ORDER BY, from the
+    keyset, or from the cursor (a cursor that always says "not settled" repeats
+    the first settled market until the walk gives up).
     """
     caller = actor()
     now = _injected_now()
-    first_approved = (await approved_market(session, caller)).id
-    second_approved = (await approved_market(session, caller)).id
+    first_settled = (await settled_market(session, caller)).id
+    second_settled = (await settled_market(session, caller)).id
+    approved = (await approved_market(session, caller)).id
     still_open = await _open_until(session, caller, now + timedelta(days=1))
-
-    def approved_stands_in_for_settled() -> ColumnElement[bool]:
-        return Market.status == MarketStatus.APPROVED
-
-    monkeypatch.setattr(browsing, "_is_settled", approved_stands_in_for_settled)
 
     walked = await _walk(session, caller, limit=1, now=now)
 
-    assert _ids(walked) == [still_open, first_approved, second_approved]
+    assert _ids(walked) == [approved, still_open, first_settled, second_settled]
 
 
 # --- #210: the page and the counts read one snapshot ----------------------
@@ -608,3 +606,66 @@ async def test_the_overview_refuses_a_session_with_a_transaction_already_open(
         await browsing.overview(
             session, caller_id=uuid.uuid4(), limit=1, now=_injected_now()
         )
+
+
+# --- [3.4] #12: settled, and settleable on each row --------------------------
+async def test_the_settled_filter_lists_only_settled_markets(
+    session: AsyncSession, population: _Population
+) -> None:
+    """[3.4] #12: "`settled` appears in [2.1] #5's overview filter and
+    zero-filled counts". The population's approved market is the decoy."""
+    rows, counts = await _overview(
+        session, population.caller, status=MarketStatus.SETTLED, now=population.now
+    )
+
+    assert _ids(rows) == [population.ids["settled"]]
+    assert counts[MarketStatus.SETTLED] == 1
+
+
+async def test_each_rows_settleable_follows_the_public_details_rule(
+    session: AsyncSession,
+    population: _Population,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[3.4] #12: each row carries `settleable` "by the same rule as the public
+    detail": true past the edge for approved, still true once settled, false
+    for every other status.
+
+    The window is patched to an hour, so the injected clock ten days ahead is
+    past the edge whatever the environment configures. Fails with the settled
+    half of the rule dropped, or with the flag missing from the rows.
+    """
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 3600)
+    decided = {population.ids["approved"], population.ids["settled"]}
+
+    rows, _ = await _overview(session, population.caller, now=population.now)
+
+    assert rows, "the population must be listed for this to mean anything"
+    for row in rows:
+        assert row.settleable is (row.id in decided), row
+
+
+@pytest.mark.parametrize(
+    "keep_approved_at", [True, False], ids=["approved_a_moment_ago", "no_approved_at"]
+)
+async def test_a_settled_rows_settleable_stays_true_whatever_the_window(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, keep_approved_at: bool
+) -> None:
+    """[3.4] #12: a row's `settleable` "stays true once the market is
+    `settled`", under a window raised to its 30-day ceiling and read a moment
+    after approval, and with no `approved_at` at all.
+
+    Fails with SETTLED put through the time rule, or the null check.
+    """
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 2592000)
+    caller = actor()
+    market_id = (await settled_market(session, caller)).id
+    if not keep_approved_at:
+        await session.execute(
+            update(Market).where(Market.id == market_id).values(approved_at=None)
+        )
+        await session.commit()
+
+    rows, _ = await _overview(session, caller, now=datetime.now(UTC))
+
+    assert [(row.id, row.settleable) for row in rows] == [(market_id, True)]

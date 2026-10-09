@@ -13,17 +13,20 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
-from model.entities import MarketStatus
+from model.entities import Market, MarketStatus
 from unit_test.conftest import (
     SOURCE_URL,
     actor,
+    approved_market,
     closed_market,
     draft_request,
     overdue_market,
     published_market,
+    settled_market,
 )
 from service import market_service
 
@@ -462,3 +465,65 @@ async def test_the_browse_list_derived_status_reaches_the_wire_too(
     payload = (await client.get(_LIST, headers=trader_headers)).json()
 
     assert [m["status"] for m in payload["markets"]] == [MarketStatus.OPEN.value]
+
+
+# --- [3.4] #12: settled, and settleable ------------------------------------
+async def test_the_browse_accepts_a_settled_filter(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """[3.4] #12: `settled` "is an accepted status on the trader browse".
+
+    The literal string, so it fails while `PublicMarketStatus` lacks it. The
+    approved decoy fails a filter that matches every decided market.
+    """
+    await _published(session)
+    await approved_market(session, actor())
+    settled_id = (await settled_market(session, actor())).id
+
+    response = await client.get(
+        _LIST, params={"status": "settled"}, headers=trader_headers
+    )
+
+    assert response.status_code == 200
+    assert [m["id"] for m in response.json()["markets"]] == [str(settled_id)]
+    assert response.json()["markets"][0]["status"] == "settled"
+
+
+async def test_settleable_on_the_wire_follows_the_routes_clock(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"`settleable` reads the request's one Python clock": the controller's
+    `now` must reach the flag and survive FastAPI's re-validation. D-027.
+
+    Approved a moment ago, so the real clock reads false. At the edge the
+    route's clock reads true, one second earlier false. Fails if the service
+    reads `datetime.now(UTC)` instead of the `now` it is handed: both sides
+    then read false.
+    """
+    import controller.public_routes as routes  # noqa: PLC0415
+
+    market_id = (await approved_market(session, actor())).id
+    approved_at = await session.scalar(
+        select(Market.approved_at).where(Market.id == market_id)
+    )
+    window = timedelta(seconds=get_settings().dispute_window_seconds)
+    edge = approved_at + window + timedelta(minutes=5)
+
+    route_clock = {"now": edge}
+
+    class _RouteClock:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return route_clock["now"]
+
+    monkeypatch.setattr(routes, "datetime", _RouteClock)
+
+    at_the_edge = (await client.get(_detail(market_id), headers=trader_headers)).json()
+    route_clock["now"] = edge - timedelta(seconds=1)
+    just_before = (await client.get(_detail(market_id), headers=trader_headers)).json()
+
+    assert at_the_edge["settleable"] is True
+    assert just_before["settleable"] is False

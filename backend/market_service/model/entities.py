@@ -86,17 +86,25 @@ class MarketStatus(StrEnum):
     # market's legal moves change here. ADR 0016.
     APPROVED = "approved"
 
+    # [3.4] #12. Terminal: the market has been settled. Every write path
+    # refuses it with `market_already_settled`. Reaching it does not prove the
+    # ledger paid, because a direct call to the settle route gets here without
+    # the ledger. ADR 0019.
+    SETTLED = "settled"
+
 
 # The statuses a trader may see, defined once. [1.1] #1.
 #
 # Read by `service/browsing.py::_visible` and by the public route's `status`
-# parameter, so the SQL filter, the accepted values and /docs cannot disagree
-# when SETTLED lands. DRAFT and SUBMITTED must stay absent.
+# parameter, so the SQL filter, the accepted values and /docs cannot disagree.
+# DRAFT and SUBMITTED must stay absent. Changes together with `MarketStatus`,
+# in one commit. ADR 0017.
 class PublicMarketStatus(StrEnum):
     OPEN = MarketStatus.OPEN.value
     CLOSED = MarketStatus.CLOSED.value
     PENDING_RESOLUTION = MarketStatus.PENDING_RESOLUTION.value
     APPROVED = MarketStatus.APPROVED.value
+    SETTLED = MarketStatus.SETTLED.value
 
 
 PUBLIC_STATUSES: tuple[MarketStatus, ...] = tuple(
@@ -105,8 +113,12 @@ PUBLIC_STATUSES: tuple[MarketStatus, ...] = tuple(
 
 # The statuses in which a proposed winner is decided and may be shown to
 # traders. PENDING_RESOLUTION is absent on purpose: it can still be rejected.
-# D-026.
-DECIDED_STATUSES: tuple[MarketStatus, ...] = (MarketStatus.APPROVED,)
+# D-026. SETTLED is here so the winner stays public once the market is
+# settled. [3.4] #12.
+DECIDED_STATUSES: tuple[MarketStatus, ...] = (
+    MarketStatus.APPROVED,
+    MarketStatus.SETTLED,
+)
 
 
 # The unmapped attribute `get_published` stamps the derived status onto. Do not
@@ -148,6 +160,7 @@ class AdminMarketCard:
 
     `MarketCard` plus `creator_id`, which the trader projection deliberately
     lacks (D-019). `status` is the derived value with no raw one beside it.
+    `settleable` is derived against the same `now`. [3.4] #12.
     """
 
     id: uuid.UUID
@@ -155,6 +168,7 @@ class AdminMarketCard:
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    settleable: bool
 
 
 @dataclass(frozen=True)

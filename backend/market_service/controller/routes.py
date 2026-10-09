@@ -370,9 +370,12 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
         "the `status` filter, so each count equals the length of that "
         "status's whole filtered list. The page and the counts are read from "
         "one snapshot.\n\n"
+        "Each row's `settleable` ([3.4] #12) is derived against the same "
+        "instant: true from five minutes after the dispute window ends, "
+        "still true once `settled`, false otherwise.\n\n"
         "Ordered by soonest `close_time`, markets with none last, then by id. "
-        "Settled markets sort last, after all of those, once [3.4] #12 adds "
-        "`settled`.\n\n"
+        "Settled markets sort last, after all of those, in the unfiltered "
+        "view.\n\n"
         "Paged by keyset (#210). Send `next_cursor` back as `cursor`, with the "
         "same `status` and `limit`, to continue; null means there is nothing "
         "after this page. `limit` defaults to the server's page size (50) and "
@@ -385,7 +388,7 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
             )
         },
         403: {"description": "`not_an_administrator` — a trader."},
-        422: {"description": "`status` is not one of the six, or `limit` is below 1."},
+        422: {"description": "`status` is not one of the seven, or `limit` is below 1."},
     },
 )
 async def market_overview(
