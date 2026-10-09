@@ -5154,6 +5154,12 @@ market_service's code beyond that, CLAUDE.md requires the extraction into
 
 **Reversal trigger.** The ledger moves to its own database (ADR 0006's outbox).
 
+*Superseded in part 2026-10-05 by [3.4] #12: "market_service's settle step
+writes no entry" and the rejection of "Entries in both services" no longer
+hold. See "market_service's settle step appends `market.marked_settled`, so a
+direct call is observed" below, and ADR 0019's amendment. The ledger's entry,
+its order against the record and the seam rule stand.*
+
 ---
 
 ### D-NEW — Settlement lands as a stack of eight PRs, docs first
@@ -5290,6 +5296,12 @@ its own error.
 
 **Reversal trigger.** A second terminal status (#221's void), or a fourth
 status table. Either makes the repetition worth a refactor PR of its own.
+
+*Superseded in part 2026-10-05 by [3.4] #12: "every write path" no longer
+holds without an exception. The settle step is the one write that answers a
+SETTLED market `200` rather than `409 market_already_settled`, as ADR 0019's
+step 5 requires. See "The settle step checks in a fixed order, and SETTLED
+answers before the clock is read" below. Every other write path is unchanged.*
 
 ---
 
@@ -5429,6 +5441,170 @@ is a contract nobody has asked for.
 
 **Reversal trigger.** #11 adds a countdown that needs the instant on list
 views.
+
+---
+
+### D-NEW — market_service's settle step appends `market.marked_settled`, so a direct call is observed
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** When `POST /markets/{id}/settle` moves APPROVED to SETTLED, it
+appends `market.marked_settled` in that same transaction. The entry carries
+the acting administrator, the market as target, `decision_snapshot`'s context,
+a null `reason`, and as `occurred_at` the `clock_timestamp()` read for the
+window check. A repeat on a market already SETTLED writes nothing and logs
+nothing. ADR 0019's amendment.
+
+**Why.** ADR 0019 accepts the direct-call gap under ADR 0007's trust model,
+and ADR 0007 extends that trust only to administrators who act observed. No
+role can read both `market.markets` and `ledger.market_settlements`, so the
+audit log is the only place a market that is settled but unpaid can show up.
+A normal settlement logs twice, one entry per commit. A
+`market.marked_settled` with no `market.settled` before it is the trace the
+gap leaves. The decision snapshot is the one approve and reject already log,
+so the entry names the proposal and proposer it settled on. A reader can match
+it against the ledger's winning outcome without reading the market.
+
+**Rejected.**
+- *No entry.* The gap is invisible.
+- *An entry only on a direct call.* The route cannot tell a direct call from
+  the ledger's.
+- *Application logging.* It is not the audit trail.
+- *A reconciliation job.* No role reads both schemas.
+
+**Reversal trigger.** A service credential exists and the settle step
+requires it. The gap closes, and the entry goes with it.
+
+**Notes.** This supersedes in part "The ledger writes the settlement's audit
+entry, through its own seam onto `shared/audit.py`": its "market_service's
+settle step writes no entry" and its rejection of entries in both services.
+Everything that entry says about the ledger stands.
+
+---
+
+### D-NEW — The settle step answers `200` with `MarketOut`, the same for the flip and for a repeat
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `POST /markets/{id}/settle` answers `200` with `MarketOut`
+whether it moved the market to SETTLED or found it SETTLED already. The two
+bodies are identical, because both are read from the locked row, which reads
+SETTLED in both cases.
+
+**Why.** The ledger reads only the status code and, on a refusal, the error
+code. A repeat is how ADR 0019 repairs every partial failure, so a repeat has
+to look like success to its one caller. The body is the whole market, as
+close, approve and reject return it.
+
+**Rejected.**
+- *`409 market_already_settled` on a repeat.* ADR 0019 requires `200`, and
+  the ledger would turn every repair into `503 settlement_unconfirmed`.
+- *A different code or a field that marks the repeat.* The ledger would
+  branch on a difference that means nothing to it.
+- *`204`.* It is the one market write route with no body, for nothing gained.
+
+**Reversal trigger.** A caller needs to tell the flip from the repeat.
+
+**Notes.** `MarketOut` sends JSON numbers ("Two schemas: `PublicMarketOut`
+beside an unchanged `MarketOut`"). The ledger reads none of its money fields,
+so no float reaches the money path.
+
+---
+
+### D-NEW — The settle step checks in a fixed order, and SETTLED answers before the clock is read
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The route checks in this order:
+
+1. `401 invalid_token`, then `403 not_an_administrator`.
+2. `404 market_not_found`, from `get_any` with the row locked.
+3. SETTLED answers `200`, with no clock read.
+4. Anything that is not APPROVED is `409 market_not_approved`. That includes
+   another administrator's draft or submitted market, which is found and
+   refused as close, approve and reject refuse one.
+5. Only then is the clock read, and a market that is not yet settleable is
+   `409 dispute_window_open`.
+
+A request body is ignored. An APPROVED market with a null `approved_at` fails
+closed as `dispute_window_open`.
+
+**Why.**
+- *Authentication first,* so a trader is told `403` and not the state of an
+  administrator's market.
+- *`get_any`,* because any administrator may settle ("Any administrator may
+  settle, and a resolver role, if one is added, takes it over"). It is safe
+  only for callers that refuse a draft before touching it, and step 4 does.
+- *SETTLED before the clock,* because a repeat writes nothing, so there is
+  nothing to stamp. It must also answer `200` even if
+  `dispute_window_seconds` has been raised since. The check runs after the
+  lock, so a repeat racing a flip waits and then answers `200`.
+- *One code for every state short of APPROVED,* because ADR 0019 names
+  `market_not_approved` and the ledger maps only that. The frozen and
+  resolution tables' codes are true, and useless to the only caller.
+- *A body is ignored,* because the route reads nothing from it. The ledger's
+  own route refuses a body `422` so that a client does not believe it chose
+  the winner. This route has one caller, which sends none.
+- *A null `approved_at` fails closed,* for the reason given in "`settleable`
+  is a pure function in `core/`, inclusive at its edge, true once settled,
+  false without `approved_at`": a null is damage, and the safe answer to
+  damage is not to settle.
+
+**Rejected.**
+- *The clock read before the SETTLED check.* It costs a round trip on every
+  repeat, and a raised window could refuse a market already paid.
+- *`market_pending_resolution`, `market_not_closed` and the other per-status
+  codes.* They are a contract the ledger would have to map for no different
+  action.
+- *`422` on a body.* It is a schema for a request with no fields.
+
+**Reversal trigger.** The route gains a caller other than the ledger, or a
+status other than APPROVED becomes settleable (#221's void).
+
+**Notes.** This is the one write path where SETTLED is not `409
+market_already_settled`. "A settled market is refused after the locked read
+and before any write, and the status tables stay separate" says "every write
+path", but it predates this route, and ADR 0019's step 5 makes the exception.
+That entry carries a note saying so.
+
+---
+
+### D-NEW — The settle step's window check reads `clock_timestamp()` after the row lock, on the APPROVED branch only, against the stored status
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** On an APPROVED market only, the settle step reads
+`_database_now` after `get_any` has locked the row. It passes that value to
+`service/settling.settleable` with the stored status. The same value is the
+entry's `occurred_at`.
+
+**Why.**
+- Settling is a decision a market records, so "Every decision a market
+  records is stamped with Postgres's `clock_timestamp()`, read after the row
+  lock" applies. The guidance in "`settleable` reads the request's one Python
+  clock, and the database-clock trigger is declined again" names this route.
+- Send-back reads the same clock after the same lock (#11's criterion). The
+  two writers therefore agree about the edge whatever any reader's clock
+  says, and the gap separates them.
+- APPROVED only, because it is the only branch whose answer depends on time.
+- The stored status, because the derivation differs from it only for OPEN,
+  which is not APPROVED either way.
+
+**Rejected.**
+- *The request's Python clock.* A replica running ahead could settle early.
+  The database clock here is the backstop that entry relies on.
+- *`func.now()`.* That is the transaction's start, read before the lock wait
+  (#138).
+- *A clock read before the lock.* Same bug.
+
+**Reversal trigger.** market_service's decision stamps move off
+`clock_timestamp()`, or the five-minute gap is replaced by a lock-based claim.
+
+**Notes.** The ledger may see `settleable` true on a replica's clock while
+this check refuses it. The route then answers `409 dispute_window_open`, the
+ledger answers `503 settlement_unconfirmed`, and a retry completes the
+settlement. That is the designed outcome, not a reason to move this check to
+Python's clock.
 
 ---
 

@@ -5,11 +5,11 @@ from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
 Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
-[3.4] #12 (the `settled` status and `settleable`), [BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
+[3.4] #12 (the `settled` status, `settleable` and the ledger's settle step), [BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
 [FE][3.1] #52.
 
-A successful submission, publication, early close, outcome proposal, approval
-or rejection also appends an entry to the shared audit log, in the same database
+A successful submission, publication, early close, outcome proposal, approval,
+rejection or settle also appends an entry to the shared audit log, in the same database
 transaction, so the two can never disagree. An autosave does not, and neither
 does an automatic close — the clock is not an actor. See
 [`audit-service.md`](audit-service.md) and
@@ -41,6 +41,7 @@ status of its own, and why the proposer is refused a `403` on both decisions:
 | POST | `/markets/{id}/propose-outcome` | Propose the winner of a closed market |
 | POST | `/markets/{id}/approve-outcome` | Approve another administrator's proposal |
 | POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
+| POST | `/markets/{id}/settle` | Mark an approved market settled — **the ledger's call only** |
 | GET | `/markets` | List my own markets |
 | GET | `/markets/overview` | Every market I can see, a page at a time, by status, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
@@ -50,16 +51,18 @@ Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is
 [`/public/markets`](#public-market-api--bex-62), below.
 
-Every route but three is scoped to the administrator who created the market,
+Every route but four is scoped to the administrator who created the market,
 and answers `404` to any other. The exceptions are `POST /markets/{id}/close`,
 which any administrator may call on any open market
-([ADR 0014](../adr/0014-closing-a-market-early.md)), and
+([ADR 0014](../adr/0014-closing-a-market-early.md)),
 `POST /markets/{id}/approve-outcome` and `/reject-outcome`, which any
 administrator **except the one who proposed** may call
-([ADR 0016](../adr/0016-deciding-a-proposal.md)). In each case the audit entry
-names who acted. Those three answer another administrator's draft or submitted
-market with a `409`, not a `404`: the id is confirmed to exist, and nothing in
-it is shown. ADR 0016.
+([ADR 0016](../adr/0016-deciding-a-proposal.md)), and
+`POST /markets/{id}/settle`, which the ledger calls with any administrator's
+token ([ADR 0019](../adr/0019-settlement-across-services.md)). In each case the
+audit entry names who acted. Those four answer another administrator's draft or
+submitted market with a `409`, not a `404`: the id is confirmed to exist, and
+nothing in it is shown. ADR 0016.
 
 ## The seven statuses
 
@@ -71,7 +74,7 @@ it is shown. ADR 0016.
 | `closed` | the clock at `close_time`, `POST /markets/{id}/close`, or `POST /markets/{id}/reject-outcome` | yes, but not tradeable |
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 | `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
-| `settled` | the market being settled ([3.4] #12); the status alone does not prove the ledger paid ([ADR 0019](../adr/0019-settlement-across-services.md)) | yes, with the winning outcome |
+| `settled` | `POST /markets/{id}/settle`, which the ledger calls after its payouts commit ([3.4] #12); the status alone does not prove the ledger paid ([ADR 0019](../adr/0019-settlement-across-services.md)) | yes, with the winning outcome |
 
 The path is `draft → submitted → open → closed → pending_resolution →
 approved → settled` and nothing skips a step. Every save on a market past `submitted` is
@@ -80,9 +83,9 @@ onwards.
 
 Only one transition is ever reversed: [3.2] #10's rejection sends a market from
 `pending_resolution` back to `closed`, with a reason. There is no unpublish, no
-reopen and no un-approve. `settled` is final: every write on a settled market is
-a `409 market_already_settled`, and the message says the market is settled and
-nothing about payouts.
+reopen and no un-approve. `settled` is final: every write on a settled market but
+the settle itself is a `409 market_already_settled`, and the message says the
+market is settled and nothing about payouts. A repeated settle answers `200`.
 
 `closed` is the only one two different things produce. A market reaches it on
 its own when `close_time` passes, and an administrator can reach it early with
@@ -816,6 +819,69 @@ would be a path back to `closed` with no second administrator in it, which is
 the thing this story exists to prevent. A proposer who has changed their mind
 asks somebody else to reject it.
 
+## POST /markets/{id}/settle — [3.4] #12
+
+**Only the ledger calls this.** Clients settle a market with
+`POST /ledger/markets/{id}/settlement`, which pays the winners, commits, and
+then calls this route with the administrator's token as its last step
+([ADR 0019](../adr/0019-settlement-across-services.md), step 5). A direct call
+marks the market `settled` and **pays nobody**. The frontend must never call it.
+
+Moves an `approved` market to `settled`. **No request body**; anything sent is
+ignored.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it,
+with `status` `settled`.
+
+A market that is **already `settled`** is answered the same way: `200` and the
+same market, with nothing written and no audit entry. That is what makes the
+ledger's request safe to repeat when this step failed the first time.
+
+### When it is refused
+
+Checked in this order, and the first that applies answers.
+
+| Status | `code` | Meaning | What the caller should do |
+| --- | --- | --- | --- |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed | log in again |
+| 403 | `not_an_administrator` | a trader | nothing; only an administrator can settle |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_approved` | its outcome has not been approved — any status short of `approved`, including another administrator's draft or submitted market | nothing to settle yet |
+| 409 | `dispute_window_open` | approved, but not yet `settleable`: settlement opens five minutes after the dispute window ends | retry once it is `settleable` |
+
+`settled` is answered before the clock is read, so a market already settled is
+`200` even if the dispute window has been lengthened since.
+
+The window is judged on **the database's clock**, read after the market row is
+locked, not on the clock the public detail's `settleable` was derived from. Near
+the edge the two can disagree: the ledger may read `settleable: true` and this
+route still answer `dispute_window_open`. The payouts have then already
+committed, the ledger answers `503 settlement_unconfirmed`, and repeating the
+request once the edge has passed completes it. An approved market with no
+`approved_at` is never settleable here.
+
+**A refused settle writes nothing.** The market keeps its status and no audit
+entry is appended.
+
+### Who may call it
+
+Any administrator's token is accepted, including the creator's, the proposer's
+and the approver's: the two-person rule was spent at approval. The route cannot
+tell the ledger's forwarded token from an administrator calling it directly,
+which is why the flip is logged.
+
+### The audit entry
+
+Moving `approved` to `settled` appends `market.marked_settled` in the same
+transaction: the acting administrator, the market, the proposal it settled on
+(as `market.outcome_approved` carries it), no reason, and the database time the
+window check read. A repeat appends nothing. The ledger's own `market.settled`
+entry, written with the payouts, comes before it in a normal settlement; a
+`market.marked_settled` with no `market.settled` before it for the same market
+is the trace of a direct call.
+
 ## GET /markets
 
 Every market belonging to the calling administrator, most recently updated
@@ -1264,8 +1330,10 @@ it still reads `code` and `message`:
 | 409 | `market_not_open` | an early close arrived for a market that is not published, whoever created it |
 | 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one |
 | 409 | `market_not_pending_resolution` | an approval or rejection arrived for a market with no proposal waiting, whoever created it |
-| 409 | `market_already_approved` | anything but a read arrived for a market whose outcome is approved |
-| 409 | `market_already_settled` | anything but a read arrived for a settled market. Checked before who is asking, so a proposer is told it is settled |
+| 409 | `market_already_approved` | anything but a read or a settle arrived for a market whose outcome is approved |
+| 409 | `market_already_settled` | anything but a read or a settle arrived for a settled market. Checked before who is asking, so a proposer is told it is settled |
+| 409 | `market_not_approved` | a settle arrived for a market whose outcome is not approved, whoever created it |
+| 409 | `dispute_window_open` | a settle arrived for an approved market that is not yet `settleable` |
 | 409 | `proposal_superseded` | an approval or rejection quoted a `proposal_id` that is no longer the proposal waiting |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | `proposal_incomplete` | outcome proposal refused; see `details` |

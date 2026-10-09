@@ -18,13 +18,14 @@ from model.entities import MarketStatus
 def settleable(
     status: MarketStatus, approved_at: datetime | None, *, now: datetime
 ) -> bool:
-    """The `settleable` flag for one market, against the request's clock. [3.4] #12.
+    """The `settleable` flag for one market, against the caller's clock. [3.4] #12.
 
     Stamped before projection and never a computed field, for the reason
     `browsing.get_published` gives. Reads the stored status: only OPEN ever
     displays as something else, and OPEN is neither approved nor settled.
-    `now` is the request's clock ("`settleable` reads the request's one
-    Python clock").
+    On a read, `now` is the request's clock ("`settleable` reads the
+    request's one Python clock"); the settle step passes Postgres's, read
+    after its row lock.
     """
     return is_settleable(
         approved=status is MarketStatus.APPROVED,

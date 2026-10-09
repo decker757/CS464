@@ -6,20 +6,26 @@ Everything the frontend parses; business rules belong in unit_test/service.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from controller import routes
 from core.database import get_session_factory
 from model.entities import Market, MarketOutcome
+from service import market_service, settling
 from service.audit import Actor
 from unit_test.conftest import (
+    approved_market,
     closed_market,
+    database_now,
     proposed_before_ids,
     proposed_market,
     settled_market,
+    time_until_settleable,
 )
 from unit_test.conftest import approval_terms as _approval
 from unit_test.conftest import close_terms as _close
@@ -118,6 +124,9 @@ async def test_every_market_route_requires_a_token(client: AsyncClient) -> None:
         await client.post(
             f"/markets/{uuid.uuid4()}/reject-outcome", json=_rejection()
         )
+    ).status_code == 401
+    assert (
+        await client.post(f"/markets/{uuid.uuid4()}/settle")
     ).status_code == 401
 
 
@@ -1514,3 +1523,136 @@ async def test_saving_a_settled_market_is_409_and_leaves_it_as_it_was(
     assert await _stored_status_and_outcome_ids(market_id) == before
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "market_already_settled"
+
+
+# --- [3.4] #12: settling, the ledger's last step ------------------------------
+# `admin_headers` is the creator and proposer; `other_admin_headers` is any
+# other administrator. ADR 0019, step 5.
+async def _approved_with_edge_at(
+    session: AsyncSession, admin_id: uuid.UUID, edge: datetime
+) -> str:
+    """A market of `admin_id`'s, approved so that settlement opens at `edge`.
+
+    Approved in the past through `approve_outcome`'s clock, so the route runs
+    on the real database clock.
+    """
+    market = await approved_market(
+        session,
+        Actor(id=admin_id, username="ernest_t", role="admin"),
+        approved_at=edge - time_until_settleable(),
+    )
+    return str(market.id)
+
+
+async def test_settling_returns_the_settled_market(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """[3.4] #12: the route "moves APPROVED to SETTLED", and "The settle step
+    answers `200` with `MarketOut`": the whole market, as close, approve and
+    reject return it."""
+    edge = await database_now(session) - timedelta(minutes=1)
+    market_id = await _approved_with_edge_at(session, admin_id, edge)
+
+    response = await client.post(
+        f"/markets/{market_id}/settle", headers=other_admin_headers
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "settled"
+    assert body["proposed_outcome_id"] is not None
+    assert body["approved_at"] is not None
+
+
+async def test_settling_twice_answers_the_same_market_both_times(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """[3.4] #12: a market already SETTLED is answered "`200` without
+    writing", and "the same for the flip and for a repeat": the ledger reads
+    only the status code, and a repeat is how it repairs a failed last step.
+    Fails with a repeat answered `409 market_already_settled`."""
+    edge = await database_now(session) - timedelta(minutes=1)
+    market_id = await _approved_with_edge_at(session, admin_id, edge)
+
+    first = await client.post(f"/markets/{market_id}/settle", headers=other_admin_headers)
+    second = await client.post(f"/markets/{market_id}/settle", headers=other_admin_headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+async def test_a_trader_cannot_settle(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    trader_headers: dict[str, str],
+) -> None:
+    """[3.4] #12's guard, on a market that would otherwise settle."""
+    edge = await database_now(session) - timedelta(minutes=1)
+    market_id = await _approved_with_edge_at(session, admin_id, edge)
+
+    response = await client.post(f"/markets/{market_id}/settle", headers=trader_headers)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+def _shift_python_clock(monkeypatch: pytest.MonkeyPatch, by: timedelta) -> None:
+    """Move Python's clock in every module the settle request could read it from.
+
+    `raising=False`: a module that reads only Postgres's clock may not import
+    `datetime` at all, and the test should still hold.
+    """
+
+    class _Shifted(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime.now(tz) + by
+
+    for module in (routes, market_service, settling):
+        monkeypatch.setattr(module, "datetime", _Shifted, raising=False)
+
+
+@pytest.mark.parametrize(
+    ("python_clock", "edge_from_database_now", "expected"),
+    [
+        (timedelta(hours=1), timedelta(minutes=30), 409),
+        (-timedelta(hours=1), -timedelta(minutes=30), 200),
+    ],
+    ids=["python_ahead_database_inside", "python_behind_database_past"],
+)
+async def test_the_window_is_judged_on_the_database_clock(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    python_clock: timedelta,
+    edge_from_database_now: timedelta,
+    expected: int,
+) -> None:
+    """"The settle step's window check reads `clock_timestamp()` after the row
+    lock": a replica running ahead must not settle early.
+
+    Through the route, not the service, because the controller is where the
+    overview reads Python's clock for its request, and passing that `now` to
+    the service is the tempting mistake. The two clocks disagree in each
+    case, and each goes red if Python's is read, in the controller or below.
+    """
+    edge = await database_now(session) + edge_from_database_now
+    market_id = await _approved_with_edge_at(session, admin_id, edge)
+    _shift_python_clock(monkeypatch, python_clock)
+
+    response = await client.post(f"/markets/{market_id}/settle", headers=admin_headers)
+
+    assert response.status_code == expected
+    if expected == 409:
+        assert response.json()["error"]["code"] == "dispute_window_open"

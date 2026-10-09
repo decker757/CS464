@@ -356,6 +356,54 @@ part of that PR, and not a copy with a TODO.
 > **Reversal trigger:** the ledger moves to its own database. ADR 0006's
 > outbox then becomes a prerequisite, as that record says.
 
+> **Amended 2026-10-05 by [3.4] #12. market_service's settle step writes an
+> entry after all: `market.marked_settled`.** The section above says step 5
+> writes no entry, because the ledger's entry already names the administrator,
+> the market and the result, so a second entry would be two log lines for one
+> action. That claim is reversed. The rest of the section still holds. The
+> ledger appends `market.settled` in the payout transaction, and a repeat
+> appends nothing on either side.
+>
+> The reason is the direct-call gap. This record accepts the gap under ADR
+> 0007's trust model, and ADR 0007 gives that trust on one condition: an
+> administrator who acts against the platform "cannot do it unobserved".
+> Without an entry, a direct call to `POST /markets/{id}/settle` is
+> unobserved. It writes SETTLED and nothing else. No role can read both
+> `market.markets` and `ledger.market_settlements`, so nothing can notice that
+> nobody was paid. The audit log is the one place both services write and one
+> role reads. That makes it the only place a market that is settled but unpaid
+> can show up.
+>
+> So on the flip from APPROVED, and only then, the settle step appends
+> `market.marked_settled` in its own transaction. The entry carries:
+>
+> - the acting administrator and the market;
+> - the decision snapshot that approve and reject log;
+> - `reason` null;
+> - as `occurred_at`, the `clock_timestamp()` the step read for its window
+>   check.
+>
+> A normal settlement now logs twice, one entry per commit: `market.settled`,
+> then `market.marked_settled`. A `market.marked_settled` with no
+> `market.settled` before it, for the same market, is the trace the gap
+> leaves. That holds whether or not the ledger's route paid the market later.
+>
+> *Rejected:*
+> - *No entry.* The gap stays invisible.
+> - *An entry only on a direct call.* The route cannot tell the ledger's
+>   forwarded token from an administrator's own call, and that is the gap
+>   itself.
+> - *Application logging.* It is not the audit trail, and no reader of the log
+>   sees it.
+> - *A reconciliation job.* No role can read both schemas.
+>
+> DECISIONS.md: "market_service's settle step appends `market.marked_settled`,
+> so a direct call is observed".
+>
+> **Reversal trigger:** a service credential exists, and step 5 requires it.
+> The gap closes, and the entry goes with it. Step 5 then records nothing an
+> administrator decided, and the ledger's entry is again the only one.
+
 ## Traps the implementation must not fall into
 
 **A Core audit insert is invisible to the replay guard.** `has_pending_writes`

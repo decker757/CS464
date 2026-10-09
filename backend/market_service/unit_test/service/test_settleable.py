@@ -31,12 +31,10 @@ from unit_test.conftest import (
     closed_market,
     proposed_market,
     published_market,
+    settleable_edge,
     settled_market,
 )
 
-# "Settlement opens five minutes after send-back closes". A constant, not a
-# setting, so the test names it too.
-_GAP = timedelta(minutes=5)
 _ONE_MICROSECOND = timedelta(microseconds=1)
 
 # Long before any `now` these tests use: the approval send-back left behind.
@@ -70,12 +68,6 @@ async def _set_approved_at(
     await session.commit()
 
 
-def _edge(approved_at: datetime) -> datetime:
-    """The first instant settlement is allowed, under the configured window."""
-    window = timedelta(seconds=get_settings().dispute_window_seconds)
-    return approved_at + window + _GAP
-
-
 # --- the edge --------------------------------------------------------------
 async def test_settleable_turns_true_exactly_five_minutes_after_the_window_ends(
     session: AsyncSession,
@@ -88,7 +80,7 @@ async def test_settleable_turns_true_exactly_five_minutes_after_the_window_ends(
     dropped (the case one microsecond early).
     """
     market_id = (await approved_market(session, actor())).id
-    edge = _edge(await _approved_at(session, market_id))
+    edge = settleable_edge(await _approved_at(session, market_id))
 
     assert await _settleable(session, market_id, edge - _ONE_MICROSECOND) is False
     assert await _settleable(session, market_id, edge) is True
@@ -105,7 +97,7 @@ async def test_the_window_length_is_read_from_settings(
     """
     monkeypatch.setattr(get_settings(), "dispute_window_seconds", 600)
     market_id = (await approved_market(session, actor())).id
-    edge = await _approved_at(session, market_id) + timedelta(seconds=600) + _GAP
+    edge = settleable_edge(await _approved_at(session, market_id))
 
     assert await _settleable(session, market_id, edge - _ONE_MICROSECOND) is False
     assert await _settleable(session, market_id, edge) is True
@@ -180,7 +172,7 @@ async def test_settleable_by_status(
     rows fail with the approved half dropped.
     """
     market_id = await build(session, actor())
-    edge = _edge(await _approved_at(session, market_id))
+    edge = settleable_edge(await _approved_at(session, market_id))
 
     assert await _settleable(session, market_id, edge + after_edge) is expected
 
