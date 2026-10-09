@@ -4987,6 +4987,10 @@ under-subsidised market, the pool goes negative between the payouts and the
 residue, inside one uncommitted transaction. No reader can see that, and the
 pool ends at `0.0000`. Do not reorder the batch to avoid it.
 
+*Amended 2026-10-09 by [3.4] #12: `post_all`'s shape is agreed. See
+"`posting.post_all` takes a list of `Movement`s, commits once, and keeps
+`post`'s SAVEPOINT" and the five entries after it.*
+
 ---
 
 ### D-NEW — A settlement's first stamp follows the newest entry on every account it locks
@@ -5011,6 +5015,10 @@ at the same time.
   query does.
 
 **Reversal trigger.** The feed stops ordering by `created_at`.
+
+*Corrected 2026-10-09 by [3.4] #12: the cost in the second Rejected bullet.
+See "`post_all` stamps from one probe per locked account, and movement *i*
+lands at the first stamp plus *i* µs" below. The decision and the chain stand.*
 
 ---
 
@@ -5168,6 +5176,13 @@ hold. See "market_service's settle step appends `market.marked_settled`, so a
 direct call is observed" below, and ADR 0019's amendment. The ledger's entry,
 its order against the record and the seam rule stand.*
 
+*Corrected 2026-10-09 by [3.4] #12: the order between the record and the
+audit insert does not matter. `post_all` reads the guard on entry, by which
+point both have been issued. The guard needs the record as an ORM write
+pending at that point. See "`post_all` asks about pending writes before it
+classifies a match, and replays only a whole batch" below, and ADR 0019's
+2026-10-09 amendment to its first trap.*
+
 ---
 
 ### D-NEW — Settlement lands as a stack of eight PRs, docs first
@@ -5218,6 +5233,11 @@ the overview, and adds the field.
 *Superseded in part 2026-10-09 by [3.4] #12: rows 3 and 5 of the table. See
 "PR 3 of the settlement stack holds the table, and the audit seam lands with
 its caller in PR 5" below. The other rows, the naming and the order stand.*
+
+*Superseded in part 2026-10-09 by [3.4] #12: row 4, which now sits on a new
+row 4a, making nine PRs. See "PR 4a extracts `post`'s helpers ahead of
+`post_all`, as its own refactor" below. The other rows, the naming and the
+order stand.*
 
 ---
 
@@ -5700,6 +5720,15 @@ updated, and nothing enforces that at the database. It does not get
 trigger there still guards it. The replay claim above depends on `posting`'s
 current behaviour; recheck it when PR 4's `post_all` lands.
 
+*Rechecked in PR 4, 2026-10-09: the claim holds. A re-staged record is a
+pending ORM write when `post_all` is entered, and `post_all` checks pending
+writes before it classifies the match. So the second settlement is
+`pending_writes_on_replay` whether its winners match the first or not. If the
+match were classified first, a different set of winners would answer
+`idempotency_key_reused` instead. Nothing would be written either way, but the
+error named above would be wrong. See "`post_all` asks about pending writes
+before it classifies a match, and replays only a whole batch".*
+
 ---
 
 ### D-NEW — PR 3 of the settlement stack holds the table, and the audit seam lands with its caller in PR 5
@@ -5749,6 +5778,347 @@ legacy adoption tests a second revision ends, and the history's table-set test,
 until the next commit updates them, as #246's did. That commit deletes the
 adoption tests and adds the kept refusal test, word for word as #246's, so the
 two branches' hunks agree.
+
+---
+
+### D-NEW — `posting.post_all` takes a list of `Movement`s, commits once, and keeps `post`'s SAVEPOINT
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.**
+
+```python
+@dataclass(frozen=True)
+class Movement:
+    idempotency_key: str
+    kind: TransactionKind
+    legs: list[Leg]
+    context: dict[str, Any] | None = None
+
+async def post_all(
+    session: AsyncSession,
+    movements: list[Movement],
+    *,
+    now: datetime | None = None,
+) -> list[Transaction]
+```
+
+`Movement` holds the same keyword arguments `post` takes, as a frozen record.
+`post_all` returns one `Transaction` per movement, in input order, whether it
+wrote the transaction or replayed it. `now` is one floor for the whole batch,
+the same way it is for `post`. `post_all` owns the batch's one commit, so a
+caller writes nothing after it.
+
+It stages every transaction and entry inside one SAVEPOINT. On an
+`IntegrityError` it re-reads the batch's keys, as `post` does. A race on a key
+that the account locks did not queue then ends as `pending_writes_on_replay`
+or `idempotency_key_reused`, never as a bare 500.
+
+**Why.** "One settlement is one commit, through `posting.post_all`" needs a
+batch that commits once, after the book lock, and it left the shape to
+decker757. Because a movement holds `post`'s own arguments, each one reads
+like a `post` call, and the checks are visibly `post`'s checks run over a
+list. Results come back in the order the caller built the movements, so the
+caller can pair each result with its movement without a lookup.
+
+The SAVEPOINT stays because the lock that serialises a race belongs to the
+caller, not to `post_all`, and `post_all` cannot see whether one is held.
+Without the handler, a race on a key reaches the client as the unique index's
+`IntegrityError`, where `post` answers with a code.
+
+**Rejected.**
+- *A tuple per movement, or parallel lists*: both are positional, so a reader
+  has to count fields to know which one is the key.
+- *A `now` per movement*: the chain fixes every stamp after the first, so only
+  one floor can ever count.
+- *A caller-owned commit*: that is the reversal trigger of "One settlement is
+  one commit, through `posting.post_all`". It is not a choice to make inside
+  `posting.py`.
+- *Dropping the SAVEPOINT because settlement's book lock already serialises
+  two settlements*: the book lock is the caller's, and `post_all` cannot rely
+  on a lock it cannot see.
+- *Results keyed by idempotency key*: the caller already holds the order it
+  built, and a dict would make it look its own keys up again.
+
+---
+
+### D-NEW — An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Before it locks anything, `post_all` refuses two kinds of batch:
+one with no movements, and one where two movements share an idempotency key.
+Both raise `MalformedBatch`, a `LedgerError` with code `malformed_batch` and
+status 500, and nothing is written.
+
+**Why.** No request can supply a batch, because the server builds every
+movement and every key, and the settlement route's body is empty. A repeated
+key is always a bug in the server. So is an empty batch, except in the one
+edge the Notes accept. That makes it the same kind of error as
+`pending_writes_on_replay`, an alarm one layer down, so it takes that error's
+status.
+- *A repeated key* would otherwise reach the unique index on
+  `idempotency_key` inside the SAVEPOINT. The race handler would re-read, find
+  no committed row, and re-raise the `IntegrityError`. The result is a bare
+  500 from a handler that exists for races, saying nothing about the batch.
+- *An empty batch* would otherwise lock nothing, write nothing and still
+  commit, taking whatever the caller had pending with it. For settlement,
+  that commits a `market_results` row and a `market.settled` entry for a
+  payout that moved no money.
+
+**Rejected.**
+- *422, as `unbalanced_transaction` is*: a 422 tells the client to fix its
+  request, and the settlement request has no body to fix.
+- *Returning `[]` for an empty batch*: without a commit, the record and the
+  audit entry are left uncommitted while the route answers 200. With one, a
+  settlement is recorded with no money moved. Either is a decision about
+  settlement, not about posting.
+- *Deduplicating a repeated key*: if the two movements match, one is silently
+  dropped. If they differ, one movement's money is silently lost.
+
+**Reversal trigger.** A market seeded at exactly one tick, `0.0001`, is
+created.
+
+**Notes.** Every book's seed subsidy is positive:
+- market_service's `_liquidity_problems` refuses a non-positive seed at
+  submission, and `publish` runs it again.
+- `books.ensure_open` refuses a non-positive or non-finite seed before it
+  writes the book.
+
+"A sell cannot take a market's pool below its seed subsidy" then keeps the
+pool at or above that seed until settlement, with one exception, in its own
+Notes: "The one exception is the one-tick case in "A cost exactly on a tick
+can round one tick against the trader, or toward them on a sell". It needs
+about 120·b of skew and moves one tick." That case is a sell of `0.0001`
+against `q = [12000, 0]` at `b = 100`. Its true proceeds are a hair under one
+tick, the engine returns exactly one tick, and the pool pays a tick it did
+not earn.
+
+So an empty batch is unreachable for any seed above one tick. A market with
+no winners still posts its residue, and a market with winners posts their
+payouts.
+
+A market seeded at exactly one tick, with no winners, could reach a zero
+pool. Its settlement would then be `500 malformed_batch` and could not
+complete. Accepted as an edge. The fix is either a minimum seed in
+market_service's validation (decker757's), or settlement committing its
+record and audit entry alone, which would need its own decision.
+
+---
+
+### D-NEW — `post_all` asks about pending writes before it classifies a match, and replays only a whole batch
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Holding the account locks, `post_all` looks up every key in the
+batch. If any key already exists:
+
+1. It checks the caller's pending writes first, using the answer it recorded
+   on entry, as `post` does. If the session is dirty, it raises
+   `PendingWritesOnReplay`, whatever the match.
+2. Only then does it classify the match. It replays only when every key
+   exists and every fingerprint matches. A replay writes nothing, commits to
+   release the locks, and returns the existing transactions in input order.
+3. Any other match is `IdempotencyKeyReused`, and nothing is written. That
+   means some keys found and others missing, or a fingerprint that differs.
+
+The re-read after the SAVEPOINT's `IntegrityError` gives the same answers.
+
+**Why.** A batch commits all of its transactions or none, so a retry finds
+either every key or none of them. Finding some keys and not others means the
+same keys were used for different money: for settlement, a different set of
+winners. Replaying the part that matched and writing the rest would split one
+batch into two commits, which is the half-paid settlement "One settlement is
+one commit, through `posting.post_all`" exists to prevent.
+
+The pending check comes first because the caller that reaches the replay
+branch is the one with the bug. Settlement always enters `post_all` with its
+`market_results` row staged. A settlement that got past its latch is
+therefore refused as `pending_writes_on_replay`, the alarm for exactly that
+mistake, whether its winners match or not. If the match were classified
+first, a partial match would answer `409 idempotency_key_reused`, which is a
+client-conflict status for a server bug.
+
+**Rejected.**
+- *Replaying the matched subset and posting the rest*: one batch in two
+  commits.
+- *Classifying before the pending check*: see above.
+- *Raising `PendingWritesOnReplay` on entry, before any lookup*: every caller
+  enters with writes pending that it means to commit with the batch. That is
+  the rejected option in "`posting.post` refuses to replay into a dirty
+  session".
+
+**Notes.** This restates ADR 0019's first trap. The guard is read on entry,
+so the order of the record and the audit insert inside the caller does not
+matter. What the guard needs is the record, as an ORM write, pending when
+`post_all` is entered. It is unsafe in three cases:
+- the record becomes a Core insert;
+- the record is staged on some paths and not others;
+- the record is committed before `post_all`.
+
+This corrects the Why of "The ledger writes the settlement's audit entry,
+through its own seam onto `shared/audit.py`", which says the order matters.
+
+---
+
+### D-NEW — `post_all` nets each USER account across the whole batch, through `_refuse_overdrafts`
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** First, `_require_balanced` checks each movement on its own.
+Then every leg in the batch goes into one flat list for the existing
+`_refuse_overdrafts`, which nets each USER account across the batch and reads
+a balance only for accounts that lose credits. This runs holding the account
+locks, after the replay lookup, as in `post`.
+
+**Why.** The batch commits once, so only an account's end state is ever
+visible to another transaction. Netting across the batch applies `post`'s
+per-transaction rule at the same boundary, the commit. `_refuse_overdrafts`
+already nets by account id, so no new code is needed. Settlement debits no
+USER account, so it reads no balance here.
+
+**Rejected.**
+- *Checking each movement against a running balance*: correct for any batch,
+  but it is a new per-account running total that no caller needs.
+- *No overdraft check in `post_all`*: settlement would not notice, but the
+  check is what `post` guarantees every caller. Without it, `post_all` is one
+  new caller away from an overdraft.
+
+**Reversal trigger.** A batch that debits a USER account in one movement and
+credits it in a later one. Netting would accept a batch whose feed shows a
+`balance_after` below zero between the two, which is the history bug #187
+fixed. The check then becomes a running balance in movement order.
+
+---
+
+### D-NEW — `post_all` locks the union of the batch's accounts once, ascending, after the caller's book lock
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `post_all` collects every account named by any leg and locks
+the whole set once, through `accounts.lock`: one statement per account,
+ascending by id. On the settlement path the caller already holds the market's
+book lock, so the order is the book, then the accounts, the same as on the
+trade path.
+
+**Why.** ADR 0009's ascending order prevents deadlock only if each writer
+takes all of its account locks in one ascending sequence. Locking the full
+set once also means the replay lookup, the overdraft check and the stamp
+probes all run with every lock held, as they do in `post`.
+
+**Rejected.**
+- *Locking each movement's accounts as it is posted*: across the batch, locks
+  would be taken out of ascending order, which is exactly what ADR 0009's
+  ordering exists to rule out.
+- *One `SELECT ... WHERE id IN (...) ORDER BY id FOR UPDATE`*: it can still
+  deadlock (ADR 0009, and `accounts.lock`'s docstring).
+
+**Notes.** The cost, accepted: a settlement holds every winner's account from
+the lock to its commit, and PLATFORM as well when it posts a residue. A
+settlement whose payouts exactly empty the pool posts no residue, names no
+PLATFORM leg, and so never locks PLATFORM. For that whole time, everything
+below queues behind it:
+- every lazily minted grant and every cold book's seed, since both post from
+  PLATFORM, but only behind a settlement that posts a residue;
+- every other settlement that also takes PLATFORM;
+- every trade by a winner, in any market.
+
+At [3.4] #12's 1,000 winners that wait can last up to the 5-second budget. It
+is accepted because settlements are rare and started by an administrator, and
+the alternative, committing per payout, is what "One settlement is one
+commit, through `posting.post_all`" refuses.
+
+---
+
+### D-NEW — `post_all` stamps from one probe per locked account, and movement *i* lands at the first stamp plus *i* µs
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Holding every lock, `post_all` calls `_stamp_after_newest` once
+over the full set of locked accounts, which is one indexed probe per account.
+The result is the first stamp. Movement *i*, counted from 0 in input order, is
+stamped at the first stamp plus *i* µs, and every leg of that movement carries
+the same stamp.
+
+**Why.** This is "A settlement's first stamp follows the newest entry on every
+account it locks", built from the helper `post` already uses. The first stamp
+falls after every existing entry on every account, and each movement lands one
+tick after the one before. So no two entries on one account share a time, and
+feed order is input order. A movement's legs share one stamp for the same
+reason `post`'s do: a history page cannot split a transaction.
+
+**Rejected.**
+- *Option B, one statement over the union*: a second way to compute the same
+  stamp, beside `_stamp_after_newest`, with no measurement asking for it yet.
+- *A probe per movement*: it probes the pool and PLATFORM again for every
+  movement.
+
+**Reversal trigger.** PR 5's 5-second test misses its budget. Option B then
+lands as its own refactor PR, with no test assertion changed.
+
+**Notes.** This corrects the cost comparison in the second Rejected bullet of
+"A settlement's first stamp follows the newest entry on every account it
+locks". That bullet weighs "a thousand probes" against "one union query".
+Option A is itself one probe per account, about 1,002 for 1,000 winners. So
+the real gap is between a probe per movement, about 2,000, and a probe per
+account, about 1,000. The single union query is option B, which is not built.
+
+---
+
+### D-NEW — `post` is not `post_all` of one movement
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Deliberately not abstracted. `post` and `post_all` each keep
+their own body. They share helpers, including `_quantized_legs` and
+`_transaction_of` from PR 4a, `_require_balanced`, `_fingerprint`,
+`_refuse_overdrafts`, `_stamp_after_newest` and `accounts.lock`, but not
+their control flow.
+
+**Why.**
+- Making `post` call `post_all([movement])` would change `post`'s lookup from
+  one key to a batch of keys. It would also put the batch's rules on the trade
+  path's replay: the whole-batch match, `MalformedBatch` and netting across
+  movements. The trade path is the busiest in the service, and none of those
+  rules is for it.
+- The merge could land only after the second copy existed, which means in a
+  later refactor PR, and that refactor would change `post`'s behaviour. The
+  steps that really were copies were extracted first, in PR 4a. What is left
+  is two different sequences of the same steps.
+
+**Rejected.**
+- *`post` as `post_all` of one movement*: see above.
+- *One private core with flags for the differences*: a flag for each
+  difference, and each flag has one caller (backend/CLAUDE.md, "Reuse").
+
+---
+
+### D-NEW — PR 4a extracts `post`'s helpers ahead of `post_all`, as its own refactor
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** PR 4a (#249, `12-settlement-4a-posting-helpers`) is a new step
+in the settlement stack, between PR 3 and PR 4. It extracts `_quantized_legs`
+and `_transaction_of` from `posting.post`, with no behaviour change. PR 4 is
+stacked on it.
+
+**Why.** CLAUDE.md: the PR that would add a second copy extracts it instead,
+and a refactor never shares a PR with a behaviour change. `post_all` needs
+both pieces, so the extraction lands first and alone, and posting's tests
+pass unchanged across it. decker757 reviews it first, as he does PR 4,
+because `posting.py` is his.
+
+**Rejected.** *The extraction inside PR 4*: a refactor in the same diff as a
+new function, so a reviewer cannot tell which lines of `post` moved and which
+changed.
+
+**Notes.** It is named `4a` rather than renumbering the rest, so PRs 5 to 7
+keep their numbers. The table gains one row, and row 4's "On" changes:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 4a | posting: `_quantized_legs` and `_transaction_of` extracted from `post`, no behaviour change | 3 | decker757 (`posting.py`) |
+| 4 | `posting.post_all`, `Movement`, `MalformedBatch`, `docs/api/ledger-service.md`'s `malformed_batch` line | 4a | decker757 (`posting.py`) |
 
 ---
 
