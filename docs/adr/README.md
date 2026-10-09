@@ -24,7 +24,8 @@ see why the code looks the way it does without reconstructing the argument.
 | [0016](0016-deciding-a-proposal.md) | Deciding a proposal, by any administrator but the proposer, with APPROVED as a status | Accepted |
 | [0017](0017-the-ledger-and-a-stopped-market.md) | The ledger asks market_service whether a market is still trading, once per trade | Accepted |
 | [0018](0018-positions-are-valued-at-liquidation.md) | Positions are valued at liquidation | Accepted |
-| [0019](0019-settlement-across-services.md) | Settlement is the ledger's request, paid in one transaction, and market_service is told afterwards | Proposed |
+| [0019](0019-settlement-across-services.md) | Settlement is the ledger's request, paid in one transaction, and market_service is told afterwards | Accepted |
+| [0020](0020-migrations-by-alembic.md) | Migrations by Alembic, per service, run as a one-off step | Accepted |
 
 Supersede rather than edit. If a decision changes, add a new record and mark
 the old one superseded, so the reasoning trail survives.

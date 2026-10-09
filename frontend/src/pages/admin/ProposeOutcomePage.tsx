@@ -8,6 +8,7 @@ import Button from '../../components/ui/Button'
 import Field from '../../components/ui/Field'
 import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
+import { selectableClass } from '../../components/ui/selectableClass'
 import TextArea from '../../components/ui/TextArea'
 import TextInput from '../../components/ui/TextInput'
 import { tradingStopped } from '../../components/markets/marketStatus'
@@ -160,11 +161,7 @@ export default function ProposeOutcomePage() {
               type="button"
               onClick={() => setWinningOutcomeId(outcome.id)}
               aria-pressed={winningOutcomeId === outcome.id}
-              className={`cursor-pointer rounded-control border px-4 py-3 text-left text-[14px] font-medium transition ${
-                winningOutcomeId === outcome.id
-                  ? 'border-smu-navy bg-smu-navy text-white'
-                  : 'border-smu-navy/20 text-smu-navy hover:border-smu-navy/40'
-              }`}
+              className={`cursor-pointer rounded-control border px-4 py-3 text-left text-[14px] font-medium transition ${selectableClass(winningOutcomeId === outcome.id)}`}
             >
               {outcome.label}
             </button>

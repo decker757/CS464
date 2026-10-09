@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { listAllActions } from '../../api/auditApi'
-import { listMarkets } from '../../api/marketApi'
+import { listAllMarkets } from '../../api/marketApi'
 import { useAuth } from '../../context/AuthContext'
 import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
@@ -17,7 +17,7 @@ export default function ProposalsPage() {
 
   useEffect(() => {
     Promise.all([
-      listMarkets({ status: 'pending_resolution' }),
+      listAllMarkets({ status: 'pending_resolution' }),
       listAllActions('market.outcome_proposed'),
     ])
       .then(([markets, entries]) => {

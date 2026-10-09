@@ -210,8 +210,8 @@ class Transaction(Base):
     # (`signup-grant:<uuid>`, 49 characters) to prove the derivation confines
     # a collision to one caller. 120 truncates that combination; 255 leaves
     # room for a client key longer than any of this service's own namespaced
-    # keys with margin to spare. Needs `sql/migrations/0007-ledger-trade-idempotency-key-width.sql`
-    # against a database that already has this column.
+    # keys with margin to spare. The baseline revision carries 255; a database
+    # from before #75 still at 120 is refused by migrate.py, naming this column.
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
     # A hash of the legs, so a replayed key can be told from a reused one.
@@ -539,10 +539,10 @@ class Position(Base):
 # the statement matches no rows.
 #
 # Attached as an `after_create` DDL event rather than written into `sql/`,
-# because these tables are this service's own: `create_all` makes them at
-# startup and `unit_test/conftest.py` rebuilds them per test, and a trigger
-# that lived in `sql/` would be dropped by the first rebuild and never come
-# back. Here it ships with the table, everywhere the table ships.
+# because these tables are this service's own: the baseline revision makes them
+# and `unit_test/conftest.py` rebuilds them per test, and a trigger that lived
+# in `sql/` would be dropped by the first rebuild and never come back. Here it
+# ships with the table, everywhere the table ships.
 #
 # Be honest about what this is worth. It is one step weaker than the audit
 # log's, because ledger_svc owns `ledger.entries` and could therefore drop its
@@ -557,10 +557,22 @@ class Position(Base):
 # The message is assembled with `||` rather than RAISE's `%` placeholder,
 # which is what `sql/02-schemas.sql` uses. Not a style preference: SQLAlchemy
 # runs every DDL string through Python's `%` interpolation before sending it,
-# so a literal percent sign in the body raises at create_all time. Doubling it
+# so a literal percent sign in the body raises whenever the DDL runs: in the
+# suite's rebuild and in the baseline migration alike. Doubling it
 # would work and would also be the kind of thing somebody quietly un-doubles
 # while editing the SQL.
-_REJECT_MUTATION = DDL(
+
+# The trigger's name, which migrate.py checks a database from before #75 for.
+APPEND_ONLY_TRIGGER = "entries_append_only"
+
+# One copy of this SQL, run in two places: by the `after_create` events below,
+# which the suite's per-test rebuild fires, and by
+# migrations/versions/0001_baseline.py. Both run these DDL elements as they
+# are, so the %-interpolation note above applies to each the same way. Editing
+# them changes what a fresh database gets and nothing else: the baseline has
+# already run everywhere it will, so a new trigger body needs a revision of its
+# own with its own copy of the SQL. ADR 0020.
+REJECT_MUTATION_FUNCTION = DDL(
     f"""
     CREATE OR REPLACE FUNCTION {SCHEMA}.reject_mutation() RETURNS trigger
     LANGUAGE plpgsql AS $$
@@ -576,13 +588,13 @@ _REJECT_MUTATION = DDL(
     """
 )
 
-_INSTALL_TRIGGER = DDL(
+INSTALL_APPEND_ONLY_TRIGGER = DDL(
     f"""
-    CREATE TRIGGER entries_append_only
+    CREATE TRIGGER {APPEND_ONLY_TRIGGER}
         BEFORE UPDATE OR DELETE OR TRUNCATE ON {SCHEMA}.entries
         FOR EACH STATEMENT EXECUTE FUNCTION {SCHEMA}.reject_mutation();
     """
 )
 
-event.listen(Entry.__table__, "after_create", _REJECT_MUTATION)
-event.listen(Entry.__table__, "after_create", _INSTALL_TRIGGER)
+event.listen(Entry.__table__, "after_create", REJECT_MUTATION_FUNCTION)
+event.listen(Entry.__table__, "after_create", INSTALL_APPEND_ONLY_TRIGGER)

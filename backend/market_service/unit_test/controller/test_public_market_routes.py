@@ -285,6 +285,103 @@ async def test_an_empty_result_is_200_with_an_empty_list(
 
     assert response.status_code == 200
     assert response.json()["markets"] == []
+    assert response.json()["next_cursor"] is None
+
+
+# --- paging, #104 ---------------------------------------------------------
+async def test_next_cursor_continues_the_list_and_is_null_on_the_last_page(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """#104's contract: send `next_cursor` back as `cursor`; null is the end.
+    The wiring only; the order and the rows are `test_browsing.py`'s job."""
+    created = set()
+    for _ in range(3):
+        created.add(str((await _published(session)).id))
+
+    first = (
+        await client.get(_LIST, params={"limit": 2}, headers=trader_headers)
+    ).json()
+    second = (
+        await client.get(
+            _LIST,
+            params={"limit": 2, "cursor": first["next_cursor"]},
+            headers=trader_headers,
+        )
+    ).json()
+
+    assert len(first["markets"]) == 2
+    assert first["next_cursor"]
+    assert len(second["markets"]) == 1
+    assert second["next_cursor"] is None
+    assert {m["id"] for m in first["markets"] + second["markets"]} == created
+
+
+async def test_a_cursor_this_service_did_not_issue_is_400_with_the_service_envelope(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """#104: one error for every bad cursor, the code the other services use."""
+    response = await client.get(
+        _LIST, params={"cursor": "made-this-up"}, headers=trader_headers
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "malformed_cursor"
+
+
+async def test_with_no_limit_a_page_is_the_configured_default(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#104: "default 50", from settings. Shrunk to 2 so three markets show it."""
+    for _ in range(3):
+        await _published(session)
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEFAULT_PAGE_SIZE", "2")
+    try:
+        payload = (await client.get(_LIST, headers=trader_headers)).json()
+    finally:
+        # Settings cached under the patched environment must not leak.
+        get_settings.cache_clear()
+
+    assert len(payload["markets"]) == 2
+    assert payload["next_cursor"]
+
+
+async def test_a_limit_above_the_ceiling_is_clamped_rather_than_refused(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#104: "oversized clamped, not refused" — a caller asking for more than
+    the ceiling wants as much as it can get."""
+    for _ in range(3):
+        await _published(session)
+    get_settings.cache_clear()
+    monkeypatch.setenv("MAX_PAGE_SIZE", "2")
+    try:
+        response = await client.get(
+            _LIST, params={"limit": 1000}, headers=trader_headers
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert len(response.json()["markets"]) == 2
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_a_limit_below_one_is_422(
+    client: AsyncClient, trader_headers: dict[str, str], limit: int
+) -> None:
+    """#104: a page of nothing makes no progress, so it is refused, not clamped."""
+    response = await client.get(
+        _LIST, params={"limit": limit}, headers=trader_headers
+    )
+
+    assert response.status_code == 422
 
 
 # --- ADR 0011, as the wire reports it -------------------------------------

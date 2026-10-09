@@ -93,18 +93,27 @@ interface MarketOut {
   outcomes: { id: string; label: string }[]
 }
 
-function daysFromNow(days: number): string {
-  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
+const HOURS_PER_DAY = 24
+const THIRTY_DAYS_IN_HOURS = 30 * HOURS_PER_DAY
+
+function hoursFromNow(hours: number): string {
+  return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString()
 }
 
-async function save(admin: Session, question: string, status: 'draft' | 'submitted', outcomeLabels = ['Yes', 'No']): Promise<MarketOut> {
+async function save(
+  admin: Session,
+  question: string,
+  status: 'draft' | 'submitted',
+  outcomeLabels = ['Yes', 'No'],
+  closesInHours = THIRTY_DAYS_IN_HOURS,
+): Promise<MarketOut> {
   const body = await call<{ market: MarketOut }>('POST', `${MARKET_URL}/markets`, admin.accessToken, {
     draft_key: randomUUID(),
     status,
     question,
     outcomes: outcomeLabels.map(label => ({ label })),
-    close_time: daysFromNow(30),
-    resolution_time: daysFromNow(45),
+    close_time: hoursFromNow(closesInHours),
+    resolution_time: hoursFromNow(closesInHours + 15 * HOURS_PER_DAY),
     resolution_criteria: 'Resolves YES if the end-to-end test says so.',
     resolution_sources: [{ url: 'https://example.com/source', label: 'Source' }],
     // Pinned rather than left to the stack's DEFAULT_LIQUIDITY_B, so a test
@@ -115,13 +124,27 @@ async function save(admin: Session, question: string, status: 'draft' | 'submitt
   return body.market
 }
 
-export async function saveDraft(admin: Session, question: string): Promise<Market> {
-  return save(admin, question, 'draft')
+/** A draft, closing in thirty days unless told otherwise. Only its creator sees it ([1.1] #1). */
+export async function saveDraft(admin: Session, question: string, options: { closesInHours?: number } = {}): Promise<Market> {
+  return save(admin, question, 'draft', undefined, options.closesInHours)
 }
 
-/** Submitted and published: open to traders, closing in thirty days. Outcomes Yes and No unless named. */
-export async function publishMarket(admin: Session, question: string, outcomeLabels?: string[]): Promise<Market> {
-  const submitted = await save(admin, question, 'submitted', outcomeLabels)
+/** Submitted and not published, closing in thirty days. Only its creator sees it ([1.1] #1). */
+export async function submitMarket(admin: Session, question: string): Promise<Market> {
+  return save(admin, question, 'submitted')
+}
+
+/**
+ * Submitted and published: open to traders, closing in thirty days unless told
+ * otherwise. Outcomes Yes and No unless named.
+ */
+export async function publishMarket(
+  admin: Session,
+  question: string,
+  outcomeLabels?: string[],
+  options: { closesInHours?: number } = {},
+): Promise<Market> {
+  const submitted = await save(admin, question, 'submitted', outcomeLabels, options.closesInHours)
   return call<MarketOut>('POST', `${MARKET_URL}/markets/${submitted.id}/publish`, admin.accessToken)
 }
 

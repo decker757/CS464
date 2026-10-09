@@ -48,18 +48,30 @@ from sqlalchemy.pool import NullPool
 
 VERSION_TABLE = "alembic_version"
 
-# Where `_alembic_config` hands the URL to env.py. An attribute, not
+# Where `alembic_config` hands the URL to env.py. An attribute, not
 # `sqlalchemy.url`: configparser would %-interpolate a URL-encoded password.
 _URL_ATTRIBUTE = "database_url"
 
 _REFUSED_FOR_DRIFT = (
     "{schema}: this database has tables but no migration history, and they do "
     "not match the models:\n{differences}\n\n"
-    "It was built before #75 and missed a hand-applied change. Apply the "
-    "missing file from sql/migrations/ as it stood before #75 (git log -- "
-    "sql/migrations/ finds it) and run this again, or start from an empty "
-    "database with `docker compose down -v`, which destroys local data. "
-    "Nothing was changed."
+    "It was built before #75. Most likely it missed one of the hand-applied "
+    "files that sql/migrations/ used to hold, which are deleted now and kept "
+    "in git history. From the repository root, find the commit that deleted "
+    "them:\n\n"
+    "    git log --diff-filter=D --format=%h -- sql/migrations/\n\n"
+    "Then find the file for each line above. Put that commit in place of "
+    "<commit>, and the last name on the line (after its final `.` or `:`) in "
+    "place of <name>:\n\n"
+    "    git grep -l <name> <commit>^ -- sql/migrations/\n\n"
+    "Apply each file it prints, in number order, with the printed line in "
+    "place of <file>. Every one of those files is safe to apply twice:\n\n"
+    "    git show <file> | docker compose exec -T db psql -U cs464 -d cs464 "
+    "-v ON_ERROR_STOP=1\n\n"
+    "then run `docker compose up` again. If no file names it (anything in "
+    "auth, or the ledger's append-only trigger), or you would rather start "
+    "clean, use `docker compose down -v`, which destroys local data. Nothing "
+    "was changed."
 )
 
 _REFUSED_PAST_BASELINE = (
@@ -189,7 +201,7 @@ def _run_migrations(connection: Connection, *, metadata: MetaData, schema: str) 
 def run_env(*, metadata: MetaData, schema: str) -> None:
     """The body of a service's `migrations/env.py`: run Alembic's command online.
 
-    The URL comes from `_alembic_config`, or from DATABASE_URL for the `alembic`
+    The URL comes from `alembic_config`, or from DATABASE_URL for the `alembic`
     command line. Raises RuntimeError in offline (`--sql`) mode or with no URL.
     Leaves logging alone: Alembic's usual `fileConfig` disables every existing
     logger, and the suites' `caplog` reads several.
@@ -206,7 +218,11 @@ def run_env(*, metadata: MetaData, schema: str) -> None:
     )
 
 
-def _alembic_config(alembic_ini: Path, url: str) -> Config:
+def alembic_config(alembic_ini: Path, url: str) -> Config:
+    """Alembic's config for `alembic_ini`, carrying `url` to `run_env`.
+
+    For `alembic.command` calls; the guard tests use it to downgrade.
+    """
     config = Config(str(alembic_ini))
     config.attributes[_URL_ATTRIBUTE] = url
     return config
@@ -251,7 +267,7 @@ def migrate(
     the baseline if they match. Raises LegacyDrift, having changed nothing, if
     they do not or if the migrations have moved past the baseline. ADR 0020.
     """
-    config = _alembic_config(alembic_ini, url)
+    config = alembic_config(alembic_ini, url)
     tables = run_in_transaction(url, functools.partial(_own_tables, schema=schema))
     if tables and VERSION_TABLE not in tables:
         scripts = ScriptDirectory.from_config(config)

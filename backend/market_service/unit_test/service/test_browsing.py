@@ -16,7 +16,13 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MarketNotFound
-from model.entities import Market, MarketCard, MarketOutcome, MarketStatus
+from model.entities import (
+    Market,
+    MarketCard,
+    MarketOutcome,
+    MarketPage,
+    MarketStatus,
+)
 from core.database import get_session_factory
 from service import browsing, market_service
 from unit_test.conftest import approved_market as _approved_market
@@ -61,6 +67,40 @@ async def _open_market(
 def _ids(cards: list[object]) -> list[uuid.UUID]:
     """The ids of `browse`'s cards, in order."""
     return [card.id for card in cards]
+
+
+# More than any test creates, so a test about order or filters reads one page.
+_ONE_PAGE = 1000
+
+# A walk longer than this means a cursor that never advances.
+_MOST_PAGES = 50
+
+
+async def _browse(session: AsyncSession, **filters: object) -> list[MarketCard]:
+    """`browse`'s markets, all on one page."""
+    page = await browsing.browse(session, limit=_ONE_PAGE, **filters)
+    return page.markets
+
+
+async def _walk(
+    session: AsyncSession,
+    *,
+    limit: int,
+    cursor: str | None = None,
+    **filters: object,
+) -> list[MarketCard]:
+    """Every card `browse` returns from `cursor` on, following `next_cursor` to the end.
+
+    Bounded, so a cursor that never advances fails the test instead of hanging it.
+    """
+    cards: list[MarketCard] = []
+    for _ in range(_MOST_PAGES):
+        page = await browsing.browse(session, limit=limit, cursor=cursor, **filters)
+        cards.extend(page.markets)
+        cursor = page.next_cursor
+        if cursor is None:
+            return cards
+    pytest.fail(f"next_cursor was still set after {_MOST_PAGES} pages")
 
 
 def _outcomes_named(*labels: str) -> list[dict[str, str]]:
@@ -110,7 +150,7 @@ async def test_the_default_view_shows_open_markets_ordered_by_soonest_close(
     soonest = await _open_market(session, timedelta(days=1))
     latest = await _open_market(session, timedelta(days=90))
 
-    listed = await browsing.browse(session)
+    listed = await _browse(session)
 
     assert _ids(listed) == [soonest.id, middle.id, latest.id]
 
@@ -126,21 +166,12 @@ async def test_open_closed_and_pending_markets_are_distinguishable(
     pending_id = (await proposed_market(session, actor())).id
     approved_id = (await _approved_market(session, actor())).id
 
-    listed = {card.id: card for card in await browsing.browse(session)}
+    listed = {card.id: card for card in await _browse(session)}
 
     assert listed[open_id].status is MarketStatus.OPEN
     assert listed[closed_id].status is MarketStatus.CLOSED
     assert listed[pending_id].status is MarketStatus.PENDING_RESOLUTION
     assert listed[approved_id].status is MarketStatus.APPROVED
-
-
-async def test_a_view_that_matches_nothing_is_an_empty_list_not_an_error(
-    session: AsyncSession,
-) -> None:
-    """[X-1] #34's empty state needs `[]`, not an error."""
-    await _open_market(session)
-
-    assert await browsing.browse(session, query="nothing matches this") == []
 
 
 # --- #214: each card names its outcomes -----------------------------------
@@ -162,7 +193,7 @@ async def test_a_card_carries_every_outcome_with_its_label_in_position_order(
     await _move_outcome(session, market_id, from_position=99, to_position=2)
     await session.commit()
 
-    [card] = await browsing.browse(session)
+    [card] = await _browse(session)
 
     assert [(outcome.position, outcome.label) for outcome in card.outcomes] == [
         (0, "Lakers"),
@@ -184,7 +215,7 @@ async def test_each_card_carries_only_its_own_outcomes(session: AsyncSession) ->
         )
     ).id
 
-    cards = {card.id: card for card in await browsing.browse(session)}
+    cards = {card.id: card for card in await _browse(session)}
 
     assert _labels(cards[basketball_id]) == ["Lakers", "Celtics"]
     assert _labels(cards[weather_id]) == ["Sun", "Rain", "Haze"]
@@ -207,7 +238,7 @@ async def test_a_browse_reads_every_markets_outcomes_in_one_query(
         await _open_market(session, timedelta(days=closes_in_days))
 
     with recorded_statements() as statements:
-        cards = await browsing.browse(session)
+        cards = await _browse(session)
 
     assert len(cards) == 3
     assert len(statements) == 2, statements
@@ -218,7 +249,7 @@ async def test_an_empty_browse_does_not_query_for_outcomes(
 ) -> None:
     """#214: with no markets on the page there is nothing to fetch outcomes for."""
     with recorded_statements() as statements:
-        cards = await browsing.browse(session)
+        cards = await _browse(session)
 
     assert cards == []
     assert len(statements) == 1, statements
@@ -238,7 +269,7 @@ async def test_markets_can_be_searched_by_words_from_the_question(
         question="Will the MRT Cross Island Line open before June 2027?",
     )
 
-    assert _ids(await browsing.browse(session, query="inflation")) == [inflation.id]
+    assert _ids(await _browse(session, query="inflation")) == [inflation.id]
 
 
 async def test_the_question_search_ignores_case(session: AsyncSession) -> None:
@@ -248,7 +279,7 @@ async def test_the_question_search_ignores_case(session: AsyncSession) -> None:
         question="Will Singapore core inflation be below 2% in December 2026?",
     )
 
-    assert _ids(await browsing.browse(session, query="INFLATION")) == [market.id]
+    assert _ids(await _browse(session, query="INFLATION")) == [market.id]
 
 
 async def test_markets_can_be_filtered_by_status(session: AsyncSession) -> None:
@@ -257,10 +288,10 @@ async def test_markets_can_be_filtered_by_status(session: AsyncSession) -> None:
     open_id = (await _open_market(session)).id
     closed_id = (await closed_market(session, actor())).id
 
-    assert _ids(await browsing.browse(session, status=MarketStatus.CLOSED)) == [
+    assert _ids(await _browse(session, status=MarketStatus.CLOSED)) == [
         closed_id
     ]
-    assert _ids(await browsing.browse(session, status=MarketStatus.OPEN)) == [
+    assert _ids(await _browse(session, status=MarketStatus.OPEN)) == [
         open_id
     ]
 
@@ -277,7 +308,7 @@ async def test_search_and_a_status_filter_can_be_used_together(
         session, actor(), question="Will the MRT Cross Island Line open in 2027?"
     )
 
-    listed = await browsing.browse(
+    listed = await _browse(
         session, status=MarketStatus.CLOSED, query="inflation"
     )
 
@@ -306,16 +337,16 @@ async def test_the_question_search_treats_like_wildcards_as_text(
 
     # `%` is any run of characters. Unescaped this matches every question with
     # a 2 in it, which is all four.
-    assert _ids(await browsing.browse(session, query="2%")) == [percent.id]
+    assert _ids(await _browse(session, query="2%")) == [percent.id]
 
     # `_` is exactly one character. Unescaped this matches every question that
     # is not empty, which is again all four.
-    assert _ids(await browsing.browse(session, query="_")) == [underscored.id]
+    assert _ids(await _browse(session, query="_")) == [underscored.id]
 
     # The escape character itself. Left as-is it becomes a dangling escape in
     # the pattern — `\T` is not a valid sequence — so this one does not return
     # the wrong rows, it raises.
-    assert _ids(await browsing.browse(session, query="C:\\Temp")) == [
+    assert _ids(await _browse(session, query="C:\\Temp")) == [
         backslashed.id
     ]
 
@@ -383,7 +414,7 @@ async def test_a_draft_is_never_listed(session: AsyncSession) -> None:
     await market_service.save(session, actor(), draft_request())
     visible = await _open_market(session)
 
-    assert _ids(await browsing.browse(session)) == [visible.id]
+    assert _ids(await _browse(session)) == [visible.id]
 
 
 async def test_a_submitted_market_is_never_listed(session: AsyncSession) -> None:
@@ -391,7 +422,7 @@ async def test_a_submitted_market_is_never_listed(session: AsyncSession) -> None
     await market_service.save(session, actor(), draft_request(status="submitted"))
     visible = await _open_market(session)
 
-    assert _ids(await browsing.browse(session)) == [visible.id]
+    assert _ids(await _browse(session)) == [visible.id]
 
 
 async def test_a_draft_is_not_a_status_a_trader_may_filter_on(
@@ -400,7 +431,7 @@ async def test_a_draft_is_not_a_status_a_trader_may_filter_on(
     """[X-2] #35's filter must apply beside the visibility rule, not instead of it."""
     await market_service.save(session, actor(), draft_request())
 
-    assert await browsing.browse(session, status=MarketStatus.DRAFT) == []
+    assert await _browse(session, status=MarketStatus.DRAFT) == []
 
 
 # --- ADR 0011: the clock closes a market, not the sweeper -----------------
@@ -411,7 +442,7 @@ async def test_a_market_past_its_close_time_is_not_listed_as_open(
     stopped = await overdue_market(session, actor())
     still_open = await _open_market(session)
 
-    listed = await browsing.browse(session, status=MarketStatus.OPEN)
+    listed = await _browse(session, status=MarketStatus.OPEN)
 
     assert _ids(listed) == [still_open.id]
     assert stopped.id not in _ids(listed)
@@ -425,7 +456,7 @@ async def test_a_market_past_its_close_time_reads_as_closed_before_the_sweep(
     stopped = await overdue_market(session, actor())
     await _open_market(session)
 
-    listed = await browsing.browse(session, status=MarketStatus.CLOSED)
+    listed = await _browse(session, status=MarketStatus.CLOSED)
 
     assert _ids(listed) == [stopped.id]
 
@@ -441,8 +472,8 @@ async def test_the_injected_clock_reaches_the_sql_filter_not_only_the_derivation
     market = await _open_market(session, timedelta(hours=1))
     later = datetime.now(UTC) + timedelta(hours=2)
 
-    as_open = await browsing.browse(session, status=MarketStatus.OPEN, now=later)
-    as_closed = await browsing.browse(session, status=MarketStatus.CLOSED, now=later)
+    as_open = await _browse(session, status=MarketStatus.OPEN, now=later)
+    as_closed = await _browse(session, status=MarketStatus.CLOSED, now=later)
 
     assert market.id not in _ids(as_open), (
         "the SQL filter ignored the clock it was handed and asked Postgres "
@@ -472,7 +503,7 @@ async def test_the_default_view_sorts_a_market_past_its_close_time_behind_the_op
     stopped = await overdue_market(session, actor())
     still_open = await _open_market(session)
 
-    listed = await browsing.browse(session)
+    listed = await _browse(session)
     ids = _ids(listed)
 
     assert stopped.id in ids
@@ -504,7 +535,7 @@ async def test_stopped_markets_list_most_recently_stopped_first_whatever_their_s
     ).id
     unswept_id = (await overdue_market(session, creator)).id
 
-    listed = await browsing.browse(session)
+    listed = await _browse(session)
 
     assert _ids(listed) == [unswept_id, pending_id, closed_id, approved_id]
 
@@ -532,7 +563,7 @@ async def test_an_early_closed_market_sorts_by_when_it_was_closed_not_its_close_
         await overdue_market(session, creator, overdue_by=timedelta(hours=1))
     ).id
 
-    listed = await browsing.browse(session)
+    listed = await _browse(session)
 
     assert _ids(listed) == [an_hour_ago_id, early_id, two_days_ago_id]
 
@@ -557,9 +588,311 @@ async def test_markets_sharing_a_close_time_list_lower_id_first_in_either_group(
     ]
     now = shared_close + timedelta(days=1 if viewed_after_the_close else -1)
 
-    listed = await browsing.browse(session, now=now)
+    listed = await _browse(session, now=now)
 
     assert _ids(listed) == sorted(tied)
+
+
+# --- #104: one page at a time, by keyset ----------------------------------
+async def _both_groups_with_ties(
+    session: AsyncSession,
+) -> list[uuid.UUID]:
+    """Both groups, each with a tie on its sort key: the boundaries #104 must survive.
+
+    Trading: one closing in a day, two sharing a close in two days. Stopped:
+    two closed by hand at one instant an hour ago, one the clock closed two days
+    ago and the sweep wrote down (`closed_at` a moment after `close_time`), and
+    one whose close passed a day ago that no sweep has written down
+    (`closed_at` NULL, `status` still open). A page boundary crosses both ways
+    a stop time is derived from `close_time`. Returns their ids in the order
+    `browse` must list them, ties by lower id first (#105).
+    """
+    soonest_close = datetime.now(UTC) + timedelta(days=1)
+    soonest_id = (
+        await published_market_closing_at(session, actor(), soonest_close)
+    ).id
+    shared_close = datetime.now(UTC) + timedelta(days=2)
+    tied_trading_ids = [
+        (await published_market_closing_at(session, actor(), shared_close)).id
+        for _ in range(2)
+    ]
+
+    an_hour_ago = datetime.now(UTC) - timedelta(hours=1)
+    tied_stopped_ids = []
+    for _ in range(2):
+        market_id = (await _open_market(session)).id
+        await market_service.close_early(
+            session, actor(), market_id, close_request(), now=an_hour_ago
+        )
+        tied_stopped_ids.append(market_id)
+    swept_id = (
+        await closed_market(session, actor(), overdue_by=timedelta(days=2))
+    ).id
+    unswept_id = (
+        await overdue_market(session, actor(), overdue_by=timedelta(days=1))
+    ).id
+
+    return [
+        soonest_id,
+        *sorted(tied_trading_ids),
+        *sorted(tied_stopped_ids),
+        unswept_id,
+        swept_id,
+    ]
+
+
+@pytest.mark.parametrize(
+    "limit",
+    [1, 2, 3, 5],
+    ids=[
+        "every_row",
+        "inside_both_ties",
+        "at_the_group_boundary",
+        "inside_the_stopped_group",
+    ],
+)
+async def test_pages_read_in_turn_list_every_market_once_in_the_browse_order(
+    session: AsyncSession, limit: int
+) -> None:
+    """#104: "pages concatenate to the unpaged order", with a page boundary
+    inside each group, inside each tie, and exactly between the two groups."""
+    expected = await _both_groups_with_ties(session)
+
+    assert _ids(await _walk(session, limit=limit)) == expected
+
+
+async def test_a_full_last_page_offers_no_cursor(session: AsyncSession) -> None:
+    """#104: `next_cursor` is null on the last page. Two markets at `limit=2`
+    is the case a `len(rows) == limit` check gets wrong."""
+    await _open_market(session)
+    await _open_market(session)
+
+    page = await browsing.browse(session, limit=2)
+
+    assert len(page.markets) == 2
+    assert page.next_cursor is None
+
+
+async def test_an_empty_result_is_an_empty_page_with_no_cursor(
+    session: AsyncSession,
+) -> None:
+    """#104: "Empty is not an error", and there is nothing to continue from.
+    [X-1] #34's empty state needs an empty list, not an error."""
+    await _open_market(session)
+
+    page = await browsing.browse(session, limit=2, query="nothing matches this")
+
+    assert page == MarketPage(markets=[], next_cursor=None)
+
+
+async def test_a_market_published_between_two_page_reads_causes_no_skip_and_no_repeat(
+    session: AsyncSession,
+) -> None:
+    """#104: keyset, not OFFSET. A market added ahead of the cursor is not
+    shown and shifts nothing; one added behind it is shown in its place."""
+    first = (await _open_market(session, timedelta(days=1))).id
+    second = (await _open_market(session, timedelta(days=2))).id
+    third = (await _open_market(session, timedelta(days=3))).id
+    fourth = (await _open_market(session, timedelta(days=4))).id
+
+    page_one = await browsing.browse(session, limit=2)
+    await _open_market(session, timedelta(hours=12))
+    behind_the_cursor = (await _open_market(session, timedelta(days=2, hours=12))).id
+    rest = await _walk(session, limit=2, cursor=page_one.next_cursor)
+
+    assert _ids(page_one.markets) == [first, second]
+    assert _ids(rest) == [behind_the_cursor, third, fourth]
+
+
+async def test_a_market_whose_close_passes_between_two_page_reads_is_listed_once(
+    session: AsyncSession,
+) -> None:
+    """#104: later pages group by the first page's instant, which the cursor
+    carries. Grouped by the second read's clock instead, `first` and
+    `crossing` move to the stopped group and `first` is listed again.
+
+    Each card still shows the second read's status (D-025): `crossing` keeps
+    its place among the trading markets and reads `closed`.
+    """
+    first = (await _open_market(session, timedelta(days=1))).id
+    crossing = (await _open_market(session, timedelta(days=2))).id
+    later = (await _open_market(session, timedelta(days=4))).id
+    stopped = (
+        await closed_market(session, actor(), overdue_by=timedelta(days=1))
+    ).id
+    first_read = datetime.now(UTC)
+
+    page_one = await browsing.browse(session, limit=1, now=first_read)
+    rest = await _walk(
+        session,
+        limit=1,
+        cursor=page_one.next_cursor,
+        now=first_read + timedelta(days=3),
+    )
+
+    assert _ids(page_one.markets) == [first]
+    assert _ids(rest) == [crossing, later, stopped]
+    assert [card.status for card in rest] == [
+        MarketStatus.CLOSED,
+        MarketStatus.OPEN,
+        MarketStatus.CLOSED,
+    ]
+
+
+async def test_a_market_closed_early_between_two_page_reads_is_listed_once(
+    session: AsyncSession,
+) -> None:
+    """#104, ADR 0014: an early close writes `status` at once, so grouping by
+    `open_for_trading(as_of)` would move this market to the stopped group and
+    list it again. `was_open_for_trading_at` reads only the clock columns."""
+    first = (await _open_market(session, timedelta(days=1))).id
+    closed_by_hand = (await _open_market(session, timedelta(days=2))).id
+    later = (await _open_market(session, timedelta(days=4))).id
+    first_read = datetime.now(UTC)
+
+    page_one = await browsing.browse(session, limit=2, now=first_read)
+    await market_service.close_early(
+        session,
+        actor(),
+        closed_by_hand,
+        close_request(),
+        now=first_read + timedelta(minutes=1),
+    )
+    rest = await _walk(
+        session,
+        limit=2,
+        cursor=page_one.next_cursor,
+        now=first_read + timedelta(minutes=2),
+    )
+
+    assert _ids(page_one.markets) == [first, closed_by_hand]
+    assert _ids(rest) == [later]
+
+
+async def test_under_status_open_a_market_whose_close_passes_mid_browse_drops_out(
+    session: AsyncSession,
+) -> None:
+    """#104: the filter reads the request's own clock, so the market is a
+    non-match on later pages, never a `closed` card in the open list."""
+    first = (await _open_market(session, timedelta(days=1))).id
+    await _open_market(session, timedelta(days=2))
+    later = (await _open_market(session, timedelta(days=4))).id
+    first_read = datetime.now(UTC)
+
+    page_one = await browsing.browse(
+        session, limit=1, status=MarketStatus.OPEN, now=first_read
+    )
+    rest = await _walk(
+        session,
+        limit=1,
+        cursor=page_one.next_cursor,
+        status=MarketStatus.OPEN,
+        now=first_read + timedelta(days=3),
+    )
+
+    assert _ids(page_one.markets) == [first]
+    assert _ids(rest) == [later]
+
+
+async def test_under_status_closed_a_market_that_stops_mid_browse_is_never_listed_twice(
+    session: AsyncSession,
+) -> None:
+    """#104: pins the DECISIONS promise ("The public browse pages by keyset,
+    grouped by the first page's clock"): a market whose close passes, or that
+    is closed by hand, between two reads is missing from the walk, as an
+    insert ahead of the cursor is, and never a repeat.
+
+    It does not by itself prove the frozen clock: it stays green with grouping
+    on the real `now`. `..._keep_the_first_pages_grouping` is the test that
+    fails without the freeze."""
+    just_stopped = (await overdue_market(session, actor())).id
+    stopped_long_ago = (
+        await overdue_market(session, actor(), overdue_by=timedelta(days=2))
+    ).id
+    crossing = (await _open_market(session, timedelta(days=1))).id
+    closed_by_hand = (await _open_market(session, timedelta(days=5))).id
+    first_read = datetime.now(UTC)
+
+    page_one = await browsing.browse(
+        session, limit=1, status=MarketStatus.CLOSED, now=first_read
+    )
+    await market_service.close_early(
+        session,
+        actor(),
+        closed_by_hand,
+        close_request(),
+        now=first_read + timedelta(minutes=1),
+    )
+    rest = await _walk(
+        session,
+        limit=1,
+        cursor=page_one.next_cursor,
+        status=MarketStatus.CLOSED,
+        now=first_read + timedelta(days=3),
+    )
+
+    listed = [*_ids(page_one.markets), *_ids(rest)]
+    assert listed == [just_stopped, stopped_long_ago]
+    assert crossing not in listed
+    assert closed_by_hand not in listed
+
+
+async def test_under_status_closed_later_pages_keep_the_first_pages_grouping(
+    session: AsyncSession,
+) -> None:
+    """#104: the filter reads the request's clock and the grouping the cursor's.
+    Both markets are closed by hand, so `status` matches at the first read
+    while `close_time` and `closed_at` still put them in the trading group at
+    its instant. Grouped by a later clock instead, the market on page one
+    falls into the stopped group, which follows the cursor, and is listed
+    again.
+
+    The backdated first read stands in for the clock-skew window in the
+    DECISIONS entry's Notes; on one consistent clock a market closed by hand
+    cannot match the filter and still be in the trading group."""
+    first = (await _open_market(session, timedelta(days=1))).id
+    second = (await _open_market(session, timedelta(days=2))).id
+    for market_id in (first, second):
+        await market_service.close_early(
+            session, actor(), market_id, close_request(), now=datetime.now(UTC)
+        )
+    first_read = datetime.now(UTC) - timedelta(hours=1)
+
+    page_one = await browsing.browse(
+        session, limit=1, status=MarketStatus.CLOSED, now=first_read
+    )
+    rest = await _walk(
+        session,
+        limit=1,
+        cursor=page_one.next_cursor,
+        status=MarketStatus.CLOSED,
+        now=first_read + timedelta(days=3),
+    )
+
+    assert _ids(page_one.markets) == [first]
+    assert _ids(rest) == [second]
+
+
+async def test_each_page_reads_only_its_own_markets_outcomes_in_one_query(
+    session: AsyncSession,
+) -> None:
+    """#104, #214: one outcomes query per page, naming exactly that page's
+    markets. Three markets at `limit=2`, so a query asked before the page is
+    trimmed to `limit` names the third market on the first page too."""
+    first = (await _open_market(session, timedelta(days=1))).id
+    second = (await _open_market(session, timedelta(days=2))).id
+    third = (await _open_market(session, timedelta(days=3))).id
+
+    with recorded_statements() as statements:
+        await _walk(session, limit=2)
+
+    outcome_reads = [
+        statement for statement in statements if "market_outcomes" in statement.sql
+    ]
+    assert [sorted(read.parameters) for read in outcome_reads] == [
+        sorted([first, second]),
+        [third],
+    ]
 
 
 # --- [2.1] #5's counts, which #62 says to build once ----------------------
@@ -628,7 +961,7 @@ async def test_browsing_does_not_empty_the_outcomes_of_a_later_detail_read(
     async with factory() as fresh:
         # Held on purpose: the identity map is weak, so dropping the list would
         # let a poisoned instance be collected and the test assert nothing.
-        listed = await browsing.browse(fresh)
+        listed = await _browse(fresh)
         assert listed, "the browse must return the market for this to mean anything"
 
         detail = await browsing.get_published(fresh, market_id)
@@ -672,7 +1005,7 @@ async def test_the_browse_card_carries_the_derived_status_not_the_column(
     stopped = await overdue_market(session, actor())
     stopped_id = stopped.id
 
-    listed = {card.id: card for card in await browsing.browse(session)}
+    listed = {card.id: card for card in await _browse(session)}
 
     assert listed[stopped_id].status is MarketStatus.CLOSED
     assert not hasattr(listed[stopped_id], "raw_status")
@@ -690,8 +1023,8 @@ async def test_a_settled_market_is_listed_and_filterable_as_settled(
     approved_id = (await _approved_market(session, actor())).id
     settled_id = (await settled_market(session, actor())).id
 
-    listed = {card.id: card for card in await browsing.browse(session)}
-    filtered = await browsing.browse(session, status=MarketStatus.SETTLED)
+    listed = {card.id: card for card in await _browse(session)}
+    filtered = await _browse(session, status=MarketStatus.SETTLED)
 
     assert listed[settled_id].status is MarketStatus.SETTLED
     assert listed[approved_id].status is MarketStatus.APPROVED

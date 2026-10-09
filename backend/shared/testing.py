@@ -14,9 +14,11 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from sqlalchemy import MetaData
     from sqlalchemy.engine import Connection
 
 # Marker files that identify the repository root. Searched for upward rather
@@ -102,9 +104,10 @@ def list_cross_service_imports(service: str) -> list[str]:
 
 
 # [F-5] #75. Everything Postgres prints about one schema, for the migration
-# guard tests: what compare_metadata sees and what it cannot (CHECK
-# constraints, partial-index predicates, sort order, triggers). The version
-# table is left out, because only a migrated schema has one.
+# guard tests: what compare_metadata cannot see (CHECK constraints,
+# partial-index predicates, triggers), and a second check of what it can, such
+# as an index's sort order (ADR 0020). The version table is left out, because
+# only a migrated schema has one.
 _SCHEMA_CATALOG_QUERIES = {
     "columns": """
         SELECT table_name || '.' || column_name || ' ' || data_type
@@ -174,3 +177,85 @@ def compose_service(name: str) -> dict[str, Any]:
 
     compose = (_repo_root() / "docker-compose.yml").read_text(encoding="utf-8")
     return yaml.safe_load(compose)["services"][name]
+
+
+def assert_baseline_downgrades_and_upgrades_again(
+    *,
+    migrate_step: Callable[[], int],
+    alembic_ini: pathlib.Path,
+    url: str,
+    metadata: MetaData,
+    schema: str,
+) -> None:
+    """The baseline's handwritten downgrade, held to the same standard as its upgrade.
+
+    Migrates, downgrades to base and expects no model table left, then migrates
+    again and expects exactly what `metadata.create_all` builds. The caller
+    empties the schema around it. Nothing else runs a downgrade. [F-5] #75
+    """
+    from alembic import command  # noqa: PLC0415 - see drop_own_tables
+    from sqlalchemy import inspect  # noqa: PLC0415
+
+    from shared.migrating import VERSION_TABLE, alembic_config, run_in_transaction  # noqa: PLC0415
+
+    def tables() -> list[str]:
+        return run_in_transaction(
+            url, lambda connection: inspect(connection).get_table_names(schema=schema)
+        )
+
+    def catalog() -> dict[str, list[str]]:
+        return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
+
+    assert migrate_step() == 0
+    command.downgrade(alembic_config(alembic_ini, url), "base")
+    assert set(tables()) <= {VERSION_TABLE}
+
+    assert migrate_step() == 0
+    migrated = catalog()
+    run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
+    run_in_transaction(url, metadata.create_all)
+    assert migrated == catalog()
+
+
+def build_like_before_75(url: str, metadata: MetaData, *statements: str) -> None:
+    """The schema as every boot before #75 left it, then `statements` against it."""
+    from sqlalchemy import text  # noqa: PLC0415 - see drop_own_tables
+
+    from shared.migrating import run_in_transaction  # noqa: PLC0415
+
+    def build(connection: Connection) -> None:
+        metadata.create_all(connection)
+        for statement in statements:
+            connection.execute(text(statement))
+
+    run_in_transaction(url, build)
+
+
+def assert_migrating_an_empty_schema_builds_the_models(
+    *, migrate_step: Callable[[], int], url: str, metadata: MetaData, schema: str
+) -> dict[str, list[str]]:
+    """The baseline, held to the models. Returns the migrated catalog.
+
+    Migrates twice, because compose runs the step on every `up` and the second
+    run must be a no-op. Expects no drift and exactly what `metadata.create_all`
+    builds. The caller empties the schema around it and asserts what only its
+    own service has (a special index) against the returned catalog. [F-5] #75
+    """
+    from shared.migrating import find_drift, run_in_transaction  # noqa: PLC0415
+
+    def catalog() -> dict[str, list[str]]:
+        return run_in_transaction(url, lambda connection: schema_catalog(connection, schema))
+
+    assert migrate_step() == 0
+    assert migrate_step() == 0
+    migrated = catalog()
+    drift = run_in_transaction(
+        url, lambda connection: find_drift(connection, metadata=metadata, schema=schema)
+    )
+
+    run_in_transaction(url, lambda connection: drop_own_tables(connection, schema))
+    run_in_transaction(url, metadata.create_all)
+
+    assert drift == []
+    assert migrated == catalog()
+    return migrated

@@ -64,16 +64,6 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-async def create_all() -> None:
-    """Create this service's tables if missing. Never alters one; [F-5] #75 is Alembic.
-
-    Callers must import the entity module first so the mappers are registered
-    on `Base`; `core` must not reach up into `model` to do it.
-    """
-    async with get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 async def dispose_engine() -> None:
     global _engine, _session_factory
     if _engine is not None:

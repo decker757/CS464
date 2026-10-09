@@ -1,12 +1,11 @@
 -- 0002 — audit: the shared admin action log. [4.3] #15
 --
--- Adds a role, a schema and a table, where 0001 added two columns. That is the
--- larger change, and it is here rather than left to `docker compose down -v`
--- because by now the development database holds drafted markets somebody would
--- rather not lose.
+-- Adds a role, a schema and a table. It is here rather than left to
+-- `docker compose down -v` because by now the development database holds
+-- drafted markets somebody would rather not lose.
 --
--- Unusually for this directory, almost nothing is written out below. Every
--- statement in sql/02-schemas.sql is already idempotent — CREATE ... IF NOT
+-- Almost nothing is written out below. Every statement in
+-- sql/02-schemas.sql is already idempotent — CREATE ... IF NOT
 -- EXISTS, ALTER ROLE, CREATE OR REPLACE, GRANT, REVOKE — so re-running that
 -- file IS the migration, and copying its audit block here would leave two
 -- definitions of one table to keep in step. The only thing it cannot do is

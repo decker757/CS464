@@ -15,7 +15,14 @@ import os
 import secrets
 import uuid
 
-from shared.testing import load_repo_env
+import pytest
+
+# Before the first import of shared.testing: pytest rewrites asserts only in
+# modules it sees imported after this call, so without it the shared helpers'
+# asserts fail with no diff.
+pytest.register_assert_rewrite("shared.testing")
+
+from shared.testing import load_repo_env  # noqa: E402
 
 
 # Before any project module is imported. `get_settings` is lru_cached, so the
@@ -44,7 +51,6 @@ from decimal import Decimal  # noqa: E402
 
 import httpx  # noqa: E402
 import jwt  # noqa: E402
-import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 

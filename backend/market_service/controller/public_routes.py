@@ -11,7 +11,8 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Query
 
-from controller.dependencies import CurrentUser, DbSession
+from controller.dependencies import CurrentUser, DbSession, PageCursor, PageLimit
+from core.paging import page_size_of
 from model.entities import MarketStatus, PublicMarketStatus
 from model.schemas import (
     MAX_QUESTION_LENGTH,
@@ -60,15 +61,24 @@ PublicStatusFilter = PublicMarketStatus
         "ordered by `position` — the same shape the detail read returns — "
         "so a card can name every outcome without a detail fetch per row "
         "(#214). A market has two or more, with any labels; do not assume "
-        "`Yes` and `No`."
+        "`Yes` and `No`.\n\n"
+        "Paged by keyset ([X-1] #104). Send `next_cursor` back as `cursor`, "
+        "with the same `q`, `status` and `limit`, to continue; null means "
+        "there is nothing after this page. `limit` defaults to the server's "
+        "page size (50) and a value above its maximum (200) is clamped. Pages "
+        "read in turn never repeat a market: the split into trading and "
+        "stopped is fixed at the first page's instant, which the cursor "
+        "carries, while each card's `status` is read now."
     ),
     responses={
+        400: {"description": "`cursor` was not one this service issued."},
         422: {
             "description": (
-                "`status` is not one of the values above, or `q` is longer "
-                "than a question may be or contains a NUL character."
+                "`status` is not one of the values above, `q` is longer "
+                "than a question may be or contains a NUL character, or "
+                "`limit` is below 1."
             )
-        }
+        },
     },
 )
 async def browse_markets(
@@ -95,16 +105,24 @@ async def browse_markets(
             "every published market with the ones still trading first."
         ),
     ),
+    limit: PageLimit = None,
+    cursor: PageCursor = None,
 ) -> PublicMarketListResponse:
     # One clock for the request, so filtering and the displayed status agree.
     # D-025, D-027.
     now = datetime.now(UTC)
 
-    markets = await browsing.browse(
-        session, query=q, status=MarketStatus(status) if status else None, now=now
+    page = await browsing.browse(
+        session,
+        limit=page_size_of(limit),
+        query=q,
+        status=MarketStatus(status) if status else None,
+        now=now,
+        cursor=cursor,
     )
     return PublicMarketListResponse(
-        markets=[PublicMarketSummaryOut.model_validate(card) for card in markets]
+        markets=[PublicMarketSummaryOut.model_validate(card) for card in page.markets],
+        next_cursor=page.next_cursor,
     )
 
 

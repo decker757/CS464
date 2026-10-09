@@ -1,4 +1,5 @@
-"""FastAPI dependencies shared across routes: the session and who the caller is.
+"""FastAPI dependencies shared across routes: the session, who the caller is,
+and the paging parameters.
 
 Authentication is a dependency, not middleware: it is opt-in per route, shows
 in /docs, and hands routes typed claims. This service never reads auth.users,
@@ -9,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from controller import transport
@@ -62,3 +63,20 @@ async def get_actor(claims: CurrentAdmin) -> Actor:
 
 
 CurrentActor = Annotated[Actor, Depends(get_actor)]
+
+
+# The two parameters of every keyset-paged list here. [X-1] #104, #210.
+PageLimit = Annotated[
+    int | None,
+    Query(
+        ge=1,
+        description=(
+            "Markets per page. Defaults to the server's page size and is "
+            "capped by its maximum: a larger value is clamped, not refused."
+        ),
+    ),
+]
+PageCursor = Annotated[
+    str | None,
+    Query(description="The `next_cursor` from the previous page, unmodified."),
+]
