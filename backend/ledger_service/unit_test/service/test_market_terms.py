@@ -9,6 +9,7 @@ real market service cannot be imported (`test_import_boundary.py`).
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -50,6 +51,8 @@ def _terms_body(**overrides: object) -> dict[str, object]:
         "liquidity_b": "100.0000",
         "seed_subsidy": "250.0000",
         "published_at": "2026-09-01T09:00:00Z",
+        "proposed_outcome_id": None,
+        "settleable": False,
         "outcomes": [
             {"id": str(_YES), "position": 0, "label": "Yes"},
             {"id": str(_NO), "position": 1, "label": "No"},
@@ -169,6 +172,36 @@ async def test_published_at_is_carried_through() -> None:
     )
 
     assert terms.published_at == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+
+
+# --- [3.4] #12: the two settlement fields, parsed strictly on every pull ---
+@pytest.mark.parametrize(
+    ("overrides", "settleable", "proposed_outcome_id"),
+    [
+        ({"settleable": True}, True, None),
+        ({"settleable": False}, False, None),
+        ({"proposed_outcome_id": str(_YES)}, False, _YES),
+    ],
+    ids=["settleable", "not settleable", "an outcome proposed"],
+)
+async def test_settleable_and_the_proposed_outcome_are_carried_through(
+    overrides: dict[str, object],
+    settleable: bool,
+    proposed_outcome_id: uuid.UUID | None,
+) -> None:
+    """DECISIONS.md, "`MarketTerms` carries `proposed_outcome_id` and
+    `settleable`". The client carries both and decides on neither.
+    """
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        terms_client=terms_client_over(_responds(body=_terms_body(**overrides))),
+    )
+
+    assert terms.settleable is settleable
+    assert terms.proposed_outcome_id == proposed_outcome_id
+    if proposed_outcome_id is not None:
+        assert isinstance(terms.proposed_outcome_id, uuid.UUID)
 
 
 # --- #114: the client is the process's, not the call's ---------------------
@@ -512,13 +545,85 @@ def test_market_terms_without_a_status_cannot_be_built() -> None:
     """The dataclass holds `_parse`'s line: a default of "open" would make a
     status nobody supplied tradeable on every other construction path.
     """
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match=r"missing .*'status'"):
         _terms().MarketTerms(  # type: ignore[call-arg]
             market_id=_MARKET_ID,
             liquidity_b=None,
             seed_subsidy=None,
             published_at=None,
             outcomes=[],
+            proposed_outcome_id=None,
+            settleable=False,
+        )
+
+
+def _without(field: str) -> dict[str, object]:
+    """Every `MarketTerms` field but one, so the only thing missing is it."""
+    fields: dict[str, object] = {
+        "market_id": _MARKET_ID,
+        "status": "approved",
+        "liquidity_b": None,
+        "seed_subsidy": None,
+        "published_at": None,
+        "outcomes": [],
+        "proposed_outcome_id": None,
+        "settleable": False,
+    }
+    del fields[field]
+    return fields
+
+
+@pytest.mark.parametrize("field", ["settleable", "proposed_outcome_id"])
+def test_market_terms_without_a_settlement_field_cannot_be_built(field: str) -> None:
+    """ADR 0019 gives `settleable` no default: `False` hides a broken deploy as
+    a window that never closes, and `True` pays out inside it. The `match`
+    makes this pass only for a missing field, not an unknown one.
+    """
+    with pytest.raises(TypeError, match=rf"missing .*'{field}'"):
+        _terms().MarketTerms(**_without(field))
+
+
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        (
+            "settleable is absent",
+            {k: v for k, v in _terms_body().items() if k != "settleable"},
+        ),
+        # Truthy: coerced, it would pay out inside the dispute window.
+        ("settleable is the string false", _terms_body(settleable="false")),
+        # `bool` subclasses `int`, so `isinstance(v, int)` would take this.
+        ("settleable is the number 0", _terms_body(settleable=0)),
+        ("settleable is null", _terms_body(settleable=None)),
+        (
+            "proposed_outcome_id is absent",
+            {k: v for k, v in _terms_body().items() if k != "proposed_outcome_id"},
+        ),
+        (
+            "proposed_outcome_id is not a uuid",
+            _terms_body(proposed_outcome_id="not-a-uuid"),
+        ),
+        # `uuid.UUID(int=7)` would take it.
+        ("proposed_outcome_id is a small number", _terms_body(proposed_outcome_id=7)),
+        # `str()` of it is 32 hex digits, which `uuid.UUID` accepts.
+        (
+            "proposed_outcome_id is a 32-digit number",
+            _terms_body(proposed_outcome_id=12345678901234567890123456789012),
+        ),
+    ],
+)
+async def test_a_malformed_settlement_field_is_unavailable(
+    label: str, body: object
+) -> None:
+    """Each body differs from a valid one in exactly this key, so nothing
+    else can be what refuses it. A 503 on every pull, the trade path's
+    included (ADR 0017's amendment).
+    """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            terms_client=terms_client_over(_responds(body=body)),
         )
 
 
@@ -664,3 +769,193 @@ async def test_the_memory_is_bounded_and_forgets_the_oldest_first() -> None:
     with pytest.raises(_errors().MarketNotFound):
         await upstream.fetch(ids[0])
     assert upstream.calls == calls_after_filling + 1, "the bound is above 10,000"
+
+
+# --- [3.4] #12: mark_settled, the settlement's last step -------------------
+async def _mark_settled(
+    transport: httpx.MockTransport, *, access_token: str | None = None
+) -> None:
+    return await _terms().mark_settled(
+        _MARKET_ID,
+        access_token=access_token if access_token is not None else _token(),
+        terms_client=terms_client_over(transport),
+    )
+
+
+async def test_mark_settled_posts_to_settle_with_the_token_and_no_body() -> None:
+    """DECISIONS.md, "`market_terms.mark_settled` accepts only a `200`": the
+    administrator's token forwarded, and nothing in the body for market_service
+    to read.
+    """
+    token = _token()
+    seen: list[httpx.Request] = []
+
+    result = await _mark_settled(_responds(record=seen), access_token=token)
+
+    assert result is None
+    assert len(seen) == 1
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == f"/markets/{_MARKET_ID}/settle"
+    assert seen[0].content == b""
+    assert seen[0].headers["Authorization"] == f"Bearer {token}"
+
+
+async def test_mark_settled_does_not_read_the_body_of_a_200() -> None:
+    """The status code is the whole answer, and `MarketOut`'s money fields are
+    JSON numbers that must stay off the money path."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    assert await _mark_settled(httpx.MockTransport(handler)) is None
+
+
+def _answers(status_code: int, code: str | None = None) -> httpx.MockTransport:
+    """A transport answering every request with this status and error code."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if code is None:
+            return httpx.Response(status_code)
+        return httpx.Response(status_code, json={"error": {"code": code}})
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        pytest.param(_answers(401, "invalid_token"), id="401"),
+        pytest.param(_answers(403, "not_an_administrator"), id="403"),
+        pytest.param(_answers(404, "market_not_found"), id="404"),
+        pytest.param(_answers(409, "market_not_approved"), id="409 not approved"),
+        pytest.param(_answers(409, "dispute_window_open"), id="409 window open"),
+        pytest.param(_answers(422, "validation_error"), id="422"),
+        pytest.param(_answers(500, "internal_error"), id="500"),
+        pytest.param(_answers(503, "unavailable"), id="503"),
+        # "Accepts only a 200": a success that is not one confirms nothing.
+        pytest.param(_answers(204), id="204"),
+        pytest.param(_raises(httpx.ConnectError("nope")), id="connect error"),
+        pytest.param(_raises(httpx.ReadTimeout("slow")), id="read timeout"),
+    ],
+)
+async def test_every_answer_but_200_is_settlement_unconfirmed(
+    transport: httpx.MockTransport,
+) -> None:
+    """The payouts have committed by now, so every failure means the same
+    thing and has the same remedy: repeat the request. A 401 or a 404 mapped
+    as `fetch` maps them would say nothing happened.
+    """
+    with pytest.raises(_errors().SettlementUnconfirmed):
+        await _mark_settled(transport)
+
+
+async def test_settlement_unconfirmed_is_a_503_named_settlement_unconfirmed() -> None:
+    """The code a client acts on, from DECISIONS.md."""
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _mark_settled(_answers(409, "dispute_window_open"))
+
+    assert isinstance(raised.value, _errors().SettlementUnconfirmed)
+    assert raised.value.status_code == 503
+    assert raised.value.code == "settlement_unconfirmed"
+
+
+class _BothRoutes:
+    """market_service answering the terms GET and the settle POST, each with
+    its own status code, counting the calls that reach each."""
+
+    def __init__(self, *, get_status: int = 200, post_status: int = 200) -> None:
+        self.get_status = get_status
+        self.post_status = post_status
+        self.gets = 0
+        self.posts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                self.posts += 1
+                return httpx.Response(self.post_status, json={})
+            self.gets += 1
+            if self.get_status == 200:
+                return httpx.Response(200, json=_terms_body())
+            return httpx.Response(self.get_status, json={})
+
+        self.client = terms_client_over(httpx.MockTransport(handler))
+
+
+async def test_a_404_from_mark_settled_is_not_remembered() -> None:
+    """A 404 here comes from a market whose book exists, so it says nothing
+    about whether the market exists."""
+    upstream = _BothRoutes(post_status=404)
+    with pytest.raises(_errors().SettlementUnconfirmed):
+        await _terms().mark_settled(
+            _MARKET_ID, access_token=_token(), terms_client=upstream.client
+        )
+
+    terms = await _terms().fetch(
+        _MARKET_ID, access_token=_token(), terms_client=upstream.client
+    )
+
+    assert terms.market_id == _MARKET_ID
+    assert upstream.gets == 1
+
+
+async def test_a_remembered_404_does_not_stop_mark_settled() -> None:
+    """A 404 a trade's fetch saw does not answer for market_service here."""
+    upstream = _BothRoutes(get_status=404)
+    with pytest.raises(_errors().MarketNotFound):
+        await _terms().fetch(
+            _MARKET_ID, access_token=_token(), terms_client=upstream.client
+        )
+
+    result = await _terms().mark_settled(
+        _MARKET_ID, access_token=_token(), terms_client=upstream.client
+    )
+
+    assert result is None
+    assert upstream.posts == 1
+
+
+@pytest.mark.parametrize(
+    ("transport", "cause"),
+    [
+        pytest.param(_answers(409, "dispute_window_open"), "409", id="a status code"),
+        pytest.param(
+            _raises(httpx.ConnectError("nope")), "ConnectError", id="an exception"
+        ),
+    ],
+)
+async def test_a_mark_settled_failure_is_logged_at_error_naming_the_cause(
+    caplog: pytest.LogCaptureFixture, transport: httpx.MockTransport, cause: str
+) -> None:
+    """Money has moved and the market is not marked until a person repeats the
+    request, so this is the one 503 above WARNING. Captured at DEBUG, so it is
+    the record's own level that is asserted, not the capture's.
+    """
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(_errors().SettlementUnconfirmed):
+            await _mark_settled(transport)
+
+    errors = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+    ]
+    assert any(
+        str(_MARKET_ID) in message and cause in message for message in errors
+    ), f"no ERROR record names {_MARKET_ID} and {cause}: {caplog.records}"
+
+
+async def test_a_fetch_failure_logs_nothing_at_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every other 503 means the dependency is unwell and is logged at WARNING
+    by the handler; at ERROR a market_service restart would bury real errors.
+    """
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(_errors().MarketTermsUnavailable):
+            await _terms().fetch(
+                _MARKET_ID,
+                access_token=_token(),
+                terms_client=terms_client_over(_answers(503, "unavailable")),
+            )
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
