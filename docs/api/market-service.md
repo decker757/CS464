@@ -904,7 +904,7 @@ GET /markets/overview?status=closed&limit=50
   then by `id`, with or without a filter. So the `closed` tab reads oldest
   close first: the one waiting longest for an administrator. This differs from
   `GET /public/markets` on purpose. Settled markets sort last, after all of
-  those, once [3.4] #12 adds `settled`.
+  those, in the unfiltered view.
 - **`creator_id`** is on every row, so the caller can tell their own by
   comparing it with their own id.
 
@@ -932,7 +932,7 @@ Pages read in turn do not repeat or skip a market that kept its place:
   after the point you have reached, and not at all if it sorts before it.
 - Two moves the order cannot see. A draft's `close_time` changes as its
   creator edits it, so a draft edited while you page can appear twice or be
-  missed. Once `settled` exists, a market settled while you page moves to the
+  missed. A market settled while you page moves to the
   end and can appear twice. Show each `id` once, and start again without a
   cursor for an exact list.
 

@@ -5099,6 +5099,9 @@ SETTLED exists (#227). Whichever of #210 and #227 merges second switches it on,
 in one line. If #210 records the order in an entry of its own, the two must
 agree.
 
+Switched on in #227: `_is_settled` is now
+`Market.status == MarketStatus.SETTLED`.
+
 **Reversal trigger.** A second terminal status.
 
 ---
