@@ -821,6 +821,7 @@ def _answers(status_code: int, code: str | None = None) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+# These cases guard against reusing fetch's status mapping, so they stay separate.
 @pytest.mark.parametrize(
     "transport",
     [
@@ -914,6 +915,7 @@ async def test_a_remembered_404_does_not_stop_mark_settled() -> None:
     assert upstream.posts == 1
 
 
+# Naming the cause is why the log lives in mark_settled ("accepts only a `200`").
 @pytest.mark.parametrize(
     ("transport", "cause"),
     [
