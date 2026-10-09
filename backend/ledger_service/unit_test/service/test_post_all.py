@@ -238,50 +238,43 @@ async def test_a_batch_writes_every_movement_balanced_in_input_order(
     await assert_ledger_balances(session)
 
 
-async def test_a_batch_that_balances_only_in_total_is_refused(
-    session: AsyncSession,
+@pytest.mark.parametrize("shape", ["balanced_only_in_total", "a_zero_leg"])
+async def test_a_batch_with_an_unbalanced_movement_is_refused(
+    session: AsyncSession, shape: str
 ) -> None:
-    """Each movement balances on its own, not the batch as a whole.
+    """Each movement balances on its own, not the batch as a whole, and no
+    leg may be zero.
 
-    Refused by the balance check: the batch is non-empty with distinct keys,
-    so `MalformedBatch` cannot answer first.
+    `balanced_only_in_total`: two movements a tick off in opposite directions.
+    `a_zero_leg`: three legs that sum to zero, one of them zero, which only
+    `_require_balanced`'s zero-leg rule refuses; a per-movement `sum != 0`
+    would let it through to `ck_entries_amount_nonzero`, a bare
+    `IntegrityError`. Both batches are non-empty with distinct keys, so
+    `MalformedBatch` cannot answer first.
     """
     (pool,) = await _new_accounts(session, AccountKind.MARKET_POOL, 1)
     first_winner, second_winner = await _new_accounts(session, AccountKind.USER, 2)
     keys = [_key(), _key()]
-    movements = [
-        _movement(keys[0], [_leg(pool, "-10.0001"), _leg(first_winner, "10.0000")]),
-        _movement(keys[1], [_leg(pool, "-5.1234"), _leg(second_winner, "5.1235")]),
-    ]
+    batches = {
+        "balanced_only_in_total": [
+            _movement(keys[0], [_leg(pool, "-10.0001"), _leg(first_winner, "10.0000")]),
+            _movement(keys[1], [_leg(pool, "-5.1234"), _leg(second_winner, "5.1235")]),
+        ],
+        "a_zero_leg": [
+            _transfer(keys[0], pool, first_winner, "2.2222"),
+            _movement(
+                keys[1],
+                [
+                    _leg(pool, "-5.4321"),
+                    _leg(first_winner, "5.4321"),
+                    _leg(second_winner, "0"),
+                ],
+            ),
+        ],
+    }
 
     with pytest.raises(errors.UnbalancedTransaction):
-        await posting.post_all(session, movements)
-
-    async with get_session_factory()() as other:
-        assert await _keys_written(other, keys) == 0
-
-
-async def test_a_zero_leg_in_one_movement_is_refused(session: AsyncSession) -> None:
-    """Three legs that sum to zero, one of them zero: only `_require_balanced`'s
-    zero-leg rule refuses this. A per-movement `sum != 0` would let it through
-    to `ck_entries_amount_nonzero`, a bare `IntegrityError`."""
-    (pool,) = await _new_accounts(session, AccountKind.MARKET_POOL, 1)
-    first_winner, second_winner = await _new_accounts(session, AccountKind.USER, 2)
-    keys = [_key(), _key()]
-    movements = [
-        _transfer(keys[0], pool, first_winner, "2.2222"),
-        _movement(
-            keys[1],
-            [
-                _leg(pool, "-5.4321"),
-                _leg(first_winner, "5.4321"),
-                _leg(second_winner, "0"),
-            ],
-        ),
-    ]
-
-    with pytest.raises(errors.UnbalancedTransaction):
-        await posting.post_all(session, movements)
+        await posting.post_all(session, batches[shape])
 
     async with get_session_factory()() as other:
         assert await _keys_written(other, keys) == 0
@@ -354,7 +347,9 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
     replayed = await posting.post_all(session, movements)
 
     assert [r.id for r in replayed] == [o.id for o in originals]
-    account_ids = {leg.account.id for m in movements for leg in m.legs}
+    account_ids: set[uuid.UUID] = set()
+    for movement in movements:
+        account_ids.update(leg.account.id for leg in movement.legs)
     async with get_session_factory()() as other:
         assert await _ledger_counts(other) == before
         for account_id in account_ids:
@@ -789,18 +784,18 @@ async def test_the_lookup_overdraft_and_stamp_reads_run_under_every_lock(
 
 
 def _hide_the_first_lookup(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Make `list_by_idempotency_keys`'s first call find nothing, so the key is
+    """Make `_list_by_idempotency_keys`'s first call find nothing, so the key is
     met only at the INSERT, as two sessions sharing no account meet it.
     Returns a one-item counter of the calls. Later calls, the re-read among
     them if it uses this function, go to the real one."""
-    real = posting.list_by_idempotency_keys
+    real = posting._list_by_idempotency_keys
     calls = [0]
 
     async def miss_the_first(own: AsyncSession, keys: list[str]):
         calls[0] += 1
         return [] if calls[0] == 1 else await real(own, keys)
 
-    monkeypatch.setattr(posting, "list_by_idempotency_keys", miss_the_first)
+    monkeypatch.setattr(posting, "_list_by_idempotency_keys", miss_the_first)
     return calls
 
 
@@ -889,10 +884,14 @@ async def _statements_for_a_batch_of(session: AsyncSession, size: int) -> int:
 
 
 async def test_statements_grow_by_two_per_movement(session: AsyncSession) -> None:
-    """One lock and one stamp probe per new account, and nothing else per
-    movement: one lookup, one INSERT per table. Both sizes stay under 500
+    """At most one lock and one stamp probe per new account, and nothing else
+    per movement: one lookup, one INSERT per table. Both sizes stay under 500
     movements, so the entries fit in one insert page of 1,000 rows."""
     smaller = await _statements_for_a_batch_of(session, 100)
     larger = await _statements_for_a_batch_of(session, 200)
 
-    assert larger - smaller == 2 * 100
+    # A ceiling, not an equality: option B, one stamp statement over the
+    # union, must land with no assertion changed. DECISIONS.md, "`post_all`
+    # stamps from one probe per locked account, and movement *i* lands at the
+    # first stamp plus *i* µs". A probe per movement is 3 and goes red.
+    assert larger - smaller <= 2 * 100

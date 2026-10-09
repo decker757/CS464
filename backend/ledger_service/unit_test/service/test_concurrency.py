@@ -222,3 +222,63 @@ async def test_a_retry_racing_its_original_is_answered_with_its_transaction(
 
     account = await accounts.ensure(session, AccountKind.USER, user_id)
     assert await accounts.balance_of(session, account.id) == ZERO
+
+
+async def _batch_debit(
+    user_id: uuid.UUID, amount: Decimal, start: asyncio.Barrier
+) -> list[Transaction] | InsufficientFunds:
+    """One `post_all` debiting the user to PLATFORM, in its own session,
+    connected and waiting at `start` before the call (ADR 0015). Returns the
+    refusal rather than raising, so the caller can count both outcomes."""
+    async with get_session_factory()() as own:
+        user = await accounts.ensure(own, AccountKind.USER, user_id)
+        platform = await accounts.ensure_platform(own)
+        movement = posting.Movement(
+            idempotency_key=f"batch-debit:{uuid.uuid4()}",
+            kind=TransactionKind.TRADE_BUY,
+            legs=[Leg(account=user, amount=-amount), Leg(account=platform, amount=amount)],
+        )
+        await own.connection()
+        await start.wait()
+        try:
+            return await posting.post_all(own, [movement])
+        except InsufficientFunds as refusal:
+            return refusal
+
+
+async def test_two_batches_racing_for_one_balance_debit_it_once(
+    session: AsyncSession,
+) -> None:
+    """Two `post_all` calls each debit 60% of one user's balance at once.
+
+    The second must wait at `accounts.lock` and judge its overdraft against
+    the first's debit. Remove that lock call from `post_all` and both read
+    the funded balance, both write, and the user ends negative.
+    """
+    user_id = uuid.uuid4()
+    funded = Decimal("123.4567")
+    debit = Decimal("74.0740")  # 60% of `funded` is 74.07402
+    await _grant(user_id, funded)
+    start = asyncio.Barrier(2)
+
+    outcomes = await asyncio.gather(
+        _batch_debit(user_id, debit, start), _batch_debit(user_id, debit, start)
+    )
+
+    returned = [outcome for outcome in outcomes if isinstance(outcome, list)]
+    refused = [outcome for outcome in outcomes if isinstance(outcome, InsufficientFunds)]
+    assert len(returned) == 1
+    assert len(refused) == 1
+    assert refused[0].balance == funded - debit
+    assert refused[0].required == debit
+
+    account = await accounts.ensure(session, AccountKind.USER, user_id)
+    debits = (
+        await session.execute(
+            select(func.count())
+            .select_from(Entry)
+            .where(Entry.account_id == account.id, Entry.amount < ZERO)
+        )
+    ).scalar_one()
+    assert debits == 1
+    assert await accounts.balance_of(session, account.id) >= ZERO
