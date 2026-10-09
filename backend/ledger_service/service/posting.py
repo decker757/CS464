@@ -202,7 +202,7 @@ def _transaction_of(
     return transaction, entries
 
 
-def _refuse_malformed_batch(movements: list[Movement]) -> None:
+def _refuse_if_malformed_batch(movements: list[Movement]) -> None:
     """Raise `MalformedBatch` for no movements, or one key named twice. Before
     any SQL: an empty batch would still commit the caller's pending writes, and
     a repeated key would surface as the unique index's bare `IntegrityError`.
@@ -240,6 +240,14 @@ async def _replay_batch(
     return replayed
 
 
+async def _list_by_idempotency_keys(
+    session: AsyncSession, idempotency_keys: list[str]
+) -> list[Transaction]:
+    """The transactions these keys already named, in no particular order."""
+    stmt = select(Transaction).where(Transaction.idempotency_key.in_(idempotency_keys))
+    return list((await session.execute(stmt)).scalars())
+
+
 async def find_by_idempotency_key(
     session: AsyncSession, idempotency_key: str
 ) -> Transaction | None:
@@ -250,14 +258,6 @@ async def find_by_idempotency_key(
     """
     stmt = select(Transaction).where(Transaction.idempotency_key == idempotency_key)
     return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def list_by_idempotency_keys(
-    session: AsyncSession, idempotency_keys: list[str]
-) -> list[Transaction]:
-    """The transactions these keys already named, in no particular order."""
-    stmt = select(Transaction).where(Transaction.idempotency_key.in_(idempotency_keys))
-    return list((await session.execute(stmt)).scalars())
 
 
 async def post(
@@ -379,7 +379,7 @@ async def post_all(
     *i* µs. `now` is one floor for the batch. DECISIONS.md, "`posting.post_all`
     takes a list of `Movement`s, commits once, and keeps `post`'s SAVEPOINT".
     """
-    _refuse_malformed_batch(movements)
+    _refuse_if_malformed_batch(movements)
 
     keys = [movement.idempotency_key for movement in movements]
     batch_legs = [_quantized_legs(movement.legs) for movement in movements]
@@ -393,11 +393,13 @@ async def post_all(
     # Recorded on entry, as in `post`.
     caller_pending = has_pending_writes(session)
 
-    all_legs = [leg for legs in batch_legs for leg in legs]
+    all_legs: list[Leg] = []
+    for legs in batch_legs:
+        all_legs.extend(legs)
     account_ids = {leg.account.id for leg in all_legs}
     await accounts.lock(session, list(account_ids))
 
-    existing = await list_by_idempotency_keys(session, keys)
+    existing = await _list_by_idempotency_keys(session, keys)
     if existing:
         return await _replay_batch(
             session, keys, fingerprints, existing, caller_pending=caller_pending
@@ -431,7 +433,7 @@ async def post_all(
     except IntegrityError:
         # `post`'s race handler over the batch: a key raced on accounts the
         # locks did not share. The savepoint kept the caller's earlier work.
-        existing = await list_by_idempotency_keys(session, keys)
+        existing = await _list_by_idempotency_keys(session, keys)
         if not existing:
             raise
         return await _replay_batch(
