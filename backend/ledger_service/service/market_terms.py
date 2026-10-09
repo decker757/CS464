@@ -8,6 +8,7 @@ drives the real request and parsing through `httpx.MockTransport`.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,8 +17,15 @@ from decimal import Decimal
 import httpx
 
 from core.config import get_settings
-from core.errors import MarketNotFound, MarketTermsUnavailable, NotAuthenticated
+from core.errors import (
+    MarketNotFound,
+    MarketTermsUnavailable,
+    NotAuthenticated,
+    SettlementUnconfirmed,
+)
 from core.not_found_cache import NotFoundCache
+
+_log = logging.getLogger(__name__)
 
 # D-030: stated rather than inherited, though it equals httpx's default, so a
 # hung market_service cannot hold the caller's request open. No test can catch
@@ -56,7 +64,9 @@ class MarketTerms:
     `books.ensure_open` refuses a null one.
 
     `status` must never get a default: it would hand out "open" for a status
-    nobody supplied, a silent fail-open on the money gate.
+    nobody supplied, a silent fail-open on the money gate. Neither does
+    `settleable`: `False` hides a broken deploy as a window that never
+    closes, and `True` pays out inside it (ADR 0019).
     """
 
     market_id: uuid.UUID
@@ -65,6 +75,8 @@ class MarketTerms:
     seed_subsidy: Decimal | None
     published_at: datetime | None
     outcomes: list[OutcomeTerms]
+    proposed_outcome_id: uuid.UUID | None
+    settleable: bool
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -115,6 +127,25 @@ def _to_uuid(value: object) -> uuid.UUID:
     return uuid.UUID(value)
 
 
+def _to_settleable(value: object) -> bool:
+    """`settleable`, which must be a JSON boolean.
+
+    Never coerced: `"false"` is truthy, and reading it as true would pay out
+    inside the dispute window. `0` is refused too, since `bool` is the only
+    type the contract sends.
+    """
+    if not isinstance(value, bool):
+        raise TypeError(f"{type(value).__name__} is not a boolean")
+    return value
+
+
+def _to_proposed_outcome_id(value: object) -> uuid.UUID | None:
+    """`proposed_outcome_id`, where null means no outcome is proposed."""
+    if value is None:
+        return None
+    return _to_uuid(value)
+
+
 def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
     """A decoded body to `MarketTerms`, or `MarketTermsUnavailable`.
 
@@ -153,6 +184,12 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
             for o in body.get("outcomes", [])
         ]
 
+        # Indexed like `published_at`: the contract always sends both keys,
+        # so a missing one is a broken deploy, not a default. DECISIONS.md,
+        # "`MarketTerms` carries `proposed_outcome_id` and `settleable`".
+        proposed_outcome_id = _to_proposed_outcome_id(body["proposed_outcome_id"])
+        settleable = _to_settleable(body["settleable"])
+
         # The body's own id must match: a proxy answering with another
         # market's body would otherwise open this book with that market's `b`,
         # permanently.
@@ -167,6 +204,8 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
             seed_subsidy=seed_subsidy,
             published_at=published_at,
             outcomes=outcomes,
+            proposed_outcome_id=proposed_outcome_id,
+            settleable=settleable,
         )
     except (
         ArithmeticError,  # InvalidOperation, from Decimal
@@ -250,3 +289,42 @@ async def fetch(
         raise MarketTermsUnavailable from exc
 
     return _parse(market_id, body)
+
+
+async def mark_settled(
+    market_id: uuid.UUID,
+    *,
+    access_token: str,
+    terms_client: httpx.AsyncClient,
+) -> None:
+    """Tell market_service the payouts committed: `POST /markets/{id}/settle`.
+
+    Returns `None` on a `200` and raises `SettlementUnconfirmed` on anything
+    else, including `httpx.RequestError`. The response body is never read, and
+    the 404 cache is neither consulted nor fed: a 404 here comes from a market
+    whose book exists. Logs the failure at ERROR, the only 503 in the service
+    that is, because it leaves money moved and the market unmarked until a
+    person repeats the request. DECISIONS.md, "`market_terms.mark_settled`
+    accepts only a `200`".
+    """
+    try:
+        response = await terms_client.post(
+            f"/markets/{market_id}/settle",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    except httpx.RequestError as exc:
+        _log.error(
+            "settlement of market %s was not confirmed: %s",
+            market_id,
+            type(exc).__name__,
+        )
+        raise SettlementUnconfirmed from exc
+
+    if response.status_code != 200:
+        _log.error(
+            "settlement of market %s was not confirmed: market_service "
+            "answered %s",
+            market_id,
+            response.status_code,
+        )
+        raise SettlementUnconfirmed
