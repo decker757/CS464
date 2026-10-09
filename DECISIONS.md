@@ -5743,10 +5743,12 @@ code. The trade latch then moves into PR 3.
 | 3 | ledger model: `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`, `ledger.market_results` and revision `0002`, the allowlist line for `MarketResult`, the migration-test edits, `docs/api/ledger-service.md`'s kinds line | 2 | |
 | 5 | the ledger's audit seam, `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, the allowlist line removed, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade, window-boundary and audit tests | 4 | |
 
-No commit in PR 3 fails the suite. The adoption tests a second revision ends
-are deleted first. The model and revision `0002` then land in one commit,
-because either alone fails the migration guard. The kept refusal test comes
-after them, word for word as #246's, so the two branches' hunks agree.
+The kinds, the model and revision `0002` land in one commit, because the model
+and the revision alone each fail the migration guard. That commit fails the
+legacy adoption tests a second revision ends, and the history's table-set test,
+until the next commit updates them, as #246's did. That commit deletes the
+adoption tests and adds the kept refusal test, word for word as #246's, so the
+two branches' hunks agree.
 
 ---
 
