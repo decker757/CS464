@@ -342,6 +342,70 @@ waits on his agreement.
 > the same job. A speed measurement is **not** a reversal trigger. The 5-second
 > criterion is a budget this must meet, not the reason it exists.
 
+> **Amended 2026-10-09 by [3.4] #12. `post_all`'s shape is agreed.** The
+> section above says `post_all` runs `post`'s checks on each transaction, and
+> that its exact shape waits on decker757's agreement. The shape is now
+> agreed, and one check, the overdraft check, now runs across the batch
+> rather than per transaction. The two reasons for the batch (atomicity and
+> the lock), the keys and the reversal trigger still hold.
+>
+> ```python
+> post_all(session, movements: list[Movement], *, now=None) -> list[Transaction]
+> ```
+>
+> - `Movement` holds `post`'s keyword arguments as a frozen record:
+>   `idempotency_key`, `kind`, `legs`, `context`.
+> - Results come back in input order.
+> - `now` is one floor for the whole batch.
+> - `post_all` owns the batch's one commit.
+> - An empty batch, or two movements sharing a key, is `500
+>   malformed_batch`. No request supplies a batch. A repeated key is always
+>   a bug in the server, and so is an empty batch for any seed above one
+>   tick. A market seeded at exactly one tick, with no winners, could reach
+>   a zero pool, and its settlement would then fail this way and could not
+>   complete. That edge is accepted.
+> - Every account in the batch is locked once, ascending by id, through
+>   `accounts.lock`, after the caller's book lock. A settlement therefore
+>   holds every winner's account until it commits, and every trade by a
+>   winner queues behind it. It holds PLATFORM only when it posts a residue,
+>   and only then do grants and cold books' seeds queue behind it too.
+> - Each movement is checked for balance on its own. Overdrafts are checked
+>   once, with each USER account netted across the batch.
+> - The first stamp is one tick after the newest entry on any locked account,
+>   from one probe per account. Movement *i* is stamped at that plus *i* µs,
+>   on every leg.
+> - Pending writes are checked before a match is classified. The batch
+>   replays only when every key exists, every fingerprint matches and the
+>   session is clean. Any other match is `idempotency_key_reused`, and
+>   nothing is written.
+> - It keeps `post`'s SAVEPOINT and the re-read after an `IntegrityError`,
+>   so a race on a key answers with an error code, not a bare 500.
+> - `post` is not rewritten as `post_all` of one movement. They share
+>   helpers, not control flow.
+>
+> DECISIONS.md: "`posting.post_all` takes a list of `Movement`s, commits
+> once, and keeps `post`'s SAVEPOINT", "An empty batch, or one key twice in a
+> batch, is `MalformedBatch`, a 500", "`post_all` asks about pending writes
+> before it classifies a match, and replays only a whole batch", "`post_all`
+> nets each USER account across the whole batch, through
+> `_refuse_overdrafts`", "`post_all` locks the union of the batch's accounts
+> once, ascending, after the caller's book lock", "`post_all` stamps from one
+> probe per locked account, and movement *i* lands at the first stamp plus
+> *i* µs", "`post` is not `post_all` of one movement" and "PR 4a extracts
+> `post`'s helpers ahead of `post_all`, as its own refactor".
+>
+> **Reversal triggers.** This section's own trigger still governs the batch.
+> Three of the choices above carry their own:
+>
+> - A batch that debits a USER account and later credits it. Netting would
+>   accept a feed with a negative `balance_after` between the two, so the
+>   check becomes a running balance in movement order.
+> - PR 5's 5-second test misses its budget. The stamp probes then become one
+>   statement over the union, in a refactor PR of its own.
+> - A market seeded at exactly one tick is created. The edge above is then
+>   live, and needs a minimum seed in market_service's validation, or a
+>   decision that settlement may commit its record and audit entry alone.
+
 ### Stamps continue every account's feed
 
 The first payout is stamped one tick after the newest entry on **any** of the
@@ -485,6 +549,37 @@ that wrote nothing. Two facts keep this from happening, and both must stay true:
 
 Move the audit insert ahead of the record, or make the record a Core insert,
 and the second fact is gone.
+
+> **Amended 2026-10-09 by [3.4] #12. The first trap, stated precisely.** The
+> trap above says the record must be staged before the audit insert, and that
+> moving the audit insert ahead of it removes the guard. The order does not
+> matter. `post_all` records `has_pending_writes` once, on entry, and by then
+> both writes have been issued, in whatever order.
+>
+> What the guard needs is narrower: **the settlement record, as an ORM write,
+> pending when `post_all` is entered.** It is unsafe if the record:
+>
+> - becomes a Core `insert()`, which `has_pending_writes` cannot see;
+> - is staged on some paths and not others, so a path without it enters
+>   `post_all` clean; or
+> - is committed before `post_all`, so nothing is pending when the guard is
+>   read.
+>
+> In each case, a settlement that got past the latch would replay with only
+> the Core audit insert pending. The replay's commit would then put a
+> `market.settled` entry in the log for a settlement that wrote nothing.
+>
+> The latch, checked under the book lock before anything is written, is still
+> the first of the two facts. `post_all` checks pending writes before it
+> classifies a match, so the guard fires whether or not a bypassed
+> settlement's winners match the first settlement's.
+>
+> DECISIONS.md: "`post_all` asks about pending writes before it classifies a
+> match, and replays only a whole batch".
+>
+> **Reversal trigger:** `has_pending_writes` comes to see a Core insert, or
+> `post_all` reads it anywhere other than on entry. The order then has to be
+> re-examined.
 
 **The pool may dip below zero partway through the batch.** `_refuse_overdrafts`
 checks USER accounts only, so MARKET_POOL and PLATFORM are never refused. Paying

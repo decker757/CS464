@@ -769,3 +769,7 @@ rather than a response any request can provoke. `pending_writes_on_replay`
 (500) is the same shape one layer down, in `service/posting.py` — a caller
 of the write primitive reaching its replay branch with work still pending,
 which every caller this service has is built not to do.
+`malformed_batch` (500) is the same again, in the batch form of that
+primitive (`posting.post_all`, new in [3.4] #12): a batch with no movements,
+or two movements sharing an idempotency key. The server builds every batch,
+so no request can provoke it.
