@@ -261,6 +261,12 @@ warns about it for its own reasons.
 Whoever lands [3.4] #12 adds SETTLED to `PublicMarketStatus` in the same
 commit as `MarketStatus`, and this entry is the second place that says so.
 
+> **Amended 2026-10-04 by [3.4] #12.** Settlement reads the same public detail
+> for its status and approved outcome, but it never asks the open-or-not
+> question this record is about. It accepts `approved` or `settled` and gates
+> on nothing else, so it is a second reader of the projection and not a second
+> trade gate ([ADR 0019](0019-settlement-across-services.md)).
+
 ## Consequences
 
 **market_service is now a runtime and availability dependency of every trade.**
