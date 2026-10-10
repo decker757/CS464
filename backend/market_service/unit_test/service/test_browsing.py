@@ -406,8 +406,6 @@ async def test_a_decided_market_carries_its_winning_outcome(
 
     detail = await browsing.get_published(session, market.id)
 
-    assert detail.proposed_outcome_id is not None
-    assert detail.proposed_outcome_id in {outcome.id for outcome in detail.outcomes}
     assert detail.proposed_outcome_id == market.outcomes[1].id
 
 
