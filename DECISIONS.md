@@ -3789,6 +3789,16 @@ which the test in "The price read exists once, and the price quantizer is in
 `core/pricing.py`" states: a reader needing something it does not use to
 decide its answer.
 
+*Noted 2026-10-10 by [3.4] #12, in PR 7: the statement also outer-joins
+`ledger.market_results`, so the one snapshot covers settlement too. A
+settlement committing mid-read is either seen whole (the payout in the
+balance, the rows settled) or not at all (no payout, the rows valued at the
+frozen book). Read separately, a payout could reach the balance while its
+shares were still valued: the double count "A settled position shows `result`
+and `payout`, and its value fields are null" exists to prevent. See "A settled
+row's payout is its quantity, and its result comes from
+`ledger.market_results`, joined in the portfolio's one statement".*
+
 ---
 
 ### D-NEW — The portfolio carries ids only, and makes no call to market_service
@@ -3892,6 +3902,14 @@ entry with it.
 **Notes.** #12's note carries the trap: a settlement that pays out and leaves
 positions at `quantity > 0` has the portfolio count those shares twice.
 
+*Fulfilled 2026-10-10 by [3.4] #12, in PR 7. This entry is history. A settled
+row carries `result` and `payout`, and its value fields are null: see "A
+settled position shows `result` and `payout`, and its value fields are null"
+and "A settled row's payout is its quantity, and its result comes from
+`ledger.market_results`, joined in the portfolio's one statement". The Notes'
+trap is closed: positions keep `quantity > 0` after the payout, and the settled
+branch values them at nothing.*
+
 ---
 
 ### D-NEW — A user's holdings in one market are valued as one sequence of sales
@@ -3931,6 +3949,10 @@ and the split would be a rule nobody could check against a trade.
 **Reversal trigger.** A ticket that needs order-independent per-row values,
 or a trade route that sells several outcomes in one transaction — which makes
 the combined sale real, and the portfolio should then value that.
+
+*Noted 2026-10-10 by [3.4] #12, in PR 7: "[L-1] #38 calls the same function"
+now means through the portfolio's valuation, which leaves settled markets out
+before it calls `liquidation_values_of`. See ADR 0018's 2026-10-10 amendment.*
 
 ---
 
@@ -4110,6 +4132,12 @@ settlement*: a test pinned to a shape #12 has not chosen.
 
 **Reversal trigger.** #12 lands. Its row either renders through the generic
 path or adds a mapping, and this entry is then history.
+
+*Fulfilled 2026-10-10 by [3.4] #12, in PR 7. This entry is history. The payout
+took the mapping branch, not the generic one: the row builder maps
+`settlement`, per "A payout's history row is kind `settlement`, with market,
+outcome and quantity". The stand-in test for an unrecognised kind still pins
+"any other kind renders with them null", and stays.*
 
 ---
 
@@ -4419,6 +4447,11 @@ once the member exists. The trader browse reads `PublicMarketStatus`, so #12
 must add it there too, or settled markets vanish from `/public/markets`: that
 is `_visible`'s allowlist working as designed. Reversal trigger: none. It
 reverts by #12 landing.
+
+*Fulfilled 2026-10-10 by [3.4] #12. This entry is history. SETTLED reached
+`MarketStatus`, `PublicMarketStatus`, the overview's filter and zero-filled
+counts, and the trader browse in PR 1 (#227). It is marked here in PR 7, with
+the stack's other two.*
 
 ---
 
@@ -5249,6 +5282,13 @@ stand.*
 row 6a, making twelve PRs. See "PR 6a moves `actor_of` into
 `shared/audit.py`, ahead of the route, as its own refactor" below. The other
 rows, the naming and the order stand.*
+
+*Amended 2026-10-10 by [3.4] #12: PR 7 says `Refs #12`, not `Closes #12`.
+#12 has an open sub-issue, [FE][3.4] #216, and CLAUDE.md's Branches rule
+(`Refs` for "a ticket with open sub-issues") wins over this entry's "the last
+PR … says `Closes #12`". #12 closes when #216 lands. The #210 condition no
+longer decides it, since the switch landed in #227. The other rows, the naming
+and the order stand.*
 
 ---
 
@@ -6937,6 +6977,126 @@ settlement (ADR 0010).
 **Notes.** A client learns that a market is settled from market_service's
 status. The frontend already hides the trade control on any market that is
 not open, and a trade on a settled market is `409 market_closed`.
+
+---
+
+### D-NEW — A settled row's payout is its quantity, and its result comes from `ledger.market_results`, joined in the portfolio's one statement
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The portfolio's one statement outer-joins `ledger.market_results`
+on `market_id`. Every held row of a market with a record is a settled row:
+
+- `result` is `paid_out` where the row's outcome is the record's `outcome_id`,
+  and `worthless` otherwise.
+- `payout` is the row's `quantity` on a `paid_out` row, and `0.0000` on a
+  `worthless` one.
+
+A settled market's book is not valued. It skips
+`book_prices.refuse_unpriceable`, `liquidation_values_of` and the above-`q`
+check, and its rows add nothing to `positions_value`.
+
+**Why.**
+- *The payout is the quantity.* "A payout is quantity × 1, keyed per winner in
+  `user_id` order, and the residue is the last movement" pays exactly the
+  winning quantity, with no rounding. "`ledger.market_settlements` is the
+  latch, and positions and `q` are never written" leaves that quantity where
+  it was. So the quantity held is the amount paid. Reading it from the entry
+  would be a join for a number that is already on the row.
+- *The result is the ledger's own record.* "The portfolio carries ids only, and
+  makes no call to market_service" named #12's realized outcome as its
+  candidate trigger and said the answer should come from the settlement
+  record, not from a call. It does, so that entry's trigger does not fire.
+- *Settled markets skip the checks.* "A damaged book, or a position above `q`,
+  fails the whole portfolio with `market_book_incomplete`" fails the whole
+  read because `net_worth` is a sum, and a missing row makes it wrong. A
+  settled row adds nothing to that sum, so its book cannot make the total
+  wrong. Failing the read over that book would refuse a correct answer.
+- *The exclusion lives in the portfolio, not in `core/`.*
+  `liquidation_values_of` is a pure function of `q`, `b` and the holdings, and
+  knows nothing of settlement. The portfolio's valuation decides which markets
+  reach it. So [L-1] #38 must reuse the portfolio's valuation. Called alone,
+  `liquidation_values_of` values a settled market's shares at the frozen book,
+  on top of the payout already in the balance. ADR 0018's 2026-10-10
+  amendment says so.
+
+**Rejected.**
+- *Reading `payout` from the `settlement` entry.* A join through `transactions`
+  by key for every settled row, for a figure equal to `quantity` while the
+  payout rule holds.
+- *A `settled` flag on `liquidation_values_of`.* Market state inside core's
+  pure pricing. #38 would still have to know which markets are settled, which
+  is the portfolio's job.
+- *Keeping `refuse_unpriceable` and the above-`q` check on settled markets.*
+  The whole read would fail over a book none of whose figures reach the
+  response.
+
+**Reversal trigger.** The payout rule's: a share that pays something other
+than 1, or fees the platform keeps from the pool. Then `payout` is no longer
+`quantity`, and the row reads it from the entry.
+
+**Notes.** Like the latch's readers, the join does not filter on `kind`. Today
+`settled` is the only kind. When [BE] #221 adds a void, its rows reach this
+branch with no `outcome_id`, so #221 must add a `result` value of its own
+here. A settled row keeps `state_version`, the frozen book's last version. A
+position sold to zero is still left out, settled or not. A holder of both
+outcomes sees two rows, one `paid_out` and one `worthless`.
+
+---
+
+### D-NEW — `result` and `payout` are on every portfolio row, null until the market is settled
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `PortfolioPositionOut` always carries `result` and `payout`.
+Both are `null` on a market the ledger has not settled. `price`, `value` and
+`unrealized_pnl` become nullable, and are `null` on a settled row. Nothing is
+left out with `exclude_none`.
+
+**Why.** One row shape. A client branches on the value of `result`, not on
+whether a key is present. It is the history's rule too: `LedgerEntryOut`
+always sends its typed fields and nulls them where they do not apply ("A trade
+row's typed fields come from its kind and `context`; any other kind renders
+with them null"). `exclude_none` would also strip a settled row's `null`
+`price`, `value` and `unrealized_pnl`. That would give two shapes again, from
+the other side, and it would apply to the whole response.
+
+**Rejected.**
+- *Omitting `result` and `payout` until settlement*, by `exclude_none` or per
+  row. See above.
+- *`payout: "0.0000"` on an unsettled row.* Zero is what a `worthless` row was
+  paid. On an unsettled row it would claim a payout that has not happened.
+
+**Notes.** The shipped portfolio page types `price`, `value` and
+`unrealized_pnl` as `string` (`frontend/src/api/ledgerApi.ts:53-59`) and
+formats them unguarded (`frontend/src/pages/PortfolioPage.tsx:145-147`). A
+settled row hands those formatters `null`. The page needs a null guard before
+this stack merges into `dev`, whether or not [FE][3.4] #216's settled
+rendering is ready by then.
+
+---
+
+### D-NEW — `_trade_fields_of` keeps its name, and its docstring says it covers settlement
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** In PR 7 the history's row builder fills `settlement` rows. Its
+name stays `_trade_fields_of`, and its docstring says it covers the two trade
+kinds and `settlement`.
+
+**Why.** It is merged code. backend/CLAUDE.md: "Do not reorder or rename
+untouched code in a feature PR". CLAUDE.md: a refactor never shares a PR with
+a behaviour change. The name is now narrower than the function, but nothing it
+says is false. The docstring is where a reader who opens it finds the rest.
+
+**Rejected.**
+- *Renaming it in PR 7.* A rename inside a behaviour PR.
+- *A rename PR ahead of PR 7, as 4a, 5a and 6a are.* A thirteenth PR for a
+  private name with one caller.
+
+**Notes.** `TradeFields` is in the same position and stays as it is, for the
+same reason. A rename of either is its own refactor PR, under an issue of its
+own.
 
 ---
 
