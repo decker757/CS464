@@ -7,7 +7,7 @@ import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import PageTitle from '../components/ui/PageTitle'
 import { HeaderCell, NumberCell } from '../components/ui/Table'
-import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
+import { formatCreditsPrecise, signedAmountColor } from '../utils/formatCredits'
 import { formatPrice } from '../utils/formatPrice'
 import { labelsFor, loadMarketsById } from '../utils/marketLabels'
 
@@ -20,19 +20,9 @@ function toRow(position: Position, markets: Map<string, PublicMarketDetail>): Po
   return { ...position, ...labelsFor(position.market_id, position.outcome_id, markets) }
 }
 
-// A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
-// say it is never a gain on a book nobody else has traded. Only colour an
-// actual loss or an actual gain; zero stays neutral.
-function pnlColor(pnl: string): string {
-  if (isZeroCredits(pnl)) return 'text-muted'
-  if (pnl.startsWith('-')) return 'text-danger'
-  return 'text-success'
-}
-
 function PnlCell({ pnl }: { pnl: string }) {
-  const color = pnlColor(pnl)
   return (
-    <span className={color}>
+    <span className={signedAmountColor(pnl)}>
       {formatCreditsPrecise(pnl, { showSign: true })}
     </span>
   )
