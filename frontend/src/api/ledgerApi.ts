@@ -211,3 +211,51 @@ export async function postTrade(marketId: string, data: TradeRequest): Promise<T
   const res = await api.post<TradeResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, data)
   return res.data
 }
+
+// --- [2.4] #8: price history and the per-market trade log ---------------
+//
+// #63 (the backend slice) has not been built yet, so these two shapes are
+// inferred from #8's acceptance criteria rather than read off docs/api/ —
+// the team's call, not a guess made to unblock this PR alone. Reconcile
+// against the real contract once #63 lands.
+
+/** One outcome's price at one point in time — the same shape the live
+ * snapshot already uses, plus the moment it was true. */
+export interface PricePoint extends OutcomePrice {
+  occurred_at: string
+}
+
+export interface PriceHistory {
+  market_id: string
+  points: PricePoint[]
+}
+
+/** The price chart data for one market, every outcome, oldest first (#8's
+ * "price chart per outcome over time"). Inferred: no real endpoint yet. */
+export async function getMarketPriceHistory(marketId: string): Promise<PriceHistory> {
+  const res = await api.get<PriceHistory>(`${LEDGER_BASE}/ledger/markets/${marketId}/price-history`)
+  return res.data
+}
+
+export interface MarketTrade {
+  id: string
+  created_at: string
+  username: string
+  outcome_id: string
+  side: TradeSide
+  quantity: string
+  average_price: string
+}
+
+interface MarketTradePage {
+  trades: MarketTrade[]
+  next_cursor: string | null
+}
+
+/** One page of every trade on one market, newest first, for #8's trade log —
+ * unlike `getMyEntries`/`getUserEntries`, this crosses every trader, so each
+ * row names its own `username`. Inferred: no real endpoint yet. */
+export async function getMarketTrades(marketId: string, params?: { cursor?: string }): Promise<MarketTradePage> {
+  const res = await api.get<MarketTradePage>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, { params })
+  return res.data
+}
