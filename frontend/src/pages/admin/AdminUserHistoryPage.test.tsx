@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import type { User } from '../../context/AuthContext'
+import { holdUntilReleased } from '../../test/holdUntilReleased'
 import { WithProviders } from '../../test/renderWithProviders'
 import { server } from '../../test/server'
 import AdminUserHistoryPage from './AdminUserHistoryPage'
@@ -82,6 +83,23 @@ function renderPage(userId = 'trader-1') {
   )
 }
 
+// A router the test can move between two :userId values at the same route,
+// so the page stays mounted and only the param changes — the shape a click
+// from one user's history to another's would take if the list ever linked
+// them directly (MarketDetailPage tests the same shape for its own :id).
+function renderMovableRouter(userId: string) {
+  const router = createMemoryRouter(
+    [{ path: '/admin/users/:userId', element: <AdminUserHistoryPage /> }],
+    { initialEntries: [`/admin/users/${userId}`] },
+  )
+  render(
+    <WithProviders user={admin}>
+      <RouterProvider router={router} />
+    </WithProviders>,
+  )
+  return router
+}
+
 describe('AdminUserHistoryPage', () => {
   it('shows the balance and the full ledger, newest first', async () => {
     mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
@@ -108,7 +126,41 @@ describe('AdminUserHistoryPage', () => {
     server.use(http.get(`${LEDGER_BASE}/ledger/users/trader-1/entries`, () => HttpResponse.error()))
     renderPage()
 
-    expect(await screen.findByRole('alert', { name: '' })).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load history/i)
+  })
+
+  it('shows an error when the balance fails to load, independent of the history', async () => {
+    server.use(http.get(`${LEDGER_BASE}/ledger/users/trader-1/balance`, () => HttpResponse.error()))
+    mockEntries('trader-1', [])
+    renderPage()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load balance/i)
+    expect(await screen.findByText(/no activity for this user yet/i)).toBeInTheDocument()
+  })
+
+  it('does not keep showing the previous user\'s balance while the next one\'s is still loading', async () => {
+    mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '111.1111' })
+    mockEntries('trader-1', [])
+    const router = renderMovableRouter('trader-1')
+    await screen.findByText('111.1111 credits')
+
+    const trader2 = holdUntilReleased()
+    server.use(
+      http.get(`${LEDGER_BASE}/ledger/users/trader-2/balance`, async () => {
+        await trader2.held
+        return HttpResponse.json({ user_id: 'trader-2', account_id: 'acc-2', balance: '222.2222' })
+      }),
+    )
+    mockEntries('trader-2', [])
+    await act(() => router.navigate('/admin/users/trader-2'))
+
+    // trader-2's balance has not answered yet: trader-1's stale number must
+    // not still be on screen while it is pending.
+    await screen.findByText(/no activity for this user yet/i)
+    expect(screen.queryByText('111.1111 credits')).not.toBeInTheDocument()
+
+    trader2.release()
+    expect(await screen.findByText('222.2222 credits')).toBeInTheDocument()
   })
 
   it('shows a link back to the user list', async () => {
