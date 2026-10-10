@@ -11,6 +11,8 @@ import PortfolioPage from './pages/PortfolioPage'
 import RegisterPage from './pages/RegisterPage'
 import TradeHistoryPage from './pages/TradeHistoryPage'
 import AdminMarketsPage from './pages/admin/AdminMarketsPage'
+import AdminUserHistoryPage from './pages/admin/AdminUserHistoryPage'
+import AdminUsersPage from './pages/admin/AdminUsersPage'
 import CreateMarketPage from './pages/admin/CreateMarketPage'
 import DecideOutcomePage from './pages/admin/DecideOutcomePage'
 import ProposalsPage from './pages/admin/ProposalsPage'
@@ -30,6 +32,8 @@ export default function App() {
             <Route path="/portfolio" element={<ProtectedRoute><PortfolioPage /></ProtectedRoute>} />
             <Route path="/history" element={<ProtectedRoute><TradeHistoryPage /></ProtectedRoute>} />
             <Route path="/admin/markets" element={<ProtectedRoute requireAdmin><AdminMarketsPage /></ProtectedRoute>} />
+            <Route path="/admin/users" element={<ProtectedRoute requireAdmin><AdminUsersPage /></ProtectedRoute>} />
+            <Route path="/admin/users/:userId" element={<ProtectedRoute requireAdmin><AdminUserHistoryPage /></ProtectedRoute>} />
             <Route path="/admin/markets/new" element={<ProtectedRoute requireAdmin><CreateMarketPage /></ProtectedRoute>} />
             <Route path="/admin/markets/:id/propose-outcome" element={<ProtectedRoute requireAdmin><ProposeOutcomePage /></ProtectedRoute>} />
             <Route path="/admin/proposals" element={<ProtectedRoute requireAdmin><ProposalsPage /></ProtectedRoute>} />

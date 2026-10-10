@@ -43,6 +43,26 @@ export async function getMyBalance(): Promise<Balance> {
   return res.data
 }
 
+export interface AdminBalance {
+  user_id: string
+  // null for an id the ledger has never opened an account for — not an
+  // error, and not grounds to mint one: this route mints nothing
+  // (ledger-service.md, #188). balance reads "0.0000" in that case too.
+  account_id: string | null
+  balance: string
+}
+
+/**
+ * An administrator's read of any user's balance ([4.1] #13), by the id
+ * `GET /admin/users` on the auth service returns. Unlike `getMyBalance`,
+ * never mints a starting grant — a user who has not read their own balance
+ * or history yet still shows zero here.
+ */
+export async function getUserBalance(userId: string): Promise<AdminBalance> {
+  const res = await api.get<AdminBalance>(`${LEDGER_BASE}/ledger/users/${userId}/balance`)
+  return res.data
+}
+
 export interface Position {
   market_id: string
   outcome_id: string
@@ -120,6 +140,17 @@ interface LedgerEntryPage {
  */
 export async function getMyEntries(params?: { cursor?: string }): Promise<LedgerEntryPage> {
   const res = await api.get<LedgerEntryPage>(`${LEDGER_BASE}/ledger/entries/me`, { params })
+  return res.data
+}
+
+/**
+ * One page of any user's ledger history ([4.1] #13), by the id
+ * `GET /admin/users` returns — same shape and order as `getMyEntries`, and
+ * an id with no account reads as an empty page rather than an error. Never
+ * mints a grant, unlike the `/me` route.
+ */
+export async function getUserEntries(userId: string, params?: { cursor?: string }): Promise<LedgerEntryPage> {
+  const res = await api.get<LedgerEntryPage>(`${LEDGER_BASE}/ledger/users/${userId}/entries`, { params })
   return res.data
 }
 
