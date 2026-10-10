@@ -40,6 +40,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.security import TokenClaims
+
 AUDIT_SCHEMA = "audit"
 
 # Separate from every Base.metadata on purpose; see the module docstring.
@@ -94,6 +96,16 @@ class Entry:
     reason: str | None = None
     context: dict[str, Any] | None = None
     occurred_at: datetime | None = None
+
+
+def actor_of(claims: TokenClaims) -> Actor:
+    """Narrow verified token claims to the `Actor` the audit log names.
+
+    One copy for the services that authorise from the token alone. The auth
+    service builds its `Actor` from the live user row instead and does not call
+    this (ADR 0007).
+    """
+    return Actor(id=claims.user_id, username=claims.username, role=claims.role.value)
 
 
 async def record(session: AsyncSession, entry: Entry, *, source_service: str) -> None:
