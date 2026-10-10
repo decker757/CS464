@@ -13,9 +13,8 @@ are `settlement_fixtures.py`'s, paid through the real settlement. [3.4] #12
 from __future__ import annotations
 
 import re
-from decimal import Decimal
-
 import uuid
+from decimal import Decimal
 
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +30,6 @@ from unit_test.portfolio_fixtures import (
     ADR_PRICE,
     ADR_QUANTITY,
     ADR_VALUE,
-    HOLDING_VALUE,
     PORTFOLIO_FIELDS,
     POSITION_FIELDS,
     funded,
@@ -157,42 +155,36 @@ async def test_a_settled_row_sends_null_figures_and_its_payout_at_scale_four(
 ) -> None:
     """DECISIONS.md, "`result` and `payout` are on every portfolio row, null
     until the market is settled": one row shape, every key on every row, so
-    `exclude_none` fails here from either side. A worthless payout is
-    `"0.0000"`, not `"0"`."""
+    `exclude_none` fails here from either side. Which figures a settled row
+    carries is `unit_test/service/test_portfolio.py`'s; this is the wire."""
     user_id, _ = await funded(session)
     open_market = await market_at(session)
     await hold(session, open_market, user_id=user_id)
     settled = await settled_market(
-        session,
-        [(user_id, LOSER, UNPAID), (user_id, WINNER, PAID), (uuid.uuid4(), WINNER, UNPAID)],
+        session, [(user_id, WINNER, PAID), (uuid.uuid4(), LOSER, UNPAID)]
     )
 
     response = await client.get(PATH, headers=bearer(user_id, UserRole.TRADER))
 
     assert response.status_code == 200, response.text
     positions = response.json()["positions"]
-    assert len(positions) == 3
+    assert len(positions) == 2
     for position in positions:
         assert set(position) == POSITION_FIELDS
-    by_row = {(p["market_id"], p["outcome_position"]): p for p in positions}
+    by_market = {p["market_id"]: p for p in positions}
 
-    for position, result, payout in (
-        (LOSER, "worthless", "0.0000"),
-        (WINNER, "paid_out", str(PAID)),
-    ):
-        row = by_row[(str(settled.market_id), position)]
-        assert {k: row[k] for k in ("price", "value", "unrealized_pnl", "result", "payout")} == {
-            "price": None,
-            "value": None,
-            "unrealized_pnl": None,
-            "result": result,
-            "payout": payout,
-        }
+    settled_row = by_market[str(settled.market_id)]
+    assert (settled_row["price"], settled_row["value"], settled_row["unrealized_pnl"]) == (
+        None,
+        None,
+        None,
+    )
+    assert _SCALE_FOUR.match(settled_row["payout"]), settled_row["payout"]
 
-    unsettled = by_row[(str(open_market.market_id), 0)]
-    assert (unsettled["result"], unsettled["payout"]) == (None, None)
-    assert unsettled["value"] == str(HOLDING_VALUE)
-    assert _SCALE_FOUR.match(unsettled["price"])
+    unsettled_row = by_market[str(open_market.market_id)]
+    assert (unsettled_row["result"], unsettled_row["payout"]) == (None, None)
+    for key in ("price", "value", "unrealized_pnl"):
+        assert _SCALE_FOUR.match(unsettled_row[key]), f"{key} = {unsettled_row[key]!r}"
 
 
 async def test_each_caller_reads_only_their_own_portfolio(
