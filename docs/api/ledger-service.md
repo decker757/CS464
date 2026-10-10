@@ -6,7 +6,7 @@ from the code and authoritative if this page ever disagrees, at
 
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 [T-1] #21's cost preview, the trade route that buys ([T-2] #22) and sells
-([T-3] #23), and [T-5] #25's trade history.
+([T-3] #23), [T-5] #25's trade history, and [3.4] #12's settlement route.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -14,6 +14,8 @@ answer how a write route authenticates a caller. Why positions live here
 rather than with markets: [ADR 0005](../adr/0005-trading-service-boundary.md).
 Why the ledger asks market_service whether a market is still open, once per
 trade: [ADR 0017](../adr/0017-the-ledger-and-a-stopped-market.md).
+Why settlement is the ledger's request and market_service is told
+afterwards: [ADR 0019](../adr/0019-settlement-across-services.md).
 
 ## Endpoints
 
@@ -27,14 +29,18 @@ trade: [ADR 0017](../adr/0017-the-ledger-and-a-stopped-market.md).
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
+| POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
 | GET | `/health` | Liveness and readiness probe |
 
-**Every other route reads, and none of them ever will edit or remove an
-entry** — the ledger is append-only, enforced by a database trigger rather
-than by the absence of a route. `POST .../trades` is this service's first
-write, and [T-2] #22 answers ADR 0009's deferred question about it: the route
-takes no account, no amount and no leg, so a trader's own token is a safe
-credential for it in a way it could never be for a route that accepted one.
+**Two routes write, and neither takes money.** `POST .../trades` takes no
+account, no amount and no leg, so a trader's own token is a safe credential
+for it in a way it could never be for a route that accepted one. That is
+[T-2] #22's answer to ADR 0009's deferred question. `POST .../settlement`
+takes an administrator's token and an empty body: the winner comes from
+market_service, and the holders and amounts come from this service's own
+positions (ADR 0009's second amendment). Every other route reads, and no
+route ever edits or removes an entry. The ledger is append-only, enforced by
+a database trigger rather than by the absence of a route.
 
 The balance route, the portfolio route, the preview route and the snapshot
 route are each an exception to "reads don't write," and for the same reason:
@@ -174,10 +180,12 @@ be recognised as one event, not so you can fetch the other half; there is no
 route that returns it.
 
 `kind` is the vocabulary of why credits moved. The values that reach a user's
-own history today are `signup_grant`, `trade_buy` and `trade_sell`.
-`settlement`, a winning holder's payout, joins them with [3.4] #12; until
-then nothing writes it, and its `market_id`, `outcome_id` and `quantity` are
-described here when they are filled in. `market_seed` and
+own history today are `signup_grant`, `trade_buy`, `trade_sell` and
+`settlement`, a winning holder's payout, which the settlement route below
+writes ([3.4] #12). Until [3.4] #12's history change, a `settlement` row's
+`market_id`, `outcome_id` and `quantity` are `null` here like any other
+non-trade kind.
+`market_seed` and
 `settlement_residue` exist as kinds too, but never reach here: each moves
 credits between the platform and a market's pool, touching no USER account.
 **Treat an unrecognised value as opaque
@@ -690,6 +698,136 @@ Errors:
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
 
+## POST /ledger/markets/{market_id}/settlement
+
+[3.4] #12. Pay every winning share of an approved market once, then tell
+market_service that the market is settled. Administrators only.
+[ADR 0019](../adr/0019-settlement-across-services.md).
+
+**This is the route a client calls.** market_service's
+`POST /markets/{id}/settle` is this route's last step and never a client's.
+Called directly, it marks the market `settled` and pays nobody.
+
+Any administrator may settle, including the market's creator, its proposer
+and its approver. The two-person rule was spent at approval (ADR 0016), and
+settlement carries out a decision that is already made.
+
+### The request
+
+```http
+POST /ledger/markets/9d1c.../settlement
+```
+
+No body, `{}` or `null`, and nothing else. **Any field is
+`422 invalid_request`**, not ignored. The request chooses nothing:
+
+- **The winner** is the outcome market_service approved, which one
+  administrator proposed and a second approved.
+- **The holders and the amounts** come from this service's positions, read
+  under the market's book lock. Each winning share pays one credit.
+
+A field that was silently dropped would let a client believe it had picked
+the winner.
+
+A market can be settled when market_service reports it `approved` and
+`settleable`, five minutes after its dispute window ends (see `settleable`
+in [the market service's docs](market-service.md)). A market that reports
+`settled` with nothing recorded here can also be settled. That state comes
+from a direct call to market_service's step, and this route pays it.
+
+### The response
+
+```jsonc
+// response, 200
+{
+  "market_id": "9d1c...",
+  "outcome_id": "4f2a...",
+  "recorded_at": "2026-10-10T09:41:02.118000Z",
+  "holders_paid": 3,
+  "total_paid": "140.0000",
+  "residue": "-12.3456"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `market_id` | The market. |
+| `outcome_id` | The winning outcome. On a repeat, it is the outcome this service recorded, whatever market_service reports now. |
+| `recorded_at` | When the settlement was recorded: read after the book lock, and the same instant as the audit entry's. The payout entries' `created_at` may be a few microseconds later. |
+| `holders_paid` | The number of holders paid: one payout for each holder with more than zero winning shares. `0` if nobody held the winner. |
+| `total_paid` | What the payouts add up to, as a decimal string at scale 4: one credit per winning share. |
+| `residue` | What was left in the market's pool after the payouts, signed. Positive went from the pool to the platform. Negative came from the platform to cover a short pool. `0.0000` means nothing was posted. Either way the pool ends at exactly `0.0000`. |
+
+The status is `200`, not `201`, on the request that pays and on every repeat
+alike. Nothing is created at an address.
+
+Each payout is a `settlement` entry in the winner's own history. The
+settlement appends `market.settled` to the audit log, in the same commit as
+the payouts. market_service's step appends `market.marked_settled`.
+
+After a settlement, a trade on the market is `409 market_closed`. The
+preview and the snapshot keep quoting the frozen book. **No price frame is
+published**, because settlement moves neither `q` nor any position, so the
+prices and `state_version` do not change.
+
+### A repeat writes nothing here
+
+A repeat answers the same `200` with the same six fields, rebuilt from the
+entries the first request wrote. The response does not say which kind of
+answer it is, and a client should not need to know: a repeat is how a
+settlement whose last step failed is finished.
+
+A repeat checks the ledger's record before market_service's status, so a
+market that has been paid is never refused for its status. Every repeat
+calls market_service's step again, and that step answers `200` without
+writing for a market that is already `settled`.
+
+### `503 settlement_unconfirmed` means the money has moved
+
+Every winner has been paid and the settlement is recorded. What failed is
+the last step, telling market_service, so the market still reads `approved`
+and stays in the overview's approved queue. **Repeat the request.** It writes
+nothing here and retries the last step, and its `200` confirms the
+settlement. Do not tell the administrator that the settlement failed.
+
+This is the opposite of `503 market_terms_unavailable`, which on this route
+means no payout was written.
+
+Near the end of the dispute window the two services can disagree, because
+they judge `settleable` on different clocks. The public detail this service
+reads derives it from market_service's request clock. market_service's step
+judges it on Postgres's `clock_timestamp()`, read after it locks the market
+row. So this service can read `settleable: true` and pay while the step still
+answers `dispute_window_open`. That too is `settlement_unconfirmed`, and a
+repeat once the edge has passed completes it.
+
+### Errors
+
+Checked in this order. The first that applies answers. A recorded settlement
+skips the status, book and winner steps: after the read, it goes straight to
+the settle step.
+
+| Step | Status | `code` | When |
+| --- | --- | --- | --- |
+| body parse | 422 | `invalid_request` | The body is not valid JSON. FastAPI refuses it before anything else runs, the token check included. |
+| token | 401 | `invalid_token` | Missing, malformed or expired access token. |
+| token | 403 | `not_an_administrator` | A trader. |
+| validation | 422 | `invalid_request` | A body with any field, a body that is not an object, or a `market_id` that is not a UUID. `error.details` names each one; see [Errors](#errors). |
+| read | 401 | `invalid_token` | market_service refused the forwarded token. |
+| read | 404 | `market_not_found` | No such market, including a draft or a submitted one, which market_service's public detail refuses with the same 404. |
+| read | 503 | `market_terms_unavailable` | market_service could not be reached, answered with unusable terms, or answered `404` for a market this service holds a book for. |
+| status | 409 | `dispute_window_open` | Nothing is recorded here, and the market is `approved` but not yet `settleable`. Retry once it is. |
+| status | 409 | `market_not_approved` | Nothing is recorded here, and the market is in any status other than `approved` or `settled`. |
+| book | 503 | `market_terms_unavailable` | On a market nobody has touched, opening its book reads market_service again, and that read failed or answered terms no book can be opened from. If market_service's answer has changed since the read step, this read can also answer that step's `401` or `404`. |
+| winner | 503 | `market_terms_unavailable` | market_service reported a winner that is null or not one of this market's outcomes. |
+| settle step | 503 | `settlement_unconfirmed` | The payouts are committed, by this request or by an earlier one, and market_service did not answer `200`. Repeat the request; see above. |
+
+Every refusal but the last writes no payout. Everything before the book step
+writes nothing at all. A refusal at the winner step on a market nobody had
+touched comes after the book was opened, as a preview's first request would
+open it. That happens once per market, and it is the only write such a
+refusal leaves.
+
 ## Errors
 
 The same envelope as the other three services:
@@ -703,7 +841,7 @@ The same envelope as the other three services:
 | 400 | `malformed_cursor` | `cursor` was not one this service issued |
 | 401 | `invalid_token` | Missing, malformed or expired access token |
 | 403 | `not_an_administrator` | Valid token, wrong role |
-| 422 | `invalid_request` | The request does not match the route's parameters or body, e.g. `limit=0`, a path id that is not a UUID, or an extra field in a trade body |
+| 422 | `invalid_request` | The request does not match the route's parameters or body, e.g. `limit=0`, a path id that is not a UUID, or an extra field in a trade or settlement body |
 
 **Every 422 is in this envelope**, whichever layer refused the request — each
 route's own codes and `invalid_request` alike — so a client parses one
@@ -739,18 +877,18 @@ path.
 
 **A `404 market_not_found` is remembered for ten seconds** (DECISIONS.md,
 "A market_service 404 is remembered for ten seconds, per process"), on the
-preview, the snapshot and the trade alike. Inside that window the ledger
-answers 404 again without asking market_service. So a market published a
-few seconds after somebody asked about it can still read as not found until
-the window passes. Retrying after ten seconds is enough. Nothing else is
-remembered: a `503` or a `401` is asked again on the next request.
+preview, the snapshot, the trade and the settlement alike. Inside that window
+the ledger answers 404 again without asking market_service. So a market
+published a few seconds after somebody asked about it can still read as not
+found until the window passes. Retrying after ten seconds is enough. Nothing
+else is remembered: a `503` or a `401` is asked again on the next request.
 
 `market_not_published` (409) is defined in `core/errors.py` and mapped like
 every other domain error, and no request can currently reach it.
 `books.ensure_open` raises it only for terms whose `published_at` is null, and
 the public detail endpoint those terms come from answers `404` for every
 market that has not been published — so a draft arrives here as
-`market_not_found`, not as this. It is left in place, and out of all three routes'
+`market_not_found`, not as this. It is left in place, and out of every route's
 declared responses, because it becomes reachable the day the ledger reads
 terms from somewhere that serves unpublished markets. Do not write a handler
 for it today.
@@ -762,14 +900,18 @@ above. `insufficient_shares_outstanding` (409) is unreachable on the trade
 route: each outcome's shares outstanding equal the sum of its positions, so
 `insufficient_shares_held` always refuses first. It stays in the code as a
 backstop and is out of the trade route's table on purpose; only the preview
-can return it. `unbalanced_transaction` (422) is
+can return it. `market_not_approved` (409), `dispute_window_open` (409) and
+`settlement_unconfirmed` (503, new in [3.4] #12) are the settlement route's own,
+documented in its section above. `unbalanced_transaction` (422) is
 `core/errors.py`'s and no route can return it: `service/trading.py` always
-builds two balanced legs, so it is a guard against a bug in this service
-rather than a response any request can provoke. `pending_writes_on_replay`
-(500) is the same shape one layer down, in `service/posting.py` — a caller
-of the write primitive reaching its replay branch with work still pending,
-which every caller this service has is built not to do.
+builds two balanced legs, so it is a guard against a bug in this service rather
+than a response any request can provoke. `pending_writes_on_replay` (500) is the
+same shape one layer down, in `service/posting.py` — a caller of the write
+primitive reaching its replay branch with work still pending, which every caller
+this service has is built not to do.
 `malformed_batch` (500) is the same again, in the batch form of that
-primitive (`posting.post_all`, new in [3.4] #12): a batch with no movements,
-or two movements sharing an idempotency key. The server builds every batch,
-so no request can provoke it.
+primitive (`posting.post_all`, new in [3.4] #12), whose one caller is the
+settlement route: a batch with no movements, or two movements sharing an
+idempotency key. The route builds every batch from this service's own
+positions, with one payout per winner keyed by user id and at most one
+residue, so no request can provoke it.

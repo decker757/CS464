@@ -5245,6 +5245,11 @@ making eleven PRs. See "PR 5 lands as three PRs: 5a extracts, 5b extends the
 terms client, 5 settles" below. The other rows, the naming and the order
 stand.*
 
+*Superseded in part 2026-10-10 by [3.4] #12: row 6, which now sits on a new
+row 6a, making twelve PRs. See "PR 6a moves `actor_of` into
+`shared/audit.py`, ahead of the route, as its own refactor" below. The other
+rows, the naming and the order stand.*
+
 ---
 
 ### D-NEW — Settlement waits for `settleable`, which market_service derives from `approved_at`
@@ -6749,6 +6754,189 @@ function would change to save one read on a rare path.
 criteria were amended to match: "No call to market_service is made while the
 request holds a database connection or a row lock", and the speed criterion
 now excludes "the calls to market_service" rather than "the two calls".
+
+---
+
+### D-NEW — PR 6a moves `actor_of` into `shared/audit.py`, ahead of the route, as its own refactor
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `actor_of(claims: TokenClaims) -> Actor` sits in
+`shared/audit.py`, beside `Actor`. It copies `user_id`, `username` and
+`role.value` from the token, so the role is the plain string. market_service's
+`get_actor` calls it through its `core/audit.py` and `service/audit.py` seams.
+The ledger's `get_actor`, in PR 6, calls it through the same two seams.
+auth_service's `get_actor` is not changed. PR 6a (#256,
+`12-settlement-6a-actor-of`) is a new step in the settlement stack, on PR 5
+(#254), and PR 6 is stacked on it.
+
+**Why.**
+- *The second copy.* The ledger's route needs the same claims-to-`Actor`
+  conversion as market_service's. CLAUDE.md says the PR that would add the
+  second copy extracts it instead.
+- *It clears ADR 0012's bar.* Every caller needs identical behaviour, and a
+  difference would be a bug. If the two copies drifted, one administrator
+  could appear under two roles, or two names, in one log: on
+  `market.outcome_approved` from market_service and on `market.settled` from
+  the ledger, for example.
+- *It already belongs there.* `TokenClaims` is in `shared/security.py` and
+  `Actor` is in `shared/audit.py`. The function's input and output both live
+  in `shared/`, and it imports no service.
+- *Its own PR.* A refactor never shares a PR with a behaviour change. This
+  follows "PR 4a extracts `post`'s helpers ahead of `post_all`, as its own
+  refactor" and "PR 5a extracts `books.lock_book` and
+  `market_status.read_terms` ahead of settlement, as its own refactor".
+- *auth_service is not a caller.* Its `get_actor` builds the `Actor` from the
+  live user row, so a demotion takes effect on the next request (ADR 0007).
+  Building it from the token would bring the fifteen-minute window back to
+  the one service that does not have it. That is a different input, not a
+  drift.
+
+**Rejected.**
+- *A second copy in the ledger's `controller/dependencies.py`, with a comment
+  naming its twin.* That is the copy CLAUDE.md forbids. Unlike the ledger's
+  `service/audit.py`, nothing in it differs by design.
+- *The extraction inside PR 6.* A refactor would share a diff with the new
+  route.
+- *auth_service calling `actor_of`.* It would undo ADR 0007's live role.
+
+**Reversal trigger.** market_service or the ledger needs an `Actor` built from
+something other than the token, such as a live user lookup. That service then
+builds its own, as auth_service does.
+
+**Notes.**
+- This is not the case "The ledger's `service/audit.py` is a third copy, and
+  the extraction is declined" decided. That file differs by the `AdminAction`
+  type it takes. `actor_of` has no vocabulary, is the same in both callers,
+  and touches no auth_service file.
+- The ledger's seam files gain the same re-export as market_service's, so
+  they still differ in constants and vocabulary only ("The ledger writes the
+  settlement's audit entry, through its own seam onto `shared/audit.py`").
+- ADR 0006's #135 amendment lists what `shared/audit.py` holds, and is
+  amended to name `actor_of`.
+- The table gains one row, and row 6's "On" changes:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 6a | shared: `actor_of` in `shared/audit.py` beside `Actor`, market_service's `get_actor` calling it through its seam, no behaviour change; its tests in `shared/unit_test/test_audit.py` | 5 | decker757 (market_service) |
+| 6 | the settlement route, `SettlementIn` and `SettlementOut`, the ledger's `get_actor` on `actor_of`, the `pay_out` allowlist line removed, `docs/api/ledger-service.md`; the route tests | 6a | |
+
+---
+
+### D-NEW — The settlement route answers `200`, the same for a fresh settlement and for a repeat
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `POST /ledger/markets/{id}/settlement` answers `200` with the
+six-field settlement. It does so on the request that pays and on every repeat
+that replays. It never answers `201`.
+
+**Why.**
+- *One status for the first answer and the replay.* The trade route answers
+  `201` to a first trade and to its replay, with byte-identical bodies.
+  market_service's settle step answers `200` to the flip and to a repeat
+  ("The settle step answers `200` with `MarketOut`, the same for the flip and
+  for a repeat"). This route follows the same rule.
+- *A split would expose what the builder hides.* "The settlement response
+  carries its full figures, rebuilt from the entries on a replay, through one
+  builder" makes a replay indistinguishable from the first answer. `201` then
+  `200` would give a client a difference to branch on. A repeat is how a
+  failed last step is repaired ("A settlement whose last step fails answers
+  `503 settlement_unconfirmed`"), so the client should treat it as the same
+  settlement.
+- *Nothing is created at an address.* There is no settlement resource to GET
+  and no `Location`. The trade's body names a new transaction by its
+  `transaction_id`. This body names only the market and its winner, and
+  settling is something done to a market that already exists.
+
+**Rejected.**
+- *`201` on both, as the trade route does.* The trade's `201` points at a new
+  transaction, and this response has no new id to point at.
+- *`201` fresh and `200` on a repeat.* That is the split described above.
+- *`204`.* The body carries the figures #12 asks for, so it cannot be empty.
+- *`202`.* The work is finished when the response is sent.
+
+**Reversal trigger.** The settlement becomes a resource of its own, with an id
+and a route that reads it.
+
+**Notes.** The trade route's `201` is not changed by this entry.
+
+---
+
+### D-NEW — The settlement body is empty, and any field in it is `422 invalid_request`
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The route takes `body: SettlementIn | None = None`.
+`SettlementIn` has `extra="forbid"` and no fields. A request with no body,
+with `{}` or with `null` is accepted. Any key, or a body that is not an
+object, is `422 invalid_request`.
+
+**Why.**
+- *ADR 0009's second amendment.* Neither write route takes money, and this
+  route's caller supplies nothing that decides who is paid or how much.
+- *A refused field cannot be mistaken for an honoured one.* A body naming an
+  outcome that was silently dropped would let a client believe it had chosen
+  the winner. Refusing it makes clear that the request chooses nothing.
+- *`| None = None`.* A model parameter on its own makes FastAPI require a
+  body, so a bare POST, which is the documented call, would fail with "field
+  required".
+- *`{}` passes,* because it is what most JSON clients send for "nothing".
+
+**Rejected.**
+- *No body parameter at all.* FastAPI then ignores whatever is sent, so
+  `{"outcome_id": …}` would succeed and look honoured.
+- *Requiring `{}`.* A bare POST would fail over a body that holds nothing.
+
+**Reversal trigger.** ADR 0009's: the body gains a field that names an
+outcome, an account or an amount. The route then needs a service credential
+first.
+
+**Notes.** market_service's settle step ignores a body instead ("anything sent
+is ignored"). That route is the ledger's call only, and the ledger sends no
+body. This route is the one a client calls, so a confused client meets this
+one.
+
+---
+
+### D-NEW — A settlement publishes no realtime frame
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Neither a payout nor a replay publishes anything to Redis. The
+trade path's price publish is not called, and no new frame type is added.
+
+**Why.**
+- *Nothing a frame carries changes.* Settlement writes neither `q` nor any
+  position: "`ledger.market_settlements` is the latch, and positions and `q`
+  are never written", a part that stands where "`ledger.market_results` is one
+  record per finished market, with a `kind`" superseded the rest. A `price`
+  frame's `state_version` and prices would be the same as the last trade's
+  frame. ADR 0010's ordering rule would discard it as stale, or it would
+  repeat what the client already shows.
+- *No frame type for it exists.* `docs/api/realtime-service.md` defines
+  `subscribed`, `unsubscribed`, `price` and `error`. A `settled` frame would
+  change the contract of a service that is decker757's, for a consumer nobody
+  has built.
+- *Its consumer decides.* ADR 0019 gives [L-3] #40's "recalculated after
+  market settlement" an event to hang on, and says it "does not decide how it
+  is consumed".
+- *#12 asks for none.*
+
+**Rejected.**
+- *A `price` frame anyway.* It carries no new information, and a client
+  cannot read "settled" from it.
+- *A `settled` frame type.* That is a realtime contract change made ahead of
+  its consumer.
+
+**Reversal trigger.** [L-3] #40, or a frontend story, needs to learn of a
+settlement without reading the market's status. That story designs the frame.
+Like the price publish, it is sent after the commit and must never fail the
+settlement (ADR 0010).
+
+**Notes.** A client learns that a market is settled from market_service's
+status. The frontend already hides the trade control on any market that is
+not open, and a trade on a settled market is `409 market_closed`.
 
 ---
 

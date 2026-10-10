@@ -287,8 +287,8 @@ async def test_there_is_no_write_route(
     client: AsyncClient, admin_headers: dict[str, str], method: str, path: str
 ) -> None:
     """No route writes entries or transactions directly, and none edits or
-    removes one. The one write route is the trade, which takes no money
-    (ADR 0009's amendment).
+    removes one. The two write routes are the trade and the settlement, and
+    neither takes money (ADR 0009's amendments).
     """
     response = await getattr(client, method)(path, headers=admin_headers)
 

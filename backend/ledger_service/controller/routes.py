@@ -10,13 +10,18 @@ DELETE anywhere on this service. That is the whole design, it is enforced by
 a trigger rather than by this file being short, and a route added here in a
 hurry would fail against the database.
 
-**`POST /markets/{market_id}/trades` is this service's first write route.**
-[T-2] #22 answers ADR 0009's deferred service-auth question for exactly this
-shape of caller: the route takes no account, no amount and no leg — the
-request model is `extra="forbid"` over five fields, none of them money — so
-the trader's account is `accounts.ensure(USER, claims.sub)` rather than
-anything in the body, and a trader's own token is safe to accept because
-there is nothing in the request for it to mint. See ADR 0009's amendment.
+**Two routes write, and neither takes money.** `POST /markets/{market_id}/trades`
+([T-2] #22) answers ADR 0009's deferred service-auth question for exactly this
+shape of caller: the request model is `extra="forbid"` over five fields, none
+of them money, so the trader's account is `accounts.ensure(USER, claims.sub)`
+rather than anything in the body, and a trader's own token is safe to accept
+because there is nothing in the request for it to mint. See ADR 0009's
+amendment.
+
+`POST /markets/{market_id}/settlement` ([3.4] #12) takes an administrator's
+token and an empty body: the winner comes from market_service and the holders
+and amounts from the ledger's own positions (ADR 0009's second amendment, ADR
+0019). It publishes nothing, so unlike the trade it holds no Redis client.
 
 The grant is the older exception that proves the same rule from the read
 side: a user reading their own balance can write, because [B-1] #32's starting
@@ -34,6 +39,7 @@ from fastapi import APIRouter, Query
 
 from controller.dependencies import (
     AccessToken,
+    CurrentActor,
     CurrentAdmin,
     CurrentUser,
     DbSession,
@@ -50,6 +56,8 @@ from model.schemas import (
     PortfolioOut,
     PortfolioPositionOut,
     PreviewOut,
+    SettlementIn,
+    SettlementOut,
     SnapshotOut,
     TradeIn,
     TradeOut,
@@ -59,6 +67,7 @@ from service import (
     ledger_service,
     portfolio as portfolio_service,
     preview as preview_service,
+    settlement,
     snapshot as snapshot_service,
     trading,
 )
@@ -558,6 +567,89 @@ async def execute_trade(
         quantity=result.quantity,
         total=result.total,
         state_version=result.state_version,
+    )
+
+
+_SETTLEMENT_DESCRIPTION = (
+    "[3.4] #12. Pay every winning share of an approved market once, then "
+    "tell market_service the market is settled. Administrators only; any "
+    "administrator may settle, including the proposer and the approver "
+    "(ADR 0019).\n\n"
+    "**The request chooses nothing.** The body is empty: no body, `{}` or "
+    "`null`. Any field is `422 invalid_request`, not ignored, because a "
+    "dropped `outcome_id` would let a client believe it had picked the "
+    "winner. The winner is the outcome market_service approved, and the "
+    "holders and amounts come from this service's own positions, read under "
+    "the book lock (ADR 0009's second amendment).\n\n"
+    "**`200` on the request that pays and on every repeat**, with the same "
+    "six fields rebuilt from the entries the first request wrote. A repeat "
+    "writes nothing here and retries the last step, so it is how a "
+    "`503 settlement_unconfirmed` is finished.\n\n"
+    "**No price frame is published**: settlement moves neither `q` nor any "
+    "position."
+)
+
+
+@router.post(
+    "/markets/{market_id}/settlement",
+    response_model=SettlementOut,
+    status_code=200,
+    summary="Pay out an approved market",
+    description=_SETTLEMENT_DESCRIPTION,
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access "
+                "token, or market_service refused the forwarded one."
+            )
+        },
+        403: {"description": "`not_an_administrator`: authenticated, but a trader."},
+        404: {"description": "`market_not_found`: no such market."},
+        409: {
+            "description": (
+                "`market_not_approved`: nothing is recorded here and the "
+                "market is in a status other than `approved` or `settled`. "
+                "`dispute_window_open`: approved, but not yet `settleable`."
+            )
+        },
+        422: _invalid_request(
+            "`invalid_request`: a body with any field, a body that is not "
+            "an object, or a `market_id` that is not a UUID."
+        ),
+        503: {
+            "description": (
+                "`market_terms_unavailable`: market_service could not be "
+                "reached, or answered with terms no settlement can use; "
+                "nothing was paid. `settlement_unconfirmed`: every winner is "
+                "paid and the settlement is recorded, and market_service did "
+                "not confirm. Repeat the request."
+            )
+        },
+    },
+)
+async def settle_market(
+    market_id: uuid.UUID,
+    actor: CurrentActor,
+    access_token: AccessToken,
+    terms_client: TermsClient,
+    session: DbSession,
+    body: SettlementIn | None = None,
+) -> SettlementOut:
+    # `body` is never read: it is declared so that a field in it is refused.
+    result = await settlement.pay_out(
+        session,
+        market_id,
+        actor=actor,
+        access_token=access_token,
+        terms_client=terms_client,
+    )
+    return SettlementOut(
+        market_id=result.market_id,
+        outcome_id=result.outcome_id,
+        recorded_at=result.recorded_at,
+        holders_paid=result.holders_paid,
+        total_paid=result.total_paid,
+        residue=result.residue,
     )
 
 
