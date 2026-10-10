@@ -18,7 +18,7 @@ from core import security
 from core.database import get_session
 from core.errors import NotAnAdministrator, NotAuthenticated
 from core.security import TokenClaims
-from service.audit import Actor
+from service.audit import Actor, actor_of
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
@@ -59,7 +59,7 @@ async def get_actor(claims: CurrentAdmin) -> Actor:
     Here, not in `service/`, so nothing below the controller knows a JWT was
     involved.
     """
-    return Actor(id=claims.user_id, username=claims.username, role=claims.role.value)
+    return actor_of(claims)
 
 
 CurrentActor = Annotated[Actor, Depends(get_actor)]
