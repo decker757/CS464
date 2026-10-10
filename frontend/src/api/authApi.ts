@@ -42,7 +42,7 @@ export interface AdminUser extends User {
   is_suspended: boolean
 }
 
-interface AdminUserPage {
+export interface AdminUserPage {
   users: AdminUser[]
   next_cursor: string | null
   has_more: boolean
