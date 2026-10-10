@@ -39,30 +39,34 @@ from unit_test.settlement_fixtures import (
     admin,
     balance_of_account,
     basis_of,
-    books,
+    book_lock_is_free,
     capture_sql_with_parameters,
     committed_counts,
     count_commits,
-    entities,
-    errors,
     hold,
     legs_of,
     locked_account_ids,
     payout_key,
     platform_id,
     positions_and_q,
-    posting,
     residue_key,
     result_count,
-    session_factory,
-    set_q,
     settle,
     settled_entries,
     transaction_by_key,
     warm,
-    book_lock_is_free,
 )
-from unit_test.trade_fixtures import assert_ledger_balances, fund, pool_balance
+from unit_test.trade_fixtures import (
+    assert_ledger_balances,
+    books,
+    entities,
+    errors,
+    fund,
+    pool_balance,
+    posting,
+    session_factory,
+    set_q,
+)
 
 # Shares held by the holder of both outcomes, and by the pure loser. Four
 # places that do not round, so a payout of the wrong outcome's quantity, or a

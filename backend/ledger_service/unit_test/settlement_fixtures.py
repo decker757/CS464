@@ -22,11 +22,18 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import event, func, select, text, update
+from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.roles import UserRole
 from unit_test.conftest import mint_token, terms_client_over
+from unit_test.trade_fixtures import (
+    accounts_module,
+    books,
+    entities,
+    session_factory,
+    set_q,
+)
 
 QUANTUM = Decimal("0.0001")
 ZERO = Decimal(0)
@@ -50,43 +57,6 @@ def settlement():
     from service import settlement  # noqa: PLC0415
 
     return settlement
-
-
-def books():
-    from service import books  # noqa: PLC0415
-
-    return books
-
-
-def posting():
-    from service import posting  # noqa: PLC0415
-
-    return posting
-
-
-def accounts_module():
-    from service import accounts  # noqa: PLC0415
-
-    return accounts
-
-
-def entities():
-    from model import entities  # noqa: PLC0415
-
-    return entities
-
-
-def errors():
-    """`core/errors.py`; `MarketNotApproved` and `DisputeWindowOpen` are PR 5's."""
-    from core import errors  # noqa: PLC0415
-
-    return errors
-
-
-def session_factory():
-    from core.database import get_session_factory  # noqa: PLC0415
-
-    return get_session_factory()
 
 
 # --- the actor ------------------------------------------------------------
@@ -278,19 +248,6 @@ async def hold(
         q[position] += quantity
     await session.flush()
     await set_q(session, upstream.market_id, q)
-
-
-async def set_q(
-    session: AsyncSession, market_id: uuid.UUID, q: Sequence[Decimal]
-) -> None:
-    outcome = entities().MarketOutcome
-    for position, value in enumerate(q):
-        await session.execute(
-            update(outcome)
-            .where(outcome.market_id == market_id, outcome.position == position)
-            .values(q=value)
-        )
-    await session.commit()
 
 
 # --- reading back -----------------------------------------------------------

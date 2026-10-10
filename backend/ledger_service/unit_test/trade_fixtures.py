@@ -339,23 +339,20 @@ async def warm(
         access_token=token(),
         terms_client=terms_client_over(upstream.transport),
     )
-    await set_q(session, upstream, q)
+    await set_q(session, upstream.market_id, q)
     upstream.calls = 0
     upstream.tokens.clear()
     return book
 
 
 async def set_q(
-    session: AsyncSession, upstream: Upstream, q: Sequence[Decimal]
+    session: AsyncSession, market_id: uuid.UUID, q: Sequence[Decimal]
 ) -> None:
     outcome = entities().MarketOutcome
     for position, value in enumerate(q):
         await session.execute(
             update(outcome)
-            .where(
-                outcome.market_id == upstream.market_id,
-                outcome.position == position,
-            )
+            .where(outcome.market_id == market_id, outcome.position == position)
             .values(q=value)
         )
     await session.commit()

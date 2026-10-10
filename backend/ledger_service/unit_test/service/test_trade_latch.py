@@ -20,9 +20,7 @@ from unit_test.settlement_fixtures import (
     LOSER,
     WINNER,
     SettleUpstream,
-    errors,
     hold,
-    session_factory,
     settle,
     warm,
 )
@@ -31,8 +29,10 @@ from unit_test.trade_fixtures import (
     book_row,
     buy,
     entry_count,
+    errors,
     fund,
     pool_balance,
+    session_factory,
     trading,
     transaction_count,
 )
