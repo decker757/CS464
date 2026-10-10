@@ -119,9 +119,9 @@ describe('TradeHistoryPage', () => {
     expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
     expect(screen.getByText('Buy Yes')).toBeInTheDocument()
     expect(screen.getByText('5.0000')).toBeInTheDocument()
-    // average_price is the average fill price (ledger-service.md), shown as
-    // a percentage like every other price on screen.
-    expect(screen.getByText('50.6%')).toBeInTheDocument()
+    // average_price is credits per share (ledger-service.md) — it can reach
+    // 1 or pass it on a skewed book, so it is never shown as a percentage.
+    expect(screen.getByText('0.5063')).toBeInTheDocument()
     expect(screen.getByText('-2.5313')).toBeInTheDocument()
     expect(screen.getByText('997.4687')).toBeInTheDocument()
   })
@@ -138,20 +138,18 @@ describe('TradeHistoryPage', () => {
     expect(within(screen.getByRole('table')).queryByRole('link')).not.toBeInTheDocument()
   })
 
-  it('renders an unrecognised kind verbatim rather than failing', async () => {
-    mockEntries([entry({ kind: 'settlement', market_id: null, outcome_id: null, side: null, quantity: null, average_price: null })])
-    renderPage()
-
-    expect(await screen.findByText('settlement')).toBeInTheDocument()
-  })
-
-  it('shows rows newest first, as the server sends them', async () => {
-    mockEntries([entry({ id: 'e2', market_id: null, outcome_id: null, quantity: null, average_price: null, kind: 'settlement' }), grantEntry()])
+  it('renders an unrecognised kind verbatim with its amount and balance, above the grant, in the server order', async () => {
+    mockEntries([
+      entry({ id: 'e2', kind: 'settlement', amount: '10.0000', balance_after: '1010.0000', market_id: null, outcome_id: null, side: null, quantity: null, average_price: null }),
+      grantEntry(),
+    ])
     renderPage()
 
     await screen.findByText('settlement')
     const rows = screen.getAllByRole('row').slice(1) // drop the header row
     expect(rows[0]).toHaveTextContent('settlement')
+    expect(rows[0]).toHaveTextContent('10.0000')
+    expect(rows[0]).toHaveTextContent('1,010.0000')
     expect(rows[1]).toHaveTextContent('Starting grant')
   })
 

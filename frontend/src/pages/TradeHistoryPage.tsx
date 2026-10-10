@@ -7,10 +7,12 @@ import PageTitle from '../components/ui/PageTitle'
 import { HeaderCell, NumberCell } from '../components/ui/Table'
 import { usePagedList } from '../hooks/usePagedList'
 import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
-import { formatPrice } from '../utils/formatPrice'
 import { labelsFor, loadMarketsById } from '../utils/marketLabels'
 
 interface EntryRow extends LedgerEntry {
+  // Only a trade row names a market and an outcome (ledger-service.md); the
+  // grant, and any kind this app does not recognise, do not.
+  isTrade: boolean
   question: string
   outcomeLabel: string
 }
@@ -21,11 +23,11 @@ interface EntryPage {
 }
 
 function toRow(entry: LedgerEntry, markets: Map<string, PublicMarketDetail>): EntryRow {
-  // Only a trade row names a market; everything else (the grant, and any
-  // kind this app does not recognise) gets the "unknown" fallback, which is
-  // never shown since those rows render no market link (ledger-service.md).
-  const labels = entry.market_id ? labelsFor(entry.market_id, entry.outcome_id ?? '', markets) : { question: '', outcomeLabel: '' }
-  return { ...entry, ...labels }
+  const isTrade = entry.kind === 'trade_buy' || entry.kind === 'trade_sell'
+  if (!isTrade || !entry.market_id || !entry.outcome_id) {
+    return { ...entry, isTrade: false, question: '', outcomeLabel: '' }
+  }
+  return { ...entry, isTrade: true, ...labelsFor(entry.market_id, entry.outcome_id, markets) }
 }
 
 // Module-level, so it keeps its identity and the list is fetched once. Joins
@@ -63,7 +65,7 @@ function kindLabel(kind: string): string {
 }
 
 function EntryDescription({ row }: { row: EntryRow }) {
-  if (!row.market_id) {
+  if (!row.isTrade || !row.market_id) {
     return <span className="text-smu-navy">{kindLabel(row.kind)}</span>
   }
   return (
@@ -108,10 +110,11 @@ export default function TradeHistoryPage() {
               <tbody>
                 {rows.map(row => (
                   <tr key={row.id} className="border-b border-line last:border-0">
-                    <td className="px-5 py-3 text-muted">{new Date(row.created_at).toLocaleString()}</td>
+                    <td className="px-5 py-3 text-muted">{new Date(row.created_at).toLocaleString('en-SG')}</td>
                     <td className="px-5 py-3"><EntryDescription row={row} /></td>
                     <NumberCell>{row.quantity ?? '—'}</NumberCell>
-                    <NumberCell>{row.average_price ? formatPrice(row.average_price) : '—'}</NumberCell>
+                    {/* Credits per share, not a probability: it can reach 1 or pass it on a skewed book (ledger-service.md). */}
+                    <NumberCell>{row.average_price ? formatCreditsPrecise(row.average_price) : '—'}</NumberCell>
                     <NumberCell>
                       <span className={amountColor(row.amount)}>{formatCreditsPrecise(row.amount)}</span>
                     </NumberCell>

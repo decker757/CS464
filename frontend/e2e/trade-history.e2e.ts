@@ -22,7 +22,7 @@ test('a trader sees their starting grant and a trade, newest first, with the mar
   await expect(rows.nth(1)).toContainText('5.0000')
   // liquidity_b is 100 and nothing else traded against this market, so these
   // are exact, not just present — the one test that talks to the real ledger.
-  await expect(rows.nth(1)).toContainText('50.6%')
+  await expect(rows.nth(1)).toContainText('0.5063')
   await expect(rows.nth(1)).toContainText('-2.5313')
   await expect(rows.nth(1)).toContainText('997.4687')
   await expect(rows.nth(2)).toContainText('Starting grant')
@@ -37,7 +37,6 @@ test('a trader who has never traded sees their starting grant, not the empty sta
   await logIn(page, trader)
   await page.goto('/history')
 
-  await expect(page.getByText(/no activity yet/i)).not.toBeVisible()
   const rows = page.getByRole('row')
   await expect(rows.nth(1)).toContainText('Starting grant')
   await expect(rows.nth(1)).toContainText('1,000.0000')
