@@ -181,6 +181,36 @@ class MarketClosed(LedgerError):
     message = "This market is not open for trading."
 
 
+class MarketNotApproved(LedgerError):
+    """A settlement asked for a market that is neither approved nor settled.
+    [3.4] #12, ADR 0019.
+
+    Read off market_service's public detail, and only when the ledger holds no
+    record for the market: a recorded settlement replays whatever the status
+    now says. Spelled as market_service's settle step spells it. 409: the
+    request is well formed and the market's state refuses it.
+    """
+
+    status_code = 409
+    code = "market_not_approved"
+    message = "This market has no approved outcome to settle."
+
+
+class DisputeWindowOpen(LedgerError):
+    """A settlement asked for an approved market that is not yet `settleable`.
+    [3.4] #12, ADR 0019.
+
+    market_service decides the edge on its own clock and the ledger reads the
+    flag rather than recomputing it. Its own code, apart from
+    `MarketNotApproved`, because the remedy differs: wait, and repeat. 409, as
+    market_service's settle step answers the same case.
+    """
+
+    status_code = 409
+    code = "dispute_window_open"
+    message = "This market's dispute window has not closed yet."
+
+
 class MarketNotFound(LedgerError):
     """market_service's public detail endpoint answered 404.
 

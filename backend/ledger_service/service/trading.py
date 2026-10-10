@@ -32,7 +32,9 @@ commits.
    holding pending writes must establish under its own lock that the
    idempotency key is absent": this is that establishment, and it runs
    before this function writes anything of its own, so a hit here still
-   costs nothing to return.
+   costs nothing to return. Then the latch ([3.4] #12): a
+   `ledger.market_results` row for the market is `409 market_closed`,
+   whatever the gate said, before anything below is read.
 7. `q`, `b` and the outcomes, read fresh — cheap, because the book row's lock
    makes this session's own prior read of `state_version` already correct,
    but read again anyway so the statement log shows a read after the lock
@@ -88,6 +90,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientSharesHeld,
+    MarketClosed,
     QuoteStale,
     UnknownOutcome,
 )
@@ -357,6 +360,14 @@ async def execute(
     )
     if under_lock is not None:
         return under_lock
+
+    # The latch: a market that has ended refuses here, under the book lock, a
+    # trade the gate let through or that queued behind a settlement. After the
+    # re-check, so a charged trade's retry still replays; before the staleness
+    # check, so a settled market is never `quote_stale`. DECISIONS.md, "The
+    # trade latch sits after the key re-check under the book lock".
+    if await books.find_result(session, market_id) is not None:
+        raise MarketClosed
 
     # 7. Read fresh, after the lock. Local rather than
     # `book_prices.read_or_open`: the trade writes `q` through these entities,

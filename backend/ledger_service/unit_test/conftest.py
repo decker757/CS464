@@ -46,6 +46,10 @@ os.environ["DATABASE_URL"] = _test_db
 # string needs to sit in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 
+# [3.4] #12. The audit reader's own connection, as market_service's: `ledger_svc`
+# holds INSERT on the log and no SELECT. ADR 0006.
+_audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
+
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
@@ -67,6 +71,16 @@ _UNREACHABLE = (
     "Cannot reach the test database.\n"
     "Start it with:  docker compose up -d db\n"
     "Or point LEDGER_TEST_DATABASE_URL at your own Postgres."
+)
+
+_NO_AUDIT_READER = (
+    "No audit reader configured.\n"
+    "The settlement tests read back the entry this service appended, and they "
+    "must do it as audit_svc, because ledger_svc holds INSERT on "
+    "audit.admin_actions and no SELECT.\n"
+    "Add AUDIT_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
+    "  export AUDIT_TEST_DATABASE_URL="
+    "postgresql+asyncpg://audit_svc:PASSWORD@localhost:PORT/cs464_test"
 )
 
 
@@ -166,6 +180,30 @@ async def clean_database():
     yield
 
     await dispose_engine()
+
+
+@pytest.fixture
+async def audit_reader():
+    """A session on `audit.admin_actions`, connected as `audit_svc`, which may read it.
+
+    It cannot clean up: nobody may delete from the log. Tests filter on a
+    fresh actor id instead.
+    """
+    from sqlalchemy import NullPool  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    if not _audit_db:
+        pytest.fail(_NO_AUDIT_READER)
+
+    engine = create_async_engine(_audit_db, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+            yield s
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture
