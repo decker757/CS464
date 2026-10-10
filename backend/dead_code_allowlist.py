@@ -21,11 +21,5 @@ connection_count
 upgrade
 downgrade
 
-# [3.4] #12 PR 5: the trade latch and settlement read it; delete this line there
-MarketResult
-
-# [3.4] #12 PR 5: settlement posts through it; delete this line there
-post_all
-
-# [3.4] #12 PR 5: settlement calls it after the payout commits; delete this line there
-mark_settled
+# [3.4] #12 PR 6: the settlement route calls it; delete this line there
+pay_out
