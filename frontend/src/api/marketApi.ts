@@ -153,6 +153,12 @@ export async function publishMarket(id: string): Promise<MarketOut> {
   return res.data
 }
 
+/** Stops an open market before its close_time, with a reason ([2.3] #7). Any administrator may call this. */
+export async function closeMarket(id: string, reason: string): Promise<MarketOut> {
+  const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/close`, { reason })
+  return res.data
+}
+
 export interface MarketSummaryOut {
   id: string
   draft_key: string
