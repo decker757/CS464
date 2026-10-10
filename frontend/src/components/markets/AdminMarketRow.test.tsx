@@ -122,6 +122,16 @@ describe('AdminMarketRow', () => {
     expect(screen.queryByRole('link', { name: /price history/i })).not.toBeInTheDocument()
   })
 
+  it('links to the exposure panel for a market that has traded, but not a draft or submitted one', () => {
+    renderRow(OPEN_MARKET)
+    expect(screen.getByRole('link', { name: /^exposure$/i })).toHaveAttribute('href', `/admin/markets/${OPEN_MARKET.id}/exposure`)
+  })
+
+  it('hides the exposure link on a draft or submitted market', () => {
+    renderRow({ ...OPEN_MARKET, status: 'submitted', close_time: '2099-01-01T00:00:00Z' })
+    expect(screen.queryByRole('link', { name: /^exposure$/i })).not.toBeInTheDocument()
+  })
+
   it('paints a too-short reason on the field, the same shape as blocking_submission, and keeps the modal open', async () => {
     // market-service.md's notes for #56, point 3. The client-side 10-character
     // gate makes this unreachable in the ordinary flow; this is the server
