@@ -6,7 +6,8 @@ from the code and authoritative if this page ever disagrees, at
 
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 [T-1] #21's cost preview, the trade route that buys ([T-2] #22) and sells
-([T-3] #23), and [T-5] #25's trade history.
+([T-3] #23), [T-5] #25's trade history, and [2.2] #6's market
+exposure.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -26,6 +27,7 @@ trade: [ADR 0017](../adr/0017-the-ledger-and-a-stopped-market.md).
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
+| GET | `/ledger/markets/{market_id}/exposure` | What resolving the market would pay out (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | GET | `/health` | Liveness and readiness probe |
 
@@ -548,6 +550,104 @@ Errors, reusing the preview's codes:
 | 404 | `market_not_found` | No such market — and also a draft or a submitted one, which `market_service`'s public detail endpoint refuses with the same 404. |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. Only a hand-run repair or a half-applied migration produces it. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
+
+## GET /ledger/markets/{market_id}/exposure
+
+[2.2] #6. What resolving a market would cost: for each outcome, the shares
+outstanding, what the market would pay if that outcome won, and what the pool
+would have left over. Read before resolving, by any administrator — not only
+the market's creator. `403` for a trader.
+
+```jsonc
+{
+  "market_id": "9d1c...",
+  "opened_at": "2026-10-08T02:15:09.441000+00:00",
+  "state_version": 1,
+  "seed_subsidy": "50.0000",
+  "pool": "481.3569",
+  "payout_exceeds_pool": true,
+  "outcomes": [
+    {
+      "outcome_id": "4f2a...",
+      "position": 0,
+      "shares_outstanding": "500.0000",
+      "payout_if_wins": "500.0000",
+      "residue_if_wins": "-18.6431"
+    },
+    {
+      "outcome_id": "b7e1...",
+      "position": 1,
+      "shares_outstanding": "0.0000",
+      "payout_if_wins": "0.0000",
+      "residue_if_wins": "481.3569"
+    }
+  ]
+}
+```
+
+That is a two-outcome market with `b = 100`, seeded with 50, after one buy of
+500 shares of the first outcome, which charged 431.3569. If the first outcome
+wins, the pool pays 500 and is 18.6431 short, which the platform covers; so
+the flag is up. If the second wins, nobody holds it, nothing is paid, and the
+whole pool goes back to the platform.
+
+| Field | Meaning |
+| --- | --- |
+| `opened_at` | When this service opened the market's book. `null` means it never has (below). |
+| `state_version` | The same counter the snapshot and every price frame report: which trade this read reflects. `null` when there is no book. |
+| `seed_subsidy` | What the platform put up at book creation. |
+| `pool` | What the market pool holds now: the seed plus every buy, minus every sell. Derived from the pool's entries, like every balance. |
+| `payout_exceeds_pool` | True when any outcome's payout is strictly greater than `pool`, i.e. any `residue_if_wins` is negative. |
+| `shares_outstanding` | Every trader's shares in this outcome, summed. |
+| `payout_if_wins` | One credit per share outstanding. |
+| `residue_if_wins` | `pool − payout_if_wins`. Positive goes to the platform at settlement; negative is what the platform tops up. |
+
+Money and shares are decimal strings at scale 4, as everywhere in this service.
+`outcomes` carries every outcome, ordered by `position`. The largest payout is
+the largest `payout_if_wins`; there is no separate field for it.
+
+**The flag is against the pool, not the seed.** The seed is the least a pool
+can hold before settlement, so comparing against it would flag almost every
+traded market (DECISIONS.md, "Exposure flags a payout the pool cannot cover,
+not one above the seed").
+
+**A market with no book reads as empty, with `200`.** A published market
+nobody has previewed, traded or snapshotted has no book here yet, and this
+route does not open one — an admin read writes nothing:
+
+```jsonc
+{
+  "market_id": "9d1c...",
+  "opened_at": null,
+  "state_version": null,
+  "seed_subsidy": null,
+  "pool": null,
+  "payout_exceeds_pool": false,
+  "outcomes": []
+}
+```
+
+This service cannot tell that market from an id that names no market at all,
+so both read this way. Show "no trading yet" and take the seed from
+market_service's detail if the panel wants it.
+
+**It does not check the market's status**, like the snapshot. An open, closed,
+pending or approved market reads the same way, which is what lets an admin
+watch exposure grow while it is still trading. One statement reads `q` and the
+pool together, so `residue_if_wins` is never off by a trade that committed
+between two reads.
+
+**A settled market is not handled yet.** Settlement empties the pool without
+resetting shares, so until #263 lands a settled market reads with every
+residue at `−shares_outstanding` and the flag up.
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 403 | `not_an_administrator` | Valid token, not an administrator. |
+| 422 | `invalid_request` | `market_id` is not a UUID. `error.details` names the field; see [Errors](#errors). |
+
+No `404`, no `503`: the route asks market_service nothing.
 
 ## POST /ledger/markets/{market_id}/trades
 
