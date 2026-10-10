@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
-import { listMarkets } from '../api/marketApi'
+import { listMarkets, type PublicMarketPage, type PublicMarketSummary } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
-import LoadMoreMarkets from '../components/markets/LoadMoreMarkets'
 import MarketCard from '../components/markets/MarketCard'
+import LoadMoreControl from '../components/ui/LoadMoreControl'
 import PageTitle from '../components/ui/PageTitle'
-import { usePagedMarkets } from '../hooks/usePagedMarkets'
+import { usePagedList } from '../hooks/usePagedList'
 import { usePricesForMarkets } from '../hooks/usePricesForMarkets'
 
 // Module-level, so it keeps its identity and the list is fetched once ([X-1] #104).
@@ -12,8 +12,14 @@ function fetchBrowsePage(cursor: string | undefined) {
   return listMarkets({ cursor })
 }
 
+const pagedMarketsOptions = {
+  itemsOf: (page: PublicMarketPage) => page.markets,
+  nextCursorOf: (page: PublicMarketPage) => page.nextCursor,
+  idOf: (market: PublicMarketSummary) => market.id,
+}
+
 export default function MarketsPage() {
-  const { markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedMarkets(fetchBrowsePage)
+  const { items: markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchBrowsePage, pagedMarketsOptions)
   // Memoised so the prices are fetched when the list changes, not on every render.
   const marketIds = useMemo(() => markets.map(market => market.id), [markets])
   const pricesByMarket = usePricesForMarkets(marketIds)
@@ -37,7 +43,7 @@ export default function MarketsPage() {
           </div>
 
           {hasMore && (
-            <LoadMoreMarkets isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} onLoadMore={loadMore} />
+            <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="markets" onLoadMore={loadMore} />
           )}
         </>
       )}

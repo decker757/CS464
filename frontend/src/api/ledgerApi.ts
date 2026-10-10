@@ -83,6 +83,46 @@ export async function getMyPortfolio(): Promise<Portfolio> {
 
 export type TradeSide = 'buy' | 'sell'
 
+export interface LedgerEntry {
+  id: string
+  created_at: string
+  // Signed for this account: negative took credits out, positive put them in
+  // (ledger-service.md). Never parseFloat it; format with formatCreditsPrecise.
+  amount: string
+  balance_after: string
+  transaction_id: string
+  // The vocabulary of why credits moved. Treat a value this app does not
+  // recognise as opaque, not an error — new ones arrive without a version
+  // bump (ledger-service.md).
+  kind: string
+  context: Record<string, unknown>
+  // Set only on trade_buy / trade_sell; null on every other kind, including
+  // one this app does not recognise.
+  market_id: string | null
+  outcome_id: string | null
+  side: TradeSide | null
+  quantity: string | null
+  // The average fill price for this trade, not the marginal price.
+  average_price: string | null
+}
+
+interface LedgerEntryPage {
+  entries: LedgerEntry[]
+  next_cursor: string | null
+  has_more: boolean
+}
+
+/**
+ * One page of the signed-in user's own ledger history, newest first
+ * ([T-5] #25) — the starting grant, every buy and sell, and anything else
+ * that moved their credits. The first call for a user also mints their
+ * starting grant, exactly as getMyBalance does.
+ */
+export async function getMyEntries(params?: { cursor?: string }): Promise<LedgerEntryPage> {
+  const res = await api.get<LedgerEntryPage>(`${LEDGER_BASE}/ledger/entries/me`, { params })
+  return res.data
+}
+
 export interface TradePreview {
   market_id: string
   state_version: number
