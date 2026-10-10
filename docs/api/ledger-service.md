@@ -877,11 +877,11 @@ path.
 
 **A `404 market_not_found` is remembered for ten seconds** (DECISIONS.md,
 "A market_service 404 is remembered for ten seconds, per process"), on the
-preview, the snapshot, the trade and the settlement alike. Inside that window the ledger
-answers 404 again without asking market_service. So a market published a
-few seconds after somebody asked about it can still read as not found until
-the window passes. Retrying after ten seconds is enough. Nothing else is
-remembered: a `503` or a `401` is asked again on the next request.
+preview, the snapshot, the trade and the settlement alike. Inside that window
+the ledger answers 404 again without asking market_service. So a market
+published a few seconds after somebody asked about it can still read as not
+found until the window passes. Retrying after ten seconds is enough. Nothing
+else is remembered: a `503` or a `401` is asked again on the next request.
 
 `market_not_published` (409) is defined in `core/errors.py` and mapped like
 every other domain error, and no request can currently reach it.
@@ -900,16 +900,15 @@ above. `insufficient_shares_outstanding` (409) is unreachable on the trade
 route: each outcome's shares outstanding equal the sum of its positions, so
 `insufficient_shares_held` always refuses first. It stays in the code as a
 backstop and is out of the trade route's table on purpose; only the preview
-can return it. `market_not_approved` (409), `dispute_window_open` (409)
-and `settlement_unconfirmed` (503, new in [3.4] #12) are the settlement
-route's own, documented in its section above. `unbalanced_transaction`
-(422) is
+can return it. `market_not_approved` (409), `dispute_window_open` (409) and
+`settlement_unconfirmed` (503, new in [3.4] #12) are the settlement route's own,
+documented in its section above. `unbalanced_transaction` (422) is
 `core/errors.py`'s and no route can return it: `service/trading.py` always
-builds two balanced legs, so it is a guard against a bug in this service
-rather than a response any request can provoke. `pending_writes_on_replay`
-(500) is the same shape one layer down, in `service/posting.py` — a caller
-of the write primitive reaching its replay branch with work still pending,
-which every caller this service has is built not to do.
+builds two balanced legs, so it is a guard against a bug in this service rather
+than a response any request can provoke. `pending_writes_on_replay` (500) is the
+same shape one layer down, in `service/posting.py` — a caller of the write
+primitive reaching its replay branch with work still pending, which every caller
+this service has is built not to do.
 `malformed_batch` (500) is the same again, in the batch form of that
 primitive (`posting.post_all`, new in [3.4] #12), whose one caller is the
 settlement route: a batch with no movements, or two movements sharing an
