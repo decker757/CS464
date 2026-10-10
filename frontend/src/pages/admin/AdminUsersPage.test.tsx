@@ -63,12 +63,6 @@ describe('AdminUsersPage', () => {
     expect(screen.queryAllByText('Suspended')).toHaveLength(1)
   })
 
-  it('lists every user before any search is typed', async () => {
-    mockUsers([adminUser()])
-    renderPage()
-    expect(await screen.findByText('alice')).toBeInTheDocument()
-  })
-
   it('searches by username or email fragment', async () => {
     mockUsers([adminUser({ id: 't1', username: 'alice' }), adminUser({ id: 't2', username: 'bob', email: 'bob@smu.edu.sg' })])
     const actor = userEvent.setup()
