@@ -78,9 +78,11 @@ async def lock(session: AsyncSession, account_ids: list[uuid.UUID]) -> None:
 def balance_query_of(
     *, account_id: uuid.UUID | ColumnElement[uuid.UUID]
 ) -> Select[tuple[Decimal]]:
-    """The sum of one account's entries, zero when it has none: a single-column
-    SELECT, so `.scalar_subquery()` turns it into a value inside another
-    statement. A balance is never stored (ADR 0009); this is how it is read.
+    """The sum of one account's entries, zero when it has none.
+
+    A single-column SELECT, so `.scalar_subquery()` turns it into a value inside
+    another statement. A balance is never stored (ADR 0009); this is how it is
+    read.
 
     `account_id` is an id, or a column of the enclosing statement (for example
     `MarketBook.pool_account_id`) that the subquery correlates on.
