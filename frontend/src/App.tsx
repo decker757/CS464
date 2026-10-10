@@ -16,6 +16,7 @@ import AdminUserHistoryPage from './pages/admin/AdminUserHistoryPage'
 import AdminUsersPage from './pages/admin/AdminUsersPage'
 import CreateMarketPage from './pages/admin/CreateMarketPage'
 import DecideOutcomePage from './pages/admin/DecideOutcomePage'
+import MarketExposurePage from './pages/admin/MarketExposurePage'
 import ProposalsPage from './pages/admin/ProposalsPage'
 import ProposeOutcomePage from './pages/admin/ProposeOutcomePage'
 
@@ -54,6 +55,7 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
+            <Route path="/admin/markets/:id/exposure" element={<ProtectedRoute requireAdmin><MarketExposurePage /></ProtectedRoute>} />
           </Routes>
         </BalanceProvider>
       </AuthProvider>
