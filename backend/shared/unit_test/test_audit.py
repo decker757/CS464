@@ -25,3 +25,4 @@ def test_actor_of_copies_id_username_and_the_role_value():
     actor = actor_of(claims)
 
     assert actor == Actor(id=claims.user_id, username="ernest_t", role="admin")
+    assert type(actor.role) is str
