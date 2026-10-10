@@ -6,7 +6,7 @@ import LoadMoreControl from '../components/ui/LoadMoreControl'
 import PageTitle from '../components/ui/PageTitle'
 import { HeaderCell, NumberCell } from '../components/ui/Table'
 import { usePagedList } from '../hooks/usePagedList'
-import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
+import { formatCreditsPrecise, signedAmountColor } from '../utils/formatCredits'
 import { labelsFor, loadMarketsById } from '../utils/marketLabels'
 
 interface EntryRow extends LedgerEntry {
@@ -46,14 +46,6 @@ const pagedHistoryOptions = {
   idOf: (row: EntryRow) => row.id,
 }
 
-// An amount of exactly zero cannot happen on a real row today, but the
-// formatter stays safe rather than colouring a hypothetical zero as a gain.
-function amountColor(amount: string): string {
-  if (isZeroCredits(amount)) return 'text-muted'
-  if (amount.startsWith('-')) return 'text-danger'
-  return 'text-success'
-}
-
 // What moved: a human label for a recognised kind, and the kind itself,
 // verbatim, for anything this app does not recognise — ledger-service.md
 // says to treat an unrecognised kind as opaque, not an error.
@@ -65,7 +57,7 @@ function kindLabel(kind: string): string {
 }
 
 function EntryDescription({ row }: { row: EntryRow }) {
-  if (!row.isTrade || !row.market_id) {
+  if (!row.isTrade) {
     return <span className="text-smu-navy">{kindLabel(row.kind)}</span>
   }
   return (
@@ -116,7 +108,7 @@ export default function TradeHistoryPage() {
                     {/* Credits per share, not a probability: it can reach 1 or pass it on a skewed book (ledger-service.md). */}
                     <NumberCell>{row.average_price ? formatCreditsPrecise(row.average_price) : '—'}</NumberCell>
                     <NumberCell>
-                      <span className={amountColor(row.amount)}>{formatCreditsPrecise(row.amount)}</span>
+                      <span className={signedAmountColor(row.amount)}>{formatCreditsPrecise(row.amount, { showSign: true })}</span>
                     </NumberCell>
                     <NumberCell>{formatCreditsPrecise(row.balance_after)}</NumberCell>
                   </tr>

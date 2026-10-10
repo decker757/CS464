@@ -126,29 +126,43 @@ describe('TradeHistoryPage', () => {
     expect(screen.getByText('997.4687')).toBeInTheDocument()
   })
 
+  it('links a trade row to its market', async () => {
+    mockEntries([entry()])
+    mockMarket('mkt-1', market())
+    const actor = userEvent.setup()
+    renderPage()
+
+    await actor.click(await screen.findByText('Will it rain in Singapore tomorrow?'))
+
+    expect(screen.getByText('market detail')).toBeInTheDocument()
+  })
+
   it('shows the starting grant as a generic row, with no market link and a dash for quantity and average price', async () => {
     mockEntries([grantEntry()])
     renderPage()
 
     expect(await screen.findByText('Starting grant')).toBeInTheDocument()
-    // amount and balance_after are both 1,000.0000 for a brand-new grant.
-    expect(screen.getAllByText('1,000.0000')).toHaveLength(2)
+    // amount is signed (+1,000.0000); balance_after never is.
+    expect(screen.getByText('+1,000.0000')).toBeInTheDocument()
+    expect(screen.getByText('1,000.0000')).toBeInTheDocument()
     // quantity and average_price are both null on a non-trade row.
     expect(screen.getAllByText('—')).toHaveLength(2)
     expect(within(screen.getByRole('table')).queryByRole('link')).not.toBeInTheDocument()
   })
 
   it('renders an unrecognised kind verbatim with its amount and balance, above the grant, in the server order', async () => {
+    // A kind this app has no label for yet, not one already in use elsewhere
+    // (settlement is #216's), so this stays "unrecognised" after that lands.
     mockEntries([
-      entry({ id: 'e2', kind: 'settlement', amount: '10.0000', balance_after: '1010.0000', market_id: null, outcome_id: null, side: null, quantity: null, average_price: null }),
+      entry({ id: 'e2', kind: 'some_future_kind', amount: '10.0000', balance_after: '1010.0000', market_id: null, outcome_id: null, side: null, quantity: null, average_price: null }),
       grantEntry(),
     ])
     renderPage()
 
-    await screen.findByText('settlement')
+    await screen.findByText('some_future_kind')
     const rows = screen.getAllByRole('row').slice(1) // drop the header row
-    expect(rows[0]).toHaveTextContent('settlement')
-    expect(rows[0]).toHaveTextContent('10.0000')
+    expect(rows[0]).toHaveTextContent('some_future_kind')
+    expect(rows[0]).toHaveTextContent('+10.0000')
     expect(rows[0]).toHaveTextContent('1,010.0000')
     expect(rows[1]).toHaveTextContent('Starting grant')
   })

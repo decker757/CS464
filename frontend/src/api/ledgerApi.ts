@@ -118,7 +118,7 @@ interface LedgerEntryPage {
  * that moved their credits. The first call for a user also mints their
  * starting grant, exactly as getMyBalance does.
  */
-export async function getMyEntries(params?: { cursor?: string; limit?: number }): Promise<LedgerEntryPage> {
+export async function getMyEntries(params?: { cursor?: string }): Promise<LedgerEntryPage> {
   const res = await api.get<LedgerEntryPage>(`${LEDGER_BASE}/ledger/entries/me`, { params })
   return res.data
 }

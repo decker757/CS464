@@ -13,7 +13,8 @@ test('a trader sees their starting grant and a trade, newest first, with the mar
   await buy(trader, market, 'Yes', '5.0000')
 
   await logIn(page, trader)
-  await page.goto('/history')
+  // Through the navbar link, not page.goto, so this also proves the link works.
+  await page.getByRole('link', { name: 'History', exact: true }).click()
 
   const rows = page.getByRole('row')
   // Newest first: the buy is above the grant.
@@ -26,7 +27,7 @@ test('a trader sees their starting grant and a trade, newest first, with the mar
   await expect(rows.nth(1)).toContainText('-2.5313')
   await expect(rows.nth(1)).toContainText('997.4687')
   await expect(rows.nth(2)).toContainText('Starting grant')
-  await expect(rows.nth(2)).toContainText('1,000.0000')
+  await expect(rows.nth(2)).toContainText('+1,000.0000')
 })
 
 test('a trader who has never traded sees their starting grant, not the empty state', async ({ page }) => {
@@ -35,9 +36,9 @@ test('a trader who has never traded sees their starting grant, not the empty sta
   const trader = await registerTrader('th_empty')
 
   await logIn(page, trader)
-  await page.goto('/history')
+  await page.getByRole('link', { name: 'History', exact: true }).click()
 
   const rows = page.getByRole('row')
   await expect(rows.nth(1)).toContainText('Starting grant')
-  await expect(rows.nth(1)).toContainText('1,000.0000')
+  await expect(rows.nth(1)).toContainText('+1,000.0000')
 })
