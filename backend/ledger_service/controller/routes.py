@@ -223,6 +223,10 @@ _PORTFOLIO_DESCRIPTION = (
     "first read exactly as `/balances/me` does. Makes no call to "
     "market_service — a market that has closed is valued at its frozen "
     "book like any other.\n\n"
+    "A market this service has settled is not valued: its rows carry "
+    "`result` and `payout`, and `price`, `value` and `unrealized_pnl` are "
+    "null. The payout is already in `balance`, so such a row adds nothing "
+    "to `positions_value`. Every key is on every row; branch on `result`.\n\n"
     "Only positions with quantity > 0 are shown, ordered by `market_id` "
     "then `outcome_position`; there is no admin variant."
 )
@@ -264,6 +268,8 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
                 price=p.price,
                 value=p.value,
                 unrealized_pnl=p.unrealized_pnl,
+                result=p.result,
+                payout=p.payout,
                 state_version=p.state_version,
             )
             for p in result.positions

@@ -110,6 +110,8 @@ POSITION_FIELDS = {
     "price",
     "value",
     "unrealized_pnl",
+    "result",
+    "payout",
     "state_version",
 }
 PORTFOLIO_FIELDS = {

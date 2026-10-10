@@ -20,7 +20,8 @@ Each structural test names the change that turns it red:
   `ledger.entries`, `ledger.positions` and `ledger.market_books`, and it is
   the same statement. Read the balance through `accounts.balance_of` beside
   the positions query and a second `entries` statement appears; read a book
-  per market through `book_prices` and a second `market_books` one does.
+  per market through `book_prices` and a second `market_books` one does; read
+  a settled market's record on its own and a second `market_results` one does.
 """
 
 from __future__ import annotations
@@ -39,8 +40,10 @@ from unit_test.portfolio_fixtures import (
     funded,
     market_at,
     read_portfolio,
+    row,
 )
 from unit_test.sell_fixtures import HELD, SOLD, hold
+from unit_test.settlement_fixtures import PAID, WINNER, settled_market
 from unit_test.trade_fixtures import (
     TIMEOUT,
     capture_sql,
@@ -152,12 +155,14 @@ async def test_the_read_makes_no_call_to_market_service(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Any HTTP request from any `httpx.AsyncClient` fails the read and is
-    recorded, so a caught failure still shows up. Two markets are held, one
-    of them closed, so a per-market status hop has somewhere to happen."""
+    recorded, so a caught failure still shows up. Three markets are held, one
+    of them closed and one settled, so a per-market status hop, or a call
+    for the settled market's winner, has somewhere to happen. [3.4] #12."""
     upstream, user_id = await _holder(session)
     closed = await market_at(session, ADR_B)
     await hold(session, closed, user_id=user_id, quantity=SOLD)
     closed.closes()
+    settled = await settled_market(session, [(user_id, WINNER, PAID)])
     upstream.calls = closed.calls = 0
 
     sent: list[str] = []
@@ -172,7 +177,9 @@ async def test_the_read_makes_no_call_to_market_service(
 
     assert sent == []
     assert (upstream.calls, closed.calls) == (0, 0)
-    assert len(result.positions) == 2
+    assert (settled.gets, settled.posts) == (0, 0)
+    assert len(result.positions) == 3
+    assert row(result, settled.market_id, WINNER).result == "paid_out"
 
 
 def _mentioning(statements: list[str], table: str) -> list[str]:
@@ -184,18 +191,25 @@ async def test_after_the_grant_the_balance_and_positions_are_one_statement(
 ) -> None:
     """The balance, the positions, `q`, `b` and `state_version` in one
     snapshot, so a trade committing mid-read cannot show its debit without
-    its shares. Two markets, so a per-market book read is two statements."""
+    its shares. Two markets, so a per-market book read is two statements. A
+    third, settled, so its record is read in the same snapshot as the payout
+    in the balance (DECISIONS.md, "A settled row's payout is its quantity").
+    """
     _, user_id = await _holder(session)
     second = await market_at(session, ADR_B)
     await hold(session, second, user_id=user_id, quantity=SOLD)
+    settled = await settled_market(session, [(user_id, WINNER, PAID)])
     schema = _schema()
 
     with capture_sql() as statements:
-        await read_portfolio(session, user_id)
+        result = await read_portfolio(session, user_id)
+
+    # Without this the test passes on a read that left the settled market out.
+    assert row(result, settled.market_id, WINNER).result == "paid_out"
 
     entries = _mentioning(statements, f"{schema}.entries")
     assert len(entries) == 1, f"the balance was read {len(entries)} times:\n{entries}"
-    for table in ("positions", "market_books", "market_outcomes"):
+    for table in ("positions", "market_books", "market_outcomes", "market_results"):
         found = _mentioning(statements, f"{schema}.{table}")
         assert found == entries, (
             f"`{table}` is not read in the balance's statement:\n{statements}"
