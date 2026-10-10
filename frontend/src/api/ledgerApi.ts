@@ -259,3 +259,42 @@ export async function getMarketTrades(marketId: string, params?: { cursor?: stri
   const res = await api.get<MarketTradePage>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, { params })
   return res.data
 }
+
+// --- [2.2] #55: market exposure --------------------------------------
+//
+// #6 (the backend slice) has not been built yet, so this shape is inferred
+// from #6's own acceptance criteria rather than read off docs/api/, which
+// has nothing for it yet — the team's call, not a guess made to unblock this
+// PR alone. A winning share pays exactly 1 credit (docs/api/ledger-service.md's
+// settlement section, "one credit per winning share"), so max_payout is the
+// outcome's shares_outstanding read as credits. Reconcile against the real
+// contract once #6 lands.
+
+export interface OutcomeExposure {
+  outcome_id: string
+  position: number
+  shares_outstanding: string
+  // What this outcome would pay out if it resolved true: shares_outstanding,
+  // one credit each.
+  max_payout: string
+}
+
+export interface MarketExposure {
+  market_id: string
+  // Empty, with pool null and exceeds_pool false, on a market the ledger has
+  // never opened a book for (#6's notes: "a 200 with nothing in it").
+  outcomes: OutcomeExposure[]
+  // seed_subsidy plus everything traders have paid in — not the seed alone
+  // (#6's acceptance criteria). Null when there is no book yet.
+  pool: string | null
+  // True when any outcome's max_payout exceeds pool.
+  exceeds_pool: boolean
+}
+
+/** Per-outcome shares outstanding and max payout for one market, plus
+ * whether any outcome's payout would exceed the pool ([2.2] #6, admin panel
+ * #55). Inferred: no real endpoint yet. */
+export async function getMarketExposure(marketId: string): Promise<MarketExposure> {
+  const res = await api.get<MarketExposure>(`${LEDGER_BASE}/ledger/markets/${marketId}/exposure`)
+  return res.data
+}
