@@ -106,6 +106,11 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
             Propose Outcome
           </Link>
         )}
+        {status !== 'draft' && status !== 'submitted' && (
+          <Link to={`/admin/markets/${market.id}/price-history`} className={buttonClass('outline', 'xs')}>
+            Price History
+          </Link>
+        )}
         {canClose && !superseded && (
           <Button variant="outline" size="xs" onClick={() => setShowCloseModal(true)}>
             Close
