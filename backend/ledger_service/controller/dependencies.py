@@ -19,6 +19,7 @@ from core import security
 from core.database import get_session
 from core.errors import NotAnAdministrator, NotAuthenticated
 from core.security import TokenClaims
+from service.audit import Actor, actor_of
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
@@ -87,3 +88,16 @@ async def require_admin(claims: CurrentUser) -> TokenClaims:
 
 
 CurrentAdmin = Annotated[TokenClaims, Depends(require_admin)]
+
+
+async def get_actor(claims: CurrentAdmin) -> Actor:
+    """Narrow verified admin claims to the `Actor` the audit log names. [3.4] #12.
+
+    Here, not in `service/`, so nothing below the controller knows a JWT was
+    involved. Built on `CurrentAdmin`: the settlement route has no other
+    admin check, so this dependency is what refuses a trader.
+    """
+    return actor_of(claims)
+
+
+CurrentActor = Annotated[Actor, Depends(get_actor)]
