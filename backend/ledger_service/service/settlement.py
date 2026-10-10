@@ -179,6 +179,7 @@ def _refuse_if_not_settleable(terms: MarketTerms) -> None:
         raise MarketNotApproved
 
 
+# Not trading._read_outcomes: ids only, for a membership test, in no order.
 async def _read_outcome_ids(
     session: AsyncSession, market_id: uuid.UUID
 ) -> list[uuid.UUID]:
