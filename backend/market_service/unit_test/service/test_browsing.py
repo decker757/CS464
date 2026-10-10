@@ -399,13 +399,16 @@ async def test_a_decided_market_carries_its_winning_outcome(
 ) -> None:
     """[X-3] #36: the winner, by id into the market's own `outcomes`. [3.4] #12:
     "A settled market's public detail shows its winning outcome". The settled
-    case fails with SETTLED left out of `DECIDED_STATUSES`, or of `_visible`."""
-    market = await decided_market(session, actor())
+    case fails with SETTLED left out of `DECIDED_STATUSES`, or of `_visible`.
+    The second outcome is the one approved, so a detail that named the first
+    instead is caught."""
+    market = await decided_market(session, actor(), winning_position=1)
 
     detail = await browsing.get_published(session, market.id)
 
     assert detail.proposed_outcome_id is not None
     assert detail.proposed_outcome_id in {outcome.id for outcome in detail.outcomes}
+    assert detail.proposed_outcome_id == market.outcomes[1].id
 
 
 # --- neither a draft nor a submission is ever public ----------------------

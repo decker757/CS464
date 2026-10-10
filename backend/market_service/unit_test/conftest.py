@@ -461,15 +461,22 @@ def rejection_request(
     return OutcomeRejectionRequest(**rejection_terms(proposal_id, **overrides))  # type: ignore[arg-type]
 
 
-async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
-    """The same closed market, with its first outcome proposed by `actor`.
+async def proposed_market(
+    session, actor: Actor, *, winning_position: int = 0, **overrides: object
+) -> Market:
+    """The same closed market, with the outcome at `winning_position` (the
+    first, by default) proposed by `actor`.
 
     `actor` is the creator and so the proposer; a decision in a test must come
     from a second administrator. Overrides are the market's terms.
+    `approved_market` and `settled_market` pass `winning_position` through.
     """
     market = await closed_market(session, actor, **overrides)
     return await market_service.propose_outcome(
-        session, actor, market.id, proposal_request(market.outcomes[0].id)
+        session,
+        actor,
+        market.id,
+        proposal_request(market.outcomes[winning_position].id),
     )
 
 
