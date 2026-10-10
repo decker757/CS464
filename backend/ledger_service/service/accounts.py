@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +75,15 @@ async def lock(session: AsyncSession, account_ids: list[uuid.UUID]) -> None:
         )
 
 
+def balance_query_of(*, account_id: uuid.UUID) -> Select[tuple[Decimal]]:
+    """The sum of one account's entries, zero when it has none: a single-column
+    SELECT, so `.scalar_subquery()` turns it into a value inside another
+    statement. A balance is never stored (ADR 0009); this is how it is read."""
+    return select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
+        Entry.account_id == account_id
+    )
+
+
 async def balance_of(session: AsyncSession, account_id: uuid.UUID) -> Decimal:
     """What this account holds: the sum of its entries, derived on every read,
     never stored (ADR 0009). [B-1] #32, [B-2] #33.
@@ -83,7 +92,5 @@ async def balance_of(session: AsyncSession, account_id: uuid.UUID) -> Decimal:
     read here: `ledger_service._page_query` sums to a position inside the
     page's own statement.
     """
-    stmt = select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
-        Entry.account_id == account_id
-    )
+    stmt = balance_query_of(account_id=account_id)
     return (await session.execute(stmt)).scalar_one()
