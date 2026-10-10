@@ -1,6 +1,6 @@
 import { useCallback, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { listUsers, type AdminUserPage } from '../../api/authApi'
+import { listUsers, type AdminUser, type AdminUserPage } from '../../api/authApi'
 import AppLayout from '../../components/layout/AppLayout'
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
@@ -12,7 +12,7 @@ import { usePagedList } from '../../hooks/usePagedList'
 const pagedUsersOptions = {
   itemsOf: (page: AdminUserPage) => page.users,
   nextCursorOf: (page: AdminUserPage) => page.next_cursor,
-  idOf: (user: { id: string }) => user.id,
+  idOf: (user: AdminUser) => user.id,
 }
 
 // [FE][4.1] #57. A fragment of a username or an email, matched server-side

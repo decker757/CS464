@@ -22,9 +22,19 @@ export default function AdminUserHistoryPage() {
 
   useEffect(() => {
     if (!userId) return
+    let ignored = false
     getUserBalance(userId)
-      .then(setBalance)
-      .catch(() => setBalanceError(true))
+      .then(found => { if (!ignored) setBalance(found) })
+      .catch(() => { if (!ignored) setBalanceError(true) })
+    // Runs before the next userId's effect, so the previous user's balance
+    // never lingers on screen while the next one is still loading, and a
+    // late answer for the user just left (ignored) can't land on it either —
+    // usePagedList's own listVersion guards the table below the same way.
+    return () => {
+      ignored = true
+      setBalance(null)
+      setBalanceError(false)
+    }
   }, [userId])
 
   const fetchPage = useCallback(
