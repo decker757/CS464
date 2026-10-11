@@ -13,8 +13,8 @@ backend/auth_service/     registration, login, logout, sessions   [A-1..A-3]
 backend/market_service/   drafting, submitting, publishing markets [1.1] [1.3],
                           closing them at their closing time [F-4] or early by
                           hand [2.3], proposing an outcome once they have
-                          [3.1], and a second admin approving or rejecting it
-                          [3.2]
+                          [3.1], a second admin approving or rejecting it
+                          [3.2], and sending an approved result back [3.3]
 backend/audit_service/    reading the shared admin action log     [4.3]
 backend/ledger_service/   credits, append-only, balances derived   [F-1]
 backend/realtime_service/ live prices over a websocket, owns no data [F-2]
@@ -235,8 +235,8 @@ is the un-propose ADR 0013 declined — and the rule is
 `actor.id == proposed_by_id`, never the username and never `creator_id`. State
 is checked before identity and identity before the reason, in the one
 `_proposal_to_decide` both share. APPROVED is a status rather than
-PENDING_RESOLUTION with `approved_at` set, so every later write is
-`market_already_approved` and [3.3] #11 and [3.4] #12 get a
+PENDING_RESOLUTION with `approved_at` set, so every later write but settle
+and send-back is `market_already_approved` and [3.3] #11 and [3.4] #12 get a
 `status = 'approved'` working set shaped like the close sweep's. A rejection
 sends the market back to CLOSED, nulls all seven proposal columns and leaves
 `closed_at` alone. There are no `rejected_by_*` columns: the
@@ -260,6 +260,22 @@ saw, or clears it with a reason written about another. Whenever a request
 decides about a thing that can be replaced under the same parent row, make it
 quote that thing's identity, and test it with the whole replacement cycle
 committed between the read and the write. ADR 0016.
+
+**An approved result can be sent back, but only inside its stored window.**
+`POST /markets/{id}/send-back-outcome` ([3.3] #11) returns an APPROVED market
+to CLOSED, nulls the seven proposal columns, the three approval columns and
+`dispute_window_ends_at`, leaves `closed_at` alone, and logs
+`market.outcome_sent_back` with the reason and a snapshot of the approval
+taken before the clear. Any administrator may call it, the proposer and the
+approver included: the only way back to APPROVED is a new proposal and a
+*different* administrator's approval, so the two-person rule still guards
+what gets paid. It quotes the approved `proposal_id`, for the reason above.
+Approval stores the window's end as `dispute_window_ends_at`, `approved_at`
+plus the setting as it is then, so changing `DISPUTE_WINDOW_SECONDS` never
+moves a running window. Send-back's edge is exclusive and reads
+`clock_timestamp()` after the lock, against the stored
+`dispute_window_ends_at`; move either and the five-minute gap stops
+protecting settlement. ADR 0023.
 
 **An admin is made by hand, and needs a fresh login.** Registration always
 creates a trader. Promotion is `UPDATE auth.users SET role = 'admin' WHERE
@@ -633,6 +649,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0019** settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 - **0020** migrations by Alembic, per service, run as a one-off step
 - **0021** the leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
+- **0023** sending an approved outcome back inside its stored dispute window, by any admin
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
