@@ -18,8 +18,14 @@ test('an admin sees shares outstanding for a traded outcome, with no flag', asyn
   await card.getByRole('link', { name: 'Exposure' }).click()
 
   await expect(page.getByRole('heading', { name: market.question })).toBeVisible()
-  const row = page.getByRole('row', { name: /yes/i })
-  await expect(row).toContainText('5.0000')
+  // Shares and payout are both 5 here, so check each column on its own: a
+  // row-wide "contains 5.0000" passes with the payout column broken.
+  await expect(page.getByRole('columnheader')).toHaveText(['Outcome', 'Shares outstanding', 'Payout if wins', 'Pool residue if wins'])
+  const yesCells = page.getByRole('row', { name: /yes/i }).getByRole('cell')
+  const sharesCell = yesCells.nth(1)
+  const payoutCell = yesCells.nth(2)
+  await expect(sharesCell).toHaveText('5.0000')
+  await expect(payoutCell).toHaveText('5.0000')
   expect(await page.getByRole('alert').count()).toBe(0)
 })
 
