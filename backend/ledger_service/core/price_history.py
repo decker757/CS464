@@ -51,12 +51,10 @@ def price_history_of(
 ) -> list[PricePoint]:
     """The opening point, then one point per trade, oldest first.
 
-    `trades` must be in commit order, and their `state_version`s must run 1, 2,
-    3, ... Raises `ValueError` naming the expected and the actual value when
-    they do not: a point labelled N must carry `q` after N trades, and a
-    dropped or reordered trade would make every later label wrong. DECISIONS.md,
-    "The price-history replay refuses trades whose state versions do not run 1,
-    2, 3, ... in order".
+    Raises `ValueError`, naming the expected and the actual value, unless the
+    trades' `state_version`s run 1, 2, 3, ... in order. The reason is in
+    DECISIONS.md, "The price-history replay refuses trades whose state versions
+    do not run 1, 2, 3, ... in order".
     """
     q = [Decimal(0)] * outcome_count
     points = [PricePoint(0, opened_at, tuple(prices(q, b)))]
