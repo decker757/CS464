@@ -1,5 +1,5 @@
 """The audit entries a market's lifecycle appends, and what each one carries.
-[4.3] #15, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.4] #12.
+[4.3] #15, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.3] #11, [3.4] #12.
 
 Every function appends on the caller's session without committing, so the
 entry commits with the action it records. ADR 0006.
@@ -138,6 +138,22 @@ def decision_snapshot(market: Market) -> dict[str, object]:
     }
 
 
+def approval_snapshot(market: Market) -> dict[str, object]:
+    """The decision snapshot plus who approved it, when, and when its window ends.
+    [3.3] #11, ADR 0023.
+
+    Twelve keys, for a send-back's entry. Take it before the clear: afterwards
+    the entry is the only copy, and `audit_svc` cannot read the market.
+    """
+    return {
+        **decision_snapshot(market),
+        "approved_by_id": str(market.approved_by_id),
+        "approved_by_username": market.approved_by_username,
+        "approved_at": _iso_or_none(market.approved_at),
+        "dispute_window_ends_at": _iso_or_none(market.dispute_window_ends_at),
+    }
+
+
 async def record_submission(
     session: AsyncSession, actor: Actor, market: Market, now: datetime
 ) -> None:
@@ -225,6 +241,31 @@ async def record_rejection(
         actor,
         market,
         AdminAction.MARKET_OUTCOME_REJECTED,
+        now,
+        reason=reason,
+        context=snapshot,
+    )
+
+
+async def record_send_back(
+    session: AsyncSession,
+    actor: Actor,
+    market: Market,
+    reason: str,
+    snapshot: dict[str, object],
+    now: datetime,
+) -> None:
+    """Append `market.outcome_sent_back`, under whoever sent it back. [3.3] #11.
+
+    Takes the snapshot rather than building it, for the reason
+    `record_rejection` gives: by now `send_back_outcome` has cleared the
+    approval from the market. ADR 0023.
+    """
+    await _record(
+        session,
+        actor,
+        market,
+        AdminAction.MARKET_OUTCOME_SENT_BACK,
         now,
         reason=reason,
         context=snapshot,

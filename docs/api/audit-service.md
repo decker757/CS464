@@ -151,6 +151,7 @@ would let a stale audit schema abort a working admin action.
 | `market.outcome_proposed` | market_service | [3.1] #9 |
 | `market.outcome_approved` | market_service | [3.2] #10 |
 | `market.outcome_rejected` | market_service | [3.2] #10 |
+| `market.outcome_sent_back` | market_service | [3.3] #11 |
 | `market.settled` | ledger_service | [3.4] #12 |
 | `market.marked_settled` | market_service | [3.4] #12 |
 | `user.suspended` | auth_service | [4.2] #14 |
@@ -170,6 +171,19 @@ decision was about.
 `market.outcome_approved` has none. A rejection clears the proposal from the
 market, so its entry — beside the proposer's own `market.outcome_proposed` — is
 the only place the rejected proposal still exists.
+
+`market.outcome_sent_back` is written when an administrator sends an approved
+result back to `closed` during its dispute window. It is under the
+administrator who sent it back, who may be anyone, including the proposer or
+the approver. It carries that administrator's `reason`, and a twelve-key
+`context`: the eight keys above, plus `approved_by_id`,
+`approved_by_username`, `approved_at` and `dispute_window_ends_at`. They are
+copied before the market is cleared, so this entry is the only place the
+sent-back approval still exists. A whole dispute can then be read from the log
+alone: `market.outcome_proposed` (P1), `market.outcome_approved` (P1),
+`market.outcome_sent_back` (P1, with the reason), `market.outcome_proposed`
+(P2), `market.outcome_approved` (P2), `market.marked_settled`. Match each
+entry to its proposal on `context.proposal_id`, as for the decisions above.
 
 Until the market service has a read for other administrators' markets,
 `?action_type=market.outcome_proposed` is also how an approver finds a proposal
