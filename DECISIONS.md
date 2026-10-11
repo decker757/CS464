@@ -7112,6 +7112,208 @@ own.
 
 ---
 
+### D-NEW — Exposure flags a payout the pool cannot cover, not one above the seed
+
+**Date:** 2026-10-10 · **Ticket:** #6 · **Status:** active
+
+**Decision.** `payout_exceeds_pool` is true when any outcome's shares
+outstanding are strictly greater than the market pool's balance. Each outcome
+also reports `residue_if_wins`, which is the pool minus that outcome's payout.
+The flag is true exactly when some residue is negative. A residue of exactly
+zero pays out in full with nothing left over, so it does not raise the flag.
+
+**Why.** Read literally, [2.2] #6's third criterion compares the payout with
+the seed subsidy. The seed is the smallest amount a pool can hold before
+settlement ("A sell cannot take a market's pool below its seed subsidy"), so
+that reading flags almost every market that has been traded at all. At
+b = 100 with a seed of 50, one buy of 51 shares charges 28.7167 and raises the
+flag, even though the pool then holds 78.7167 and covers it. The question an
+admin has before resolving is whether the platform will have to make up the
+difference. Settlement pays winners from the pool and takes any shortfall from
+PLATFORM, so the pool is the number that answers that question.
+
+**Rejected.** *The seed, as the criterion is worded*: it ignores every credit
+traders have paid in, and it flags markets that are fully covered.
+*`b·ln(n)`*: that is the worst case LMSR allows, not what this market owes
+right now. It also doesn't change, so the admin panel already shows it at
+creation. *A top-level `max_payout`*: it is just the largest `payout_if_wins`.
+Sending it would give the response two sources for one number. *A non-strict
+`>=`*: it would flag a market that pays out exactly what it holds.
+
+**Notes.** `residue_if_wins` uses the same sign as the SETTLEMENT_RESIDUE
+movement in ADR 0019 (Settlement design, #220): positive goes to PLATFORM,
+negative comes from PLATFORM. So the exposure read before resolution and the
+settlement afterwards will agree to the last place.
+
+**Reversal trigger.** A payout other than one credit per share (fees, scalar
+markets), or one that pays winners from somewhere other than the pool.
+
+---
+
+### D-NEW — Exposure on a market with no book is a 200 with nothing in it, and writes nothing
+
+**Date:** 2026-10-10 · **Ticket:** #6 · **Status:** active
+
+**Decision.** If the ledger holds no book for `market_id`, the exposure route
+answers `200`. That covers a published market nobody has previewed, traded or
+snapshotted, and also an id that names no market at all. In that response
+`opened_at`, `state_version`, `seed_subsidy`, `pool`, `result` and
+`winning_outcome_id` are null, `outcomes` is empty, and `payout_exceeds_pool`
+is false. The route never opens a book, never
+funds a pool and never calls market_service.
+
+**Why.** Without asking market_service, the ledger can't tell a cold market
+from an unknown id. It doesn't ask market_service on this route (see the
+amendment on ADR 0005). So a `404` would sometimes be wrong about a real market
+that simply has no trades yet. That case has zero exposure, so it is an
+answer, not an error. Opening the book here would post the seed from PLATFORM
+because an admin looked. "An administrator's read of somebody else's balance
+or history mints nothing" has already ruled out that kind of side effect: an
+admin read investigates and should not change what it investigates.
+
+**Rejected.** *`404` for an id without a book*: wrong for a published market
+that hasn't been touched yet. *Opening the book the way the preview and the
+snapshot do*: the read would then write, and it would put market_service on
+the request path. *Fetching the seed from market_service so a cold market can
+show its pool*: that is the second call the amendment on ADR 0005 removes, and
+the frontend already has the seed from market_service's own detail.
+
+**Notes.** `opened_at: null` is how a client spots this case. Because no flag
+can be raised here, a typo in the id reads as a quiet market and not as an
+alarm.
+
+**Reversal trigger.** The ledger opening a book at publish time instead of on
+first touch. Every published market would then have a book, an id without one
+would really be unknown, and `404` would become the right answer.
+
+---
+
+### D-NEW — Exposure reads `q` and the pool in one statement, with no lock
+
+**Date:** 2026-10-10 · **Ticket:** #6 · **Status:** active
+
+**Decision.** One SQL statement under READ COMMITTED, with no `FOR UPDATE`. It
+reads the book (`opened_at`, `state_version`, `seed_subsidy`), every outcome
+row of the book ordered by `position`, and the pool's balance as a scalar
+subquery built from `accounts.balance_query_of`, given the book's
+`pool_account_id` column. That is the expression `balance_of` uses, extracted
+in #262.
+
+**Why one statement.** This follows the same reasoning as "Preview reads `q`
+and `state_version` in one SQL statement" and "The portfolio reads its balance
+and positions in one statement, after the grant, with no lock". Under READ
+COMMITTED each statement gets its own snapshot. If `q` and the pool were read
+in separate statements, a trade could commit between the two reads, and the
+residue would be off by that trade's cost. That error can raise or clear the
+flag. With one statement, `q`, the pool and `state_version` all describe the
+same moment.
+
+**Why no lock.** ADR 0015 asks for a lock on every read whose answer decides a
+write. This read decides none. A `FOR UPDATE` on the book would queue every
+trade on the market behind an admin's page load and protect nothing.
+
+**Rejected.** *Two statements inside a REPEATABLE READ transaction*: correct,
+but it only adds an isolation level to buy the same consistency one statement
+already gives. The overview needed that because it pages ("The admin overview
+pages by keyset, settled markets last, and reads its counts in the same
+REPEATABLE READ snapshot"), and this read doesn't page. *Calling `balance_of`
+after the outcome read*: that is the two-snapshot bug described above.
+
+**Reversal trigger.** Something starts gating a write on this read, for
+example settlement refusing to run while the flag is up. That read then needs
+the book lock, taken before the pool's account lock.
+
+---
+
+### D-NEW — The settled-market check is owed by whichever of #6 and #258 lands second
+
+**Date:** 2026-10-10 · **Ticket:** #6, #12 · **Status:** closed by "A settled market's exposure reads its result, and reports no payouts against the drained pool"
+
+**Decision.** This PR does not handle a settled market. Whichever of this PR
+and #258 merges into `dev` second adds the check that keeps the exposure read
+honest about a settled market, together with its test. #220 is not edited for
+this.
+
+**Why.** Settlement empties the pool: winners are paid, and the residue moves
+to or from PLATFORM, so "the pool ends at zero either way". `q` is not reset.
+Once a market has settled, this read would show every outcome with shares as
+`residue_if_wins = −q` and raise the flag, so a finished market would look
+like the most exposed one in the system. Neither PR can fix this alone. On
+`dev` today there is no settlement row to read and no way to put a market into
+that state. The settlement stack, for its part, doesn't know the exposure
+route exists. The PR that lands second is the first one that can write a test
+that goes red.
+
+**Rejected.** *Writing the check here against `ledger.market_results`*: that
+would tie this PR to a table on an unmerged stack, and the test could not run
+on `dev`. *Adding it to #220*: the ADR would end up describing a route it
+never designed. *Doing nothing*: the flag would be wrong for every settled
+market from the day both PRs are merged.
+
+**Notes.** Tracked in #263. The PR that owes the check decides its shape and
+records it. At minimum, a settled market must not report a flag or residues
+computed against a drained pool. Done in #267.
+
+**Reversal trigger.** None. This entry is closed by whichever PR lands second.
+
+---
+
+### D-NEW — A settled market's exposure reads its result, and reports no payouts against the drained pool
+
+**Date:** 2026-10-11 · **Ticket:** #6, #263 · **Status:** active
+
+**Decision.** The exposure read's one statement outer-joins
+`ledger.market_results` on `market_id`. Every response carries two more
+top-level fields:
+
+- `result`: null, or the record's `kind` as a string (`"settled"`).
+- `winning_outcome_id`: null, or the record's `outcome_id`.
+
+When a record exists, `pool` is null, `payout_exceeds_pool` is false, and every
+outcome's `payout_if_wins` and `residue_if_wins` are null. `shares_outstanding`,
+`seed_subsidy`, `opened_at` and `state_version` stay as read. The read branches
+on whether the record exists, never on `kind`.
+
+**Why.**
+- *The figures would be wrong, not just stale.* Settlement drains the pool and
+  leaves `q` ("`ledger.market_results` is the latch, and positions and `q` are
+  never written"). Computed as before, every outcome with shares reads
+  `residue_if_wins = −q` against a pool of zero and raises the flag, including
+  the outcome that lost. A finished market would look like the most exposed
+  one in the system.
+- *The same statement.* "Exposure reads `q` and the pool in one statement, with
+  no lock" holds for the record too: read in a second statement, a settlement
+  committing between the two would pair a drained pool with no record and
+  raise the flag.
+- *Nulls, not missing keys.* One shape on every response, so a client branches
+  on the value of `result`. It is the portfolio's rule ("`result` and `payout`
+  are on every portfolio row, null until the market is settled").
+- *Not on `kind`.* Like the latch's readers and the portfolio, so [BE] #221's
+  void reaches this branch too, and its pool is drained just the same.
+- *Shares stay.* They are what the winners were paid on, and the admin panel
+  can still show what each outcome held at the end.
+
+**Rejected.**
+- *Figures against the pool as it stood before settlement*: another read, for
+  a question nobody asks once the payout is made. The settlement's own figures
+  are in its response and its `market.settled` audit entry.
+- *A `404` or `409` for a settled market*: the admin panel links Exposure on
+  settled markets ([FE] #265), and a settled market is an answer.
+- *Omitting the fields with `exclude_none`*: two shapes, and it would strip
+  the cold market's nulls too.
+- *Renaming the fields already on the wire*: #265 reads `payout_exceeds_pool`
+  and `payout_if_wins`.
+
+**Notes.** A void from #221 will read with a non-null `result` and a null
+`winning_outcome_id`, and #221 must say so in the API doc. `state_version` on a
+settled market is the frozen book's last version. Closes "The settled-market
+check is owed by whichever of #6 and #258 lands second".
+
+**Reversal trigger.** Settlement resetting `q`, or leaving the pool funded.
+Then the figures mean something again after settlement.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
