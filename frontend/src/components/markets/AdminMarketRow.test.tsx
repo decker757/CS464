@@ -153,4 +153,14 @@ describe('AdminMarketRow', () => {
     expect(await screen.findByText(/at least 10 characters/i)).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
+
+  it('links to the exposure panel for a market that has traded, but not a draft or submitted one', () => {
+    renderRow(OPEN_MARKET)
+    expect(screen.getByRole('link', { name: /^exposure$/i })).toHaveAttribute('href', `/admin/markets/${OPEN_MARKET.id}/exposure`)
+  })
+
+  it('hides the exposure link on a draft or submitted market', () => {
+    renderRow({ ...OPEN_MARKET, status: 'submitted', close_time: '2099-01-01T00:00:00Z' })
+    expect(screen.queryByRole('link', { name: /^exposure$/i })).not.toBeInTheDocument()
+  })
 })

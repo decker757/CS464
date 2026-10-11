@@ -61,6 +61,11 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
             Propose Outcome
           </Link>
         )}
+        {market.status !== 'draft' && market.status !== 'submitted' && (
+          <Link to={`/admin/markets/${market.id}/exposure`} className={buttonClass('outline', 'xs')}>
+            Exposure
+          </Link>
+        )}
         {canClose && !superseded && (
           <Button variant="outline" size="xs" onClick={openCloseModal}>
             Close
