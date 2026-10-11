@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SCHEMA
 from unit_test.market_fixtures import market_with_outcomes
+from unit_test.schema_fixtures import refusing_constraint
 
 LIQUIDITY_B = Decimal("100.0000")
 
@@ -41,14 +42,6 @@ def _result(market_id: uuid.UUID, outcome_id: uuid.UUID | None):
         outcome_id=outcome_id,
         recorded_at=datetime.now(UTC),
     )
-
-
-def _refusing_constraint(refusal: pytest.ExceptionInfo[IntegrityError]) -> str | None:
-    """The constraint Postgres named when it refused the write. None for a
-    not-null violation, which names a column instead."""
-    # SQLAlchemy's asyncpg adapter raises its own error from asyncpg's, and
-    # only asyncpg's carries the constraint name.
-    return refusal.value.orig.__cause__.constraint_name
 
 
 async def _primary_key_name(session: AsyncSession) -> str:
@@ -102,7 +95,7 @@ async def test_a_second_result_for_the_same_market_is_refused(
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
 
-    assert _refusing_constraint(refusal) == primary_key
+    assert refusing_constraint(refusal) == primary_key
     await session.rollback()
 
 
@@ -118,7 +111,7 @@ async def test_a_settled_result_with_no_outcome_is_refused(
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
 
-    assert _refusing_constraint(refusal) == "ck_market_results_outcome_iff_settled"
+    assert refusing_constraint(refusal) == "ck_market_results_outcome_iff_settled"
     await session.rollback()
 
 
@@ -135,5 +128,5 @@ async def test_a_result_naming_another_markets_outcome_is_refused(
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
 
-    assert _refusing_constraint(refusal) == "fk_market_results_market_outcome"
+    assert refusing_constraint(refusal) == "fk_market_results_market_outcome"
     await session.rollback()

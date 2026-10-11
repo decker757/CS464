@@ -183,6 +183,30 @@ aggregates, so composition is cheap, but each needs a decision about who
 composes — the trading service growing a read endpoint, or the frontend issuing
 two calls. Decide it in those tickets, not here.
 
+> **Amended by [2.2] #6. The ledger answers it alone.** Neither of this
+> paragraph's two options was needed. The ledger already held both halves when
+> #6 was picked up. Shares outstanding are `ledger.market_outcomes.q`. The seed
+> subsidy was copied into `ledger.market_books.seed_subsidy` when the book was
+> created, under "Market terms reach the ledger by lazy pull on first touch",
+> which is the immutable snapshot this record calls for. So
+> `GET /ledger/markets/{id}/exposure` makes no call to market_service, there is
+> no composite read, and the frontend sends one request.
+>
+> The amendment also changes which number #6 compares a payout with. The
+> criterion says "seeded subsidy", but the comparison that tells an admin
+> whether the platform will have to cover a payout is against the pool, meaning
+> the seed plus everything traders have paid in. See "Exposure flags a payout
+> the pool cannot cover, not one above the seed". The seed is still reported
+> next to it.
+>
+> The snapshot exists only once a book has been opened. A market nobody has
+> touched yet has no seed on this side of the boundary. The exposure route
+> reports that as an empty `200` and does not fetch the seed ("Exposure on a
+> market with no book is a 200 with nothing in it, and writes nothing"), so the
+> ledger still never reads market_service on an admin read.
+>
+> [X-3] #36, the other query in this paragraph, is not affected.
+
 **One more network hop in the hot path.** Every cost preview becomes composite
 to ledger. This is the reason `b` is snapshotted at publish rather than fetched:
 one hop per quote is a budget, two is a latency problem in an interaction that
