@@ -7751,6 +7751,168 @@ Then the figures mean something again after settlement.
 
 ---
 
+### D-NEW — Suspending the last administrator reuses `last_administrator`
+
+**Date:** 2026-10-11 · **Ticket:** #14 · **Status:** active
+
+**Decision.** `set_suspension` refuses to suspend the last administrator who
+can log in with the existing `409 last_administrator`, the same class and
+message the role change raises. Its docstring widens from "demoting this user"
+to "demoting or suspending this user".
+
+**Why.** Same cause, same fix: make somebody else an administrator first. A
+client does nothing different for the two, and this service's rule is one code
+per thing a client can do about it. The message ("This is the only
+administrator. Promote another one first.") reads correctly for both. Like the
+demotion, it is reachable only when two administrators act at the same
+moment: through the route the caller is an active administrator and not the
+target, so the caller is always left.
+
+**Rejected.** A separate `last_administrator_suspension`. A second code for one
+remedy.
+
+**Notes.** The guard discards the target from the locked set rather than
+testing membership, as `change_role` does: a suspended administrator is absent
+from the set and must still be a valid target (ADR 0007). Unsuspending only
+grows the set and has no guard, but still takes the set lock first, so a
+suspension and a role change cannot deadlock (ADR 0015).
+
+---
+
+### D-NEW — A suspension needs a reason both ways, checked by a copy of market_service's reason rule
+
+**Date:** 2026-10-11 · **Ticket:** #14 · **Status:** active
+
+**Decision.** `PATCH /admin/users/{user_id}/suspension` requires `reason` to
+suspend and to unsuspend. The schema requires the key and caps it at 500
+characters, as `RoleChangeRequest.reason` does. The service trims it and
+refuses blank or under ten characters with `422 suspension_incomplete`, whose
+`details` name `reason`. The trimmed reason is what the audit entry stores. The
+rule is a copy of market_service's `service/validation.py::_reason_problems`,
+with a one-line comment naming the twin.
+
+**Why.** The acceptance criteria say "requires a reason". An unsuspension is a
+decision about somebody else's account too, and an entry that says only "back
+on" answers nothing (Ernest, 2026-10-11). The copy stays a copy: two services
+and two forms, and the floors moving apart would be a design choice rather than
+a bug, which is below ADR 0012's bar for `shared/`. Auth has no
+`IncompleteError` base like market_service's, so `SuspensionIncomplete` is a
+plain `AuthError` carrying `problems`, as `DuplicateUser` already is. Its
+message fits both directions: "A reason is required to suspend or unsuspend an
+account."
+
+**Rejected.** A reason on suspend only. Moving `_reason_problems` into
+`shared/`.
+
+---
+
+### D-NEW — Suspending revokes every refresh token the account holds
+
+**Date:** 2026-10-11 · **Ticket:** #14 · **Status:** active
+
+**Decision.** `set_suspension` calls `revoke_all_for_user` when it suspends,
+under the target's row lock, before it sets the flag. Unsuspending revokes
+nothing.
+
+**Why.** Refresh already refuses a suspended account, so revoking changes what
+happens *after* unsuspension. Without it a 14-day refresh cookie starts working
+again the moment the account is unsuspended, and the user is silently logged
+back in on every device they had. With it, unsuspension means "may log in
+again". "The refresh path locks the user row before the token" assumed this
+ticket would revoke, and requires the row lock it holds.
+
+**Rejected.** Revoking nothing, because refresh refuses anyway: the sessions
+come back on unsuspension.
+
+**Notes.** The revoke is written before the flag. Under the row lock the order
+does not matter, and auth's sessions do not autoflush, so neither order lets
+the flag's `UPDATE auth.users` wait on a concurrent rotation and hide a missing
+lock: `test_a_refresh_racing_a_suspension_keeps_no_session` goes red without
+`lock_user` in both orders.
+
+---
+
+### D-NEW — A suspension that changes nothing writes nothing, decided from the locked row
+
+**Date:** 2026-10-11 · **Ticket:** #14 · **Status:** active
+
+**Decision.** Asking for the state the account already has writes nothing,
+revokes nothing and records nothing, and returns `200` with the user. The
+check reads `is_suspended` from the row `lock_user` locked.
+
+**Why.** The role change's rule, and the reason the body names a state rather
+than an action: a double-submitted form is the same outcome. Two
+administrators clicking Suspend on the same abusive account at once is the
+realistic case, and deciding under the lock makes it one entry rather than two.
+
+---
+
+### D-NEW — The suspension's audit entry carries the target's role in `context`
+
+**Date:** 2026-10-11 · **Ticket:** #14 · **Status:** active
+
+**Decision.** `user.suspended` and `user.unsuspended` carry
+`context = {"role": <the target's role at the time>}`, beside the trimmed
+`reason` and a snapshotted `target_label`.
+
+**Why.** A reader of the log should tell an administrator's suspension from a
+trader's, and the role can change afterwards. `audit_svc` cannot read
+`auth.users` to look it up, which is why the label is snapshotted too. The
+reason lives only here: there are no `suspended_at` or `suspended_reason`
+columns (Ernest, 2026-10-11), so the log is the record.
+
+---
+
+### D-NEW — Login decides suspension under the user's row lock
+
+**Date:** 2026-10-11 · **Ticket:** #14 · **Status:** active
+
+**Decision.** After the password is verified, `authenticate` re-reads the user
+with `lock_user` and checks `is_suspended` on the locked row. The lock is held
+until the login commits its new refresh token.
+
+**Why.** Revoking every session is a promise only if no session can be created
+during the suspension. `authenticate` read the row without a lock, so a login
+that read "not suspended" just before an administrator's suspension committed
+could insert its refresh token after the revoke. That token does nothing while
+the account is suspended, and comes back to life on unsuspension: exactly what
+the revoke exists to prevent. CLAUDE.md's "a lock on the transition is half a
+lock": the read that decides the write must be locked. With the lock the login
+either waits for the suspension and is refused, or goes first and has its token
+revoked by the suspension that follows. After the password, so suspension
+still cannot be probed ("Suspension is checked only after the password is
+proven").
+
+**Rejected.** Leaving it: a suspension would not end every session.
+
+**Notes.** Lock order stays acyclic. Every path that touches a user row and a
+token takes the user row first; only the two admin paths take the
+administrator set, and both take it first.
+
+---
+
+### D-NEW — One auth client in the ledger, for #14's trade check and #38's leaderboard
+
+**Date:** 2026-10-11 · **Ticket:** #14 · **Status:** active
+
+**Decision.** The ledger holds one `httpx.AsyncClient` for the auth service,
+built on `main.py`'s lifespan beside the terms client, with explicit
+five-second timeouts and a setting `auth_service_url` defaulting to
+`http://auth:8000`. Whichever of #14 and [L-1] #38 lands first builds it; the
+other reuses the client and the setting.
+
+**Why.** ADR 0022's per-trade check calls auth on every trade, so a client per
+call would pay a handshake on the hottest path, as #114 found for
+market_service. ADR 0021's leaderboard refresh needs a client for the same
+host. The timeout is stated rather than inherited (D-030), and is its own
+constant rather than the terms client's: the two dependencies' budgets may
+reasonably diverge. The default matches compose's hostname, as
+`market_service_url`'s does, so compose needs no entry.
+
+**Rejected.** A client per service that calls auth. Two clients for one host.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
