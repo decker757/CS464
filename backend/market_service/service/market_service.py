@@ -650,8 +650,9 @@ async def settle(
     market = await get_any(session, market_id, for_update=True)
 
     # Before the clock: a repeat writes nothing, so there is nothing to stamp,
-    # and a raised window must not refuse a market already paid. Do not answer
-    # it `market_already_settled`; a repeat is how the ledger repairs a failed
+    # and a market already paid must not be refused by its window (0002's
+    # backfill on a database that ran a shorter one). Do not answer it
+    # `market_already_settled`; a repeat is how the ledger repairs a failed
     # last step. DECISIONS.md, "The settle step checks in a fixed order".
     if market.status is MarketStatus.SETTLED:
         return market
