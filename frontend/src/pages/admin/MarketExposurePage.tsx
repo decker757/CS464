@@ -51,7 +51,7 @@ export default function MarketExposurePage() {
                 <p className="mb-6 text-sm text-muted">This market has settled; the pool has been paid out.</p>
               ) : (
                 <SectionCard title="Pool" className="mb-6">
-                  <DetailItem label="Seed subsidy plus everything traders have paid in">
+                  <DetailItem label="Seed plus every buy, minus every sell">
                     <p className="text-smu-navy">{exposure.pool === null ? '—' : formatCreditsPrecise(exposure.pool)}</p>
                   </DetailItem>
                   {exposure.payout_exceeds_pool && (
