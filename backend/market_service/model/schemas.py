@@ -317,6 +317,45 @@ class OutcomeRejectionRequest(BaseModel):
     )
 
 
+class OutcomeSendBackRequest(BaseModel):
+    """The body of POST /markets/{id}/send-back-outcome. [3.3] #11
+
+    `proposal_id` names the approved proposal the administrator is looking
+    at, for the reason the decisions carry one: within the window an approval
+    can be sent back, re-proposed and re-approved on the same market row, and
+    a send-back keyed by the market would then undo an approval nobody on
+    that screen saw. Its own description, because it is read from a different
+    audit entry. Required key, nullable value. ADR 0016, ADR 0023.
+
+    `reason` is split as `OutcomeRejectionRequest` splits it: a missing key is
+    FastAPI's 422, and what it says is `send_back_incomplete`.
+    """
+
+    proposal_id: uuid.UUID | None = Field(
+        description=(
+            "The `proposal_id` of the approved result the administrator "
+            "reviewed, exactly as it was read from the latest "
+            "`market.outcome_approved` audit entry's `context` for this "
+            "market. Send `null` only for an approval whose proposal had "
+            "none, which is one made before proposal ids existed. If that "
+            "approval has since been sent back and another approved in its "
+            "place, the send-back is refused as `409 proposal_superseded` "
+            "rather than applied to a result nobody here has read."
+        )
+    )
+
+    reason: str = Field(
+        max_length=MAX_PROSE_LENGTH,
+        description=(
+            "Why this approved result is being sent back. At least 10 "
+            "characters. Recorded in the audit log against the administrator "
+            "who sent it back, and kept nowhere else: it is not a field on "
+            "the market, and the approval it undoes is cleared from the market."
+        ),
+        examples=["The source cited was revised; the first print says No, not Yes."],
+    )
+
+
 class OutcomeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
