@@ -2,7 +2,8 @@
 
 Dependencies rather than middleware: they default to closed, and /docs shows
 which routes need a token. Authority comes from the signed token alone, so a
-suspended user keeps it for one access-token lifetime (ADR 0003).
+suspended user keeps it for one access-token lifetime (ADR 0003), except to
+trade: the trade path asks auth (ADR 0022).
 """
 
 from __future__ import annotations
@@ -38,6 +39,14 @@ async def get_terms_client(request: Request) -> httpx.AsyncClient:
 
 
 TermsClient = Annotated[httpx.AsyncClient, Depends(get_terms_client)]
+
+
+async def get_auth_client(request: Request) -> httpx.AsyncClient:
+    """The process-wide auth client `main.py`'s lifespan built. ADR 0022."""
+    return request.app.state.auth_client
+
+
+AuthClient = Annotated[httpx.AsyncClient, Depends(get_auth_client)]
 
 
 async def get_claims(request: Request) -> TokenClaims:
