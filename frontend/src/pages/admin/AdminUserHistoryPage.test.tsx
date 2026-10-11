@@ -70,10 +70,10 @@ function mockMarket(id: string, body: Record<string, unknown>) {
   server.use(http.get(`${MARKET_BASE}/public/markets/${id}`, () => HttpResponse.json(body)))
 }
 
-function renderPage(userId = 'trader-1') {
+function renderPage(userId = 'trader-1', state?: Record<string, unknown>) {
   return render(
     <WithProviders user={admin}>
-      <MemoryRouter initialEntries={[`/admin/users/${userId}`]}>
+      <MemoryRouter initialEntries={[{ pathname: `/admin/users/${userId}`, state }]}>
         <Routes>
           <Route path="/admin/users/:userId" element={<AdminUserHistoryPage />} />
           <Route path="/admin/users" element={<p>users list</p>} />
@@ -101,6 +101,23 @@ function renderMovableRouter(userId: string) {
 }
 
 describe('AdminUserHistoryPage', () => {
+  it('names whose history this is when linked from the user list', async () => {
+    mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+    mockEntries('trader-1', [])
+    renderPage('trader-1', { user: { id: 'trader-1', username: 'alice', email: 'alice@smu.edu.sg' } })
+
+    expect(await screen.findByRole('heading', { name: /alice/i })).toBeInTheDocument()
+    expect(screen.getByText('alice@smu.edu.sg')).toBeInTheDocument()
+  })
+
+  it('falls back to the user id when there is no linked user, as after a page reload', async () => {
+    mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+    mockEntries('trader-1', [])
+    renderPage('trader-1')
+
+    expect(await screen.findByRole('heading', { name: /trader-1/i })).toBeInTheDocument()
+  })
+
   it('shows the balance and the full ledger, newest first', async () => {
     mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
     mockEntries('trader-1', [entry()])

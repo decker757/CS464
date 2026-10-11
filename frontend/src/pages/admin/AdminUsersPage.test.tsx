@@ -2,12 +2,20 @@ import { StrictMode } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import type { User } from '../../context/AuthContext'
 import { WithProviders } from '../../test/renderWithProviders'
 import { server } from '../../test/server'
 import AdminUsersPage from './AdminUsersPage'
+
+// Renders the username the router state named, so a test can prove the link
+// actually carries the user along, not only that the route matched.
+function UserHistoryStub() {
+  const location = useLocation()
+  const user = (location.state as { user?: { username: string } } | null)?.user
+  return <p>user history for {user?.username ?? 'nobody'}</p>
+}
 
 const AUTH_BASE = 'http://localhost:8000'
 
@@ -40,7 +48,7 @@ function renderPage() {
         <MemoryRouter initialEntries={['/admin/users']}>
           <Routes>
             <Route path="/admin/users" element={<AdminUsersPage />} />
-            <Route path="/admin/users/:userId" element={<p>user history</p>} />
+            <Route path="/admin/users/:userId" element={<UserHistoryStub />} />
           </Routes>
         </MemoryRouter>
       </WithProviders>
@@ -110,14 +118,14 @@ describe('AdminUsersPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
   })
 
-  it('links to the selected user\'s history', async () => {
+  it('links to the selected user\'s history, carrying the user along as router state', async () => {
     mockUsers([adminUser({ id: 't1', username: 'alice' })])
     const actor = userEvent.setup()
     renderPage()
 
     await actor.click(await screen.findByText('alice'))
 
-    expect(screen.getByText('user history')).toBeInTheDocument()
+    expect(screen.getByText('user history for alice')).toBeInTheDocument()
   })
 
   it('appends the next page when Load more is clicked', async () => {

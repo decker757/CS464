@@ -19,6 +19,7 @@ test('an admin searches for a trader and reads their real balance and history', 
   await page.getByRole('button', { name: 'Search' }).click()
   await page.getByText(trader.username, { exact: true }).click()
 
+  await expect(page.getByRole('heading', { name: trader.username })).toBeVisible()
   // liquidity_b is 100 and nothing else traded against this market, so this
   // is exact, not just present — the one test that talks to the real ledger.
   await expect(page.getByText('997.4687 credits')).toBeVisible()
