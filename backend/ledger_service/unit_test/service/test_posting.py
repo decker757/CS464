@@ -326,6 +326,27 @@ async def test_an_account_with_no_entries_holds_zero(session: AsyncSession) -> N
     assert await accounts.balance_of(session, user.id) == ZERO
 
 
+async def test_balance_query_of_correlated_on_a_column_gives_each_row_its_own_balance(
+    session: AsyncSession,
+) -> None:
+    """`balance_query_of` given a column, as the exposure read gives it
+    `MarketBook.pool_account_id` (#262's review). Two accounts with different
+    balances, read in one statement. Catches: the subquery not correlating,
+    which sums every entry in the ledger, zero, onto every row."""
+    first, platform = await _pair(session)
+    second = await accounts.ensure(session, AccountKind.USER, uuid.uuid4())
+    await _fund(session, first, platform, Decimal("500"))
+    await _fund(session, second, platform, Decimal("125.5000"))
+
+    balance = accounts.balance_query_of(account_id=Account.id).scalar_subquery()
+    stmt = select(Account.id, balance.label("balance")).where(
+        Account.id.in_([first.id, second.id])
+    )
+    rows = dict((await session.execute(stmt)).tuples().all())
+
+    assert rows == {first.id: Decimal("500"), second.id: Decimal("125.5000")}
+
+
 # --- the timestamp, fixed under the lock (#187) ----------------------------
 async def test_a_movement_lands_after_the_newest_entry_on_its_accounts(
     session: AsyncSession,

@@ -24,6 +24,7 @@ from unit_test.exposure_fixtures import (
     market_with,
 )
 from unit_test.sell_fixtures import hold
+from unit_test.settlement_fixtures import LOSER, PAID, UNPAID, WINNER, settled_market
 
 _FIELDS = {
     "market_id",
@@ -32,6 +33,8 @@ _FIELDS = {
     "seed_subsidy",
     "pool",
     "payout_exceeds_pool",
+    "result",
+    "winning_outcome_id",
     "outcomes",
 }
 _OUTCOME_FIELDS = {
@@ -114,6 +117,8 @@ async def test_the_exposure_json_is_decimal_strings_at_scale_four(
     assert type(body["opened_at"]) is str
     assert datetime.fromisoformat(body["opened_at"]) == book.opened_at
     assert body["payout_exceeds_pool"] is True
+    assert body["result"] is None
+    assert body["winning_outcome_id"] is None
 
     for field, expected in (("seed_subsidy", "50.0000"), ("pool", "481.3569")):
         assert type(body[field]) is str, field
@@ -161,5 +166,42 @@ async def test_a_market_with_no_book_is_nulls_and_an_empty_list_on_the_wire(
         "seed_subsidy": None,
         "pool": None,
         "payout_exceeds_pool": False,
+        "result": None,
+        "winning_outcome_id": None,
         "outcomes": [],
     }
+
+
+async def test_a_settled_market_on_the_wire_is_its_result_with_null_figures(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_headers: dict[str, str],
+    user_id: uuid.UUID,
+    other_user_id: uuid.UUID,
+) -> None:
+    """DECISIONS.md, "A settled market's exposure reads its result, and reports
+    no payouts against the drained pool". Catches: a dropped field; a zero or
+    an absent key where the contract says null; the flag sent up."""
+    market = await settled_market(
+        session, [(other_user_id, LOSER, UNPAID), (user_id, WINNER, PAID)]
+    )
+
+    response = await client.get(_path(market.market_id), headers=admin_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == _FIELDS
+    assert body["payout_exceeds_pool"] is False
+    assert body["pool"] is None
+    assert body["result"] == "settled"
+    assert body["winning_outcome_id"] == str(market.winner)
+
+    outcomes = {o["position"]: o for o in body["outcomes"]}
+    assert set(outcomes) == {LOSER, WINNER}
+    for position, shares in ((LOSER, str(UNPAID)), (WINNER, str(PAID))):
+        outcome = outcomes[position]
+        assert set(outcome) == _OUTCOME_FIELDS, position
+        assert outcome["outcome_id"] == str(market.outcomes[position]), position
+        assert outcome["shares_outstanding"] == shares, position
+        assert outcome["payout_if_wins"] is None, position
+        assert outcome["residue_if_wins"] is None, position

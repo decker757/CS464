@@ -14,6 +14,10 @@ that turns it red:
   through `accounts.balance_of` beside the outcome read and a second SELECT
   appears. DECISIONS.md, "Exposure reads `q` and the pool in one statement,
   with no lock".
+- **A settled market too.** The result record joins the same statement, so a
+  settlement committing between two reads cannot pair a drained pool with no
+  record. DECISIONS.md, "A settled market's exposure reads its result, and
+  reports no payouts against the drained pool".
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from unit_test.exposure_fixtures import (
     row_counts,
 )
 from unit_test.sell_fixtures import hold
+from unit_test.settlement_fixtures import LOSER, PAID, UNPAID, WINNER, settled_market
 from unit_test.trade_fixtures import capture_sql, writes
 
 
@@ -72,6 +77,23 @@ async def test_a_market_with_a_book_is_read_in_one_select(
     """Catches: the pool read by a second statement."""
     market = await market_with(session, b=EXAMPLE_B, seed=EXAMPLE_SEED)
     await hold(session, market, user_id=user_id, quantity=EXAMPLE_QUANTITY)
+
+    with capture_sql() as statements:
+        await read_exposure(session, market.market_id)
+
+    assert writes(statements) == []
+    assert len(_selects(statements)) == 1, (
+        f"expected one SELECT, got {len(_selects(statements))}:\n{statements}"
+    )
+
+
+async def test_a_settled_market_is_still_read_in_one_select(
+    session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
+) -> None:
+    """Catches: `market_results` read by a second statement."""
+    market = await settled_market(
+        session, [(other_user_id, LOSER, UNPAID), (user_id, WINNER, PAID)]
+    )
 
     with capture_sql() as statements:
         await read_exposure(session, market.market_id)

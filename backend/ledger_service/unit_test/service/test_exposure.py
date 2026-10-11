@@ -29,6 +29,15 @@ from unit_test.exposure_fixtures import (
     read_exposure,
 )
 from unit_test.sell_fixtures import hold, sell
+from unit_test.settlement_fixtures import (
+    LOSER,
+    PAID,
+    SUBSIDY,
+    UNPAID,
+    WINNER,
+    positions_and_q,
+    settled_market,
+)
 
 B = Decimal("100.0000")
 ZERO = Decimal("0")
@@ -158,3 +167,34 @@ async def test_the_pool_is_the_seed_plus_buys_less_sells_and_its_own_markets(
     assert result.pool == pool
     assert other_result.seed_subsidy == other_seed
     assert other_result.pool == other_pool
+
+
+# =========================================================================
+# A settled market
+# =========================================================================
+async def test_a_settled_market_reads_its_result_and_no_figures_against_the_drained_pool(
+    session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
+) -> None:
+    """Settled through the real `pay_out`, which empties the pool and leaves
+    `q`: Ernest's reproduction on #267, where the loser read -17.2909 and the
+    winner -41.3337 with the flag up. DECISIONS.md, "A settled market's exposure
+    reads its result, and reports no payouts against the drained pool".
+    Catches: `market_results` ignored."""
+    market = await settled_market(
+        session, [(other_user_id, LOSER, UNPAID), (user_id, WINNER, PAID)]
+    )
+    _, q = await positions_and_q(session, market.market_id)
+
+    result = await read_exposure(session, market.market_id)
+    outcomes = by_position(result.outcomes)
+
+    assert result.payout_exceeds_pool is False
+    assert result.pool is None
+    for position in (LOSER, WINNER):
+        assert outcomes[position].payout_if_wins is None, position
+        assert outcomes[position].residue_if_wins is None, position
+    assert result.result == "settled"
+    assert result.winning_outcome_id == market.winner
+    assert [outcomes[position].shares_outstanding for position in (0, 1)] == q
+    assert q[LOSER] == UNPAID and q[WINNER] == PAID, "q is what was held"
+    assert result.seed_subsidy == SUBSIDY
