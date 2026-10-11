@@ -200,17 +200,17 @@ describe('MarketDetailPage', () => {
     expect(banner.querySelector('strong')).toHaveTextContent('Yes')
   })
 
-  // #12 adds a `settled` status the frontend does not know yet; the page must
-  // still render rather than go blank on an unknown value.
+  // A status the backend adds before the frontend knows it (as #12's `settled`
+  // once was); the page must still render rather than go blank on it.
   it('shows a market whose status the page does not know yet', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
-        HttpResponse.json({ ...baseMarket, status: 'settled' }),
+        HttpResponse.json({ ...baseMarket, status: 'under_review' }),
       ),
     )
     renderPage()
     expect(await screen.findByText(baseMarket.question)).toBeInTheDocument()
-    expect(screen.getByText('settled')).toBeInTheDocument()
+    expect(screen.getByText('under review')).toBeInTheDocument()
   })
 
   it('shows resolution criteria and sources', async () => {
