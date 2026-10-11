@@ -30,7 +30,7 @@ export default function MarketTradeTable({ trades, outcomeLabels }: MarketTradeT
       <tbody>
         {trades.map(trade => (
           <tr key={trade.transaction_id} className="border-b border-line last:border-0">
-            <td className="px-5 py-3 text-muted">{new Date(trade.occurred_at).toLocaleString('en-SG')}</td>
+            <td className="px-5 py-3 text-muted">{new Date(trade.created_at).toLocaleString('en-SG')}</td>
             <td className="px-5 py-3 text-smu-navy" title={trade.user_id}>{shortId(trade.user_id)}</td>
             <td className="px-5 py-3 text-smu-navy">{outcomeLabels.get(trade.outcome_id) ?? trade.outcome_id}</td>
             <NumberCell>{trade.side === 'buy' ? 'Buy' : 'Sell'}</NumberCell>

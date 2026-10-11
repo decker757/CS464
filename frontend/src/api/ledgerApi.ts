@@ -216,7 +216,9 @@ export async function getMarketPriceHistory(marketId: string): Promise<PriceHist
 
 export interface MarketTrade {
   transaction_id: string
-  occurred_at: string
+  // `created_at`, not `occurred_at`: a trade is a ledger transaction row
+  // (MarketTradeOut), while `occurred_at` belongs to a price point above.
+  created_at: string
   // Not a username: the ledger holds no user table (ledger-service.md).
   // Shown as a short id until an admin batch lookup on auth exists.
   user_id: string

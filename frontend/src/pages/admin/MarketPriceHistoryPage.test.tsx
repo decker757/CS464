@@ -38,7 +38,7 @@ function market(overrides: Record<string, unknown> = {}) {
 function trade(overrides: Record<string, unknown> = {}) {
   return {
     transaction_id: 't1',
-    occurred_at: '2026-01-02T12:00:00Z',
+    created_at: '2026-01-02T12:00:00Z',
     user_id: 'aaaaaaaa-1111-2222-3333-444444444444',
     outcome_id: 'o-yes',
     side: 'buy',
