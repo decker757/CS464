@@ -18,6 +18,18 @@ from core.clock import as_utc
 SETTLEMENT_GAP = timedelta(minutes=5)
 
 
+def is_in_dispute_window(*, ends_at: datetime | None, now: datetime) -> bool:
+    """May this approval still be sent back? `now < ends_at`, exclusive. [3.3] #11.
+
+    False with no `ends_at`: a null is damage, and fails closed as
+    `is_settleable` does. Exclusive, so no instant is both inside the window
+    and settleable. ADR 0023.
+    """
+    if ends_at is None:
+        return False
+    return as_utc(now) < as_utc(ends_at)
+
+
 def is_settleable(
     *,
     approved: bool,
