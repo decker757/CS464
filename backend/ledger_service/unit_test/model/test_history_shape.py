@@ -23,6 +23,9 @@ def test_the_history_adds_no_table_and_no_column() -> None:
         "market_books",
         "market_outcomes",
         "positions",
+        # [3.4] #12's PR 3 adds the ledger's results table; the history itself
+        # still adds none.
+        "market_results",
     }
     assert {column.name for column in Entry.__table__.columns} == {
         "id",

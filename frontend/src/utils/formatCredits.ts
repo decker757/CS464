@@ -26,6 +26,16 @@ export function isZeroCredits(value: string): boolean {
   return /^0*$/.test(wholeRaw) && /^0*$/.test(fractionRaw)
 }
 
+// A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
+// say it is never a gain on a book nobody else has traded, and the same is
+// true of a signed amount that happens to land on exactly zero. Only colour
+// an actual loss or an actual gain; zero stays neutral.
+export function signedAmountColor(value: string): string {
+  if (isZeroCredits(value)) return 'text-muted'
+  if (value.startsWith('-')) return 'text-danger'
+  return 'text-success'
+}
+
 // Credits are whole numbers in practice, so display reads the integer part
 // directly off the string instead of parsing it as a float and rounding.
 // BigInt is exact over that integer part — no float involved — and

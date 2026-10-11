@@ -229,6 +229,16 @@ verification and the LMSR engine.
 > gaining a parameter, flag or branch that only one caller uses: the behaviour
 > is then no longer identical, and a copy is cheaper than a flag.
 
+> **Amended 2026-10-10 by [3.4] #12.** `shared/audit.py` also holds
+> `actor_of`, which turns verified token claims into the `Actor` snapshot.
+> market_service and the ledger authorise from the token alone and must name
+> an administrator identically, or one person appears under two roles in one
+> log. The auth service does not call it: it builds its `Actor` from the live
+> user row, so a demotion takes effect on its next request (ADR 0007). That
+> is a different input, not a branch in this module, so the reversal trigger
+> above is not met. DECISIONS.md: "PR 6a moves `actor_of` into
+> `shared/audit.py`, ahead of the route, as its own refactor".
+
 **The audit table is not in any service's `Base.metadata`, and that is
 load-bearing.** Everything mapped there is created by `create_all` at startup
 and dropped by `unit_test/conftest.py` per test. Either against this table

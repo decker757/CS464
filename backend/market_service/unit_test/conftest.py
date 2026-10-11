@@ -56,7 +56,7 @@ from decimal import Decimal  # noqa: E402
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from sqlalchemy import NullPool, event, update  # noqa: E402
+from sqlalchemy import NullPool, event, func, select, update  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -460,27 +460,89 @@ def rejection_request(
     return OutcomeRejectionRequest(**rejection_terms(proposal_id, **overrides))  # type: ignore[arg-type]
 
 
-async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
-    """The same closed market, with its first outcome proposed by `actor`.
+async def proposed_market(
+    session, actor: Actor, *, winning_position: int = 0, **overrides: object
+) -> Market:
+    """The same closed market, with the outcome at `winning_position` (the
+    first, by default) proposed by `actor`.
 
     `actor` is the creator and so the proposer; a decision in a test must come
     from a second administrator. Overrides are the market's terms.
+    `approved_market` and `settled_market` pass `winning_position` through.
     """
     market = await closed_market(session, actor, **overrides)
     return await market_service.propose_outcome(
-        session, actor, market.id, proposal_request(market.outcomes[0].id)
+        session,
+        actor,
+        market.id,
+        proposal_request(market.outcomes[winning_position].id),
     )
 
 
-async def approved_market(session, creator: Actor, **overrides: object) -> Market:
-    """An approved market, standing in for "settled" until [3.4] #12.
+async def approved_market(
+    session,
+    creator: Actor,
+    *,
+    approver: Actor | None = None,
+    approved_at: datetime | None = None,
+    **overrides: object,
+) -> Market:
+    """A market whose proposal a second administrator has approved. [3.2] #10.
 
-    Overrides are `proposed_market`'s.
+    `approver` defaults to a fresh administrator. `approved_at` is handed to
+    `approve_outcome` as its clock, so a test can approve in the past through
+    the real path. Overrides are `proposed_market`'s.
     """
     market = await proposed_market(session, creator, **overrides)
     return await market_service.approve_outcome(
-        session, actor(), market.id, approval_request(market.proposal_id)
+        session,
+        approver or actor(),
+        market.id,
+        approval_request(market.proposal_id),
+        now=approved_at,
     )
+
+
+async def database_now(session) -> datetime:
+    """Postgres's `clock_timestamp()`, the clock every market decision is stamped with."""
+    return (await session.execute(select(func.clock_timestamp()))).scalar_one()
+
+
+# "Settlement opens five minutes after send-back closes" (ADR 0019). A
+# constant, not a setting, so the tests name it too rather than import it:
+# a gap shortened in `core/settling.py` must turn them red.
+_SETTLEMENT_GAP = timedelta(minutes=5)
+
+
+def time_until_settleable() -> timedelta:
+    """How long after approval a market becomes settleable, under the current settings.
+
+    Read at call time, so a test that raised the window sees the raised one.
+    """
+    return timedelta(seconds=get_settings().dispute_window_seconds) + _SETTLEMENT_GAP
+
+
+def settleable_edge(approved_at: datetime) -> datetime:
+    """The first instant settlement is allowed for a market approved at `approved_at`."""
+    return approved_at + time_until_settleable()
+
+
+async def settled_market(session, creator: Actor, **overrides: object) -> Market:
+    """The same market, approved long enough ago to settle, then settled. [3.4] #12.
+
+    Approved at the database's clock minus the window and the gap, then
+    settled through `market_service.settle` on the real clock, so no audit
+    entry is dated in the future. Settled by a fresh administrator, so no
+    caller's actor gains an entry. Overrides are `proposed_market`'s. Returns
+    the market reloaded from the database.
+    """
+    approved_at = await database_now(session) - time_until_settleable()
+    market_id = (
+        await approved_market(session, creator, approved_at=approved_at, **overrides)
+    ).id
+    await market_service.settle(session, actor(), market_id)
+    session.expire_all()
+    return await market_service.get(session, creator.id, market_id)
 
 
 async def proposed_before_ids(session, actor: Actor) -> Market:

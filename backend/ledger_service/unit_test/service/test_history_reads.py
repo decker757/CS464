@@ -8,6 +8,8 @@ Each structural test names the change that turns it red:
   anchor sum in its own query beside the page leaves a second `entries`
   statement. Taking `kind` and `context` from
   `Entry.transaction`'s `selectin` load leaves a second `transactions` one.
+  Reading a settlement row's winner from `ledger.market_results` leaves a
+  second statement of its own.
 - **One leg per USER account.** The mixed test stays green while every writer
   keeps one leg on the user. A writer that splits the user's side in two turns
   it red. The fabricated companion shows the guard's query can find a breach:
@@ -34,6 +36,7 @@ from unit_test.history_fixtures import (
 )
 from unit_test.portfolio_fixtures import funded, market_at
 from unit_test.sell_fixtures import hold, sell
+from unit_test.settlement_fixtures import PAID, WINNER, settled_market
 from unit_test.trade_fixtures import (
     SMALL_QUANTITY,
     accounts_module,
@@ -67,8 +70,10 @@ def _without(statements: list[str], removed: list[str]) -> list[str]:
 async def test_each_page_is_one_statement_after_the_grant_check(
     session: AsyncSession,
 ) -> None:
-    """Page 1 and a cursor page, three rows at `limit=2`."""
+    """Page 1 and a cursor page, four rows at `limit=2`: the grant, the buy,
+    the sell, and a payout from a settled market, newest, on page 1."""
     scenario = await traded(session)
+    settled = await settled_market(session, [(scenario.user_id, WINNER, PAID)])
     schema = _schema()
 
     with capture_sql() as grant_check:
@@ -81,7 +86,10 @@ async def test_each_page_is_one_statement_after_the_grant_check(
             session, scenario.user_id, limit=2, cursor=page_one.next_cursor
         )
 
-    assert len(page_one.rows) == 2 and len(page_two.rows) == 1
+    assert len(page_one.rows) == 2 and len(page_two.rows) == 2
+    payout = page_one.rows[0]
+    assert payout.entry.transaction.kind == entities().TransactionKind.SETTLEMENT
+    assert payout.trade.outcome_id == settled.outcomes[1]
     for name, captured in (("page 1", page_one_sql), ("page 2", page_two_sql)):
         read = _without(captured, grant_check)
         assert len(read) == 1, f"{name} took {len(read)} statements:\n" + "\n\n".join(read)

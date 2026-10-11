@@ -29,44 +29,12 @@ commands, and ADR 0020 has the decision.
 
 `0001` and `0003` to `0007` were hand-applied ALTERs that nothing recorded.
 [F-5] #75 folded them into the baselines and deleted them. A development
-database from before #75 that missed one is refused by its migrate step, which
-names the missing column, index or type and changes nothing. Read the refusal
-with `docker compose logs market-migrate` (or `auth-migrate`, `ledger-migrate`).
+database from before #75 has the service's tables and no migration history,
+and its migrate step refuses it and changes nothing. Read the refusal with
+`docker compose logs market-migrate` (or `auth-migrate`, `ledger-migrate`).
 
-The files are still in git history. From the repository root, find the
-commit that deleted them:
-
-```bash
-git log --diff-filter=D --format=%h -- sql/migrations/
-```
-
-The file names describe features, not columns, so look the file up by what is missing.
-For each line of the refusal, take the last name on it (after its final `.` or
-`:`, so `liquidity_b` from `add_column market.markets.liquidity_b`) and put it
-in place of `<name>`, with the commit in place of `<commit>`:
-
-```bash
-git grep -l <name> <commit>^ -- sql/migrations/
-```
-
-That prints one or more lines like
-`<commit>^:sql/migrations/0001-market-lmsr-parameters.sql`. Apply each, in
-number order, with the printed line in place of `<file>`:
-
-```bash
-git show <file> | docker compose exec -T db psql -U cs464 -d cs464 -v ON_ERROR_STOP=1
-```
-
-Every one of those files is idempotent, so applying one twice, or applying all
-of a service's files in number order, does no harm. Then run
-`docker compose up` again.
-
-Nothing in git history fixes an auth refusal, or a ledger that lost its
-append-only trigger: those need `docker compose down -v`, which destroys local
-data.
-
-The recovery above works only while each service's baseline is its newest
-revision. After that, the answer is `docker compose down -v`, which destroys local data.
+Start from an empty database with `docker compose down -v`, which destroys
+local data. ADR 0020 has why nothing recovers it in place.
 
 ## Why this is not in `sql/` itself
 

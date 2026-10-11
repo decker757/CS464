@@ -221,6 +221,34 @@ only by the suite.
 > deferred reopens in full and is a prerequisite of that ticket rather than a
 > detail inside it.
 
+> **Amended 2026-10-04 by [3.4] #12. Two write routes, and neither takes money.**
+>
+> `POST /ledger/markets/{market_id}/settlement` is the second write route
+> ([ADR 0019](0019-settlement-across-services.md)). It accepts an
+> administrator's token and an empty body (`extra="forbid"`). The rule this
+> record set down for the trade route still holds: whoever calls a route
+> supplies nothing that decides who is paid or how much. Checked input by
+> input:
+>
+> | Input | Why it cannot move money it should not |
+> | --- | --- |
+> | `market_id` | Path only. Credits move between *that* market's pool, its holders and PLATFORM, and nowhere else |
+> | the winning outcome | Not an input. Read from market_service's public detail, where it can only be the outcome two different administrators proposed and approved (ADR 0016). On a repeat, the ledger's own record governs and the detail is not read for the payout |
+> | the credited accounts | Not an input. Read from `ledger.positions` under the book lock |
+> | the amounts | Not an input. One credit per winning share, from the stored quantity. The residue is the pool's derived balance |
+> | the debited accounts | Not an input. The pool and, for a short pool, PLATFORM. Never the caller |
+> | idempotency keys | Not an input. Derived by the server: `settlement:{market_id}:{user_id}` per payout and `settlement_residue:{market_id}` for the residue, namespaces no other route writes, so no request can claim them |
+> | the token | Must carry the admin role. It authorises asking for the settlement, and it names no account |
+>
+> **What this does not answer.** The question of a caller with no token
+> stays open, exactly as the amendment above leaves it. Settlement is an
+> administrator's request. A scheduled sweep that settled markets would have
+> no token to forward, and it reopens the question in full.
+>
+> **Reversal trigger:** either route gains a body field that names an
+> outcome, an account or an amount. That route then needs a service
+> credential first, and this table stops holding.
+
 ## Consequences
 
 **Every read of a balance can write.** One insert per user, ever, and it is the

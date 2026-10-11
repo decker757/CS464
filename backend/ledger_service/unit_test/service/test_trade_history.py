@@ -33,6 +33,15 @@ from unit_test.history_fixtures import (
 )
 from unit_test.portfolio_fixtures import funded, market_at
 from unit_test.sell_fixtures import HELD, PROCEEDS, hold, sell, version_of
+from unit_test.settlement_fixtures import (
+    LOSER,
+    PAID,
+    UNPAID,
+    WINNER,
+    payout_key,
+    settled_market,
+    transaction_by_key,
+)
 from unit_test.trade_fixtures import (
     SMALL_QUANTITY,
     accounts_module,
@@ -262,7 +271,7 @@ async def test_an_unrecognised_kind_renders_with_amount_and_balance_after_and_nu
 ) -> None:
     """**The one test that fabricates a kind.** A `market_seed` posted against
     a user account: no real writer does that, and it stands in for a kind the
-    row builder does not recognise, such as a settlement. Its context names a
+    row builder does not recognise. Its context names a
     `market_id`, so a builder that reads any kind's context for one is caught.
     """
     user_id, credits = await funded(session)
@@ -287,3 +296,51 @@ async def test_an_unrecognised_kind_renders_with_amount_and_balance_after_and_nu
     assert rows[0].entry.amount == amount
     assert rows[0].balance_after == credits + amount
     assert trade_fields(rows[0]) == NULL_TRADE_FIELDS
+
+
+# =========================================================================
+# Settlement rows. [3.4] #12
+# =========================================================================
+async def test_a_payout_is_a_settlement_row_naming_its_market_winner_and_quantity(
+    session: AsyncSession,
+) -> None:
+    """DECISIONS.md, "A payout's history row is kind `settlement`, with market,
+    outcome and quantity". The winner is outcome position 1, so a row that
+    took the market's first outcome is caught; `side` and `average_price`
+    stay null, because a payout is not a trade."""
+    user_id, credits = await funded(session)
+    settled = await settled_market(
+        session, [(user_id, WINNER, PAID), (uuid.uuid4(), LOSER, UNPAID)]
+    )
+    payout = await transaction_by_key(session, payout_key(settled.market_id, user_id))
+
+    rows = (await read_history(session, user_id)).rows
+
+    assert transaction_ids(rows) == [payout.id, await grant_id_of(session, user_id)]
+    row = rows[0]
+    assert row.entry.transaction.kind == entities().TransactionKind.SETTLEMENT
+    assert row.entry.amount == PAID
+    assert row.balance_after == credits + PAID
+    assert trade_fields(row) == (
+        settled.market_id,
+        settled.outcomes[1],
+        None,
+        PAID,
+        None,
+    )
+    assert str(row.trade.quantity) == "41.3337"
+
+
+async def test_a_holder_of_only_losing_shares_has_no_settlement_row(
+    session: AsyncSession,
+) -> None:
+    """A loser is paid nothing, so no entry, so no row: no zero row is
+    invented. Same decision as above."""
+    user_id, _ = await funded(session)
+    await settled_market(
+        session, [(user_id, LOSER, UNPAID), (uuid.uuid4(), WINNER, PAID)]
+    )
+
+    rows = (await read_history(session, user_id)).rows
+
+    assert transaction_ids(rows) == [await grant_id_of(session, user_id)]

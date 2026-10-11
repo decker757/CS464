@@ -3789,6 +3789,16 @@ which the test in "The price read exists once, and the price quantizer is in
 `core/pricing.py`" states: a reader needing something it does not use to
 decide its answer.
 
+*Noted 2026-10-10 by [3.4] #12, in PR 7: the statement also outer-joins
+`ledger.market_results`, so the one snapshot covers settlement too. A
+settlement committing mid-read is either seen whole (the payout in the
+balance, the rows settled) or not at all (no payout, the rows valued at the
+frozen book). Read separately, a payout could reach the balance while its
+shares were still valued: the double count "A settled position shows `result`
+and `payout`, and its value fields are null" exists to prevent. See "A settled
+row's payout is its quantity, and its result comes from
+`ledger.market_results`, joined in the portfolio's one statement".*
+
 ---
 
 ### D-NEW — The portfolio carries ids only, and makes no call to market_service
@@ -3892,6 +3902,14 @@ entry with it.
 **Notes.** #12's note carries the trap: a settlement that pays out and leaves
 positions at `quantity > 0` has the portfolio count those shares twice.
 
+*Fulfilled 2026-10-10 by [3.4] #12, in PR 7. This entry is history. A settled
+row carries `result` and `payout`, and its value fields are null: see "A
+settled position shows `result` and `payout`, and its value fields are null"
+and "A settled row's payout is its quantity, and its result comes from
+`ledger.market_results`, joined in the portfolio's one statement". The Notes'
+trap is closed: positions keep `quantity > 0` after the payout, and the settled
+branch values them at nothing.*
+
 ---
 
 ### D-NEW — A user's holdings in one market are valued as one sequence of sales
@@ -3931,6 +3949,10 @@ and the split would be a rule nobody could check against a trade.
 **Reversal trigger.** A ticket that needs order-independent per-row values,
 or a trade route that sells several outcomes in one transaction — which makes
 the combined sale real, and the portfolio should then value that.
+
+*Noted 2026-10-10 by [3.4] #12, in PR 7: "[L-1] #38 calls the same function"
+now means through the portfolio's valuation, which leaves settled markets out
+before it calls `liquidation_values_of`. See ADR 0018's 2026-10-10 amendment.*
 
 ---
 
@@ -4110,6 +4132,12 @@ settlement*: a test pinned to a shape #12 has not chosen.
 
 **Reversal trigger.** #12 lands. Its row either renders through the generic
 path or adds a mapping, and this entry is then history.
+
+*Fulfilled 2026-10-10 by [3.4] #12, in PR 7. This entry is history. The payout
+took the mapping branch, not the generic one: the row builder maps
+`settlement`, per "A payout's history row is kind `settlement`, with market,
+outcome and quantity". The stand-in test for an unrecognised kind still pins
+"any other kind renders with them null", and stays.*
 
 ---
 
@@ -4419,6 +4447,11 @@ once the member exists. The trader browse reads `PublicMarketStatus`, so #12
 must add it there too, or settled markets vanish from `/public/markets`: that
 is `_visible`'s allowlist working as designed. Reversal trigger: none. It
 reverts by #12 landing.
+
+*Fulfilled 2026-10-10 by [3.4] #12. This entry is history. SETTLED reached
+`MarketStatus`, `PublicMarketStatus`, the overview's filter and zero-filled
+counts, and the trader browse in PR 1 (#227). It is marked here in PR 7, with
+the stack's other two.*
 
 ---
 
@@ -4740,6 +4773,2345 @@ dead-code allowlist entry goes. When #227 lands, `_is_settled` returns
 
 ---
 
+### D-NEW — Settlement is the ledger's request, and market_service is told after the payout commits
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** An administrator calls `POST /ledger/markets/{id}/settlement`
+with an empty body. The ledger reads the market's status, approved outcome
+and `settleable` from the public detail, opens the book if it is cold, pays
+everyone under the book lock, and commits. Only then does it call
+`POST /markets/{id}/settle` on market_service, forwarding the administrator's
+token. Both services answer a repeat with `200` and write nothing. ADR 0019.
+
+**Why.** No transaction can span both services, so something has to come
+second. With the money first, the worst partial state is "paid, still shown as
+approved". That market stays in the overview's approved queue, which is exactly
+the prompt to repeat the request. The other order leaves "settled, nobody paid",
+and nothing prompts a fix.
+
+**Rejected.**
+- *market_service marks SETTLED and then calls the ledger.* That is a dual
+  write, and it needs a ledger route that takes the winner as input.
+- *market_service checks with the ledger before it writes.* That creates an
+  HTTP cycle between the two services.
+
+**Reversal trigger.** A service credential exists. market_service's route then
+requires it, and the direct-call gap below closes.
+
+**Notes.** The direct-call gap is accepted under ADR 0007's trust model. Any
+administrator can call `/markets/{id}/settle` directly. A market settled that
+way pays nobody, sinks out of the overview's approved queue and looks finished.
+The ledger still accepts `settled` with no record, so calling the ledger's route
+pays it. The frontend calls only the ledger's route, and
+`docs/api/market-service.md` documents the other as the ledger's alone.
+
+---
+
+### D-NEW — A settlement whose last step fails answers `503 settlement_unconfirmed`
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** If the call to market_service's settle route fails after the
+payouts committed, the ledger answers `503 settlement_unconfirmed`. The
+payouts stand. Repeating the request completes it and writes nothing in the
+ledger.
+
+**Why.** Every existing use of `503 market_terms_unavailable` means nothing
+happened. Reusing it here would tell an administrator that a settlement failed
+when it has paid everybody. The status and the remedy match ("Upstream failures
+map to 503, 404 and 401, and the timeout is explicit"), but the principle
+behind those codes is that a caller can act differently on each, and here an
+administrator does: they need to know that money has moved.
+
+**Rejected.**
+- *`market_terms_unavailable`*: it means the opposite.
+- *`200` with a warning field*: the request is not finished, and a client that
+  reads only the status would never retry.
+- *`502`*: a status the frontend has no handler for, and a code is the
+  contract anyway.
+
+**Reversal trigger.** None expected. It goes when the last step does, for
+example if market_service learns of settlement some other way.
+
+---
+
+### D-NEW — Any administrator may settle, and a resolver role, if one is added, takes it over
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `CurrentAdmin` on the ledger route, and `get_any` with an admin
+guard on market_service's. The creator, the proposer and the approver may all
+settle.
+
+**Why.** The two-person rule is spent at approval (ADR 0016). Settlement carries
+out a decision that is already made, and chooses nothing. [4.4] #16's split
+between creator and resolver is not built: ADR 0007 declined it and #16 is
+closed.
+
+**Rejected.** *Excluding the proposer, as approval does*: that guards a choice,
+and settlement makes none.
+
+**Reversal trigger.** A resolver role is added to `UserRole`: settlement then
+moves to that role on both routes. *When* any administrator may settle is a
+separate entry, "Settlement waits for `settleable`, which market_service
+derives from `approved_at`".
+
+---
+
+### D-NEW — Neither call to market_service is made holding a database connection
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The public-detail read runs before the request's first database
+statement, or after a rollback on a path that has already read. The settle call
+follows the commit with no statement between them, so nothing autobegins a
+transaction.
+
+**Why.** "The cold path holds no connection across the terms pull", applied to
+a request that calls out twice. A hung market_service must cost this request its
+latency, not a pooled connection or a lock on the book.
+
+**Rejected.** *Making the settle call inside the transaction so that one
+failure rolls everything back*: the book lock would be held across a remote
+round trip, and a hung market_service would stop trading in that market. The
+rollback it buys is also wrong, because a failed call would un-pay every
+winner.
+
+**Reversal trigger.** A step that has to touch the database between the commit
+and the settle call. The connection-release test fails on that change, and the
+step moves rather than the test.
+
+---
+
+### D-NEW — APPROVED is read before the book lock, because send-back and settlement never overlap
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The ledger trusts an `approved` and `settleable` answer read
+before it locks.
+
+**Why.** ADR 0017 already argues that the ledger's lock holds nothing still in
+market_service. The read is also stable. APPROVED has two exits: SETTLED,
+which the ledger accepts too, and back to CLOSED by send-back ([3.3] #11),
+which ends at `window_ends_at`. Every other write path in market_service
+refuses an APPROVED market: save and publish through the frozen table, close
+early and propose through the resolution table, approve and reject through
+`_proposal_to_decide`. The sweep touches only OPEN markets. Settlement starts
+five minutes after send-back ends, so no send-back can start once `settleable`
+is readable, and one that started in time has had five minutes to commit.
+
+The gap is for one race. A send-back checks the clock just before
+`window_ends_at` and commits just after. A settlement's unlocked read lands in
+between, sees `approved` and `settleable`, and pays the old winner. The
+send-back then commits, but the settlement record is written, and "On a
+repeat, the recorded outcome governs" keeps the old winner paid and recorded
+for good.
+
+**Rejected.** *Re-reading the status after the commit*: it would close no
+window, since the read is remote, and it would cost a second call.
+
+**Reversal trigger.** Any further transition out of APPROVED, or send-back
+allowed past `window_ends_at`.
+
+---
+
+### D-NEW — `ledger.market_settlements` is the latch, and positions and `q` are never written
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** There is one row per settled market: `market_id` (primary key),
+`outcome_id`, with `(market_id, outcome_id)` a composite foreign key into
+`market_outcomes`, and `settled_at`. It is read under the book lock by settlement, which writes nothing if
+the row exists, and by the trade path, which then refuses
+`409 market_closed`. Positions and `q` are untouched. It is a new table, and
+whichever of this stack's ledger-model PR and [F-5] #75's ledger PR merges
+second adds its Alembic revision.
+
+**Why.** It keeps a record of what was held and paid. It keeps "Shares
+outstanding equal the sum of positions, so the outstanding check is a backstop
+on the trade route" true without new code. It gives the portfolio and history
+something of the ledger's own to join, with no call to market_service. The
+trade path's status gate already refuses a SETTLED market; the latch covers a
+trade that passed the gate and then queued on the book lock behind the
+settlement.
+
+**Rejected.**
+- *Zeroing positions*: it loses the record, and the portfolio would have
+  nothing to show.
+- *A `settled_at` column on `market_books`*: a status on a table ADR 0017
+  keeps status-free.
+- *Relying on the status gate alone*: it refuses before the lock, not under
+  it.
+- *Storing what it paid (a total, a holder count, the residue)*: a stored sum
+  of ledger rows, the second source of truth ADR 0009 refuses, and nothing
+  reads it. The entries are the record of the money, and the audit entry
+  already carries the figures for a reader of the log.
+
+**Reversal trigger.** A reader that needs a settled market's shares to read as
+zero and cannot join the record, or any path that could reopen a settled
+market.
+
+**Notes.** [BE] #221's void and refund is a later user of `post_all` and of
+this record, and is not designed here. `outcome_id` is non-null, because a
+settlement always has a winner, so a void may need a record shape of its own.
+
+*Superseded in part 2026-10-09 by [3.4] #12: the table's name, `outcome_id`'s
+nullability, `settled_at`, and the Notes' "a void may need a record shape of
+its own". See "`ledger.market_results` is one record per finished market, with
+a `kind`" below, and ADR 0019's amendment of 2026-10-09. The latch, its readers
+under the book lock, the untouched positions and `q`, and the rejected
+alternatives stand. `ledger.market_settlements` elsewhere in this file now
+means `ledger.market_results`.*
+
+---
+
+### D-NEW — On a repeat, the recorded outcome governs
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** If the settlement record exists, the ledger answers from it.
+What market_service reports now is not read for the payout. Nothing is paid
+again, whatever market_service reports.
+
+**Why.** Settlement is one-way, and money that has been paid cannot be
+recalled. If a later answer from market_service could steer a repeat, any
+inconsistency between the two services would turn into a second payout.
+
+**Rejected.** *Comparing the two and refusing on a mismatch*: it leaves an
+administrator with a market they can neither finish nor fix. The step that
+remains is marking SETTLED, and that doesn't depend on which outcome is named.
+
+**Reversal trigger.** A settlement can be reversed. Nothing planned does this.
+
+---
+
+### D-NEW — One settlement is one commit, through `posting.post_all`
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Every winner's payout is its own transaction of kind
+`SETTLEMENT`, keyed `settlement:{market_id}:{user_id}`, with one leg on that
+user's account ("A transaction puts at most one leg on any USER account"). The
+residue is one more, of kind `SETTLEMENT_RESIDUE`, keyed
+`settlement_residue:{market_id}`. Both keys are derived by the server; no
+request supplies any part of them. All of them, the record and the audit entry are posted
+by `posting.post_all`, which commits once. `post_all` is a new function in
+decker757's `posting.py`, and its shape waits on his agreement.
+
+**Why.** Two reasons, neither of them speed:
+- *Atomicity.* A settlement that is half paid cannot be labelled, and cannot be
+  finished idempotently.
+- *The lock.* `post` commits, so a loop of `post` calls would release the book
+  lock after the first winner, and a trade could land mid-settlement.
+
+**Rejected.**
+- *A loop of `post`*: see above.
+- *One transaction with a leg per winner*: it breaks the one-leg-per-user
+  invariant from the other side, and turns the history into one row shared by
+  a thousand users.
+
+**Reversal trigger.** "The book's writes share `posting.post`'s commit, and
+nothing may follow it" changes so that callers own the commit. A speed
+measurement is **not** a trigger.
+
+**Notes.** `_refuse_overdrafts` checks USER accounts only. On an
+under-subsidised market, the pool goes negative between the payouts and the
+residue, inside one uncommitted transaction. No reader can see that, and the
+pool ends at `0.0000`. Do not reorder the batch to avoid it.
+
+*Amended 2026-10-09 by [3.4] #12: `post_all`'s shape is agreed. See
+"`posting.post_all` takes a list of `Movement`s, commits once, and keeps
+`post`'s SAVEPOINT" and the five entries after it.*
+
+---
+
+### D-NEW — A settlement's first stamp follows the newest entry on every account it locks
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The first transaction in the batch is stamped one tick after the
+newest entry on the union of the locked accounts: the pool, PLATFORM and every
+winner. Each later transaction is stamped one tick after the one before.
+
+**Why.** "A movement's timestamp is fixed under its account locks, not trusted
+from the clock", applied to a batch. Stamping from the pool's entries alone
+lets a winner with a newer entry get a payout listed before it, with a
+`balance_after` they never held. The chain keeps no two entries on one account
+at the same time.
+
+**Rejected.**
+- *One stamp for the whole batch*: PLATFORM and the pool would carry several
+  entries with the same time, and "no two entries on one account share a time"
+  would break.
+- *A per-transaction probe*: correct, but a thousand probes where one union
+  query does.
+
+**Reversal trigger.** The feed stops ordering by `created_at`.
+
+*Corrected 2026-10-09 by [3.4] #12: the cost in the second Rejected bullet.
+See "`post_all` stamps from one probe per locked account, and movement *i*
+lands at the first stamp plus *i* µs" below. The decision and the chain stand.*
+
+---
+
+### D-NEW — The residue empties the pool, in whichever direction it falls
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Pool minus the payouts:
+- positive: posted from the pool to PLATFORM;
+- negative: posted from PLATFORM to the pool;
+- zero: skipped.
+
+The pool ends at `0.0000`. A market nobody traded returns its whole seed.
+
+**Why.** A settled pool holding credits would be money that nobody owns and
+nothing reads. The direction follows ADR 0009: PLATFORM is the only account
+meant to absorb the difference.
+
+**Rejected.**
+- *Leaving the residue in the pool*: credits stranded in an account that will
+  never move again.
+- *Paying pro rata when the pool is short*: it pays a winner less than a
+  winning share is worth, which is the opposite of the first criterion.
+
+**Reversal trigger.** Per-market fees the platform keeps, or a decision on the
+open question about markets subsidised below `b·ln(n)`.
+
+---
+
+### D-NEW — A settled position shows `result` and `payout`, and its value fields are null
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The row keeps `quantity`, `cost_basis` and `average_entry_price`,
+and adds `result` (`paid_out` | `worthless`) and `payout`. `price`, `value` and
+`unrealized_pnl` are `null`. It adds nothing to `positions_value`.
+
+**Why.** The payout is already in the balance. Valuing the shares again at the
+frozen book is the double count that #12's note warned about. `null` rather
+than `0.0000`, because zero is a valuation, and a sold-out position is already
+the one place zero means something. This supersedes the realized-outcome
+placeholder that "A resolved market's realized outcome is [3.4] #12's
+criterion, not [T-4] #24's" declined to add.
+
+**Rejected.**
+- *Dropping the row*: the trader loses the record of what they held.
+- *`value = payout`*: it adds the payout into `net_worth` a second time.
+
+**Reversal trigger.** A ticket that needs a settled position given a value.
+
+---
+
+### D-NEW — A payout's history row is kind `settlement`, with market, outcome and quantity
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The row builder maps `settlement`: `market_id`, `outcome_id` (the
+winner) and `quantity` (shares paid) come from `context`; `side` and
+`average_price` are `null`. A holder of only losing shares has no entry, so they
+have no row.
+
+**Why.** This is #12's criterion, moved from #25, and no longer conditional. A
+payout with no market on it is unreadable in a history. `average_price` stays
+`null` because every payout's price is exactly one, and showing it would invite
+reading a payout as a trade.
+
+**Rejected.** *A losing row at zero*: a zero leg is refused by `posting.post`,
+and inventing a row with no entry breaks "the history is the ledger presented".
+
+**Reversal trigger.** None. "A resolution payout's history row is [3.4] #12's
+criterion, not [T-5] #25's" becomes history when this lands.
+
+---
+
+### D-NEW — Settled markets sink in the overview's unfiltered view, and the counts are unchanged
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** In the unfiltered view the order is settled last, then #5's
+`close_time ASC NULLS LAST, id ASC`. Filtered views keep #5's order. The counts
+stay every status, zero-filled, summing to what the caller can see.
+
+**Why.** "The admin overview orders by soonest close, missing close times last,
+then id" names SETTLED as its reversal trigger: terminal markets would pile up
+at the top of a work queue. Sinking keeps them reachable, where excluding them
+would break "the counts sum to the markets visible".
+
+**Rejected.** *Excluding settled markets from the unfiltered view*: the counts
+and the list would then disagree.
+
+**Notes.** [2.1] #210 builds this order, into its paging and its cursor, so the
+cursor format does not change when SETTLED arrives. It is switched off until
+SETTLED exists (#227). Whichever of #210 and #227 merges second switches it on,
+in one line. If #210 records the order in an entry of its own, the two must
+agree.
+
+Switched on in #227: `_is_settled` is now
+`Market.status == MarketStatus.SETTLED`.
+
+**Reversal trigger.** A second terminal status.
+
+---
+
+### D-NEW — SETTLED joins the frozen, resolution and decided status tables
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `PublicMarketStatus` and `MarketStatus` gain `settled` in one
+commit. SETTLED is added to `_FROZEN_STATUS_ERRORS`, to
+`_RESOLUTION_STATUS_ERRORS` and to `_proposal_to_decide`'s state check, each
+answering `409 market_already_settled`. It is also added to `DECIDED_STATUSES`.
+
+**Why.** Without these, `_refuse_if_frozen`'s `.get()` lets an autosave reach
+`_clear_children` and `status = DRAFT`, deleting a settled market's outcomes
+and turning it back into a draft. Close early, propose and the decisions would
+answer true but useless codes. And `DECIDED_STATUSES` without SETTLED would hide
+the winner from traders and from the ledger's own repeat read. ADR 0017 already
+requires the two enums to change in one commit.
+
+**Rejected.** *`status not in (DRAFT, SUBMITTED)`*: the frozen table's own
+comment refuses it, because each status owes its own error.
+
+**Reversal trigger.** None. These are the fixes the new member needs.
+
+---
+
+### D-NEW — The ledger writes the settlement's audit entry, through its own seam onto `shared/audit.py`
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `market.settled` is appended on the payout session, after the
+settlement record is staged and before `post_all` commits. The ledger gains
+`core/audit.py`, `model/audit.py` and `service/audit.py`. market_service's settle
+step writes no entry.
+
+**Why.** ADR 0006: the entry commits with the action. Writing it only once is
+what makes "one action, one entry" true. Order matters because
+`has_pending_writes` sees ORM writes only, not a Core `insert()`. The latch,
+checked before any write, keeps a settled market away from `post_all`'s replay
+branch. The record, an ORM add staged first, means the guard still fires if the
+latch is ever bypassed.
+
+**Rejected.** *Entries in both services*: two log lines for one action.
+
+**Rule for the implementation.** The three seam files may differ from
+market_service's in constants and vocabulary only. If any would repeat
+market_service's code beyond that, CLAUDE.md requires the extraction into
+`shared/` in the same PR.
+
+**Reversal trigger.** The ledger moves to its own database (ADR 0006's outbox).
+
+*Superseded in part 2026-10-05 by [3.4] #12: "market_service's settle step
+writes no entry" and the rejection of "Entries in both services" no longer
+hold. See "market_service's settle step appends `market.marked_settled`, so a
+direct call is observed" below, and ADR 0019's amendment. The ledger's entry,
+its order against the record and the seam rule stand.*
+
+*Corrected 2026-10-09 by [3.4] #12: the order between the record and the
+audit insert does not matter. `post_all` reads the guard on entry, by which
+point both have been issued. The guard needs the record as an ORM write
+pending at that point. See "`post_all` asks about pending writes before it
+classifies a match, and replays only a whole batch" below, and ADR 0019's
+2026-10-09 amendment to its first trap.*
+
+---
+
+### D-NEW — Settlement lands as a stack of eight PRs, docs first
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Each PR says `Refs #12` until the last PR that completes #12's
+criteria, which says `Closes #12`. Each part targets the one below it. From
+PR 2 on, each branch is named `12-settlement-<n>-<slug>`. PR 1 (#227) keeps
+`12-settled-status`, because renaming a pull request's head branch closes the
+pull request.
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 0 | docs: ADR 0019, the ADR 0009 and 0017 amendments, these entries, CLAUDE.md, the ADR README | `dev` | decker757 |
+| 1 | market: SETTLED in `MarketStatus` and `PublicMarketStatus`, `DECIDED_STATUSES`, `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS`, `_proposal_to_decide`, `409 market_already_settled`; `settleable` on the public detail, from `approved_at`, the window length setting (24 h default) and the five-minute gap; `settleable` on each admin overview row; `docs/api/market-service.md`'s status and `settleable` edits | 0 | decker757 |
+| 2 | market: `POST /markets/{id}/settle` with `409 dispute_window_open`, and the settle route's section of `docs/api/market-service.md` | 1 | decker757 |
+| 3 | ledger model: `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`, `market_settlements`, the ledger's audit seam | 2 | |
+| 4 | `posting.post_all` | 3 | decker757 (`posting.py`) |
+| 5 | `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade and window-boundary tests | 4 | |
+| 6 | controller route, error codes, `docs/api/ledger-service.md` | 5 | |
+| 7 | reads: portfolio, history; mark the three entries #12 fulfils as history | 6 | |
+
+The settled-last order is built by [2.1] #210's paging, switched off until
+SETTLED exists. Whichever of #210 and #227 merges second switches it on, in one
+line, with its test: a settled market sorts last in the unfiltered overview,
+across a page boundary. If #210's switch lands after PR 7, PR 7 says
+`Refs #12`, and #12 is closed when the switch merges.
+
+PR 1 builds `settleable`. [3.3] #11 builds send-back and the countdown on
+it, and #12 does not wait for #11.
+
+**Why.** CLAUDE.md: one layer or one behaviour per PR, each green on its own.
+Docs go first so that review of the design comes before review of the code.
+The three market PRs go to decker757 first because market_service's lifecycle
+is his. PR 4 touches `posting.py`, which is his file.
+
+**Rejected.** *One PR*: a reviewer could not follow it. *Code before the ADR*:
+the design would be argued in code review.
+
+**Notes.** A PR that changes a contract carries its docs, so
+`docs/api/market-service.md`'s status and `settleable` edits land in PR 1,
+not PR 2. PR 1 is the one that adds `settled` to the browse, the detail and
+the overview, and adds the field.
+
+**Reversal trigger.** Review asks for a different split.
+
+*Superseded in part 2026-10-09 by [3.4] #12: rows 3 and 5 of the table. See
+"PR 3 of the settlement stack holds the table, and the audit seam lands with
+its caller in PR 5" below. The other rows, the naming and the order stand.*
+
+*Superseded in part 2026-10-09 by [3.4] #12: row 4, which now sits on a new
+row 4a, making nine PRs. See "PR 4a extracts `post`'s helpers ahead of
+`post_all`, as its own refactor" below. The other rows, the naming and the
+order stand.*
+
+*Superseded in part 2026-10-09 by [3.4] #12: row 5, as "PR 3 of the
+settlement stack holds the table…" left it. It is now rows 5a, 5b and 5,
+making eleven PRs. See "PR 5 lands as three PRs: 5a extracts, 5b extends the
+terms client, 5 settles" below. The other rows, the naming and the order
+stand.*
+
+*Superseded in part 2026-10-10 by [3.4] #12: row 6, which now sits on a new
+row 6a, making twelve PRs. See "PR 6a moves `actor_of` into
+`shared/audit.py`, ahead of the route, as its own refactor" below. The other
+rows, the naming and the order stand.*
+
+*Amended 2026-10-10 by [3.4] #12: PR 7 says `Refs #12`, not `Closes #12`.
+#12 has an open sub-issue, [FE][3.4] #216, and CLAUDE.md's Branches rule
+(`Refs` for "a ticket with open sub-issues") wins over this entry's "the last
+PR … says `Closes #12`". #12 closes when #216 lands. The #210 condition no
+longer decides it, since the switch landed in #227. The other rows, the naming
+and the order stand.*
+
+*Merge order, added 2026-10-11 in review: PR 6 (#257) never reaches `dev`
+without PR 7 (#258). PR 6 alone pays the winners while the portfolio still
+values their positions at the last price, so a winner's net worth, and the
+leaderboard built on it, count the win twice until PR 7 lands. Merge #258
+into #257's branch first, or merge the two back to back in one sitting.
+PR 7 in turn waits for the portfolio page to handle a settled position's
+null `unrealized_pnl` on `dev` ([FE][3.4] #216).*
+
+---
+
+### D-NEW — Settlement waits for `settleable`, which market_service derives from `approved_at`
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** market_service derives, on its own clock, from `approved_at`:
+send-back is allowed until `window_ends_at`, and settlement from
+`window_ends_at` plus five minutes. It exposes the second as `settleable` on
+the public detail. The ledger reads it in its status read and refuses an
+`approved` market that is not `settleable` with `409 dispute_window_open`.
+`POST /markets/{id}/settle` refuses the same, so a direct call cannot settle
+mid-window. ADR 0019.
+
+**Why.** [3.3] #11's window exists so that a wrong winner can be sent back
+before anyone is paid. A settlement inside it would make the window decide
+nothing. One clock decides both edges, the way the clock decides closing (ADR
+0011), and the ledger reads the answer rather than recomputing it, because
+two clocks deciding one boundary disagree at it. `settleable` gets no default
+in `MarketTerms`, for the reason `status` has none.
+
+**Rejected.** *The ledger computing the window from `approved_at`*: a second
+clock on the boundary, and a copy of #11's window length in the ledger's
+settings.
+
+**Reversal trigger.** None expected while #11's window exists.
+
+---
+
+### D-NEW — Settlement opens five minutes after send-back closes
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` turns true five minutes after `window_ends_at`, not
+at it.
+
+**Why.** A send-back that checks the clock just before `window_ends_at` and
+commits just after is invisible to a settlement's unlocked read in between.
+Without a gap, that settlement pays the old winner, and the record keeps it
+for good. Five minutes is a judgement call: market_service sets no statement,
+transaction or request timeout, so nothing bounds how long such a send-back
+takes. It is far longer than any request that completes, and short beside a
+24-hour window.
+
+**Rejected.**
+- *No gap*: the race above.
+- *A "settling" claim in market_service that locks the row before the
+  payment*: a new status, and a write in market_service before the ledger's,
+  which is a dual write, for the same result the gap gives.
+
+**Reversal trigger.** A statement or transaction timeout is added to
+market_service under [5.3] #19, the deploy pipeline. That bounds how long a
+send-back can take, so the gap can shrink, as long as it still exceeds the
+timeout.
+
+---
+
+### D-NEW — A settled market is refused after the locked read and before any write, and the status tables stay separate
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Every write path refuses a SETTLED market with `409
+market_already_settled`. The check runs after authentication and after the
+locked read of the market, and before any write. Approve and reject check it
+in `_proposal_to_decide`'s state check, before identity, as they already do
+for APPROVED. The message says the market is settled and never claims that
+payouts were made. `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS` and
+the decision state check each list SETTLED themselves.
+
+**Why.** After the locked read because ADR 0015 puts the check on the
+reader: a status read without the lock can be overtaken by the settle step
+it is meant to refuse. After authentication so that a trader is told `403`,
+not which state an administrator's market is in. Before identity on the
+decisions because CLAUDE.md fixes that order for every decision: state, then
+identity, then the reason. The message stays silent on payouts because
+SETTLED in market_service does not prove the ledger paid: a direct call to
+`POST /markets/{id}/settle` can reach SETTLED with no settlement recorded,
+and #12 has the ledger repair exactly that case. market_service cannot know
+whether credits moved, so it does not say so.
+
+**Rejected.** *Composing the tables from each other*, for example the
+resolution table spread from the frozen one. It is a refactor, and CLAUDE.md
+keeps refactors out of behaviour PRs. With three tables and one terminal
+status, it also saves less than it hides. "SETTLED joins the frozen,
+resolution and decided status tables" already explains why each status owes
+its own error.
+
+**Reversal trigger.** A second terminal status (#221's void), or a fourth
+status table. Either makes the repetition worth a refactor PR of its own.
+
+*Superseded in part 2026-10-05 by [3.4] #12: "every write path" no longer
+holds without an exception. The settle step is the one write that answers a
+SETTLED market `200` rather than `409 market_already_settled`, as ADR 0019's
+step 5 requires. See "The settle step checks in a fixed order, and SETTLED
+answers before the clock is read" below. Every other write path is unchanged.*
+
+---
+
+### D-NEW — The dispute window is `dispute_window_seconds`, an int with a 30-day ceiling, and the five-minute gap is a constant
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** market_service's `Settings` gains `dispute_window_seconds: int`,
+default `86400`, `gt=0`, `le=2592000`, read from `DISPUTE_WINDOW_SECONDS`.
+The five minutes between the window's end and `settleable` stay a constant in
+code.
+
+**Why.** [3.3] #11 asks for a configurable window with a 24-hour default.
+Seconds in an int mean the same thing to everyone who reads `.env`, and they
+allow a 60-second window for a demo. The ceiling turns a mis-typed unit (a
+millisecond value, say) into a boot failure instead of a window nobody
+notices for a month. `gt=0` because an empty window lets nobody send a result
+back, and #11's window exists for that. The gap is not a setting because
+"Settlement opens five minutes after send-back closes" depends on it: set to
+zero, it reopens the race that entry closes.
+
+**Rejected.**
+- *`timedelta`*: pydantic parses `86400`, `P1D` and other spellings, so the
+  same env value is easy to misread.
+- *Hours*: no short window for a demo or an end-to-end test.
+- *Allowing 0*: the window would decide nothing.
+- *The gap as a setting*: a 0 there reopens the race.
+
+**Reversal trigger.** A window longer than 30 days is needed.
+
+---
+
+### D-NEW — `settleable` is a pure function in `core/`, inclusive at its edge, true once settled, false without `approved_at`
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` is always true on a SETTLED market. On an APPROVED
+market it is true when `approved_at` is not null and `now >= approved_at +
+window + 5 minutes`. It is false on every other status. It is a pure
+function in `core/`, `is_settleable(*, approved, settled, approved_at,
+window, now)`, which takes whether the status is APPROVED and whether it is
+SETTLED as two bools (`core/` cannot import `model/`, as with
+`trading_is_open`). `service/` stamps it onto the projection before it is
+built. It is never a computed field or a validator.
+
+**Why.**
+- *Inclusive*, because #12's boundary test settles a market whose window
+  ended "five minutes ago or more". Send-back's edge is exclusive, so no
+  instant is both.
+- *True on SETTLED, whatever the window*, so the flag is monotonic: once
+  true it never goes back, even if `dispute_window_seconds` is raised later,
+  and no reader sees it flicker. The overview and [FE] #216 then read one
+  consistent flag. It is not what keeps the repair path open. The ledger
+  reads `settleable` only on an `approved` market and accepts a `settled` one
+  whatever the flag says (ADR 0019, step 1).
+- *False on a null `approved_at`*, because the flag fails closed. Approval
+  always stamps it, so a null is damage, and the safe answer to damage is not
+  to pay.
+- *In `core/`, stamped in `service/`*, for the reason "The derived status is
+  computed in `service/`, before projection" gives: a computed field re-runs
+  when FastAPI re-validates the response, against whatever clock it can
+  reach, and that is the failure "One clock per request, read at the
+  controller, Python's not the transaction's" recorded in its correction.
+
+**Rejected.**
+- *A computed field*: the re-validation bug above.
+- *A stored column*: a second authority for something the clock already
+  answers (ADR 0011), and a migration ADR 0019 says this needs none of.
+- *False on SETTLED*: the flag would go back to false, and the overview
+  would disagree with itself about a market it already paid.
+- *Testing `DECIDED_STATUSES`* in place of naming APPROVED and SETTLED: a
+  status added to that table for its own reasons (#221's void) would become
+  settleable by accident. SETTLED also went through the time rule
+  that way, so raising the window turned a settled market false.
+
+**Reversal trigger.** A third status that should pay out.
+
+---
+
+### D-NEW — `settleable` reads the request's one Python clock, and the database-clock trigger is declined again
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` on the public detail and on the overview is
+derived against the `now` the controller reads once for that request, as
+"One clock per request, read at the controller, Python's not the
+transaction's" describes. That entry's trigger, for a path that decides or
+writes, is declined here for ADR 0017's reason.
+
+**Why.** The ledger acts on this flag, so that entry's trigger fires. It is
+declined because the database's clock would cost a round trip on a hot
+public read, and the five-minute gap absorbs the skew instead. If a replica
+runs ahead by less than the gap, the flag turns true early, but still after
+send-back has closed. The ledger pays. If the settle step reads the
+database's clock, as the guidance below and "Every decision a market records
+is stamped with Postgres's `clock_timestamp()`, read after the row lock" both
+say, it finds the market not yet settleable and refuses `409
+dispute_window_open`, and the ledger answers `503 settlement_unconfirmed`.
+Payouts stand, and a retry once the edge passes completes the request. A
+replica that runs behind only delays settlement.
+
+**Guidance, not decided here.** PR 2's settle route and [3.3] #11's
+send-back are already covered by "Every decision a market records is stamped
+with Postgres's `clock_timestamp()`, read after the row lock", since settling
+and sending back are both decisions a market records: each reads
+`clock_timestamp()` after its row lock, so the two writers agree with each
+other whatever the readers see. Send-back's edge is exclusive: allowed while
+`now < window_ends_at`.
+
+**Rejected.** *Postgres's clock for the read*: a round trip on a hot public
+read, which ADR 0017 and the one-clock entry both refused, for skew the gap
+already absorbs.
+
+**Reversal trigger.** Skew between the services' clocks and the database's
+approaches the five-minute gap.
+
+---
+
+### D-NEW — `settleable` is on the public detail and on every admin overview row; `window_ends_at` is #11's
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` is a field on the public market detail and on
+each `MarketOverviewRowOut`. `window_ends_at` is not exposed by this ticket;
+[3.3] #11 adds it with its countdown.
+
+**Why.** The ledger reads the public detail. The settle control lives on the
+admin overview ([FE][3.4] #216), and without the flag there it would show on
+every approved market for the whole 24-hour window, and each click would be a
+`409 dispute_window_open`. The overview derives it with the clock it already
+reads once for its list and counts ("The overview's list and counts share one
+clock and one statement"), so a row's status and its flag never disagree.
+
+**Rejected.** *The public detail only*: the control would appear mid-window.
+*`window_ends_at` now*: it is #11's countdown, and a field with no reader yet
+is a contract nobody has asked for.
+
+**Reversal trigger.** #11 adds a countdown that needs the instant on list
+views.
+
+---
+
+### D-NEW — market_service's settle step appends `market.marked_settled`, so a direct call is observed
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** When `POST /markets/{id}/settle` moves APPROVED to SETTLED, it
+appends `market.marked_settled` in that same transaction. The entry carries
+the acting administrator, the market as target, `decision_snapshot`'s context,
+a null `reason`, and as `occurred_at` the `clock_timestamp()` read for the
+window check. A repeat on a market already SETTLED writes nothing and logs
+nothing. ADR 0019's amendment.
+
+**Why.** ADR 0019 accepts the direct-call gap under ADR 0007's trust model,
+and ADR 0007 extends that trust only to administrators who act observed. No
+role can read both `market.markets` and `ledger.market_settlements`, so the
+audit log is the only place a market that is settled but unpaid can show up.
+A normal settlement logs twice, one entry per commit. A
+`market.marked_settled` with no `market.settled` before it is the trace the
+gap leaves. The decision snapshot is the one approve and reject already log,
+so the entry names the proposal and proposer it settled on. A reader can match
+it against the ledger's winning outcome without reading the market.
+
+**Rejected.**
+- *No entry.* The gap is invisible.
+- *An entry only on a direct call.* The route cannot tell a direct call from
+  the ledger's.
+- *Application logging.* It is not the audit trail.
+- *A reconciliation job.* No role reads both schemas.
+
+**Reversal trigger.** A service credential exists and the settle step
+requires it. The gap closes, and the entry goes with it.
+
+**Notes.** This supersedes in part "The ledger writes the settlement's audit
+entry, through its own seam onto `shared/audit.py`": its "market_service's
+settle step writes no entry" and its rejection of entries in both services.
+Everything that entry says about the ledger stands.
+
+---
+
+### D-NEW — The settle step answers `200` with `MarketOut`, the same for the flip and for a repeat
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `POST /markets/{id}/settle` answers `200` with `MarketOut`
+whether it moved the market to SETTLED or found it SETTLED already. The two
+bodies are identical, because both are read from the locked row, which reads
+SETTLED in both cases.
+
+**Why.** The ledger reads only the status code and, on a refusal, the error
+code. A repeat is how ADR 0019 repairs every partial failure, so a repeat has
+to look like success to its one caller. The body is the whole market, as
+close, approve and reject return it.
+
+**Rejected.**
+- *`409 market_already_settled` on a repeat.* ADR 0019 requires `200`, and
+  the ledger would turn every repair into `503 settlement_unconfirmed`.
+- *A different code or a field that marks the repeat.* The ledger would
+  branch on a difference that means nothing to it.
+- *`204`.* It is the one market write route with no body, for nothing gained.
+
+**Reversal trigger.** A caller needs to tell the flip from the repeat.
+
+**Notes.** `MarketOut` sends JSON numbers ("Two schemas: `PublicMarketOut`
+beside an unchanged `MarketOut`"). The ledger reads none of its money fields,
+so no float reaches the money path.
+
+*Corrected 2026-10-09 by [3.4] #12: the ledger reads the status code only.
+Every answer but `200` is `503 settlement_unconfirmed`, whatever its error
+code. See "`market_terms.mark_settled` accepts only a `200`, and every other
+answer is `503 settlement_unconfirmed`, logged at ERROR" below.*
+
+---
+
+### D-NEW — The settle step checks in a fixed order, and SETTLED answers before the clock is read
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The route checks in this order:
+
+1. `401 invalid_token`, then `403 not_an_administrator`.
+2. `404 market_not_found`, from `get_any` with the row locked.
+3. SETTLED answers `200`, with no clock read.
+4. Anything that is not APPROVED is `409 market_not_approved`. That includes
+   another administrator's draft or submitted market, which is found and
+   refused as close, approve and reject refuse one.
+5. Only then is the clock read, and a market that is not yet settleable is
+   `409 dispute_window_open`.
+
+A request body is ignored. An APPROVED market with a null `approved_at` fails
+closed as `dispute_window_open`.
+
+**Why.**
+- *Authentication first,* so a trader is told `403` and not the state of an
+  administrator's market.
+- *`get_any`,* because any administrator may settle ("Any administrator may
+  settle, and a resolver role, if one is added, takes it over"). It is safe
+  only for callers that refuse a draft before touching it, and step 4 does.
+- *SETTLED before the clock,* because a repeat writes nothing, so there is
+  nothing to stamp. It must also answer `200` even if
+  `dispute_window_seconds` has been raised since. The check runs after the
+  lock, so a repeat racing a flip waits and then answers `200`.
+- *One code for every state short of APPROVED,* because ADR 0019 names
+  `market_not_approved` and the ledger maps only that. The frozen and
+  resolution tables' codes are true, and useless to the only caller.
+- *A body is ignored,* because the route reads nothing from it. The ledger's
+  own route refuses a body `422` so that a client does not believe it chose
+  the winner. This route has one caller, which sends none.
+- *A null `approved_at` fails closed,* for the reason given in "`settleable`
+  is a pure function in `core/`, inclusive at its edge, true once settled,
+  false without `approved_at`": a null is damage, and the safe answer to
+  damage is not to settle.
+
+**Rejected.**
+- *The clock read before the SETTLED check.* It costs a round trip on every
+  repeat, and a raised window could refuse a market already paid.
+- *`market_pending_resolution`, `market_not_closed` and the other per-status
+  codes.* They are a contract the ledger would have to map for no different
+  action.
+- *`422` on a body.* It is a schema for a request with no fields.
+
+**Reversal trigger.** The route gains a caller other than the ledger, or a
+status other than APPROVED becomes settleable (#221's void).
+
+**Notes.** This is the one write path where SETTLED is not `409
+market_already_settled`. "A settled market is refused after the locked read
+and before any write, and the status tables stay separate" says "every write
+path", but it predates this route, and ADR 0019's step 5 makes the exception.
+That entry carries a note saying so.
+
+---
+
+### D-NEW — The settle step's window check reads `clock_timestamp()` after the row lock, on the APPROVED branch only, against the stored status
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** On an APPROVED market only, the settle step reads
+`_database_now` after `get_any` has locked the row. It passes that value to
+`service/settling.settleable` with the stored status. The same value is the
+entry's `occurred_at`.
+
+**Why.**
+- Settling is a decision a market records, so "Every decision a market
+  records is stamped with Postgres's `clock_timestamp()`, read after the row
+  lock" applies. The guidance in "`settleable` reads the request's one Python
+  clock, and the database-clock trigger is declined again" names this route.
+- Send-back reads the same clock after the same lock (#11's criterion). The
+  two writers therefore agree about the edge whatever any reader's clock
+  says, and the gap separates them.
+- APPROVED only, because it is the only branch whose answer depends on time.
+- The stored status, because the derivation differs from it only for OPEN,
+  which is not APPROVED either way.
+
+**Rejected.**
+- *The request's Python clock.* A replica running ahead could settle early.
+  The database clock here is the backstop that entry relies on.
+- *`func.now()`.* That is the transaction's start, read before the lock wait
+  (#138).
+- *A clock read before the lock.* Same bug.
+
+**Reversal trigger.** market_service's decision stamps move off
+`clock_timestamp()`, or the five-minute gap is replaced by a lock-based claim.
+
+**Notes.** The ledger may see `settleable` true on a replica's clock while
+this check refuses it. The route then answers `409 dispute_window_open`, the
+ledger answers `503 settlement_unconfirmed`, and a retry completes the
+settlement. That is the designed outcome, not a reason to move this check to
+Python's clock.
+
+---
+
+### D-NEW — `ledger.market_results` is one record per finished market, with a `kind`
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The settlement record is `ledger.market_results`:
+
+- `market_id`: the primary key, and a foreign key into `market_books`.
+- `kind`: a non-native enum, `settled` only for now.
+- `outcome_id`: nullable, still a composite foreign key with `market_id` into
+  `market_outcomes`, with `CHECK ((kind = 'settled') = (outcome_id IS NOT NULL))`.
+- `recorded_at`.
+
+Neither key has an `ON DELETE`. The trade latch and the settlement read any
+row, under the book lock, and never filter on `kind`. `MarketResult` is an ORM
+class, so the record stays an ORM add staged before the audit insert (ADR
+0019's first trap).
+
+**Why.** [BE] #221's decision 3. One record per finished market is one latch
+for every ending, and the primary key stops a market from being both settled
+and voided. Taking the shape now means the latch, the settlement and the
+portfolio's join are written against it once. A rename costs two docs edits
+today, and a revision plus every reader later. The plain foreign key exists
+because Postgres skips a composite key when `outcome_id` is null.
+
+**Rejected.**
+- *A separate table for voids*: two latches for every reader, and nothing in
+  the database stops a market ending both ways.
+- *Deferring everything but the name*: cheap DDL either way, but readers would
+  be written against a shape that later changes under them.
+
+**Reversal trigger.** #221 closes without a void, or voids get a table of
+their own. A revision then drops `kind` and restores `NOT NULL` on
+`outcome_id`.
+
+**Notes.** These wait for #221's revision: `reason` and `voided_by`, their
+CHECK clauses, and `409 market_already_voided`. Nothing writes them yet, and
+nullable columns are cheap to add later. Until a non-settled kind exists, no
+test can exercise the plain foreign key or the CHECK's non-settled half;
+`test_migrations.py`'s catalog comparison is what holds them to the models.
+`kind` has no CHECK on its values, like every non-native enum here; the paired
+CHECK is what constrains it. `recorded_at` has no default, like
+`market_books.opened_at`: the settlement supplies it.
+
+---
+
+### D-NEW — `ledger.market_results` carries no append-only trigger
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `ledger.market_results` is written once per market and never
+updated, and nothing enforces that at the database. It does not get
+`ledger.entries`' trigger or one of its own.
+
+**Why.**
+- The primary key already refuses a second row for a market.
+- If a row were deleted, money still could not move twice. A second
+  settlement derives the same `settlement:{market_id}:{user_id}` and
+  `settlement_residue:{market_id}` keys. It reaches posting's replay with the
+  re-staged record pending, and is refused as `pending_writes_on_replay`. The
+  trade path's status gate also still refuses a market market_service reports
+  as settled.
+- A trigger needs either `reject_mutation` changed, whose message names
+  `ledger.entries`, or a second function. Both need SQL in a revision of their
+  own ("The ledger's trigger SQL is shared, so editing it needs a new
+  revision", ADR 0020), for a table nothing writes twice.
+
+**Rejected.**
+- *Reusing `reject_mutation`*: its message would name the wrong table, and
+  changing it is a revision.
+- *A second trigger function*: a second copy of trigger SQL, guarding against
+  a write no code makes.
+
+**Reversal trigger.** Any code path that updates or deletes a row of
+`ledger.market_results`.
+
+**Notes.** Unlike `ledger.positions`, nothing updates this table, and unlike
+`ledger.entries`, it holds no money. The money is in the entries, and the
+trigger there still guards it. The replay claim above depends on `posting`'s
+current behaviour; recheck it when PR 4's `post_all` lands.
+
+*Rechecked in PR 4, 2026-10-09: the claim holds. A re-staged record is a
+pending ORM write when `post_all` is entered, and `post_all` checks pending
+writes before it classifies the match. So the second settlement is
+`pending_writes_on_replay` whether its winners match the first or not. If the
+match were classified first, a different set of winners would answer
+`idempotency_key_reused` instead. Nothing would be written either way, but the
+error named above would be wrong. See "`post_all` asks about pending writes
+before it classifies a match, and replays only a whole batch".*
+
+*Noted 2026-10-10 by [3.4] #12: settlement's lookup before the lock depends
+on this table too. "A recorded settlement replays before any status check;
+the lookup before the lock can only short-circuit" treats a row found without
+a lock as final. That is safe only while no row is ever updated or deleted,
+and nothing at the database enforces it. This entry's reversal trigger
+therefore also ends that entry's safety. A path that deletes a row must first
+move settlement's lookup under the book lock.*
+
+---
+
+### D-NEW — PR 3 of the settlement stack holds the table, and the audit seam lands with its caller in PR 5
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** PR 3 holds:
+
+- `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`
+- `ledger.market_results` and revision `0002`
+- one `dead_code_allowlist.py` line for `MarketResult`
+- the migration-test edits
+- `docs/api/ledger-service.md`'s kinds line
+
+PR 5 gains the ledger's audit seam (`core/audit.py`, `model/audit.py`,
+`service/audit.py`). It also decides whether `service/audit.py` is a third
+copy or an extraction, and deletes the allowlist line once the trade latch and
+the settlement read `MarketResult`.
+
+**Why.** The dead-code check matches by name. In PR 3, the seam's `record` and
+`AdminAction` would count as used through market_service's identically named
+ones, so untested code would pass unseen. In PR 5, the seam lands with its
+caller and with the test of #12's audit criterion. `MarketResult` has no
+reader until PR 5 either, and an allowlist line says so where the check can
+see it.
+
+**Rejected.**
+- *Folding PR 3 into PR 5*: PR 5 is already the stack's largest.
+- *The trade latch in PR 3, as `MarketResult`'s caller*: #12's test notes ask
+  for the settle-against-trade race test to fail with the under-lock lookup
+  removed, and for the PR to name that line. The latch and that test belong in
+  one diff, and in PR 3 the latch would guard a state nothing can create.
+
+**Reversal trigger.** Review of PR 3 refuses an allowlist entry for planned
+code. The trade latch then moves into PR 3.
+
+**Notes.** Rows 3 and 5 of the stack table now read:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 3 | ledger model: `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`, `ledger.market_results` and revision `0002`, the allowlist line for `MarketResult`, the migration-test edits, `docs/api/ledger-service.md`'s kinds line | 2 | |
+| 5 | the ledger's audit seam, `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, the allowlist line removed, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade, window-boundary and audit tests | 4 | |
+
+The kinds, the model and revision `0002` land in one commit, because the model
+and the revision alone each fail the migration guard. That commit fails the
+legacy adoption tests a second revision ends, and the history's table-set test,
+until the next commit updates them, as #246's did. That commit deletes the
+adoption tests and adds the kept refusal test, word for word as #246's, so the
+two branches' hunks agree.
+
+*Row 5 above is superseded 2026-10-09: see "PR 5 lands as three PRs: 5a
+extracts, 5b extends the terms client, 5 settles" below.*
+
+---
+
+### D-NEW — `posting.post_all` takes a list of `Movement`s, commits once, and keeps `post`'s SAVEPOINT
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.**
+
+```python
+@dataclass(frozen=True)
+class Movement:
+    idempotency_key: str
+    kind: TransactionKind
+    legs: list[Leg]
+    context: dict[str, Any] | None = None
+
+async def post_all(
+    session: AsyncSession,
+    movements: list[Movement],
+    *,
+    now: datetime | None = None,
+) -> list[Transaction]
+```
+
+`Movement` holds the same keyword arguments `post` takes, as a frozen record.
+`post_all` returns one `Transaction` per movement, in input order, whether it
+wrote the transaction or replayed it. `now` is one floor for the whole batch,
+the same way it is for `post`. `post_all` owns the batch's one commit, so a
+caller writes nothing after it.
+
+It stages every transaction and entry inside one SAVEPOINT. On an
+`IntegrityError` it re-reads the batch's keys, as `post` does. A race on a key
+that the account locks did not queue then ends as `pending_writes_on_replay`
+or `idempotency_key_reused`, never as a bare 500.
+
+**Why.** "One settlement is one commit, through `posting.post_all`" needs a
+batch that commits once, after the book lock, and it left the shape to
+decker757. Because a movement holds `post`'s own arguments, each one reads
+like a `post` call, and the checks are visibly `post`'s checks run over a
+list. Results come back in the order the caller built the movements, so the
+caller can pair each result with its movement without a lookup.
+
+The SAVEPOINT stays because the lock that serialises a race belongs to the
+caller, not to `post_all`, and `post_all` cannot see whether one is held.
+Without the handler, a race on a key reaches the client as the unique index's
+`IntegrityError`, where `post` answers with a code.
+
+**Rejected.**
+- *A tuple per movement, or parallel lists*: both are positional, so a reader
+  has to count fields to know which one is the key.
+- *A `now` per movement*: the chain fixes every stamp after the first, so only
+  one floor can ever count.
+- *A caller-owned commit*: that is the reversal trigger of "One settlement is
+  one commit, through `posting.post_all`". It is not a choice to make inside
+  `posting.py`.
+- *Dropping the SAVEPOINT because settlement's book lock already serialises
+  two settlements*: the book lock is the caller's, and `post_all` cannot rely
+  on a lock it cannot see.
+- *Results keyed by idempotency key*: the caller already holds the order it
+  built, and a dict would make it look its own keys up again.
+
+---
+
+### D-NEW — An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Before it locks anything, `post_all` refuses two kinds of batch:
+one with no movements, and one where two movements share an idempotency key.
+Both raise `MalformedBatch`, a `LedgerError` with code `malformed_batch` and
+status 500, and nothing is written.
+
+**Why.** No request can supply a batch, because the server builds every
+movement and every key, and the settlement route's body is empty. A repeated
+key is always a bug in the server. So is an empty batch, except in the one
+edge the Notes accept. That makes it the same kind of error as
+`pending_writes_on_replay`, an alarm one layer down, so it takes that error's
+status.
+- *A repeated key* would otherwise reach the unique index on
+  `idempotency_key` inside the SAVEPOINT. The race handler would re-read, find
+  no committed row, and re-raise the `IntegrityError`. The result is a bare
+  500 from a handler that exists for races, saying nothing about the batch.
+- *An empty batch* would otherwise lock nothing, write nothing and still
+  commit, taking whatever the caller had pending with it. For settlement,
+  that commits a `market_results` row and a `market.settled` entry for a
+  payout that moved no money.
+
+**Rejected.**
+- *422, as `unbalanced_transaction` is*: a 422 tells the client to fix its
+  request, and the settlement request has no body to fix.
+- *Returning `[]` for an empty batch*: without a commit, the record and the
+  audit entry are left uncommitted while the route answers 200. With one, a
+  settlement is recorded with no money moved. Either is a decision about
+  settlement, not about posting.
+- *Deduplicating a repeated key*: if the two movements match, one is silently
+  dropped. If they differ, one movement's money is silently lost.
+
+**Reversal trigger.** A market seeded at exactly one tick, `0.0001`, is
+created.
+
+**Notes.** Every book's seed subsidy is positive:
+- market_service's `_liquidity_problems` refuses a non-positive seed at
+  submission, and `publish` runs it again.
+- `books.ensure_open` refuses a non-positive or non-finite seed before it
+  writes the book.
+
+"A sell cannot take a market's pool below its seed subsidy" then keeps the
+pool at or above that seed until settlement, with one exception, in its own
+Notes: "The one exception is the one-tick case in "A cost exactly on a tick
+can round one tick against the trader, or toward them on a sell". It needs
+about 120·b of skew and moves one tick." That case is a sell of `0.0001`
+against `q = [12000, 0]` at `b = 100`. Its true proceeds are a hair under one
+tick, the engine returns exactly one tick, and the pool pays a tick it did
+not earn.
+
+So an empty batch is unreachable for any seed above one tick. A market with
+no winners still posts its residue, and a market with winners posts their
+payouts.
+
+A market seeded at exactly one tick, with no winners, could reach a zero
+pool. Its settlement would then be `500 malformed_batch` and could not
+complete. Accepted as an edge. The fix is either a minimum seed in
+market_service's validation (decker757's), or settlement committing its
+record and audit entry alone, which would need its own decision.
+
+---
+
+### D-NEW — `post_all` asks about pending writes before it classifies a match, and replays only a whole batch
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Holding the account locks, `post_all` looks up every key in the
+batch. If any key already exists:
+
+1. It checks the caller's pending writes first, using the answer it recorded
+   on entry, as `post` does. If the session is dirty, it raises
+   `PendingWritesOnReplay`, whatever the match.
+2. Only then does it classify the match. It replays only when every key
+   exists and every fingerprint matches. A replay writes nothing, commits to
+   release the locks, and returns the existing transactions in input order.
+3. Any other match is `IdempotencyKeyReused`, and nothing is written. That
+   means some keys found and others missing, or a fingerprint that differs.
+
+The re-read after the SAVEPOINT's `IntegrityError` gives the same answers.
+
+**Why.** A batch commits all of its transactions or none, so a retry finds
+either every key or none of them. Finding some keys and not others means the
+same keys were used for different money: for settlement, a different set of
+winners. Replaying the part that matched and writing the rest would split one
+batch into two commits, which is the half-paid settlement "One settlement is
+one commit, through `posting.post_all`" exists to prevent.
+
+The pending check comes first because the caller that reaches the replay
+branch is the one with the bug. Settlement always enters `post_all` with its
+`market_results` row staged. A settlement that got past its latch is
+therefore refused as `pending_writes_on_replay`, the alarm for exactly that
+mistake, whether its winners match or not. If the match were classified
+first, a partial match would answer `409 idempotency_key_reused`, which is a
+client-conflict status for a server bug.
+
+**Rejected.**
+- *Replaying the matched subset and posting the rest*: one batch in two
+  commits.
+- *Classifying before the pending check*: see above.
+- *Raising `PendingWritesOnReplay` on entry, before any lookup*: every caller
+  enters with writes pending that it means to commit with the batch. That is
+  the rejected option in "`posting.post` refuses to replay into a dirty
+  session".
+
+**Notes.** This restates ADR 0019's first trap. The guard is read on entry,
+so the order of the record and the audit insert inside the caller does not
+matter. What the guard needs is the record, as an ORM write, pending when
+`post_all` is entered. It is unsafe in three cases:
+- the record becomes a Core insert;
+- the record is staged on some paths and not others;
+- the record is committed before `post_all`.
+
+This corrects the Why of "The ledger writes the settlement's audit entry,
+through its own seam onto `shared/audit.py`", which says the order matters.
+
+---
+
+### D-NEW — `post_all` nets each USER account across the whole batch, through `_refuse_overdrafts`
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** First, `_require_balanced` checks each movement on its own.
+Then every leg in the batch goes into one flat list for the existing
+`_refuse_overdrafts`, which nets each USER account across the batch and reads
+a balance only for accounts that lose credits. This runs holding the account
+locks, after the replay lookup, as in `post`.
+
+**Why.** The batch commits once, so only an account's end state is ever
+visible to another transaction. Netting across the batch applies `post`'s
+per-transaction rule at the same boundary, the commit. `_refuse_overdrafts`
+already nets by account id, so no new code is needed. Settlement debits no
+USER account, so it reads no balance here.
+
+**Rejected.**
+- *Checking each movement against a running balance*: correct for any batch,
+  but it is a new per-account running total that no caller needs.
+- *No overdraft check in `post_all`*: settlement would not notice, but the
+  check is what `post` guarantees every caller. Without it, `post_all` is one
+  new caller away from an overdraft.
+
+**Reversal trigger.** A batch that debits a USER account in one movement and
+credits it in a later one. Netting would accept a batch whose feed shows a
+`balance_after` below zero between the two, which is the history bug #187
+fixed. The check then becomes a running balance in movement order.
+
+---
+
+### D-NEW — `post_all` locks the union of the batch's accounts once, ascending, after the caller's book lock
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `post_all` collects every account named by any leg and locks
+the whole set once, through `accounts.lock`: one statement per account,
+ascending by id. On the settlement path the caller already holds the market's
+book lock, so the order is the book, then the accounts, the same as on the
+trade path.
+
+**Why.** ADR 0009's ascending order prevents deadlock only if each writer
+takes all of its account locks in one ascending sequence. Locking the full
+set once also means the replay lookup, the overdraft check and the stamp
+probes all run with every lock held, as they do in `post`.
+
+**Rejected.**
+- *Locking each movement's accounts as it is posted*: across the batch, locks
+  would be taken out of ascending order, which is exactly what ADR 0009's
+  ordering exists to rule out.
+- *One `SELECT ... WHERE id IN (...) ORDER BY id FOR UPDATE`*: it can still
+  deadlock (ADR 0009, and `accounts.lock`'s docstring).
+
+**Notes.** The cost, accepted: a settlement holds every winner's account from
+the lock to its commit, and PLATFORM as well when it posts a residue. A
+settlement whose payouts exactly empty the pool posts no residue, names no
+PLATFORM leg, and so never locks PLATFORM. For that whole time, everything
+below queues behind it:
+- every lazily minted grant and every cold book's seed, since both post from
+  PLATFORM, but only behind a settlement that posts a residue;
+- every other settlement that also takes PLATFORM;
+- every trade by a winner, in any market.
+
+At [3.4] #12's 1,000 winners that wait can last up to the 5-second budget. It
+is accepted because settlements are rare and started by an administrator, and
+the alternative, committing per payout, is what "One settlement is one
+commit, through `posting.post_all`" refuses.
+
+---
+
+### D-NEW — `post_all` stamps from one probe per locked account, and movement *i* lands at the first stamp plus *i* µs
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Holding every lock, `post_all` calls `_stamp_after_newest` once
+over the full set of locked accounts, which is one indexed probe per account.
+The result is the first stamp. Movement *i*, counted from 0 in input order, is
+stamped at the first stamp plus *i* µs, and every leg of that movement carries
+the same stamp.
+
+**Why.** This is "A settlement's first stamp follows the newest entry on every
+account it locks", built from the helper `post` already uses. The first stamp
+falls after every existing entry on every account, and each movement lands one
+tick after the one before. So no two entries on one account share a time, and
+feed order is input order. A movement's legs share one stamp for the same
+reason `post`'s do: a history page cannot split a transaction.
+
+**Rejected.**
+- *Option B, one statement over the union*: a second way to compute the same
+  stamp, beside `_stamp_after_newest`, with no measurement asking for it yet.
+- *A probe per movement*: it probes the pool and PLATFORM again for every
+  movement.
+
+**Reversal trigger.** PR 5's 5-second test misses its budget. Option B then
+lands as its own refactor PR, with no test assertion changed.
+
+**Notes.** This corrects the cost comparison in the second Rejected bullet of
+"A settlement's first stamp follows the newest entry on every account it
+locks". That bullet weighs "a thousand probes" against "one union query".
+Option A is itself one probe per account, about 1,002 for 1,000 winners. So
+the real gap is between a probe per movement, about 2,000, and a probe per
+account, about 1,000. The single union query is option B, which is not built.
+
+---
+
+### D-NEW — `post` is not `post_all` of one movement
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Deliberately not abstracted. `post` and `post_all` each keep
+their own body. They share helpers, including `_quantized_legs` and
+`_transaction_of` from PR 4a, `_require_balanced`, `_fingerprint`,
+`_refuse_overdrafts`, `_stamp_after_newest` and `accounts.lock`, but not
+their control flow.
+
+**Why.**
+- Making `post` call `post_all([movement])` would change `post`'s lookup from
+  one key to a batch of keys. It would also put the batch's rules on the trade
+  path's replay: the whole-batch match, `MalformedBatch` and netting across
+  movements. The trade path is the busiest in the service, and none of those
+  rules is for it.
+- The merge could land only after the second copy existed, which means in a
+  later refactor PR, and that refactor would change `post`'s behaviour. The
+  steps that really were copies were extracted first, in PR 4a. What is left
+  is two different sequences of the same steps.
+
+**Rejected.**
+- *`post` as `post_all` of one movement*: see above.
+- *One private core with flags for the differences*: a flag for each
+  difference, and each flag has one caller (backend/CLAUDE.md, "Reuse").
+
+---
+
+### D-NEW — PR 4a extracts `post`'s helpers ahead of `post_all`, as its own refactor
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** PR 4a (#249, `12-settlement-4a-posting-helpers`) is a new step
+in the settlement stack, between PR 3 and PR 4. It extracts `_quantized_legs`
+and `_transaction_of` from `posting.post`, with no behaviour change. PR 4 is
+stacked on it.
+
+**Why.** CLAUDE.md: the PR that would add a second copy extracts it instead,
+and a refactor never shares a PR with a behaviour change. `post_all` needs
+both pieces, so the extraction lands first and alone, and posting's tests
+pass unchanged across it. decker757 reviews it first, as he does PR 4,
+because `posting.py` is his.
+
+**Rejected.** *The extraction inside PR 4*: a refactor in the same diff as a
+new function, so a reviewer cannot tell which lines of `post` moved and which
+changed.
+
+**Notes.** It is named `4a` rather than renumbering the rest, so PRs 5 to 7
+keep their numbers. The table gains one row, and row 4's "On" changes:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 4a | posting: `_quantized_legs` and `_transaction_of` extracted from `post`, no behaviour change | 3 | decker757 (`posting.py`) |
+| 4 | `posting.post_all`, `Movement`, `MalformedBatch`, `docs/api/ledger-service.md`'s `malformed_batch` line | 4a | decker757 (`posting.py`) |
+
+---
+
+### D-NEW — PR 5 lands as three PRs: 5a extracts, 5b extends the terms client, 5 settles
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** PR 5 of the settlement stack becomes three PRs, each saying
+`Refs #12`:
+
+- **5a** (#251, `12-settlement-5a-helpers`), on PR 4 (#250): a refactor that
+  extracts `books.lock_book` and `market_status.read_terms`.
+- **5b** (`12-settlement-5b-terms-client`), on 5a: `proposed_outcome_id` and
+  `settleable` on `MarketTerms`, and `market_terms.mark_settled`.
+- **5**, on 5b: the settlement service, the trade path's latch, the audit
+  seam and their tests.
+
+**Why.** CLAUDE.md says a refactor never shares a PR with a behaviour change,
+so 5a stands alone. 5b changes what every pull accepts, the trade path's
+included, so a reviewer should see that change on its own rather than inside
+the settlement diff. "PR 3 of the settlement stack holds the table, and the
+audit seam lands with its caller in PR 5" already calls PR 5 the stack's
+largest. This follows the precedent of "PR 4a extracts `post`'s helpers ahead
+of `post_all`, as its own refactor".
+
+**Rejected.**
+- *5a inside PR 5*: a reviewer could not tell which lines of the trade path
+  moved and which changed.
+- *5b inside PR 5*: the trade path's new 503 would be reviewed among the race
+  tests, and the client's parse cases would sit beside the payout's.
+- *Renumbering PRs 5 to 7*: named `5a` and `5b`, as `4a` was, so PRs 6 and 7
+  keep their numbers.
+
+**Notes.** The stack now has eleven PRs. Row 5 of the table, as "PR 3 of the
+settlement stack holds the table…" left it, is replaced by three rows:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 5a | ledger: `books.lock_book` and `market_status.read_terms` extracted, `ensure_trading` still returning `None`, no behaviour change | 4 | |
+| 5b | ledger: `proposed_outcome_id` and `settleable` on `MarketTerms`, parsed strictly; `market_terms.mark_settled` and `SettlementUnconfirmed`; the allowlist line for `mark_settled`; their tests | 5a | |
+| 5 | the ledger's audit seam, `service/settlement.py`, the trade path's latch, the three allowlist lines removed, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade, window-boundary and audit tests | 5b | |
+
+*Amended 2026-10-10 by [3.4] #12: row 5 also adds one allowlist line, for
+`pay_out`, which PR 6 deletes, and carries ADR 0019's amendment of 2026-10-10
+with its DECISIONS.md entries. See "`pay_out` waits for its route on one
+allowlist line, and PR 5 deletes the three lines it ends".*
+
+---
+
+### D-NEW — PR 5a extracts `books.lock_book` and `market_status.read_terms` ahead of settlement, as its own refactor
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The book lock moves from `trading._lock_book` to
+`books.lock_book`. The body of `ensure_trading` up to the status comparison
+moves into `market_status.read_terms`: the pending-writes assert, the
+rollback, the fetch, and the 404 mapped by whether a book exists.
+`ensure_trading` calls `read_terms` and still returns `None`. There is no
+behaviour change. The SQL of a warm buy, a cold buy, a gate refusal and both
+404 branches is identical before and after.
+
+**Why.** Settlement needs both. PR 5 would otherwise add the second copy of
+the book lock, and of the rule that a 404 on a market with a book is
+`MarketTermsUnavailable` (ADR 0017). CLAUDE.md says the PR that would add a
+second copy extracts it instead. `ensure_trading` keeps returning `None`
+because ADR 0017 says that handing fresh terms to the trade path is one
+refactor away from pricing off a wire `liquidity_b`. That would break ADR
+0005's rule that `b` crosses once, at publish, as an immutable snapshot.
+Settlement takes its terms from `read_terms`, and the trade path never does.
+
+**Rejected.**
+- *`ensure_trading` returning `MarketTerms`, so settlement could call it*:
+  the reason above, and settlement would then be asking the open-or-not
+  question it never asks.
+- *Settlement calling `market_terms.fetch` and mapping the 404 itself*: that
+  is the second copy.
+- *The extraction inside PR 5*: see "PR 5 lands as three PRs: 5a extracts,
+  5b extends the terms client, 5 settles" above.
+
+**Notes.** No test assertion changes. The sell race's docstring now names
+`books.lock_book` as the line it is evidence for.
+
+---
+
+### D-NEW — `MarketTerms` carries `proposed_outcome_id` and `settleable`, parsed strictly on every pull
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `MarketTerms` gains `proposed_outcome_id: uuid.UUID | None` and
+`settleable: bool`, with no defaults. `_parse` reads both keys by index, so a
+missing key is a malformed body:
+
+- `settleable` must be a JSON boolean.
+- `proposed_outcome_id` is null or a uuid string, read through `_to_uuid`.
+
+Any failure is `503 market_terms_unavailable`, on every pull: the trade gate,
+a first touch through `books.ensure_open`, and settlement. The client carries
+both fields and decides on neither (ADR 0017).
+
+**Why.** This is how the contract is already parsed: `published_at` is read
+by index because the contract always sends the key. market_service sends
+both fields on every public detail, since PR 1 (#227). A body missing one
+therefore comes from a broken deploy, and the client fails closed on that,
+as it does for a missing `status`.
+
+A `settleable` that is not a real boolean is refused rather than coerced.
+`"false"` is truthy, and reading it as true would pay out inside the dispute
+window, which is why ADR 0019 gives `settleable` no default.
+
+Positive reads are never cached. Only a 404 is remembered ("A market_service
+404 is remembered for ten seconds, per process"), so settlement always reads
+both fields fresh.
+
+**Rejected.**
+- *Lenient parsing, with settlement refusing a missing value itself*: the
+  trade path would then depend on nothing new, but one client would parse in
+  two styles.
+- *A default on either field*: `settleable=False` hides a broken deploy as a
+  window that never closes, and `settleable=True` pays out mid-window.
+
+**Notes.**
+- Deploy order matters. A ledger running 5b against a market_service from
+  before PR 1 answers 503 to every trade. The stack's order prevents that,
+  because PR 1 sits below 5b.
+- ADR 0017 is amended: its list of what stays in `_parse` grows by two fields
+  that the trade path does not read.
+- The trade route's `503` row in `docs/api/ledger-service.md` needs no edit.
+  A malformed body was already a 503 there, and still is.
+
+---
+
+### D-NEW — `market_terms.mark_settled` accepts only a `200`, and every other answer is `503 settlement_unconfirmed`, logged at ERROR
+
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `mark_settled(market_id, *, access_token, terms_client) -> None`
+sits in `service/market_terms.py`. It sends `POST /markets/{id}/settle` with
+no body, forwards the administrator's token, and uses the process-wide terms
+client, which carries the timeout from "Upstream failures map to 503, 404 and
+401, and the timeout is explicit".
+
+- A `200` returns `None`.
+- Everything else raises `SettlementUnconfirmed` (`core/errors.py`, `503`,
+  `settlement_unconfirmed`): a 401, 403, 404 or 409 (`market_not_approved`
+  or `dispute_window_open`), any other 4xx, any 5xx, and any
+  `httpx.RequestError`, a timeout included.
+- The response body is never read, whether the call succeeded or failed.
+
+The failure is logged at ERROR, with the market id and what came back (the
+status code, or the exception's class). It is the only 503 in the service
+logged above WARNING.
+
+**Why.**
+- **One failure meaning.** The call runs only after the payouts committed
+  (ADR 0019, step 5), so every failure means the same thing: money has moved
+  and the market is not marked. The remedy is the same too: repeat the
+  request. Mapping a 401 to `invalid_token`, or a 404 to `market_not_found`,
+  would tell an administrator that nothing happened. A 401 would also send
+  the frontend to the login screen with no sign that anyone was paid.
+- **The body is not needed.** "The settle step answers `200` with
+  `MarketOut`, the same for the flip and for a repeat" makes the status code
+  the whole answer. `MarketOut`'s money fields are JSON numbers, so not
+  reading the body also keeps any float off the money path.
+- **A timeout after sending does no harm.** If market_service committed, the
+  retry gets `200` for SETTLED to SETTLED and writes nothing.
+- **Why ERROR.** Every other 503 means the dependency is unwell, and the next
+  request retries on its own. This one leaves a state that lasts until a
+  person repeats the request. `controller/errors.py` keeps 503s at WARNING so
+  that a market_service restart does not bury real errors. At WARNING, this
+  line would be buried among exactly those.
+
+**Rejected.**
+- *Mapping answers as `fetch` does, by the table in "Upstream failures map to
+  503, 404 and 401, and the timeout is explicit"*: it reuses codes that mean
+  nothing happened.
+- *Reading the error code to pick between refusals*: no refusal here changes
+  what the administrator should do.
+- *Retrying inside `mark_settled`*: the window-edge `409` needs minutes, not
+  milliseconds, and a loop would hold the administrator's request open. A
+  repeat from the administrator already retries, and writes nothing in the
+  ledger.
+- *Logging in the error handler*: the handler sees only the code, not what
+  market_service answered.
+
+**Notes.**
+- `mark_settled` does not consult or feed the 404 cache. A 404 here comes
+  from a market whose book exists, so it says nothing about whether the
+  market exists.
+- The handler still logs its WARNING for the 503, so a failure writes two
+  lines. That is accepted, because only the ERROR line names the cause.
+- `mark_settled` has no caller until PR 5. Until then
+  `backend/dead_code_allowlist.py` carries one line for it, in the existing
+  format, and PR 5 deletes it.
+
+**Reversal trigger.** market_service learns of settlement some other way, and
+step 5 goes. The function and the error go with it ("A settlement whose last
+step fails answers `503 settlement_unconfirmed`").
+
+---
+
+### D-NEW — A recorded settlement replays before any status check; the lookup before the lock can only short-circuit
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `settlement.pay_out` runs in this order:
+
+1. It reads the public detail through `market_status.read_terms`, holding no
+   connection. A failure refuses here, even for a market the ledger has
+   already paid: `503`, or `401`. Nothing has been written by this request.
+2. It looks up the market's `ledger.market_results` row without a lock. A row
+   means a replay: one `GROUP BY` over the pool's entries rebuilds the
+   figures, the session rolls back, and `POST /markets/{id}/settle` is called.
+   This happens whatever status step 1 reported.
+3. Only with no row are the status checks applied to step 1's answer:
+   - `approved` and not `settleable`: `409 dispute_window_open`.
+   - `approved` and `settleable`, or `settled`: continue.
+   - anything else: `409 market_not_approved`.
+
+   A refusal writes nothing and opens no book.
+4. `books.ensure_open`, then `books.lock_book`, then the lookup again, under
+   the lock. A row found there is a replay too, and its rollback releases the
+   lock.
+
+A repeat always calls `/settle`.
+
+**Why.**
+- *Replay first.* This is the reason in "The ledger asks market_service
+  whether a market is still trading, and a replay is answered first", applied
+  to a request whose last step can fail after the money moved. ADR 0019
+  repairs a failed settle step by a repeat, so a repeat has to reach the
+  replay whatever market_service now says.
+- *The unlocked lookup can only short-circuit.* A hit names a committed row
+  that nothing updates or deletes. The record commits in the same commit as
+  every payout, so a row that is visible means all of its entries are
+  visible. A miss is trusted for nothing: the status checks still run, and the
+  latch is read again under the book lock.
+- *A status refusal opens no book.* The checks come before
+  `books.ensure_open`, whose cold path commits a `MARKET_SEED`. Without that
+  order, a refused request would write.
+- *A repeat always calls `/settle`.* The record proves that the money moved.
+  It does not prove that market_service was told. Only a `200` from `/settle`
+  proves that, and `SETTLED → SETTLED` writes nothing there.
+- *A failed read refuses even for a paid market.* Accepted:
+  - the request wrote nothing, so `503 market_terms_unavailable`'s "nothing
+    happened" is true of this request;
+  - a retry completes it;
+  - the market stays in the overview's approved queue, which prompts the
+    retry.
+
+  A replay cannot finish without market_service anyway, because it ends in
+  `/settle`.
+
+**Rejected.**
+- *The lookup before the read, as the trade path orders them.* It issues a
+  statement before the first HTTP call and then has to roll it back. It also
+  saves nothing: a trade's replay makes no call at all, but a settlement's
+  replay still has to call `/settle`.
+- *The status checks before the lookup, which is ADR 0019's original order.*
+  Take a market that was paid, whose settle step failed, and whose
+  `dispute_window_seconds` has been raised since. It still reads `approved`,
+  but no longer `settleable`, so a repeat would answer `409
+  dispute_window_open`. That code means nothing was written, but this market
+  was already paid. In the order above it replays instead, and `/settle`'s
+  answer decides the response: `200`, or `503 settlement_unconfirmed`.
+
+**Reversal trigger.** Either of these:
+- The settle step goes, because market_service learns of settlement some
+  other way. A replay then makes no call, and the trade path's order becomes
+  the better one.
+- A code path updates or deletes a `ledger.market_results` row. The lookup
+  can then no longer short-circuit without a lock.
+
+**Notes.** This amends ADR 0019's steps 1 and 3 (amendment of 2026-10-10).
+
+---
+
+### D-NEW — The winner is checked under the book lock, after the latch, and a replay never checks it
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** This check runs after the under-lock lookup misses. The book's
+outcomes are read, and market_service's `proposed_outcome_id` must be one of
+them. If it is null or names an outcome the book does not have, the answer is
+`503 market_terms_unavailable`, and the rollback writes nothing and releases
+the lock. A replay never reads `proposed_outcome_id`, whichever lookup found
+the record.
+
+**Why.**
+- *A replay never checks it.* "On a repeat, the recorded outcome governs." If
+  a replay checked market_service's current winner, a later answer from
+  market_service could refuse a market that has already been paid.
+- *Against the book's outcomes, under the lock.* On a cold book those rows
+  exist only after `books.ensure_open`. The record's composite foreign key
+  points at them, so a foreign winner is refused by this check with a code.
+  It is never left to the foreign key, which would raise an `IntegrityError`
+  inside `post_all` and end as a 500. The outcomes are immutable (ADR 0005),
+  so the lock is not needed for freshness. The check sits here because the
+  outcomes read does, and they are read only once.
+- *503, not 409.* Approval always stamps the winner, so a null on an
+  approved market is damage in market_service. A winner that is not in the
+  book means market_service is wrong, which ADR 0017 maps to 503, as it does
+  a 404 for a market with a book. An administrator can do nothing about
+  either, and #12's criterion already names 503.
+
+**Rejected.**
+- *Checking during the status checks, against step 1's `terms.outcomes`.* That
+  is a second list of outcomes to trust, and the foreign key would still be
+  the only guard on the book's own rows.
+- *`409`.* It tells an administrator to act, and no action helps.
+
+**Reversal trigger.** A settlement that pays something other than
+market_service's winner, such as [BE] #221's void.
+
+---
+
+### D-NEW — The trade latch sits after the key re-check under the book lock, and before the outcomes read and the staleness check
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** On the trade path, the `ledger.market_results` lookup runs
+right after the under-lock idempotency re-check. A row is `409 market_closed`.
+The lookup reads any row and never filters on `kind`. It runs before the
+outcomes read, `book_prices.refuse_unpriceable` and the staleness check.
+
+**Why.**
+- *After the key re-check,* so that a trade that committed before the
+  settlement still replays. A trader whose trade charged them is never told it
+  was refused. That is the reason in "The ledger asks market_service whether a
+  market is still trading, and a replay is answered first", applied under the
+  lock.
+- *Before the staleness check,* so that a settled market answers
+  `409 market_closed` and not `409 quote_stale`. A fresh quote cannot help on
+  a market that will never trade again. Settlement leaves `state_version`
+  alone, so a stale answer would only come from a quote that was already old.
+  It would still send the trader to re-preview a market they cannot trade.
+- *Before the outcomes read,* because a refusal needs nothing that read
+  returns.
+
+**Rejected.**
+- *The latch before the key re-check.* A retried trade that committed before
+  the settlement would be refused even though it was charged.
+- *The latch after the staleness check.* A stale quote on a settled market
+  would answer `quote_stale`, and the trader would re-preview only to be
+  refused again.
+
+**Reversal trigger.** The trade path stops answering a replay first.
+
+---
+
+### D-NEW — A payout is quantity × 1, keyed per winner in `user_id` order, and the residue is the last movement
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** These reads and movements all happen under the book lock.
+
+- **Winners.** One statement: positions joined to their USER accounts, where
+  the outcome is the winner and `quantity > 0`, `ORDER BY user_id`.
+- **One payout per winner.** Kind `SETTLEMENT`, keyed
+  `settlement:{market_id}:{user_id}`. Its legs are the pool `−quantity` and
+  the user `+quantity`. Its context is `user_id`, `market_id`, `outcome_id`
+  and `quantity`, all as strings.
+- **The pool's balance.** Read after the winners.
+- **The residue.** `r = pool − Σ payouts`:
+  - positive: posted from the pool to PLATFORM;
+  - negative: posted from PLATFORM to the pool;
+  - zero: skipped, and PLATFORM is not named, so it is not locked.
+
+  It is kind `SETTLEMENT_RESIDUE`, keyed `settlement_residue:{market_id}`,
+  with context `market_id`. It is the last movement in the batch.
+- **One number.** The signed `r` is the same value in the audit entry and in
+  the response.
+
+**Why.**
+- *× 1 needs no rounding.* "Shares keep money's scale of 4, in `q` and in
+  positions" means the quantity is already a valid amount. The pool's legs
+  therefore match the shares exactly.
+- *`user_id` order.* The same settlement always builds the same batch. Since
+  `post_all` stamps movement *i* at the first stamp plus *i* µs, the feed's
+  order is that order. Account locks are taken in `post_all`'s own order
+  (ascending by account id), which this order does not affect.
+- *The residue last.* It is computed from the payouts. ADR 0019's second trap
+  explains why reordering it is not a fix.
+- *Context strings.* These are the fields PR 7's history row reads ("A
+  payout's history row is kind `settlement`, with market, outcome and
+  quantity"). They are strings, as a trade's `quantity` already is.
+- *The pool's balance is stable under the book lock.* Every writer of a pool
+  either holds the book lock (trades, settlement) or commits together with the
+  book row itself (the seed, in `books.ensure_open`'s one commit). So the book
+  lock is the lock ADR 0015 asks for on this read.
+- *`quantity > 0`.* A zero leg is refused by posting, and a holder who sold to
+  zero is paid nothing.
+- *One `r`.* It is computed once, so the residue entry, the audit entry and
+  the response cannot disagree.
+
+**Rejected.**
+- *No `ORDER BY`.* Postgres would be free to build the batch in a different
+  order on each run, and the feed's order would follow it.
+- *A query per winner for their account.* That is a thousand statements where
+  one join does.
+
+**Reversal trigger.** A share that pays something other than 1, or fees the
+platform keeps from the pool.
+
+---
+
+### D-NEW — A settlement's `recorded_at` is Python's clock read after the book lock, and is `post_all`'s floor
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `now` is `datetime.now(UTC)`, read after `books.lock_book` and
+after the under-lock lookup misses. It becomes the record's `recorded_at`, the
+audit entry's `occurred_at` and `post_all(now=now)`. Tests may pass `now` in.
+
+**Why.** This is the trade path's clock, read at the same point. It is read
+after the lock so that a settlement that queued behind a trade is not stamped
+before that trade (#138). It is only a floor for `post_all`, which stamps each
+entry after the newest entry on every account it locks ("A movement's
+timestamp is fixed under its account locks, not trusted from the clock"). So
+the order of the entries never depends on this clock. The entries may land a
+little after `recorded_at`, as a trade's entries land a little after its
+`state_changed_at`. The record and the audit entry take one value, so they
+cannot disagree with each other.
+
+**Rejected.**
+- *`clock_timestamp()`, as in "Every decision a market records is stamped
+  with Postgres's `clock_timestamp()`, read after the row lock".* That entry
+  exists because market_service's sweep stamps with the database clock next
+  to container stamps on the same row. Nothing in the ledger stamps
+  `market_results` from the database, and the probe fixes the entries' order.
+  It would be a round trip that orders nothing.
+- *`func.now()`.* That is the transaction's start time, which comes before
+  the lock wait (#138).
+- *The first payout's stamp, from `post_all`.* The record and the audit entry
+  must be staged before `post_all` is entered (ADR 0019's first trap, as
+  amended), so they cannot wait for what it returns.
+
+**Reversal trigger.** A reader orders the record or the audit entry against
+something stamped with the database's clock.
+
+---
+
+### D-NEW — The settlement response carries its full figures, rebuilt from the entries on a replay, through one builder
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The result is a frozen record with `market_id`, `outcome_id`,
+`recorded_at`, `holders_paid`, `total_paid` and `residue`. One builder makes
+it on both paths:
+- *The fresh path* uses the values it computed before `post_all`.
+- *A replay* takes `outcome_id` and `recorded_at` from the record, and the
+  other figures from one `GROUP BY` kind over the pool account's
+  `SETTLEMENT` and `SETTLEMENT_RESIDUE` entries:
+  - `holders_paid` is the count of `SETTLEMENT` legs;
+  - `total_paid` is minus their sum;
+  - `residue` is minus the residue leg;
+  - a kind with no entries reads as zero.
+
+No ORM instance is read after the commit or the rollback.
+
+**Why.**
+- *Full figures.* #12 answers a repeat "with the settlement it recorded the
+  first time".
+- *Rebuilt from the entries.* The record stores no sums. Its shape is
+  "`ledger.market_results` is one record per finished market, with a `kind`",
+  and the rejection of stored sums, as a second source of truth, stands in
+  the entry that one superseded in part. The entries are the record of the
+  money, so a replay derives the figures, as a balance is derived.
+- *One builder,* for the reason `trading.result_of` is the trade path's only
+  builder: two builders could drift apart, and one cannot.
+- *Nothing read after the commit or the rollback.* Both expire every
+  instance, so a lazy load would autobegin a transaction just before
+  `/settle`, which breaks "no statement between them". Under asyncio it
+  raises anyway.
+
+**Rejected.**
+- *Storing the figures on the record:* refused above.
+- *Answering with only the market and the winner:* the response is the
+  administrator's one immediate account of what moved.
+
+---
+
+### D-NEW — `market.settled` carries the winner and the three figures, with no target label and no reason
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The entry is:
+- `action_type` `market.settled`;
+- `target_type` `"market"`, `target_id` the market's id;
+- `target_label` null and `reason` null;
+- `occurred_at` equal to `recorded_at`;
+- the actor taken from the administrator's token;
+- `context` with `winning_outcome_id` (a uuid string), `total_paid` and
+  `residue` (signed decimal strings), and `holders_paid` (an integer).
+
+**Why.**
+- *These fields:* #12's audit criterion lists the winner, the total paid, the
+  number of holders paid and the residue.
+- *`winning_outcome_id`* is the key market_service already uses in the
+  decision snapshot that `market.outcome_approved` and
+  `market.marked_settled` carry. A reader can match all three entries by that
+  one key.
+- *No label:* market_service labels a market with its question, and the
+  ledger does not hold the question. `MarketTerms` carries no prose, just as
+  `OutcomeTerms` has no label.
+- *No reason:* `reason` holds an administrator's justification (ADR 0014,
+  ADR 0016), and settlement chooses nothing.
+- *Strings:* money crosses as decimal strings.
+
+**Rejected.**
+- *The question as the label, read from the public detail.* It would widen
+  `MarketTerms` for a display field.
+- *Calling the key `outcome_id`.* That would give the same thing two names in
+  one log.
+
+**Reversal trigger.** A reader of the log needs a label that market_service's
+own entries for the market do not give it.
+
+---
+
+### D-NEW — The ledger's `service/audit.py` is a third copy, and the extraction is declined
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The ledger gains three files:
+- `core/audit.py`, with `SOURCE_SERVICE = "ledger_service"`;
+- `model/audit.py`, an `AdminAction` with `MARKET_SETTLED = "market.settled"`;
+- `service/audit.py`, the same as market_service's and auth_service's except
+  for the `AdminAction` it types the call with.
+
+Each file names its twins in a one-line comment.
+
+**Why.** ADR 0006's #135 amendment moved everything identical into
+`shared/audit.py`. It kept the per-service files on purpose: the vocabulary
+and the source name differ by design, and `service/audit.py` keeps each call
+typed by that service's own `AdminAction`. ADR 0019 lets the ledger's seam
+differ in constants and vocabulary only, and the type of `action` is the
+vocabulary. So the copy is what those two records already chose, not a missed
+extraction.
+
+**Rejected.** *Extracting it into `shared/`.*
+- It touches auth_service, which is decker757's.
+- It would refactor two services inside a behaviour PR.
+- A shared builder would have to take a bare `StrEnum`, so a service could log
+  an action from another service's vocabulary. The typing that the file exists
+  for would be lost.
+
+**Reversal trigger.** A fourth writing service, or a change to one copy's body
+that is not about its vocabulary. The extraction then lands as its own
+refactor PR ahead of that change, because a refactor never shares a PR with a
+behaviour change.
+
+**Notes.** This settles what "PR 3 of the settlement stack holds the table,
+and the audit seam lands with its caller in PR 5" left open.
+
+---
+
+### D-NEW — `pay_out` waits for its route on one allowlist line, and PR 5 deletes the three lines it ends
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** PR 5 adds one line to `backend/dead_code_allowlist.py`, in the
+existing format:
+
+```python
+# [3.4] #12 PR 6: the settlement route calls it; delete this line there
+pay_out
+```
+
+It deletes the `MarketResult`, `post_all` and `mark_settled` lines.
+
+**Why.** The dead-code check fails on anything production code does not use,
+and tests do not count. `pay_out`'s caller is PR 6's route. The trade latch
+uses `MarketResult` in production. `pay_out` names `post_all` and
+`mark_settled`, which the check counts as use.
+
+**Rejected.** *The route inside PR 5.* PR 6 is the controller layer, and PR 5
+is already the stack's largest.
+
+**Reversal trigger.** Review of PR 5 refuses an allowlist entry for planned
+code. The route then moves into PR 5.
+
+---
+
+### D-NEW — A cold settlement reads the public detail twice
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** On a market whose book was never opened, settlement's first read
+is followed by `books.ensure_open`'s own fetch. That makes two GETs, and it is
+accepted. `ensure_open` is not handed the first read's terms.
+
+**Why.** The trade path already makes the same two reads on a first touch,
+through its gate and `ensure_open`. A cold settlement is rare. A trade, a
+preview or a snapshot each opens a book ("The realtime snapshot is a second
+first-toucher, and never gates on status"), so a cold settlement means nobody
+traded the market or looked at it. Neither read holds a connection. The first
+runs before any statement, and `ensure_open` rolls back before its fetch ("The
+cold path holds no connection across the terms pull").
+
+**Rejected.** *Passing the terms into `ensure_open`.* Every first toucher's
+function would change to save one read on a rare path.
+
+**Reversal trigger.** Settling untouched markets becomes common.
+
+**Notes.** A cold settlement makes three calls to market_service. #12's
+criteria were amended to match: "No call to market_service is made while the
+request holds a database connection or a row lock", and the speed criterion
+now excludes "the calls to market_service" rather than "the two calls".
+
+---
+
+### D-NEW — PR 6a moves `actor_of` into `shared/audit.py`, ahead of the route, as its own refactor
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `actor_of(claims: TokenClaims) -> Actor` sits in
+`shared/audit.py`, beside `Actor`. It copies `user_id`, `username` and
+`role.value` from the token, so the role is the plain string. market_service's
+`get_actor` calls it through its `core/audit.py` and `service/audit.py` seams.
+The ledger's `get_actor`, in PR 6, calls it through the same two seams.
+auth_service's `get_actor` is not changed. PR 6a (#256,
+`12-settlement-6a-actor-of`) is a new step in the settlement stack, on PR 5
+(#254), and PR 6 is stacked on it.
+
+**Why.**
+- *The second copy.* The ledger's route needs the same claims-to-`Actor`
+  conversion as market_service's. CLAUDE.md says the PR that would add the
+  second copy extracts it instead.
+- *It clears ADR 0012's bar.* Every caller needs identical behaviour, and a
+  difference would be a bug. If the two copies drifted, one administrator
+  could appear under two roles, or two names, in one log: on
+  `market.outcome_approved` from market_service and on `market.settled` from
+  the ledger, for example.
+- *It already belongs there.* `TokenClaims` is in `shared/security.py` and
+  `Actor` is in `shared/audit.py`. The function's input and output both live
+  in `shared/`, and it imports no service.
+- *Its own PR.* A refactor never shares a PR with a behaviour change. This
+  follows "PR 4a extracts `post`'s helpers ahead of `post_all`, as its own
+  refactor" and "PR 5a extracts `books.lock_book` and
+  `market_status.read_terms` ahead of settlement, as its own refactor".
+- *auth_service is not a caller.* Its `get_actor` builds the `Actor` from the
+  live user row, so a demotion takes effect on the next request (ADR 0007).
+  Building it from the token would bring the fifteen-minute window back to
+  the one service that does not have it. That is a different input, not a
+  drift.
+
+**Rejected.**
+- *A second copy in the ledger's `controller/dependencies.py`, with a comment
+  naming its twin.* That is the copy CLAUDE.md forbids. Unlike the ledger's
+  `service/audit.py`, nothing in it differs by design.
+- *The extraction inside PR 6.* A refactor would share a diff with the new
+  route.
+- *auth_service calling `actor_of`.* It would undo ADR 0007's live role.
+
+**Reversal trigger.** market_service or the ledger needs an `Actor` built from
+something other than the token, such as a live user lookup. That service then
+builds its own, as auth_service does.
+
+**Notes.**
+- This is not the case "The ledger's `service/audit.py` is a third copy, and
+  the extraction is declined" decided. That file differs by the `AdminAction`
+  type it takes. `actor_of` has no vocabulary, is the same in both callers,
+  and touches no auth_service file.
+- The ledger's seam files gain the same re-export as market_service's, so
+  they still differ in constants and vocabulary only ("The ledger writes the
+  settlement's audit entry, through its own seam onto `shared/audit.py`").
+- ADR 0006's #135 amendment lists what `shared/audit.py` holds, and is
+  amended to name `actor_of`.
+- The table gains one row, and row 6's "On" changes:
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 6a | shared: `actor_of` in `shared/audit.py` beside `Actor`, market_service's `get_actor` calling it through its seam, no behaviour change; its tests in `shared/unit_test/test_audit.py` | 5 | decker757 (market_service) |
+| 6 | the settlement route, `SettlementIn` and `SettlementOut`, the ledger's `get_actor` on `actor_of`, the `pay_out` allowlist line removed, `docs/api/ledger-service.md`; the route tests | 6a | |
+
+---
+
+### D-NEW — The settlement route answers `200`, the same for a fresh settlement and for a repeat
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `POST /ledger/markets/{id}/settlement` answers `200` with the
+six-field settlement. It does so on the request that pays and on every repeat
+that replays. It never answers `201`.
+
+**Why.**
+- *One status for the first answer and the replay.* The trade route answers
+  `201` to a first trade and to its replay, with byte-identical bodies.
+  market_service's settle step answers `200` to the flip and to a repeat
+  ("The settle step answers `200` with `MarketOut`, the same for the flip and
+  for a repeat"). This route follows the same rule.
+- *A split would expose what the builder hides.* "The settlement response
+  carries its full figures, rebuilt from the entries on a replay, through one
+  builder" makes a replay indistinguishable from the first answer. `201` then
+  `200` would give a client a difference to branch on. A repeat is how a
+  failed last step is repaired ("A settlement whose last step fails answers
+  `503 settlement_unconfirmed`"), so the client should treat it as the same
+  settlement.
+- *Nothing is created at an address.* There is no settlement resource to GET
+  and no `Location`. The trade's body names a new transaction by its
+  `transaction_id`. This body names only the market and its winner, and
+  settling is something done to a market that already exists.
+
+**Rejected.**
+- *`201` on both, as the trade route does.* The trade's `201` points at a new
+  transaction, and this response has no new id to point at.
+- *`201` fresh and `200` on a repeat.* That is the split described above.
+- *`204`.* The body carries the figures #12 asks for, so it cannot be empty.
+- *`202`.* The work is finished when the response is sent.
+
+**Reversal trigger.** The settlement becomes a resource of its own, with an id
+and a route that reads it.
+
+**Notes.** The trade route's `201` is not changed by this entry.
+
+---
+
+### D-NEW — The settlement body is empty, and any field in it is `422 invalid_request`
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The route takes `body: SettlementIn | None = None`.
+`SettlementIn` has `extra="forbid"` and no fields. A request with no body,
+with `{}` or with `null` is accepted. Any key, or a body that is not an
+object, is `422 invalid_request`.
+
+**Why.**
+- *ADR 0009's second amendment.* Neither write route takes money, and this
+  route's caller supplies nothing that decides who is paid or how much.
+- *A refused field cannot be mistaken for an honoured one.* A body naming an
+  outcome that was silently dropped would let a client believe it had chosen
+  the winner. Refusing it makes clear that the request chooses nothing.
+- *`| None = None`.* A model parameter on its own makes FastAPI require a
+  body, so a bare POST, which is the documented call, would fail with "field
+  required".
+- *`{}` passes,* because it is what most JSON clients send for "nothing".
+
+**Rejected.**
+- *No body parameter at all.* FastAPI then ignores whatever is sent, so
+  `{"outcome_id": …}` would succeed and look honoured.
+- *Requiring `{}`.* A bare POST would fail over a body that holds nothing.
+
+**Reversal trigger.** ADR 0009's: the body gains a field that names an
+outcome, an account or an amount. The route then needs a service credential
+first.
+
+**Notes.** market_service's settle step ignores a body instead ("anything sent
+is ignored"). That route is the ledger's call only, and the ledger sends no
+body. This route is the one a client calls, so a confused client meets this
+one.
+
+---
+
+### D-NEW — A settlement publishes no realtime frame
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Neither a payout nor a replay publishes anything to Redis. The
+trade path's price publish is not called, and no new frame type is added.
+
+**Why.**
+- *Nothing a frame carries changes.* Settlement writes neither `q` nor any
+  position: "`ledger.market_settlements` is the latch, and positions and `q`
+  are never written", a part that stands where "`ledger.market_results` is one
+  record per finished market, with a `kind`" superseded the rest. A `price`
+  frame's `state_version` and prices would be the same as the last trade's
+  frame. ADR 0010's ordering rule would discard it as stale, or it would
+  repeat what the client already shows.
+- *No frame type for it exists.* `docs/api/realtime-service.md` defines
+  `subscribed`, `unsubscribed`, `price` and `error`. A `settled` frame would
+  change the contract of a service that is decker757's, for a consumer nobody
+  has built.
+- *Its consumer decides.* ADR 0019 gives [L-3] #40's "recalculated after
+  market settlement" an event to hang on, and says it "does not decide how it
+  is consumed".
+- *#12 asks for none.*
+
+**Rejected.**
+- *A `price` frame anyway.* It carries no new information, and a client
+  cannot read "settled" from it.
+- *A `settled` frame type.* That is a realtime contract change made ahead of
+  its consumer.
+
+**Reversal trigger.** [L-3] #40, or a frontend story, needs to learn of a
+settlement without reading the market's status. That story designs the frame.
+Like the price publish, it is sent after the commit and must never fail the
+settlement (ADR 0010).
+
+**Notes.** A client learns that a market is settled from market_service's
+status. The frontend already hides the trade control on any market that is
+not open, and a trade on a settled market is `409 market_closed`.
+
+---
+
+### D-NEW — A settled row's payout is its quantity, and its result comes from `ledger.market_results`, joined in the portfolio's one statement
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The portfolio's one statement outer-joins `ledger.market_results`
+on `market_id`. Every held row of a market with a record is a settled row:
+
+- `result` is `paid_out` where the row's outcome is the record's `outcome_id`,
+  and `worthless` otherwise.
+- `payout` is the row's `quantity` on a `paid_out` row, and `0.0000` on a
+  `worthless` one.
+
+A settled market's book is not valued. It skips
+`book_prices.refuse_unpriceable`, `liquidation_values_of` and the above-`q`
+check, and its rows add nothing to `positions_value`.
+
+**Why.**
+- *The payout is the quantity.* "A payout is quantity × 1, keyed per winner in
+  `user_id` order, and the residue is the last movement" pays exactly the
+  winning quantity, with no rounding. "`ledger.market_settlements` is the
+  latch, and positions and `q` are never written" leaves that quantity where
+  it was. So the quantity held is the amount paid. Reading it from the entry
+  would be a join for a number that is already on the row.
+- *The result is the ledger's own record.* "The portfolio carries ids only, and
+  makes no call to market_service" named #12's realized outcome as its
+  candidate trigger and said the answer should come from the settlement
+  record, not from a call. It does, so that entry's trigger does not fire.
+- *Settled markets skip the checks.* "A damaged book, or a position above `q`,
+  fails the whole portfolio with `market_book_incomplete`" fails the whole
+  read because `net_worth` is a sum, and a missing row makes it wrong. A
+  settled row adds nothing to that sum, so its book cannot make the total
+  wrong. Failing the read over that book would refuse a correct answer.
+- *The exclusion lives in the portfolio, not in `core/`.*
+  `liquidation_values_of` is a pure function of `q`, `b` and the holdings, and
+  knows nothing of settlement. The portfolio's valuation decides which markets
+  reach it. So [L-1] #38 must reuse the portfolio's valuation. Called alone,
+  `liquidation_values_of` values a settled market's shares at the frozen book,
+  on top of the payout already in the balance. ADR 0018's 2026-10-10
+  amendment says so.
+
+**Rejected.**
+- *Reading `payout` from the `settlement` entry.* A join through `transactions`
+  by key for every settled row, for a figure equal to `quantity` while the
+  payout rule holds.
+- *A `settled` flag on `liquidation_values_of`.* Market state inside core's
+  pure pricing. #38 would still have to know which markets are settled, which
+  is the portfolio's job.
+- *Keeping `refuse_unpriceable` and the above-`q` check on settled markets.*
+  The whole read would fail over a book none of whose figures reach the
+  response.
+
+**Reversal trigger.** The payout rule's: a share that pays something other
+than 1, or fees the platform keeps from the pool. Then `payout` is no longer
+`quantity`, and the row reads it from the entry.
+
+**Notes.** Like the latch's readers, the join does not filter on `kind`. Today
+`settled` is the only kind. When [BE] #221 adds a void, its rows reach this
+branch with no `outcome_id`, so #221 must add a `result` value of its own
+here. A settled row keeps `state_version`, the frozen book's last version. A
+position sold to zero is still left out, settled or not. A holder of both
+outcomes sees two rows, one `paid_out` and one `worthless`.
+
+---
+
+### D-NEW — `result` and `payout` are on every portfolio row, null until the market is settled
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `PortfolioPositionOut` always carries `result` and `payout`.
+Both are `null` on a market the ledger has not settled. `price`, `value` and
+`unrealized_pnl` become nullable, and are `null` on a settled row. Nothing is
+left out with `exclude_none`.
+
+**Why.** One row shape. A client branches on the value of `result`, not on
+whether a key is present. It is the history's rule too: `LedgerEntryOut`
+always sends its typed fields and nulls them where they do not apply ("A trade
+row's typed fields come from its kind and `context`; any other kind renders
+with them null"). `exclude_none` would also strip a settled row's `null`
+`price`, `value` and `unrealized_pnl`. That would give two shapes again, from
+the other side, and it would apply to the whole response.
+
+**Rejected.**
+- *Omitting `result` and `payout` until settlement*, by `exclude_none` or per
+  row. See above.
+- *`payout: "0.0000"` on an unsettled row.* Zero is what a `worthless` row was
+  paid. On an unsettled row it would claim a payout that has not happened.
+
+**Notes.** The shipped portfolio page types `price`, `value` and
+`unrealized_pnl` as `string` (`frontend/src/api/ledgerApi.ts:53-59`), and the
+`Position` type has no `result` or `payout`. The formatters at
+`frontend/src/pages/PortfolioPage.tsx:145-147` already show "—" for anything
+that is not a decimal string, so a null `price` or `value` renders. The crash
+is the P&L cell: `PnlCell` colours the value through `isZeroCredits`, which
+calls `null.startsWith` and takes the page down for anyone holding a settled
+position. The page needs that guard, and the type its nullable fields, before
+this stack merges into `dev`, whether or not [FE][3.4] #216's settled
+rendering is ready by then.
+
+---
+
+### D-NEW — `_trade_fields_of` keeps its name, and its docstring says it covers settlement
+
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+
+**Decision.** In PR 7 the history's row builder fills `settlement` rows. Its
+name stays `_trade_fields_of`, and its docstring says it covers the two trade
+kinds and `settlement`.
+
+**Why.** It is merged code. backend/CLAUDE.md: "Do not reorder or rename
+untouched code in a feature PR". CLAUDE.md: a refactor never shares a PR with
+a behaviour change. The name is now narrower than the function, but nothing it
+says is false. The docstring is where a reader who opens it finds the rest.
+
+**Rejected.**
+- *Renaming it in PR 7.* A rename inside a behaviour PR.
+- *A rename PR ahead of PR 7, as 4a, 5a and 6a are.* A thirteenth PR for a
+  private name with one caller.
+
+**Notes.** `TradeFields` is in the same position and stays as it is, for the
+same reason. A rename of either is its own refactor PR, under an issue of its
+own.
+
+---
+
 ### D-NEW — Exposure flags a payout the pool cannot cover, not one above the seed
 
 **Date:** 2026-10-10 · **Ticket:** #6 · **Status:** active
@@ -4974,3 +7346,14 @@ Move these into the log above when they're settled.
   since autogenerate cannot see a CHECK (ADR 0020). Whether that is
   worth it, and whether [3.4] #12 should land it since it is the next writer
   of `q`, is undecided.
+- **No index serves settlement's winners read.** `ledger.positions`' primary
+  key leads with `user_id`, so `WHERE market_id = … AND outcome_id = … AND
+  quantity > 0` scans the table while holding the market's book lock. That
+  stalls that market's trades, not the others'. An index on
+  `(market_id, outcome_id)` would need a revision. It becomes a decision when
+  PR 5's 5-second test misses its budget, or when `positions` grows large
+  enough that a measurement shows the scan.
+- **A third copy of the conftest's audit-reader engine.** The ledger's
+  `unit_test/conftest.py` gains an `audit_svc` engine from
+  `AUDIT_TEST_DATABASE_URL`, as market_service's and auth_service's already
+  do. Whether it moves into `shared/testing.py` is #<N>.

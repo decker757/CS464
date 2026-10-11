@@ -16,6 +16,9 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SCHEMA
+from unit_test.market_fixtures import market_with_outcomes
+
+LIQUIDITY_B = Decimal("137.0000")
 
 
 def _entities():
@@ -53,45 +56,6 @@ async def _columns(session: AsyncSession, table: str) -> dict[str, tuple]:
     return {r[0]: tuple(r[1:]) for r in rows}
 
 
-async def _market(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
-    """A book and its outcomes, flushed so a position can reference them
-    through the composite foreign key."""
-    from datetime import UTC, datetime  # noqa: PLC0415
-
-    entities = _entities()
-    market_id = uuid.uuid4()
-    outcome_id = uuid.uuid4()
-
-    pool = entities.Account(kind=entities.AccountKind.MARKET_POOL, owner_id=market_id)
-    session.add(pool)
-    await session.flush()
-
-    now = datetime.now(UTC)
-    session.add(
-        entities.MarketBook(
-            market_id=market_id,
-            liquidity_b=Decimal("137.0000"),
-            seed_subsidy=Decimal("250.0000"),
-            pool_account_id=pool.id,
-            state_version=0,
-            state_changed_at=now,
-            opened_at=now,
-        )
-    )
-    session.add(
-        entities.MarketOutcome(
-            market_id=market_id, outcome_id=outcome_id, position=0
-        )
-    )
-    session.add(
-        entities.MarketOutcome(
-            market_id=market_id, outcome_id=uuid.uuid4(), position=1
-        )
-    )
-    await session.flush()
-    return market_id, outcome_id
-
-
 def _position(user_id: uuid.UUID, market_id: uuid.UUID, outcome_id: uuid.UUID, **over):
     entities = _entities()
     fields = {
@@ -123,7 +87,10 @@ async def test_one_user_holds_two_outcomes_as_two_rows(
     """The key's own consequence, exercised. A trader on both sides of a
     binary market holds two positions, and a key of `(user_id, market_id)`
     would merge them into one row at an average price that means nothing."""
-    market_id, outcome_id = await _market(session)
+    market_id, outcome_ids = await market_with_outcomes(
+        session, liquidity_b=LIQUIDITY_B
+    )
+    outcome_id = outcome_ids[0]
     user_id = uuid.uuid4()
     other = (
         await session.execute(
@@ -164,7 +131,7 @@ async def test_a_position_in_an_outcome_that_does_not_exist_is_refused(
     session: AsyncSession,
 ) -> None:
     """The constraint doing its job, rather than the catalogue reporting it."""
-    market_id, _ = await _market(session)
+    market_id, _ = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
 
     session.add(_position(uuid.uuid4(), market_id, uuid.uuid4()))
 
@@ -202,7 +169,10 @@ async def test_a_negative_value_is_refused(
 ) -> None:
     """`CHECK (quantity >= 0)` and `CHECK (cost_basis >= 0)`: the database's
     backstop for the per-user no-shorting rule."""
-    market_id, outcome_id = await _market(session)
+    market_id, outcome_ids = await market_with_outcomes(
+        session, liquidity_b=LIQUIDITY_B
+    )
+    outcome_id = outcome_ids[0]
 
     session.add(
         _position(uuid.uuid4(), market_id, outcome_id, **{column: Decimal("-1.0000")})
@@ -217,7 +187,10 @@ async def test_a_zero_position_is_allowed(session: AsyncSession) -> None:
     """`>= 0`, not `> 0`. [T-3] #23 sells a position down and a trader who
     sold everything holds zero shares, which is a fact rather than an error —
     and their `cost_basis` history is still worth keeping."""
-    market_id, outcome_id = await _market(session)
+    market_id, outcome_ids = await market_with_outcomes(
+        session, liquidity_b=LIQUIDITY_B
+    )
+    outcome_id = outcome_ids[0]
 
     session.add(
         _position(
@@ -237,7 +210,10 @@ async def test_a_zero_position_is_allowed(session: AsyncSession) -> None:
 async def test_the_table_is_not_append_only(session: AsyncSession) -> None:
     """No trigger: `ledger.entries`' append-only one is a copied line away,
     and would make every repeat buy a 500."""
-    market_id, outcome_id = await _market(session)
+    market_id, outcome_ids = await market_with_outcomes(
+        session, liquidity_b=LIQUIDITY_B
+    )
+    outcome_id = outcome_ids[0]
     user_id = uuid.uuid4()
     session.add(_position(user_id, market_id, outcome_id))
     await session.flush()

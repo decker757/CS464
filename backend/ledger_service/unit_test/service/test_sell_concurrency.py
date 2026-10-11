@@ -54,7 +54,7 @@ async def test_two_sells_exceeding_the_position_one_fills_one_is_refused_held(
     """One trader holds `54.3333` and sells `41.0000` and `29.7777` at once:
     each within the position, together over it by `16.4444`.
 
-    The evidence for the `.with_for_update()` in `trading._lock_book`. Without
+    The evidence for the `.with_for_update()` in `books.lock_book`. Without
     it both parties read the same holding before either commits, both fill,
     and the loser's write is a lost update: assertions 1–3 fail. 4 and 5 are
     asserted because the criterion lists them, and probably survive the bug.

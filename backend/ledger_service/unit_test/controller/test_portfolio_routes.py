@@ -6,12 +6,14 @@ scale 4, and that the body is the service's result and nothing else. The
 figures are `unit_test/service/test_portfolio.py`'s.
 
 Holdings are made by real buys through the service on a book opened at zero,
-then read through the route: ADR 0018's 500 YES at b = 100.
+then read through the route: ADR 0018's 500 YES at b = 100. Settled markets
+are `settlement_fixtures.py`'s, paid through the real settlement. [3.4] #12
 """
 
 from __future__ import annotations
 
 import re
+import uuid
 from decimal import Decimal
 
 from httpx import AsyncClient
@@ -35,6 +37,7 @@ from unit_test.portfolio_fixtures import (
     read_portfolio,
 )
 from unit_test.sell_fixtures import hold
+from unit_test.settlement_fixtures import LOSER, PAID, UNPAID, WINNER, settled_market
 
 PATH = "/ledger/portfolio/me"
 _HEADING = "## GET /ledger/portfolio/me"
@@ -98,6 +101,8 @@ async def test_the_route_returns_the_figures_as_scale_four_strings(
         "price": str(ADR_PRICE),
         "value": str(ADR_VALUE),
         "unrealized_pnl": str(ADR_PNL),
+        "result": None,
+        "payout": None,
         "state_version": 1,
     }
     for key in _POSITION_AMOUNTS:
@@ -135,12 +140,51 @@ async def test_the_response_is_the_service_result(
                 "price": str(p.price),
                 "value": str(p.value),
                 "unrealized_pnl": str(p.unrealized_pnl),
+                "result": None,
+                "payout": None,
                 "state_version": p.state_version,
             }
             for p in result.positions
         ],
     }
     assert len(result.positions) == 3
+
+
+async def test_a_settled_row_sends_null_figures_and_its_payout_at_scale_four(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """DECISIONS.md, "`result` and `payout` are on every portfolio row, null
+    until the market is settled": one row shape, every key on every row, so
+    `exclude_none` fails here from either side. Which figures a settled row
+    carries is `unit_test/service/test_portfolio.py`'s; this is the wire."""
+    user_id, _ = await funded(session)
+    open_market = await market_at(session)
+    await hold(session, open_market, user_id=user_id)
+    settled = await settled_market(
+        session, [(user_id, WINNER, PAID), (uuid.uuid4(), LOSER, UNPAID)]
+    )
+
+    response = await client.get(PATH, headers=bearer(user_id, UserRole.TRADER))
+
+    assert response.status_code == 200, response.text
+    positions = response.json()["positions"]
+    assert len(positions) == 2
+    for position in positions:
+        assert set(position) == POSITION_FIELDS
+    by_market = {p["market_id"]: p for p in positions}
+
+    settled_row = by_market[str(settled.market_id)]
+    assert (settled_row["price"], settled_row["value"], settled_row["unrealized_pnl"]) == (
+        None,
+        None,
+        None,
+    )
+    assert _SCALE_FOUR.match(settled_row["payout"]), settled_row["payout"]
+
+    unsettled_row = by_market[str(open_market.market_id)]
+    assert (unsettled_row["result"], unsettled_row["payout"]) == (None, None)
+    for key in ("price", "value", "unrealized_pnl"):
+        assert _SCALE_FOUR.match(unsettled_row[key]), f"{key} = {unsettled_row[key]!r}"
 
 
 async def test_each_caller_reads_only_their_own_portfolio(

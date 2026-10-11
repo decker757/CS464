@@ -1,70 +1,31 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getMyPortfolio, type Portfolio, type Position } from '../api/ledgerApi'
-import { getMarket, type PublicMarketDetail } from '../api/marketApi'
+import type { PublicMarketDetail } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import PageTitle from '../components/ui/PageTitle'
-import { formatCreditsPrecise, isZeroCredits } from '../utils/formatCredits'
+import { HeaderCell, NumberCell } from '../components/ui/Table'
+import { formatCreditsPrecise, signedAmountColor } from '../utils/formatCredits'
 import { formatPrice } from '../utils/formatPrice'
+import { labelsFor, loadMarketsById } from '../utils/marketLabels'
 
 interface PositionRow extends Position {
   question: string
   outcomeLabel: string
 }
 
-// Markets, keyed by id, for every distinct market a position names — one
-// fetch per market held, not per position (ledger-service.md: the portfolio
-// carries ids only, and labels are the frontend's own join). allSettled, not
-// all: one market failing to load (market_service down, or a 404) must not
-// blank the whole portfolio — cash and net worth came from the ledger and
-// are correct regardless. toRow's "Unknown market" fallback covers the gap.
-async function loadMarkets(positions: Position[]): Promise<Map<string, PublicMarketDetail>> {
-  const ids = [...new Set(positions.map(p => p.market_id))]
-  const results = await Promise.allSettled(ids.map(getMarket))
-  const markets: PublicMarketDetail[] = []
-  for (const result of results) {
-    if (result.status === 'fulfilled') markets.push(result.value)
-  }
-  return new Map(markets.map(m => [m.id, m]))
-}
-
 function toRow(position: Position, markets: Map<string, PublicMarketDetail>): PositionRow {
-  const market = markets.get(position.market_id)
-  const outcome = market?.outcomes.find(o => o.id === position.outcome_id)
-  return {
-    ...position,
-    question: market?.question ?? 'Unknown market',
-    outcomeLabel: outcome?.label ?? 'Unknown outcome',
-  }
-}
-
-// A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
-// say it is never a gain on a book nobody else has traded. Only colour an
-// actual loss or an actual gain; zero stays neutral.
-function pnlColor(pnl: string): string {
-  if (isZeroCredits(pnl)) return 'text-muted'
-  if (pnl.startsWith('-')) return 'text-danger'
-  return 'text-success'
+  return { ...position, ...labelsFor(position.market_id, position.outcome_id, markets) }
 }
 
 function PnlCell({ pnl }: { pnl: string }) {
-  const color = pnlColor(pnl)
   return (
-    <span className={color}>
+    <span className={signedAmountColor(pnl)}>
       {formatCreditsPrecise(pnl, { showSign: true })}
     </span>
   )
-}
-
-/** A right-aligned table cell for a plain number or price — every row has several of these. */
-function NumberCell({ children }: { children: React.ReactNode }) {
-  return <td className="px-5 py-3 text-right text-smu-navy">{children}</td>
-}
-
-function HeaderCell({ align = 'left', children }: { align?: 'left' | 'right'; children: React.ReactNode }) {
-  return <th className={`px-5 py-3 ${align === 'right' ? 'text-right' : ''}`}>{children}</th>
 }
 
 // Shown at full precision so the three cards add up.
@@ -88,7 +49,7 @@ export default function PortfolioPage() {
     getMyPortfolio()
       .then(async found => {
         setPortfolio(found)
-        const markets = await loadMarkets(found.positions)
+        const markets = await loadMarketsById(found.positions.map(p => p.market_id))
         setRows(found.positions.map(p => toRow(p, markets)))
       })
       .catch(() => setError(true))
