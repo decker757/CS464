@@ -663,3 +663,27 @@ def test_the_open_status_matches_the_one_market_service_puts_on_the_wire() -> No
         f"this service gates trading on {_status()._OPEN!r} and market_service "
         f"publishes {theirs!r}; every trade would be refused as market_closed"
     )
+
+
+@pytest.mark.parametrize(
+    ("ours", "member"), [("_APPROVED", "APPROVED"), ("_SETTLED", "SETTLED")]
+)
+def test_the_settlement_statuses_match_the_ones_market_service_puts_on_the_wire(
+    ours: str, member: str
+) -> None:
+    """Settlement's copies of `"approved"` and `"settled"`, pinned the same
+    way. The fake upstream in `settlement_fixtures.py` types the same literal,
+    so a rename upstream would refuse every settlement as market_not_approved
+    with every settlement test still green."""
+    from service import settlement  # noqa: PLC0415
+
+    theirs = _enum_member(
+        _BACKEND / "market_service" / "model" / "entities.py",
+        "MarketStatus",
+        member,
+    )
+
+    assert getattr(settlement, ours) == theirs, (
+        f"settlement reads {getattr(settlement, ours)!r} and market_service "
+        f"publishes {theirs!r}; every settlement would be refused"
+    )

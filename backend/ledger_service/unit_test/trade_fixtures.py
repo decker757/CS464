@@ -339,23 +339,20 @@ async def warm(
         access_token=token(),
         terms_client=terms_client_over(upstream.transport),
     )
-    await set_q(session, upstream, q)
+    await set_q(session, upstream.market_id, q)
     upstream.calls = 0
     upstream.tokens.clear()
     return book
 
 
 async def set_q(
-    session: AsyncSession, upstream: Upstream, q: Sequence[Decimal]
+    session: AsyncSession, market_id: uuid.UUID, q: Sequence[Decimal]
 ) -> None:
     outcome = entities().MarketOutcome
     for position, value in enumerate(q):
         await session.execute(
             update(outcome)
-            .where(
-                outcome.market_id == upstream.market_id,
-                outcome.position == position,
-            )
+            .where(outcome.market_id == market_id, outcome.position == position)
             .values(q=value)
         )
     await session.commit()
@@ -459,6 +456,23 @@ async def transaction_count(session: AsyncSession, *, key: str | None = None) ->
     if key is not None:
         stmt = stmt.where(transaction.idempotency_key == key)
     return (await session.execute(stmt)).scalar_one()
+
+
+async def ledger_counts(session: AsyncSession) -> tuple[int, int]:
+    """Transactions and entries in the whole ledger, as this session sees them.
+
+    Not built on `transaction_count` and `entry_count`: those expire the
+    session, and a caller still holding loaded accounts to post with would
+    then lazy-load them outside the event loop.
+    """
+    ents = entities()
+    transactions = (
+        await session.execute(select(func.count()).select_from(ents.Transaction))
+    ).scalar_one()
+    entries = (
+        await session.execute(select(func.count()).select_from(ents.Entry))
+    ).scalar_one()
+    return transactions, entries
 
 
 # --- the invariants ------------------------------------------------------
@@ -680,6 +694,31 @@ def capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
 
     with _on_each_statement(keep_both):
         yield captured
+
+
+@contextmanager
+def count_commits() -> Iterator[list[int]]:
+    """Root COMMITs on the engine's connections, counted in `[0]`.
+
+    Not the session's `after_commit`, which a released SAVEPOINT fires too.
+    On the engine it still sees a commit made after the session has moved to
+    a new connection.
+    """
+    from sqlalchemy import event  # noqa: PLC0415
+
+    from core.database import get_engine  # noqa: PLC0415
+
+    commits = [0]
+    engine = get_engine().sync_engine
+
+    def count(_conn) -> None:  # noqa: ANN001
+        commits[0] += 1
+
+    event.listen(engine, "commit", count)
+    try:
+        yield commits
+    finally:
+        event.remove(engine, "commit", count)
 
 
 def writes(statements: Sequence[str]) -> list[str]:

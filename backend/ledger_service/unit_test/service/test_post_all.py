@@ -17,12 +17,12 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import event, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import errors
-from core.database import get_engine, get_session_factory, has_pending_writes
+from core.database import get_session_factory, has_pending_writes
 from model.entities import (
     Account,
     AccountKind,
@@ -38,6 +38,8 @@ from unit_test.trade_fixtures import (
     assert_ledger_balances,
     capture_sql,
     capture_sql_with_parameters,
+    count_commits,
+    ledger_counts,
 )
 
 TICK = timedelta(microseconds=1)
@@ -117,17 +119,6 @@ def _stage_stowaway(session: AsyncSession) -> uuid.UUID:
 async def _entries_of(session: AsyncSession, transaction_id: uuid.UUID) -> list[Entry]:
     stmt = select(Entry).where(Entry.transaction_id == transaction_id)
     return list((await session.execute(stmt)).scalars())
-
-
-async def _ledger_counts(session: AsyncSession) -> tuple[int, int]:
-    """Transactions and entries in the whole ledger, as this session sees them."""
-    transactions = (
-        await session.execute(select(func.count()).select_from(Transaction))
-    ).scalar_one()
-    entries = (
-        await session.execute(select(func.count()).select_from(Entry))
-    ).scalar_one()
-    return transactions, entries
 
 
 async def _keys_written(session: AsyncSession, keys: list[str]) -> int:
@@ -322,7 +313,7 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
     (ADR 0015). The second session's NOWAIT fails if they are still held."""
     movements, originals = await _committed_batch(session)
     async with get_session_factory()() as other:
-        before = await _ledger_counts(other)
+        before = await ledger_counts(other)
     assert not has_pending_writes(session)
 
     replayed = await posting.post_all(session, movements)
@@ -332,7 +323,7 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
     for movement in movements:
         account_ids.update(leg.account.id for leg in movement.legs)
     async with get_session_factory()() as other:
-        assert await _ledger_counts(other) == before
+        assert await ledger_counts(other) == before
         for account_id in account_ids:
             try:
                 await other.execute(
@@ -373,13 +364,13 @@ async def test_a_full_replay_into_a_dirty_session_is_refused(
     """The pending check refuses: non-empty, distinct keys and balanced, so no
     earlier check can. Without it the replay's commit lands the caller's row."""
     movements, _ = await _committed_batch(session)
-    in_session_before = await _ledger_counts(session)
+    in_session_before = await ledger_counts(session)
     stowaway = _stage_stowaway(session)
 
     with pytest.raises(errors.PendingWritesOnReplay):
         await posting.post_all(session, movements)
 
-    assert await _ledger_counts(session) == in_session_before
+    assert await ledger_counts(session) == in_session_before
     async with get_session_factory()() as other:
         assert await _stowaway_count(other, stowaway) == 0
 
@@ -487,14 +478,14 @@ async def test_a_fingerprint_mismatch_on_a_later_movement_is_a_reused_key(
     source, target = last.legs[0].account, last.legs[1].account
     changed = [*movements[:2], _transfer(last.idempotency_key, source, target, "6.0004")]
     async with get_session_factory()() as other:
-        before = await _ledger_counts(other)
+        before = await ledger_counts(other)
     assert not has_pending_writes(session)
 
     with pytest.raises(errors.IdempotencyKeyReused):
         await posting.post_all(session, changed)
 
     async with get_session_factory()() as other:
-        assert await _ledger_counts(other) == before
+        assert await ledger_counts(other) == before
 
 
 # =========================================================================
@@ -610,20 +601,10 @@ async def test_a_batch_commits_exactly_once(session: AsyncSession) -> None:
     platform = await _platform(session)
     winners = await _new_accounts(session, AccountKind.USER, 3)
     movements = [_transfer(_key(), platform, winner, "2.5001") for winner in winners]
-    engine = get_engine().sync_engine
-    commits = 0
-
-    def count_commit(_conn) -> None:  # noqa: ANN001
-        nonlocal commits
-        commits += 1
-
-    event.listen(engine, "commit", count_commit)
-    try:
+    with count_commits() as commits:
         await posting.post_all(session, movements)
-    finally:
-        event.remove(engine, "commit", count_commit)
 
-    assert commits == 1
+    assert commits[0] == 1
 
 
 # =========================================================================
@@ -856,7 +837,7 @@ async def test_a_whole_batch_found_only_by_the_insert_race_replays(
     order and writes nothing, as the lookup under the lock would have."""
     movements, originals = await _committed_batch(session)
     async with get_session_factory()() as other:
-        before = await _ledger_counts(other)
+        before = await ledger_counts(other)
     assert not has_pending_writes(session)
     calls = _hide_the_first_lookup(monkeypatch)
 
@@ -869,7 +850,7 @@ async def test_a_whole_batch_found_only_by_the_insert_race_replays(
     )
     assert [r.id for r in replayed] == [o.id for o in originals]
     async with get_session_factory()() as other:
-        assert await _ledger_counts(other) == before
+        assert await ledger_counts(other) == before
 
 
 # =========================================================================

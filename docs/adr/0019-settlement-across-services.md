@@ -100,6 +100,72 @@ would then be unable to start, test or fail without the other.
 > proves a request comes from the ledger rather than from a person. Step 5 then
 > requires it, and the gap closes.
 
+> **Amended 2026-10-10 by [3.4] #12. A recorded settlement replays before any
+> status check.** The record lookup in step 3 now comes ahead of step 1's
+> status checks. The read in step 1 still comes first. The ledger now:
+>
+> 1. Reads the public detail, holding no connection. A failure refuses here,
+>    even for a market the ledger has already paid: `503`, or `401`.
+> 2. Looks up the settlement record without a lock. If one exists, the request
+>    is a replay. It rebuilds the figures from the entries, rolls back, and
+>    goes to step 5, whatever status market_service reported.
+> 3. Checks the status only when there is no record: `409 market_not_approved`
+>    or `409 dispute_window_open`, as step 1 describes. A refusal writes
+>    nothing and opens no book.
+> 4. Opens the book if it is cold, takes the book lock and looks for the
+>    record again, as steps 2 and 3 describe. A record found under the lock is
+>    a replay too, and its rollback releases the lock.
+> 5. Pays and commits as step 4 describes, then makes step 5's call.
+>
+> **Why.** A repeat is how this record repairs a failed step 5, so a repeat
+> has to reach the replay whatever market_service now reports. Take a market
+> that was paid, whose step 5 failed, and whose `dispute_window_seconds` has
+> been raised since. It still reads `approved`, but no longer `settleable`. In
+> the original order a repeat answers `409 dispute_window_open`, a code that
+> means nothing was written, for a market whose winners were already paid. In
+> this order it replays and calls step 5, and step 5's answer decides the
+> response: `200`, or `503 settlement_unconfirmed`.
+>
+> The lookup before the lock can only short-circuit. A hit names a committed
+> row that nothing updates or deletes. A miss is trusted for nothing: the
+> status is still checked, and the record is looked for again under the lock.
+> This is ADR 0017's replay-first rule, with the read moved ahead of it for
+> the reason given under *Rejected*.
+>
+> Two passages in this record no longer hold exactly:
+>
+> - "Neither outbound call holds a database connection" says step 5's call
+>   follows the commit. On a replay it follows the rollback, still with no
+>   statement in between.
+> - The repair table's first row now has an exception. A failed step 1
+>   refuses even after the payouts have committed. One row is added:
+>
+> | What failed | What is left | What a repeat does |
+> | --- | --- | --- |
+> | step 1, on a repeat after step 5 failed | payouts committed, market still APPROVED; this request wrote nothing | finds the record, writes nothing, retries step 5 |
+>
+> That is accepted. The failed request wrote nothing, so
+> `503 market_terms_unavailable`'s "nothing happened" is true of it. A retry
+> completes it, and the market stays in the approved queue that prompts the
+> retry. A replay cannot finish without market_service anyway, because it
+> ends in step 5.
+>
+> *Rejected:*
+> - *The lookup before the read, as the trade path orders them.* It issues a
+>   statement before the first HTTP call and then has to roll it back. It
+>   also saves nothing: a trade's replay makes no call, but a settlement's
+>   replay still makes step 5's.
+> - *The status checks before the lookup, as this record first ordered them.*
+>   That is the repeat described above.
+>
+> DECISIONS.md: "A recorded settlement replays before any status check; the
+> lookup before the lock can only short-circuit".
+>
+> **Reversal trigger:** step 5 goes, because market_service learns of
+> settlement some other way, and a replay then makes no call. Or a code path
+> updates or deletes a `ledger.market_results` row, and the lookup can no
+> longer short-circuit without a lock.
+
 ### Who may settle: any administrator
 
 Any administrator may settle, including the market's creator, proposer or

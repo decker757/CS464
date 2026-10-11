@@ -21,7 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import has_pending_writes
 from core.errors import MarketNotPublished, MarketTermsUnavailable
-from model.entities import AccountKind, MarketBook, MarketOutcome, TransactionKind
+from model.entities import (
+    AccountKind,
+    MarketBook,
+    MarketOutcome,
+    MarketResult,
+    TransactionKind,
+)
 from service import accounts, market_terms, posting
 from service.market_terms import OutcomeTerms
 from service.posting import Leg
@@ -197,3 +203,16 @@ async def lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
     """
     stmt = select(MarketBook).where(MarketBook.market_id == market_id).with_for_update()
     return (await session.execute(stmt)).scalar_one()
+
+
+async def find_result(
+    session: AsyncSession, market_id: uuid.UUID
+) -> MarketResult | None:
+    """How this market ended, or None if it has not. Takes no lock of its own.
+
+    Any row, never filtered on `kind`: a row is the latch for every ending
+    (ADR 0019, as amended 2026-10-09). A real SELECT, never `session.get`,
+    whose identity map would answer from a row loaded before the book lock.
+    """
+    stmt = select(MarketResult).where(MarketResult.market_id == market_id)
+    return (await session.execute(stmt)).scalar_one_or_none()

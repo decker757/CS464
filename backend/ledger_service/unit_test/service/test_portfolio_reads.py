@@ -257,7 +257,7 @@ async def test_a_position_above_q_fails_the_whole_read(session: AsyncSession) ->
     upstream, user_id = await _holder(session)
     healthy = await market_at(session, ADR_B)
     await hold(session, healthy, user_id=user_id, quantity=SOLD)
-    await set_q(session, upstream, [Decimal("10.0000"), Decimal("0")])
+    await set_q(session, upstream.market_id, [Decimal("10.0000"), Decimal("0")])
 
     with pytest.raises(Exception) as raised:
         await read_portfolio(session, user_id)
