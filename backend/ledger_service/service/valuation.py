@@ -219,12 +219,17 @@ def valuation_of(balance: Decimal, rows: list[Row]) -> Valuation:
     """One user's positions and totals, from their balance and their rows of
     `held_outcomes_query`, ordered by `(market_id, position)`.
 
+    A user who holds nothing still has one row, joined to no market; it is
+    skipped here, so every caller gets the same answer for them: their
+    balance, and no positions.
+
     Raises `MarketBookIncomplete` for an unsettled market whose book cannot
     be priced or that the user holds above `q`. A settled market is not
     valued: its payout is already in `balance`, so its rows add nothing to
     `positions_value`.
     """
-    positions = _positions_of(rows)
+    held = [row for row in rows if row.market_id is not None]
+    positions = _positions_of(held)
     positions_value = sum(
         (position.value for position in positions if position.value is not None),
         _ZERO_AMOUNT,
