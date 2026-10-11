@@ -138,6 +138,34 @@ class MarketTermsUnavailable(LedgerError):
     message = "Could not read this market's terms right now. Try again shortly."
 
 
+class AccountSuspended(LedgerError):
+    """[4.2] #14 - the auth service says this account is suspended. ADR 0022.
+
+    Same code and message as auth_service's `AccountSuspended`, so the
+    frontend has one handler for both. Not retryable: the account, not the
+    request, is refused.
+    """
+
+    status_code = 403
+    code = "account_suspended"
+    message = "This account is suspended. Contact an administrator."
+
+
+class AuthUnavailable(LedgerError):
+    """[4.2] #14 - the auth service did not say whether this account may trade.
+
+    A refused connection, a timeout, a 5xx, or any answer that is not a `200`,
+    a `401` or a `403 account_suspended`. Fails closed, as ADR 0017's gate
+    does. Its own code rather than `market_terms_unavailable`, which would
+    name the wrong service (ADR 0022). 503 because a retry in a moment may
+    work.
+    """
+
+    status_code = 503
+    code = "auth_unavailable"
+    message = "Could not check this account right now. Try again shortly."
+
+
 class SettlementUnconfirmed(LedgerError):
     """The payouts committed and market_service was not told. [3.4] #12.
 
