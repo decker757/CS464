@@ -988,7 +988,7 @@ async def test_a_publication_whose_entry_fails_leaves_the_market_submitted(
     }
 
 
-# The four below patch the `market_audit` writer rather than `audit.record`,
+# The five below patch the `market_audit` writer rather than `audit.record`,
 # so they hold wherever the shared writer lives.
 async def test_an_early_close_whose_entry_fails_leaves_the_market_open(
     session: AsyncSession,
@@ -1081,6 +1081,34 @@ async def test_a_decision_whose_entry_fails_leaves_the_proposal_pending(
     assert stored_proposal_id == proposal_id
     assert approved_at is None
     assert await _entries(audit_reader, decider) == []
+
+
+async def test_a_settle_whose_entry_fails_leaves_the_market_approved(
+    session: AsyncSession,
+    audit_reader: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0006, for the entry ADR 0019's amendment adds: a direct call that
+    pays nobody must not reach SETTLED unobserved."""
+    proposer, approver = _actor(), _actor(username="ihsan_b")
+    settler = _actor(username="michelle_t")
+    opens = await database_now(session)
+    market = await approved_market(
+        session, proposer, approver=approver, approved_at=opens - time_until_settleable()
+    )
+    market_id = market.id
+    monkeypatch.setattr(market_audit, "record_marked_settled", _fail_to_record)
+
+    with pytest.raises(_AuditInsertFailed):
+        await market_service.settle(session, settler, market_id, now=opens)
+    await session.rollback()
+
+    async with get_session_factory()() as fresh:
+        stored = await market_service.get(fresh, proposer.id, market_id)
+        status = stored.status
+
+    assert status is MarketStatus.APPROVED
+    assert await _entries(audit_reader, settler) == []
 
 
 async def test_an_entry_is_not_committed_by_its_writer(
