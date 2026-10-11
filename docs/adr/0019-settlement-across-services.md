@@ -134,9 +134,9 @@ read as true would pay out on a market still in its window.
 
 Inside market_service two clocks are still read, and that is deliberate. The
 `settleable` flag is a read, so it uses the request's Python clock, as every
-public read does. The settle route and send-back are writes, so each reads
-Postgres's `clock_timestamp()` after its row lock, and the two writers agree
-with each other whatever the flag said. If market_service's clock runs ahead
+public read does. The settle route and send-back ([3.3] #11, not yet built)
+are writes, so each reads Postgres's `clock_timestamp()` after its row lock,
+and the two writers agree with each other whatever the flag said. If market_service's clock runs ahead
 of the database's, the ledger can pay on a flag that turned true early, and
 the settle route then refuses `409 dispute_window_open`; the ledger answers
 `503 settlement_unconfirmed`, and a retry once the edge passes finishes it.
