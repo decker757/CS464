@@ -151,8 +151,11 @@ would let a stale audit schema abort a working admin action.
 | `market.outcome_proposed` | market_service | [3.1] #9 |
 | `market.outcome_approved` | market_service | [3.2] #10 |
 | `market.outcome_rejected` | market_service | [3.2] #10 |
+| `market.outcome_sent_back` | market_service | [3.3] #11 |
 | `market.settled` | ledger_service | [3.4] #12 |
 | `market.marked_settled` | market_service | [3.4] #12 |
+| `user.suspended` | auth_service | [4.2] #14 |
+| `user.unsuspended` | auth_service | [4.2] #14 |
 
 Treat an unrecognised value as opaque rather than as an error: a newer service
 may be writing an action type this build has never heard of.
@@ -168,6 +171,19 @@ decision was about.
 `market.outcome_approved` has none. A rejection clears the proposal from the
 market, so its entry — beside the proposer's own `market.outcome_proposed` — is
 the only place the rejected proposal still exists.
+
+`market.outcome_sent_back` is written when an administrator sends an approved
+result back to `closed` during its dispute window. It is under the
+administrator who sent it back, who may be anyone, including the proposer or
+the approver. It carries that administrator's `reason`, and a twelve-key
+`context`: the eight keys above, plus `approved_by_id`,
+`approved_by_username`, `approved_at` and `dispute_window_ends_at`. They are
+copied before the market is cleared, so this entry is the only place the
+sent-back approval still exists. A whole dispute can then be read from the log
+alone: `market.outcome_proposed` (P1), `market.outcome_approved` (P1),
+`market.outcome_sent_back` (P1, with the reason), `market.outcome_proposed`
+(P2), `market.outcome_approved` (P2), `market.marked_settled`. Match each
+entry to its proposal on `context.proposal_id`, as for the decisions above.
 
 Until the market service has a read for other administrators' markets,
 `?action_type=market.outcome_proposed` is also how an approver finds a proposal
@@ -196,6 +212,15 @@ step's window check read. The ledger's own `market.settled` entry, written
 with the payouts, comes before it in a normal settlement; a
 `market.marked_settled` with no `market.settled` before it for the same market
 is the trace of a direct call that paid nobody (ADR 0019's amendment).
+
+`user.suspended` and `user.unsuspended` are written by auth's
+`PATCH /admin/users/{user_id}/suspension`, in the same transaction as the
+change, and never for a request that asked for the state the user already had.
+`target_label` is the username at the time. `reason` is always present — the
+route refuses a suspension or an unsuspension without one — and this entry is
+the only place it is stored. `context` has one key, `role`, the target's role
+when it happened (`"trader"` or `"admin"`), so a suspended administrator can be
+told from a suspended trader after a later role change.
 
 Note what is **not** logged, and will not be:
 

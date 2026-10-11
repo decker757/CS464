@@ -100,6 +100,7 @@ class _FakePublishedMarket:
         self.approved_by_id = uuid.uuid4() if approved else None
         self.approved_by_username = "ihsan_b" if approved else None
         self.approved_at = now - timedelta(hours=1) if approved else None
+        self.dispute_window_ends_at = now + timedelta(hours=23) if approved else None
 
         # What `get_published` stamps before projection (D-027), from the real
         # `displayed_status` so the derivation itself is exercised.

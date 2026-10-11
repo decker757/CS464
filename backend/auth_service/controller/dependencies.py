@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import raiseload
 
 from controller import transport
 from core import security
@@ -32,7 +33,12 @@ async def get_current_user(request: Request, session: DbSession) -> User:
     if claims is None:
         raise InvalidToken
 
-    user = await session.get(User, claims.user_id)
+    # `raiseload`: `lazy="selectin"` would load every refresh token the user
+    # has ever had, and the ledger calls `/auth/me` on every trade (ADR 0022).
+    # Nothing reached through this dependency reads the collection.
+    user = await session.get(
+        User, claims.user_id, options=[raiseload(User.refresh_tokens)]
+    )
     if user is None:
         raise InvalidToken
 

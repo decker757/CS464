@@ -106,6 +106,17 @@ No deadline column. [3.3] #11's window is `approved_at` plus a setting, derived
 the way the close sweep derives from `close_time`, and whether #11 wants to
 snapshot the end of it is an additive decision for #11.
 
+> **Amended 2026-10-11 by [3.3] #11. A deadline column after all.** #11
+> stores the window's end at approval, in `dispute_window_ends_at`: written by
+> `approve_outcome` in the same transaction and from the same clock read as
+> `approved_at`, as `approved_at` plus `DISPUTE_WINDOW_SECONDS` as the setting
+> is then. It is cleared with the other approval columns by a send-back, and
+> kept on a settled market. So the approval columns are now four, all null
+> unless the market is APPROVED or SETTLED. Market revision `0002` adds it and
+> backfills `approved_at` plus 24 hours. The reason: deriving the end from the
+> current setting let a raised window reopen windows that had closed, including
+> on a market the ledger had already paid. ADR 0023.
+
 ### Any administrator but the proposer, and the proposer is refused both ways
 
 Both endpoints read through `get_any`, so neither is scoped to the creator. The
@@ -284,6 +295,26 @@ and the audience is administrators.
 propose, close early, approve and reject all refuse it with
 `market_already_approved`. The next write to an approved market is [3.4] #12's
 settlement, and [3.3] #11 decides what, if anything, a dispute can do to it.
+
+> **Amended 2026-10-11 by [3.3] #11. One exit back to CLOSED, inside the
+> window.** #11 adds `POST /markets/{id}/send-back-outcome`. Any
+> administrator may call it on an APPROVED market while
+> `now < dispute_window_ends_at`, judged on `clock_timestamp()` after the row
+> lock, and it must quote the approved `proposal_id`, as approve and reject
+> do. It returns the market to CLOSED and clears the seven proposal columns,
+> the three approval columns and `dispute_window_ends_at`, leaving `closed_at`
+> alone. `market.outcome_sent_back` records the reason and the approval,
+> snapshotted before the clear. So APPROVED now has two exits: SETTLED, and
+> this one. Every other write is still `market_already_approved`, and the
+> deadline column this record declined is added after all (see the amendment
+> under "Approval adds three columns"). ADR 0023.
+>
+> Letting the proposer send back does not contradict "letting the proposer
+> reject, as a withdrawal", rejected below. A withdrawal removes a proposal
+> nobody else has agreed to yet, which is a path back to CLOSED with one
+> administrator in it. A send-back undoes a result two people have already
+> agreed, and leads only to another two-person decision: the creator proposes
+> again and a different administrator approves.
 
 **The creator cannot approve their own market in a one-administrator
 deployment, and that is the rule working.** ADR 0007 already said to run the

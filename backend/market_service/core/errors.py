@@ -122,6 +122,18 @@ class RejectionIncomplete(IncompleteError):
     DEFAULT_MESSAGE = "This proposal cannot be rejected without a reason."
 
 
+class SendBackIncomplete(IncompleteError):
+    """The reason given for sending an approved result back is not usable. [3.3] #11
+
+    Its own code, not `rejection_incomplete`: a different form, undoing a
+    different thing. ADR 0023.
+    """
+
+    code = "send_back_incomplete"
+
+    DEFAULT_MESSAGE = "This approved result cannot be sent back without a reason."
+
+
 class MarketNotEditable(MarketError):
     """An autosave tried to write over an already-submitted market. ADR 0004.
 
@@ -246,17 +258,19 @@ class MarketNotPendingResolution(MarketError):
 
 
 class MarketNotApproved(MarketError):
-    """A settle arrived for a market whose outcome is not approved. [3.4] #12.
+    """A settle or a send-back arrived for a market whose outcome is not approved.
+    [3.4] #12, [3.3] #11.
 
-    One code for every status short of APPROVED, because the ledger is the
-    only caller and maps this one alone. ADR 0019, step 5.
+    For settle, one code for every status short of APPROVED, because the
+    ledger maps this one alone (ADR 0019, step 5). Send-back gives a pending
+    proposal its own code first, since its remedy differs. ADR 0023.
     """
 
     status_code = 409
     code = "market_not_approved"
     message = (
-        "Only a market whose outcome has been approved can be settled. This "
-        "one has not been approved."
+        "Only a market whose outcome has been approved can be settled or sent "
+        "back. This one has not been approved."
     )
 
 
@@ -276,8 +290,25 @@ class DisputeWindowOpen(MarketError):
     )
 
 
+class DisputeWindowClosed(MarketError):
+    """A send-back arrived at or after the approved market's dispute window ended. [3.3] #11.
+
+    Judged on Postgres's clock, read after the row lock, against the stored
+    `dispute_window_ends_at`; a null end is refused the same way. 409: the
+    result is final, and nothing the caller does changes that. ADR 0023.
+    """
+
+    status_code = 409
+    code = "dispute_window_closed"
+    message = (
+        "This market's dispute window has ended. Its approved outcome is final "
+        "and can no longer be sent back."
+    )
+
+
 class MarketAlreadyApproved(MarketError):
-    """Any write but settle arrived for a market whose outcome is approved. [3.2] #10.
+    """Any write but settle and send-back arrived for a market whose outcome is approved.
+    [3.2] #10, [3.3] #11.
 
     Checked before who is asking, so the proposer is told it is approved.
     ADR 0016.
@@ -287,7 +318,7 @@ class MarketAlreadyApproved(MarketError):
     code = "market_already_approved"
     message = (
         "A second administrator has already approved this market's outcome. "
-        "The proposal is final and the next step is settlement."
+        "Next it is settled, unless it is sent back during its dispute window."
     )
 
 
@@ -323,17 +354,19 @@ class SecondAdministratorRequired(MarketError):
 
 
 class ProposalSuperseded(MarketError):
-    """A decision quoted a proposal that has since been replaced. [3.2] #10.
+    """A decision or a send-back quoted a proposal that has since been replaced.
+    [3.2] #10, [3.3] #11.
 
-    The row lock cannot catch this: the reject-and-repropose cycle had already
-    committed. 409: reload and review the proposal now waiting. ADR 0016.
+    The row lock cannot catch this: the reject-and-repropose cycle, or the
+    send-back, repropose and re-approve cycle, had already committed. 409:
+    reload and review the current one. ADR 0016, ADR 0023.
     """
 
     status_code = 409
     code = "proposal_superseded"
     message = (
         "The proposal you reviewed has been replaced by a newer one. Reload the "
-        "market and review the proposal that is waiting now."
+        "market and review the current one."
     )
 
 
