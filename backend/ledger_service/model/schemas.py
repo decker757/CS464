@@ -3,10 +3,12 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-One request model, `TradeIn`, for the one route that writes: [T-2] #22's
-`POST /ledger/markets/{market_id}/trades`. It carries no account, no amount
-and no leg — `extra="forbid"` refuses a body naming one — which is the answer
-ADR 0009's amendment gives to how a caller authenticates to the write path.
+Two request models, for the two routes that write: `TradeIn` for [T-2] #22's
+`POST /ledger/markets/{market_id}/trades`, and `SettlementIn` for [3.4] #12's
+`POST /ledger/markets/{market_id}/settlement`. Neither carries an account, an
+amount or a leg — `extra="forbid"` refuses a body naming one — which is the
+answer ADR 0009's amendments give to how a caller authenticates to a write
+path.
 
 **Amounts are strings, and that is the one deliberate departure from the market
 service**, whose `MarketOut` serialises `liquidity_b` as a JSON number. That was
@@ -503,6 +505,54 @@ class TradeOut(BaseModel):
     @field_serializer("quantity", "total")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+
+class SettlementIn(BaseModel):
+    """The body of a settlement: nothing. [3.4] #12, ADR 0009's second amendment.
+
+    No fields and `extra="forbid"`, so a body naming an outcome, an account or
+    an amount is `422 invalid_request` rather than silently dropped — a
+    dropped `outcome_id` would let a client believe it had chosen the winner.
+    The route never reads it; it exists to refuse what it cannot hold.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SettlementOut(BaseModel):
+    """What one settlement paid. [3.4] #12.
+
+    Built from `service/settlement.py::SettlementResult`, which is the same on
+    the request that pays and on every repeat, so a repeat returns this
+    byte-for-byte.
+    """
+
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID = Field(
+        description=(
+            "The winning outcome. On a repeat, the one this service "
+            "recorded, whatever market_service reports now."
+        )
+    )
+    recorded_at: datetime = Field(
+        description="When the settlement was recorded, with its UTC offset."
+    )
+    holders_paid: int = Field(
+        description=(
+            "One payout for each holder of more than zero winning shares; "
+            "0 if nobody held the winner."
+        )
+    )
+    total_paid: Decimal = Field(
+        description="What the payouts add up to: one credit per winning share."
+    )
+    residue: Decimal = Field(
+        description=(
+            "What was left in the market's pool after the payouts, signed. "
+            "Positive went to the platform, negative came from it, and the "
+            "pool ends at exactly 0.0000 either way."
+        )
+    )
 
 
 # One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared

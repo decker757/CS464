@@ -12,9 +12,9 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import audit as _shared
-from shared.audit import Actor, Entry
+from shared.audit import Actor, Entry, actor_of
 
-__all__ = ["SOURCE_SERVICE", "Actor", "Entry", "record"]
+__all__ = ["SOURCE_SERVICE", "Actor", "Entry", "actor_of", "record"]
 
 SOURCE_SERVICE = "ledger_service"
 

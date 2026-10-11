@@ -20,6 +20,3 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
-
-# [3.4] #12 PR 6: the settlement route calls it; delete this line there
-pay_out
