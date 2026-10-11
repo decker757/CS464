@@ -1,4 +1,4 @@
-"""Administering other people's accounts. [4.1] #13, [4.4] #16
+"""Administering other people's accounts. [4.1] #13, [4.4] #16, [4.2] #14
 
 One user acting on another, which is why changes here are audited and those in
 `auth_service.py` are not.
@@ -13,7 +13,14 @@ from sqlalchemy import ColumnElement, Select, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, raiseload
 
-from core.errors import CannotChangeOwnRole, LastAdministrator, UserNotFound
+from core.errors import (
+    CannotChangeOwnRole,
+    CannotSuspendSelf,
+    FieldProblem,
+    LastAdministrator,
+    SuspensionIncomplete,
+    UserNotFound,
+)
 from core.paging import decode_cursor, encode_cursor
 from core.roles import UserRole
 from model.audit import AdminAction
@@ -25,6 +32,9 @@ from service.audit import Actor
 # in usernames, so `ernest_t` must not match `ernestXt`. The backslash goes
 # first, or it would escape the escapes.
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
+# [4.2] #14. The floor market_service's close and reject reasons use.
+_MIN_SUSPENSION_REASON_LENGTH = 10
 
 
 @dataclass(frozen=True)
@@ -72,8 +82,8 @@ async def _lock_administrators(session: AsyncSession) -> set[uuid.UUID]:
     Keep `is_suspended` in the predicate: a suspended admin cannot log in, so
     counting one hides an empty set.
 
-    [4.2] #14 must take this lock too, and refuse to suspend the last
-    unsuspended admin: that empties the set without touching `role`.
+    `set_suspension` takes it too: suspending the last unsuspended admin
+    empties the set without touching `role`.
     """
     rows = await session.execute(
         select(User.id)
@@ -81,6 +91,40 @@ async def _lock_administrators(session: AsyncSession) -> set[uuid.UUID]:
         .with_for_update()
     )
     return set(rows.scalars())
+
+
+def _reason_problems(raw: str) -> list[FieldProblem]:
+    """The reason rule: trimmed, not blank, at least ten characters.
+
+    A copy of market_service's `service/validation.py::_reason_problems`;
+    different services and forms, so the two may move apart. ADR 0012.
+    """
+    reason = raw.strip()
+
+    if not reason:
+        return [
+            FieldProblem(
+                field="reason",
+                message=(
+                    "A reason is required. It is the only record of why this "
+                    "account was suspended or unsuspended."
+                ),
+            )
+        ]
+
+    if len(reason) < _MIN_SUSPENSION_REASON_LENGTH:
+        return [
+            FieldProblem(
+                field="reason",
+                message=(
+                    f"The reason must be at least {_MIN_SUSPENSION_REASON_LENGTH} "
+                    "characters, so that somebody reading the log later can tell "
+                    "what happened."
+                ),
+            )
+        ]
+
+    return []
 
 
 async def search_users(
@@ -169,6 +213,71 @@ async def change_role(
         target_label=target.username,
         reason=reason,
         context={"from": previous.value, "to": role.value},
+    )
+
+    await session.commit()
+    return target
+
+
+async def set_suspension(
+    session: AsyncSession,
+    *,
+    actor: Actor,
+    target_id: uuid.UUID,
+    suspended: bool,
+    reason: str,
+) -> User:
+    """Suspend or unsuspend `target_id`, audit it, commit, and return the user.
+
+    Raises CannotSuspendSelf, SuspensionIncomplete, UserNotFound or
+    LastAdministrator (ADR 0007). Locks the administrator set, then the target
+    (ADR 0015). Suspending revokes every refresh token the target holds. Asking
+    for the state already held writes nothing and logs nothing.
+    """
+    # Identity, then the reason, both before any lookup. ADR 0016's order.
+    if target_id == actor.id:
+        raise CannotSuspendSelf
+
+    problems = _reason_problems(reason)
+    if problems:
+        raise SuspensionIncomplete(problems)
+
+    # The set first on every path, unsuspend too, or this and a role change
+    # deadlock. ADR 0015.
+    remaining = await _lock_administrators(session)
+    target = await auth_service.lock_user(session, target_id)
+    if target is None:
+        raise UserNotFound
+
+    if suspended and target.role is UserRole.ADMIN:
+        # Discard, do not test membership: a suspended admin is absent from
+        # the set yet is still a valid target. ADR 0007.
+        remaining.discard(target.id)
+
+        if not remaining:
+            raise LastAdministrator
+
+    # From the locked row, so two admins suspending one user write one entry.
+    if target.is_suspended == suspended:
+        return target
+
+    if suspended:
+        # Needs the row lock taken above. DECISIONS.md, "Suspending revokes
+        # every refresh token the account holds".
+        await auth_service.revoke_all_for_user(session, target.id)
+    target.is_suspended = suspended
+
+    await audit.record(
+        session,
+        actor=actor,
+        action=AdminAction.USER_SUSPENDED if suspended else AdminAction.USER_UNSUSPENDED,
+        target_type="user",
+        target_id=target.id,
+        # Snapshotted: `audit_svc` cannot read auth.users to resolve an id.
+        target_label=target.username,
+        reason=reason.strip(),
+        # The role at the time, which a later role change cannot rewrite.
+        context={"role": target.role.value},
     )
 
     await session.commit()
