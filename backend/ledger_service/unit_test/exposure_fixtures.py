@@ -37,7 +37,7 @@ EXAMPLE_RESIDUE = Decimal("-18.6431")
 
 # --- lazy handles --------------------------------------------------------
 def exposure():
-    """`service/exposure.py`, #6's own module. Does not exist yet."""
+    """The `service.exposure` module."""
     from service import exposure  # noqa: PLC0415
 
     return exposure

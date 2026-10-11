@@ -14,6 +14,8 @@ from datetime import datetime
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.roles import UserRole
+from unit_test.conftest import bearer
 from unit_test.exposure_fixtures import (
     EXAMPLE_B,
     EXAMPLE_QUANTITY,
@@ -43,6 +45,37 @@ _OUTCOME_FIELDS = {
 
 def _path(market_id: uuid.UUID) -> str:
     return f"/ledger/markets/{market_id}/exposure"
+
+
+async def test_an_anonymous_caller_is_refused(client: AsyncClient) -> None:
+    response = await client.get(_path(uuid.uuid4()))
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_an_expired_token_is_refused(client: AsyncClient) -> None:
+    """An admin's token, so only its expiry can be what refuses it."""
+    response = await client.get(
+        _path(uuid.uuid4()),
+        headers=bearer(uuid.uuid4(), UserRole.ADMIN, expires_in=-1),
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_a_malformed_market_id_is_invalid_request_naming_the_field(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    response = await client.get(
+        "/ledger/markets/not-a-uuid/exposure", headers=admin_headers
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "invalid_request"
+    assert ["path", "market_id"] in [item["loc"] for item in error["details"]]
 
 
 async def test_a_trader_is_refused_with_not_an_administrator(
