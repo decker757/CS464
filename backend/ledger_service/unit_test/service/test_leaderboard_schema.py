@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_session_factory
+from unit_test.schema_fixtures import refusing_constraint
 
 NET_WORTH = Decimal("1000.0000")
 
@@ -51,13 +52,6 @@ def _entry(generation_id: uuid.UUID, *, rank: int, user_id: uuid.UUID | None = N
     )
 
 
-def _refusing_constraint(refusal: pytest.ExceptionInfo[IntegrityError]) -> str | None:
-    """The constraint Postgres named when it refused the write."""
-    # SQLAlchemy's asyncpg adapter raises its own error from asyncpg's, and
-    # only asyncpg's carries the constraint name.
-    return refusal.value.orig.__cause__.constraint_name
-
-
 async def _entries_in(session: AsyncSession, generation_id: uuid.UUID) -> int:
     entry = _entities().LeaderboardEntry
     return (
@@ -86,7 +80,7 @@ async def test_an_entry_ranked_zero_is_refused(session: AsyncSession) -> None:
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
 
-    assert _refusing_constraint(refusal) == "ck_leaderboard_entries_rank_positive"
+    assert refusing_constraint(refusal) == "ck_leaderboard_entries_rank_positive"
     await session.rollback()
 
 
@@ -104,7 +98,7 @@ async def test_the_same_rank_twice_in_one_generation_is_refused(
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
 
-    assert _refusing_constraint(refusal) == "leaderboard_entries_pkey"
+    assert refusing_constraint(refusal) == "leaderboard_entries_pkey"
     await session.rollback()
 
 
@@ -137,7 +131,7 @@ async def test_the_same_user_twice_in_one_generation_is_refused(
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
 
-    assert _refusing_constraint(refusal) == "uq_leaderboard_entries_generation_user"
+    assert refusing_constraint(refusal) == "uq_leaderboard_entries_generation_user"
     await session.rollback()
 
 
