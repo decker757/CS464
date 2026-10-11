@@ -7112,6 +7112,645 @@ own.
 
 ---
 
+### D-NEW — The leaderboard is stored as generations, and a refresh swaps the whole ranking in one commit
+
+**Date:** 2026-10-11 · **Ticket:** #38, #40 · **Status:** active
+
+**Decision.** Two new ledger tables, added by one Alembic revision:
+
+- `ledger.leaderboard_generations`: `id`, `computed_at`, `ranked_users`.
+  `ranked_users` is the number of entries the generation holds, written in
+  the same insert, so a page can report it without counting.
+- `ledger.leaderboard_entries`: `generation_id`, `rank`, `user_id`,
+  `username`, `net_worth`. The primary key is `(generation_id, rank)`, and
+  `(generation_id, user_id)` is unique. The foreign key to the generation is
+  `ON DELETE CASCADE`.
+
+A refresh inserts one generation and all of its entries in one transaction,
+then deletes every generation except the new one and the one before it.
+
+The newest generation, by `computed_at`, is the current ranking. Nothing
+points at it, so there is no pointer to update. Rows are never updated: a
+generation is written once and later deleted.
+
+**Why.** [L-3] #40: "Users never see partially calculated rankings." A reader
+sees a generation only after its commit, and sees every row of it. The
+swap is that commit, so no reader can observe a half-swapped ranking.
+
+Keeping the previous generation is what lets a cursor survive one refresh
+("A leaderboard cursor names its generation"). Deleting the rest bounds the
+tables at two rankings.
+
+**Rejected.**
+- *One table, truncated and refilled.* A reader between the delete and the
+  insert sees an empty board, unless the whole refill holds a lock that
+  readers wait on. Every refresh would then stall every read for its duration.
+- *Updating rank and net worth in place.* A reader mid-update sees ranks from
+  two rankings, which is the partial ranking #40 forbids.
+- *A `current_generation` pointer row.* Pointer and rows are a second thing
+  that has to agree. "Newest `computed_at`" cannot disagree with itself, and
+  "A refresh never replaces a newer generation" keeps it correct.
+- *A materialized view.* `REFRESH ... CONCURRENTLY` swaps atomically, but the
+  view would have to run ADR 0018's valuation in SQL, a second copy of the
+  engine.
+
+**Notes.** `user_id` is stored so that [L-2]'s own-row lookup can use the
+unique index. It is never in a response. `net_worth` is
+`numeric(scale 4)`, like every amount in the ledger. `rank` is an `int`.
+
+**Reversal trigger.** A refresh that no longer fits in its interval, measured
+on a real dataset. Then the refresh becomes incremental, and generations may
+stop being whole copies.
+
+---
+
+### D-NEW — A refresh writes under a transaction-level advisory lock, and writes nothing if a generation at least as new exists
+
+**Date:** 2026-10-11 · **Ticket:** #38, #40 · **Status:** active
+
+**Decision.** A refresh's write transaction starts with
+`SELECT pg_advisory_xact_lock(<key>)`. The key is one constant in the
+ledger's `core/`, and this is the only advisory lock in the database. Under
+that lock the refresh asks whether any generation has
+`computed_at >= its own computed_at`. If one does, it inserts nothing,
+deletes nothing, commits, and logs at INFO. Otherwise it inserts and prunes
+as "The leaderboard is stored as generations" says.
+
+**Why.** Two refreshes can overlap. The loop awaits each refresh before
+sleeping, so one replica cannot overlap itself: overlap needs two replicas or
+a second writer (the reversal trigger names one). Without this guard the
+slower, older one commits last. It becomes the current ranking even though it
+is older, and its prune deletes the newer generation's rows. ADR 0015 puts
+the rule on the reader: the read that decides the write is issued after the
+lock. A row lock cannot be taken on a generation that does not exist yet, so
+the lock is an advisory lock. Its `xact` form releases at commit or
+rollback, so a refresh that crashes cannot leave it held.
+
+**Rejected.**
+- *`SELECT ... FOR UPDATE` on the newest generation.* It locks the row that
+  exists, not the one about to be inserted. Two refreshes that both found no
+  generation, on an empty table, would both insert.
+- *A unique constraint on `computed_at`.* It stops only exact duplicates, not
+  an older generation landing after a newer one.
+- *Comparing by insertion order (`id` or a sequence).* That orders by who
+  committed last, which is exactly the order that is wrong here.
+
+**Notes.** Trades never take this lock, and the refresh takes no row lock on
+any trade table. A refresh cannot block a trade ([L-3] #40). The guard
+compares `computed_at` values stamped on different replicas' clocks ("A
+refresh's `computed_at` is Python's clock, read before the valuation"). With
+skew, a replica running ahead can make another replica's genuinely newer
+refresh skip. The board is then up to that skew older than it could be, and
+never inconsistent.
+
+**Reversal trigger.** The leaderboard gains a second writer that is not a
+refresh, such as an admin-triggered recompute. It must take the same lock,
+and this entry gets a line saying so.
+
+---
+
+### D-NEW — A refresh's `computed_at` is Python's clock, read before the valuation; `stale` is derived on read against the same clock
+
+**Date:** 2026-10-11 · **Ticket:** #38, #40 · **Status:** active
+
+**Decision.** A refresh reads `datetime.now(UTC)` once, before its valuation
+statement, and stamps the generation with it. The read route reads
+`datetime.now(UTC)` once per request. It answers
+`stale = now - computed_at > 2 × LEADERBOARD_REFRESH_SECONDS`: 120 seconds at
+the default. When no generation exists, it answers `rows: []`,
+`ranked_users: 0`, `computed_at: null` and `stale: true`. Nothing stored says "stale".
+
+**Why.**
+- *Before, not after.* The valuation's snapshot starts at or after the
+  stamp, so the board can claim to be older than its data and never newer.
+  [L-1] #38: "shows when its values were last updated". An understatement is
+  honest. An overstatement would show a fresh time on old numbers.
+- *Derived.* [L-3] #40's failure case is a refresh that did not happen. Any
+  stored flag would need a writer, and the missing writer is the failure.
+  Deriving it from the age of the newest generation needs nobody to notice.
+- *One clock.* The same service's Python clock stamps the generation and
+  judges its age. With several replicas the stamping and judging clocks are
+  different machines, and the skew that allows is accepted (see the
+  advisory-lock entry's Notes). "One clock per request, read at the
+  controller, Python's not the transaction's" gives that reason for display
+  reads, and
+  "A settlement's `recorded_at` is Python's clock read after the book lock"
+  is the ledger's precedent for a stamp.
+- *Twice the interval.* One missed refresh is noise. Two in a row is a
+  failure worth showing. Tying the threshold to the interval keeps it right
+  when the interval is changed.
+
+**Rejected.**
+- *Postgres's `clock_timestamp()`*, as market_service stamps decisions ("Every
+  decision a market records is stamped with Postgres's `clock_timestamp()`").
+  That rule orders a market's own history across replicas. Here the cost is
+  the skew case in the advisory-lock entry's Notes: a skipped refresh, never
+  a wrong ranking. Ruled Python's for this ticket.
+- *A fixed 120-second constant.* It would read "always stale" the day the
+  interval is raised past it.
+- *Stamping after the valuation.* That claims freshness the data does not have.
+
+**Notes.** `stale` is for the generation actually served. A page read
+through a cursor into the previous generation reports that generation's
+`computed_at` and its own `stale`.
+
+**Reversal trigger.** A reader that compares `computed_at` with a timestamp
+from another service, such as a trade's `occurred_at`. Mixed clocks start
+mattering then, and the stamp moves to `clock_timestamp()`.
+
+---
+
+### D-NEW — Every ledger `USER` account holder is ranked, administrators included; nobody else is
+
+**Date:** 2026-10-11 · **Ticket:** #38, #39 · **Status:** active
+
+**Decision.** A refresh values every `ledger.accounts` row with
+`kind = USER`, whatever the owner's role. `PLATFORM` and `MARKET_POOL`
+accounts are not users and are never ranked.
+
+A user with no account has nothing to rank and is not on the board. They
+have never read their own balance, history or portfolio, and never traded.
+Each of those mints the grant. An administrator's read of somebody else's
+balance or history does not ("An administrator's read of somebody else's
+balance or history mints nothing"). A user with an account and no trades is ranked at
+their balance.
+
+**Why.** The ledger cannot see roles: they live in auth and in the
+token. Ranking administrators therefore needs no role in the lookup. An
+administrator who trades has a net worth like anyone else. Whether they
+should trade at all is a separate question, which [BE] #221's
+`admin_has_a_stake` asks for one market. Leaving out users with no account
+follows from "The leaderboard read writes nothing, and mints no grant": the
+ledger only knows the users who have arrived.
+
+[L-2] #39 asks that "A new user with no trades can still appear according to
+the platform's eligibility rule". They do, at their starting credits, from the
+first refresh after their account is minted. The navbar reads the balance
+for every signed-in user (`AppNavbar.tsx`, through `BalanceContext`), so in
+practice that is within one interval of the user's first visit.
+
+**Rejected.**
+- *Excluding administrators.* The lookup would have to return the role, which
+  is a fourth field from auth. It also adds a rule nobody asked for.
+- *Ranking every registered user.* The refresh would have to list auth's
+  users and mint a grant for each. That writes credits for accounts that
+  have never signed in, and puts auth's user list on the ledger's write path.
+
+**Notes.** An account id that auth's lookup does not return is not a user
+this platform knows. It is left out and logged at WARNING, and the refresh
+continues. No route deletes a user today, so this should not happen.
+
+**Reversal trigger.** A product rule that administrators are referees and
+must not appear, or a minimum-activity rule (for example, "has traded at
+least once"). Either changes this entry, not the ADR.
+
+---
+
+### D-NEW — A suspended account is left out of the ranking, and ranks close up with no gap
+
+**Date:** 2026-10-11 · **Ticket:** #38, #14 · **Status:** active
+
+**Decision.** A refresh drops every holder whose lookup answer has
+`is_suspended: true`, then numbers the rest 1..N. The suspended user's rows
+in `ledger.*` are untouched, and so are their positions. They reappear on the
+first refresh after the suspension is lifted.
+
+**Why.** [L-1] #38: "excluded or clearly handled according to one documented
+platform rule". Leaving them out is the rule that needs nothing from the
+frontend. A rank of 4 after a rank of 2 would make every reader wonder who
+is missing, and would mark the place where somebody was suspended. [4.2] #14
+keeps positions on suspension, so the account's state is kept. Only its
+visibility changes.
+
+The column `auth.users.is_suspended` exists already and defaults to false.
+This rule is built and tested now, by setting the column directly in auth's
+tests, and it affects real users once #14 writes the column.
+
+**Rejected.**
+- *Shown, with a "suspended" badge.* Another field in the contract, more work
+  for #58's UI, and it publishes a moderation action against a named user.
+- *Excluded, with ranks keeping their gaps.* See above.
+- *Deferring the rule to #14.* That was the ADR's fallback, and it was not
+  needed: ADR 0021 was accepted, so the refresh reads the flag itself.
+
+**Reversal trigger.** A moderation policy that wants suspensions to be
+visible.
+
+---
+
+### D-NEW — Ranks run 1..N by net worth descending, then `lower(username)` ascending, decided in Python at refresh
+
+**Date:** 2026-10-11 · **Ticket:** #38 · **Status:** active
+
+**Decision.** The refresh sorts its eligible holders in Python with the key
+`(-net_worth, username.lower())` and numbers them 1..N. Equal net worths get
+different, consecutive ranks. No rank is shared, and none is skipped. Paging
+and reading compare `rank`, an integer, and never a username.
+
+**Why.** [L-1] #38: "Ties use a documented deterministic tie-breaker." Two
+users with the same `lower(username)` cannot exist (auth's
+`uq_users_username_lower`), so the order is total. Net worth is a `Decimal`
+on the scale-4 grid, so the first key is an exact comparison.
+
+Auth accepts only `^[A-Za-z0-9_-]+$`, 3 to 32 characters
+(`auth_service/model/schemas.py`, `_USERNAME_RE`), so every username is
+ASCII. `str.lower()` and Python's code-point ordering are exactly ASCII
+case-folding and byte order for that alphabet. Sorting in Python, once, at
+refresh, keeps the comparison out of the database. There, `ORDER BY` follows
+the database's collation, which is `en_US.utf8` on both `cs464` and
+`cs464_test`. glibc collations have changed how they order `_` and `-`
+between versions. The comparison is pinned in one place: the refresh's sort
+key.
+
+**Rejected.**
+- *Shared ranks ("1, 2, 2, 4").* Ranks would no longer identify a row, and
+  paging would need a second key.
+- *Ties broken by `user_id`.* It is deterministic, but no reader can see why
+  one user is above another.
+- *Ties broken by account age.* "Who joined first" is a policy nobody asked
+  for, and it needs `created_at` from auth.
+- *Sorting in SQL with `COLLATE "C"`.* That is correct too, but it is a
+  second place that has to stay pinned, and the ranks are assigned in Python
+  anyway.
+
+**Reversal trigger.** Auth widening the username alphabet past ASCII. Then
+`lower()` stops being the right fold (`casefold()`, plus Unicode
+normalisation), and this entry is revisited together with auth's uniqueness
+index, which folds with Postgres's `lower()`.
+
+---
+
+### D-NEW — A leaderboard cursor names its generation; the current and previous generations are served, and an older one is `409 leaderboard_refreshed`
+
+**Date:** 2026-10-11 · **Ticket:** #38 · **Status:** active
+
+**Decision.** `next_cursor` is `shared/paging.py::encode_fields(generation_id,
+last_rank)`. A page with no cursor reads the newest generation. A page with a
+cursor reads that cursor's generation, from `rank > last_rank`, while the
+generation still exists. Once it has been pruned the answer is `409
+leaderboard_refreshed`, and the client starts again from page one. A cursor
+that does not decode is `400 malformed_cursor`, like every other cursor in
+the ledger. The page is read in one statement that joins the generation to
+its entries. `limit` defaults to 50 and is clamped at 200.
+
+**Why.** A walk through the ranking has to stay inside one ranking. Paging
+by rank across a refresh would show one user twice, or skip one, whenever
+two users swap places between pages. That is the OFFSET bug in another form,
+the one "The audit feed and the user list page by keyset, not OFFSET" exists
+to prevent. Keeping exactly one older generation means a cursor lives
+through at least one refresh. With one replica that is between 60 and 120
+seconds after its first page, which is long enough for a person clicking
+"next".
+
+**Rejected.**
+- *Serving the current generation for any cursor.* This is the duplicate and
+  skip bug above, without the client being told.
+- *Keeping every generation for an hour.* That is sixty copies of the
+  ranking, so the tables grow with users × 60, to support a pager nobody
+  holds open that long.
+- *`410 Gone`.* The resource still exists. Only the client's position in it
+  has gone. `409` is how the ledger already reports that a client's view is
+  out of date (`quote_stale`).
+
+**Notes.** With N replicas each refreshing, a generation can be pruned
+sooner: N refreshes a minute means a cursor may last only a few seconds.
+Compose runs one ledger today. A second replica either turns
+`LEADERBOARD_REFRESH_ENABLED` off, or this entry gains a "skip if a
+generation is younger than half the interval" rule.
+
+**Reversal trigger.** A second ledger replica with refresh enabled, or `409`s
+showing up in the frontend's error reports.
+
+---
+
+### D-NEW — The refresh runs every 60 seconds in a loop on each replica, behind `LEADERBOARD_REFRESH_ENABLED`, and a failed refresh writes nothing
+
+**Date:** 2026-10-11 · **Ticket:** #38, #40 · **Status:** active
+
+**Decision.** `main.py`'s lifespan starts one refresh loop when
+`LEADERBOARD_REFRESH_ENABLED` is true, which is the default. The loop runs a
+refresh at once, then one every `LEADERBOARD_REFRESH_SECONDS` (default `60`,
+`gt=0`). A refresh is:
+
+1. Stamp `computed_at`.
+2. Value every account holder in one statement ("The refresh values holders
+   through the portfolio's valuation"), and end that transaction.
+3. Call auth's lookup, in chunks of 500 ids (auth's maximum), holding no
+   connection.
+4. Exclude, sort and rank.
+5. Write, under the advisory lock.
+
+The loop catches every `Exception`, logs it at ERROR and waits for the next
+tick. Any failure means nothing is written: a book `MarketBookIncomplete`
+refuses, an auth error, a timeout, or a non-200 answer. The previous
+generation stays current, and reads mark it stale once it is old enough.
+
+**Why.** [L-3] #40 offers "after committed trades, market settlement, or
+according to a documented refresh interval". An interval is the only one of
+the three that needs no change to the trade or settlement path. ADR 0018
+already showed that every trade moves every holder of that market, so a
+per-trade refresh would be a full recompute per trade. The loop's shape is
+`market_service/service/sweeper.py`'s: start at once, swallow `Exception`,
+and let `CancelledError` through. ADR 0011 gives the reason: a task that has
+died is a feature that has stopped with nobody told.
+
+A damaged book fails the whole refresh, for the reason "A damaged book, or a
+position above `q`, fails the whole portfolio with `market_book_incomplete`"
+gives. Ranking without one holder's positions ranks them wrongly, and showing
+them in the wrong place is the partial ranking #40 forbids.
+
+**Rejected.**
+- *Refresh after every committed trade.* The trade path would gain work that
+  can fail, and its cost grows with every holder.
+- *A cron container or Redis-scheduled job.* That is more moving parts for a
+  timer, and ADR 0011 already declined the same for the close sweep.
+- *Skipping a holder whose book is damaged.* That is a silent partial ranking.
+
+**Notes.** Turning it off on every replica stops the board updating, and it
+turns stale after two intervals. That is safe and recoverable, the same as
+`CLOSE_SWEEP_ENABLED`. Leave it on somewhere. The auth client is held for the
+process, with the terms client's five-second timeout, as #114 did for
+market_service.
+
+**Reversal trigger.** A refresh's measured duration approaching its
+interval, or a product requirement that the board move within seconds of a
+trade.
+
+---
+
+### D-NEW — The refresh values holders through the portfolio's valuation, and the portfolio keeps its one-statement read
+
+**Date:** 2026-10-11 · **Ticket:** #38 · **Status:** active
+
+**Decision.** A refactor PR, ahead of #38's service PR, moves the pure part
+of `service/portfolio.py` into one function that both callers use. That part
+is `_positions_of`, the two branches it chooses between, and the
+`positions_value` and `net_worth` sums. It takes one user's balance and rows,
+and returns their positions and totals.
+
+The portfolio's `_read` stays one statement that reads balance and positions
+together, for one user. The refresh gets its own single statement with the
+same row shape, for every `USER` account, ordered by
+`(owner_id, market_id, position)`. Every holder is valued from one snapshot.
+`held_outcomes_query` shares the columns and the four joins, not just the row
+shape; each caller brings only its anchor (balance and holder), its
+`held_markets` filter and its ORDER BY. The refactor PR changes no test
+assertion.
+
+**Why.** ADR 0018's 2026-10-10 amendment: #38 "reuses the portfolio's
+valuation, its settled branch included", and calling
+`liquidation_values_of` directly would pay winners twice. "The portfolio
+reads its balance and positions in one statement, after the grant, with no
+lock" is why the read stays one statement: a trade committing mid-read
+cannot show its debit without its shares. One statement for every holder
+extends that guarantee to the whole board. No user is valued before a trade
+and another after it.
+
+**Rejected.**
+- *Calling `portfolio_of_user` per account holder.* Its statements see
+  different snapshots, it mints a grant, and it costs one round trip per user.
+- *A separate leaderboard valuation.* This is the copy the amendment forbids.
+- *The refresh using a `REPEATABLE READ` transaction of per-user
+  statements.* That would be consistent, but it means N statements where one
+  will do.
+
+**Notes.** CLAUDE.md: "A refactor never shares a PR with a behaviour change."
+The extraction is the refactor. The second statement is #38's.
+
+---
+
+### D-NEW — The leaderboard read writes nothing, and mints no grant
+
+**Date:** 2026-10-11 · **Ticket:** #38 · **Status:** active
+
+**Decision.** `GET /ledger/leaderboard` needs a valid access token and does
+not call `grants.ensure_granted`. It reads one generation and returns.
+
+The ledger's reads that write stay at five:
+
+- `GET /ledger/balances/me`, `GET /ledger/entries/me` and
+  `GET /ledger/portfolio/me` mint the caller's grant (`ensure_granted` in
+  `ledger_service.balance_of_user`, `history_for_user` and
+  `portfolio.portfolio_of_user`).
+- The preview and the snapshot open a market's book on first touch.
+
+**Why.** The board is not about the caller. A grant minted here would not put
+the caller on the current generation anyway, because only the next refresh
+can. So a write on this route buys nothing anyone can see for up to a
+minute, and it would turn a cacheable read into one that can fail on a write.
+
+**Rejected.** *Mint the caller's grant, as the portfolio does.* It is
+invisible until the next refresh, and it adds a sixth write-on-read to a
+list the API doc keeps short on purpose.
+
+**Notes.** [L-2] #39's own-row field reports a caller who has no account the
+same way as one who is not ranked: `me: null`. That is the [BE][L-2] issue's
+to specify.
+
+---
+
+### D-NEW — Exposure flags a payout the pool cannot cover, not one above the seed
+
+**Date:** 2026-10-10 · **Ticket:** #6 · **Status:** active
+
+**Decision.** `payout_exceeds_pool` is true when any outcome's shares
+outstanding are strictly greater than the market pool's balance. Each outcome
+also reports `residue_if_wins`, which is the pool minus that outcome's payout.
+The flag is true exactly when some residue is negative. A residue of exactly
+zero pays out in full with nothing left over, so it does not raise the flag.
+
+**Why.** Read literally, [2.2] #6's third criterion compares the payout with
+the seed subsidy. The seed is the smallest amount a pool can hold before
+settlement ("A sell cannot take a market's pool below its seed subsidy"), so
+that reading flags almost every market that has been traded at all. At
+b = 100 with a seed of 50, one buy of 51 shares charges 28.7167 and raises the
+flag, even though the pool then holds 78.7167 and covers it. The question an
+admin has before resolving is whether the platform will have to make up the
+difference. Settlement pays winners from the pool and takes any shortfall from
+PLATFORM, so the pool is the number that answers that question.
+
+**Rejected.** *The seed, as the criterion is worded*: it ignores every credit
+traders have paid in, and it flags markets that are fully covered.
+*`b·ln(n)`*: that is the worst case LMSR allows, not what this market owes
+right now. It also doesn't change, so the admin panel already shows it at
+creation. *A top-level `max_payout`*: it is just the largest `payout_if_wins`.
+Sending it would give the response two sources for one number. *A non-strict
+`>=`*: it would flag a market that pays out exactly what it holds.
+
+**Notes.** `residue_if_wins` uses the same sign as the SETTLEMENT_RESIDUE
+movement in ADR 0019 (Settlement design, #220): positive goes to PLATFORM,
+negative comes from PLATFORM. So the exposure read before resolution and the
+settlement afterwards will agree to the last place.
+
+**Reversal trigger.** A payout other than one credit per share (fees, scalar
+markets), or one that pays winners from somewhere other than the pool.
+
+---
+
+### D-NEW — Exposure on a market with no book is a 200 with nothing in it, and writes nothing
+
+**Date:** 2026-10-10 · **Ticket:** #6 · **Status:** active
+
+**Decision.** If the ledger holds no book for `market_id`, the exposure route
+answers `200`. That covers a published market nobody has previewed, traded or
+snapshotted, and also an id that names no market at all. In that response
+`opened_at`, `state_version`, `seed_subsidy`, `pool`, `result` and
+`winning_outcome_id` are null, `outcomes` is empty, and `payout_exceeds_pool`
+is false. The route never opens a book, never
+funds a pool and never calls market_service.
+
+**Why.** Without asking market_service, the ledger can't tell a cold market
+from an unknown id. It doesn't ask market_service on this route (see the
+amendment on ADR 0005). So a `404` would sometimes be wrong about a real market
+that simply has no trades yet. That case has zero exposure, so it is an
+answer, not an error. Opening the book here would post the seed from PLATFORM
+because an admin looked. "An administrator's read of somebody else's balance
+or history mints nothing" has already ruled out that kind of side effect: an
+admin read investigates and should not change what it investigates.
+
+**Rejected.** *`404` for an id without a book*: wrong for a published market
+that hasn't been touched yet. *Opening the book the way the preview and the
+snapshot do*: the read would then write, and it would put market_service on
+the request path. *Fetching the seed from market_service so a cold market can
+show its pool*: that is the second call the amendment on ADR 0005 removes, and
+the frontend already has the seed from market_service's own detail.
+
+**Notes.** `opened_at: null` is how a client spots this case. Because no flag
+can be raised here, a typo in the id reads as a quiet market and not as an
+alarm.
+
+**Reversal trigger.** The ledger opening a book at publish time instead of on
+first touch. Every published market would then have a book, an id without one
+would really be unknown, and `404` would become the right answer.
+
+---
+
+### D-NEW — Exposure reads `q` and the pool in one statement, with no lock
+
+**Date:** 2026-10-10 · **Ticket:** #6 · **Status:** active
+
+**Decision.** One SQL statement under READ COMMITTED, with no `FOR UPDATE`. It
+reads the book (`opened_at`, `state_version`, `seed_subsidy`), every outcome
+row of the book ordered by `position`, and the pool's balance as a scalar
+subquery built from `accounts.balance_query_of`, given the book's
+`pool_account_id` column. That is the expression `balance_of` uses, extracted
+in #262.
+
+**Why one statement.** This follows the same reasoning as "Preview reads `q`
+and `state_version` in one SQL statement" and "The portfolio reads its balance
+and positions in one statement, after the grant, with no lock". Under READ
+COMMITTED each statement gets its own snapshot. If `q` and the pool were read
+in separate statements, a trade could commit between the two reads, and the
+residue would be off by that trade's cost. That error can raise or clear the
+flag. With one statement, `q`, the pool and `state_version` all describe the
+same moment.
+
+**Why no lock.** ADR 0015 asks for a lock on every read whose answer decides a
+write. This read decides none. A `FOR UPDATE` on the book would queue every
+trade on the market behind an admin's page load and protect nothing.
+
+**Rejected.** *Two statements inside a REPEATABLE READ transaction*: correct,
+but it only adds an isolation level to buy the same consistency one statement
+already gives. The overview needed that because it pages ("The admin overview
+pages by keyset, settled markets last, and reads its counts in the same
+REPEATABLE READ snapshot"), and this read doesn't page. *Calling `balance_of`
+after the outcome read*: that is the two-snapshot bug described above.
+
+**Reversal trigger.** Something starts gating a write on this read, for
+example settlement refusing to run while the flag is up. That read then needs
+the book lock, taken before the pool's account lock.
+
+---
+
+### D-NEW — The settled-market check is owed by whichever of #6 and #258 lands second
+
+**Date:** 2026-10-10 · **Ticket:** #6, #12 · **Status:** closed by "A settled market's exposure reads its result, and reports no payouts against the drained pool"
+
+**Decision.** This PR does not handle a settled market. Whichever of this PR
+and #258 merges into `dev` second adds the check that keeps the exposure read
+honest about a settled market, together with its test. #220 is not edited for
+this.
+
+**Why.** Settlement empties the pool: winners are paid, and the residue moves
+to or from PLATFORM, so "the pool ends at zero either way". `q` is not reset.
+Once a market has settled, this read would show every outcome with shares as
+`residue_if_wins = −q` and raise the flag, so a finished market would look
+like the most exposed one in the system. Neither PR can fix this alone. On
+`dev` today there is no settlement row to read and no way to put a market into
+that state. The settlement stack, for its part, doesn't know the exposure
+route exists. The PR that lands second is the first one that can write a test
+that goes red.
+
+**Rejected.** *Writing the check here against `ledger.market_results`*: that
+would tie this PR to a table on an unmerged stack, and the test could not run
+on `dev`. *Adding it to #220*: the ADR would end up describing a route it
+never designed. *Doing nothing*: the flag would be wrong for every settled
+market from the day both PRs are merged.
+
+**Notes.** Tracked in #263. The PR that owes the check decides its shape and
+records it. At minimum, a settled market must not report a flag or residues
+computed against a drained pool. Done in #267.
+
+**Reversal trigger.** None. This entry is closed by whichever PR lands second.
+
+---
+
+### D-NEW — A settled market's exposure reads its result, and reports no payouts against the drained pool
+
+**Date:** 2026-10-11 · **Ticket:** #6, #263 · **Status:** active
+
+**Decision.** The exposure read's one statement outer-joins
+`ledger.market_results` on `market_id`. Every response carries two more
+top-level fields:
+
+- `result`: null, or the record's `kind` as a string (`"settled"`).
+- `winning_outcome_id`: null, or the record's `outcome_id`.
+
+When a record exists, `pool` is null, `payout_exceeds_pool` is false, and every
+outcome's `payout_if_wins` and `residue_if_wins` are null. `shares_outstanding`,
+`seed_subsidy`, `opened_at` and `state_version` stay as read. The read branches
+on whether the record exists, never on `kind`.
+
+**Why.**
+- *The figures would be wrong, not just stale.* Settlement drains the pool and
+  leaves `q` ("`ledger.market_results` is the latch, and positions and `q` are
+  never written"). Computed as before, every outcome with shares reads
+  `residue_if_wins = −q` against a pool of zero and raises the flag, including
+  the outcome that lost. A finished market would look like the most exposed
+  one in the system.
+- *The same statement.* "Exposure reads `q` and the pool in one statement, with
+  no lock" holds for the record too: read in a second statement, a settlement
+  committing between the two would pair a drained pool with no record and
+  raise the flag.
+- *Nulls, not missing keys.* One shape on every response, so a client branches
+  on the value of `result`. It is the portfolio's rule ("`result` and `payout`
+  are on every portfolio row, null until the market is settled").
+- *Not on `kind`.* Like the latch's readers and the portfolio, so [BE] #221's
+  void reaches this branch too, and its pool is drained just the same.
+- *Shares stay.* They are what the winners were paid on, and the admin panel
+  can still show what each outcome held at the end.
+
+**Rejected.**
+- *Figures against the pool as it stood before settlement*: another read, for
+  a question nobody asks once the payout is made. The settlement's own figures
+  are in its response and its `market.settled` audit entry.
+- *A `404` or `409` for a settled market*: the admin panel links Exposure on
+  settled markets ([FE] #265), and a settled market is an answer.
+- *Omitting the fields with `exclude_none`*: two shapes, and it would strip
+  the cold market's nulls too.
+- *Renaming the fields already on the wire*: #265 reads `payout_exceeds_pool`
+  and `payout_if_wins`.
+
+**Notes.** A void from #221 will read with a non-null `result` and a null
+`winning_outcome_id`, and #221 must say so in the API doc. `state_version` on a
+settled market is the frozen book's last version. Closes "The settled-market
+check is owed by whichever of #6 and #258 lands second".
+
+**Reversal trigger.** Settlement resetting `q`, or leaving the pool funded.
+Then the figures mean something again after settlement.
+
+---
+
 ### D-NEW — Price history is replayed from the trades on the pool's feed, and nothing stores it
 
 **Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
@@ -7302,15 +7941,14 @@ trades one each.
 ledger stores no username and asks auth for none. The administrator's browser
 resolves names through a new admin-only batch lookup on auth,
 `POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
-returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021
-(proposed in #270), `POST /internal/users/lookup`, but it takes an
+returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021,
+`POST /internal/users/lookup`, but it takes an
 administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
 User column shows a short id that links to #259's user page.
 
 **Why.**
-- *ADR 0021's lookup is the wrong credential for this.* It is still Proposed,
-  and it is scoped to one key, one caller and one route, for a background job
-  with nobody behind it. This request has an administrator's token behind it.
+- *ADR 0021's lookup is the wrong credential for this.* It is scoped to one
+  key, one caller and one route, for a background job with nobody behind it. This request has an administrator's token behind it.
   Sending the service key per request would widen that ADR beyond what it
   argues.
 - *The leaderboard's snapshot names the wrong set.* It leaves suspended users
@@ -7422,6 +8060,12 @@ Move these into the log above when they're settled.
   administrator's request. Neither is on the board now, and either makes a real
   service credential a prerequisite rather than a detail. ADR 0017's reversal
   note names the same day from the status gate's side.
+
+  ADR 0021 (accepted, [L-1] #38) introduces the first service credential, and
+  it does not close this entry. That credential is one key, held by the
+  ledger, which opens one auth route: `POST /internal/users/lookup`. It gives
+  no service an identity on any other route, so #27's caller still needs a
+  decision of its own.
 - **A NULL `close_time` on an OPEN market means two different things.** SQL and
   Python disagree, and neither is documented as the intended answer.
   `core/closing.py` returns False for a null, so the Python derivation labels

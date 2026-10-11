@@ -142,7 +142,7 @@ platform-wide total built from them is not sound.
 > is not the whole valuation. A settled market's shares add nothing, because
 > the payout is already in the balance. The portfolio drops such a market
 > before it calls `liquidation_values_of`. That happens in
-> `service/portfolio.py`, not in `core/pricing.py`, because the pure function
+> `service/valuation.py`, not in `core/pricing.py`, because the pure function
 > takes `q`, `b` and holdings and knows nothing of settlement.
 >
 > A leaderboard that called `liquidation_values_of` directly would value every

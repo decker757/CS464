@@ -20,3 +20,9 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
+
+# [L-1] #38: the leaderboard refresh PR writes it; delete this line there
+LeaderboardGeneration
+
+# [L-1] #38: the leaderboard refresh PR writes it; delete this line there
+LeaderboardEntry

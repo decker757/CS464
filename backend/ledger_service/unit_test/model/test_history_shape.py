@@ -26,6 +26,10 @@ def test_the_history_adds_no_table_and_no_column() -> None:
         # [3.4] #12's PR 3 adds the ledger's results table; the history itself
         # still adds none.
         "market_results",
+        # [L-1] #38's PR 3 adds the leaderboard's two tables; the history
+        # itself still adds none.
+        "leaderboard_generations",
+        "leaderboard_entries",
     }
     assert {column.name for column in Entry.__table__.columns} == {
         "id",
