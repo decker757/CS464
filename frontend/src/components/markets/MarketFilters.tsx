@@ -4,9 +4,9 @@ import FilterPill from '../ui/FilterPill'
 import TextInput from '../ui/TextInput'
 import { STATUS_CONFIG } from './marketStatus'
 
-// The statuses GET /public/markets accepts; draft and submitted are never
-// listed to a trader (market-service.md).
-const STATUS_FILTERS = ['open', 'closed', 'pending_resolution', 'approved'] as const
+// The statuses GET /public/markets accepts, in the order market-service.md
+// lists them; draft and submitted are never listed to a trader.
+const STATUS_FILTERS = ['open', 'closed', 'pending_resolution', 'approved', 'settled'] as const
 export type StatusFilter = (typeof STATUS_FILTERS)[number]
 
 // null stands for "All", alongside every real status, so the pill list and
