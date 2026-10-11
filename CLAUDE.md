@@ -408,7 +408,7 @@ beside it and `PYTHONPATH=/app` makes the import resolve the way it does in a
 checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 
 It holds token verification, the settings base, the role enum, the cursor
-format, the audit writer, the migration runner (`shared/migrating.py`, ADR
+format, the audit writer and `actor_of`, the migration runner (`shared/migrating.py`, ADR
 0020) and the test helpers in `shared/testing.py` (the env loader, the
 import-boundary scan, and the migration guard tests' `schema_catalog`,
 `drop_own_tables`, `build_like_before_75`, the two `assert_...` round trips and
