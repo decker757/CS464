@@ -8588,6 +8588,38 @@ show traders, and goes through this entry and the one above.
 
 ---
 
+### D-NEW — The price-history replay refuses trades whose state versions do not run 1, 2, 3, … in order
+
+**Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
+
+**Decision.** The replay refuses trades whose `state_version`s do not run 1, 2,
+3, … in order. It raises `ValueError`, naming the value it expected and the
+one it got.
+
+**Why.**
+- *A point's label is a claim.* A point labelled N must carry `q` after N
+  trades. A dropped or reordered trade makes every later label wrong.
+- *The chart trusts the label.* It drops any live frame whose `state_version`
+  it already holds, so one wrong point would make it discard correct frames in
+  favour of wrong history.
+- *The run is gapless on a healthy book.* Only trades bump `state_version`,
+  and each does it in its own transaction, so a gap or a reorder means the
+  feed read is wrong and not that the market is.
+
+**Rejected.**
+- *No guard.* The replay would return a series that looks fine and is wrong
+  from the first missing trade on.
+- *Strictly increasing, gaps allowed.* It would still carry a wrong `q` under
+  every label after a gap, and it would accept the dropped trade silently.
+
+**Notes.** The route PR decides how a refusal reaches the caller.
+
+**Reversal trigger.** Any event other than a trade starts bumping
+`state_version`, for example a void ([BE] #221). Then the run has legitimate
+gaps, and the replay has to be told which events move `q` and which do not.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
