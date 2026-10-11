@@ -598,6 +598,65 @@ class MarketResult(Base):
     )
 
 
+class LeaderboardGeneration(Base):
+    """One complete ranking, written once and later deleted. [L-1] #38
+
+    D-NEW "The leaderboard is stored as generations, and a refresh swaps the
+    whole ranking in one commit". Nothing points at the current generation:
+    it is the newest `computed_at`, so there is no pointer to disagree with.
+    Rows are never updated.
+    """
+
+    __tablename__ = "leaderboard_generations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    # No default, like `MarketResult.recorded_at`: the refresh supplies it, and
+    # the advisory-lock guard compares it against the newest generation.
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # How many entries this generation holds, so a page reports it without a count.
+    ranked_users: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class LeaderboardEntry(Base):
+    """One user's place in one generation. [L-1] #38
+
+    `user_id` is stored so [L-2]'s own-row lookup can use the unique index; it
+    is never in a response, and it is not a foreign key for the reason
+    `Account.owner_id` is not (ADR 0003). The cascade is what the refresh's
+    prune relies on: it deletes generations and nothing else.
+    """
+
+    __tablename__ = "leaderboard_entries"
+
+    generation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "leaderboard_generations.id",
+            name="fk_leaderboard_entries_generation",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    rank: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+    # Copied from `auth.users.username`, which is 32 characters.
+    username: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    net_worth: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "generation_id", "user_id", name="uq_leaderboard_entries_generation_user"
+        ),
+        CheckConstraint("rank > 0", name="ck_leaderboard_entries_rank_positive"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Append-only, at the database.
 # ---------------------------------------------------------------------------
