@@ -298,14 +298,13 @@ route.
 
 ## POST /internal/users/lookup
 
-Proposed under ADR 0021 and not built yet.
+Accepted under ADR 0021 and not built yet.
 
 `200`. **Not for the frontend.** It is a service-to-service read with
 exactly one caller: the ledger's leaderboard refresh ([L-1] #38). A browser
 cannot use it, because it needs a key no browser holds. Why it exists, and
 why it is a key rather than a token:
-[ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md),
-status Proposed.
+[ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md).
 
 ```
 POST /internal/users/lookup

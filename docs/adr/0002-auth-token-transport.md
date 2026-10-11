@@ -29,6 +29,12 @@ Issue one JWT and accept it two ways.
 Both funnel into a single signature check in `controller/dependencies.py`.
 There is one verification path, not two.
 
+> **Amended by [ADR 0021](0021-the-leaderboard-and-the-first-service-credential.md).**
+> Auth now has a second path: `POST /internal/users/lookup` accepts only the
+> ledger's `X-Service-Key`, and no token. The key opens that one route and no
+> other, and a token does not open it. Every other route still has the one
+> path above.
+
 **Precedence: the header wins over the cookie.** An explicitly attached
 credential should beat one the browser sent ambiently, so a service call
 carrying its own token is never silently reinterpreted as whoever happens to be
