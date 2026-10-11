@@ -83,6 +83,7 @@ class TradePage:
 _PageRow = tuple[
     uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict[str, Any] | None, Decimal
 ]
+_TradeRow = tuple[uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict[str, Any] | None]
 
 
 def trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
@@ -290,7 +291,7 @@ async def _history_of_account(
 
 def _trade_page_query(
     pool_account_id: uuid.UUID, position: Position | None, limit_plus_one: int
-) -> Select[_PageRow]:
+) -> Select[_TradeRow]:
     """The pool's trade entries and their transactions, in one statement.
 
     The kind filter is in the WHERE, before the LIMIT, so a pool whose newest
@@ -320,7 +321,7 @@ def _trade_page_query(
     )
 
 
-def _market_trade_of(row: Row[_PageRow]) -> MarketTradeOut:
+def _market_trade_of(row: Row[_TradeRow]) -> MarketTradeOut:
     """One pool entry into a feed row.
 
     `trade_fields_of` and `trading.result_of` build it, so it cannot disagree
@@ -328,7 +329,7 @@ def _market_trade_of(row: Row[_PageRow]) -> MarketTradeOut:
     pool's leg: the trader's with the sign flipped, the same absolute value.
     """
     transaction = Transaction(id=row.transaction_id, kind=row.kind, context=row.context)
-    # Read twice on purpose: one row builder for the feed, not two.
+    # trade_fields_of also reads the context; reading it again keeps one row builder.
     fields = trade_fields_of(transaction, row.amount)
     result = trading.result_of(transaction)
     return MarketTradeOut(
