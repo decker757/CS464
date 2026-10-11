@@ -188,11 +188,12 @@ describe('MarketDetailPage', () => {
   })
 
   it.each([
-    { status: 'pending_resolution', label: 'Proposed outcome' },
-    { status: 'approved', label: 'Approved outcome' },
-    { status: 'settled', label: 'Settled' },
-  ])('names the outcome on record for a $status market as "$label"', async ({ status, label }) => {
-    // Only a settled market has paid out, so only it may say "Settled".
+    { status: 'pending_resolution', label: 'Proposed outcome', closed: 'Trading is closed while the outcome is decided.' },
+    { status: 'approved', label: 'Approved outcome', closed: 'The outcome is approved and payouts are pending. Trading is closed.' },
+    { status: 'settled', label: 'Settled', closed: 'This market has been settled. Trading is closed.' },
+  ])('names the outcome on record for a $status market as "$label"', async ({ status, label, closed }) => {
+    // Only a settled market is final, so only it may say "Settled", in the
+    // banner or in why trading is closed.
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
         HttpResponse.json({ ...baseMarket, status, proposed_outcome_id: 'o1' }),
@@ -201,6 +202,7 @@ describe('MarketDetailPage', () => {
     renderPage()
     const banner = await screen.findByText(`${label}:`, { exact: false })
     expect(banner.querySelector('strong')).toHaveTextContent('Yes')
+    expect(screen.getByText(closed)).toBeInTheDocument()
   })
 
   // A status the backend adds before the frontend knows it (as #12's `settled`
