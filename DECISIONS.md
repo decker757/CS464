@@ -5435,11 +5435,13 @@ zero, it reopens the race that entry closes.
 *Amended 2026-10-11 by [3.3] #11: the setting is read once, at approval, by
 `service/settling.dispute_window_ends_at`, and stored on the market as
 `dispute_window_ends_at`. A change to `DISPUTE_WINDOW_SECONDS` affects only
-approvals made after it: a running countdown never jumps, and a closed window
-never reopens. The type, the default, `gt=0`, the ceiling and the constant gap
-are unchanged. Market revision 0002 backfills existing approvals with 86400
-seconds, written into the revision, because the migrate step cannot see the
-setting. See "`dispute_window_ends_at` is stored at approval, and market
+approvals made after it: for approvals after revision 0002, a running
+countdown never jumps, and a closed window never reopens. The type, the
+default, `gt=0`, the ceiling and the constant gap are unchanged. Market
+revision 0002 backfills existing approvals with 86400 seconds, written into
+the revision, because the migrate step cannot see the setting; on a database
+that ran a shorter window, that backfill can reopen a closed window once (see
+the Notes of the entry below). See "`dispute_window_ends_at` is stored at approval, and market
 revision 0002 backfills 24 hours" below.*
 
 ---
@@ -5708,9 +5710,11 @@ That entry carries a note saying so.
 *Amended 2026-10-11 by [3.3] #11: "An APPROVED market with a null
 `approved_at` fails closed" now reads a null `dispute_window_ends_at`, since
 step 5 judges the window against the stored end. The order is unchanged.
-SETTLED still answers before the clock is read; a raised
-`dispute_window_seconds` can no longer refuse a market already paid, so the
-round trip saved is now the whole reason. See "`dispute_window_ends_at` is
+SETTLED still answers before the clock is read. For approvals after revision
+0002, a raised `dispute_window_seconds` can no longer refuse a market already
+paid; the round trip saved remains, and so does the case of a market whose
+stored end is later than the window it was paid under (0002's backfill on a
+database that ran a shorter window, or a replica whose clock runs behind). See "`dispute_window_ends_at` is
 stored at approval, and market revision 0002 backfills 24 hours" below.*
 
 ---
@@ -8038,13 +8042,20 @@ a stored instant the clock is compared against (ADR 0011).
 - *Migrating per test for the backfill*: ADR 0020's dated note. One targeted
   test, `test_markets_approved_before_0002_get_a_window_end`, covers it.
 
-**Notes.** A developer with a short demo window will see their local approved
-markets' windows become 24 hours, once. One `UPDATE` fixes a market by hand.
-If #221's market revision merges first, this one is renumbered and its
-`down_revision` pointed at #221's.
+**Notes.** A database that ran a window shorter than 24 hours gets 24 hours
+for its existing approvals, once. That can reopen a window that had closed:
+a market the ledger paid but whose step 5 failed still reads approved, and
+becomes sendable-back and not settleable again. The fix is by hand, before
+anyone acts on it: `UPDATE market.markets SET dispute_window_ends_at =
+approved_at + interval '<your window> seconds' WHERE approved_at IS NOT NULL`,
+or `docker compose down -v`, which destroys local data. If #221's market
+revision merges first, this one is renumbered and its `down_revision`
+pointed at #221's.
 
-**Reversal trigger.** A deployed database holds approved markets when the
-revision runs, with a window other than 24 hours.
+A pre-deploy check for [5.3] #19, which also covers every local database:
+before revision 0002 runs, does the database hold approved markets under a
+window other than 24 hours? If so, run the `UPDATE` above with that window
+right after the migrate step.
 
 ---
 
