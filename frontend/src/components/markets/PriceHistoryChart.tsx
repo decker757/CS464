@@ -27,9 +27,14 @@ export default function PriceHistoryChart({ outcomes, points }: PriceHistoryChar
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line)" />
+          {/* A time scale, so a burst of trades in one minute takes a
+              minute's width rather than one slot per trade. */}
           <XAxis
-            dataKey="occurred_at"
-            tickFormatter={value => new Date(value).toLocaleDateString('en-SG', { day: 'numeric', month: 'short' })}
+            dataKey="time"
+            type="number"
+            scale="time"
+            domain={['dataMin', 'dataMax']}
+            tickFormatter={time => new Date(time).toLocaleDateString('en-SG', { day: 'numeric', month: 'short' })}
             tick={{ fontSize: 12, fill: 'var(--color-subtle)' }}
           />
           <YAxis
@@ -38,7 +43,7 @@ export default function PriceHistoryChart({ outcomes, points }: PriceHistoryChar
             tick={{ fontSize: 12, fill: 'var(--color-subtle)' }}
           />
           <Tooltip
-            labelFormatter={label => (typeof label === 'string' ? new Date(label).toLocaleString('en-SG') : '')}
+            labelFormatter={time => (typeof time === 'number' ? new Date(time).toLocaleString('en-SG') : '')}
             formatter={(_value, _name, item) => {
               const row = item.payload as ChartRow | undefined
               const original = row?.[originalPriceKey(String(item.dataKey ?? ''))]

@@ -19,7 +19,9 @@ export function originalPriceKey(outcomeId: string): string {
 }
 
 export interface ChartRow {
-  occurred_at: string
+  // The point's occurred_at in milliseconds, so the x axis can space points
+  // by when they happened rather than one slot per trade.
+  time: number
   [outcomeIdOrPriceKey: string]: number | string | null
 }
 
@@ -28,7 +30,7 @@ export interface ChartRow {
  * point, not a group-by-time the way separate per-outcome points would need. */
 export function toChartRows(points: PricePoint[]): ChartRow[] {
   return points.map(point => {
-    const row: ChartRow = { occurred_at: point.occurred_at }
+    const row: ChartRow = { time: Date.parse(point.occurred_at) }
     for (const price of point.prices) {
       row[price.outcome_id] = toPercent(price.price)
       row[originalPriceKey(price.outcome_id)] = price.price
