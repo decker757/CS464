@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-11
 - **Affects:** [3.3] #11, [FE][3.3] #59, [3.4] #12, [FE][3.4] #216, [BE] #221, ADR 0006, ADR 0007, ADR 0011, ADR 0013, ADR 0015, ADR 0016, ADR 0019, ADR 0020
-- **Implemented in:** nothing yet. This record precedes #11's code PRs, which will touch `backend/market_service/service/market_service.py` (`send_back_outcome`, `_refuse_if_superseded`, `_clear_proposal`, `approve_outcome`), `service/settling.py`, `core/settling.py`, `service/market_audit.py`, `service/validation.py`, `core/errors.py`, `model/entities.py`, `model/schemas.py`, `controller/routes.py` and `migrations/versions/0002_dispute_window_ends_at.py`
+- **Implemented in:** `backend/market_service/service/market_service.py` (`send_back_outcome`, `_refuse_if_superseded`, `_clear_proposal`, `approve_outcome`, `settle`), `service/settling.py`, `core/settling.py`, `service/market_audit.py`, `service/validation.py`, `service/browsing.py`, `core/errors.py`, `model/entities.py`, `model/schemas.py`, `model/audit.py`, `controller/routes.py` and `migrations/versions/0002_dispute_window_ends_at.py`
 
 ## Context
 
