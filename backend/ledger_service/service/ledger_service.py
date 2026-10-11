@@ -13,7 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Row, Select, func, select, tuple_
+from sqlalchemy import ColumnElement, Row, Select, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.paging import Position, decode_cursor, encode_cursor
@@ -119,6 +119,12 @@ def trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
     )
 
 
+def _keyset_condition_of(position: Position) -> ColumnElement[bool]:
+    """The rows strictly older than `position` in the feed's ordering."""
+    created_at, row_id = position
+    return tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id)
+
+
 def _page_query(
     account_id: uuid.UUID, position: Position | None, limit_plus_one: int
 ) -> Select[_PageRow]:
@@ -142,8 +148,7 @@ def _page_query(
     """
     conditions = [Entry.account_id == account_id]
     if position is not None:
-        created_at, row_id = position
-        conditions.append(tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id))
+        conditions.append(_keyset_condition_of(position))
 
     page = (
         select(
@@ -202,6 +207,20 @@ def _page_query(
     ).order_by(page.c.created_at.desc(), page.c.id.desc())
 
 
+def _page_cut_of(
+    fetched: list[Row[Any]], limit: int
+) -> tuple[list[Row[Any]], str | None]:
+    """The first `limit` of the rows fetched with `limit + 1`, and the cursor
+    after them: None unless the extra row proves there is more."""
+    page = fetched[:limit]
+    next_cursor = (
+        encode_cursor(page[-1].created_at, page[-1].id)
+        if len(fetched) > limit
+        else None
+    )
+    return page, next_cursor
+
+
 def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
     """One fetched row into a `HistoryRow`.
 
@@ -249,12 +268,7 @@ async def _history_of_account(
         (await session.execute(_page_query(account.id, position, limit + 1))).all()
     )
 
-    page = fetched[:limit]
-    next_cursor = (
-        encode_cursor(page[-1].created_at, page[-1].id)
-        if len(fetched) > limit
-        else None
-    )
+    page, next_cursor = _page_cut_of(fetched, limit)
 
     return EntryPage(
         rows=[_history_row_of(account.id, row) for row in page],
