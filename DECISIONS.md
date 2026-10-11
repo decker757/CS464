@@ -5712,9 +5712,10 @@ That entry carries a note saying so.
 step 5 judges the window against the stored end. The order is unchanged.
 SETTLED still answers before the clock is read. For approvals after revision
 0002, a raised `dispute_window_seconds` can no longer refuse a market already
-paid; the round trip saved remains, and so does the case of a market whose
-stored end is later than the window it was paid under (0002's backfill on a
-database that ran a shorter window, or a replica whose clock runs behind). See "`dispute_window_ends_at` is
+paid. Two reasons remain: the round trip saved, and revision 0002's backfill
+on a database that ran a window shorter than 24 hours, which can give a
+market already settled an end in the future. Answering SETTLED first means
+such a market is still `200`. See "`dispute_window_ends_at` is
 stored at approval, and market revision 0002 backfills 24 hours" below.*
 
 ---
