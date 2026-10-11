@@ -345,6 +345,28 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
         await other.rollback()
 
 
+async def test_a_replay_is_not_refused_for_money_spent_since(
+    session: AsyncSession,
+) -> None:
+    """The overdraft check runs after the replay lookup, as in `post`. A
+    batch that debited a user replays after the user has spent the rest:
+    the retry moves no money, so the balance it would fail is irrelevant."""
+    platform = await _platform(session)
+    (user,) = await _new_accounts(session, AccountKind.USER, 1)
+    await _fund(session, platform, user, "10.0000")
+    movements = [
+        _transfer(_key(), user, platform, "6.0000", kind=TransactionKind.TRADE_BUY)
+    ]
+    originals = await posting.post_all(session, movements)
+    await _fund(session, user, platform, "4.0000")
+
+    replayed = await posting.post_all(session, movements)
+
+    assert [r.id for r in replayed] == [o.id for o in originals]
+    async with get_session_factory()() as other:
+        assert await accounts.balance_of(other, user.id) == Decimal("0.0000")
+
+
 async def test_a_full_replay_into_a_dirty_session_is_refused(
     session: AsyncSession,
 ) -> None:
