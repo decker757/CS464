@@ -5,8 +5,8 @@ from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8000/docs).
 
 Covers [A-1] #29, [A-2] #30, [A-3] #31, [4.4] #16 and the user-search half of
-[4.1] #13, and the frontend halves [FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48
-and [FE][4.1] #57.
+[4.1] #13, the user lookup [L-1] #38's leaderboard reads, and the frontend
+halves [FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48 and [FE][4.1] #57.
 
 Why we host this ourselves rather than buying it:
 [ADR 0001](../adr/0001-self-host-authentication.md). Why browsers get cookies and
@@ -27,6 +27,7 @@ a balance field anywhere below.
 | GET | `/auth/me` | The current user |
 | GET | `/admin/users` | Search user accounts |
 | PATCH | `/admin/users/{user_id}/role` | Move a user between `trader` and `admin` |
+| POST | `/internal/users/lookup` | Usernames and suspension, for the ledger only (service key) |
 
 ## Authentication
 
@@ -38,6 +39,9 @@ Two ways in, one verification.
 - **Service:** `Authorization: Bearer <jwt>`, and `X-Refresh-Token` for the
   refresh call. **The header wins over the cookie**, so a service call carrying
   its own token is never reinterpreted as whoever happens to be logged in.
+- **Service key:** `X-Service-Key`, accepted by `/internal/users/lookup` and
+  by nothing else. It belongs to the ledger, not to a person; see that
+  route below.
 
 | Cookie | Path | Lifetime |
 | --- | --- | --- |
@@ -292,6 +296,60 @@ be granted it, so administrator number one is a manual `UPDATE` against the
 database — permanently, by design. Everyone after that comes through this
 route.
 
+## POST /internal/users/lookup
+
+`200`. **Not for the frontend.** It is a service-to-service read with
+exactly one caller: the ledger's leaderboard refresh ([L-1] #38). A browser
+cannot use it, because it needs a key no browser holds. Why it exists, and
+why it is a key rather than a token:
+[ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md),
+status Proposed.
+
+```
+POST /internal/users/lookup
+X-Service-Key: <LEDGER_SERVICE_KEY>
+Content-Type: application/json
+
+{ "user_ids": ["5f3e...", "9a01..."] }
+```
+
+```json
+{
+  "users": [
+    { "id": "5f3e...", "username": "michelle_l", "is_suspended": false },
+    { "id": "9a01...", "username": "ernest_t",   "is_suspended": true }
+  ]
+}
+```
+
+**The request.**
+- `user_ids` is required and holds between 1 and 500 UUIDs. The ledger
+  sends larger sets in chunks of 500.
+- A duplicate id is answered once.
+- Any other field in the body is refused.
+
+**The answer.**
+- One row per id that names a user, ordered by `id`.
+- An id that names no user is left out, not refused: the caller decides what
+  a missing user means.
+- `is_suspended` is the same flag `GET /admin/users` shows, written by
+  [4.2] #14.
+
+**Exactly three fields per user.** No email, no role, no `created_at`, and no
+balance: this service still does not know that credits exist.
+
+**The key, and only the key.**
+- `X-Service-Key` must equal `LEDGER_SERVICE_KEY`, compared in constant time.
+- A missing or wrong key is `401 invalid_service_key`, the same for both.
+- An access token, by cookie or bearer header, does not open this route, and
+  the key opens no other route.
+- `LEDGER_SERVICE_KEY` is required, has no default, and must be at least 32
+  characters, or the service refuses to boot. Generate one with
+  `python -c "import secrets; print(secrets.token_urlsafe(48))"` and put the
+  same value in the ledger's environment.
+
+**Not audited**, like the user search above: it is a read.
+
 ## Errors
 
 The same envelope the market service uses, so one parser covers both:
@@ -304,6 +362,7 @@ The same envelope the market service uses, so one parser covers both:
 | --- | --- | --- |
 | 401 | `invalid_credentials` | wrong password, or no such account — deliberately the same |
 | 401 | `invalid_token` | no access token, or it is expired, forged or malformed |
+| 401 | `invalid_service_key` | `/internal/users/lookup` without the right `X-Service-Key` |
 | 403 | `account_suspended` | credentials were right; the account is suspended |
 | 400 | `malformed_cursor` | `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | signed in, but not an admin — same code the market service uses |
