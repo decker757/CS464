@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-11
 - **Affects:** [4.2] #14, [FE][4.2] #60, [T-2] #22, [T-3] #23, [5.4] #20, [T-7] #27, [L-1] #38, ADR 0002, ADR 0003, ADR 0009, ADR 0015, ADR 0017, ADR 0021
-- **Implemented in:** nothing yet. This record precedes [4.2] #14's ledger PR, which is the first code that has to obey it.
+- **Implemented in:** [4.2] #14's ledger PR: `ledger_service/service/account_status.py::refuse_if_suspended`, called from `trading.execute` between the replay lookup and the market gate.
 
 ## Context
 
