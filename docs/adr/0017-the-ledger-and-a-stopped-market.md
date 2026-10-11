@@ -237,6 +237,38 @@ structurally needs — an object, a matching id, a parseable status — and the
 arguments on the rules that move survive the move unchanged, because they were
 always arguments about writing.
 
+> **Amended 2026-10-09 by [3.4] #12. `_parse` keeps two fields the trade path
+> does not read.** The section above keeps in `_parse` only what every caller
+> structurally needs: an object, a matching id and a parseable status.
+> Settlement (ADR 0019) adds `proposed_outcome_id` and `settleable` to
+> `MarketTerms`, and `_parse` requires both on every pull, the trade path's
+> included. A missing key, a `settleable` that is not a JSON boolean, or an id
+> that is not a uuid string is `503 market_terms_unavailable` for a trade, a
+> first touch and a snapshot alike.
+>
+> This is not the kind of rule the section moved out. Those rules were about
+> values: a null `b` is a value the contract allows, and refusing trades on it
+> would refuse books that price correctly. A missing key is not a value.
+> market_service sends both fields on every public detail, so a body without
+> one comes from a broken deploy, which this record already fails closed on
+> when `status` is missing. A null `proposed_outcome_id` is a value, and it
+> is accepted: the field is null on every market not yet decided.
+>
+> `fetch` still gates on nothing it carries. Only settlement reads the two
+> fields.
+>
+> *Rejected:* parsing both leniently and letting settlement refuse a missing
+> value. The trade path would then depend on nothing new, but one client
+> would parse in two styles, since `published_at` and `status` already refuse
+> a missing key.
+>
+> DECISIONS.md: "`MarketTerms` carries `proposed_outcome_id` and
+> `settleable`, parsed strictly on every pull".
+>
+> **Reversal trigger:** the ledger must trade against a producer of the
+> public detail that omits either field. The trade path's parse then relaxes,
+> and settlement refuses the missing value itself.
+
 ### `settled` is refused by the comparison and not by the path
 
 `status != "open"` needs no list, so a member added to `MarketStatus` on the

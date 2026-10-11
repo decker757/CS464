@@ -98,6 +98,8 @@ class _Upstream:
             "liquidity_b": None if liquidity_b is None else str(liquidity_b),
             "seed_subsidy": None if seed_subsidy is None else str(seed_subsidy),
             "published_at": published_at,
+            "proposed_outcome_id": None,
+            "settleable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)
@@ -467,6 +469,20 @@ async def test_a_status_that_is_not_a_string_is_unavailable_not_closed(
     market closed. ADR 0017: a parseable status, or a 503.
     """
     upstream = _Upstream(**kwargs)  # type: ignore[arg-type]
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _gate(session, upstream)
+
+
+async def test_a_body_without_settleable_is_unavailable_at_the_gate(
+    session: AsyncSession,
+) -> None:
+    """DECISIONS.md, "parsed strictly on every pull": the trade path reads no
+    settlement field, and still refuses a body missing one. The status is
+    "open", so the missing key is the only thing that can refuse it.
+    """
+    upstream = _Upstream()
+    del upstream.body["settleable"]
 
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _gate(session, upstream)

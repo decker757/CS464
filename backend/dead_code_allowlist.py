@@ -26,3 +26,6 @@ MarketResult
 
 # [3.4] #12 PR 5: settlement posts through it; delete this line there
 post_all
+
+# [3.4] #12 PR 5: settlement calls it after the payout commits; delete this line there
+mark_settled

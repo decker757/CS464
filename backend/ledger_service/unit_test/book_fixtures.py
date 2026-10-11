@@ -77,6 +77,8 @@ class Upstream:
             "liquidity_b": str(B),
             "seed_subsidy": str(SUBSIDY),
             "published_at": published_at,
+            "proposed_outcome_id": None,
+            "settleable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)
@@ -181,6 +183,8 @@ class TermsStub:
                     market_terms.OutcomeTerms(outcome_id=o, position=i)
                     for i, o in enumerate(self.outcomes)
                 ],
+                proposed_outcome_id=None,
+                settleable=False,
             )
 
         monkeypatch.setattr(market_terms, "fetch", fake)
