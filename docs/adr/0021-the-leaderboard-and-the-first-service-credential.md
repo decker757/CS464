@@ -1,8 +1,8 @@
 # ADR 0021: The leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
 
-- **Status:** Proposed. Ernest must agree before the auth half is built: the lookup route below, its key and its settings.
+- **Status:** Accepted. Ernest agreed to the lookup route, its key and its settings on 2026-10-11.
 - **Date:** 2026-10-11
-- **Affects:** [L-1] #38, [L-2] #39, [L-3] #40, [FE][L-1] #58, [4.2] #14, [BE] #221, [T-7] #27, ADR 0002, ADR 0003, ADR 0009, ADR 0010, ADR 0015, ADR 0018
+- **Affects:** [L-1] #38, [L-2] #39, [L-3] #40, [FE][L-1] #58, [4.2] #14, [BE] #221, [T-7] #27, ADR 0002, ADR 0003, ADR 0009, ADR 0010, ADR 0011, ADR 0015, ADR 0018, ADR 0019
 - **Implemented in:** nothing yet. This record precedes [L-1] #38, which is the first code that has to obey it.
 
 ## Context
@@ -74,9 +74,11 @@ X-Service-Key: <LEDGER_SERVICE_KEY>
 ```
 
 - **It is the first credential in this system that belongs to a service
-  rather than a person.** ADR 0002's "bearer tokens for services" means a
-  person's token carried by a service. This key is new, and it is the
-  narrowest version available.
+  rather than a person.** ADR 0002's "bearer tokens for services" was only
+  ever a person's token carried by a service, and its "one verification path,
+  not two" is no longer true for auth: this key is a second path. ADR 0002
+  and ADR 0003 carry an amendment saying so. The key is the narrowest version
+  available.
 - **One key, one caller, one route.** Auth reads `LEDGER_SERVICE_KEY` from its
   settings, and the ledger reads the same variable to send. The variable is
   required in both and has no default, for the reason CLAUDE.md gives for
@@ -136,7 +138,8 @@ service calls in general.
   holds.
 - **The valuation moves out of the portfolio's read.** Both callers need the
   pure part: grouping rows by market, the settled branch, the liquidation
-  branch, and the sums. It becomes one function. The portfolio keeps its
+  branch, and the sums. It becomes one function, and the query's columns
+  and joins are shared too (`held_outcomes_query`). The portfolio keeps its
   one-statement read of balance and positions together. The refresh gets a
   second statement with the same shape for every account holder. The move is
   its own refactor PR ahead of #38's service PR.
@@ -147,8 +150,8 @@ service calls in general.
 
 ## Alternatives rejected
 
-**Copying the username from the token at grant time. This is the fallback if
-the route is declined.** `ensure_granted` already runs on the user's own token,
+**Copying the username from the token at grant time. This was the fallback
+had the route been declined.** `ensure_granted` already runs on the user's own token,
 and that token carries `username`. A `username` column on `ledger.accounts`,
 written at grant, would name every account holder with no new credential. It
 works today, because no route renames a user. It has three costs:
@@ -161,10 +164,8 @@ works today, because no route renames a user. It has three costs:
    [4.2] #14", and #14 would then need a channel from auth to the ledger,
    which brings back the question this record answers.
 
-So the fallback postpones the credential and does not avoid it. If Ernest
-declines the route, #38 ships with the fallback. The suspension criterion is
-then recorded as handled by #14, and this record is withdrawn rather than
-accepted.
+So the fallback postpones the credential and does not avoid it. Ernest
+accepted the route on 2026-10-11, so the fallback is not built.
 
 **A cross-schema `SELECT` grant on `auth.users (id, username, is_suspended)`
 to `ledger_svc`.** CLAUDE.md: "Do not add a grant to make something
@@ -199,9 +200,11 @@ a username, which anyone could enumerate. Suspension would then be filtered
 in the browser, so a suspended user would still reach every client. Paging
 by rank also breaks if the client drops rows.
 
-**Auth pushes changes to the ledger.** Auth would have to know the ledger
-exists, would need a credential in the other direction, and would need an
-outbox to survive a ledger outage. That costs more than the problem it
+**Auth pushes changes to the ledger.** Auth knows the ledger exists either
+way, since it holds `LEDGER_SERVICE_KEY`. What differs is the direction:
+pushing needs a credential the ledger checks, a call from inside every
+transaction that renames or suspends a user, and an outbox so a change made
+during a ledger outage is not lost. That costs more than the problem it
 solves.
 
 **Ranking on every read.** It costs the full valuation of every user per

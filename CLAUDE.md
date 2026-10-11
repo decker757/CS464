@@ -632,6 +632,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0018** positions are valued at liquidation, not at the marginal price
 - **0019** settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 - **0020** migrations by Alembic, per service, run as a one-off step
+- **0021** the leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
