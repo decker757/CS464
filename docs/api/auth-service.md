@@ -232,9 +232,10 @@ beside each entry. **No balance appears here**, on this or any other route:
 this service does not know that credits exist.
 
 `is_suspended` is readable here and written by
-`PATCH /admin/users/{user_id}/suspension` below. It appears on this
-route only — on register, login and `/auth/me` it could only ever read `false`,
-because a suspended account cannot reach any of the three.
+`PATCH /admin/users/{user_id}/suspension` below. It appears here and in the
+suspension route's response only — on register, login and `/auth/me` it could
+only ever read `false`, because a suspended account cannot reach any of the
+three.
 
 ### Paging
 

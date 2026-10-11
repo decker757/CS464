@@ -7828,7 +7828,8 @@ come back on unsuspension.
 does not matter, and auth's sessions do not autoflush, so neither order lets
 the flag's `UPDATE auth.users` wait on a concurrent rotation and hide a missing
 lock: `test_a_refresh_racing_a_suspension_keeps_no_session` goes red without
-`lock_user` in both orders.
+`lock_user` in both orders. Revoke-first is kept because it stays right if
+autoflush is ever turned on.
 
 ---
 
