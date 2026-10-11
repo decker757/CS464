@@ -11,13 +11,12 @@ interface SearchFormProps {
   onSearch: (query: string) => void
 }
 
-/** A labelled search box and Search button, trimming on submit — the admin
- * user search's box, which MarketFilters (#255) should adopt. The box's draft
- * text follows `query` when it is cleared from outside (#255's "Clear
- * search"/"Clear all" will need this), but not on every keystroke of a submit
- * it caused itself — `query` only changes a beat after submit, to the same
- * trimmed value already in the box. Adjusted during render, React's documented
- * alternative to an effect for resetting state when a prop changes. */
+/** A labelled search box and Search button, trimming on submit, for the admin
+ * user search and the market filters. When `query` changes, the box shows it,
+ * so after a submit the box holds the trimmed search. Adjusted during render,
+ * React's documented alternative to an effect for resetting state when a prop
+ * changes. A caller that clears the search gives the box a new `key` instead,
+ * which also empties text typed and never submitted (MarketFilters). */
 export default function SearchForm({ id, label, placeholder, query, onSearch }: SearchFormProps) {
   const [draft, setDraft] = useState(query)
   const [lastQuery, setLastQuery] = useState(query)

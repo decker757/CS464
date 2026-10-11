@@ -478,6 +478,21 @@ describe('MarketsPage', () => {
       expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
     })
 
+    // With no search applied, clearing changes nothing the box could follow,
+    // so "Clear all" has to empty a search that was typed and never submitted.
+    it('empties a typed but unsubmitted search on Clear all', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+
+      await actor.click(screen.getByRole('button', { name: 'Closed' }))
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'inflation')
+      await actor.click(screen.getByRole('button', { name: 'Clear all' }))
+
+      expect(screen.getByRole('searchbox', { name: /search markets/i })).toHaveValue('')
+    })
+
     // A different status is a different list (MarketList's own comment): the
     // `key` on it must change, or a stale card from the old filter would keep
     // its old price forever instead of refetching.
