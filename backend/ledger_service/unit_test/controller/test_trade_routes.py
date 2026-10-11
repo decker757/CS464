@@ -41,7 +41,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import bearer, mint_token, terms_client_over
+from unit_test.conftest import (
+    auth_client_over,
+    bearer,
+    mint_token,
+    terms_client_over,
+)
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -630,6 +635,54 @@ async def test_an_unreachable_market_service_is_503(
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "market_terms_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("auth_status", "auth_body", "status", "code"),
+    [
+        (
+            403,
+            {"error": {"code": "account_suspended", "message": "Suspended."}},
+            403,
+            "account_suspended",
+        ),
+        (500, {}, 503, "auth_unavailable"),
+    ],
+    ids=["suspended", "auth-down"],
+)
+async def test_auth_s_refusal_reaches_the_trader_in_the_envelope(
+    trade_client,
+    app_under_test,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    auth_status: int,
+    auth_body: dict,
+    status: int,
+    code: str,
+) -> None:
+    """ADR 0022's two new answers on this route, in the error envelope the
+    frontend parses. Nothing is published for a refused trade."""
+    import httpx  # noqa: PLC0415
+
+    from controller.dependencies import get_auth_client  # noqa: PLC0415
+
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    def auth_answers(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(auth_status, json=auth_body)
+
+    async with auth_client_over(httpx.MockTransport(auth_answers)) as auth_client:
+        app_under_test.dependency_overrides[get_auth_client] = lambda: auth_client
+        response = await client.post(
+            _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
+        )
+
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
+    assert recorder.calls == []
 
 
 async def test_market_terms_unavailable_is_logged_at_warning_not_error(
