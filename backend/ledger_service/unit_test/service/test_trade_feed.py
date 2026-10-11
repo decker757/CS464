@@ -5,26 +5,6 @@ and the keyset paging over them. DECISIONS.md, "The market's trade feed reads
 the pool account's feed, filtered to the trade kinds, and its rows are built
 by `trade_fields_of`". The wire shape and the guard are
 `controller/test_trade_feed_routes.py`'s.
-
-**The interface is agreed here, and this is the single place it is written
-down.** `service/ledger_service.py`, beside `trade_fields_of` and
-`history_for_user`, gains
-
-    async def list_market_trades(
-        session: AsyncSession,
-        market_id: uuid.UUID,
-        *,
-        limit: int,
-        cursor: str | None = None,
-    ) -> TradePage
-
-`history_for_user`'s parameters with `market_id` in place of `user_id`. The
-page mirrors `EntryPage`: `rows`, `next_cursor`, and `has_more` as
-`next_cursor is not None`. A row cannot be a `HistoryRow`, which carries no
-trader and a `balance_after` the feed refuses, so each row carries the wire
-row's fields as attributes; these tests read `transaction_id` and `user_id`.
-It raises `MalformedCursor` and writes nothing. If the implementation lands on
-other names, `_list_market_trades` below is the one place to change.
 """
 
 from __future__ import annotations
