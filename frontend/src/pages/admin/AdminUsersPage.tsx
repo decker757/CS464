@@ -1,12 +1,11 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { listUsers, type AdminUser, type AdminUserPage } from '../../api/authApi'
 import AppLayout from '../../components/layout/AppLayout'
-import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
 import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
-import TextInput from '../../components/ui/TextInput'
+import SearchForm from '../../components/ui/SearchForm'
 import { usePagedList } from '../../hooks/usePagedList'
 
 const pagedUsersOptions = {
@@ -21,31 +20,23 @@ const pagedUsersOptions = {
 // state waiting to be typed into.
 export default function AdminUsersPage() {
   const [query, setQuery] = useState('')
-  const [draft, setDraft] = useState('')
 
   const fetchPage = useCallback((cursor: string | undefined) => listUsers({ cursor, q: query || undefined }), [query])
   const { items: users, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchPage, pagedUsersOptions)
-
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault()
-    setQuery(draft.trim())
-  }
 
   return (
     <AppLayout width="max-w-[800px]">
       <PageTitle className="mb-8">Users</PageTitle>
 
-      <form role="search" onSubmit={handleSubmit} className="mb-6 flex gap-2">
-        <label htmlFor="user-search" className="sr-only">Search by username or email</label>
-        <TextInput
+      <div className="mb-6">
+        <SearchForm
           id="user-search"
-          type="search"
-          value={draft}
-          onChange={event => setDraft(event.target.value)}
+          label="Search by username or email"
           placeholder="Search by username or email"
+          query={query}
+          onSearch={setQuery}
         />
-        <Button type="submit" variant="outline" size="md">Search</Button>
-      </form>
+      </div>
 
       {isLoading && <p className="text-sm text-muted">Loading users…</p>}
 
@@ -59,7 +50,7 @@ export default function AdminUsersPage() {
         <>
           <div className="flex flex-col gap-3">
             {users.map(user => (
-              <Link key={user.id} to={`/admin/users/${user.id}`}>
+              <Link key={user.id} to={`/admin/users/${user.id}`} state={{ user }}>
                 <Card interactive className="flex items-center justify-between gap-4 px-6 py-4">
                   <div className="min-w-0">
                     <p className="truncate text-[15px] font-semibold text-smu-navy">{user.username}</p>

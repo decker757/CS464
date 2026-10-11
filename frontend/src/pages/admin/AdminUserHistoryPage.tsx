@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useLocation, useParams } from 'react-router-dom'
+import type { AdminUser } from '../../api/authApi'
 import { getUserBalance, getUserEntries, type AdminBalance } from '../../api/ledgerApi'
 import AppLayout from '../../components/layout/AppLayout'
 import LedgerEntryTable from '../../components/ledger/LedgerEntryTable'
@@ -16,6 +17,11 @@ import { joinEntryPage, pagedEntryOptions } from '../../utils/ledgerEntries'
 // history here, not an error.
 export default function AdminUserHistoryPage() {
   const { userId } = useParams<{ userId: string }>()
+  // Passed from AdminUsersPage's link, so the title can name whose history
+  // this is without the ledger knowing usernames. Absent after a page
+  // reload, since router state does not survive one — the id is the fallback.
+  const location = useLocation()
+  const linkedUser = (location.state as { user?: AdminUser } | null)?.user
 
   const [balance, setBalance] = useState<AdminBalance | null>(null)
   const [balanceError, setBalanceError] = useState(false)
@@ -46,7 +52,8 @@ export default function AdminUserHistoryPage() {
   return (
     <AppLayout width="max-w-[1100px]">
       <BackLink to="/admin/users" label="Users" className="mb-4 block" />
-      <PageTitle className="mb-2">User History</PageTitle>
+      <PageTitle className="mb-2">{linkedUser ? `${linkedUser.username}'s History` : `History for ${userId}`}</PageTitle>
+      {linkedUser && <p className="mb-6 text-sm text-subtle">{linkedUser.email}</p>}
 
       {balanceError && <p role="alert" className="mb-6 text-sm text-danger">Failed to load balance.</p>}
       {balance && (
