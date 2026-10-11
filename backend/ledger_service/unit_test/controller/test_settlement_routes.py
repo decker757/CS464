@@ -166,6 +166,29 @@ async def test_a_body_naming_anything_is_refused_before_anything_runs(
     assert await committed_counts(upstream.market_id) == before
 
 
+@pytest.mark.parametrize("body", [[], "x", 1], ids=["list", "string", "number"])
+async def test_a_body_that_is_not_an_object_is_refused(
+    settle_client: AsyncClient,
+    session: AsyncSession,
+    upstream: SettleUpstream,
+    body: object,
+) -> None:
+    """The docs promise `422 invalid_request` for "a body that is not an
+    object", which is a different check from a named field. Nothing written,
+    nothing asked: with the body parameter removed, this request would settle
+    and answer 200."""
+    await warm(session, upstream)
+    before = await committed_counts(upstream.market_id)
+
+    response = await settle_client.post(
+        _path(upstream.market_id), json=body, headers=_admin_headers()
+    )
+
+    _assert_refused(response, 422, "invalid_request")
+    assert (upstream.gets, upstream.posts) == (0, 0)
+    assert await committed_counts(upstream.market_id) == before
+
+
 @pytest.mark.parametrize(
     "request_kwargs",
     [
