@@ -161,6 +161,8 @@ class AdminMarketCard:
     `MarketCard` plus `creator_id`, which the trader projection deliberately
     lacks (D-019). `status` is the derived value with no raw one beside it.
     `settleable` is derived against the same `now`. [3.4] #12.
+    `dispute_window_ends_at` is the stored column, passed through for the
+    countdown. [3.3] #11, ADR 0023.
     """
 
     id: uuid.UUID
@@ -169,6 +171,7 @@ class AdminMarketCard:
     question: str | None
     close_time: datetime | None
     settleable: bool
+    dispute_window_ends_at: datetime | None
 
 
 @dataclass(frozen=True)

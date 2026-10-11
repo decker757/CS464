@@ -551,6 +551,12 @@ class PublicMarketOut(_UtcTimestamps):
     # missing flag must not read as true. ADR 0019.
     settleable: bool
 
+    # [3.3] #11. When the dispute window ends, the stored column as it is:
+    # null until approved and after a send-back, kept once settled. For the
+    # countdown only; nothing decides from it here. Required, so a missing
+    # field cannot read as "no window". ADR 0023.
+    dispute_window_ends_at: datetime | None
+
     @model_validator(mode="after")
     def _hide_an_undecided_proposal(self) -> PublicMarketOut:
         """Hide a proposed winner until it is decided. D-026.
@@ -604,6 +610,8 @@ class MarketOverviewRowOut(_UtcTimestamps):
     question: str | None
     close_time: datetime | None
     settleable: bool
+    # [3.3] #11. The stored column, for the countdown, as on the public detail.
+    dispute_window_ends_at: datetime | None
 
 
 class MarketOverviewResponse(BaseModel):

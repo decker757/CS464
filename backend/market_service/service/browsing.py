@@ -573,6 +573,7 @@ async def overview(
             question=row.question,
             close_time=row.close_time,
             settleable=settleable(row.status, row.dispute_window_ends_at, now=now),
+            dispute_window_ends_at=row.dispute_window_ends_at,
         )
         for row in shown
     ]
