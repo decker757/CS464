@@ -588,6 +588,73 @@ class SnapshotOut(BaseModel):
         return value.isoformat()
 
 
+class ExposureOutcomeOut(BaseModel):
+    """One outcome's share of what resolving the market would cost. [2.2] #6"""
+
+    outcome_id: uuid.UUID
+    position: int = Field(ge=0, description="The outcome's order within its market.")
+    shares_outstanding: Decimal = Field(
+        description="Every trader's shares in this outcome, summed."
+    )
+    payout_if_wins: Decimal = Field(
+        description="One credit per share outstanding."
+    )
+    residue_if_wins: Decimal = Field(
+        description=(
+            "pool - payout_if_wins. Positive goes to the platform at "
+            "settlement; negative is what the platform tops up."
+        )
+    )
+
+    @field_serializer("shares_outstanding", "payout_if_wins", "residue_if_wins")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class ExposureOut(BaseModel):
+    """What resolving a market would pay out, for an administrator. [2.2] #6
+
+    A market this service holds no book for reads as nulls and an empty
+    `outcomes`, with `payout_exceeds_pool` false. DECISIONS.md, "Exposure on a
+    market with no book is a 200 with nothing in it, and writes nothing".
+    """
+
+    market_id: uuid.UUID
+    opened_at: datetime | None = Field(
+        description="When this service opened the book. Null means it never has."
+    )
+    state_version: int | None = Field(
+        description="Which trade this read reflects. Null when there is no book."
+    )
+    seed_subsidy: Decimal | None = Field(
+        description="What the platform put up at book creation."
+    )
+    pool: Decimal | None = Field(
+        description="What the market pool holds now, derived from its entries."
+    )
+    payout_exceeds_pool: bool = Field(
+        description="True when any outcome's payout is strictly greater than `pool`."
+    )
+    outcomes: list[ExposureOutcomeOut] = Field(
+        description="Every outcome, ordered by position. Empty when there is no book."
+    )
+
+    @field_validator("opened_at")
+    @classmethod
+    def _always_utc(cls, v: datetime | None) -> datetime | None:
+        if v is not None and v.tzinfo is None:
+            return v.replace(tzinfo=UTC)
+        return v
+
+    @field_serializer("opened_at")
+    def _opened_at_as_string(self, value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat()
+
+    @field_serializer("seed_subsidy", "pool")
+    def _as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
 class LedgerEntryListResponse(BaseModel):
     """One page of a user's history, newest first."""
 
