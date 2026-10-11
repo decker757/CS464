@@ -33,12 +33,13 @@ async function openCloseModal(market: MarketOverviewRow = OPEN_MARKET) {
 }
 
 describe('AdminMarketRow', () => {
-  it('shows a Close control on an open market that has not reached its close_time', () => {
-    renderRow(OPEN_MARKET)
+  it('offers Close on another administrator\'s market, not only the creator\'s', () => {
+    // market-service.md's notes for #56, point 7.
+    renderRow(OPEN_MARKET, false)
     expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument()
   })
 
-  it('offers Close on another administrator\'s market too, not only the creator\'s', () => {
+  it('offers Close on the administrator\'s own open market that has not reached its close_time', () => {
     renderRow(OPEN_MARKET, true)
     expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument()
   })
@@ -55,8 +56,11 @@ describe('AdminMarketRow', () => {
     expect(screen.queryByRole('button', { name: /^close$/i })).not.toBeInTheDocument()
   })
 
-  it('hides the Close control on a draft or submitted market', () => {
-    renderRow({ ...OPEN_MARKET, status: 'draft', close_time: null })
+  it.each([
+    { status: 'draft' as const, close_time: null },
+    { status: 'submitted' as const, close_time: OPEN_MARKET.close_time },
+  ])('hides the Close control on a $status market', ({ status, close_time }) => {
+    renderRow({ ...OPEN_MARKET, status, close_time })
     expect(screen.queryByRole('button', { name: /^close$/i })).not.toBeInTheDocument()
   })
 
@@ -96,21 +100,39 @@ describe('AdminMarketRow', () => {
     expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument()
   })
 
-  it('offers a Reload control and drops Close when somebody else already closed it', async () => {
-    // market-service.md's notes for #56, point 6: a 409 market_closed means
-    // somebody got there first, or the clock did — reload rather than retry.
+  it.each([
+    { code: 'market_closed', message: /somebody else closed/i },
+    { code: 'market_already_settled', message: /been settled/i },
+  ])('offers a Reload control and drops Close on a 409 $code', async ({ code, message }) => {
+    // market-service.md's notes for #56, point 6, and the close table: the
+    // market already stopped some other way — reload rather than retry.
     server.use(
-      http.post(CLOSE(OPEN_MARKET.id), () => HttpResponse.json({ error: { code: 'market_closed', message: 'closed' } }, { status: 409 })),
+      http.post(CLOSE(OPEN_MARKET.id), () => HttpResponse.json({ error: { code, message: 'stopped' } }, { status: 409 })),
     )
     const actor = await openCloseModal()
     await actor.type(screen.getByLabelText(/reason/i), 'Source retracted its print')
 
     await actor.click(screen.getByRole('button', { name: /confirm close/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/somebody else closed/i)
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
     expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^close$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('shows the generic failure and keeps Close available for a retry when the server errors', async () => {
+    server.use(
+      http.post(CLOSE(OPEN_MARKET.id), () => HttpResponse.json({ error: { code: 'internal_error', message: 'boom' } }, { status: 500 })),
+    )
+    const actor = await openCloseModal()
+    await actor.type(screen.getByLabelText(/reason/i), 'Source retracted its print')
+
+    await actor.click(screen.getByRole('button', { name: /confirm close/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Closing this market failed. Please try again.')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /reload/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument()
   })
 
   it('paints a too-short reason on the field, the same shape as blocking_submission, and keeps the modal open', async () => {
