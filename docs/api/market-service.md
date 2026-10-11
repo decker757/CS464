@@ -1006,7 +1006,8 @@ Checked in this order, and the first that applies answers.
 | 409 | `dispute_window_open` | approved, but not yet `settleable`: settlement opens five minutes after the dispute window ends | retry once it is `settleable` |
 
 `settled` is answered before the clock is read, so a market already settled is
-`200` even if the dispute window has been lengthened since.
+`200` whatever the window says, for example when the ledger's repeat reached a
+replica whose clock runs behind and reads the market as not yet settleable.
 
 The window is judged on **the database's clock**, read after the market row is
 locked, not on the clock the public detail's `settleable` was derived from. Near
