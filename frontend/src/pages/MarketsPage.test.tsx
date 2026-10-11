@@ -452,6 +452,29 @@ describe('MarketsPage', () => {
       expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
     })
 
+    // A different status is a different list (MarketList's own comment): the
+    // `key` on it must change, or a stale card from the old filter would keep
+    // its old price forever instead of refetching.
+    it('refetches prices for a market still shown after the status filter changes', async () => {
+      let snapshotRequests = 0
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
+        http.get(SNAPSHOT, ({ params }) => {
+          snapshotRequests += 1
+          return HttpResponse.json(snapshotFor(String(params.id), snapshotRequests === 1 ? ['0.1200', '0.8800'] : ['0.7000', '0.3000']))
+        }),
+      )
+      renderPage()
+      await screen.findByText('Will SMU win SUNIG?')
+      await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('12.0%'))
+
+      const actor = userEvent.setup()
+      await actor.click(screen.getByRole('button', { name: 'Open' }))
+
+      await screen.findByText('Will SMU win SUNIG?')
+      await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('70.0%'))
+    })
+
     it('starts a new search from the first page, not from the cursor of the old list', async () => {
       const cursorsSeen: (string | null)[] = []
       server.use(
