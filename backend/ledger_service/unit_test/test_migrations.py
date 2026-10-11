@@ -15,6 +15,7 @@ import os
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
 
@@ -27,6 +28,7 @@ from shared.testing import (
     assert_migrating_an_empty_schema_builds_the_models,
     compose_service,
     drop_own_tables,
+    schema_catalog,
 )
 
 # The conftest has pointed DATABASE_URL at the test database by now.
@@ -89,6 +91,32 @@ def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> 
         url=_URL,
         metadata=Base.metadata,
         schema=SCHEMA,
+    )
+
+
+def test_the_leaderboard_revision_downgrades_to_market_results_and_upgrades_again(
+    empty_schema,
+) -> None:
+    """Revision 0003, on top of 0002: the round trip above holds the whole
+    history to the models, and is satisfied by a history with no leaderboard
+    at all. DECISIONS.md, "The leaderboard is stored as generations"."""
+    leaderboard = {"leaderboard_generations", "leaderboard_entries"}
+    config = alembic_config(ALEMBIC_INI, _URL)
+    assert main() == 0
+    assert ScriptDirectory.from_config(config).get_current_head() == "0003"
+    assert leaderboard <= set(_tables())
+
+    command.downgrade(config, "0002")
+
+    assert leaderboard.isdisjoint(_tables())
+    assert "market_results" in _tables()
+
+    assert main() == 0
+    migrated = run_in_transaction(_URL, lambda connection: schema_catalog(connection, SCHEMA))
+    _empty_the_schema()
+    run_in_transaction(_URL, Base.metadata.create_all)
+    assert migrated == run_in_transaction(
+        _URL, lambda connection: schema_catalog(connection, SCHEMA)
     )
 
 
