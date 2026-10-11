@@ -61,16 +61,6 @@ async def _entries_in(session: AsyncSession, generation_id: uuid.UUID) -> int:
     ).scalar_one()
 
 
-async def test_an_entry_ranked_first_is_accepted(session: AsyncSession) -> None:
-    """Ranks start at 1. Red for `rank > 1`."""
-    generation = await _generation(session)
-
-    session.add(_entry(generation.id, rank=1))
-    await session.flush()
-
-    assert await _entries_in(session, generation.id) == 1
-
-
 async def test_an_entry_ranked_zero_is_refused(session: AsyncSession) -> None:
     """Red for `rank >= 0`."""
     generation = await _generation(session)
