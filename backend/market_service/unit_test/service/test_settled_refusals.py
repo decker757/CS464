@@ -26,6 +26,7 @@ from unit_test.conftest import (
     draft_request,
     proposal_request,
     rejection_request,
+    send_back_request,
     settled_market,
 )
 
@@ -72,6 +73,14 @@ async def _reject(session: AsyncSession, creator: Actor, market: Market) -> obje
     )
 
 
+# [3.3] #11. A settled market's window has long ended, so this also proves
+# send-back checks the state before the window.
+async def _send_back(session: AsyncSession, creator: Actor, market: Market) -> object:
+    return await market_service.send_back_outcome(
+        session, actor(), market.id, send_back_request(market.proposal_id)
+    )
+
+
 # The proposer is the creator. State is checked before identity, so the
 # proposer hears `market_already_settled`, not `second_administrator_required`.
 async def _approve_as_proposer(
@@ -100,6 +109,7 @@ async def _reject_as_proposer(
         _propose,
         _approve,
         _reject,
+        _send_back,
         _approve_as_proposer,
         _reject_as_proposer,
     ],
@@ -112,7 +122,8 @@ async def test_each_write_on_a_settled_market_is_409_market_already_settled(
 
     Each case fails with SETTLED removed from its own table: the frozen one
     for save and publish, the resolution one for close and propose,
-    `_proposal_to_decide`'s state check for the decisions. The proposer cases
+    `_proposal_to_decide`'s state check for the decisions, send-back's own
+    state check for send-back ([3.3] #11). The proposer cases
     fail if identity is checked before state.
     """
     creator = actor()
