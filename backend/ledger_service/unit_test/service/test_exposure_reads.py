@@ -71,29 +71,19 @@ async def test_a_market_with_no_book_reads_empty_and_writes_nothing(
     assert result.payout_exceeds_pool is False
 
 
+@pytest.mark.parametrize("settled", [False, True], ids=["open market", "settled market"])
 async def test_a_market_with_a_book_is_read_in_one_select(
-    session: AsyncSession, user_id: uuid.UUID
+    session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID, settled: bool
 ) -> None:
-    """Catches: the pool read by a second statement."""
-    market = await market_with(session, b=EXAMPLE_B, seed=EXAMPLE_SEED)
-    await hold(session, market, user_id=user_id, quantity=EXAMPLE_QUANTITY)
-
-    with capture_sql() as statements:
-        await read_exposure(session, market.market_id)
-
-    assert writes(statements) == []
-    assert len(_selects(statements)) == 1, (
-        f"expected one SELECT, got {len(_selects(statements))}:\n{statements}"
-    )
-
-
-async def test_a_settled_market_is_still_read_in_one_select(
-    session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
-) -> None:
-    """Catches: `market_results` read by a second statement."""
-    market = await settled_market(
-        session, [(other_user_id, LOSER, UNPAID), (user_id, WINNER, PAID)]
-    )
+    """Catches: the pool, or in the settled case `market_results`, read by a
+    second statement."""
+    if settled:
+        market = await settled_market(
+            session, [(other_user_id, LOSER, UNPAID), (user_id, WINNER, PAID)]
+        )
+    else:
+        market = await market_with(session, b=EXAMPLE_B, seed=EXAMPLE_SEED)
+        await hold(session, market, user_id=user_id, quantity=EXAMPLE_QUANTITY)
 
     with capture_sql() as statements:
         await read_exposure(session, market.market_id)

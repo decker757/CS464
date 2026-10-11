@@ -176,9 +176,8 @@ async def test_a_settled_market_reads_its_result_and_no_figures_against_the_drai
     session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
 ) -> None:
     """Settled through the real `pay_out`, which empties the pool and leaves
-    `q`: Ernest's reproduction on #267, where the loser read -17.2909 and the
-    winner -41.3337 with the flag up. DECISIONS.md, "A settled market's exposure
-    reads its result, and reports no payouts against the drained pool".
+    `q`. DECISIONS.md, "A settled market's exposure reads its result, and
+    reports no payouts against the drained pool".
     Catches: `market_results` ignored."""
     market = await settled_market(
         session, [(other_user_id, LOSER, UNPAID), (user_id, WINNER, PAID)]

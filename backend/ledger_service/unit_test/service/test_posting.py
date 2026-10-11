@@ -330,7 +330,7 @@ async def test_balance_query_of_correlated_on_a_column_gives_each_row_its_own_ba
     session: AsyncSession,
 ) -> None:
     """`balance_query_of` given a column, as the exposure read gives it
-    `MarketBook.pool_account_id` (#262's review). Two accounts with different
+    `MarketBook.pool_account_id`. Two accounts with different
     balances, read in one statement. Catches: the subquery not correlating,
     which sums every entry in the ledger, zero, onto every row."""
     first, platform = await _pair(session)
