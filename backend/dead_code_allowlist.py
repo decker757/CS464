@@ -26,7 +26,3 @@ LeaderboardGeneration
 
 # [L-1] #38: the leaderboard refresh PR writes it; delete this line there
 LeaderboardEntry
-
-# [4.2] #14's service, one PR ahead of its route. The route's PR adds
-# `PATCH /admin/users/{user_id}/suspension` and deletes this line.
-set_suspension
