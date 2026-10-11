@@ -185,48 +185,59 @@ export async function postTrade(marketId: string, data: TradeRequest): Promise<T
 
 // --- [2.4] #8: price history and the per-market trade log ---------------
 //
-// #63 (the backend slice) has not been built yet, so these two shapes are
-// inferred from #8's acceptance criteria rather than read off docs/api/ —
-// the team's call, not a guess made to unblock this PR alone. Reconcile
-// against the real contract once #63 lands.
+// Both shapes are Ihsan's for #63, sent ahead of docs/api/ landing there.
 
-/** One outcome's price at one point in time — the same shape the live
- * snapshot already uses, plus the moment it was true. */
-export interface PricePoint extends OutcomePrice {
+/** Every outcome's price at one point in time — basically a price socket
+ * frame (same `state_version`/`occurred_at`/`prices` shape), so a live frame
+ * can be appended and deduped on `state_version`. The first point is the
+ * opening, uniform price. */
+export interface PricePoint {
+  state_version: number
   occurred_at: string
+  prices: OutcomePrice[]
 }
 
 export interface PriceHistory {
   market_id: string
+  // Oldest first. Empty, with every field below null, on a market the
+  // ledger has never opened a book for.
   points: PricePoint[]
+  result: 'settled' | null
+  winning_outcome_id: string | null
+  result_recorded_at: string | null
 }
 
 /** The price chart data for one market, every outcome, oldest first (#8's
- * "price chart per outcome over time"). Inferred: no real endpoint yet. */
+ * "price chart per outcome over time"). */
 export async function getMarketPriceHistory(marketId: string): Promise<PriceHistory> {
   const res = await api.get<PriceHistory>(`${LEDGER_BASE}/ledger/markets/${marketId}/price-history`)
   return res.data
 }
 
 export interface MarketTrade {
-  id: string
-  created_at: string
-  username: string
+  transaction_id: string
+  occurred_at: string
+  // Not a username: the ledger holds no user table (ledger-service.md).
+  // Shown as a short id until an admin batch lookup on auth exists.
+  user_id: string
   outcome_id: string
   side: TradeSide
   quantity: string
   average_price: string
+  total: string
+  state_version: number
 }
 
 interface MarketTradePage {
   trades: MarketTrade[]
   next_cursor: string | null
+  has_more: boolean
 }
 
-/** One page of every trade on one market, newest first, for #8's trade log —
- * unlike `getMyEntries`/`getUserEntries`, this crosses every trader, so each
- * row names its own `username`. Inferred: no real endpoint yet. */
-export async function getMarketTrades(marketId: string, params?: { cursor?: string }): Promise<MarketTradePage> {
+/** One page of every trade on one market, newest first, admin-only, for #8's
+ * trade log — unlike `getMyEntries`/`getUserEntries`, this crosses every
+ * trader, so each row names its own `user_id` rather than reading "me". */
+export async function getMarketTrades(marketId: string, params?: { cursor?: string; limit?: number }): Promise<MarketTradePage> {
   const res = await api.get<MarketTradePage>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, { params })
   return res.data
 }
