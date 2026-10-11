@@ -71,8 +71,7 @@ async def _read(session: AsyncSession, user_id: uuid.UUID) -> tuple[Decimal, lis
 
     rows = (await session.execute(stmt)).all()
     balance_amount = rows[0].balance if rows else ZERO
-    held = [row for row in rows if row.market_id is not None]
-    return balance_amount, held
+    return balance_amount, rows
 
 
 async def portfolio_of_user(session: AsyncSession, user_id: uuid.UUID) -> Portfolio:
