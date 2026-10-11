@@ -232,9 +232,9 @@ class MarketNotOpen(MarketError):
 class MarketNotPendingResolution(MarketError):
     """An approval or rejection arrived for a market with no proposal. [3.2] #10.
 
-    Every state but PENDING_RESOLUTION and APPROVED, including a proposal just
-    rejected by a racing request. Not `MarketAlreadyApproved`: this market may
-    still get a proposal. ADR 0016.
+    Every state but PENDING_RESOLUTION, APPROVED and SETTLED, including a
+    proposal just rejected by a racing request. Not `MarketAlreadyApproved`:
+    this market may still get a proposal. ADR 0016.
     """
 
     status_code = 409
@@ -257,6 +257,22 @@ class MarketAlreadyApproved(MarketError):
     message = (
         "A second administrator has already approved this market's outcome. "
         "The proposal is final and the next step is settlement."
+    )
+
+
+class MarketAlreadySettled(MarketError):
+    """Any write or decision arrived for a market that is SETTLED. [3.4] #12.
+
+    The message says the market is settled and nothing about payouts: SETTLED
+    here does not prove the ledger paid, because the settle route can be
+    called directly. ADR 0019.
+    """
+
+    status_code = 409
+    code = "market_already_settled"
+    message = (
+        "This market has been settled. Its terms and its outcome are final "
+        "and can no longer be changed."
     )
 
 

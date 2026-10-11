@@ -5099,6 +5099,9 @@ SETTLED exists (#227). Whichever of #210 and #227 merges second switches it on,
 in one line. If #210 records the order in an entry of its own, the two must
 agree.
 
+Switched on in #227: `_is_settled` is now
+`Market.status == MarketStatus.SETTLED`.
+
 **Reversal trigger.** A second terminal status.
 
 ---
@@ -5252,6 +5255,180 @@ takes. It is far longer than any request that completes, and short beside a
 market_service under [5.3] #19, the deploy pipeline. That bounds how long a
 send-back can take, so the gap can shrink, as long as it still exceeds the
 timeout.
+
+---
+
+### D-NEW — A settled market is refused after the locked read and before any write, and the status tables stay separate
+
+**Date:** 2026-10-05 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Every write path refuses a SETTLED market with `409
+market_already_settled`. The check runs after authentication and after the
+locked read of the market, and before any write. Approve and reject check it
+in `_proposal_to_decide`'s state check, before identity, as they already do
+for APPROVED. The message says the market is settled and never claims that
+payouts were made. `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS` and
+the decision state check each list SETTLED themselves.
+
+**Why.** After the locked read because ADR 0015 puts the check on the
+reader: a status read without the lock can be overtaken by the settle step
+it is meant to refuse. After authentication so that a trader is told `403`,
+not which state an administrator's market is in. Before identity on the
+decisions because CLAUDE.md fixes that order for every decision: state, then
+identity, then the reason. The message stays silent on payouts because
+SETTLED in market_service does not prove the ledger paid: a direct call to
+`POST /markets/{id}/settle` can reach SETTLED with no settlement recorded,
+and #12 has the ledger repair exactly that case. market_service cannot know
+whether credits moved, so it does not say so.
+
+**Rejected.** *Composing the tables from each other*, for example the
+resolution table spread from the frozen one. It is a refactor, and CLAUDE.md
+keeps refactors out of behaviour PRs. With three tables and one terminal
+status, it also saves less than it hides. "SETTLED joins the frozen,
+resolution and decided status tables" already explains why each status owes
+its own error.
+
+**Reversal trigger.** A second terminal status (#221's void), or a fourth
+status table. Either makes the repetition worth a refactor PR of its own.
+
+---
+
+### D-NEW — The dispute window is `dispute_window_seconds`, an int with a 30-day ceiling, and the five-minute gap is a constant
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** market_service's `Settings` gains `dispute_window_seconds: int`,
+default `86400`, `gt=0`, `le=2592000`, read from `DISPUTE_WINDOW_SECONDS`.
+The five minutes between the window's end and `settleable` stay a constant in
+code.
+
+**Why.** [3.3] #11 asks for a configurable window with a 24-hour default.
+Seconds in an int mean the same thing to everyone who reads `.env`, and they
+allow a 60-second window for a demo. The ceiling turns a mis-typed unit (a
+millisecond value, say) into a boot failure instead of a window nobody
+notices for a month. `gt=0` because an empty window lets nobody send a result
+back, and #11's window exists for that. The gap is not a setting because
+"Settlement opens five minutes after send-back closes" depends on it: set to
+zero, it reopens the race that entry closes.
+
+**Rejected.**
+- *`timedelta`*: pydantic parses `86400`, `P1D` and other spellings, so the
+  same env value is easy to misread.
+- *Hours*: no short window for a demo or an end-to-end test.
+- *Allowing 0*: the window would decide nothing.
+- *The gap as a setting*: a 0 there reopens the race.
+
+**Reversal trigger.** A window longer than 30 days is needed.
+
+---
+
+### D-NEW — `settleable` is a pure function in `core/`, inclusive at its edge, true once settled, false without `approved_at`
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` is always true on a SETTLED market. On an APPROVED
+market it is true when `approved_at` is not null and `now >= approved_at +
+window + 5 minutes`. It is false on every other status. It is a pure
+function in `core/`, `is_settleable(*, approved, settled, approved_at,
+window, now)`, which takes whether the status is APPROVED and whether it is
+SETTLED as two bools (`core/` cannot import `model/`, as with
+`trading_is_open`). `service/` stamps it onto the projection before it is
+built. It is never a computed field or a validator.
+
+**Why.**
+- *Inclusive*, because #12's boundary test settles a market whose window
+  ended "five minutes ago or more". Send-back's edge is exclusive, so no
+  instant is both.
+- *True on SETTLED, whatever the window*, so the flag is monotonic: once
+  true it never goes back, even if `dispute_window_seconds` is raised later,
+  and no reader sees it flicker. The overview and [FE] #216 then read one
+  consistent flag. It is not what keeps the repair path open. The ledger
+  reads `settleable` only on an `approved` market and accepts a `settled` one
+  whatever the flag says (ADR 0019, step 1).
+- *False on a null `approved_at`*, because the flag fails closed. Approval
+  always stamps it, so a null is damage, and the safe answer to damage is not
+  to pay.
+- *In `core/`, stamped in `service/`*, for the reason "The derived status is
+  computed in `service/`, before projection" gives: a computed field re-runs
+  when FastAPI re-validates the response, against whatever clock it can
+  reach, and that is the failure "One clock per request, read at the
+  controller, Python's not the transaction's" recorded in its correction.
+
+**Rejected.**
+- *A computed field*: the re-validation bug above.
+- *A stored column*: a second authority for something the clock already
+  answers (ADR 0011), and a migration ADR 0019 says this needs none of.
+- *False on SETTLED*: the flag would go back to false, and the overview
+  would disagree with itself about a market it already paid.
+- *Testing `DECIDED_STATUSES`* in place of naming APPROVED and SETTLED: a
+  status added to that table for its own reasons (#221's void) would become
+  settleable by accident. SETTLED also went through the time rule
+  that way, so raising the window turned a settled market false.
+
+**Reversal trigger.** A third status that should pay out.
+
+---
+
+### D-NEW — `settleable` reads the request's one Python clock, and the database-clock trigger is declined again
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` on the public detail and on the overview is
+derived against the `now` the controller reads once for that request, as
+"One clock per request, read at the controller, Python's not the
+transaction's" describes. That entry's trigger, for a path that decides or
+writes, is declined here for ADR 0017's reason.
+
+**Why.** The ledger acts on this flag, so that entry's trigger fires. It is
+declined because the database's clock would cost a round trip on a hot
+public read, and the five-minute gap absorbs the skew instead. If a replica
+runs ahead by less than the gap, the flag turns true early, but still after
+send-back has closed. The ledger pays. If the settle step reads the
+database's clock, as the guidance below and "Every decision a market records
+is stamped with Postgres's `clock_timestamp()`, read after the row lock" both
+say, it finds the market not yet settleable and refuses `409
+dispute_window_open`, and the ledger answers `503 settlement_unconfirmed`.
+Payouts stand, and a retry once the edge passes completes the request. A
+replica that runs behind only delays settlement.
+
+**Guidance, not decided here.** PR 2's settle route and [3.3] #11's
+send-back are already covered by "Every decision a market records is stamped
+with Postgres's `clock_timestamp()`, read after the row lock", since settling
+and sending back are both decisions a market records: each reads
+`clock_timestamp()` after its row lock, so the two writers agree with each
+other whatever the readers see. Send-back's edge is exclusive: allowed while
+`now < window_ends_at`.
+
+**Rejected.** *Postgres's clock for the read*: a round trip on a hot public
+read, which ADR 0017 and the one-clock entry both refused, for skew the gap
+already absorbs.
+
+**Reversal trigger.** Skew between the services' clocks and the database's
+approaches the five-minute gap.
+
+---
+
+### D-NEW — `settleable` is on the public detail and on every admin overview row; `window_ends_at` is #11's
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` is a field on the public market detail and on
+each `MarketOverviewRowOut`. `window_ends_at` is not exposed by this ticket;
+[3.3] #11 adds it with its countdown.
+
+**Why.** The ledger reads the public detail. The settle control lives on the
+admin overview ([FE][3.4] #216), and without the flag there it would show on
+every approved market for the whole 24-hour window, and each click would be a
+`409 dispute_window_open`. The overview derives it with the clock it already
+reads once for its list and counts ("The overview's list and counts share one
+clock and one statement"), so a row's status and its flag never disagree.
+
+**Rejected.** *The public detail only*: the control would appear mid-window.
+*`window_ends_at` now*: it is #11's countdown, and a field with no reader yet
+is a contract nobody has asked for.
+
+**Reversal trigger.** #11 adds a countdown that needs the instant on list
+views.
 
 ---
 

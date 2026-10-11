@@ -9,10 +9,18 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import get_session_factory
+from model.entities import Market, MarketOutcome
 from service.audit import Actor
-from unit_test.conftest import closed_market, proposed_before_ids, proposed_market
+from unit_test.conftest import (
+    closed_market,
+    proposed_before_ids,
+    proposed_market,
+    settled_market,
+)
 from unit_test.conftest import approval_terms as _approval
 from unit_test.conftest import close_terms as _close
 from unit_test.conftest import market_json as _payload
@@ -1452,3 +1460,57 @@ async def test_an_approval_with_no_proposal_id_is_fastapis_422_not_ours(
 
     assert response.status_code == 422
     assert "error" not in response.json()
+
+
+# --- [3.4] #12: a settled market is frozen ----------------------------------
+async def _stored_status_and_outcome_ids(
+    market_id: uuid.UUID,
+) -> tuple[str, list[uuid.UUID]]:
+    """What is committed, read from a session the request never touched."""
+    async with get_session_factory()() as fresh:
+        status = await fresh.scalar(select(Market.status).where(Market.id == market_id))
+        outcome_ids = list(
+            (
+                await fresh.scalars(
+                    select(MarketOutcome.id)
+                    .where(MarketOutcome.market_id == market_id)
+                    .order_by(MarketOutcome.position)
+                )
+            ).all()
+        )
+    return str(status), outcome_ids
+
+
+@pytest.mark.parametrize("requested", ["draft", "submitted"])
+async def test_saving_a_settled_market_is_409_and_leaves_it_as_it_was(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    requested: str,
+) -> None:
+    """[3.4] #12: a settled market's terms "can no longer be saved" or
+    submitted, `409 market_already_settled`. "SETTLED joins the frozen,
+    resolution and decided status tables": without the frozen entry an
+    autosave reaches `_clear_children` and `status = DRAFT`.
+
+    Read back from a second session after the request has finished, so the
+    deletion is seen wherever the commit lives. Fails with SETTLED removed from
+    `_FROZEN_STATUS_ERRORS`: the outcome ids change and the status reads draft.
+    """
+    creator = Actor(id=admin_id, username="ernest_t", role="admin")
+    market = await settled_market(session, creator)
+    market_id, draft_key = market.id, market.draft_key
+    before = await _stored_status_and_outcome_ids(market_id)
+    assert before[0] == "settled", "the fixture must have settled this market"
+
+    response = await client.post(
+        "/markets",
+        json=_payload(draft_key=str(draft_key), status=requested),
+        headers=admin_headers,
+    )
+
+    # First, so a 200 does not hide the deletion it committed.
+    assert await _stored_status_and_outcome_ids(market_id) == before
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_already_settled"
