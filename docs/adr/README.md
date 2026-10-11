@@ -27,6 +27,7 @@ see why the code looks the way it does without reconstructing the argument.
 | [0019](0019-settlement-across-services.md) | Settlement is the ledger's request, paid in one transaction, and market_service is told afterwards | Accepted |
 | [0020](0020-migrations-by-alembic.md) | Migrations by Alembic, per service, run as a one-off step | Accepted |
 | [0021](0021-the-leaderboard-and-the-first-service-credential.md) | The leaderboard is a snapshot on the ledger, and auth names its users through the first service credential | Accepted |
+| [0022](0022-the-ledger-and-a-suspended-trader.md) | The ledger asks auth whether a trader is still active, once per trade | Accepted |
 
 Supersede rather than edit. If a decision changes, add a new record and mark
 the old one superseded, so the reasoning trail survives.
