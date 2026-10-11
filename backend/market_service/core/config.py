@@ -44,11 +44,12 @@ class Settings(ServiceSettings):
     close_sweep_enabled: bool = True
 
     # --- Dispute window [3.3] #11, [3.4] #12 --------------------------------
-    # How long after approval any administrator may send a result back. Whole
-    # seconds, so a demo can use a short one; the ceiling (30 days) turns a
-    # mistyped unit into a boot failure, and `gt=0` because an empty window
-    # decides nothing. The five-minute gap that follows it is a constant in
-    # `core/settling.py`, not a setting. ADR 0019.
+    # How long after approval any administrator may send a result back. Read
+    # once, at approval, which stores the window's end: a change here moves
+    # only later approvals (ADR 0023). Whole seconds, so a demo can use a short
+    # one; the ceiling (30 days) turns a mistyped unit into a boot failure, and
+    # `gt=0` because an empty window decides nothing. The five-minute gap that
+    # follows it is a constant in `core/settling.py`, not a setting. ADR 0019.
     dispute_window_seconds: int = Field(default=86400, gt=0, le=2592000)
 
     # --- Paging [X-1] #104, #210 ------------------------------------------
