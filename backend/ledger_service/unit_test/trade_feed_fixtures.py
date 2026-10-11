@@ -38,13 +38,7 @@ from unit_test.settlement_fixtures import (
     transaction_by_key,
 )
 from unit_test.settlement_fixtures import warm as warm_settleable
-from unit_test.trade_fixtures import SMALL_QUANTITY, Upstream, buy, fund
-
-
-def books():
-    from service import books  # noqa: PLC0415
-
-    return books
+from unit_test.trade_fixtures import SMALL_QUANTITY, Upstream, books, buy, fund
 
 
 @dataclass(frozen=True)

@@ -167,16 +167,18 @@ async def test_a_cursor_we_did_not_issue_is_a_400(
     assert response.json()["error"]["code"] == "malformed_cursor"
 
 
-async def test_an_oversized_limit_is_clamped_not_refused(
+async def test_a_malformed_cursor_is_a_400_even_on_an_unknown_market(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
-    """"Clamped at 200. Asking for more is not an error." Catches: a `le=`
-    bound on `limit`, which answers 422."""
+    """The cold path answers an empty 200 for an unknown market, so a bad
+    cursor has to be refused before that answer. Catches: the cursor decoded
+    after the book lookup."""
     response = await client.get(
-        f"{_path(uuid.uuid4())}?limit=100000", headers=admin_headers
+        f"{_path(uuid.uuid4())}?cursor=nonsense", headers=admin_headers
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "malformed_cursor"
 
 
 async def test_the_page_size_defaults_and_is_clamped_by_the_server_settings(
@@ -194,6 +196,8 @@ async def test_the_page_size_defaults_and_is_clamped_by_the_server_settings(
     monkeypatch.setattr(get_settings(), "max_page_size", 2)
 
     by_default = await _trades(client, scenario.m1.market_id, admin_headers)
+    # docs/api/ledger-service.md: "Asking for more is not an error." This is a
+    # 200 with the ceiling's rows, not a 422.
     oversized = await _trades(
         client, scenario.m1.market_id, admin_headers, "?limit=100000"
     )
