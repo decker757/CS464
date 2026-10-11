@@ -12,8 +12,6 @@ taken before any rollback of that session, never after.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -36,7 +34,11 @@ from model.entities import (
 )
 from service import accounts, posting
 from unit_test.market_fixtures import market_with_outcomes
-from unit_test.trade_fixtures import assert_ledger_balances, capture_sql
+from unit_test.trade_fixtures import (
+    assert_ledger_balances,
+    capture_sql,
+    capture_sql_with_parameters,
+)
 
 TICK = timedelta(microseconds=1)
 
@@ -151,27 +153,6 @@ async def _newest_entry_at(
 ) -> datetime | None:
     stmt = select(func.max(Entry.created_at)).where(Entry.account_id.in_(account_ids))
     return (await session.execute(stmt)).scalar_one()
-
-
-@contextmanager
-def _capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
-    """Every statement the block sends, with its parameters, in order.
-
-    `trade_fixtures.capture_sql` keeps only the text, and the lock order is
-    in the parameters. The twin is market_service's `recorded_statements`,
-    which this service cannot import (`test_import_boundary.py`).
-    """
-    captured: list[tuple[str, tuple]] = []
-    engine = get_engine().sync_engine
-
-    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        captured.append((statement, tuple(parameters or ())))
-
-    event.listen(engine, "before_cursor_execute", before)
-    try:
-        yield captured
-    finally:
-        event.remove(engine, "before_cursor_execute", before)
 
 
 def _is_lock(statement: str) -> bool:
@@ -362,6 +343,28 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
             except DBAPIError:
                 pytest.fail("the replay left an account lock held")
         await other.rollback()
+
+
+async def test_a_replay_is_not_refused_for_money_spent_since(
+    session: AsyncSession,
+) -> None:
+    """The overdraft check runs after the replay lookup, as in `post`. A
+    batch that debited a user replays after the user has spent the rest:
+    the retry moves no money, so the balance it would fail is irrelevant."""
+    platform = await _platform(session)
+    (user,) = await _new_accounts(session, AccountKind.USER, 1)
+    await _fund(session, platform, user, "10.0000")
+    movements = [
+        _transfer(_key(), user, platform, "6.0000", kind=TransactionKind.TRADE_BUY)
+    ]
+    originals = await posting.post_all(session, movements)
+    await _fund(session, user, platform, "4.0000")
+
+    replayed = await posting.post_all(session, movements)
+
+    assert [r.id for r in replayed] == [o.id for o in originals]
+    async with get_session_factory()() as other:
+        assert await accounts.balance_of(other, user.id) == Decimal("0.0000")
 
 
 async def test_a_full_replay_into_a_dirty_session_is_refused(
@@ -737,7 +740,7 @@ async def test_the_batch_locks_each_account_once_ascending(
     descending = sorted(winners, key=lambda account: account.id, reverse=True)
     movements = [_transfer(_key(), pool, winner, "1.0001") for winner in descending]
 
-    with _capture_sql_with_parameters() as captured:
+    with capture_sql_with_parameters() as captured:
         await posting.post_all(session, movements)
 
     locked = [
