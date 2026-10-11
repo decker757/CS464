@@ -33,7 +33,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from core.pricing import Side
-from model.entities import Entry, TransactionKind
+from model.entities import Entry, ResultKind, TransactionKind
 
 
 class BalanceOut(BaseModel):
@@ -667,6 +667,94 @@ class SnapshotOut(BaseModel):
         only asserted the offset was present, which is true of both.
         """
         return value.isoformat()
+
+
+class ExposureOutcomeOut(BaseModel):
+    """One outcome's share of what resolving the market would cost. [2.2] #6"""
+
+    outcome_id: uuid.UUID
+    position: int = Field(ge=0, description="The outcome's order within its market.")
+    shares_outstanding: Decimal = Field(
+        description="Every trader's shares in this outcome, summed."
+    )
+    payout_if_wins: Decimal | None = Field(
+        description="One credit per share outstanding. Null once the market has a result."
+    )
+    residue_if_wins: Decimal | None = Field(
+        description=(
+            "pool - payout_if_wins. Positive goes to the platform at "
+            "settlement; negative is what the platform tops up. Null once "
+            "the market has a result."
+        )
+    )
+
+    @field_serializer("shares_outstanding")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("payout_if_wins", "residue_if_wins")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class ExposureOut(BaseModel):
+    """What resolving a market would pay out, for an administrator. [2.2] #6
+
+    A market this service holds no book for reads as nulls and an empty
+    `outcomes`, with `payout_exceeds_pool` false. DECISIONS.md, "Exposure on a
+    market with no book is a 200 with nothing in it, and writes nothing".
+    """
+
+    market_id: uuid.UUID
+    opened_at: datetime | None = Field(
+        description="When this service opened the book. Null means it never has."
+    )
+    state_version: int | None = Field(
+        description="Which trade this read reflects. Null when there is no book."
+    )
+    seed_subsidy: Decimal | None = Field(
+        description="What the platform put up at book creation."
+    )
+    pool: Decimal | None = Field(
+        description=(
+            "What the market pool holds now, derived from its entries. Null "
+            "when there is no book, and once the market has a result: "
+            "settlement drained it."
+        )
+    )
+    payout_exceeds_pool: bool = Field(
+        description=(
+            "True when any outcome's payout is strictly greater than `pool`. "
+            "False once the market has a result."
+        )
+    )
+    result: ResultKind | None = Field(
+        description=(
+            "Null until the ledger records how the market ended; then that "
+            "record's kind, today always `settled`."
+        )
+    )
+    winning_outcome_id: uuid.UUID | None = Field(
+        description="Null until the market is settled; then the outcome that paid."
+    )
+    outcomes: list[ExposureOutcomeOut] = Field(
+        description="Every outcome, ordered by position. Empty when there is no book."
+    )
+
+    @field_validator("opened_at")
+    @classmethod
+    def _always_utc(cls, v: datetime | None) -> datetime | None:
+        if v is not None and v.tzinfo is None:
+            return v.replace(tzinfo=UTC)
+        return v
+
+    @field_serializer("opened_at")
+    def _opened_at_as_string(self, value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat()
+
+    @field_serializer("seed_subsidy", "pool")
+    def _as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
 
 
 class LedgerEntryListResponse(BaseModel):

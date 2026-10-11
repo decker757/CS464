@@ -50,6 +50,8 @@ from core.config import get_settings
 from core.pricing import Side
 from model.schemas import (
     BalanceOut,
+    ExposureOut,
+    ExposureOutcomeOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
     OutcomePriceOut,
@@ -64,6 +66,7 @@ from model.schemas import (
     ValidationErrorOut,
 )
 from service import (
+    exposure as exposure_service,
     ledger_service,
     portfolio as portfolio_service,
     preview as preview_service,
@@ -461,6 +464,58 @@ async def market_snapshot(
             for p in result.prices
         ],
         occurred_at=result.occurred_at,
+    )
+
+
+_EXPOSURE_DESCRIPTION = (
+    "[2.2] #6. What resolving a market would cost: for each outcome, the "
+    "shares outstanding, what the market would pay if that outcome won, and "
+    "what the pool would have left over. Any administrator, not only the "
+    "market's creator.\n\n"
+    "`payout_exceeds_pool` is true when any payout is strictly greater than "
+    "the pool, not the seed. One statement reads `q` and the pool together, "
+    "with no lock. Once `result` is set, `pool`, `payout_if_wins` and "
+    "`residue_if_wins` are null, and `payout_exceeds_pool` is false.\n\n"
+    "**Writes nothing and asks market_service nothing.** A market with no "
+    "book here, including an id that names no market, is a `200` with nulls "
+    "and an empty `outcomes`. Never checks the market's status."
+)
+
+
+@router.get(
+    "/markets/{market_id}/exposure",
+    response_model=ExposureOut,
+    summary="What resolving the market would pay out",
+    description=_EXPOSURE_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request("`invalid_request`: `market_id` is not a UUID."),
+    },
+)
+async def market_exposure(
+    market_id: uuid.UUID, admin: CurrentAdmin, session: DbSession
+) -> ExposureOut:
+    result = await exposure_service.exposure_of_market(session, market_id=market_id)
+    return ExposureOut(
+        market_id=result.market_id,
+        opened_at=result.opened_at,
+        state_version=result.state_version,
+        seed_subsidy=result.seed_subsidy,
+        pool=result.pool,
+        payout_exceeds_pool=result.payout_exceeds_pool,
+        result=result.result,
+        winning_outcome_id=result.winning_outcome_id,
+        outcomes=[
+            ExposureOutcomeOut(
+                outcome_id=outcome.outcome_id,
+                position=outcome.position,
+                shares_outstanding=outcome.shares_outstanding,
+                payout_if_wins=outcome.payout_if_wins,
+                residue_if_wins=outcome.residue_if_wins,
+            )
+            for outcome in result.outcomes
+        ],
     )
 
 
