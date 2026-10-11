@@ -67,8 +67,8 @@ channel.
 > The ledger now asks auth for usernames and the suspension flag over a second
 > channel, a service key on one route, and keeps the usernames in its
 > leaderboard snapshot. It is display data, replaced every refresh and never
-> read to decide anything, so authority still comes from the token alone and
-> the argument above still holds for it.
+> read to authorise anything, so authority still comes from the token alone
+> and the argument above still holds for it.
 
 ## Consequences
 
