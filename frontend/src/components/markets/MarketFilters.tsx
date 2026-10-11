@@ -1,7 +1,6 @@
-import { useState, type FormEvent } from 'react'
-import Button from '../ui/Button'
+import { useState } from 'react'
 import FilterPill from '../ui/FilterPill'
-import TextInput from '../ui/TextInput'
+import SearchForm from '../ui/SearchForm'
 import { STATUS_CONFIG } from './marketStatus'
 
 // The statuses GET /public/markets accepts, in the order market-service.md
@@ -39,16 +38,14 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
 }
 
 export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
-  const [draft, setDraft] = useState(query)
+  // A new key remounts the search box, which empties anything typed in it.
+  // Clearing needs that: with no search applied, the cleared query is the same
+  // empty string as before, so SearchForm has no change to follow.
+  const [searchBoxKey, setSearchBoxKey] = useState(0)
   const hasActiveFilters = query !== '' || status !== null
 
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault()
-    onQueryChange(draft.trim())
-  }
-
   function handleClearQuery() {
-    setDraft('')
+    setSearchBoxKey(key => key + 1)
     onQueryChange('')
   }
 
@@ -59,17 +56,14 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
 
   return (
     <div className="mb-6 space-y-4">
-      <form role="search" onSubmit={handleSubmit} className="flex gap-2">
-        <label htmlFor="market-search" className="sr-only">Search markets</label>
-        <TextInput
-          id="market-search"
-          type="search"
-          value={draft}
-          onChange={event => setDraft(event.target.value)}
-          placeholder="Search markets by question"
-        />
-        <Button type="submit" variant="outline" size="md">Search</Button>
-      </form>
+      <SearchForm
+        key={searchBoxKey}
+        id="market-search"
+        label="Search markets"
+        placeholder="Search markets by question"
+        query={query}
+        onSearch={onQueryChange}
+      />
 
       <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
         {FILTER_OPTIONS.map(option => (
