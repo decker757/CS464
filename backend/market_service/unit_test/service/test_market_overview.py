@@ -21,6 +21,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
 from core.database import get_session_factory
 from core.errors import MalformedCursor
 from model.entities import Market, MarketOverview, MarketStatus
@@ -142,7 +143,19 @@ class _Population:
 
 
 @pytest.fixture
-async def population(session: AsyncSession) -> _Population:
+def hour_long_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A one-hour dispute window, set before any market is approved.
+
+    Approval stores the window's end from the setting as it is then (ADR 0023),
+    so this has to run before `population` builds its approved market. An hour
+    keeps the injected clock, ten days ahead, past that market's edge whatever
+    the environment configures.
+    """
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 3600)
+
+
+@pytest.fixture
+async def population(session: AsyncSession, hour_long_window: None) -> _Population:
     caller = actor()
     other = actor(username="michelle_t")
     now = _injected_now()
@@ -628,10 +641,10 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
     detail": true past the edge for approved, still true once settled, false
     for every other status.
 
-    The approved row's window end was stored when the population was approved
-    (ADR 0023), 24 hours on under the default window, so the injected clock
-    ten days ahead is past its edge. Fails with the settled half of the rule
-    dropped, or with the flag missing from the rows.
+    `population` approves under `hour_long_window`, so the injected clock ten
+    days ahead is past the approved row's stored edge whatever the environment
+    configures. Fails with the settled half of the rule dropped, or with the
+    flag missing from the rows.
     """
     decided = {population.ids["approved"], population.ids["settled"]}
 
@@ -642,7 +655,7 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
         assert row.settleable is (row.id in decided), row
 
 
-async def test_a_settled_rows_settleable_stays_true_whatever_the_window(
+async def test_a_settled_rows_settleable_stays_true_even_with_no_window_end(
     session: AsyncSession,
 ) -> None:
     """[3.4] #12: a row's `settleable` "stays true once the market is

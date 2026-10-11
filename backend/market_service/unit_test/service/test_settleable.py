@@ -156,7 +156,8 @@ async def _open_with_stale_approval(session: AsyncSession, creator: Actor) -> uu
 async def _pending_with_stale_approval(
     session: AsyncSession, creator: Actor
 ) -> uuid.UUID:
-    """Sent back, then proposed again ([3.3] #11), with an approval left over."""
+    """A pending market carrying approval columns: damage, since send-back
+    clears them ([3.3] #11). Only the status rule can make it unsettleable."""
     market_id = (await proposed_market(session, creator)).id
     await _set_stale_approval(session, market_id)
     return market_id
@@ -165,8 +166,9 @@ async def _pending_with_stale_approval(
 async def _closed_with_stale_approval(
     session: AsyncSession, creator: Actor
 ) -> uuid.UUID:
-    """Sent back ([3.3] #11), with an approval left over. A plain CLOSED market
-    has none and would not notice."""
+    """A closed market carrying approval columns: damage, since send-back
+    clears them ([3.3] #11). A plain CLOSED market has none and would not
+    notice."""
     market_id = (await closed_market(session, creator)).id
     await _set_stale_approval(session, market_id)
     return market_id
@@ -220,7 +222,7 @@ async def test_settleable_by_status(
     assert await _settleable(session, market_id, edge + after_edge) is expected
 
 
-async def test_a_settled_market_is_settleable_whatever_the_window(
+async def test_a_settled_market_is_settleable_even_with_no_window_end(
     session: AsyncSession,
 ) -> None:
     """[3.4] #12: `settleable` "stays true once the market is `settled`", even
