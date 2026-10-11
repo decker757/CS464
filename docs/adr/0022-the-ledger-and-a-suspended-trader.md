@@ -83,7 +83,7 @@ service holds no pooled connection (D-043).
 
 ### The trader's token, and not ADR 0021's service key
 
-ADR 0021 gives the ledger a key for `POST /internal/users/lookup`, which also
+[ADR 0021](0021-the-leaderboard-and-the-first-service-credential.md) gives the ledger a key for `POST /internal/users/lookup`, which also
 returns `is_suspended`. It is not used here, for four reasons:
 
 1. **A trade always has a person behind it** (ADR 0009's amendment), and the
