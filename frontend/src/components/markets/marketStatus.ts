@@ -7,20 +7,27 @@ export type MarketStatus = PublicMarketSummary['status']
 // never sees (market-service.md's six statuses).
 export type AdminMarketStatus = MarketSummaryOut['status']
 
-export const STATUS_CONFIG: Record<AdminMarketStatus, { label: string; tone: Tone }> = {
-  draft:              { label: 'Draft',    tone: 'neutral' },
+// Every status either list can show: the admin's two unpublished ones, and
+// every published one, `settled` included (market-service.md's seven statuses).
+type KnownMarketStatus = AdminMarketStatus | MarketStatus
+
+// `approved` is "approved, waiting for the ledger's payout"; `settled` is paid
+// out and final ([3.4] #12).
+export const STATUS_CONFIG: Record<KnownMarketStatus, { label: string; tone: Tone }> = {
+  draft:              { label: 'Draft',     tone: 'neutral' },
   submitted:          { label: 'Submitted', tone: 'warning' },
-  open:               { label: 'Open',    tone: 'success' },
-  closed:             { label: 'Closed',  tone: 'neutral' },
-  pending_resolution: { label: 'Pending', tone: 'warning' },
-  approved:           { label: 'Settled', tone: 'info' },
+  open:               { label: 'Open',      tone: 'success' },
+  closed:             { label: 'Closed',    tone: 'neutral' },
+  pending_resolution: { label: 'Pending',   tone: 'warning' },
+  approved:           { label: 'Approved',  tone: 'info' },
+  settled:            { label: 'Settled',   tone: 'neutral' },
 }
 
 // The label and tone for any status string. A status the frontend does not
-// know yet (a new one from the backend, like #12's `settled`) is shown as its
-// own name rather than crashing the page.
+// know yet (a new one from the backend) is shown as its own name rather than
+// crashing the page.
 export function statusDisplay(status: string): { label: string; tone: Tone } {
-  if (Object.hasOwn(STATUS_CONFIG, status)) return STATUS_CONFIG[status as AdminMarketStatus]
+  if (Object.hasOwn(STATUS_CONFIG, status)) return STATUS_CONFIG[status as KnownMarketStatus]
   return { label: status.replaceAll('_', ' '), tone: 'neutral' }
 }
 
