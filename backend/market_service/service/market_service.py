@@ -490,6 +490,31 @@ async def propose_outcome(
     return market
 
 
+def _refuse_if_superseded(market: Market, proposal_id: uuid.UUID | None) -> None:
+    """Raise `ProposalSuperseded` unless `proposal_id` names the market's proposal. ADR 0016.
+
+    The row lock cannot tell a proposal from its replacement, so the request
+    quotes the one it read. A null id matches only a proposal made before ids
+    existed, never one that has an id.
+    """
+    if market.proposal_id != proposal_id:
+        raise ProposalSuperseded
+
+
+def _clear_proposal(market: Market) -> None:
+    """Null the seven proposal columns, the ones `propose_outcome` writes together.
+
+    Take any audit snapshot first: afterwards the log is the only copy. ADR 0016.
+    """
+    market.proposal_id = None
+    market.proposed_outcome_id = None
+    market.proposed_by_id = None
+    market.proposed_by_username = None
+    market.proposed_at = None
+    market.proposal_evidence_url = None
+    market.proposal_evidence_note = None
+
+
 # Below `get_any`, which it reads through, and above the two decisions it gates.
 async def _proposal_to_decide(
     session: AsyncSession,
@@ -519,8 +544,7 @@ async def _proposal_to_decide(
     if market.proposed_by_id == actor.id:
         raise SecondAdministratorRequired
 
-    if market.proposal_id != proposal_id:
-        raise ProposalSuperseded
+    _refuse_if_superseded(market, proposal_id)
 
     return market
 
@@ -592,13 +616,7 @@ async def reject_outcome(
     snapshot = market_audit.decision_snapshot(market)
 
     market.status = MarketStatus.CLOSED
-    market.proposal_id = None
-    market.proposed_outcome_id = None
-    market.proposed_by_id = None
-    market.proposed_by_username = None
-    market.proposed_at = None
-    market.proposal_evidence_url = None
-    market.proposal_evidence_note = None
+    _clear_proposal(market)
 
     await session.flush()
     await market_audit.record_rejection(
