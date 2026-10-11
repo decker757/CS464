@@ -8,7 +8,7 @@ const MARKET_BASE = import.meta.env.VITE_MARKET_API_URL ?? 'http://localhost:800
 
 export interface PublicMarketSummary {
   id: string
-  status: 'open' | 'closed' | 'pending_resolution' | 'approved'
+  status: 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
   question: string
   close_time: string
   /** Every outcome, in position order (#214). */
@@ -59,7 +59,7 @@ export interface PublicSource {
 
 export interface PublicMarketDetail {
   id: string
-  status: 'open' | 'closed' | 'pending_resolution' | 'approved'
+  status: 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
   question: string
   description: string | null
   outcomes: PublicOutcome[]
