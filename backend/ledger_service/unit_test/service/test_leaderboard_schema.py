@@ -41,7 +41,7 @@ async def _generation(session: AsyncSession, *, ranked_users: int = 0):
     return generation
 
 
-def _entry(generation_id: int, *, rank: int, user_id: uuid.UUID | None = None):
+def _entry(generation_id: uuid.UUID, *, rank: int, user_id: uuid.UUID | None = None):
     return _entities().LeaderboardEntry(
         generation_id=generation_id,
         rank=rank,
@@ -58,7 +58,7 @@ def _refusing_constraint(refusal: pytest.ExceptionInfo[IntegrityError]) -> str |
     return refusal.value.orig.__cause__.constraint_name
 
 
-async def _entries_in(session: AsyncSession, generation_id: int) -> int:
+async def _entries_in(session: AsyncSession, generation_id: uuid.UUID) -> int:
     entry = _entities().LeaderboardEntry
     return (
         await session.execute(
@@ -67,26 +67,25 @@ async def _entries_in(session: AsyncSession, generation_id: int) -> int:
     ).scalar_one()
 
 
-@pytest.mark.parametrize(
-    ("rank", "accepted"),
-    [(1, True), (0, False)],
-    ids=["rank_1_accepted", "rank_0_refused"],
-)
-async def test_an_entry_rank_is_accepted_from_one_and_refused_below(
-    session: AsyncSession, rank: int, accepted: bool
-) -> None:
-    """Ranks start at 1. Red for `rank > 1` (the first case) and for
-    `rank >= 0` (the second) alike."""
+async def test_an_entry_ranked_first_is_accepted(session: AsyncSession) -> None:
+    """Ranks start at 1. Red for `rank > 1`."""
     generation = await _generation(session)
 
-    session.add(_entry(generation.id, rank=rank))
+    session.add(_entry(generation.id, rank=1))
+    await session.flush()
 
-    if accepted:
-        await session.flush()
-        assert await _entries_in(session, generation.id) == 1
-        return
+    assert await _entries_in(session, generation.id) == 1
+
+
+async def test_an_entry_ranked_zero_is_refused(session: AsyncSession) -> None:
+    """Red for `rank >= 0`."""
+    generation = await _generation(session)
+
+    session.add(_entry(generation.id, rank=0))
+
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
+
     assert _refusing_constraint(refusal) == "ck_leaderboard_entries_rank_positive"
     await session.rollback()
 
