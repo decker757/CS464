@@ -414,6 +414,32 @@ describe('MarketsPage', () => {
       expect(screen.getByText('Will SMU win SUNIG?')).toBeInTheDocument()
     })
 
+    // #258 added `settled`, and `approved` now means approved and waiting for
+    // payout, so "Settled" has to ask for settled markets and not approved ones.
+    it('asks the server for settled markets when Settled is chosen', async () => {
+      const statusesSent: (string | null)[] = []
+      const settled = {
+        id: 's7', status: 'settled', question: 'Did the referendum pass?', close_time: '2025-02-01T00:00:00Z',
+        outcomes: outcomesFor('s7', ['Yes', 'No']),
+      }
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets`, ({ request }) => {
+          const status = new URL(request.url).searchParams.get('status')
+          statusesSent.push(status)
+          return HttpResponse.json({ markets: status === 'settled' ? [settled] : mockMarkets, next_cursor: null })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will SMU win SUNIG?')
+
+      await actor.click(screen.getByRole('button', { name: 'Settled' }))
+
+      expect(await screen.findByText('Did the referendum pass?')).toBeInTheDocument()
+      expect(statusesSent.at(-1)).toBe('settled')
+      expect(within(cardFor('Did the referendum pass?')).getByText('Settled')).toBeInTheDocument()
+    })
+
     it('applies a search and a status together', async () => {
       mockSearchableMarkets()
       const actor = userEvent.setup()
