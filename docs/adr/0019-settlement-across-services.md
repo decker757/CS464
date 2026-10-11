@@ -198,12 +198,28 @@ way, so a direct call cannot settle mid-window either. `settleable` gets no
 default in `MarketTerms`, for the reason `status` has none: a missing flag
 read as true would pay out on a market still in its window.
 
+Inside market_service two clocks are still read, and that is deliberate. The
+`settleable` flag is a read, so it uses the request's Python clock, as every
+public read does. The settle route and send-back are writes, so each reads
+Postgres's `clock_timestamp()` after its row lock, and the two writers agree
+with each other whatever the flag said. If market_service's clock runs ahead
+of the database's, the ledger can pay on a flag that turned true early, and
+the settle route then refuses `409 dispute_window_open`; the ledger answers
+`503 settlement_unconfirmed`, and a retry once the edge passes finishes it.
+The payouts stand, and they are still after send-back closed, because the
+skew is smaller than the five-minute gap below. That is the condition this
+design rests on.
+
 **The five minutes are a judgement call.** The gap exists for the race named
 in the next section, and its size is not derived from anything.
 market_service sets no statement, transaction or request timeout, so nothing
 bounds how long a send-back that passed its clock check can take to commit.
 Five minutes is far longer than any request that completes, and short beside
 a 24-hour window.
+
+> **Reversal trigger:** skew between the services' clocks and the database's
+> approaches the five-minute gap. The flag then reads the database's clock
+> too, or the gap grows.
 
 *Rejected:*
 - *No gap, with settlement allowed from `window_ends_at`.* That is the race.

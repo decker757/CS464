@@ -151,6 +151,7 @@ would let a stale audit schema abort a working admin action.
 | `market.outcome_proposed` | market_service | [3.1] #9 |
 | `market.outcome_approved` | market_service | [3.2] #10 |
 | `market.outcome_rejected` | market_service | [3.2] #10 |
+| `market.settled` | ledger_service | [3.4] #12 |
 | `market.marked_settled` | market_service | [3.4] #12 |
 
 Treat an unrecognised value as opaque rather than as an error: a newer service
@@ -175,6 +176,15 @@ waiting on them: `target_id` is the market, `actor_id` the proposer, and
 `market.outcome_proposed` entry written before [3.2] #10 has no `proposal_id`
 key; that proposal has none, and the request quotes `null`. A decision on it
 records `"proposal_id": null`. See [`market-service.md`](market-service.md).
+
+`market.settled` is written by the ledger's
+`POST /ledger/markets/{id}/settlement`, in the same transaction as the payouts,
+and never on a repeat. It is under the settling administrator, with no
+`reason`, and its `context` has four keys: `winning_outcome_id`; `total_paid`,
+the credits paid to winners as a decimal string; `residue`, a signed decimal
+string, positive for what the pool returned to the platform and negative for
+what the platform added to cover the payouts; and `holders_paid`, a number,
+the count of winners paid.
 
 `market.marked_settled` is written by market_service's
 `POST /markets/{id}/settle` when it moves a market from `approved` to
