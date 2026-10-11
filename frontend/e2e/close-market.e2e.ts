@@ -33,5 +33,8 @@ test('any admin can close another admin\'s market early, and new trades are then
   await expect(reloadedCard.getByRole('button', { name: /^close$/i })).toHaveCount(0)
 
   const trader = await registerTrader('cm_trader')
-  await expect(buy(trader, market, 'Yes', '1')).rejects.toThrow()
+  // The ledger's own refusal, not any failure: `call` throws
+  // "POST <url> answered <status>: <body>", and a typo, a 500 or a missing
+  // outcome would satisfy a bare toThrow() too.
+  await expect(buy(trader, market, 'Yes', '1')).rejects.toThrow(/\/trades answered 409: .*"market_closed"/)
 })
