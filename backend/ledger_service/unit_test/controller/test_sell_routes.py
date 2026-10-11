@@ -33,9 +33,11 @@ from unit_test.controller.test_trade_routes import (  # noqa: F401 - fixture
 _OPERATION = "execute_trade_ledger_markets__market_id__trades_post"
 _TRADE_HEADING = "## POST /ledger/markets/{market_id}/trades"
 
-# #23's error table, by status. The codeless 422 row is FastAPI's own.
+# #23's error table, by status, plus #14's `account_suspended` and
+# `auth_unavailable` (ADR 0022). The codeless 422 row is FastAPI's own.
 _ISSUE_CODES = {
     "401": ["invalid_token"],
+    "403": ["account_suspended"],
     "404": ["market_not_found"],
     "409": [
         "market_closed",
@@ -51,7 +53,7 @@ _ISSUE_CODES = {
         "proceeds_below_tick",
     ],
     "500": ["market_book_incomplete"],
-    "503": ["market_terms_unavailable"],
+    "503": ["market_terms_unavailable", "auth_unavailable"],
 }
 
 
@@ -266,7 +268,7 @@ async def test_the_declared_responses_are_the_tables_and_omit_the_unreachable_tw
     operation = await _operation(client)
     responses = operation["responses"]
 
-    assert set(responses) == {"201", "401", "404", "409", "422", "500", "503"}
+    assert set(responses) == {"201", "401", "403", "404", "409", "422", "500", "503"}
     for status, codes in _ISSUE_CODES.items():
         for code in codes:
             assert f"`{code}`" in responses[status]["description"], (status, code)
@@ -283,6 +285,7 @@ def test_the_docs_error_table_is_exactly_the_issues() -> None:
 
     assert rows == {
         ("401", "invalid_token"),
+        ("403", "account_suspended"),
         ("404", "market_not_found"),
         ("409", "market_closed"),
         ("409", "quote_stale"),
@@ -296,6 +299,7 @@ def test_the_docs_error_table_is_exactly_the_issues() -> None:
         ("422", "invalid_request"),
         ("500", "market_book_incomplete"),
         ("503", "market_terms_unavailable"),
+        ("503", "auth_unavailable"),
     }
 
 

@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
 from core.database import get_session_factory
 from core.errors import (
     MarketAlreadyApproved,
@@ -159,6 +160,26 @@ async def test_approving_records_when_it_happened(session: AsyncSession) -> None
 
     assert approved.approved_at == later
     assert approved.approved_at != approved.proposed_at
+
+
+async def test_an_approval_stores_when_its_window_ends(session: AsyncSession) -> None:
+    """[3.3] #11, D2: approval starts the dispute window, and its end is stored
+    then, from the setting as it is at that moment. ADR 0023.
+
+    Fails if approve does not write `dispute_window_ends_at`, or writes it
+    from another clock than the one that stamps `approved_at`.
+    """
+    proposer, approver = _actor(), _actor(username="ihsan_b")
+    market = await proposed_market(session, proposer)
+    later = datetime.now(UTC) + timedelta(days=2)
+
+    await market_service.approve_outcome(
+        session, approver, market.id, _approve(market.proposal_id), now=later
+    )
+
+    stored = await _stored(session)
+    window = timedelta(seconds=get_settings().dispute_window_seconds)
+    assert stored.dispute_window_ends_at == later + window
 
 
 async def test_an_approval_keeps_the_proposal(session: AsyncSession) -> None:

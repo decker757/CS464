@@ -634,3 +634,22 @@ async def test_a_non_positive_liquidity_b_is_refused_before_the_book_is_written(
         assert await _books().find(session, upstream.market_id) is None, (
             f"a b of {bad} left a book behind"
         )
+
+
+async def test_a_warm_book_still_refuses_a_caller_with_pending_writes(
+    session: AsyncSession,
+) -> None:
+    """The precondition is checked on every call, not only on the cold path
+    that rolls back, so a caller that breaks it fails on the first market it
+    touches rather than on the first cold one."""
+    upstream = _Upstream()
+    await _open(session, upstream)
+    pending = _entities().Account(
+        kind=_entities().AccountKind.USER, owner_id=uuid.uuid4()
+    )
+    session.add(pending)
+
+    with pytest.raises(AssertionError, match="nothing pending"):
+        await _open(session, upstream)
+
+    assert pending in session.new, "the pending write was discarded"
