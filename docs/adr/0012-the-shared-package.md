@@ -76,6 +76,10 @@ with `pythonpath = . ..`.
 > tests both call `metadata.create_all` as the service's own role. One shared
 > `Base` would have them try to create every other service's tables, in schemas
 > that role cannot write. ADR 0020.
+>
+> *2026-10-06, #236:* the adoption is deleted, and `build_like_before_75` with
+> it. `shared/migrating.py` keeps the `env.py` body and the own-schema filter,
+> and refuses a database from before #75. ADR 0020's note.
 
 The LMSR engine is the third thing ADR 0005 named. It does not exist yet and
 lands with [F-3] #43, into this package.

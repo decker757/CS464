@@ -20,7 +20,7 @@ interface PublicMarketListResponse {
   next_cursor: string | null
 }
 
-interface PublicMarketPage {
+export interface PublicMarketPage {
   markets: PublicMarketSummary[]
   /** Pass back as `cursor` for the next page; null on the last page. */
   nextCursor: string | null
