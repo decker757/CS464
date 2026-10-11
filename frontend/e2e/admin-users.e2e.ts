@@ -15,8 +15,16 @@ test('an admin searches for a trader and reads their real balance and history', 
   await logIn(page, admin)
   await page.getByRole('link', { name: 'Users', exact: true }).click()
 
+  // The list is newest first, so the trader is on top before any search. The
+  // admin, registered a moment earlier, is the user the search has to drop.
+  await expect(page.getByText(admin.username, { exact: true })).toBeVisible()
   await page.getByLabel('Search by username or email').fill(trader.username)
   await page.getByRole('button', { name: 'Search' }).click()
+  // One card once the filtered list arrives. While it loads there are none,
+  // so the loading state cannot pass this by hiding the admin.
+  const userCards = page.getByRole('link').filter({ hasText: '@example.com' })
+  await expect(userCards).toHaveCount(1)
+  await expect(page.getByText(admin.username, { exact: true })).toBeHidden()
   await page.getByText(trader.username, { exact: true }).click()
 
   await expect(page.getByRole('heading', { name: trader.username })).toBeVisible()
