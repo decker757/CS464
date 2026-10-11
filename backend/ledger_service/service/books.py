@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import has_pending_writes
+from core.database import has_pending_writes, release_before_calling_out
 from core.errors import MarketNotPublished, MarketTermsUnavailable
 from model.entities import (
     AccountKind,
@@ -103,7 +103,8 @@ async def ensure_open(
     """
     # Enforced, not just documented: the rollback would discard a pending
     # write silently, and release a lock taken before this call mid-request,
-    # which ADR 0015 forbids.
+    # which ADR 0015 forbids. Here as well as on the cold path, so a caller
+    # with pending writes fails on a warm market too.
     assert not has_pending_writes(session), (
         "ensure_open() rolls back on the cold path: call it with nothing "
         "pending on the session, or hoist the terms fetch out of it"
@@ -115,7 +116,7 @@ async def ensure_open(
 
     # D-043: release the connection the empty read checked out, so the terms
     # pull (up to 5s) holds none. Nothing is lost: the read wrote nothing.
-    await session.rollback()
+    await release_before_calling_out(session, caller="ensure_open()")
 
     terms = await market_terms.fetch(
         market_id, access_token=access_token, terms_client=terms_client
