@@ -55,6 +55,7 @@ from model.schemas import (
     ExposureOutcomeOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
+    MarketTradeListResponse,
     OutcomePriceOut,
     PortfolioOut,
     PortfolioPositionOut,
@@ -638,6 +639,49 @@ async def execute_trade(
         quantity=result.quantity,
         total=result.total,
         state_version=result.state_version,
+    )
+
+
+_TRADE_FEED_DESCRIPTION = (
+    "[BE][2.4] #63. Every trade in one market, newest first, for an "
+    "administrator investigating it. Each row names its trader by `user_id`; "
+    "resolve names through auth's batch lookup.\n\n"
+    "The market's pool account also holds the seed, the settlement payouts and "
+    "the residue, and none of them appears here. There is no `balance_after`.\n\n"
+    "**Writes nothing.** A market with no book, or an id that names no market, "
+    "is an empty `200`; this never opens a book, grants credits or calls "
+    "market_service, and does not check the market's status.\n\n"
+    "Paged by keyset with the same cursor as `/ledger/entries/me`: a trade "
+    "committed while you page is newer than every row on screen."
+)
+
+
+@router.get(
+    "/markets/{market_id}/trades",
+    response_model=MarketTradeListResponse,
+    summary="A market's trades",
+    description=_TRADE_FEED_DESCRIPTION,
+    responses={
+        400: {"description": "`cursor` was not one this service issued."},
+        401: {"description": "Missing, malformed or expired access token."},
+        403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request(
+            "`invalid_request`: `market_id` is not a UUID, or `limit` below 1."
+        ),
+    },
+)
+async def market_trades(
+    market_id: uuid.UUID,
+    admin: CurrentAdmin,
+    session: DbSession,
+    cursor: PageCursor = None,
+    limit: PageLimit = None,
+) -> MarketTradeListResponse:
+    page = await ledger_service.list_market_trades(
+        session, market_id, limit=_page_size(limit), cursor=cursor
+    )
+    return MarketTradeListResponse(
+        trades=page.rows, next_cursor=page.next_cursor, has_more=page.has_more
     )
 
 
