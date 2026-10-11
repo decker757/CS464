@@ -21,7 +21,7 @@ function renderRow(market: MarketOverviewRow) {
 }
 
 describe('AdminMarketRow', () => {
-  it('links to price history for a market that has traded, but not a draft or submitted one', () => {
+  it('links to price history on a published market, whether or not it has traded', () => {
     renderRow(OPEN_MARKET)
     expect(screen.getByRole('link', { name: /price history/i })).toHaveAttribute('href', `/admin/markets/${OPEN_MARKET.id}/price-history`)
   })
