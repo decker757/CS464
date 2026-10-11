@@ -12,6 +12,7 @@ from decimal import Decimal
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from model.entities import PLATFORM_OWNER_ID, Account, AccountKind, Entry
 
@@ -75,13 +76,19 @@ async def lock(session: AsyncSession, account_ids: list[uuid.UUID]) -> None:
         )
 
 
-def balance_query_of(*, account_id: uuid.UUID) -> Select[tuple[Decimal]]:
+def balance_query_of(
+    *, account_id: uuid.UUID | InstrumentedAttribute[uuid.UUID]
+) -> Select[tuple[Decimal]]:
     """The sum of one account's entries, zero when it has none.
 
     A single-column SELECT, so a caller can narrow it with `.where()` or turn
     it into a value inside another statement with `.scalar_subquery()`. A
-    balance is never stored (ADR 0009); `balance_of` and the history's running
-    balance both sum through this.
+    balance is never stored (ADR 0009); `balance_of`, the history's running
+    balance and the exposure read all sum through this.
+
+    `account_id` is an id, or a column of the enclosing statement
+    (`MarketBook.pool_account_id` in the exposure read) that the subquery
+    correlates on.
     """
     return select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
         Entry.account_id == account_id
