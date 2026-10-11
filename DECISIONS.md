@@ -7176,14 +7176,15 @@ that lock the refresh asks whether any generation has
 deletes nothing, commits, and logs at INFO. Otherwise it inserts and prunes
 as "The leaderboard is stored as generations" says.
 
-**Why.** Two refreshes can overlap: two replicas, or one slow refresh still
-running when the next tick fires. Without this guard the slower, older one
-commits last. It becomes the current ranking even though it is older, and
-its prune deletes the newer generation's rows. ADR 0015 puts the rule on the
-reader: the read that decides the write is issued after the lock. A row lock
-cannot be taken on a generation that does not exist yet, so the lock is an
-advisory lock. Its `xact` form releases at commit or rollback, so a refresh
-that crashes cannot leave it held.
+**Why.** Two refreshes can overlap. The loop awaits each refresh before
+sleeping, so one replica cannot overlap itself: overlap needs two replicas or
+a second writer (the reversal trigger names one). Without this guard the
+slower, older one commits last. It becomes the current ranking even though it
+is older, and its prune deletes the newer generation's rows. ADR 0015 puts
+the rule on the reader: the read that decides the write is issued after the
+lock. A row lock cannot be taken on a generation that does not exist yet, so
+the lock is an advisory lock. Its `xact` form releases at commit or
+rollback, so a refresh that crashes cannot leave it held.
 
 **Rejected.**
 - *`SELECT ... FOR UPDATE` on the newest generation.* It locks the row that
@@ -7228,8 +7229,11 @@ the default. When no generation exists, it answers `rows: []`,
   stored flag would need a writer, and the missing writer is the failure.
   Deriving it from the age of the newest generation needs nobody to notice.
 - *One clock.* The same service's Python clock stamps the generation and
-  judges its age. "One clock per request, read at the controller, Python's
-  not the transaction's" gives that reason for display reads, and
+  judges its age. With several replicas the stamping and judging clocks are
+  different machines, and the skew that allows is accepted (see the
+  advisory-lock entry's Notes). "One clock per request, read at the
+  controller, Python's not the transaction's" gives that reason for display
+  reads, and
   "A settlement's `recorded_at` is Python's clock read after the book lock"
   is the ledger's precedent for a stamp.
 - *Twice the interval.* One missed refresh is noise. Two in a row is a
@@ -7292,9 +7296,10 @@ practice that is within one interval of the user's first visit.
   users and mint a grant for each. That writes credits for accounts that
   have never signed in, and puts auth's user list on the ledger's write path.
 
-**Notes.** An account id that auth's lookup does not return is not a user
-this platform knows. It is left out and logged at WARNING, and the refresh
-continues. No route deletes a user today, so this should not happen.
+**Notes.** If ADR 0021 is accepted, an account id that auth's lookup does
+not return is not a user this platform knows. It is left out and logged at
+WARNING, and the refresh continues. No route deletes a user today, so this
+should not happen.
 
 **Reversal trigger.** A product rule that administrators are referees and
 must not appear, or a minimum-activity rule (for example, "has traded at
@@ -7304,7 +7309,7 @@ least once"). Either changes this entry, not the ADR.
 
 ### D-NEW — A suspended account is left out of the ranking, and ranks close up with no gap
 
-**Date:** 2026-10-11 · **Ticket:** #38, #14 · **Status:** active
+**Date:** 2026-10-11 · **Ticket:** #38, #14 · **Status:** proposed (ADR 0021)
 
 **Decision.** A refresh drops every holder whose lookup answer has
 `is_suspended: true`, then numbers the rest 1..N. The suspended user's rows
@@ -7326,8 +7331,8 @@ tests, and it affects real users once #14 writes the column.
 - *Shown, with a "suspended" badge.* Another field in the contract, more work
   for #58's UI, and it publishes a moderation action against a named user.
 - *Excluded, with ranks keeping their gaps.* See above.
-- *Deferring the rule to #14.* That is the fallback in ADR 0021 if the lookup
-  route is declined. It is not the plan.
+- *Deferring the rule to #14.* It is not the plan if ADR 0021 is accepted; if
+  it is declined, suspension is deferred to [4.2] #14 (the ADR's fallback).
 
 **Reversal trigger.** A moderation policy that wants suspensions to be
 visible.

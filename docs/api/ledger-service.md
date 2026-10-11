@@ -414,10 +414,10 @@ none of it. The refresh asks the auth service for usernames in chunks of
 
 **`stale: true` means the board has not been refreshed recently.** It is
 true when `computed_at` is more than two refresh intervals old (120 seconds
-by default), which happens only if refreshing has failed. The ranking shown
+by default), which means no refresh has completed recently. The ranking shown
 is still the last complete one. Nothing partial is ever served. Show the
-board with a "may be out of date" note, not an error. Before the first
-refresh after a fresh deploy, the answer is `computed_at: null`,
+board with a "may be out of date" note, not an error. Before the ledger has
+ever completed a refresh, the answer is `computed_at: null`,
 `stale: true`, `rows: []`, `ranked_users: 0`.
 
 **`ranked_users` is how many users the whole ranking holds**, not how many
@@ -447,10 +447,10 @@ identifies the caller.
 **A cursor holds you to one ranking.** Every page reached through
 `next_cursor` comes from the same ranking as the first page, even if a
 refresh has happened since. Each page repeats that ranking's `computed_at`
-and `stale`. The ledger keeps the ranking before the current one, so a cursor
-survives one refresh: between one and two minutes after its first page. After
-that it is `409 leaderboard_refreshed`. Drop the cursor and load page one
-again. Do not show the older pages beside the new one.
+and `stale`. The ledger keeps the ranking before the current one. A cursor
+survives one refresh; after the second it is `409 leaderboard_refreshed`. Drop
+the cursor and load page one again. Do not show the older pages beside the
+new one.
 
 ```js
 async function loadPage(cursor) {
@@ -471,7 +471,7 @@ Errors:
 | --- | --- | --- |
 | 400 | `malformed_cursor` | `cursor` was not one this service issued. |
 | 401 | `invalid_token` | Missing, malformed or expired access token. |
-| 409 | `leaderboard_refreshed` | The cursor's ranking has been replaced twice since it was issued. Start again from page one. |
+| 409 | `leaderboard_refreshed` | A cursor survives one refresh; after the second it is `409 leaderboard_refreshed`. Start again from page one. |
 | 422 | `invalid_request` | For example `limit=0`. |
 
 ## GET /ledger/users/{user_id}/balance and /entries

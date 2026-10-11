@@ -298,6 +298,8 @@ route.
 
 ## POST /internal/users/lookup
 
+Proposed under ADR 0021 and not built yet.
+
 `200`. **Not for the frontend.** It is a service-to-service read with
 exactly one caller: the ledger's leaderboard refresh ([L-1] #38). A browser
 cannot use it, because it needs a key no browser holds. Why it exists, and
@@ -317,7 +319,7 @@ Content-Type: application/json
 {
   "users": [
     { "id": "5f3e...", "username": "michelle_l", "is_suspended": false },
-    { "id": "9a01...", "username": "ernest_t",   "is_suspended": true }
+    { "id": "9a01...", "username": "suspended_user", "is_suspended": true }
   ]
 }
 ```
