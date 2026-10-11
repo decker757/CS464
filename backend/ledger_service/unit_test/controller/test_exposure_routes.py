@@ -64,8 +64,8 @@ async def test_the_exposure_json_is_decimal_strings_at_scale_four(
     admin_headers: dict[str, str],
     user_id: uuid.UUID,
 ) -> None:
-    """The documented example, seed 50, one buy of 500. Catches: a number or
-    an unscaled "0" on the wire; a dropped field."""
+    """The documented example, seed 50, one buy of 500. Catches: a number on
+    the wire; a dropped field."""
     market = await market_with(session, b=EXAMPLE_B, seed=EXAMPLE_SEED)
     await hold(session, market, user_id=user_id, quantity=EXAMPLE_QUANTITY)
     book = await book_from_another_session(market.market_id)
