@@ -323,8 +323,14 @@ async def test_a_send_back_that_queued_past_the_edge_is_refused(
             )
             await _wait_until_blocked_on_a_lock(holder, sender_pid)
             assert await database_now(holder) < ends_at, "queued after the edge"
-            while await database_now(holder) <= ends_at:
+            # Bounded, so a clock that never passes the end fails the test
+            # instead of hanging the suite. The end is 1.5 s away.
+            for _ in range(100):
+                if await database_now(holder) > ends_at:
+                    break
                 await asyncio.sleep(0.05)
+            else:
+                pytest.fail("the database clock never passed the window's end")
         finally:
             # Before `own` closes, which would otherwise wait on this lock.
             await holder.rollback()
