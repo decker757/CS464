@@ -39,7 +39,6 @@ from unit_test.trade_fixtures import (
     buy,
     entities,
     errors,
-    session_factory,
 )
 
 _SUSPENDED_BODY = {
