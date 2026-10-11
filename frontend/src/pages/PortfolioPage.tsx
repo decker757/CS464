@@ -16,11 +16,17 @@ interface PositionRow extends Position {
   outcomeLabel: string
 }
 
+// A settled position is no longer valued: its price, value and P&L arrive as
+// null, and are shown as a dash rather than as zero ([3.4] #12).
+const NOT_VALUED = '—'
+
 function toRow(position: Position, markets: Map<string, PublicMarketDetail>): PositionRow {
   return { ...position, ...labelsFor(position.market_id, position.outcome_id, markets) }
 }
 
-function PnlCell({ pnl }: { pnl: string }) {
+function PnlCell({ pnl }: { pnl: string | null }) {
+  if (pnl === null) return <span className="text-muted">{NOT_VALUED}</span>
+
   return (
     <span className={signedAmountColor(pnl)}>
       {formatCreditsPrecise(pnl, { showSign: true })}
@@ -103,8 +109,8 @@ export default function PortfolioPage() {
                       <NumberCell>{row.quantity}</NumberCell>
                       <NumberCell>{row.average_entry_price}</NumberCell>
                       <NumberCell>{formatCreditsPrecise(row.cost_basis)}</NumberCell>
-                      <NumberCell>{formatPrice(row.price)}</NumberCell>
-                      <NumberCell>{formatCreditsPrecise(row.value)}</NumberCell>
+                      <NumberCell>{row.price === null ? NOT_VALUED : formatPrice(row.price)}</NumberCell>
+                      <NumberCell>{row.value === null ? NOT_VALUED : formatCreditsPrecise(row.value)}</NumberCell>
                       <td className="px-5 py-3 text-right"><PnlCell pnl={row.unrealized_pnl} /></td>
                     </tr>
                   ))}
