@@ -4740,6 +4740,521 @@ dead-code allowlist entry goes. When #227 lands, `_is_settled` returns
 
 ---
 
+### D-NEW — Settlement is the ledger's request, and market_service is told after the payout commits
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** An administrator calls `POST /ledger/markets/{id}/settlement`
+with an empty body. The ledger reads the market's status, approved outcome
+and `settleable` from the public detail, opens the book if it is cold, pays
+everyone under the book lock, and commits. Only then does it call
+`POST /markets/{id}/settle` on market_service, forwarding the administrator's
+token. Both services answer a repeat with `200` and write nothing. ADR 0019.
+
+**Why.** No transaction can span both services, so something has to come
+second. With the money first, the worst partial state is "paid, still shown as
+approved". That market stays in the overview's approved queue, which is exactly
+the prompt to repeat the request. The other order leaves "settled, nobody paid",
+and nothing prompts a fix.
+
+**Rejected.**
+- *market_service marks SETTLED and then calls the ledger.* That is a dual
+  write, and it needs a ledger route that takes the winner as input.
+- *market_service checks with the ledger before it writes.* That creates an
+  HTTP cycle between the two services.
+
+**Reversal trigger.** A service credential exists. market_service's route then
+requires it, and the direct-call gap below closes.
+
+**Notes.** The direct-call gap is accepted under ADR 0007's trust model. Any
+administrator can call `/markets/{id}/settle` directly. A market settled that
+way pays nobody, sinks out of the overview's approved queue and looks finished.
+The ledger still accepts `settled` with no record, so calling the ledger's route
+pays it. The frontend calls only the ledger's route, and
+`docs/api/market-service.md` documents the other as the ledger's alone.
+
+---
+
+### D-NEW — A settlement whose last step fails answers `503 settlement_unconfirmed`
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** If the call to market_service's settle route fails after the
+payouts committed, the ledger answers `503 settlement_unconfirmed`. The
+payouts stand. Repeating the request completes it and writes nothing in the
+ledger.
+
+**Why.** Every existing use of `503 market_terms_unavailable` means nothing
+happened. Reusing it here would tell an administrator that a settlement failed
+when it has paid everybody. The status and the remedy match ("Upstream failures
+map to 503, 404 and 401, and the timeout is explicit"), but the principle
+behind those codes is that a caller can act differently on each, and here an
+administrator does: they need to know that money has moved.
+
+**Rejected.**
+- *`market_terms_unavailable`*: it means the opposite.
+- *`200` with a warning field*: the request is not finished, and a client that
+  reads only the status would never retry.
+- *`502`*: a status the frontend has no handler for, and a code is the
+  contract anyway.
+
+**Reversal trigger.** None expected. It goes when the last step does, for
+example if market_service learns of settlement some other way.
+
+---
+
+### D-NEW — Any administrator may settle, and a resolver role, if one is added, takes it over
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `CurrentAdmin` on the ledger route, and `get_any` with an admin
+guard on market_service's. The creator, the proposer and the approver may all
+settle.
+
+**Why.** The two-person rule is spent at approval (ADR 0016). Settlement carries
+out a decision that is already made, and chooses nothing. [4.4] #16's split
+between creator and resolver is not built: ADR 0007 declined it and #16 is
+closed.
+
+**Rejected.** *Excluding the proposer, as approval does*: that guards a choice,
+and settlement makes none.
+
+**Reversal trigger.** A resolver role is added to `UserRole`: settlement then
+moves to that role on both routes. *When* any administrator may settle is a
+separate entry, "Settlement waits for `settleable`, which market_service
+derives from `approved_at`".
+
+---
+
+### D-NEW — Neither call to market_service is made holding a database connection
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The public-detail read runs before the request's first database
+statement, or after a rollback on a path that has already read. The settle call
+follows the commit with no statement between them, so nothing autobegins a
+transaction.
+
+**Why.** "The cold path holds no connection across the terms pull", applied to
+a request that calls out twice. A hung market_service must cost this request its
+latency, not a pooled connection or a lock on the book.
+
+**Rejected.** *Making the settle call inside the transaction so that one
+failure rolls everything back*: the book lock would be held across a remote
+round trip, and a hung market_service would stop trading in that market. The
+rollback it buys is also wrong, because a failed call would un-pay every
+winner.
+
+**Reversal trigger.** A step that has to touch the database between the commit
+and the settle call. The connection-release test fails on that change, and the
+step moves rather than the test.
+
+---
+
+### D-NEW — APPROVED is read before the book lock, because send-back and settlement never overlap
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The ledger trusts an `approved` and `settleable` answer read
+before it locks.
+
+**Why.** ADR 0017 already argues that the ledger's lock holds nothing still in
+market_service. The read is also stable. APPROVED has two exits: SETTLED,
+which the ledger accepts too, and back to CLOSED by send-back ([3.3] #11),
+which ends at `window_ends_at`. Every other write path in market_service
+refuses an APPROVED market: save and publish through the frozen table, close
+early and propose through the resolution table, approve and reject through
+`_proposal_to_decide`. The sweep touches only OPEN markets. Settlement starts
+five minutes after send-back ends, so no send-back can start once `settleable`
+is readable, and one that started in time has had five minutes to commit.
+
+The gap is for one race. A send-back checks the clock just before
+`window_ends_at` and commits just after. A settlement's unlocked read lands in
+between, sees `approved` and `settleable`, and pays the old winner. The
+send-back then commits, but the settlement record is written, and "On a
+repeat, the recorded outcome governs" keeps the old winner paid and recorded
+for good.
+
+**Rejected.** *Re-reading the status after the commit*: it would close no
+window, since the read is remote, and it would cost a second call.
+
+**Reversal trigger.** Any further transition out of APPROVED, or send-back
+allowed past `window_ends_at`.
+
+---
+
+### D-NEW — `ledger.market_settlements` is the latch, and positions and `q` are never written
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** There is one row per settled market: `market_id` (primary key),
+`outcome_id`, with `(market_id, outcome_id)` a composite foreign key into
+`market_outcomes`, and `settled_at`. It is read under the book lock by settlement, which writes nothing if
+the row exists, and by the trade path, which then refuses
+`409 market_closed`. Positions and `q` are untouched. It is a new table, and
+whichever of this stack's ledger-model PR and [F-5] #75's ledger PR merges
+second adds its Alembic revision.
+
+**Why.** It keeps a record of what was held and paid. It keeps "Shares
+outstanding equal the sum of positions, so the outstanding check is a backstop
+on the trade route" true without new code. It gives the portfolio and history
+something of the ledger's own to join, with no call to market_service. The
+trade path's status gate already refuses a SETTLED market; the latch covers a
+trade that passed the gate and then queued on the book lock behind the
+settlement.
+
+**Rejected.**
+- *Zeroing positions*: it loses the record, and the portfolio would have
+  nothing to show.
+- *A `settled_at` column on `market_books`*: a status on a table ADR 0017
+  keeps status-free.
+- *Relying on the status gate alone*: it refuses before the lock, not under
+  it.
+- *Storing what it paid (a total, a holder count, the residue)*: a stored sum
+  of ledger rows, the second source of truth ADR 0009 refuses, and nothing
+  reads it. The entries are the record of the money, and the audit entry
+  already carries the figures for a reader of the log.
+
+**Reversal trigger.** A reader that needs a settled market's shares to read as
+zero and cannot join the record, or any path that could reopen a settled
+market.
+
+**Notes.** [BE] #221's void and refund is a later user of `post_all` and of
+this record, and is not designed here. `outcome_id` is non-null, because a
+settlement always has a winner, so a void may need a record shape of its own.
+
+---
+
+### D-NEW — On a repeat, the recorded outcome governs
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** If the settlement record exists, the ledger answers from it.
+What market_service reports now is not read for the payout. Nothing is paid
+again, whatever market_service reports.
+
+**Why.** Settlement is one-way, and money that has been paid cannot be
+recalled. If a later answer from market_service could steer a repeat, any
+inconsistency between the two services would turn into a second payout.
+
+**Rejected.** *Comparing the two and refusing on a mismatch*: it leaves an
+administrator with a market they can neither finish nor fix. The step that
+remains is marking SETTLED, and that doesn't depend on which outcome is named.
+
+**Reversal trigger.** A settlement can be reversed. Nothing planned does this.
+
+---
+
+### D-NEW — One settlement is one commit, through `posting.post_all`
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Every winner's payout is its own transaction of kind
+`SETTLEMENT`, keyed `settlement:{market_id}:{user_id}`, with one leg on that
+user's account ("A transaction puts at most one leg on any USER account"). The
+residue is one more, of kind `SETTLEMENT_RESIDUE`, keyed
+`settlement_residue:{market_id}`. Both keys are derived by the server; no
+request supplies any part of them. All of them, the record and the audit entry are posted
+by `posting.post_all`, which commits once. `post_all` is a new function in
+decker757's `posting.py`, and its shape waits on his agreement.
+
+**Why.** Two reasons, neither of them speed:
+- *Atomicity.* A settlement that is half paid cannot be labelled, and cannot be
+  finished idempotently.
+- *The lock.* `post` commits, so a loop of `post` calls would release the book
+  lock after the first winner, and a trade could land mid-settlement.
+
+**Rejected.**
+- *A loop of `post`*: see above.
+- *One transaction with a leg per winner*: it breaks the one-leg-per-user
+  invariant from the other side, and turns the history into one row shared by
+  a thousand users.
+
+**Reversal trigger.** "The book's writes share `posting.post`'s commit, and
+nothing may follow it" changes so that callers own the commit. A speed
+measurement is **not** a trigger.
+
+**Notes.** `_refuse_overdrafts` checks USER accounts only. On an
+under-subsidised market, the pool goes negative between the payouts and the
+residue, inside one uncommitted transaction. No reader can see that, and the
+pool ends at `0.0000`. Do not reorder the batch to avoid it.
+
+---
+
+### D-NEW — A settlement's first stamp follows the newest entry on every account it locks
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The first transaction in the batch is stamped one tick after the
+newest entry on the union of the locked accounts: the pool, PLATFORM and every
+winner. Each later transaction is stamped one tick after the one before.
+
+**Why.** "A movement's timestamp is fixed under its account locks, not trusted
+from the clock", applied to a batch. Stamping from the pool's entries alone
+lets a winner with a newer entry get a payout listed before it, with a
+`balance_after` they never held. The chain keeps no two entries on one account
+at the same time.
+
+**Rejected.**
+- *One stamp for the whole batch*: PLATFORM and the pool would carry several
+  entries with the same time, and "no two entries on one account share a time"
+  would break.
+- *A per-transaction probe*: correct, but a thousand probes where one union
+  query does.
+
+**Reversal trigger.** The feed stops ordering by `created_at`.
+
+---
+
+### D-NEW — The residue empties the pool, in whichever direction it falls
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Pool minus the payouts:
+- positive: posted from the pool to PLATFORM;
+- negative: posted from PLATFORM to the pool;
+- zero: skipped.
+
+The pool ends at `0.0000`. A market nobody traded returns its whole seed.
+
+**Why.** A settled pool holding credits would be money that nobody owns and
+nothing reads. The direction follows ADR 0009: PLATFORM is the only account
+meant to absorb the difference.
+
+**Rejected.**
+- *Leaving the residue in the pool*: credits stranded in an account that will
+  never move again.
+- *Paying pro rata when the pool is short*: it pays a winner less than a
+  winning share is worth, which is the opposite of the first criterion.
+
+**Reversal trigger.** Per-market fees the platform keeps, or a decision on the
+open question about markets subsidised below `b·ln(n)`.
+
+---
+
+### D-NEW — A settled position shows `result` and `payout`, and its value fields are null
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The row keeps `quantity`, `cost_basis` and `average_entry_price`,
+and adds `result` (`paid_out` | `worthless`) and `payout`. `price`, `value` and
+`unrealized_pnl` are `null`. It adds nothing to `positions_value`.
+
+**Why.** The payout is already in the balance. Valuing the shares again at the
+frozen book is the double count that #12's note warned about. `null` rather
+than `0.0000`, because zero is a valuation, and a sold-out position is already
+the one place zero means something. This supersedes the realized-outcome
+placeholder that "A resolved market's realized outcome is [3.4] #12's
+criterion, not [T-4] #24's" declined to add.
+
+**Rejected.**
+- *Dropping the row*: the trader loses the record of what they held.
+- *`value = payout`*: it adds the payout into `net_worth` a second time.
+
+**Reversal trigger.** A ticket that needs a settled position given a value.
+
+---
+
+### D-NEW — A payout's history row is kind `settlement`, with market, outcome and quantity
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** The row builder maps `settlement`: `market_id`, `outcome_id` (the
+winner) and `quantity` (shares paid) come from `context`; `side` and
+`average_price` are `null`. A holder of only losing shares has no entry, so they
+have no row.
+
+**Why.** This is #12's criterion, moved from #25, and no longer conditional. A
+payout with no market on it is unreadable in a history. `average_price` stays
+`null` because every payout's price is exactly one, and showing it would invite
+reading a payout as a trade.
+
+**Rejected.** *A losing row at zero*: a zero leg is refused by `posting.post`,
+and inventing a row with no entry breaks "the history is the ledger presented".
+
+**Reversal trigger.** None. "A resolution payout's history row is [3.4] #12's
+criterion, not [T-5] #25's" becomes history when this lands.
+
+---
+
+### D-NEW — Settled markets sink in the overview's unfiltered view, and the counts are unchanged
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** In the unfiltered view the order is settled last, then #5's
+`close_time ASC NULLS LAST, id ASC`. Filtered views keep #5's order. The counts
+stay every status, zero-filled, summing to what the caller can see.
+
+**Why.** "The admin overview orders by soonest close, missing close times last,
+then id" names SETTLED as its reversal trigger: terminal markets would pile up
+at the top of a work queue. Sinking keeps them reachable, where excluding them
+would break "the counts sum to the markets visible".
+
+**Rejected.** *Excluding settled markets from the unfiltered view*: the counts
+and the list would then disagree.
+
+**Notes.** [2.1] #210 builds this order, into its paging and its cursor, so the
+cursor format does not change when SETTLED arrives. It is switched off until
+SETTLED exists (#227). Whichever of #210 and #227 merges second switches it on,
+in one line. If #210 records the order in an entry of its own, the two must
+agree.
+
+**Reversal trigger.** A second terminal status.
+
+---
+
+### D-NEW — SETTLED joins the frozen, resolution and decided status tables
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `PublicMarketStatus` and `MarketStatus` gain `settled` in one
+commit. SETTLED is added to `_FROZEN_STATUS_ERRORS`, to
+`_RESOLUTION_STATUS_ERRORS` and to `_proposal_to_decide`'s state check, each
+answering `409 market_already_settled`. It is also added to `DECIDED_STATUSES`.
+
+**Why.** Without these, `_refuse_if_frozen`'s `.get()` lets an autosave reach
+`_clear_children` and `status = DRAFT`, deleting a settled market's outcomes
+and turning it back into a draft. Close early, propose and the decisions would
+answer true but useless codes. And `DECIDED_STATUSES` without SETTLED would hide
+the winner from traders and from the ledger's own repeat read. ADR 0017 already
+requires the two enums to change in one commit.
+
+**Rejected.** *`status not in (DRAFT, SUBMITTED)`*: the frozen table's own
+comment refuses it, because each status owes its own error.
+
+**Reversal trigger.** None. These are the fixes the new member needs.
+
+---
+
+### D-NEW — The ledger writes the settlement's audit entry, through its own seam onto `shared/audit.py`
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** `market.settled` is appended on the payout session, after the
+settlement record is staged and before `post_all` commits. The ledger gains
+`core/audit.py`, `model/audit.py` and `service/audit.py`. market_service's settle
+step writes no entry.
+
+**Why.** ADR 0006: the entry commits with the action. Writing it only once is
+what makes "one action, one entry" true. Order matters because
+`has_pending_writes` sees ORM writes only, not a Core `insert()`. The latch,
+checked before any write, keeps a settled market away from `post_all`'s replay
+branch. The record, an ORM add staged first, means the guard still fires if the
+latch is ever bypassed.
+
+**Rejected.** *Entries in both services*: two log lines for one action.
+
+**Rule for the implementation.** The three seam files may differ from
+market_service's in constants and vocabulary only. If any would repeat
+market_service's code beyond that, CLAUDE.md requires the extraction into
+`shared/` in the same PR.
+
+**Reversal trigger.** The ledger moves to its own database (ADR 0006's outbox).
+
+---
+
+### D-NEW — Settlement lands as a stack of eight PRs, docs first
+
+**Date:** 2026-10-04 · **Ticket:** #12 · **Status:** active
+
+**Decision.** Each PR says `Refs #12` until the last PR that completes #12's
+criteria, which says `Closes #12`. Each part targets the one below it. From
+PR 2 on, each branch is named `12-settlement-<n>-<slug>`. PR 1 (#227) keeps
+`12-settled-status`, because renaming a pull request's head branch closes the
+pull request.
+
+| # | Contents | On | Reviewer first |
+| --- | --- | --- | --- |
+| 0 | docs: ADR 0019, the ADR 0009 and 0017 amendments, these entries, CLAUDE.md, the ADR README | `dev` | decker757 |
+| 1 | market: SETTLED in `MarketStatus` and `PublicMarketStatus`, `DECIDED_STATUSES`, `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS`, `_proposal_to_decide`, `409 market_already_settled`; `settleable` on the public detail, from `approved_at`, the window length setting (24 h default) and the five-minute gap; `settleable` on each admin overview row; `docs/api/market-service.md`'s status and `settleable` edits | 0 | decker757 |
+| 2 | market: `POST /markets/{id}/settle` with `409 dispute_window_open`, and the settle route's section of `docs/api/market-service.md` | 1 | decker757 |
+| 3 | ledger model: `TransactionKind` `SETTLEMENT` and `SETTLEMENT_RESIDUE`, `market_settlements`, the ledger's audit seam | 2 | |
+| 4 | `posting.post_all` | 3 | decker757 (`posting.py`) |
+| 5 | `service/settlement.py`, `settleable` on `MarketTerms`, the settle POST on the `market_terms` client, the trade path's latch, with the 5 s, one-commit, rollback, stamp, no-connection, settle-vs-settle, settle-vs-trade and window-boundary tests | 4 | |
+| 6 | controller route, error codes, `docs/api/ledger-service.md` | 5 | |
+| 7 | reads: portfolio, history; mark the three entries #12 fulfils as history | 6 | |
+
+The settled-last order is built by [2.1] #210's paging, switched off until
+SETTLED exists. Whichever of #210 and #227 merges second switches it on, in one
+line, with its test: a settled market sorts last in the unfiltered overview,
+across a page boundary. If #210's switch lands after PR 7, PR 7 says
+`Refs #12`, and #12 is closed when the switch merges.
+
+PR 1 builds `settleable`. [3.3] #11 builds send-back and the countdown on
+it, and #12 does not wait for #11.
+
+**Why.** CLAUDE.md: one layer or one behaviour per PR, each green on its own.
+Docs go first so that review of the design comes before review of the code.
+The three market PRs go to decker757 first because market_service's lifecycle
+is his. PR 4 touches `posting.py`, which is his file.
+
+**Rejected.** *One PR*: a reviewer could not follow it. *Code before the ADR*:
+the design would be argued in code review.
+
+**Notes.** A PR that changes a contract carries its docs, so
+`docs/api/market-service.md`'s status and `settleable` edits land in PR 1,
+not PR 2. PR 1 is the one that adds `settled` to the browse, the detail and
+the overview, and adds the field.
+
+**Reversal trigger.** Review asks for a different split.
+
+---
+
+### D-NEW — Settlement waits for `settleable`, which market_service derives from `approved_at`
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** market_service derives, on its own clock, from `approved_at`:
+send-back is allowed until `window_ends_at`, and settlement from
+`window_ends_at` plus five minutes. It exposes the second as `settleable` on
+the public detail. The ledger reads it in its status read and refuses an
+`approved` market that is not `settleable` with `409 dispute_window_open`.
+`POST /markets/{id}/settle` refuses the same, so a direct call cannot settle
+mid-window. ADR 0019.
+
+**Why.** [3.3] #11's window exists so that a wrong winner can be sent back
+before anyone is paid. A settlement inside it would make the window decide
+nothing. One clock decides both edges, the way the clock decides closing (ADR
+0011), and the ledger reads the answer rather than recomputing it, because
+two clocks deciding one boundary disagree at it. `settleable` gets no default
+in `MarketTerms`, for the reason `status` has none.
+
+**Rejected.** *The ledger computing the window from `approved_at`*: a second
+clock on the boundary, and a copy of #11's window length in the ledger's
+settings.
+
+**Reversal trigger.** None expected while #11's window exists.
+
+---
+
+### D-NEW — Settlement opens five minutes after send-back closes
+
+**Date:** 2026-10-05 · **Ticket:** #12, #11 · **Status:** active
+
+**Decision.** `settleable` turns true five minutes after `window_ends_at`, not
+at it.
+
+**Why.** A send-back that checks the clock just before `window_ends_at` and
+commits just after is invisible to a settlement's unlocked read in between.
+Without a gap, that settlement pays the old winner, and the record keeps it
+for good. Five minutes is a judgement call: market_service sets no statement,
+transaction or request timeout, so nothing bounds how long such a send-back
+takes. It is far longer than any request that completes, and short beside a
+24-hour window.
+
+**Rejected.**
+- *No gap*: the race above.
+- *A "settling" claim in market_service that locks the row before the
+  payment*: a new status, and a write in market_service before the ledger's,
+  which is a dual write, for the same result the gap gives.
+
+**Reversal trigger.** A statement or transaction timeout is added to
+market_service under [5.3] #19, the deploy pipeline. That bounds how long a
+send-back can take, so the gap can shrink, as long as it still exceeds the
+timeout.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.
