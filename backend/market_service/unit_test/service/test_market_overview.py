@@ -25,6 +25,7 @@ from core.config import get_settings
 from core.database import get_session_factory
 from core.errors import MalformedCursor
 from model.entities import Market, MarketOverview, MarketStatus
+from model.schemas import MarketOverviewRowOut
 from service import browsing, market_service
 from service.audit import Actor
 from unit_test.conftest import (
@@ -675,3 +676,25 @@ async def test_a_settled_rows_settleable_stays_true_even_with_no_window_end(
     rows, _ = await _overview(session, caller, now=datetime.now(UTC))
 
     assert [(row.id, row.settleable) for row in rows] == [(market_id, True)]
+
+
+async def test_an_approved_rows_window_end_is_the_stored_one(
+    session: AsyncSession,
+) -> None:
+    """[3.3] #11: the countdown is visible to administrators on the overview,
+    from `dispute_window_ends_at` exactly as approval stored it (ADR 0023).
+    Fails with the field missing from the row, the card or the select.
+    """
+    caller = actor()
+    market_id = (await approved_market(session, caller)).id
+    stored = await session.scalar(
+        select(Market.dispute_window_ends_at).where(Market.id == market_id)
+    )
+    assert stored is not None, "approval must have stored the end"
+
+    rows, _ = await _overview(session, caller, now=datetime.now(UTC))
+
+    shown = [MarketOverviewRowOut.model_validate(row) for row in rows]
+    assert [(row.id, row.dispute_window_ends_at) for row in shown] == [
+        (market_id, stored)
+    ]
