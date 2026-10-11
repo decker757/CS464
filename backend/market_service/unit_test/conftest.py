@@ -517,13 +517,19 @@ _SETTLEMENT_GAP = timedelta(minutes=5)
 def time_until_settleable() -> timedelta:
     """How long after approval a market becomes settleable, under the current settings.
 
-    Read at call time, so a test that raised the window sees the raised one.
+    Read at call time, so a test that raised the window before approving sees
+    the raised one: approval stores the window's end from the setting as it is
+    then (ADR 0023).
     """
     return timedelta(seconds=get_settings().dispute_window_seconds) + _SETTLEMENT_GAP
 
 
 def settleable_edge(approved_at: datetime) -> datetime:
-    """The first instant settlement is allowed for a market approved at `approved_at`."""
+    """The first instant settlement is allowed for a market approved at `approved_at`.
+
+    The stored window end plus the gap, for a market approved under the
+    current settings.
+    """
     return approved_at + time_until_settleable()
 
 

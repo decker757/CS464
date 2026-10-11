@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import inspect
+from alembic import command
+from sqlalchemy import inspect, text
 
 from core.database import SCHEMA, Base
 from main import create_app
 from migrate import ALEMBIC_INI, main
-from shared.migrating import VERSION_TABLE, run_in_transaction
+from shared.migrating import VERSION_TABLE, alembic_config, run_in_transaction
 from shared.testing import (
     assert_baseline_downgrades_and_upgrades_again,
     assert_migrating_an_empty_schema_builds_the_models,
@@ -69,6 +72,50 @@ def test_the_baseline_downgrades_to_nothing_and_upgrades_again(empty_schema) -> 
         metadata=Base.metadata,
         schema=SCHEMA,
     )
+
+
+def test_markets_approved_before_0002_get_a_window_end(empty_schema) -> None:
+    """[3.3] #11, D2: revision 0002's hand-written backfill. The suites build
+    from the models and never run it, so this is its one test (ADR 0020's
+    2026-10-11 note). An approved market gets `approved_at` plus 24 hours;
+    one never approved stays null. Fails without the `UPDATE`.
+    """
+    approved_id, closed_id = uuid.uuid4(), uuid.uuid4()
+    approved_at = datetime(2026, 10, 1, 9, 30, tzinfo=UTC)
+
+    command.upgrade(alembic_config(ALEMBIC_INI, _URL), "0001")
+    # Raw SQL: the models already carry the column 0001 lacks.
+    run_in_transaction(
+        _URL,
+        lambda connection: connection.execute(
+            text(
+                "INSERT INTO market.markets "
+                "(id, creator_id, draft_key, status, approved_at) VALUES "
+                "(:approved, :creator, :key_a, 'approved', :approved_at), "
+                "(:closed, :creator, :key_b, 'closed', NULL)"
+            ),
+            {
+                "approved": approved_id,
+                "closed": closed_id,
+                "creator": uuid.uuid4(),
+                "key_a": uuid.uuid4(),
+                "key_b": uuid.uuid4(),
+                "approved_at": approved_at,
+            },
+        ),
+    )
+
+    assert main() == 0
+
+    ends = dict(
+        run_in_transaction(
+            _URL,
+            lambda connection: connection.execute(
+                text("SELECT id, dispute_window_ends_at FROM market.markets")
+            ).all(),
+        )
+    )
+    assert ends == {approved_id: approved_at + timedelta(hours=24), closed_id: None}
 
 
 def test_a_schema_from_before_75_is_refused_and_left_as_it_was(empty_schema, capsys) -> None:

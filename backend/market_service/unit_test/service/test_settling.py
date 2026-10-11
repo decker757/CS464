@@ -188,17 +188,18 @@ async def test_each_status_short_of_approved_is_market_not_approved(
     another administrator's draft or submitted market is found and refused,
     not 404.
 
-    Every row carries a long-stale `approved_at`, so only the status can
-    refuse it: fails with the status check removed, or with `get` in place
+    Every row carries a long-stale `approved_at` and window end, so only the
+    status can refuse it: fails with the status check removed, or with `get` in place
     of `get_any` (the drafts would be `market_not_found`). The status is
     re-read in the request's own session before anything rolls back.
     """
     owner, settler = _actor(), _actor(username="ihsan_b")
     market_id = await build(session, owner)
+    stale = await database_now(session) - _STALE
     await session.execute(
         update(Market)
         .where(Market.id == market_id)
-        .values(approved_at=await database_now(session) - _STALE)
+        .values(approved_at=stale, dispute_window_ends_at=stale + timedelta(days=1))
     )
     await session.commit()
     assert await _status_in(session, market_id) is status, "the builder must feed the named status"
@@ -252,11 +253,12 @@ async def test_an_approved_market_not_yet_settleable_is_refused(
     assert await _marked_settled(audit_reader, settler) == 0
 
 
-async def test_an_approved_market_with_no_approved_at_is_refused(
+async def test_an_approved_market_with_no_window_end_is_refused(
     session: AsyncSession, audit_reader: AsyncSession
 ) -> None:
-    """"The settle step checks in a fixed order": "An APPROVED market with a
-    null `approved_at` fails closed as `dispute_window_open`."
+    """"The settle step checks in a fixed order", as amended by [3.3] #11: an
+    APPROVED market with a null `dispute_window_ends_at` fails closed as
+    `dispute_window_open`.
 
     Approved long ago, so only the null can refuse it: fails with the null
     read as settleable.
@@ -264,7 +266,9 @@ async def test_an_approved_market_with_no_approved_at_is_refused(
     settler = _actor(username="ihsan_b")
     market = await _settleable_since(session, _actor(), _STALE)
     await session.execute(
-        update(Market).where(Market.id == market.id).values(approved_at=None)
+        update(Market)
+        .where(Market.id == market.id)
+        .values(dispute_window_ends_at=None)
     )
     await session.commit()
 
