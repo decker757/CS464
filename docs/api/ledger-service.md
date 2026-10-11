@@ -914,7 +914,7 @@ Both must carry an offset: `Z` or `+08:00`. In a query string, send `+` as
   "points": [
     {
       "state_version": 0,
-      "occurred_at": "2026-10-08T02:15:09.441000Z",
+      "occurred_at": "2026-10-08T02:15:09.441000+00:00",
       "prices": [
         { "outcome_id": "4f2a...", "position": 0, "price": "0.5000" },
         { "outcome_id": "b7e1...", "position": 1, "price": "0.5000" }
@@ -922,7 +922,7 @@ Both must carry an offset: `Z` or `+08:00`. In a query string, send `+` as
     },
     {
       "state_version": 1,
-      "occurred_at": "2026-10-08T02:16:40.102311Z",
+      "occurred_at": "2026-10-08T02:16:40.102311+00:00",
       "prices": [
         { "outcome_id": "4f2a...", "position": 0, "price": "0.6225" },
         { "outcome_id": "b7e1...", "position": 1, "price": "0.3775" }
@@ -930,7 +930,7 @@ Both must carry an offset: `Z` or `+08:00`. In a query string, send `+` as
     },
     {
       "state_version": 2,
-      "occurred_at": "2026-10-08T03:02:11.870954Z",
+      "occurred_at": "2026-10-08T03:02:11.870954+00:00",
       "prices": [
         { "outcome_id": "4f2a...", "position": 0, "price": "0.5744" },
         { "outcome_id": "b7e1...", "position": 1, "price": "0.4256" }
@@ -952,10 +952,10 @@ chart draws the history, then appends live frames and drops any frame whose
 **The first point is the book's opening.** `state_version` 0, every outcome at
 the same price, at the book's `opened_at`. After that there is one point per
 trade, in the order the trades committed, which is `state_version` order. A
-point's `occurred_at` is when that trade's entries landed. That can be a few
-microseconds later than the `occurred_at` on the frame for the same
-`state_version`, which is when the trade took its price under the book lock
-(#187). Dedupe on `state_version`, never on time.
+point's `occurred_at` is when that trade's entries landed. That can be later
+than the `occurred_at` on the frame for the same `state_version`, which is when
+the trade took its price under the book lock (#187). Across replicas the gap is
+clock skew. Dedupe on `state_version`, never on time.
 
 ### `from` and `to`
 
@@ -970,8 +970,8 @@ window moved it to:
 {
   "market_id": "9d1c...",
   "points": [
-    { "state_version": 41, "occurred_at": "2026-10-08T22:51:37.004118Z", "prices": [ ... ] },
-    { "state_version": 42, "occurred_at": "2026-10-09T08:12:44.501200Z", "prices": [ ... ] }
+    { "state_version": 41, "occurred_at": "2026-10-08T22:51:37.004118+00:00", "prices": [ ... ] },
+    { "state_version": 42, "occurred_at": "2026-10-09T08:12:44.501200+00:00", "prices": [ ... ] }
   ],
   "result": null,
   "winning_outcome_id": null,
@@ -999,7 +999,7 @@ reported beside the points:
   "points": [ /* ... ending at the last trade ... */ ],
   "result": "settled",
   "winning_outcome_id": "b7e1...",
-  "result_recorded_at": "2026-10-10T09:41:02.118000Z"
+  "result_recorded_at": "2026-10-10T09:41:02.118000+00:00"
 }
 ```
 
@@ -1049,7 +1049,7 @@ path with `POST` is the trade route above; this one only reads.
   "trades": [
     {
       "transaction_id": "8a7e...",
-      "occurred_at": "2026-10-08T03:02:11.870954Z",
+      "created_at": "2026-10-08T03:02:11.870954+00:00",
       "user_id": "77c0...",
       "outcome_id": "4f2a...",
       "side": "sell",
@@ -1060,7 +1060,7 @@ path with `POST` is the trade route above; this one only reads.
     },
     {
       "transaction_id": "36fd...",
-      "occurred_at": "2026-10-08T02:16:40.102311Z",
+      "created_at": "2026-10-08T02:16:40.102311+00:00",
       "user_id": "5f3e...",
       "outcome_id": "4f2a...",
       "side": "buy",
@@ -1070,7 +1070,7 @@ path with `POST` is the trade route above; this one only reads.
       "state_version": 1
     }
   ],
-  "next_cursor": "MjAyNi0xMC0wOFQwMjoxNjo0MC4xMDIzMTFa...",
+  "next_cursor": "MjAyNi0xMC0wOFQwMjoxNjo0MC4xMDIzMTEr...",
   "has_more": true
 }
 ```
@@ -1078,7 +1078,7 @@ path with `POST` is the trade route above; this one only reads.
 | Field | Meaning |
 | --- | --- |
 | `transaction_id` | The trade's transaction. The same id is on the trader's own history row. |
-| `occurred_at` | When the trade's entries landed. The same instant as the matching price-history point. |
+| `created_at` | When the trade's entries landed, named as on `/ledger/entries/me`. It equals the matching price-history point's `occurred_at`. |
 | `user_id` | The trader. An id, not a name (below). |
 | `side` | `"buy"` or `"sell"`. |
 | `quantity` | Shares, at scale 4. |

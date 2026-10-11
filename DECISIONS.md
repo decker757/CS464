@@ -7164,8 +7164,8 @@ come from `book_prices.priced`, the quantizer the snapshot and the price frame
 use. So a point and a frame for the same `state_version` give the same strings.
 
 **Reversal trigger.** A request measured as too slow. Then a stored table,
-backfilled by this replay function, which is pure and in `core/` (PR 4) so the
-backfill can call it unchanged.
+backfilled by this replay function, which is pure and in `core/` (the replay
+PR) so the backfill can call it unchanged.
 
 ---
 
@@ -7235,10 +7235,10 @@ starts at the right level. Points after `to` are left out. A `from` later than
 
 **Notes.** A point is a `price` socket frame without `type` and `market_id`.
 The chart appends live frames and dedupes on `state_version`. A point's
-`occurred_at` is when the trade's entries landed, which can be slightly later
-than the frame's `occurred_at` (the book's `state_changed_at`) for the same
-`state_version`. The snapshot section already says this about the entries
-(#187).
+`occurred_at` is when the trade's entries landed, which can be later than
+the frame's `occurred_at` (the book's `state_changed_at`) for the same
+`state_version`. Across replicas the gap is clock skew. The snapshot section
+already says this about the entries (#187).
 
 **Reversal trigger.** The payload size, measured, is a problem. Then a bucket
 the client chooses from a fixed list, with high and low in each bucket so a
@@ -7253,8 +7253,8 @@ spike inside one stays visible.
 **Decision.** `GET /ledger/markets/{id}/trades` reads the market's pool account
 feed newest first, keeps the `trade_buy` and `trade_sell` entries, and pages
 it by keyset on `(created_at, id)` with the `/entries/me` cursor. Each row is
-built by `_trade_fields_of`, which PR 2 makes public as `trade_fields_of` in a
-refactor PR of its own, ahead of the feed. That PR changes no test assertion.
+built by `_trade_fields_of`, which the refactor PR makes public as
+`trade_fields_of`, ahead of the feed. That PR changes no test assertion.
 `user_id`, `total` and `state_version` come from `trading.result_of`, the
 reader of a trade's `context` that `trade_fields_of` already calls.
 
@@ -7300,9 +7300,9 @@ trades one each.
 ledger stores no username and asks auth for none. The administrator's browser
 resolves names through a new admin-only batch lookup on auth,
 `POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
-returning `{"users": [{"id", "username"}]}`. It mirrors ADR 0021's
-`POST /internal/users/lookup`, but it takes an administrator's token and never
-returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
+returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021
+(proposed in #270), `POST /internal/users/lookup`, but it takes an
+administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
 User column shows a short id that links to #259's user page.
 
 **Why.**
@@ -7322,7 +7322,8 @@ User column shows a short id that links to #259's user page.
   nothing on an admin page.
 - *Privacy.* For an administrator this is data that
   `/ledger/users/{id}/entries` already gives, grouped by market. For a trader
-  it would be new exposure, which is why the trade feed is admin-only (below).
+  it would be new exposure, which is why the trade feed is admin-only (the
+  next entry).
 - *Its own path, and a body.* One path answers one shape, so the paged search
   on `GET /admin/users` keeps its contract. 200 UUIDs in a query string are
   about 7.4 KB, close to common URL limits.
@@ -7362,8 +7363,8 @@ gets `403 not_an_administrator`.
   price frame to every subscriber of the market. An admin gate on the history
   would protect nothing, and it would stop the market page from reusing the
   route.
-- *The trade feed says who traded.* That is the exposure the entry above
-  describes. Administrators can already read it through
+- *The trade feed says who traded.* That is the exposure the previous entry's
+  Why describes. Administrators can already read it through
   `/ledger/users/{id}/entries`, and traders cannot.
 
 **Rejected.**
