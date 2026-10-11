@@ -29,7 +29,7 @@ there instead of silently hollowing out every rounding test.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
@@ -625,6 +625,25 @@ def assert_rounding_is_load_bearing(
 
 
 @contextmanager
+def _on_each_statement(record: Callable[[str, object], None]) -> Iterator[None]:
+    """Call `record(statement, parameters)` for every statement the block sends."""
+    from sqlalchemy import event  # noqa: PLC0415
+
+    from core.database import get_engine  # noqa: PLC0415
+
+    engine = get_engine().sync_engine
+
+    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        record(statement, parameters)
+
+    event.listen(engine, "before_cursor_execute", before)
+    try:
+        yield
+    finally:
+        event.remove(engine, "before_cursor_execute", before)
+
+
+@contextmanager
 def capture_sql() -> Iterator[list[str]]:
     """Every statement the block sends to Postgres, in order.
 
@@ -634,21 +653,31 @@ def capture_sql() -> Iterator[list[str]]:
     structural assertion, and `before_cursor_execute` sees the compiled
     statement text without pinning any SQL syntax.
     """
-    from sqlalchemy import event  # noqa: PLC0415
-
-    from core.database import get_engine  # noqa: PLC0415
-
     statements: list[str] = []
-    engine = get_engine().sync_engine
 
-    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+    def keep_the_text(statement: str, _parameters: object) -> None:
         statements.append(statement)
 
-    event.listen(engine, "before_cursor_execute", before)
-    try:
+    with _on_each_statement(keep_the_text):
         yield statements
-    finally:
-        event.remove(engine, "before_cursor_execute", before)
+
+
+@contextmanager
+def capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
+    """Every statement the block sends, with its parameters, in order.
+
+    For a claim that lives in the parameters rather than the text, such as
+    the order accounts are locked in. The twin is market_service's
+    `recorded_statements`, which this service cannot import
+    (`test_import_boundary.py`).
+    """
+    captured: list[tuple[str, tuple]] = []
+
+    def keep_both(statement: str, parameters: object) -> None:
+        captured.append((statement, tuple(parameters or ())))
+
+    with _on_each_statement(keep_both):
+        yield captured
 
 
 def writes(statements: Sequence[str]) -> list[str]:
