@@ -184,39 +184,39 @@ export async function postTrade(marketId: string, data: TradeRequest): Promise<T
 }
 
 // --- [2.2] #55: market exposure --------------------------------------
-//
-// #6 (the backend slice) has not been built yet, so this shape is inferred
-// from #6's own acceptance criteria rather than read off docs/api/, which
-// has nothing for it yet — the team's call, not a guess made to unblock this
-// PR alone. A winning share pays exactly 1 credit (docs/api/ledger-service.md's
-// settlement section, "one credit per winning share"), so max_payout is the
-// outcome's shares_outstanding read as credits. Reconcile against the real
-// contract once #6 lands.
 
 export interface OutcomeExposure {
   outcome_id: string
   position: number
   shares_outstanding: string
-  // What this outcome would pay out if it resolved true: shares_outstanding,
-  // one credit each.
-  max_payout: string
+  // What this outcome would pay out if it resolved true: null once the
+  // market is settled (docs/api/ledger-service.md).
+  payout_if_wins: string | null
+  // pool - payout_if_wins. Negative is what the platform would have to top
+  // up; null once the market is settled.
+  residue_if_wins: string | null
 }
 
 export interface MarketExposure {
   market_id: string
-  // Empty, with pool null and exceeds_pool false, on a market the ledger has
-  // never opened a book for (#6's notes: "a 200 with nothing in it").
-  outcomes: OutcomeExposure[]
-  // seed_subsidy plus everything traders have paid in — not the seed alone
-  // (#6's acceptance criteria). Null when there is no book yet.
+  // null when the ledger has never opened a book for this market yet.
+  opened_at: string | null
+  state_version: number | null
+  seed_subsidy: string | null
+  // seed_subsidy plus everything traders have paid in, minus everything
+  // sold. Null when there is no book yet, or once the market is settled.
   pool: string | null
-  // True when any outcome's max_payout exceeds pool.
-  exceeds_pool: boolean
+  // True when any outcome's payout_if_wins is strictly greater than pool.
+  // Always false once the market is settled.
+  payout_exceeds_pool: boolean
+  // null until the ledger records how the market ended.
+  result: 'settled' | null
+  winning_outcome_id: string | null
+  outcomes: OutcomeExposure[]
 }
 
-/** Per-outcome shares outstanding and max payout for one market, plus
- * whether any outcome's payout would exceed the pool ([2.2] #6, admin panel
- * #55). Inferred: no real endpoint yet. */
+/** Per-outcome shares outstanding and payout for one market, plus whether
+ * any outcome's payout would exceed the pool ([2.2] #6, admin panel #55). */
 export async function getMarketExposure(marketId: string): Promise<MarketExposure> {
   const res = await api.get<MarketExposure>(`${LEDGER_BASE}/ledger/markets/${marketId}/exposure`)
   return res.data
