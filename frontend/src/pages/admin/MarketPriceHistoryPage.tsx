@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMarketPriceHistory, getMarketTrades, type MarketTrade, type PriceHistory } from '../../api/ledgerApi'
+import { getMarketPriceHistory, getMarketTrades, type MarketTrade, type MarketTradePage, type PriceHistory } from '../../api/ledgerApi'
 import AppLayout from '../../components/layout/AppLayout'
 import MarketTradeTable from '../../components/markets/MarketTradeTable'
 import PriceHistoryChart from '../../components/markets/PriceHistoryChart'
@@ -12,8 +12,8 @@ import { useMarketDetail } from '../../hooks/useMarketDetail'
 import { usePagedList } from '../../hooks/usePagedList'
 
 const pagedTradeOptions = {
-  itemsOf: (page: { trades: MarketTrade[]; next_cursor: string | null }) => page.trades,
-  nextCursorOf: (page: { trades: MarketTrade[]; next_cursor: string | null }) => page.next_cursor,
+  itemsOf: (page: MarketTradePage) => page.trades,
+  nextCursorOf: (page: MarketTradePage) => page.next_cursor,
   idOf: (trade: MarketTrade) => trade.transaction_id,
 }
 

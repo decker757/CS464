@@ -230,7 +230,7 @@ export interface MarketTrade {
   state_version: number
 }
 
-interface MarketTradePage {
+export interface MarketTradePage {
   trades: MarketTrade[]
   next_cursor: string | null
   has_more: boolean
