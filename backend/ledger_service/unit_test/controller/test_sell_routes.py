@@ -283,6 +283,7 @@ def test_the_docs_error_table_is_exactly_the_issues() -> None:
 
     assert rows == {
         ("401", "invalid_token"),
+        ("403", "account_suspended"),
         ("404", "market_not_found"),
         ("409", "market_closed"),
         ("409", "quote_stale"),
@@ -296,6 +297,7 @@ def test_the_docs_error_table_is_exactly_the_issues() -> None:
         ("422", "invalid_request"),
         ("500", "market_book_incomplete"),
         ("503", "market_terms_unavailable"),
+        ("503", "auth_unavailable"),
     }
 
 
