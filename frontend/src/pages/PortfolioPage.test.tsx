@@ -169,6 +169,19 @@ describe('PortfolioPage', () => {
     expect(screen.queryByText('+0.0000')).not.toBeInTheDocument()
   })
 
+  it('shows a settled position, whose price, value and P&L are null, as dashes instead of crashing', async () => {
+    // [3.4] #12: a position in a settled market is no longer valued, and the
+    // ledger sends null for these three. The rest of the page still renders.
+    const settled = { ...portfolio().positions[0], price: null, value: null, unrealized_pnl: null }
+    mockPortfolio(portfolio({ positions: [settled] }))
+    mockMarket('mkt-1', market({ status: 'settled' }))
+    renderPage()
+
+    expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
+    expect(screen.getAllByText('—')).toHaveLength(3)
+    expect(screen.queryByText('0.0000')).not.toBeInTheDocument()
+  })
+
   it('fetches each distinct market only once across multiple positions in it', async () => {
     let calls = 0
     server.use(http.get(`${MARKET_BASE}/public/markets/mkt-1`, () => { calls += 1; return HttpResponse.json(market()) }))
