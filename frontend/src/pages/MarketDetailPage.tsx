@@ -31,8 +31,9 @@ function closedMessage(status: MarketStatus): string {
   return 'Trading is closed for this market.'
 }
 
-// What the banner calls the outcome on record: only a settled market has paid
-// it, and a pending one is still waiting for a second administrator.
+// What the banner calls the outcome on record: only a settled market is final,
+// an approved one is waiting on the ledger's payout, and a pending one on a
+// second administrator.
 function outcomeBannerLabel(status: MarketStatus): string {
   if (status === 'settled') return 'Settled'
   if (status === 'approved') return 'Approved outcome'
