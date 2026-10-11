@@ -39,7 +39,7 @@ describe('AdminMarketRow', () => {
   })
 
   it('offers Close on another administrator\'s market too, not only the creator\'s', () => {
-    renderRow(OPEN_MARKET, false)
+    renderRow(OPEN_MARKET, true)
     expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument()
   })
 
@@ -110,6 +110,7 @@ describe('AdminMarketRow', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/somebody else closed/i)
     expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^close$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('paints a too-short reason on the field, the same shape as blocking_submission, and keeps the modal open', async () => {
