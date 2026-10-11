@@ -17,8 +17,22 @@ test('an admin sees a trade in the price history and the trade log', async ({ pa
   await card.getByRole('link', { name: 'Price History' }).click()
 
   await expect(page.getByText(market.question)).toBeVisible()
+
+  // The chart got points: wait until it stops loading, then neither the
+  // empty nor the failed message is showing.
+  await expect(page.getByText('Loading price history…')).toHaveCount(0)
+  await expect(page.getByText('No price history yet.')).toHaveCount(0)
+  await expect(page.getByText('Failed to load price history.')).toHaveCount(0)
+
   const rows = page.getByRole('row')
   // Newest first on the trade log; row 0 is the header.
-  await expect(rows.nth(1)).toContainText('Buy')
-  await expect(rows.nth(1)).toContainText('5.0000')
+  const newestTrade = rows.nth(1)
+  await expect(newestTrade).toContainText('Buy')
+  await expect(newestTrade).toContainText('5.0000')
+  // The user column is the trader's id, cut short (MarketTradeTable).
+  await expect(newestTrade).toContainText(trader.id.slice(0, 8))
+  // The date column read a field the ledger really sends.
+  const dateCell = newestTrade.getByRole('cell').first()
+  await expect(dateCell).not.toContainText('Invalid Date')
+  await expect(dateCell).toHaveText(/\d{1,2}\/\d{1,2}\/\d{4}/)
 })
