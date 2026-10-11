@@ -158,9 +158,8 @@ def _page_query(
     # pair, so it agrees with the page boundary even between the two legs of
     # one movement, which share a timestamp.
     anchor_sum = (
-        select(func.coalesce(func.sum(Entry.amount), accounts.ZERO))
+        accounts.balance_query_of(account_id=account_id)
         .where(
-            Entry.account_id == account_id,
             tuple_(Entry.created_at, Entry.id)
             <= tuple_(anchor_position.c.created_at, anchor_position.c.id),
         )
