@@ -63,6 +63,13 @@ established it as the cross-service contract, and its signature is already
 checked. Adding one claim to something already trusted beats inventing a second
 channel.
 
+> **Amended by [ADR 0021](0021-the-leaderboard-and-the-first-service-credential.md).**
+> The ledger now asks auth for usernames and the suspension flag over a second
+> channel, a service key on one route, and keeps the usernames in its
+> leaderboard snapshot. It is display data, replaced every refresh and never
+> read to authorise anything, so authority still comes from the token alone
+> and the argument above still holds for it.
+
 ## Consequences
 
 **A role change takes effect on the next token, not immediately.** Promote
