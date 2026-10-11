@@ -7157,8 +7157,9 @@ markets), or one that pays winners from somewhere other than the pool.
 **Decision.** If the ledger holds no book for `market_id`, the exposure route
 answers `200`. That covers a published market nobody has previewed, traded or
 snapshotted, and also an id that names no market at all. In that response
-`opened_at`, `state_version`, `seed_subsidy` and `pool` are null, `outcomes` is
-empty, and `payout_exceeds_pool` is false. The route never opens a book, never
+`opened_at`, `state_version`, `seed_subsidy`, `pool`, `result` and
+`winning_outcome_id` are null, `outcomes` is empty, and `payout_exceeds_pool`
+is false. The route never opens a book, never
 funds a pool and never calls market_service.
 
 **Why.** Without asking market_service, the ledger can't tell a cold market
@@ -7226,7 +7227,7 @@ the book lock, taken before the pool's account lock.
 
 ### D-NEW — The settled-market check is owed by whichever of #6 and #258 lands second
 
-**Date:** 2026-10-10 · **Ticket:** #6, #12 · **Status:** active
+**Date:** 2026-10-10 · **Ticket:** #6, #12 · **Status:** closed by "A settled market's exposure reads its result, and reports no payouts against the drained pool"
 
 **Decision.** This PR does not handle a settled market. Whichever of this PR
 and #258 merges into `dev` second adds the check that keeps the exposure read
@@ -7251,9 +7252,65 @@ market from the day both PRs are merged.
 
 **Notes.** Tracked in #263. The PR that owes the check decides its shape and
 records it. At minimum, a settled market must not report a flag or residues
-computed against a drained pool.
+computed against a drained pool. Done in #267.
 
 **Reversal trigger.** None. This entry is closed by whichever PR lands second.
+
+---
+
+### D-NEW — A settled market's exposure reads its result, and reports no payouts against the drained pool
+
+**Date:** 2026-10-11 · **Ticket:** #6, #263 · **Status:** active
+
+**Decision.** The exposure read's one statement outer-joins
+`ledger.market_results` on `market_id`. Every response carries two more
+top-level fields:
+
+- `result`: null, or the record's `kind` as a string (`"settled"`).
+- `winning_outcome_id`: null, or the record's `outcome_id`.
+
+When a record exists, `pool` is null, `payout_exceeds_pool` is false, and every
+outcome's `payout_if_wins` and `residue_if_wins` are null. `shares_outstanding`,
+`seed_subsidy`, `opened_at` and `state_version` stay as read. The read branches
+on whether the record exists, never on `kind`.
+
+**Why.**
+- *The figures would be wrong, not just stale.* Settlement drains the pool and
+  leaves `q` ("`ledger.market_results` is the latch, and positions and `q` are
+  never written"). Computed as before, every outcome with shares reads
+  `residue_if_wins = −q` against a pool of zero and raises the flag, including
+  the outcome that lost. A finished market would look like the most exposed
+  one in the system.
+- *The same statement.* "Exposure reads `q` and the pool in one statement, with
+  no lock" holds for the record too: read in a second statement, a settlement
+  committing between the two would pair a drained pool with no record and
+  raise the flag.
+- *Nulls, not missing keys.* One shape on every response, so a client branches
+  on the value of `result`. It is the portfolio's rule ("`result` and `payout`
+  are on every portfolio row, null until the market is settled").
+- *Not on `kind`.* Like the latch's readers and the portfolio, so [BE] #221's
+  void reaches this branch too, and its pool is drained just the same.
+- *Shares stay.* They are what the winners were paid on, and the admin panel
+  can still show what each outcome held at the end.
+
+**Rejected.**
+- *Figures against the pool as it stood before settlement*: another read, for
+  a question nobody asks once the payout is made. The settlement's own figures
+  are in its response and its `market.settled` audit entry.
+- *A `404` or `409` for a settled market*: the admin panel links Exposure on
+  settled markets ([FE] #265), and a settled market is an answer.
+- *Omitting the fields with `exclude_none`*: two shapes, and it would strip
+  the cold market's nulls too.
+- *Renaming the fields already on the wire*: #265 reads `payout_exceeds_pool`
+  and `payout_if_wins`.
+
+**Notes.** A void from #221 will read with a non-null `result` and a null
+`winning_outcome_id`, and #221 must say so in the API doc. `state_version` on a
+settled market is the frozen book's last version. Closes "The settled-market
+check is owed by whichever of #6 and #258 lands second".
+
+**Reversal trigger.** Settlement resetting `q`, or leaving the pool funded.
+Then the figures mean something again after settlement.
 
 ---
 

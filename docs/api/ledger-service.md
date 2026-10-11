@@ -633,6 +633,8 @@ the market's creator. `403` for a trader.
   "seed_subsidy": "50.0000",
   "pool": "481.3569",
   "payout_exceeds_pool": true,
+  "result": null,
+  "winning_outcome_id": null,
   "outcomes": [
     {
       "outcome_id": "4f2a...",
@@ -663,11 +665,13 @@ whole pool goes back to the platform.
 | `opened_at` | When this service opened the market's book. `null` means it never has (below). |
 | `state_version` | The same counter the snapshot and every price frame report: which trade this read reflects. `null` when there is no book. |
 | `seed_subsidy` | What the platform put up at book creation. |
-| `pool` | What the market pool holds now: the seed plus every buy, minus every sell. Derived from the pool's entries, like every balance. |
-| `payout_exceeds_pool` | True when any outcome's payout is strictly greater than `pool`, i.e. any `residue_if_wins` is negative. |
+| `pool` | What the market pool holds now: the seed plus every buy, minus every sell. Derived from the pool's entries, like every balance. `null` once the market is settled. |
+| `payout_exceeds_pool` | True when any outcome's payout is strictly greater than `pool`, i.e. any `residue_if_wins` is negative. Always `false` once the market is settled. |
+| `result` | `null` until the ledger records how the market ended; then that record's kind, today always `"settled"`. |
+| `winning_outcome_id` | `null` until the market is settled; then the outcome that paid. |
 | `shares_outstanding` | Every trader's shares in this outcome, summed. |
-| `payout_if_wins` | One credit per share outstanding. |
-| `residue_if_wins` | `pool − payout_if_wins`. Positive goes to the platform at settlement; negative is what the platform tops up. |
+| `payout_if_wins` | One credit per share outstanding. `null` once the market is settled. |
+| `residue_if_wins` | `pool − payout_if_wins`. Positive goes to the platform at settlement; negative is what the platform tops up. `null` once the market is settled. |
 
 Money and shares are decimal strings at scale 4, as everywhere in this service.
 `outcomes` carries every outcome, ordered by `position`. The largest payout is
@@ -690,6 +694,8 @@ route does not open one — an admin read writes nothing:
   "seed_subsidy": null,
   "pool": null,
   "payout_exceeds_pool": false,
+  "result": null,
+  "winning_outcome_id": null,
   "outcomes": []
 }
 ```
@@ -704,9 +710,48 @@ watch exposure grow while it is still trading. One statement reads `q` and the
 pool together, so `residue_if_wins` is never off by a trade that committed
 between two reads.
 
-**A settled market is not handled yet.** Settlement empties the pool without
-resetting shares, so until #263 lands a settled market reads with every
-residue at `−shares_outstanding` and the flag up.
+**A settled market reads its result, and no payouts.** Settlement pays the
+winners from the pool and empties it, but leaves the shares where they were.
+Figures computed against that empty pool would show every outcome short by its
+whole payout, so once the ledger has recorded a result, `pool`, every
+`payout_if_wins` and every `residue_if_wins` are `null` and the flag is
+`false`. `shares_outstanding`, `seed_subsidy`, `opened_at` and `state_version`
+are still reported:
+
+```jsonc
+{
+  "market_id": "9d1c...",
+  "opened_at": "2026-10-08T02:15:09.441000+00:00",
+  "state_version": 1,
+  "seed_subsidy": "50.0000",
+  "pool": null,
+  "payout_exceeds_pool": false,
+  "result": "settled",
+  "winning_outcome_id": "b7e1...",
+  "outcomes": [
+    {
+      "outcome_id": "4f2a...",
+      "position": 0,
+      "shares_outstanding": "500.0000",
+      "payout_if_wins": null,
+      "residue_if_wins": null
+    },
+    {
+      "outcome_id": "b7e1...",
+      "position": 1,
+      "shares_outstanding": "0.0000",
+      "payout_if_wins": null,
+      "residue_if_wins": null
+    }
+  ]
+}
+```
+
+That is the first example's market, settled for its second outcome. Branch on
+`result`, not on whether `pool` is null: a market with no book has a null
+`pool` too. What the settlement actually paid is in its own response and its
+audit entry (DECISIONS.md, "A settled market's exposure reads its result, and
+reports no payouts against the drained pool").
 
 | Status | `code` | When |
 | --- | --- | --- |
