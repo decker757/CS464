@@ -14,15 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import event, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.roles import UserRole
@@ -31,6 +30,7 @@ from unit_test.trade_fixtures import (
     accounts_module,
     books,
     entities,
+    ledger_counts,
     session_factory,
     set_q,
 )
@@ -314,19 +314,6 @@ async def result_count(session: AsyncSession, market_id: uuid.UUID) -> int:
     ).scalar_one()
 
 
-async def ledger_counts(session: AsyncSession) -> tuple[int, int]:
-    """Transactions and entries in the whole ledger, as this session sees them."""
-    ents = entities()
-    session.expire_all()
-    transactions = (
-        await session.execute(select(func.count()).select_from(ents.Transaction))
-    ).scalar_one()
-    entries = (
-        await session.execute(select(func.count()).select_from(ents.Entry))
-    ).scalar_one()
-    return transactions, entries
-
-
 async def committed_counts(market_id: uuid.UUID) -> tuple[int, int, int]:
     """Transactions, entries and result rows, from a session of its own: only
     what has been committed."""
@@ -397,24 +384,6 @@ async def book_lock_is_free(market_id: uuid.UUID) -> bool:
     return True
 
 
-@contextmanager
-def capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
-    """Every statement and its parameters, from the engine."""
-    from core.database import get_engine  # noqa: PLC0415
-
-    statements: list[tuple[str, tuple]] = []
-    engine = get_engine().sync_engine
-
-    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        statements.append((statement, tuple(parameters or ())))
-
-    event.listen(engine, "before_cursor_execute", before)
-    try:
-        yield statements
-    finally:
-        event.remove(engine, "before_cursor_execute", before)
-
-
 def locked_account_ids(statements: Sequence[tuple[str, tuple]]) -> set:
     return {
         parameter
@@ -422,25 +391,6 @@ def locked_account_ids(statements: Sequence[tuple[str, tuple]]) -> set:
         if "for update" in statement.lower() and "accounts" in statement.lower()
         for parameter in parameters
     }
-
-
-@contextmanager
-def count_commits() -> Iterator[list[int]]:
-    """Root COMMITs on the engine's connections: `test_post_all.py`'s shape.
-    Not the session's `after_commit`, which a released SAVEPOINT fires too."""
-    from core.database import get_engine  # noqa: PLC0415
-
-    commits = [0]
-    engine = get_engine().sync_engine
-
-    def count(_conn) -> None:  # noqa: ANN001
-        commits[0] += 1
-
-    event.listen(engine, "commit", count)
-    try:
-        yield commits
-    finally:
-        event.remove(engine, "commit", count)
 
 
 # --- pausing one session, watching another queue --------------------------

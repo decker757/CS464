@@ -40,9 +40,7 @@ from unit_test.settlement_fixtures import (
     balance_of_account,
     basis_of,
     book_lock_is_free,
-    capture_sql_with_parameters,
     committed_counts,
-    count_commits,
     hold,
     legs_of,
     locked_account_ids,
@@ -59,6 +57,8 @@ from unit_test.settlement_fixtures import (
 from unit_test.trade_fixtures import (
     assert_ledger_balances,
     books,
+    capture_sql_with_parameters,
+    count_commits,
     entities,
     errors,
     fund,

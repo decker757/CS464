@@ -12,19 +12,17 @@ taken before any rollback of that session, never after.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import event, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import errors
-from core.database import get_engine, get_session_factory, has_pending_writes
+from core.database import get_session_factory, has_pending_writes
 from model.entities import (
     Account,
     AccountKind,
@@ -36,7 +34,13 @@ from model.entities import (
 )
 from service import accounts, posting
 from unit_test.market_fixtures import market_with_outcomes
-from unit_test.trade_fixtures import assert_ledger_balances, capture_sql
+from unit_test.trade_fixtures import (
+    assert_ledger_balances,
+    capture_sql,
+    capture_sql_with_parameters,
+    count_commits,
+    ledger_counts,
+)
 
 TICK = timedelta(microseconds=1)
 
@@ -117,17 +121,6 @@ async def _entries_of(session: AsyncSession, transaction_id: uuid.UUID) -> list[
     return list((await session.execute(stmt)).scalars())
 
 
-async def _ledger_counts(session: AsyncSession) -> tuple[int, int]:
-    """Transactions and entries in the whole ledger, as this session sees them."""
-    transactions = (
-        await session.execute(select(func.count()).select_from(Transaction))
-    ).scalar_one()
-    entries = (
-        await session.execute(select(func.count()).select_from(Entry))
-    ).scalar_one()
-    return transactions, entries
-
-
 async def _keys_written(session: AsyncSession, keys: list[str]) -> int:
     stmt = (
         select(func.count())
@@ -151,27 +144,6 @@ async def _newest_entry_at(
 ) -> datetime | None:
     stmt = select(func.max(Entry.created_at)).where(Entry.account_id.in_(account_ids))
     return (await session.execute(stmt)).scalar_one()
-
-
-@contextmanager
-def _capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
-    """Every statement the block sends, with its parameters, in order.
-
-    `trade_fixtures.capture_sql` keeps only the text, and the lock order is
-    in the parameters. The twin is market_service's `recorded_statements`,
-    which this service cannot import (`test_import_boundary.py`).
-    """
-    captured: list[tuple[str, tuple]] = []
-    engine = get_engine().sync_engine
-
-    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        captured.append((statement, tuple(parameters or ())))
-
-    event.listen(engine, "before_cursor_execute", before)
-    try:
-        yield captured
-    finally:
-        event.remove(engine, "before_cursor_execute", before)
 
 
 def _is_lock(statement: str) -> bool:
@@ -341,7 +313,7 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
     (ADR 0015). The second session's NOWAIT fails if they are still held."""
     movements, originals = await _committed_batch(session)
     async with get_session_factory()() as other:
-        before = await _ledger_counts(other)
+        before = await ledger_counts(other)
     assert not has_pending_writes(session)
 
     replayed = await posting.post_all(session, movements)
@@ -351,7 +323,7 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
     for movement in movements:
         account_ids.update(leg.account.id for leg in movement.legs)
     async with get_session_factory()() as other:
-        assert await _ledger_counts(other) == before
+        assert await ledger_counts(other) == before
         for account_id in account_ids:
             try:
                 await other.execute(
@@ -364,19 +336,41 @@ async def test_a_full_replay_returns_the_originals_and_releases_the_locks(
         await other.rollback()
 
 
+async def test_a_replay_is_not_refused_for_money_spent_since(
+    session: AsyncSession,
+) -> None:
+    """The overdraft check runs after the replay lookup, as in `post`. A
+    batch that debited a user replays after the user has spent the rest:
+    the retry moves no money, so the balance it would fail is irrelevant."""
+    platform = await _platform(session)
+    (user,) = await _new_accounts(session, AccountKind.USER, 1)
+    await _fund(session, platform, user, "10.0000")
+    movements = [
+        _transfer(_key(), user, platform, "6.0000", kind=TransactionKind.TRADE_BUY)
+    ]
+    originals = await posting.post_all(session, movements)
+    await _fund(session, user, platform, "4.0000")
+
+    replayed = await posting.post_all(session, movements)
+
+    assert [r.id for r in replayed] == [o.id for o in originals]
+    async with get_session_factory()() as other:
+        assert await accounts.balance_of(other, user.id) == Decimal("0.0000")
+
+
 async def test_a_full_replay_into_a_dirty_session_is_refused(
     session: AsyncSession,
 ) -> None:
     """The pending check refuses: non-empty, distinct keys and balanced, so no
     earlier check can. Without it the replay's commit lands the caller's row."""
     movements, _ = await _committed_batch(session)
-    in_session_before = await _ledger_counts(session)
+    in_session_before = await ledger_counts(session)
     stowaway = _stage_stowaway(session)
 
     with pytest.raises(errors.PendingWritesOnReplay):
         await posting.post_all(session, movements)
 
-    assert await _ledger_counts(session) == in_session_before
+    assert await ledger_counts(session) == in_session_before
     async with get_session_factory()() as other:
         assert await _stowaway_count(other, stowaway) == 0
 
@@ -484,14 +478,14 @@ async def test_a_fingerprint_mismatch_on_a_later_movement_is_a_reused_key(
     source, target = last.legs[0].account, last.legs[1].account
     changed = [*movements[:2], _transfer(last.idempotency_key, source, target, "6.0004")]
     async with get_session_factory()() as other:
-        before = await _ledger_counts(other)
+        before = await ledger_counts(other)
     assert not has_pending_writes(session)
 
     with pytest.raises(errors.IdempotencyKeyReused):
         await posting.post_all(session, changed)
 
     async with get_session_factory()() as other:
-        assert await _ledger_counts(other) == before
+        assert await ledger_counts(other) == before
 
 
 # =========================================================================
@@ -607,20 +601,10 @@ async def test_a_batch_commits_exactly_once(session: AsyncSession) -> None:
     platform = await _platform(session)
     winners = await _new_accounts(session, AccountKind.USER, 3)
     movements = [_transfer(_key(), platform, winner, "2.5001") for winner in winners]
-    engine = get_engine().sync_engine
-    commits = 0
-
-    def count_commit(_conn) -> None:  # noqa: ANN001
-        nonlocal commits
-        commits += 1
-
-    event.listen(engine, "commit", count_commit)
-    try:
+    with count_commits() as commits:
         await posting.post_all(session, movements)
-    finally:
-        event.remove(engine, "commit", count_commit)
 
-    assert commits == 1
+    assert commits[0] == 1
 
 
 # =========================================================================
@@ -737,7 +721,7 @@ async def test_the_batch_locks_each_account_once_ascending(
     descending = sorted(winners, key=lambda account: account.id, reverse=True)
     movements = [_transfer(_key(), pool, winner, "1.0001") for winner in descending]
 
-    with _capture_sql_with_parameters() as captured:
+    with capture_sql_with_parameters() as captured:
         await posting.post_all(session, movements)
 
     locked = [
@@ -853,7 +837,7 @@ async def test_a_whole_batch_found_only_by_the_insert_race_replays(
     order and writes nothing, as the lookup under the lock would have."""
     movements, originals = await _committed_batch(session)
     async with get_session_factory()() as other:
-        before = await _ledger_counts(other)
+        before = await ledger_counts(other)
     assert not has_pending_writes(session)
     calls = _hide_the_first_lookup(monkeypatch)
 
@@ -866,7 +850,7 @@ async def test_a_whole_batch_found_only_by_the_insert_race_replays(
     )
     assert [r.id for r in replayed] == [o.id for o in originals]
     async with get_session_factory()() as other:
-        assert await _ledger_counts(other) == before
+        assert await ledger_counts(other) == before
 
 
 # =========================================================================
