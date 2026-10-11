@@ -7297,9 +7297,8 @@ practice that is within one interval of the user's first visit.
   have never signed in, and puts auth's user list on the ledger's write path.
 
 **Notes.** An account id that auth's lookup does not return is not a user
-this platform knows. It is left out and logged at
-WARNING, and the refresh continues. No route deletes a user today, so this
-should not happen.
+this platform knows. It is left out and logged at WARNING, and the refresh
+continues. No route deletes a user today, so this should not happen.
 
 **Reversal trigger.** A product rule that administrators are referees and
 must not appear, or a minimum-activity rule (for example, "has traded at
@@ -7309,7 +7308,7 @@ least once"). Either changes this entry, not the ADR.
 
 ### D-NEW — A suspended account is left out of the ranking, and ranks close up with no gap
 
-**Date:** 2026-10-11 · **Ticket:** #38, #14 · **Status:** decided (ADR 0021, accepted 2026-10-11)
+**Date:** 2026-10-11 · **Ticket:** #38, #14 · **Status:** active
 
 **Decision.** A refresh drops every holder whose lookup answer has
 `is_suspended: true`, then numbers the rest 1..N. The suspended user's rows

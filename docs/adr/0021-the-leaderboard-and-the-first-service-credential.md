@@ -2,7 +2,7 @@
 
 - **Status:** Accepted. Ernest agreed to the lookup route, its key and its settings on 2026-10-11.
 - **Date:** 2026-10-11
-- **Affects:** [L-1] #38, [L-2] #39, [L-3] #40, [FE][L-1] #58, [4.2] #14, [BE] #221, [T-7] #27, ADR 0002, ADR 0003, ADR 0009, ADR 0010, ADR 0011, ADR 0015, ADR 0018, ADR 0019
+- **Affects:** [L-1] #38, [L-2] #39, [L-3] #40, [FE][L-1] #58, [4.2] #14, [BE] #221, [T-7] #27, ADR 0002, ADR 0003, ADR 0009, ADR 0010, ADR 0015, ADR 0018, ADR 0019
 - **Implemented in:** nothing yet. This record precedes [L-1] #38, which is the first code that has to obey it.
 
 ## Context
@@ -76,8 +76,8 @@ X-Service-Key: <LEDGER_SERVICE_KEY>
 - **It is the first credential in this system that belongs to a service
   rather than a person.** ADR 0002's "bearer tokens for services" was only
   ever a person's token carried by a service, and its "one verification path,
-  not two" is no longer true for auth: this key is a second path. ADR 0002
-  and ADR 0003 carry an amendment saying so. The key is the narrowest version
+  not two" is no longer true for auth: this key is a second path, and ADR
+  0002 carries an amendment saying so. The key is the narrowest version
   available.
 - **One key, one caller, one route.** Auth reads `LEDGER_SERVICE_KEY` from its
   settings, and the ledger reads the same variable to send. The variable is
@@ -151,8 +151,8 @@ service calls in general.
 ## Alternatives rejected
 
 **Copying the username from the token at grant time. This was the fallback
-had the route been declined.** `ensure_granted` already runs on the user's own token,
-and that token carries `username`. A `username` column on `ledger.accounts`,
+had the route been declined.** `ensure_granted` already runs on the user's
+own token, and that token carries `username`. A `username` column on `ledger.accounts`,
 written at grant, would name every account holder with no new credential. It
 works today, because no route renames a user. It has three costs:
 
@@ -202,9 +202,9 @@ by rank also breaks if the client drops rows.
 
 **Auth pushes changes to the ledger.** Auth knows the ledger exists either
 way, since it holds `LEDGER_SERVICE_KEY`. What differs is the direction:
-pushing needs a credential the ledger checks, a call from inside every
-transaction that renames or suspends a user, and an outbox so a change made
-during a ledger outage is not lost. That costs more than the problem it
+pushing needs a credential the ledger checks, a call after every rename or
+suspension, and an outbox so a change made during a ledger outage is not
+lost. That costs more than the problem it
 solves.
 
 **Ranking on every read.** It costs the full valuation of every user per
