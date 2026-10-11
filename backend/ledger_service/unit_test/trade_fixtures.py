@@ -29,7 +29,7 @@ there instead of silently hollowing out every rounding test.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
@@ -625,6 +625,25 @@ def assert_rounding_is_load_bearing(
 
 
 @contextmanager
+def _on_each_statement(record: Callable[[str, object], None]) -> Iterator[None]:
+    """Call `record(statement, parameters)` for every statement the block sends."""
+    from sqlalchemy import event  # noqa: PLC0415
+
+    from core.database import get_engine  # noqa: PLC0415
+
+    engine = get_engine().sync_engine
+
+    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        record(statement, parameters)
+
+    event.listen(engine, "before_cursor_execute", before)
+    try:
+        yield
+    finally:
+        event.remove(engine, "before_cursor_execute", before)
+
+
+@contextmanager
 def capture_sql() -> Iterator[list[str]]:
     """Every statement the block sends to Postgres, in order.
 
@@ -659,25 +678,6 @@ def capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
 
     with _on_each_statement(keep_both):
         yield captured
-
-
-@contextmanager
-def _on_each_statement(record) -> Iterator[None]:  # noqa: ANN001
-    """Call `record(statement, parameters)` for every statement the block sends."""
-    from sqlalchemy import event  # noqa: PLC0415
-
-    from core.database import get_engine  # noqa: PLC0415
-
-    engine = get_engine().sync_engine
-
-    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        record(statement, parameters)
-
-    event.listen(engine, "before_cursor_execute", before)
-    try:
-        yield
-    finally:
-        event.remove(engine, "before_cursor_execute", before)
 
 
 def writes(statements: Sequence[str]) -> list[str]:
