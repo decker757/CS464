@@ -145,9 +145,9 @@ class SettlementUnconfirmed(LedgerError):
     that never got an answer. Money has moved and the market is not marked
     SETTLED, so every failure means the same thing and has the same remedy:
     the administrator repeats the request, which writes nothing in the ledger.
-    A 401 or a 404 mapped as `MarketTermsUnavailable` maps them would say that
-    nothing happened. DECISIONS.md, "`market_terms.mark_settled` accepts only
-    a `200`".
+    Mapping a 401 or a 404 the way `fetch` does, to `NotAuthenticated` or
+    `MarketNotFound`, would tell the administrator that nothing happened.
+    DECISIONS.md, "`market_terms.mark_settled` accepts only a `200`".
 
     503 because the dependency did not confirm, and a repeat is the fix.
     """
