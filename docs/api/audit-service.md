@@ -154,6 +154,8 @@ would let a stale audit schema abort a working admin action.
 | `market.outcome_sent_back` | market_service | [3.3] #11 |
 | `market.settled` | ledger_service | [3.4] #12 |
 | `market.marked_settled` | market_service | [3.4] #12 |
+| `user.suspended` | auth_service | [4.2] #14 |
+| `user.unsuspended` | auth_service | [4.2] #14 |
 
 Treat an unrecognised value as opaque rather than as an error: a newer service
 may be writing an action type this build has never heard of.
@@ -210,6 +212,15 @@ step's window check read. The ledger's own `market.settled` entry, written
 with the payouts, comes before it in a normal settlement; a
 `market.marked_settled` with no `market.settled` before it for the same market
 is the trace of a direct call that paid nobody (ADR 0019's amendment).
+
+`user.suspended` and `user.unsuspended` are written by auth's
+`PATCH /admin/users/{user_id}/suspension`, in the same transaction as the
+change, and never for a request that asked for the state the user already had.
+`target_label` is the username at the time. `reason` is always present — the
+route refuses a suspension or an unsuspension without one — and this entry is
+the only place it is stored. `context` has one key, `role`, the target's role
+when it happened (`"trader"` or `"admin"`), so a suspended administrator can be
+told from a suspended trader after a later role change.
 
 Note what is **not** logged, and will not be:
 
