@@ -26,8 +26,17 @@ function formatDate(iso: string) {
 // Why trading is closed, for a market that cannot be traded right now.
 function closedMessage(status: MarketStatus): string {
   if (status === 'pending_resolution') return 'Trading is closed while the outcome is decided.'
-  if (status === 'approved') return 'This market has been settled. Trading is closed.'
+  if (status === 'approved') return 'The outcome is approved and payouts are pending. Trading is closed.'
+  if (status === 'settled') return 'This market has been settled. Trading is closed.'
   return 'Trading is closed for this market.'
+}
+
+// What the banner calls the outcome on record: only a settled market has paid
+// it, and a pending one is still waiting for a second administrator.
+function outcomeBannerLabel(status: MarketStatus): string {
+  if (status === 'settled') return 'Settled'
+  if (status === 'approved') return 'Approved outcome'
+  return 'Proposed outcome'
 }
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
@@ -117,7 +126,7 @@ export default function MarketDetailPage() {
 
           {winningOutcome && (
             <Banner className="border-info/20 bg-info/5 font-semibold text-info-strong">
-              Settled: <strong>{winningOutcome.label}</strong>
+              {outcomeBannerLabel(market.status)}: <strong>{winningOutcome.label}</strong>
             </Banner>
           )}
 

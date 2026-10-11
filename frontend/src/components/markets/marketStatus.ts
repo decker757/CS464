@@ -4,15 +4,15 @@ import type { Tone } from '../ui/Badge'
 export type MarketStatus = PublicMarketSummary['status']
 
 // The admin's own markets can also be in draft or submitted, which a trader
-// never sees (market-service.md's six statuses).
+// never sees.
 export type AdminMarketStatus = MarketSummaryOut['status']
 
 // Every status either list can show: the admin's two unpublished ones, and
-// every published one, `settled` included (market-service.md's seven statuses).
+// every published one, `settled` included (market-service.md).
 type KnownMarketStatus = AdminMarketStatus | MarketStatus
 
-// `approved` is "approved, waiting for the ledger's payout"; `settled` is paid
-// out and final ([3.4] #12).
+// `approved` is "approved, waiting for the ledger's payout"; `settled` is final
+// ([3.4] #12; the status alone does not prove the ledger paid, ADR 0019).
 export const STATUS_CONFIG: Record<KnownMarketStatus, { label: string; tone: Tone }> = {
   draft:              { label: 'Draft',     tone: 'neutral' },
   submitted:          { label: 'Submitted', tone: 'warning' },

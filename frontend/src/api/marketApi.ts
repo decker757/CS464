@@ -59,7 +59,7 @@ export interface PublicSource {
 
 export interface PublicMarketDetail {
   id: string
-  status: 'open' | 'closed' | 'pending_resolution' | 'approved'
+  status: 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
   question: string
   description: string | null
   outcomes: PublicOutcome[]
