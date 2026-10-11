@@ -30,6 +30,11 @@ class Settings(ServiceSettings):
     # is not a credential, and CI's boot check does not set it.
     market_service_url: str = Field(default="http://market:8000")
 
+    # --- The account check [4.2] #14, ADR 0022 ------------------------------
+    # `auth` is compose's hostname for the auth service, defaulted for the
+    # same reasons as `market_service_url`.
+    auth_service_url: str = Field(default="http://auth:8000")
+
     # --- The price broadcast's bus [F-9] #112, ADR 0010 --------------------
     # A default, unlike the realtime service's required one: a wrong Redis
     # here costs a broadcast, not the service (D-046). It must still parse, or

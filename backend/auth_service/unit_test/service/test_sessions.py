@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from contextlib import suppress
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.database import get_session_factory
@@ -17,36 +16,8 @@ from core.security import hash_refresh_token
 from model.entities import RefreshToken, User
 from model.schemas import TokenPair
 from service import auth_service
-
-
-async def _live_token_count(session: AsyncSession) -> int:
-    stmt = (
-        select(func.count())
-        .select_from(RefreshToken)
-        .where(RefreshToken.revoked_at.is_(None))
-    )
-    return (await session.execute(stmt)).scalar_one()
-
-
-async def _wait_briefly(event: asyncio.Event) -> None:
-    """Wait for the other party, but never long enough to hang a fixed build."""
-    with suppress(TimeoutError):
-        await asyncio.wait_for(event.wait(), timeout=1)
-
-
-async def _wait_until_blocked_on_a_lock(session: AsyncSession, pid: int) -> None:
-    """Poll until backend `pid` waits on a lock, for at most two seconds.
-
-    `pg_blocking_pids` reads the lock table live; `pg_stat_activity` would not,
-    because it is snapshotted once per transaction.
-    """
-    stmt = text("SELECT cardinality(pg_blocking_pids(:pid)) > 0")
-    for _ in range(200):
-        if await session.scalar(stmt, {"pid": pid}):
-            return
-        await asyncio.sleep(0.01)
-    # Carrying on would test the two sessions one after the other, not the race.
-    pytest.fail(f"backend {pid} never blocked on a lock")
+from unit_test.service.lock_waits import wait_briefly, wait_until_blocked_on_a_lock
+from unit_test.service.user_rows import live_token_count
 
 
 async def _refresh_in_own_session(
@@ -109,12 +80,12 @@ async def test_replaying_a_revoked_token_kills_every_live_session(
     await session.commit()
 
     await auth_service.rotate_refresh_token(session, stolen.refresh_token)
-    assert await _live_token_count(session) >= 1
+    assert await live_token_count(session) >= 1
 
     with pytest.raises(InvalidToken):
         await auth_service.rotate_refresh_token(session, stolen.refresh_token)
 
-    assert await _live_token_count(session) == 0
+    assert await live_token_count(session) == 0
 
 
 async def test_revoking_is_idempotent_and_silent_when_unknown(
@@ -161,7 +132,7 @@ async def test_two_concurrent_refreshes_of_one_token_leave_one_winner_and_no_ses
     )
 
     assert sorted(results) == ["issued", "refused"]
-    assert await _live_token_count(session) == 0
+    assert await live_token_count(session) == 0
 
 
 async def test_a_replay_revokes_a_session_rotated_at_the_same_moment(
@@ -188,13 +159,13 @@ async def test_a_replay_revokes_a_session_rotated_at_the_same_moment(
         pair = await real_issue_tokens(own, user)
         await own.flush()
         rotation_pending.set()
-        await _wait_briefly(replay_has_read)
+        await wait_briefly(replay_has_read)
         return pair
 
     async def revoke_all_while_rotation_pending(
         own: AsyncSession, user_id: uuid.UUID
     ) -> None:
-        await _wait_briefly(rotation_pending)
+        await wait_briefly(rotation_pending)
         await real_revoke_all(own, user_id)
         replay_has_read.set()
 
@@ -214,7 +185,7 @@ async def test_a_replay_revokes_a_session_rotated_at_the_same_moment(
     )
 
     assert replay == "refused"
-    assert await _live_token_count(session) == 0
+    assert await live_token_count(session) == 0
 
 
 async def test_a_refresh_that_waits_on_a_logout_is_refused(
@@ -241,10 +212,10 @@ async def test_a_refresh_that_waits_on_a_logout_is_refused(
             auth_service.rotate_refresh_token(refresher, tokens.refresh_token)
         )
         # Not a barrier: the refresh must already be queued behind the logout.
-        await _wait_until_blocked_on_a_lock(logout, refresher_pid)
+        await wait_until_blocked_on_a_lock(logout, refresher_pid)
         await logout.commit()
 
         with pytest.raises(InvalidToken):
             await refresh
 
-    assert await _live_token_count(session) == 0
+    assert await live_token_count(session) == 0

@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from controller import routes
+from core.config import get_settings
 from core.database import get_session_factory
 from model.entities import Market, MarketOutcome
 from service import market_service, settling
@@ -32,6 +33,7 @@ from unit_test.conftest import close_terms as _close
 from unit_test.conftest import market_json as _payload
 from unit_test.conftest import proposal_json as _proposal
 from unit_test.conftest import rejection_terms as _rejection
+from unit_test.conftest import send_back_terms as _send_back
 
 
 # --- the guard ------------------------------------------------------------
@@ -127,6 +129,11 @@ async def test_every_market_route_requires_a_token(client: AsyncClient) -> None:
     ).status_code == 401
     assert (
         await client.post(f"/markets/{uuid.uuid4()}/settle")
+    ).status_code == 401
+    assert (
+        await client.post(
+            f"/markets/{uuid.uuid4()}/send-back-outcome", json=_send_back()
+        )
     ).status_code == 401
 
 
@@ -1656,3 +1663,120 @@ async def test_the_window_is_judged_on_the_database_clock(
     assert response.status_code == expected
     if expected == 409:
         assert response.json()["error"]["code"] == "dispute_window_open"
+
+
+# --- [3.3] #11: sending an approved result back --------------------------------
+# `admin_headers` is the creator and proposer; `other_admin_headers` is any
+# other administrator. ADR 0023.
+async def _approved(
+    session: AsyncSession, admin_id: uuid.UUID, *, approved_at: datetime | None = None
+) -> tuple[str, str]:
+    """A market of `admin_id`'s whose outcome is approved: its id and the
+    `proposal_id` a send-back has to quote."""
+    market = await approved_market(
+        session,
+        Actor(id=admin_id, username="ernest_t", role="admin"),
+        approved_at=approved_at,
+    )
+    return str(market.id), str(market.proposal_id)
+
+
+async def test_sending_back_returns_the_closed_market(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """[3.3] #11: `200` with the whole market, as reject returns it: CLOSED,
+    every proposal and approval field null, `closed_at` kept, so the screen
+    repaints and the creator's propose control comes back."""
+    market_id, proposal_id = await _approved(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/send-back-outcome",
+        json=_send_back(proposal_id),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "closed"
+    assert body["closed_at"] is not None
+    for field in (
+        "proposal_id",
+        "proposed_outcome_id",
+        "proposed_by_id",
+        "proposed_by_username",
+        "proposed_at",
+        "proposal_evidence_url",
+        "proposal_evidence_note",
+        "approved_by_id",
+        "approved_by_username",
+        "approved_at",
+    ):
+        assert body[field] is None, field
+
+
+async def test_a_trader_cannot_send_back(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    trader_headers: dict[str, str],
+) -> None:
+    """[3.3] #11's guard, on a market that would otherwise be sent back."""
+    market_id, proposal_id = await _approved(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/send-back-outcome",
+        json=_send_back(proposal_id),
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_sending_back_with_an_unusable_reason_is_422_and_names_the_field(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """This service's own envelope, as a refused rejection uses, so the dispute
+    screen paints `details` with the renderer it already has."""
+    market_id, proposal_id = await _approved(session, admin_id)
+
+    response = await client.post(
+        f"/markets/{market_id}/send-back-outcome",
+        json=_send_back(proposal_id, reason="   "),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "send_back_incomplete"
+    assert [problem["field"] for problem in error["details"]] == ["reason"]
+
+
+async def test_sending_back_after_the_window_is_409_dispute_window_closed(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """[3.3] #11: "After the window, send-back is refused", with the new code
+    `docs/api/` promises the frontend. Approved a whole window and a minute
+    ago, judged on the database's clock."""
+    window = timedelta(seconds=get_settings().dispute_window_seconds)
+    approved_at = await database_now(session) - window - timedelta(minutes=1)
+    market_id, proposal_id = await _approved(session, admin_id, approved_at=approved_at)
+
+    response = await client.post(
+        f"/markets/{market_id}/send-back-outcome",
+        json=_send_back(proposal_id),
+        headers=other_admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "dispute_window_closed"
