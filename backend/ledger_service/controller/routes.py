@@ -39,6 +39,7 @@ from fastapi import APIRouter, Query
 
 from controller.dependencies import (
     AccessToken,
+    AuthClient,
     CurrentActor,
     CurrentAdmin,
     CurrentUser,
@@ -561,6 +562,12 @@ _TRADE_DESCRIPTION = (
                 "`invalid_token`: missing, malformed or expired access token."
             )
         },
+        403: {
+            "description": (
+                "`account_suspended`: an administrator has suspended this "
+                "account. Nothing was written (ADR 0022)."
+            )
+        },
         404: {"description": "`market_not_found`: no such market."},
         409: {
             "description": (
@@ -593,7 +600,8 @@ _TRADE_DESCRIPTION = (
             "description": (
                 "`market_terms_unavailable`: market_service could not be "
                 "reached right now, or returned unusable terms on a first "
-                "trade."
+                "trade. `auth_unavailable`: the auth service could not say "
+                "whether this account may trade."
             )
         },
     },
@@ -604,6 +612,7 @@ async def execute_trade(
     user: CurrentUser,
     access_token: AccessToken,
     terms_client: TermsClient,
+    auth_client: AuthClient,
     session: DbSession,
     redis: RedisClient,
 ) -> TradeOut:
@@ -618,6 +627,7 @@ async def execute_trade(
         idempotency_key=body.idempotency_key,
         access_token=access_token,
         terms_client=terms_client,
+        auth_client=auth_client,
         redis_client=redis,
     )
     return TradeOut(

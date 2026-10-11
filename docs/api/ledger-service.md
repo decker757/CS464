@@ -970,10 +970,16 @@ bug that has no symptom until a market closes mid-retry.**
    comparison — a client that lost its response is expected to re-preview
    before retrying, and the version it now quotes is newer, for the same
    trade.
-2. Only then the gate: is this market still open? Read off
+2. Then: is this account still allowed to trade? Asked of the auth
+   service's `GET /auth/me`, once, forwarding this request's own token
+   ([ADR 0022](../adr/0022-the-ledger-and-a-suspended-trader.md)). A
+   suspended account is refused `403 account_suspended` here, before the
+   market is looked at, so it hears about itself rather than about the
+   market.
+3. Only then the gate: is this market still open? Read off
    `market_service`'s public detail endpoint, once, forwarding this
    request's own token.
-3. The book row's lock, and a second idempotency check under it, before this
+4. The book row's lock, and a second idempotency check under it, before this
    request writes anything of its own.
 
 **Why the lookup runs before the gate, not after.** A trade that committed
@@ -999,6 +1005,7 @@ Errors:
 | Status | `code` | When |
 | --- | --- | --- |
 | 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 403 | `account_suspended` | An administrator has suspended this account. The same code and message the auth service uses, so one handler covers both: end the session and show the message. Not retryable. A refused trade writes nothing, and the account's balance and positions stay as they were. |
 | 404 | `market_not_found` | No such market. |
 | 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
 | 409 | `quote_stale` | The quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
@@ -1012,6 +1019,12 @@ Errors:
 | 422 | `invalid_request` | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. `error.details` names each field; see [Errors](#errors). |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
+| 503 | `auth_unavailable` | The auth service could not be reached, or did not answer whether this account may trade. Nothing was written. Worth retrying. |
+
+**A suspended account is refused on this route only.** The preview, the
+snapshot, the balance, the history and the portfolio decide nothing, and keep
+answering until the access token expires (ADR 0003's window, which ADR 0022
+narrows for trades alone).
 
 ## POST /ledger/markets/{market_id}/settlement
 
@@ -1447,7 +1460,8 @@ declared responses, because it becomes reachable the day the ledger reads
 terms from somewhere that serves unpublished markets. Do not write a handler
 for it today.
 
-`insufficient_funds` (409), `insufficient_shares_held` (409, new in [T-3]
+`account_suspended` (403) and `auth_unavailable` (503), both new in [4.2]
+#14, `insufficient_funds` (409), `insufficient_shares_held` (409, new in [T-3]
 #23), `idempotency_key_reused` (409), `market_closed` (409) and `quote_stale`
 (409, new in [T-2] #22) are the trade route's own, documented in its section
 above. `insufficient_shares_outstanding` (409) is unreachable on the trade

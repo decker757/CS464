@@ -37,7 +37,12 @@ import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import mint_token, terms_client_over
+from unit_test.conftest import (
+    active_auth_transport,
+    auth_client_over,
+    mint_token,
+    terms_client_over,
+)
 
 ZERO = Decimal(0)
 QUANTUM = Decimal("0.0001")
@@ -270,6 +275,7 @@ async def buy(
     access_token: str | None = None,
     redis_client: Recorder | None = None,
     transport: httpx.MockTransport | None = None,
+    auth_transport: httpx.MockTransport | None = None,
 ):
     """One trade, with the interface these tests assume.
 
@@ -281,7 +287,8 @@ async def buy(
     and market id positionally, everything else keyword-only, `access_token`
     forwarded rather than minted, `transport` and `redis_client` the two
     injectable seams. If the implementation lands on other names, this helper
-    is the one place to change.
+    is the one place to change. `auth_transport` answers the account check
+    (ADR 0022), active unless a test says otherwise.
 
     `side` arrives as the wire string and is converted at the boundary,
     because that is what the route does: parsed once, passed down as the enum.
@@ -299,6 +306,9 @@ async def buy(
         redis_client=redis_client if redis_client is not None else Recorder(),
         terms_client=terms_client_over(
             upstream.transport if transport is None else transport
+        ),
+        auth_client=auth_client_over(
+            active_auth_transport() if auth_transport is None else auth_transport
         ),
     )
 

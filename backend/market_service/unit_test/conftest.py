@@ -74,6 +74,7 @@ from model.schemas import (  # noqa: E402
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
+    OutcomeSendBackRequest,
 )
 from service import closing, market_service  # noqa: E402
 from service.audit import Actor  # noqa: E402
@@ -460,6 +461,29 @@ def rejection_request(
     return OutcomeRejectionRequest(**rejection_terms(proposal_id, **overrides))  # type: ignore[arg-type]
 
 
+# [3.3] #11. One send-back's reason, shared by both suites.
+SEND_BACK_REASON = "The source cited was revised; the first print says No, not Yes."
+
+
+def send_back_terms(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> dict[str, object]:
+    """A send-back that passes every rule; `proposal_id` defaults as in `approval_terms`."""
+    base: dict[str, object] = {
+        "proposal_id": str(proposal_id or uuid.uuid4()),
+        "reason": SEND_BACK_REASON,
+    }
+    base.update(overrides)
+    return base
+
+
+def send_back_request(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> OutcomeSendBackRequest:
+    """`send_back_terms` parsed, for driving the service layer without HTTP."""
+    return OutcomeSendBackRequest(**send_back_terms(proposal_id, **overrides))  # type: ignore[arg-type]
+
+
 async def proposed_market(
     session, actor: Actor, *, winning_position: int = 0, **overrides: object
 ) -> Market:
@@ -517,13 +541,19 @@ _SETTLEMENT_GAP = timedelta(minutes=5)
 def time_until_settleable() -> timedelta:
     """How long after approval a market becomes settleable, under the current settings.
 
-    Read at call time, so a test that raised the window sees the raised one.
+    Read at call time, so a test that raised the window before approving sees
+    the raised one: approval stores the window's end from the setting as it is
+    then (ADR 0023).
     """
     return timedelta(seconds=get_settings().dispute_window_seconds) + _SETTLEMENT_GAP
 
 
 def settleable_edge(approved_at: datetime) -> datetime:
-    """The first instant settlement is allowed for a market approved at `approved_at`."""
+    """The first instant settlement is allowed for a market approved at `approved_at`.
+
+    The stored window end plus the gap, for a market approved under the
+    current settings.
+    """
     return approved_at + time_until_settleable()
 
 

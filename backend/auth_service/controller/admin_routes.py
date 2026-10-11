@@ -1,4 +1,4 @@
-"""Administrative routes: one user acting on another. [4.4] #16, [4.1] #13
+"""Administrative routes: one user acting on another. [4.4] #16, [4.1] #13, [4.2] #14
 
 Apart from `routes.py` (a user's own session) so /docs lists them separately.
 The account search is here too, though it changes nothing, because the guard
@@ -18,6 +18,8 @@ from model.schemas import (
     AdminUserOut,
     RoleChangeRequest,
     RoleChangeResponse,
+    SuspensionRequest,
+    SuspensionResponse,
     UserListResponse,
     UserOut,
 )
@@ -150,5 +152,66 @@ async def change_role(
     )
     return RoleChangeResponse(
         user=UserOut.model_validate(user),
+        takes_effect_within_seconds=get_settings().access_token_ttl_seconds,
+    )
+
+
+@router.patch(
+    "/users/{user_id}/suspension",
+    response_model=SuspensionResponse,
+    summary="Suspend or unsuspend an account",
+    description=(
+        "[4.2] #14. Sets whether an account may log in and trade, with a "
+        "reason, and appends `user.suspended` or `user.unsuspended` to the "
+        "shared audit log in the same transaction.\n\n"
+        "`suspended` is the state the account should end up in, so a repeated "
+        "request is the same outcome and records nothing. `reason` is "
+        "required both ways and must be at least ten characters once "
+        "trimmed; it is kept only in the audit log.\n\n"
+        "Suspending ends every session the account has, and unsuspending "
+        "brings none of them back. Login is refused at once, and so is "
+        "trading: the ledger asks this service on every trade (ADR 0022). "
+        "**Reads elsewhere do not stop at once.** The other services "
+        "authorise from the access token, so they honour the account's "
+        "current one for up to `takes_effect_within_seconds`. Positions are "
+        "untouched."
+    ),
+    responses={
+        403: {
+            "description": (
+                "Not an administrator, or an administrator targeting themselves."
+            )
+        },
+        404: {"description": "No user with that id."},
+        409: {
+            "description": (
+                "Suspending this administrator would leave none who can log "
+                "in. Only reachable when two administrators act on each other "
+                "at the same instant."
+            )
+        },
+        422: {
+            "description": (
+                "`suspension_incomplete`: the reason is blank or shorter than "
+                "ten characters once trimmed. `details` names `reason`."
+            )
+        },
+    },
+)
+async def set_suspension(
+    user_id: uuid.UUID,
+    payload: SuspensionRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> SuspensionResponse:
+    user = await user_admin.set_suspension(
+        session,
+        actor=actor,
+        target_id=user_id,
+        suspended=payload.suspended,
+        reason=payload.reason,
+    )
+    return SuspensionResponse(
+        user=AdminUserOut.model_validate(user),
         takes_effect_within_seconds=get_settings().access_token_ttl_seconds,
     )
