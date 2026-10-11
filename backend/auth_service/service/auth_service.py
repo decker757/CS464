@@ -154,8 +154,9 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
     """Return the user these credentials prove. [A-2] #30
 
     Raises InvalidCredentials for a wrong password and an unknown account
-    alike, and AccountSuspended only after the password is proven. May rehash
-    `user.password_hash`, leaving that write pending for the caller to commit.
+    alike, and AccountSuspended only after the password is proven. Locks the
+    user's row once the password is proven, held until the caller commits. May
+    rehash `user.password_hash`, leaving that write pending for the caller.
     """
     user = await _find_by_identifier(session, identifier)
 
@@ -165,6 +166,13 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
         raise InvalidCredentials
 
     if not security.verify_password(user.password_hash, password):
+        raise InvalidCredentials
+
+    # Decided from the locked row, or a login racing a suspension issues a
+    # session after its revoke. DECISIONS.md, "Login decides suspension under
+    # the user's row lock".
+    user = await lock_user(session, user.id)
+    if user is None:
         raise InvalidCredentials
 
     # After the password, or suspended accounts could be enumerated.
