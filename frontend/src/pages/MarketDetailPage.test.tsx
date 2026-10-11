@@ -187,16 +187,19 @@ describe('MarketDetailPage', () => {
     expect(await screen.findByText(/awaiting outcome decision/i)).toBeInTheDocument()
   })
 
-  it('shows the winning outcome for settled markets', async () => {
+  it.each([
+    { status: 'pending_resolution', label: 'Proposed outcome' },
+    { status: 'approved', label: 'Approved outcome' },
+    { status: 'settled', label: 'Settled' },
+  ])('names the outcome on record for a $status market as "$label"', async ({ status, label }) => {
+    // Only a settled market has paid out, so only it may say "Settled".
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
-        HttpResponse.json({ ...baseMarket, status: 'approved', proposed_outcome_id: 'o1' }),
+        HttpResponse.json({ ...baseMarket, status, proposed_outcome_id: 'o1' }),
       ),
     )
     renderPage()
-    // The settled banner contains "Settled: Yes" — use the strong element for the winner label
-    const banner = await screen.findByText(/settled:/i)
-    expect(banner).toBeInTheDocument()
+    const banner = await screen.findByText(`${label}:`, { exact: false })
     expect(banner.querySelector('strong')).toHaveTextContent('Yes')
   })
 
