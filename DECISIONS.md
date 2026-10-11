@@ -7296,8 +7296,8 @@ practice that is within one interval of the user's first visit.
   users and mint a grant for each. That writes credits for accounts that
   have never signed in, and puts auth's user list on the ledger's write path.
 
-**Notes.** If ADR 0021 is accepted, an account id that auth's lookup does
-not return is not a user this platform knows. It is left out and logged at
+**Notes.** An account id that auth's lookup does not return is not a user
+this platform knows. It is left out and logged at
 WARNING, and the refresh continues. No route deletes a user today, so this
 should not happen.
 
@@ -7309,7 +7309,7 @@ least once"). Either changes this entry, not the ADR.
 
 ### D-NEW — A suspended account is left out of the ranking, and ranks close up with no gap
 
-**Date:** 2026-10-11 · **Ticket:** #38, #14 · **Status:** proposed (ADR 0021)
+**Date:** 2026-10-11 · **Ticket:** #38, #14 · **Status:** decided (ADR 0021, accepted 2026-10-11)
 
 **Decision.** A refresh drops every holder whose lookup answer has
 `is_suspended: true`, then numbers the rest 1..N. The suspended user's rows
@@ -7331,8 +7331,8 @@ tests, and it affects real users once #14 writes the column.
 - *Shown, with a "suspended" badge.* Another field in the contract, more work
   for #58's UI, and it publishes a moderation action against a named user.
 - *Excluded, with ranks keeping their gaps.* See above.
-- *Deferring the rule to #14.* It is not the plan if ADR 0021 is accepted; if
-  it is declined, suspension is deferred to [4.2] #14 (the ADR's fallback).
+- *Deferring the rule to #14.* That was the ADR's fallback, and it was not
+  needed: ADR 0021 was accepted, so the refresh reads the flag itself.
 
 **Reversal trigger.** A moderation policy that wants suspensions to be
 visible.
@@ -7586,7 +7586,7 @@ Move these into the log above when they're settled.
   service credential a prerequisite rather than a detail. ADR 0017's reversal
   note names the same day from the status gate's side.
 
-  ADR 0021 (proposed, [L-1] #38) introduces the first service credential, and
+  ADR 0021 (accepted, [L-1] #38) introduces the first service credential, and
   it does not close this entry. That credential is one key, held by the
   ledger, which opens one auth route: `POST /internal/users/lookup`. It gives
   no service an identity on any other route, so #27's caller still needs a

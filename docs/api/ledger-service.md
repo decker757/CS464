@@ -409,8 +409,7 @@ can differ from the user's live portfolio by whatever has traded since
 `computed_at` is when the ranking that this page came from began. Show it as
 "Updated …". Every user on every page of one ranking was valued from the same
 instant, so a trade that commits mid-refresh is in the whole ranking or in
-none of it. The refresh asks the auth service for usernames in chunks of
-500 user ids.
+none of it.
 
 **`stale: true` means the board has not been refreshed recently.** It is
 true when `computed_at` is more than two refresh intervals old (120 seconds
@@ -456,7 +455,11 @@ new one.
 async function loadPage(cursor) {
   const url = `/ledger/leaderboard?limit=50${cursor ? `&cursor=${cursor}` : ""}`;
   const res = await fetch(url, { credentials: "include" });
-  if (res.status === 409) return loadPage(null);   // leaderboard_refreshed
+  if (res.status === 409) {
+    // leaderboard_refreshed: this is page one of a new ranking.
+    // Replace the whole list with it; do not append it to what is shown.
+    return { ...(await loadPage(null)), restarted: true };
+  }
   return res.json();
 }
 ```
@@ -471,7 +474,7 @@ Errors:
 | --- | --- | --- |
 | 400 | `malformed_cursor` | `cursor` was not one this service issued. |
 | 401 | `invalid_token` | Missing, malformed or expired access token. |
-| 409 | `leaderboard_refreshed` | A cursor survives one refresh; after the second it is `409 leaderboard_refreshed`. Start again from page one. |
+| 409 | `leaderboard_refreshed` | The cursor's ranking has been replaced twice since its first page. Start again from page one and replace the list. |
 | 422 | `invalid_request` | For example `limit=0`. |
 
 ## GET /ledger/users/{user_id}/balance and /entries
