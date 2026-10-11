@@ -67,7 +67,6 @@ from core.database import (  # noqa: E402
     get_session_factory,
 )
 from core.roles import UserRole  # noqa: E402
-from core.settling import SETTLEMENT_GAP  # noqa: E402
 from model.entities import Market, MarketStatus  # noqa: E402
 from model.schemas import (  # noqa: E402
     MarketCloseRequest,
@@ -502,12 +501,18 @@ async def database_now(session) -> datetime:
     return (await session.execute(select(func.clock_timestamp()))).scalar_one()
 
 
+# "Settlement opens five minutes after send-back closes" (ADR 0019). A
+# constant, not a setting, so the tests name it too rather than import it:
+# a gap shortened in `core/settling.py` must turn them red.
+_SETTLEMENT_GAP = timedelta(minutes=5)
+
+
 def time_until_settleable() -> timedelta:
     """How long after approval a market becomes settleable, under the current settings.
 
     Read at call time, so a test that raised the window sees the raised one.
     """
-    return timedelta(seconds=get_settings().dispute_window_seconds) + SETTLEMENT_GAP
+    return timedelta(seconds=get_settings().dispute_window_seconds) + _SETTLEMENT_GAP
 
 
 def settleable_edge(approved_at: datetime) -> datetime:
