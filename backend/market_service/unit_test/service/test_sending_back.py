@@ -107,6 +107,35 @@ async def _set_window_end(
     await session.commit()
 
 
+async def _wait_until_blocked_on_a_lock(session: AsyncSession, pid: int) -> None:
+    """Poll until backend `pid` waits on a lock, for at most two seconds.
+
+    `pg_blocking_pids` reads the lock table live; `pg_stat_activity` would not,
+    because it is snapshotted once per transaction. Auth's test_sessions.py
+    has the twin.
+    """
+    stmt = text("SELECT cardinality(pg_blocking_pids(:pid)) > 0")
+    for _ in range(200):
+        if await session.scalar(stmt, {"pid": pid}):
+            return
+        await asyncio.sleep(0.01)
+    # Carrying on would test the two sessions one after the other, not the race.
+    pytest.fail(f"backend {pid} never blocked on a lock")
+
+
+async def _backend_pid(session: AsyncSession) -> int:
+    """Connect `session` and return its Postgres backend's pid."""
+    return await session.scalar(text("SELECT pg_backend_pid()"))
+
+
+async def _outcome(write: Awaitable[Market]) -> str:
+    """The status a write left, or the code it was refused with."""
+    try:
+        return (await write).status.value
+    except MarketError as refused:
+        return refused.code
+
+
 # --- the transition [3.3] #11 ------------------------------------------------
 async def test_an_approved_market_inside_its_window_is_sent_back_to_closed(
     session: AsyncSession,
@@ -186,13 +215,14 @@ async def test_a_sent_back_market_can_be_proposed_and_approved_again_with_a_fres
 
 
 # --- who [3.3] #11, D1 -------------------------------------------------------
-@pytest.mark.parametrize("who", ["proposer", "approver", "third_admin"])
+@pytest.mark.parametrize("who", ["proposer", "approver"])
 async def test_any_administrator_may_send_back(session: AsyncSession, who: str) -> None:
-    """D1: any administrator, the proposer and the approver included. Fails if
-    an identity check is added, such as `_proposal_to_decide`'s."""
+    """D1: any administrator, the proposer and the approver included. A third
+    administrator is the main-flow test above. Fails if an identity check is
+    added, such as `_proposal_to_decide`'s."""
     proposer, approver = _actor(), _actor(username="ihsan_b")
     market = await approved_market(session, proposer, approver=approver)
-    senders = {"proposer": proposer, "approver": approver, "third_admin": _actor()}
+    senders = {"proposer": proposer, "approver": approver}
 
     sent = await market_service.send_back_outcome(
         session, senders[who], market.id, _send_back(market.proposal_id)
@@ -262,9 +292,11 @@ async def test_a_send_back_that_queued_past_the_edge_is_refused(
     that arrived inside the window and got the row after it is refused: the
     clock is read once it holds the lock. ADR 0015.
 
-    The send-back connects and starts with the window open; a third session
-    holds the row until the end has passed. Fails with the clock read before
-    the lock, or through `func.now()` (the transaction's start, #138).
+    A third session holds the row. The send-back is seen waiting on that lock
+    while the database's clock is still before the end, so it provably queued
+    inside the window; the holder releases the row only once that clock has
+    passed the end. Fails with the clock read before the lock, or through
+    `func.now()` (the transaction's start, #138).
     """
     factory = get_session_factory()
     sender = _actor()
@@ -272,34 +304,31 @@ async def test_a_send_back_that_queued_past_the_edge_is_refused(
     async with factory() as setup:
         market = await approved_market(setup, _actor())
         market_id, proposal_id = market.id, market.proposal_id
-        await _set_window_end(
-            setup, market_id, await database_now(setup) + timedelta(seconds=1)
-        )
+        ends_at = await database_now(setup) + timedelta(milliseconds=1500)
+        await _set_window_end(setup, market_id, ends_at)
 
-    barrier = asyncio.Barrier(2)
-
-    async def hold_the_row() -> None:
-        async with factory() as own:
-            await own.execute(
+    async with factory() as holder, factory() as own:
+        sender_pid = await _backend_pid(own)
+        sending: asyncio.Task[str] | None = None
+        try:
+            await holder.execute(
                 select(Market.id).where(Market.id == market_id).with_for_update()
             )
-            await barrier.wait()
-            await asyncio.sleep(2)
-            await own.rollback()
-
-    async def send_back() -> str:
-        async with factory() as own:
-            await own.connection()
-            await barrier.wait()
-            try:
-                await market_service.send_back_outcome(
-                    own, sender, market_id, _send_back(proposal_id)
+            sending = asyncio.create_task(
+                _outcome(
+                    market_service.send_back_outcome(
+                        own, sender, market_id, _send_back(proposal_id)
+                    )
                 )
-            except MarketError as refused:
-                return refused.code
-            return "sent back"
-
-    _, answer = await asyncio.gather(hold_the_row(), send_back())
+            )
+            await _wait_until_blocked_on_a_lock(holder, sender_pid)
+            assert await database_now(holder) < ends_at, "queued after the edge"
+            while await database_now(holder) <= ends_at:
+                await asyncio.sleep(0.05)
+        finally:
+            # Before `own` closes, which would otherwise wait on this lock.
+            await holder.rollback()
+            answer = await sending if sending is not None else None
 
     assert answer == "dispute_window_closed"
     assert await _committed_status(market_id) is MarketStatus.APPROVED
@@ -513,6 +542,24 @@ async def test_a_stale_send_back_is_refused_before_its_reason_is_read(
     assert refused.value.code == "proposal_superseded"
 
 
+async def test_the_window_is_checked_before_which_approval(
+    session: AsyncSession,
+) -> None:
+    """ADR 0023's order: once the window on whatever is approved now has
+    closed, a page left open from an earlier cycle is told the result is
+    final, not to reload and review. Fails with the id check moved ahead of
+    the window."""
+    market_id, stale, _, _ = await _replaced_approval(session, _actor())
+    ends_at = (await _stored(session, market_id)).dispute_window_ends_at
+
+    with pytest.raises(MarketError) as refused:
+        await market_service.send_back_outcome(
+            session, _actor(), market_id, _send_back(stale), now=ends_at
+        )
+
+    assert refused.value.code == "dispute_window_closed"
+
+
 # --- the audit entry (ADR 0006, 0016, 0023) ----------------------------------
 async def test_a_send_back_logs_what_was_approved_before_clearing_it(
     session: AsyncSession, audit_reader: AsyncSession
@@ -559,35 +606,6 @@ async def test_a_send_back_logs_what_was_approved_before_clearing_it(
 
 
 # --- two requests at once (ADR 0015) -----------------------------------------
-async def _wait_until_blocked_on_a_lock(session: AsyncSession, pid: int) -> None:
-    """Poll until backend `pid` waits on a lock, for at most two seconds.
-
-    `pg_blocking_pids` reads the lock table live; `pg_stat_activity` would not,
-    because it is snapshotted once per transaction. Auth's test_sessions.py
-    has the twin.
-    """
-    stmt = text("SELECT cardinality(pg_blocking_pids(:pid)) > 0")
-    for _ in range(200):
-        if await session.scalar(stmt, {"pid": pid}):
-            return
-        await asyncio.sleep(0.01)
-    # Carrying on would test the two sessions one after the other, not the race.
-    pytest.fail(f"backend {pid} never blocked on a lock")
-
-
-async def _backend_pid(session: AsyncSession) -> int:
-    """Connect `session` and return its Postgres backend's pid."""
-    return await session.scalar(text("SELECT pg_backend_pid()"))
-
-
-async def _outcome(write: Awaitable[Market]) -> str:
-    """The status a write left, or the code it was refused with."""
-    try:
-        return (await write).status.value
-    except MarketError as refused:
-        return refused.code
-
-
 async def _approved_for_a_race() -> tuple[uuid.UUID, uuid.UUID, datetime]:
     """An approved market, committed: its id, `proposal_id` and window end."""
     async with get_session_factory()() as setup:
@@ -698,39 +716,24 @@ async def test_two_concurrent_send_backs_send_back_once(
     other reads CLOSED under the lock and is `market_not_approved`, and the
     log holds one entry.
 
-    A third session holds the row while both senders, already connected,
-    read it. Fails with `for_update` removed from send-back: both read
-    APPROVED, both commit, and the log holds two entries.
+    The first is queued on the row before the second, so the order is forced.
+    Fails with `for_update` removed from send-back: both read APPROVED, both
+    commit, and the log holds two entries.
     """
-    factory = get_session_factory()
     first, second = _actor(), _actor(username="carol_a")
     market_id, proposal_id, _ = await _approved_for_a_race()
-    barrier = asyncio.Barrier(3)
 
-    async def hold_the_row() -> None:
-        async with factory() as own:
-            await own.execute(
-                select(Market.id).where(Market.id == market_id).with_for_update()
-            )
-            await barrier.wait()
-            await asyncio.sleep(1)
-            await own.rollback()
-
-    async def send_back(sender: Actor) -> str:
-        async with factory() as own:
-            await own.connection()
-            await barrier.wait()
-            return await _outcome(
-                market_service.send_back_outcome(
-                    own, sender, market_id, _send_back(proposal_id)
-                )
-            )
-
-    _, first_answer, second_answer = await asyncio.gather(
-        hold_the_row(), send_back(first), send_back(second)
+    answers = await _queue_in_order(
+        market_id,
+        lambda own: market_service.send_back_outcome(
+            own, first, market_id, _send_back(proposal_id)
+        ),
+        lambda own: market_service.send_back_outcome(
+            own, second, market_id, _send_back(proposal_id)
+        ),
     )
 
-    assert sorted([first_answer, second_answer]) == ["closed", "market_not_approved"]
+    assert answers == ("closed", "market_not_approved")
     assert await _committed_status(market_id) is MarketStatus.CLOSED
     entries = await _entries(audit_reader, first, _SENT_BACK) + await _entries(
         audit_reader, second, _SENT_BACK
