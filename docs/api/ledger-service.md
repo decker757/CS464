@@ -1336,6 +1336,7 @@ path with `POST` is the trade route above; this one only reads.
 | `transaction_id` | The trade's transaction. The same id is on the trader's own history row. |
 | `created_at` | When the trade's entries landed, named as on `/ledger/entries/me`. It equals the matching price-history point's `occurred_at`. |
 | `user_id` | The trader. An id, not a name (below). |
+| `outcome_id` | The outcome traded. One of this market's outcomes. |
 | `side` | `"buy"` or `"sell"`. |
 | `quantity` | Shares, at scale 4. |
 | `average_price` | `\|total\| ÷ quantity`, `ROUND_HALF_UP` at scale 4: what this trade averaged, not a marginal price. The same function as the trader's own history row, so the two always agree. |

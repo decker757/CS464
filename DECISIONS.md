@@ -7941,15 +7941,14 @@ trades one each.
 ledger stores no username and asks auth for none. The administrator's browser
 resolves names through a new admin-only batch lookup on auth,
 `POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
-returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021
-(proposed in #270), `POST /internal/users/lookup`, but it takes an
+returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021,
+`POST /internal/users/lookup`, but it takes an
 administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
 User column shows a short id that links to #259's user page.
 
 **Why.**
-- *ADR 0021's lookup is the wrong credential for this.* It is still Proposed,
-  and it is scoped to one key, one caller and one route, for a background job
-  with nobody behind it. This request has an administrator's token behind it.
+- *ADR 0021's lookup is the wrong credential for this.* It is scoped to one
+  key, one caller and one route, for a background job with nobody behind it. This request has an administrator's token behind it.
   Sending the service key per request would widen that ADR beyond what it
   argues.
 - *The leaderboard's snapshot names the wrong set.* It leaves suspended users
