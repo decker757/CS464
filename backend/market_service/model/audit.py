@@ -41,6 +41,11 @@ class AdminAction(StrEnum):
     # an approval, snapshotted before the rejection cleared them. ADR 0016.
     MARKET_OUTCOME_REJECTED = "market.outcome_rejected"
 
+    # [3.3] #11. An approved result sent back inside its dispute window, under
+    # whoever sent it. The reason in `reason`, and in `context` the approval
+    # it undid (twelve keys), snapshotted before the clear. ADR 0023.
+    MARKET_OUTCOME_SENT_BACK = "market.outcome_sent_back"
+
     # [3.4] #12. The settle step's flip from APPROVED, never a repeat. Beside
     # the ledger's `market.settled`; one with no `market.settled` before it
     # is a direct call that paid nobody. ADR 0019's amendment.
