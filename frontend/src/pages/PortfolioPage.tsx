@@ -14,6 +14,10 @@ interface PositionRow extends Position {
   outcomeLabel: string
 }
 
+// A settled position is no longer valued: its price, value and P&L arrive as
+// null, and are shown as a dash rather than as zero ([3.4] #12).
+const NOT_VALUED = '—'
+
 // Markets, keyed by id, for every distinct market a position names — one
 // fetch per market held, not per position (ledger-service.md: the portfolio
 // carries ids only, and labels are the frontend's own join). allSettled, not
@@ -48,10 +52,6 @@ function pnlColor(pnl: string): string {
   if (pnl.startsWith('-')) return 'text-danger'
   return 'text-success'
 }
-
-// A settled position is no longer valued: its price, value and P&L arrive as
-// null, and are shown as a dash rather than as zero ([3.4] #12).
-const NOT_VALUED = '—'
 
 function PnlCell({ pnl }: { pnl: string | null }) {
   if (pnl === null) return <span className="text-muted">{NOT_VALUED}</span>
