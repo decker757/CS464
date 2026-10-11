@@ -74,6 +74,7 @@ from model.schemas import (  # noqa: E402
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
+    OutcomeSendBackRequest,
 )
 from service import closing, market_service  # noqa: E402
 from service.audit import Actor  # noqa: E402
@@ -458,6 +459,29 @@ def rejection_request(
 ) -> OutcomeRejectionRequest:
     """`rejection_terms` parsed, for driving the service layer without HTTP."""
     return OutcomeRejectionRequest(**rejection_terms(proposal_id, **overrides))  # type: ignore[arg-type]
+
+
+# [3.3] #11. One send-back's reason, shared by both suites.
+SEND_BACK_REASON = "The source cited was revised; the first print says No, not Yes."
+
+
+def send_back_terms(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> dict[str, object]:
+    """A send-back that passes every rule; `proposal_id` defaults as in `approval_terms`."""
+    base: dict[str, object] = {
+        "proposal_id": str(proposal_id or uuid.uuid4()),
+        "reason": SEND_BACK_REASON,
+    }
+    base.update(overrides)
+    return base
+
+
+def send_back_request(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> OutcomeSendBackRequest:
+    """`send_back_terms` parsed, for driving the service layer without HTTP."""
+    return OutcomeSendBackRequest(**send_back_terms(proposal_id, **overrides))  # type: ignore[arg-type]
 
 
 async def proposed_market(

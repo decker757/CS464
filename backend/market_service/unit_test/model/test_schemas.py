@@ -26,6 +26,7 @@ from model.schemas import (
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
+    OutcomeSendBackRequest,
 )
 
 
@@ -393,6 +394,12 @@ def test_a_null_proposal_id_is_a_value_not_an_absence() -> None:
 def test_an_approval_needs_a_proposal_id() -> None:
     with pytest.raises(ValidationError):
         OutcomeApprovalRequest()  # type: ignore[call-arg]
+
+
+def test_a_send_back_needs_a_proposal_id() -> None:
+    """[3.3] #11: required, not optional, as for the decisions. ADR 0016, 0023."""
+    with pytest.raises(ValidationError):
+        OutcomeSendBackRequest(reason="A reason long enough to pass.")  # type: ignore[call-arg]
 
 
 def test_a_proposal_id_that_is_not_a_uuid_is_refused() -> None:
