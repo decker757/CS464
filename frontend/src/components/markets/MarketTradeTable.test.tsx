@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import type { MarketTrade } from '../../api/ledgerApi'
 import MarketTradeTable from './MarketTradeTable'
@@ -11,8 +11,14 @@ const TRADES: MarketTrade[] = [
 const OUTCOME_LABELS = new Map([['o-yes', 'Yes'], ['o-no', 'No']])
 
 describe('MarketTradeTable', () => {
-  it('shows every trade with its user, outcome, side, quantity and price', () => {
+  it('shows every trade with its date, user, outcome, side, quantity and price', () => {
     render(<MarketTradeTable trades={TRADES} outcomeLabels={OUTCOME_LABELS} />)
+
+    // A real date, read from created_at: a wrong field name renders
+    // "Invalid Date". en-SG is day/month/year, and noon UTC on 1 January is
+    // still 1 January in every timezone from UTC-11 to UTC+11.
+    const [, firstTrade] = screen.getAllByRole('row')
+    expect(within(firstTrade).getAllByRole('cell')[0]).toHaveTextContent(/^0?1\/0?1\/2026, /)
 
     expect(screen.getByText('aaaaaaaa')).toBeInTheDocument()
     expect(screen.getByText('bbbbbbbb')).toBeInTheDocument()
