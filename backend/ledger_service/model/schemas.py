@@ -33,7 +33,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from core.pricing import Side
-from model.entities import Entry, TransactionKind
+from model.entities import Entry, ResultKind, TransactionKind
 
 
 class BalanceOut(BaseModel):
@@ -677,19 +677,24 @@ class ExposureOutcomeOut(BaseModel):
     shares_outstanding: Decimal = Field(
         description="Every trader's shares in this outcome, summed."
     )
-    payout_if_wins: Decimal = Field(
-        description="One credit per share outstanding."
+    payout_if_wins: Decimal | None = Field(
+        description="One credit per share outstanding. Null once the market has a result."
     )
-    residue_if_wins: Decimal = Field(
+    residue_if_wins: Decimal | None = Field(
         description=(
             "pool - payout_if_wins. Positive goes to the platform at "
-            "settlement; negative is what the platform tops up."
+            "settlement; negative is what the platform tops up. Null once "
+            "the market has a result."
         )
     )
 
-    @field_serializer("shares_outstanding", "payout_if_wins", "residue_if_wins")
+    @field_serializer("shares_outstanding")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+    @field_serializer("payout_if_wins", "residue_if_wins")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
 
 
 class ExposureOut(BaseModel):
@@ -711,10 +716,26 @@ class ExposureOut(BaseModel):
         description="What the platform put up at book creation."
     )
     pool: Decimal | None = Field(
-        description="What the market pool holds now, derived from its entries."
+        description=(
+            "What the market pool holds now, derived from its entries. Null "
+            "when there is no book, and once the market has a result: "
+            "settlement drained it."
+        )
     )
     payout_exceeds_pool: bool = Field(
-        description="True when any outcome's payout is strictly greater than `pool`."
+        description=(
+            "True when any outcome's payout is strictly greater than `pool`. "
+            "False once the market has a result."
+        )
+    )
+    result: ResultKind | None = Field(
+        description=(
+            "Null until the ledger records how the market ended; then that "
+            "record's kind, today always `settled`."
+        )
+    )
+    winning_outcome_id: uuid.UUID | None = Field(
+        description="Null until the market is settled; then the outcome that paid."
     )
     outcomes: list[ExposureOutcomeOut] = Field(
         description="Every outcome, ordered by position. Empty when there is no book."
