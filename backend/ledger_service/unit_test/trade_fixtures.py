@@ -458,6 +458,23 @@ async def transaction_count(session: AsyncSession, *, key: str | None = None) ->
     return (await session.execute(stmt)).scalar_one()
 
 
+async def ledger_counts(session: AsyncSession) -> tuple[int, int]:
+    """Transactions and entries in the whole ledger, as this session sees them.
+
+    Not built on `transaction_count` and `entry_count`: those expire the
+    session, and a caller still holding loaded accounts to post with would
+    then lazy-load them outside the event loop.
+    """
+    ents = entities()
+    transactions = (
+        await session.execute(select(func.count()).select_from(ents.Transaction))
+    ).scalar_one()
+    entries = (
+        await session.execute(select(func.count()).select_from(ents.Entry))
+    ).scalar_one()
+    return transactions, entries
+
+
 # --- the invariants ------------------------------------------------------
 async def assert_ledger_balances(session: AsyncSession) -> None:
     """Both halves, because one of them is not enough.
@@ -633,19 +650,73 @@ def capture_sql() -> Iterator[list[str]]:
     structural assertion, and `before_cursor_execute` sees the compiled
     statement text without pinning any SQL syntax.
     """
+    statements: list[str] = []
+
+    def keep_the_text(statement: str, _parameters: object) -> None:
+        statements.append(statement)
+
+    with _on_each_statement(keep_the_text):
+        yield statements
+
+
+@contextmanager
+def capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
+    """Every statement the block sends, with its parameters, in order.
+
+    For a claim that lives in the parameters rather than the text, such as
+    the order accounts are locked in. The twin is market_service's
+    `recorded_statements`, which this service cannot import
+    (`test_import_boundary.py`).
+    """
+    captured: list[tuple[str, tuple]] = []
+
+    def keep_both(statement: str, parameters: object) -> None:
+        captured.append((statement, tuple(parameters or ())))
+
+    with _on_each_statement(keep_both):
+        yield captured
+
+
+@contextmanager
+def count_commits() -> Iterator[list[int]]:
+    """Root COMMITs on the engine's connections, counted in `[0]`.
+
+    Not the session's `after_commit`, which a released SAVEPOINT fires too.
+    On the engine it still sees a commit made after the session has moved to
+    a new connection.
+    """
     from sqlalchemy import event  # noqa: PLC0415
 
     from core.database import get_engine  # noqa: PLC0415
 
-    statements: list[str] = []
+    commits = [0]
+    engine = get_engine().sync_engine
+
+    def count(_conn) -> None:  # noqa: ANN001
+        commits[0] += 1
+
+    event.listen(engine, "commit", count)
+    try:
+        yield commits
+    finally:
+        event.remove(engine, "commit", count)
+
+
+@contextmanager
+def _on_each_statement(record) -> Iterator[None]:  # noqa: ANN001
+    """Call `record(statement, parameters)` for every statement the block sends."""
+    from sqlalchemy import event  # noqa: PLC0415
+
+    from core.database import get_engine  # noqa: PLC0415
+
     engine = get_engine().sync_engine
 
     def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        statements.append(statement)
+        record(statement, parameters)
 
     event.listen(engine, "before_cursor_execute", before)
     try:
-        yield statements
+        yield
     finally:
         event.remove(engine, "before_cursor_execute", before)
 

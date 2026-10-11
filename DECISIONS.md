@@ -5290,6 +5290,14 @@ PR … says `Closes #12`". #12 closes when #216 lands. The #210 condition no
 longer decides it, since the switch landed in #227. The other rows, the naming
 and the order stand.*
 
+*Merge order, added 2026-10-11 in review: PR 6 (#257) never reaches `dev`
+without PR 7 (#258). PR 6 alone pays the winners while the portfolio still
+values their positions at the last price, so a winner's net worth, and the
+leaderboard built on it, count the win twice until PR 7 lands. Merge #258
+into #257's branch first, or merge the two back to back in one sitting.
+PR 7 in turn waits for the portfolio page to handle a settled position's
+null `unrealized_pnl` on `dev` ([FE][3.4] #216).*
+
 ---
 
 ### D-NEW — Settlement waits for `settleable`, which market_service derives from `approved_at`
