@@ -302,8 +302,7 @@ def _trade_page_query(
         Transaction.kind.in_(list(_TRADE_SIDE_OF_KIND)),
     ]
     if position is not None:
-        created_at, row_id = position
-        conditions.append(tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id))
+        conditions.append(_keyset_condition_of(position))
 
     return (
         select(
@@ -329,6 +328,7 @@ def _market_trade_of(row: Row[_PageRow]) -> MarketTradeOut:
     pool's leg: the trader's with the sign flipped, the same absolute value.
     """
     transaction = Transaction(id=row.transaction_id, kind=row.kind, context=row.context)
+    # Read twice on purpose: one row builder for the feed, not two.
     fields = trade_fields_of(transaction, row.amount)
     result = trading.result_of(transaction)
     return MarketTradeOut(
@@ -435,10 +435,5 @@ async def list_market_trades(
         ).all()
     )
 
-    page = fetched[:limit]
-    next_cursor = (
-        encode_cursor(page[-1].created_at, page[-1].id)
-        if len(fetched) > limit
-        else None
-    )
+    page, next_cursor = _page_cut_of(fetched, limit)
     return TradePage(rows=[_market_trade_of(row) for row in page], next_cursor=next_cursor)
