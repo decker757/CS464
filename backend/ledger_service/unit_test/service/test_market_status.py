@@ -98,6 +98,8 @@ class _Upstream:
             "liquidity_b": None if liquidity_b is None else str(liquidity_b),
             "seed_subsidy": None if seed_subsidy is None else str(seed_subsidy),
             "published_at": published_at,
+            "proposed_outcome_id": None,
+            "settleable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)
@@ -472,6 +474,20 @@ async def test_a_status_that_is_not_a_string_is_unavailable_not_closed(
         await _gate(session, upstream)
 
 
+async def test_a_body_without_settleable_is_unavailable_at_the_gate(
+    session: AsyncSession,
+) -> None:
+    """DECISIONS.md, "parsed strictly on every pull": the trade path reads no
+    settlement field, and still refuses a body missing one. The status is
+    "open", so the missing key is the only thing that can refuse it.
+    """
+    upstream = _Upstream()
+    del upstream.body["settleable"]
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _gate(session, upstream)
+
+
 async def test_a_404_on_a_market_with_a_book_is_unavailable_not_not_found(
     session: AsyncSession,
 ) -> None:
@@ -646,4 +662,28 @@ def test_the_open_status_matches_the_one_market_service_puts_on_the_wire() -> No
     assert _status()._OPEN == theirs, (
         f"this service gates trading on {_status()._OPEN!r} and market_service "
         f"publishes {theirs!r}; every trade would be refused as market_closed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("ours", "member"), [("_APPROVED", "APPROVED"), ("_SETTLED", "SETTLED")]
+)
+def test_the_settlement_statuses_match_the_ones_market_service_puts_on_the_wire(
+    ours: str, member: str
+) -> None:
+    """Settlement's copies of `"approved"` and `"settled"`, pinned the same
+    way. The fake upstream in `settlement_fixtures.py` types the same literal,
+    so a rename upstream would refuse every settlement as market_not_approved
+    with every settlement test still green."""
+    from service import settlement  # noqa: PLC0415
+
+    theirs = _enum_member(
+        _BACKEND / "market_service" / "model" / "entities.py",
+        "MarketStatus",
+        member,
+    )
+
+    assert getattr(settlement, ours) == theirs, (
+        f"settlement reads {getattr(settlement, ours)!r} and market_service "
+        f"publishes {theirs!r}; every settlement would be refused"
     )

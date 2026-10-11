@@ -110,12 +110,13 @@ jobs:
       # back to this, so one variable per job is enough.
       DATABASE_URL: postgresql+asyncpg://${{ matrix.role }}@localhost:5432/cs464_test
 
-      # [4.3] #15. Set for every job, and actually used by two of them.
+      # [4.3] #15. Set for every job, and actually used by four of them.
       #
-      # The audit service's own suite connects with it, and so does the market
-      # service's, because market_svc holds INSERT on audit.admin_actions and
-      # no SELECT: a test that appends an entry cannot read it back over the
-      # connection that wrote it, and has to come in as the reader instead.
+      # The audit service's own suite connects with it, and so do the auth,
+      # market and ledger services', because each of their roles holds INSERT
+      # on audit.admin_actions and no SELECT: a test that appends an entry
+      # cannot read it back over the connection that wrote it, and has to come
+      # in as the reader instead.
       # Passwordless here, matching the trust auth above.
       AUDIT_TEST_DATABASE_URL: postgresql+asyncpg://audit_svc@localhost:5432/cs464_test
 

@@ -84,8 +84,8 @@ class TransactionKind(StrEnum):
     """Why credits moved.
 
     SIGNUP_GRANT is the oldest member. TRADE_BUY and TRADE_SELL arrived with
-    [T-2] #22 and [T-3] #23, and SETTLEMENT arrives with [3.4] #12. Each is a
-    Python-only addition for the same reason as `AccountKind`.
+    [T-2] #22 and [T-3] #23, and SETTLEMENT and SETTLEMENT_RESIDUE with [3.4]
+    #12. Each is a Python-only addition for the same reason as `AccountKind`.
     """
 
     SIGNUP_GRANT = "signup_grant"
@@ -104,6 +104,26 @@ class TransactionKind(StrEnum):
     # rest, so it needs no migration either.
     TRADE_SELL = "trade_sell"
 
+    # MARKET_POOL -> USER, posted once per holder of the winning outcome when a
+    # market settles. [3.4] #12, ADR 0019. Non-native like the rest.
+    SETTLEMENT = "settlement"
+
+    # MARKET_POOL -> PLATFORM, posted once per settled market: whatever the pool
+    # holds after the holders are paid. [3.4] #12, ADR 0019.
+    SETTLEMENT_RESIDUE = "settlement_residue"
+
+
+class ResultKind(StrEnum):
+    """How a market ended. [3.4] #12, D-NEW "`ledger.market_results` is one
+    record per finished market, with a `kind`".
+
+    Only SETTLED exists. A second member is [BE] #221's, and arrives with its
+    own columns and CHECK clauses. Non-native like the rest, so the column is a
+    plain varchar with no CHECK on its values.
+    """
+
+    SETTLED = "settled"
+
 
 _ACCOUNT_KIND_COLUMN = Enum(
     AccountKind,
@@ -118,6 +138,14 @@ _TRANSACTION_KIND_COLUMN = Enum(
     name="ledger_transaction_kind",
     native_enum=False,
     length=32,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+_RESULT_KIND_COLUMN = Enum(
+    ResultKind,
+    name="ledger_result_kind",
+    native_enum=False,
+    length=24,
     values_callable=lambda enum: [member.value for member in enum],
 )
 
@@ -210,8 +238,7 @@ class Transaction(Base):
     # (`signup-grant:<uuid>`, 49 characters) to prove the derivation confines
     # a collision to one caller. 120 truncates that combination; 255 leaves
     # room for a client key longer than any of this service's own namespaced
-    # keys with margin to spare. The baseline revision carries 255; a database
-    # from before #75 still at 120 is refused by migrate.py, naming this column.
+    # keys with margin to spare. The baseline revision carries 255.
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
     # A hash of the legs, so a replayed key can be told from a reused one.
@@ -526,6 +553,51 @@ class Position(Base):
     )
 
 
+class MarketResult(Base):
+    """How a market ended: one row per finished market. [3.4] #12, ADR 0019.
+
+    The primary key is `market_id` alone, so a market cannot end twice, with a
+    different winner or otherwise. The trade latch and the settlement both read
+    a row of this table under the book lock and never filter on `kind`.
+
+    `outcome_id` is nullable so a later kind that names no winner needs no
+    ALTER ([BE] #221). The paired CHECK is what binds the two columns, and the
+    composite key is what makes a winner one of this market's own outcomes:
+    Postgres skips a composite key when any column is null, which is why
+    `market_id` also has the plain foreign key. Neither key has an ON DELETE,
+    for the reason `Entry.transaction_id` has none.
+
+    Not append-only at the database, on purpose: D-NEW "`ledger.market_results`
+    carries no append-only trigger".
+    """
+
+    __tablename__ = "market_results"
+
+    market_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("market_books.market_id", name="fk_market_results_book"),
+        primary_key=True,
+    )
+
+    kind: Mapped[ResultKind] = mapped_column(_RESULT_KIND_COLUMN, nullable=False)
+
+    outcome_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
+    # No default, like `MarketBook.opened_at`: the settlement supplies it.
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["market_id", "outcome_id"],
+            ["market_outcomes.market_id", "market_outcomes.outcome_id"],
+            name="fk_market_results_market_outcome",
+        ),
+        CheckConstraint(
+            "(kind = 'settled') = (outcome_id IS NOT NULL)",
+            name="ck_market_results_outcome_iff_settled",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Append-only, at the database.
 # ---------------------------------------------------------------------------
@@ -562,7 +634,6 @@ class Position(Base):
 # would work and would also be the kind of thing somebody quietly un-doubles
 # while editing the SQL.
 
-# The trigger's name, which migrate.py checks a database from before #75 for.
 APPEND_ONLY_TRIGGER = "entries_append_only"
 
 # One copy of this SQL, run in two places: by the `after_create` events below,

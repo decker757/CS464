@@ -137,14 +137,16 @@ services:
       CLOSE_SWEEP_SECONDS: ${CLOSE_SWEEP_SECONDS:-10}
       CLOSE_SWEEP_BATCH: ${CLOSE_SWEEP_BATCH:-100}
       CLOSE_SWEEP_ENABLED: ${CLOSE_SWEEP_ENABLED:-true}
+      # [3.3] #11, [3.4] #12. Seconds after an approval during which any
+      # administrator may send the result back; settlement opens five minutes
+      # after it ends. 1 to 2592000 (30 days).
+      DISPUTE_WINDOW_SECONDS: ${DISPUTE_WINDOW_SECONDS:-86400}
     ports:
       - "${MARKET_PORT:-8001}:8000"
     restart: unless-stopped
 
   # [F-5] #75. Brings the ledger schema to head and exits; `ledger` starts only
-  # if this exited 0. Same shape and reasons as `auth-migrate`. It also refuses
-  # a database from before #75 whose entries lost their append-only trigger.
-  # ADR 0020.
+  # if this exited 0. Same shape and reasons as `auth-migrate`. ADR 0020.
   ledger-migrate:
     build:
       context: ./backend

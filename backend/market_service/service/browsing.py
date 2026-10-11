@@ -19,7 +19,6 @@ from sqlalchemy import (
     Row,
     and_,
     case,
-    false,
     func,
     not_,
     null,
@@ -52,6 +51,7 @@ from model.entities import (
     displayed_status,
 )
 from service.closing import open_for_trading, was_open_for_trading_at
+from service.settling import settleable
 
 # The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
 # doubling is Python's, not SQL's.
@@ -328,7 +328,11 @@ async def get_published(
     unknown id. Do not swap in `market_service.get_any`: [1.1] #1's draft
     invisibility would go with no test failing. The derived status goes on an
     unmapped attribute, never on `status`; see `TRADER_FACING_STATUS`. D-027.
+    `settleable` goes beside it, against the same `now`, for the same reason:
+    a computed field would re-run on a clock it cannot see. [3.4] #12.
     """
+    now = now or datetime.now(UTC)
+
     stmt = select(Market).where(Market.id == market_id, _visible())
     market = (await session.execute(stmt)).scalar_one_or_none()
     if market is None:
@@ -339,6 +343,7 @@ async def get_published(
         TRADER_FACING_STATUS,
         displayed_status(market.status, market.close_time, now=now),
     )
+    market.settleable = settleable(market.status, market.approved_at, now=now)
     return market
 
 
@@ -363,18 +368,18 @@ def _visible_to_admin(caller_id: uuid.UUID) -> ColumnElement[bool]:
 def _is_settled() -> ColumnElement[bool]:
     """Is the market settled? Decides its overview group. #210.
 
-    Constant false until [3.4] #12 adds `MarketStatus.SETTLED` (#227). Then
-    the body is `return Market.status == MarketStatus.SETTLED`, and nothing
-    else changes: the order, the keyset and the cursor carry the group already.
+    Switched on by [3.4] #12 (#227), which added `MarketStatus.SETTLED`. The
+    order, the keyset and the cursor carried the group already, so this is the
+    only line that changed.
     """
-    return false()
+    return Market.status == MarketStatus.SETTLED
 
 
 def _overview_group() -> ColumnElement[int]:
     """0 for a market still in play, 1 for a settled one, which sorts last.
 
-    A CASE rather than the boolean: until SETTLED exists the boolean renders
-    as `false`, and Postgres refuses `ORDER BY false` as a non-integer constant.
+    A CASE rather than the boolean, so the group is an integer: the keyset
+    compares it with the cursor's group, and the cursor reads it back.
     """
     return case((_is_settled(), _SETTLED_GROUP), else_=_ACTIVE_GROUP)
 
@@ -451,6 +456,7 @@ async def _list_overview_rows(
         Market.status,
         Market.question,
         Market.close_time,
+        Market.approved_at,
         _overview_group().label("overview_group"),
     ).where(_visible_to_admin(caller_id))
 
@@ -564,6 +570,7 @@ async def overview(
             status=displayed_status(row.status, row.close_time, now=now),
             question=row.question,
             close_time=row.close_time,
+            settleable=settleable(row.status, row.approved_at, now=now),
         )
         for row in shown
     ]

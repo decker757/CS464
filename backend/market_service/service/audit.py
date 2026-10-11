@@ -16,10 +16,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import audit as core_audit
-from core.audit import Actor, Entry
+from core.audit import Actor, Entry, actor_of
 from model.audit import AdminAction
 
-__all__ = ["Actor", "record"]
+__all__ = ["Actor", "actor_of", "record"]
 
 
 async def record(

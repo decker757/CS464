@@ -3,8 +3,8 @@
 ADR 0020. auth, market and ledger bind this to their own metadata and schema in
 `migrations/env.py` and `migrate.py`, and nothing here imports a service. One
 copy, because a divergence would be a bug rather than a design choice: a schema
-filter that let `audit` in would offer to drop a table no service may touch,
-and two adoption rules would adopt a database the third refuses. ADR 0012's bar.
+filter that let `audit` in would offer to drop a table no service may touch.
+ADR 0012's bar.
 
 Two things here are load-bearing and not obvious.
 
@@ -18,9 +18,7 @@ without a schema while the models name one, and every foreign key would come
 back dropped and re-added (checked against Alembic 1.20.0).
 
 compare_metadata cannot see CHECK constraints, partial-index predicates or
-triggers. Each service's guard tests compare those through the catalog, and
-`extra_drift` lets a service add a check of its own (the ledger's append-only
-trigger) to the adoption of a database from before #75.
+triggers. Each service's guard tests compare those through the catalog.
 
 Never imported by the realtime or audit services, which have no Alembic.
 """
@@ -29,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import logging
 import os
 import sys
 from collections.abc import Callable
@@ -37,10 +34,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from alembic import command, context
-from alembic.autogenerate import compare_metadata
 from alembic.config import Config
-from alembic.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from sqlalchemy import MetaData, inspect
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -52,43 +46,19 @@ VERSION_TABLE = "alembic_version"
 # `sqlalchemy.url`: configparser would %-interpolate a URL-encoded password.
 _URL_ATTRIBUTE = "database_url"
 
-_REFUSED_FOR_DRIFT = (
-    "{schema}: this database has tables but no migration history, and they do "
-    "not match the models:\n{differences}\n\n"
-    "It was built before #75. Most likely it missed one of the hand-applied "
-    "files that sql/migrations/ used to hold, which are deleted now and kept "
-    "in git history. From the repository root, find the commit that deleted "
-    "them:\n\n"
-    "    git log --diff-filter=D --format=%h -- sql/migrations/\n\n"
-    "Then find the file for each line above. Put that commit in place of "
-    "<commit>, and the last name on the line (after its final `.` or `:`) in "
-    "place of <name>:\n\n"
-    "    git grep -l <name> <commit>^ -- sql/migrations/\n\n"
-    "Apply each file it prints, in number order, with the printed line in "
-    "place of <file>. Every one of those files is safe to apply twice:\n\n"
-    "    git show <file> | docker compose exec -T db psql -U cs464 -d cs464 "
-    "-v ON_ERROR_STOP=1\n\n"
-    "then run `docker compose up` again. If no file names it (anything in "
-    "auth, or the ledger's append-only trigger), or you would rather start "
-    "clean, use `docker compose down -v`, which destroys local data. Nothing "
-    "was changed."
-)
-
-_REFUSED_PAST_BASELINE = (
-    "{schema}: this database has tables but no migration history, and the "
-    "migrations have moved past the baseline it could have been matched "
-    "against. Start from an empty database with `docker compose down -v`, "
-    "which destroys local data. Nothing was changed."
+_REFUSED_WITHOUT_HISTORY = (
+    "{schema}: this database has tables but no migration history, so something "
+    "other than the migrations built it, most likely a boot from before #75. "
+    "The migrate step cannot know what it holds (ADR 0020). Start from an "
+    "empty database with `docker compose down -v`, which destroys local data. "
+    "Nothing was changed."
 )
 
 Result = TypeVar("Result")
-DriftCheck = Callable[[Connection], list[str]]
-
-logger = logging.getLogger(__name__)
 
 
-class LegacyDrift(Exception):
-    """A database from before #75 that the migrate step will not adopt. The message says why."""
+class NoMigrationHistory(Exception):
+    """Tables and no version table, which the migrate step refuses. The message says what to do."""
 
 
 def is_own_name(
@@ -103,33 +73,6 @@ def is_own_name(
     if type_ == "schema":
         return name == schema
     return True
-
-
-def _describe_change(change: tuple[Any, ...]) -> str:
-    kind = change[0]
-    if kind in ("add_table", "remove_table"):
-        return f"{kind} {change[1].fullname}"
-    if kind in ("add_column", "remove_column"):
-        _, schema, table, column = change
-        return f"{kind} {schema}.{table}.{column.name}"
-    if kind.startswith("modify_"):
-        _, schema, table, column_name = change[:4]
-        return f"{kind} {schema}.{table}.{column_name}"
-    # An index, a unique constraint or a foreign key: each knows its table.
-    item = change[1]
-    return f"{kind} {item.table.fullname}: {item.name or '(unnamed)'}"
-
-
-def describe_drift(differences: list[Any]) -> list[str]:
-    """One line per difference compare_metadata found, naming what differs."""
-    lines: list[str] = []
-    for difference in differences:
-        # Changes to one column arrive grouped in a list.
-        if isinstance(difference, list):
-            lines.extend(_describe_change(change) for change in difference)
-        else:
-            lines.append(_describe_change(difference))
-    return lines
 
 
 def _migration_engine(url: str) -> AsyncEngine:
@@ -161,7 +104,12 @@ def run_in_transaction(url: str, work: Callable[[Connection], Result]) -> Result
     return asyncio.run(_run_async(url, work))
 
 
-def _context_options(metadata: MetaData, schema: str) -> dict[str, Any]:
+def context_options(metadata: MetaData, schema: str) -> dict[str, Any]:
+    """Alembic's options for `schema`: only its own names, types and defaults compared.
+
+    The guard tests compare with these too (shared/testing.py), so a test sees
+    exactly what a migration run sees.
+    """
     return {
         "target_metadata": metadata,
         "version_table_schema": schema,
@@ -172,28 +120,8 @@ def _context_options(metadata: MetaData, schema: str) -> dict[str, Any]:
     }
 
 
-def find_drift(
-    connection: Connection,
-    *,
-    metadata: MetaData,
-    schema: str,
-    extra_drift: DriftCheck | None = None,
-) -> list[str]:
-    """Every way `schema` differs from `metadata`, one line each; empty when they match.
-
-    compare_metadata, plus whatever `extra_drift` finds that it cannot see.
-    """
-    migration_context = MigrationContext.configure(
-        connection, opts=_context_options(metadata, schema)
-    )
-    lines = describe_drift(compare_metadata(migration_context, metadata))
-    if extra_drift is not None:
-        lines.extend(extra_drift(connection))
-    return lines
-
-
 def _run_migrations(connection: Connection, *, metadata: MetaData, schema: str) -> None:
-    context.configure(connection=connection, **_context_options(metadata, schema))
+    context.configure(connection=connection, **context_options(metadata, schema))
     with context.begin_transaction():
         context.run_migrations()
 
@@ -232,71 +160,21 @@ def _own_tables(connection: Connection, *, schema: str) -> set[str]:
     return set(inspect(connection).get_table_names(schema=schema))
 
 
-def _adopt_legacy_schema(
-    connection: Connection,
-    *,
-    metadata: MetaData,
-    schema: str,
-    extra_drift: DriftCheck | None,
-) -> None:
-    # The create_all every boot ran before #75, so a database that was only
-    # behind on tables is not drift. Inside the caller's transaction, which a
-    # refusal rolls back, so a refused database keeps none of them. ADR 0020.
-    metadata.create_all(connection)
-    differences = find_drift(
-        connection, metadata=metadata, schema=schema, extra_drift=extra_drift
-    )
-    if differences:
-        listed = "\n".join(f"  - {line}" for line in differences)
-        raise LegacyDrift(_REFUSED_FOR_DRIFT.format(schema=schema, differences=listed))
-
-
-def migrate(
-    *,
-    alembic_ini: Path,
-    url: str,
-    metadata: MetaData,
-    schema: str,
-    extra_drift: DriftCheck | None = None,
-) -> None:
-    """Bring `schema` to head, adopting a database from before #75 first.
+def migrate(*, alembic_ini: Path, url: str, schema: str) -> None:
+    """Bring `schema` to head, or refuse a database from before #75.
 
     With a version table: upgrade. With none of the service's tables: upgrade
-    from nothing. With tables and no version table, the database predates #75:
-    it gets any missing table, is compared with `metadata`, and is stamped at
-    the baseline if they match. Raises LegacyDrift, having changed nothing, if
-    they do not or if the migrations have moved past the baseline. ADR 0020.
+    from nothing. With tables and no version table, the database was built
+    before #75 and the migrations cannot know what it holds: raises
+    NoMigrationHistory, having changed nothing. ADR 0020.
     """
-    config = alembic_config(alembic_ini, url)
     tables = run_in_transaction(url, functools.partial(_own_tables, schema=schema))
     if tables and VERSION_TABLE not in tables:
-        scripts = ScriptDirectory.from_config(config)
-        baseline = scripts.get_base()
-        # Matching the models proves a database is at head, and head is the
-        # baseline only until a second revision exists.
-        if scripts.get_current_head() != baseline:
-            raise LegacyDrift(_REFUSED_PAST_BASELINE.format(schema=schema))
-        run_in_transaction(
-            url,
-            functools.partial(
-                _adopt_legacy_schema,
-                metadata=metadata,
-                schema=schema,
-                extra_drift=extra_drift,
-            ),
-        )
-        command.stamp(config, baseline)
-        logger.info("%s: adopted a database from before #75 at revision %s", schema, baseline)
-    command.upgrade(config, "head")
+        raise NoMigrationHistory(_REFUSED_WITHOUT_HISTORY.format(schema=schema))
+    command.upgrade(alembic_config(alembic_ini, url), "head")
 
 
-def migrate_from_environment(
-    *,
-    alembic_ini: Path,
-    metadata: MetaData,
-    schema: str,
-    extra_drift: DriftCheck | None = None,
-) -> int:
+def migrate_from_environment(*, alembic_ini: Path, schema: str) -> int:
     """`migrate` the database DATABASE_URL names, as an exit code: 0 done, 1 refused or failed, 2 no URL.
 
     A refusal is printed to stderr; any other error exits 1 with its
@@ -308,14 +186,8 @@ def migrate_from_environment(
         print("DATABASE_URL is required and has no default.", file=sys.stderr)
         return 2
     try:
-        migrate(
-            alembic_ini=alembic_ini,
-            url=url,
-            metadata=metadata,
-            schema=schema,
-            extra_drift=extra_drift,
-        )
-    except LegacyDrift as refusal:
+        migrate(alembic_ini=alembic_ini, url=url, schema=schema)
+    except NoMigrationHistory as refusal:
         print(refusal, file=sys.stderr)
         return 1
     return 0

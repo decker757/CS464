@@ -1,5 +1,5 @@
 """The audit entries a market's lifecycle appends, and what each one carries.
-[4.3] #15, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10.
+[4.3] #15, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.4] #12.
 
 Every function appends on the caller's session without committing, so the
 entry commits with the action it records. ADR 0006.
@@ -228,4 +228,23 @@ async def record_rejection(
         now,
         reason=reason,
         context=snapshot,
+    )
+
+
+async def record_marked_settled(
+    session: AsyncSession, actor: Actor, market: Market, now: datetime
+) -> None:
+    """Append `market.marked_settled`, under the settling administrator. [3.4] #12.
+
+    Carries the approval's snapshot, so a reader can match the proposal it
+    settled on against the ledger's `market.settled` without reading the
+    market. ADR 0019's amendment.
+    """
+    await _record(
+        session,
+        actor,
+        market,
+        AdminAction.MARKET_MARKED_SETTLED,
+        now,
+        context=decision_snapshot(market),
     )

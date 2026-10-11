@@ -138,6 +138,28 @@ class MarketTermsUnavailable(LedgerError):
     message = "Could not read this market's terms right now. Try again shortly."
 
 
+class SettlementUnconfirmed(LedgerError):
+    """The payouts committed and market_service was not told. [3.4] #12.
+
+    Raised for every answer to the settle call but a `200`, and for a call
+    that never got an answer. Money has moved and the market is not marked
+    SETTLED, so every failure means the same thing and has the same remedy:
+    the administrator repeats the request, which writes nothing in the ledger.
+    Mapping a 401 or a 404 the way `fetch` does, to `NotAuthenticated` or
+    `MarketNotFound`, would tell the administrator that nothing happened.
+    DECISIONS.md, "`market_terms.mark_settled` accepts only a `200`".
+
+    503 because the dependency did not confirm, and a repeat is the fix.
+    """
+
+    status_code = 503
+    code = "settlement_unconfirmed"
+    message = (
+        "The payouts were made, but the market could not be marked settled. "
+        "Repeat the request."
+    )
+
+
 class MarketClosed(LedgerError):
     """This market is not open for trading. [F-8] #109, ADR 0017.
 
@@ -157,6 +179,36 @@ class MarketClosed(LedgerError):
     status_code = 409
     code = "market_closed"
     message = "This market is not open for trading."
+
+
+class MarketNotApproved(LedgerError):
+    """A settlement asked for a market that is neither approved nor settled.
+    [3.4] #12, ADR 0019.
+
+    Read off market_service's public detail, and only when the ledger holds no
+    record for the market: a recorded settlement replays whatever the status
+    now says. Spelled as market_service's settle step spells it. 409: the
+    request is well formed and the market's state refuses it.
+    """
+
+    status_code = 409
+    code = "market_not_approved"
+    message = "This market has no approved outcome to settle."
+
+
+class DisputeWindowOpen(LedgerError):
+    """A settlement asked for an approved market that is not yet `settleable`.
+    [3.4] #12, ADR 0019.
+
+    market_service decides the edge on its own clock and the ledger reads the
+    flag rather than recomputing it. Its own code, apart from
+    `MarketNotApproved`, because the remedy differs: wait, and repeat. 409, as
+    market_service's settle step answers the same case.
+    """
+
+    status_code = 409
+    code = "dispute_window_open"
+    message = "This market's dispute window has not closed yet."
 
 
 class MarketNotFound(LedgerError):
@@ -359,6 +411,25 @@ class PendingWritesOnReplay(LedgerError):
     message = (
         "A caller reached a replay with unwritten work already pending in "
         "the session. This is a bug in this service, not in the request."
+    )
+
+
+class MalformedBatch(LedgerError):
+    """`posting.post_all` was handed no movements, or one key twice.
+    [3.4] #12.
+
+    "An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500":
+    the server builds every movement and every key, and the settlement
+    request has no body to fix, so this is a bug in the server like
+    `PendingWritesOnReplay`, and takes its status. Raised before any SQL, so
+    nothing is locked and nothing the caller has pending is committed.
+    """
+
+    status_code = 500
+    code = "malformed_batch"
+    message = (
+        "A batch of movements was empty or named one idempotency key twice. "
+        "This is a bug in this service, not in the request."
     )
 
 
