@@ -16,7 +16,7 @@ import { formatCreditsPrecise } from '../../utils/formatCredits'
 export default function MarketExposurePage() {
   const { id } = useParams<{ id: string }>()
 
-  const { market, hasError: marketError } = useMarketDetail(id)
+  const { market, hasError: marketError, outcomeLabels } = useMarketDetail(id)
 
   const [exposure, setExposure] = useState<MarketExposure | null>(null)
   const [exposureLoading, setExposureLoading] = useState(true)
@@ -31,8 +31,6 @@ export default function MarketExposurePage() {
       .finally(() => { if (!ignored) setExposureLoading(false) })
     return () => { ignored = true }
   }, [id])
-
-  const outcomeLabels = new Map((market?.outcomes ?? []).map(outcome => [outcome.id, outcome.label]))
 
   return (
     <AppLayout width="max-w-[900px]">
