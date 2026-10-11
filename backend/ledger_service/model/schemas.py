@@ -780,6 +780,71 @@ class LedgerEntryListResponse(BaseModel):
     )
 
 
+class MarketTradeOut(BaseModel):
+    """One trade in a market's feed, for an administrator. [BE][2.4] #63.
+
+    The trader's own history row minus `balance_after`, which means nothing on
+    a pool account, plus `user_id`. DECISIONS.md, "The market's trade feed
+    reads the pool account's feed, filtered to the trade kinds, and its rows
+    are built by `trade_fields_of`".
+    """
+
+    transaction_id: uuid.UUID
+    created_at: datetime
+    user_id: uuid.UUID = Field(
+        description=(
+            "The trader. An id, not a name: this service holds no user table. "
+            "DECISIONS.md, \"A market's trades carry `user_id`, not "
+            "`username`\"."
+        )
+    )
+    outcome_id: uuid.UUID
+    side: Side
+    quantity: Decimal = Field(description="Shares, at scale 4.")
+    average_price: Decimal = Field(
+        description=(
+            "`|total| ÷ quantity` rounded half-up at scale 4, the same "
+            "function as the trader's own history row."
+        )
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed for the trader, as `TradeOut.total` is: negative on a "
+            "buy, positive on a sell."
+        )
+    )
+    state_version: int = Field(description="The book's counter after this trade.")
+
+    @field_serializer("quantity", "average_price", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_validator("created_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        """The same guard `LedgerEntryOut` carries, so the two spell one
+        trade's time the same way."""
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+
+class MarketTradeListResponse(BaseModel):
+    """One page of a market's trades, newest first."""
+
+    trades: list[MarketTradeOut]
+
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pass back as `cursor` for the next page. Null means this page is "
+            "the end. Opaque: echo it unmodified rather than constructing one."
+        ),
+    )
+
+    has_more: bool = Field(
+        description="Equivalent to `next_cursor` being non-null."
+    )
+
+
 class InvalidFieldOut(BaseModel):
     """One part of a request that failed validation, as pydantic reported it."""
 
