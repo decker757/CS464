@@ -85,9 +85,11 @@ async def _lock_refresh_token(session: AsyncSession, raw: str) -> RefreshToken |
 async def lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
     """Lock and return the user's row, or None.
 
-    The lock every path that rotates or revokes all of a user's tokens shares,
-    so a replay's revoke-all cannot miss a token a rotation is inserting.
-    `populate_existing` so `is_suspended` and `role` come from the locked row.
+    The lock every path takes that decides from a user's row or changes it,
+    so the decision is made from a row nobody else can change meanwhile (ADR
+    0015). On the token paths it also makes a replay's revoke-all wait for a
+    token a rotation is inserting. `populate_existing` so `is_suspended` and
+    `role` come from the locked row.
     """
     return await session.get(
         User, user_id, with_for_update=True, populate_existing=True
