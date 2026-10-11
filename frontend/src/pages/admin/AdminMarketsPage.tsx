@@ -3,9 +3,9 @@ import { getMarketOverview, type MarketOverview, type MarketOverviewRow } from '
 import AppLayout from '../../components/layout/AppLayout'
 import AdminMarketRow from '../../components/markets/AdminMarketRow'
 import { STATUS_CONFIG, type AdminMarketStatus } from '../../components/markets/marketStatus'
+import FilterPill from '../../components/ui/FilterPill'
 import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
-import { selectableClass } from '../../components/ui/selectableClass'
 import { useAuth } from '../../context/AuthContext'
 import { usePagedList } from '../../hooks/usePagedList'
 
@@ -61,16 +61,9 @@ export default function AdminMarketsPage() {
         {FILTERS.map(f => {
           const active = filter === f
           return (
-            <button
-              key={f}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setFilter(f)}
-              className={`cursor-pointer rounded-full border px-4 py-1.5 text-[13px] font-semibold transition ${selectableClass(active)}`}
-            >
+            <FilterPill key={f} active={active} role="tab" aria-selected={active} onClick={() => setFilter(f)}>
               {filterLabel(f)} <span className={active ? 'text-white/70' : 'text-subtle'}>{countFor(f, counts)}</span>
-            </button>
+            </FilterPill>
           )
         })}
       </div>

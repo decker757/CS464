@@ -1,13 +1,21 @@
 import { useState, type FormEvent } from 'react'
 import Button from '../ui/Button'
+import FilterPill from '../ui/FilterPill'
 import TextInput from '../ui/TextInput'
-import { selectableClass } from '../ui/selectableClass'
 import { STATUS_CONFIG } from './marketStatus'
 
 // The statuses GET /public/markets accepts; draft and submitted are never
 // listed to a trader (market-service.md).
 const STATUS_FILTERS = ['open', 'closed', 'pending_resolution', 'approved'] as const
 export type StatusFilter = (typeof STATUS_FILTERS)[number]
+
+// null stands for "All", alongside every real status, so the pill list and
+// its label are drawn from one place instead of "All" being copied in by hand.
+const FILTER_OPTIONS: (StatusFilter | null)[] = [null, ...STATUS_FILTERS]
+
+function filterLabel(status: StatusFilter | null): string {
+  return status === null ? 'All' : STATUS_CONFIG[status].label
+}
 
 interface MarketFiltersProps {
   /** The search that is applied to the list, not what is half typed in the box. */
@@ -64,24 +72,15 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
       </form>
 
       <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          aria-pressed={status === null}
-          onClick={() => onStatusChange(null)}
-          className={`cursor-pointer rounded-full border px-4 py-1.5 text-[13px] font-semibold transition ${selectableClass(status === null)}`}
-        >
-          All
-        </button>
-        {STATUS_FILTERS.map(option => (
-          <button
-            key={option}
-            type="button"
+        {FILTER_OPTIONS.map(option => (
+          <FilterPill
+            key={option ?? 'all'}
+            active={status === option}
             aria-pressed={status === option}
             onClick={() => onStatusChange(option)}
-            className={`cursor-pointer rounded-full border px-4 py-1.5 text-[13px] font-semibold transition ${selectableClass(status === option)}`}
           >
-            {STATUS_CONFIG[option].label}
-          </button>
+            {filterLabel(option)}
+          </FilterPill>
         ))}
       </div>
 
