@@ -35,7 +35,11 @@ test('a market nobody has traded shows no trades yet', async ({ page }) => {
   // snapshot for every market it lists, and the first snapshot opens the
   // market's book. A market published first would reach the exposure page
   // with a book and zero shares, not the "no book" state this test is about.
+  // Wait for that list to load, too, or a publish that beats the list's read
+  // gets listed and snapshotted anyway.
   await logIn(page, admin)
+  await expect(page.getByRole('heading', { name: 'Markets' })).toBeVisible()
+  await expect(page.getByText('Loading markets…')).toHaveCount(0)
   const market = await publishMarket(admin, `Will ${uniqueName('untraded')} resolve yes?`)
 
   await page.goto('/admin/markets')
