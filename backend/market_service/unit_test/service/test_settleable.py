@@ -1,11 +1,13 @@
 """`settleable` on the public detail, through the service layer. [3.4] #12, PR 1.
 
 The ledger reads this flag rather than recomputing it ("Settlement waits for
-`settleable`, which market_service derives from `approved_at`"). The rule,
-from "`settleable` is a pure function in `core/`, inclusive at its edge, true
-once settled, false without `approved_at`": a settled market always is; an
-approved one is once `approved_at` is set and `now >= approved_at + window + 5
-minutes`; nothing else is. Every case hands
+`settleable`, which market_service derives from `approved_at`", as amended by
+[3.3] #11). The rule, from "`settleable` is a pure function in `core/`,
+inclusive at its edge, true once settled, false without `approved_at`" and its
+amendment: a settled market always is; an approved one is once
+`dispute_window_ends_at`, the stored end, is set and `now >= that end + 5
+minutes`; nothing else is. Approval stores the end as `approved_at` plus the
+window as it was then (D2, ADR 0023). Every case hands
 `get_published` its clock and reads the flag off `PublicMarketOut`, which is
 what the ledger is sent.
 """
@@ -59,11 +61,31 @@ async def _approved_at(session: AsyncSession, market_id: uuid.UUID) -> datetime:
     return stored
 
 
-async def _set_approved_at(
-    session: AsyncSession, market_id: uuid.UUID, approved_at: datetime | None
+async def _set_window_end(
+    session: AsyncSession, market_id: uuid.UUID, ends_at: datetime | None
 ) -> None:
     await session.execute(
-        update(Market).where(Market.id == market_id).values(approved_at=approved_at)
+        update(Market)
+        .where(Market.id == market_id)
+        .values(dispute_window_ends_at=ends_at)
+    )
+    await session.commit()
+
+
+async def _set_stale_approval(session: AsyncSession, market_id: uuid.UUID) -> None:
+    """An approval and its stored window end, both long over, left on the row.
+
+    Both columns, so only the status half of the rule can make the flag false.
+    """
+    approved_at = datetime.now(UTC) - _STALE
+    await session.execute(
+        update(Market)
+        .where(Market.id == market_id)
+        .values(
+            approved_at=approved_at,
+            dispute_window_ends_at=approved_at
+            + timedelta(seconds=get_settings().dispute_window_seconds),
+        )
     )
     await session.commit()
 
@@ -93,7 +115,8 @@ async def test_the_window_length_is_read_from_settings(
     `dispute_window_seconds`…".
 
     Patched on the cached settings to ten minutes, far from the 24-hour
-    default. Fails if the window is hard-coded, or read once at import.
+    default, before the approval that reads it. Fails if the window is
+    hard-coded, or read once at import.
     """
     monkeypatch.setattr(get_settings(), "dispute_window_seconds", 600)
     market_id = (await approved_market(session, actor())).id
@@ -103,29 +126,51 @@ async def test_the_window_length_is_read_from_settings(
     assert await _settleable(session, market_id, edge) is True
 
 
+async def test_changing_the_window_setting_does_not_move_a_running_window(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[3.3] #11, D2: the end is stored at approval, so a setting changed
+    afterwards affects only later approvals. ADR 0023.
+
+    Approved under 24 hours, then the setting drops to ten minutes; fifteen
+    minutes on, the old rule (`approved_at + window + 5 minutes`, recomputed)
+    says settleable. Fails if `settleable` reads the setting again.
+    """
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 86400)
+    market_id = (await approved_market(session, actor())).id
+    approved_at = await _approved_at(session, market_id)
+
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 600)
+
+    later = approved_at + timedelta(minutes=15)
+    assert await _settleable(session, market_id, later) is False
+
+
 # --- by status -------------------------------------------------------------
 async def _open_with_stale_approval(session: AsyncSession, creator: Actor) -> uuid.UUID:
     market_id = (await published_market(session, creator)).id
-    await _set_approved_at(session, market_id, datetime.now(UTC) - _STALE)
+    await _set_stale_approval(session, market_id)
     return market_id
 
 
 async def _pending_with_stale_approval(
     session: AsyncSession, creator: Actor
 ) -> uuid.UUID:
-    """Sent back, then proposed again ([3.3] #11): `approved_at` may survive."""
+    """A pending market carrying approval columns: damage, since send-back
+    clears them ([3.3] #11). Only the status rule can make it unsettleable."""
     market_id = (await proposed_market(session, creator)).id
-    await _set_approved_at(session, market_id, datetime.now(UTC) - _STALE)
+    await _set_stale_approval(session, market_id)
     return market_id
 
 
 async def _closed_with_stale_approval(
     session: AsyncSession, creator: Actor
 ) -> uuid.UUID:
-    """Sent back ([3.3] #11): APPROVED returns to CLOSED, and `approved_at` may
-    survive. A plain CLOSED market has a null one and would not notice."""
+    """A closed market carrying approval columns: damage, since send-back
+    clears them ([3.3] #11). A plain CLOSED market has none and would not
+    notice."""
     market_id = (await closed_market(session, creator)).id
-    await _set_approved_at(session, market_id, datetime.now(UTC) - _STALE)
+    await _set_stale_approval(session, market_id)
     return market_id
 
 
@@ -143,8 +188,8 @@ _Build = Callable[[AsyncSession, Actor], Awaitable[uuid.UUID]]
 @pytest.mark.parametrize(
     ("build", "after_edge", "expected"),
     [
-        # Each non-decided row carries an `approved_at`, or it would pass
-        # with the status half of the rule removed.
+        # Each non-decided row carries an approval and a window end, or it
+        # would pass with the status half of the rule removed.
         (_open_with_stale_approval, timedelta(hours=1), False),
         (_pending_with_stale_approval, timedelta(hours=1), False),
         (_closed_with_stale_approval, timedelta(hours=1), False),
@@ -177,36 +222,31 @@ async def test_settleable_by_status(
     assert await _settleable(session, market_id, edge + after_edge) is expected
 
 
-@pytest.mark.parametrize(
-    "keep_approved_at", [True, False], ids=["approved_a_moment_ago", "no_approved_at"]
-)
-async def test_a_settled_market_is_settleable_whatever_the_window(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, keep_approved_at: bool
+async def test_a_settled_market_is_settleable_even_with_no_window_end(
+    session: AsyncSession,
 ) -> None:
-    """[3.4] #12: `settleable` "stays true once the market is `settled`". A
-    window raised to its 30-day ceiling, read a moment after approval, must not
-    turn it back to false, and neither may a null `approved_at`.
+    """[3.4] #12: `settleable` "stays true once the market is `settled`", even
+    with no stored window end.
 
     Fails with SETTLED put through the time rule, or the null check.
     """
-    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 2592000)
     market_id = (await settled_market(session, actor())).id
-    if not keep_approved_at:
-        await _set_approved_at(session, market_id, None)
+    await _set_window_end(session, market_id, None)
 
     assert await _settleable(session, market_id, datetime.now(UTC)) is True
 
 
-async def test_an_approved_market_with_no_approved_at_is_not_settleable(
+async def test_an_approved_market_with_no_window_end_is_not_settleable(
     session: AsyncSession,
 ) -> None:
-    """[3.4] #12: false "for a market with no `approved_at`". Approval always
-    stamps it, so a null is damage, and the flag fails closed.
+    """[3.4] #12, as amended by [3.3] #11: false for an approved market with no
+    `dispute_window_ends_at`. Approval always stores it, so a null is damage,
+    and the flag fails closed.
 
     A year ahead, so only the null can make it false.
     """
     market_id = (await approved_market(session, actor())).id
-    await _set_approved_at(session, market_id, None)
+    await _set_window_end(session, market_id, None)
 
     later = datetime.now(UTC) + timedelta(days=365)
     assert await _settleable(session, market_id, later) is False

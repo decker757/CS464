@@ -32,6 +32,7 @@ from model.schemas import (
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
+    OutcomeSendBackRequest,
     ValidationProblemOut,
 )
 from service import browsing, market_service
@@ -336,6 +337,63 @@ async def reject_market_outcome(
     session: DbSession,
 ) -> MarketOut:
     market = await market_service.reject_outcome(session, actor, market_id, payload)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/send-back-outcome",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Send an approved result back during its dispute window, with a reason",
+    description=(
+        "[3.3] #11. Sends an `approved` market back to `closed` while its "
+        "dispute window is open, clearing every `proposed_*`, `proposal_*` "
+        "and `approved_*` field. The creator may then propose again, and a "
+        "second administrator approve again, which starts a fresh window. "
+        "`closed_at` is unchanged.\n\n"
+        "**Any administrator may send back**, including the one who proposed "
+        "the outcome and the one who approved it.\n\n"
+        "The window is open while the database's clock, read once the market "
+        "is locked, is before the market's `dispute_window_ends_at` (the "
+        "field on the public detail and the overview). At that instant or "
+        "after it, the result is final and this is a `409 "
+        "dispute_window_closed`. A countdown in the browser can be a few "
+        "seconds off; the server decides.\n\n"
+        "`proposal_id` must be the one in the latest `market.outcome_approved` "
+        "audit entry the administrator reviewed, `null` only for an approval "
+        "whose proposal had none. If that approval has since been sent back "
+        "and another approved in its place, this is a `409 "
+        "proposal_superseded` and changes nothing.\n\n"
+        "`reason` is required and is recorded in the audit log against the "
+        "administrator who sent the result back, beside a copy of the "
+        "approval it cleared, in the same transaction. It is kept nowhere "
+        "else, and this response does not carry it back."
+    ),
+    responses={
+        403: {"description": "`not_an_administrator` — a trader."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_already_settled` — it has been settled. "
+                "`market_pending_resolution` — its outcome is proposed but not "
+                "yet approved; review it instead. `market_not_approved` — no "
+                "outcome is approved. `dispute_window_closed` — the window has "
+                "ended and the result is final. `proposal_superseded` — "
+                "`proposal_id` is not the approval in place now."
+            )
+        },
+        422: {"description": "Send-back refused; `error.details` names `reason`."},
+    },
+)
+async def send_back_market_outcome(
+    market_id: uuid.UUID,
+    payload: OutcomeSendBackRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    # No `now` from here: the window is judged on Postgres's clock, read
+    # after the row lock, never the request's. ADR 0023.
+    market = await market_service.send_back_outcome(session, actor, market_id, payload)
     return MarketOut.model_validate(market)
 
 

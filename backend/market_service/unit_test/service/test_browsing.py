@@ -24,6 +24,7 @@ from model.entities import (
     MarketStatus,
 )
 from core.database import get_session_factory
+from model.schemas import PublicMarketOut
 from service import browsing, market_service
 from unit_test.conftest import approved_market as _approved_market
 from unit_test.conftest import (
@@ -407,6 +408,23 @@ async def test_a_decided_market_carries_its_winning_outcome(
     detail = await browsing.get_published(session, market.id)
 
     assert detail.proposed_outcome_id == market.outcomes[1].id
+
+
+async def test_an_approved_markets_detail_carries_its_stored_window_end(
+    session: AsyncSession,
+) -> None:
+    """[3.3] #11: the countdown is visible to traders. The detail carries
+    `dispute_window_ends_at` exactly as approval stored it (ADR 0023). Fails
+    with the field missing from `PublicMarketOut`."""
+    market_id = (await _approved_market(session, actor())).id
+    stored = await session.scalar(
+        select(Market.dispute_window_ends_at).where(Market.id == market_id)
+    )
+    assert stored is not None, "approval must have stored the end"
+
+    detail = await browsing.get_published(session, market_id)
+
+    assert PublicMarketOut.model_validate(detail).dispute_window_ends_at == stored
 
 
 # --- neither a draft nor a submission is ever public ----------------------
