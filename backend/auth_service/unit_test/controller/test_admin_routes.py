@@ -1,4 +1,4 @@
-"""HTTP wiring for the administrative routes: status codes and the guard. [4.4] #16, [4.1] #13"""
+"""HTTP wiring for the administrative routes: status codes and the guard. [4.4] #16, [4.1] #13, [4.2] #14"""
 
 from __future__ import annotations
 
@@ -13,6 +13,13 @@ USERS = "/admin/users"
 
 def _url(user_id: str) -> str:
     return f"/admin/users/{user_id}/role"
+
+
+def _suspension_url(user_id: str) -> str:
+    return f"/admin/users/{user_id}/suspension"
+
+
+SUSPEND = {"suspended": True, "reason": "Second account of bob_1, same device."}
 
 
 # --- the happy path -------------------------------------------------------
@@ -153,6 +160,83 @@ async def test_demoting_the_other_administrator_is_allowed(
 
     assert response.status_code == 200
     assert response.json()["user"]["role"] == "trader"
+
+
+# --- suspension [4.2] #14 -------------------------------------------------
+async def test_a_suspension_returns_200_with_the_row_the_list_shows(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """`AdminUserOut`, so the screen can replace the row, and the window the
+    other services may still honour the user's token. ADR 0003, ADR 0022."""
+    from core.config import get_settings  # noqa: PLC0415
+
+    response = await admin_client.patch(_suspension_url(target_user_id), json=SUSPEND)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user"]["id"] == target_user_id
+    assert body["user"]["is_suspended"] is True
+    assert (
+        body["takes_effect_within_seconds"]
+        == get_settings().access_token_ttl_seconds
+    )
+
+
+async def test_an_anonymous_caller_cannot_suspend(
+    client: AsyncClient, target_user_id: str
+) -> None:
+    response = await client.patch(_suspension_url(target_user_id), json=SUSPEND)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_a_trader_cannot_suspend(client: AsyncClient, target_user_id: str) -> None:
+    await client.post(
+        "/auth/register",
+        json={
+            "username": "just_a_trader",
+            "email": "trader@example.com",
+            "password": VALID_PASSWORD,
+        },
+    )
+
+    response = await client.patch(_suspension_url(target_user_id), json=SUSPEND)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_an_administrator_suspending_themselves_gets_403(
+    admin_client: AsyncClient,
+) -> None:
+    me = await admin_client.get("/auth/me")
+
+    response = await admin_client.patch(_suspension_url(me.json()["id"]), json=SUSPEND)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "cannot_suspend_self"
+
+
+async def test_suspending_an_unknown_user_gets_404(admin_client: AsyncClient) -> None:
+    response = await admin_client.patch(_suspension_url(str(uuid.uuid4())), json=SUSPEND)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "user_not_found"
+
+
+async def test_a_short_reason_is_422_naming_the_field(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """[4.2] #14: requires a reason. Our envelope, with `details` on the field."""
+    response = await admin_client.patch(
+        _suspension_url(target_user_id), json={"suspended": True, "reason": "  spam  "}
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "suspension_incomplete"
+    assert error["details"][0]["field"] == "reason"
 
 
 # --- the user list --------------------------------------------------------

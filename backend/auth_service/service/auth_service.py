@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import raiseload
 
 from core import security
 from core.config import get_settings
@@ -64,18 +65,6 @@ async def _find_token_owner(session: AsyncSession, raw: str) -> uuid.UUID | None
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
-    """Lock and return the user's row, or None.
-
-    The lock every path that rotates or revokes all of a user's tokens shares,
-    so a replay's revoke-all cannot miss a token a rotation is inserting.
-    `populate_existing` so `is_suspended` comes from the locked row.
-    """
-    return await session.get(
-        User, user_id, with_for_update=True, populate_existing=True
-    )
-
-
 async def _lock_refresh_token(session: AsyncSession, raw: str) -> RefreshToken | None:
     """Lock and return the row for this raw token, or None.
 
@@ -92,6 +81,25 @@ async def _lock_refresh_token(session: AsyncSession, raw: str) -> RefreshToken |
         .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
+    """Lock and return the user's row, or None.
+
+    The lock every path takes that decides from a user's row or changes it,
+    so the decision is made from a row nobody else can change meanwhile (ADR
+    0015). On the token paths it also makes a replay's revoke-all wait for a
+    token a rotation is inserting. `populate_existing` so `is_suspended` and
+    `role` come from the locked row. `raiseload` on the sessions: no caller
+    reads them, and `selectin` would reload all of them under the lock.
+    """
+    return await session.get(
+        User,
+        user_id,
+        with_for_update=True,
+        populate_existing=True,
+        options=[raiseload(User.refresh_tokens)],
+    )
 
 
 async def issue_tokens(session: AsyncSession, user: User) -> TokenPair:
@@ -152,8 +160,9 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
     """Return the user these credentials prove. [A-2] #30
 
     Raises InvalidCredentials for a wrong password and an unknown account
-    alike, and AccountSuspended only after the password is proven. May rehash
-    `user.password_hash`, leaving that write pending for the caller to commit.
+    alike, and AccountSuspended only after the password is proven. Locks the
+    user's row once the password is proven, held until the caller commits. May
+    rehash `user.password_hash`, leaving that write pending for the caller.
     """
     user = await _find_by_identifier(session, identifier)
 
@@ -163,6 +172,13 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
         raise InvalidCredentials
 
     if not security.verify_password(user.password_hash, password):
+        raise InvalidCredentials
+
+    # Decided from the locked row, or a login racing a suspension issues a
+    # session after its revoke. DECISIONS.md, "Login decides suspension under
+    # the user's row lock".
+    user = await lock_user(session, user.id)
+    if user is None:
         raise InvalidCredentials
 
     # After the password, or suspended accounts could be enumerated.
@@ -178,7 +194,7 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
 async def revoke_all_for_user(session: AsyncSession, user_id: uuid.UUID) -> None:
     """Revoke every live refresh token the user holds. Does not commit.
 
-    The caller must hold the user's row lock (`_lock_user`), or a rotation
+    The caller must hold the user's row lock (`lock_user`), or a rotation
     committing meanwhile keeps the token it is inserting.
     """
     stmt = select(RefreshToken).where(
@@ -204,7 +220,7 @@ async def rotate_refresh_token(session: AsyncSession, raw: str) -> tuple[User, T
     # replay's revoke-all cannot see a token another rotation has inserted but
     # not committed, so it must wait for that commit. ADR 0015; DECISIONS.md,
     # "The refresh path locks the user row before the token".
-    user = await _lock_user(session, owner_id)
+    user = await lock_user(session, owner_id)
     record = await _lock_refresh_token(session, raw)
     if user is None or record is None:
         raise InvalidToken

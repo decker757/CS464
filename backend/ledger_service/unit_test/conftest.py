@@ -126,6 +126,27 @@ def terms_client_over(transport: httpx.AsyncBaseTransport) -> httpx.AsyncClient:
     return market_terms.open_client(transport=transport)
 
 
+def auth_client_over(transport: httpx.AsyncBaseTransport) -> httpx.AsyncClient:
+    """The production auth client, with a test transport under it, so the real
+    base URL, timeout and request building still run. ADR 0022."""
+    from service import account_status  # noqa: PLC0415
+
+    return account_status.open_client(transport=transport)
+
+
+def active_auth_transport() -> httpx.MockTransport:
+    """auth's answer for an account in good standing: `200` on `/auth/me`.
+
+    Every trade asks it since ADR 0022, so every test that trades without
+    being about suspension gets this one. The body is not read.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    return httpx.MockTransport(handler)
+
+
 class ManualClock:
     """A monotonic clock a test moves by hand."""
 
@@ -215,23 +236,33 @@ async def session(clean_database):
 
 @pytest.fixture
 async def app_under_test(clean_database):
-    """The app, with the market_service client its lifespan would open.
+    """The app, with the market_service and auth clients its lifespan would
+    open.
 
     `ASGITransport` runs no lifespan, so `app.state.terms_client` does not
     exist under test. The dependency is overridden rather than the attribute
-    set, because the override is the seam the routes read through. It is the
-    production client, so a route test that does not stub `market_terms.fetch`
-    makes a real connection attempt, never a silent success.
+    set, because the override is the seam the routes read through. The terms
+    client is the production one, so a route test that does not stub
+    `market_terms.fetch` makes a real connection attempt, never a silent
+    success. The auth client answers every trade's account check with `200`
+    (ADR 0022); the refusals are tested in `test_account_status.py`.
 
     `create_app` is imported here so the pure layers never construct the app.
     """
-    from controller.dependencies import get_terms_client  # noqa: PLC0415
+    from controller.dependencies import (  # noqa: PLC0415
+        get_auth_client,
+        get_terms_client,
+    )
     from main import create_app  # noqa: PLC0415
     from service import market_terms  # noqa: PLC0415
 
     app = create_app()
-    async with market_terms.open_client() as terms_client:
+    async with (
+        market_terms.open_client() as terms_client,
+        auth_client_over(active_auth_transport()) as auth_client,
+    ):
         app.dependency_overrides[get_terms_client] = lambda: terms_client
+        app.dependency_overrides[get_auth_client] = lambda: auth_client
         yield app
 
 

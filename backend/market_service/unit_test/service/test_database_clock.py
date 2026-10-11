@@ -11,13 +11,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.errors import MarketError
+from model.entities import Market
 from service import market_service
 from unit_test.conftest import actor as _actor
 from unit_test.conftest import (
     approval_request,
+    approved_market,
     close_request,
     closed_market,
     database_now,
@@ -26,6 +29,7 @@ from unit_test.conftest import (
     proposed_market,
     published_market,
     rejection_request,
+    send_back_request,
 )
 
 # Read back as audit_svc: market_svc holds INSERT on this table and no SELECT.
@@ -135,3 +139,30 @@ async def test_a_rejection_is_logged_at_the_database_time(
         await audit_reader.execute(_REJECTION_ENTRY, {"actor": rejecter.id})
     ).scalar_one()
     assert occurred_at >= before
+
+
+async def test_send_back_reads_the_database_clock_not_the_containers(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[3.3] #11: send-back's window is judged on `clock_timestamp()`. The
+    stored end is a minute before the database's now, and the container's
+    clock an hour behind would still call the window open. ADR 0023.
+
+    Fails if the service reads Python's clock.
+    """
+    market = await approved_market(session, _actor())
+    market_id, proposal_id = market.id, market.proposal_id
+    await session.execute(
+        update(Market)
+        .where(Market.id == market_id)
+        .values(dispute_window_ends_at=await database_now(session) - timedelta(minutes=1))
+    )
+    await session.commit()
+    _put_the_container_clock_an_hour_behind(monkeypatch)
+
+    with pytest.raises(MarketError) as refused:
+        await market_service.send_back_outcome(
+            session, _actor(), market_id, send_back_request(proposal_id)
+        )
+
+    assert refused.value.code == "dispute_window_closed"

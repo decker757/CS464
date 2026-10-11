@@ -317,3 +317,28 @@ import each other. `env.py` and `migrate.py` are composition roots instead.
 > comparison the guard tests use moved into `shared/testing.py`, which no
 > image carries. Each service keeps one test that a schema built the way every
 > boot before #75 left it is refused.
+
+> **2026-10-11, [3.3] #11: the data-work trigger is not tripped by a backfill.**
+> Market revision `0002` adds `dispute_window_ends_at` and fills it with an
+> `UPDATE` for every market that already has an `approved_at`. That is the
+> first data work in any revision, and the reversal section above says the
+> suites switch to migrating per test "when a revision does data work the
+> models cannot express". Ernest reads the trigger as not applying here, for
+> this reason.
+>
+> On that reading, the trigger is about data every database must hold, such
+> as seed rows. A schema built from the models would lack that data forever,
+> so no test would ever run against it. A backfill is different: it only converts rows that
+> existed before the revision, and a schema built from the models has none.
+> For example, a test that approves a market in `cs464_test` gets the column
+> from the models and the value from approve, and the `UPDATE` had nothing to
+> do. On a developer's `cs464` with a market approved last week, the `UPDATE`
+> is the only thing that gives it a window end, and a dedicated test covers
+> exactly that case: `test_markets_approved_before_0002_get_a_window_end` in
+> `backend/market_service/unit_test/test_migrations.py` migrates an empty
+> schema to `0001`, inserts an approved row, migrates to head, and checks that
+> its end is `approved_at` plus 24 hours. The suites keep building from the models.
+>
+> The next revision that does data work is judged the same way: a backfill of
+> existing rows gets a targeted test like this one, and data every database
+> must hold trips the trigger.

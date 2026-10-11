@@ -1,7 +1,7 @@
 """Request and response contracts, published at /docs for the frontend.
 
-[A-1] #29, [A-2] #30, [A-3] #31, [4.1] #13, [4.4] #16. Class docstrings and
-field descriptions here are the /docs text.
+[A-1] #29, [A-2] #30, [A-3] #31, [4.1] #13, [4.4] #16, [4.2] #14. Class
+docstrings and field descriptions here are the /docs text.
 """
 
 from __future__ import annotations
@@ -186,6 +186,39 @@ class RoleChangeResponse(BaseModel):
             "honouring the token it was given until it expires. This service's "
             "own routes are not affected: they read the row. Zero would be "
             "wrong to report and a promise this design cannot keep."
+        ),
+        examples=[900],
+    )
+
+
+class SuspensionRequest(BaseModel):
+    """[4.2] #14. Suspend or unsuspend one account, and say why.
+
+    `suspended` is the state the account should end up in, not an action, so
+    the same request repeated is the same outcome. `reason` is required both
+    ways, at least ten characters once trimmed, and is stored only in the
+    audit log.
+    """
+
+    suspended: bool
+    reason: str = Field(
+        max_length=500,
+        examples=["Second account of bob_1, same device and same card."],
+    )
+
+
+class SuspensionResponse(BaseModel):
+    """The account as it now is, and how long its old token can linger."""
+
+    user: AdminUserOut
+
+    takes_effect_within_seconds: int = Field(
+        description=(
+            "Upper bound, in seconds, on how long other services may still "
+            "honour the account's current access token. Login, refresh and "
+            "trading are refused at once (ADR 0022); reads on the ledger and "
+            "the market service, and a suspended administrator's market "
+            "service actions, ride the token until it expires (ADR 0003)."
         ),
         examples=[900],
     )
