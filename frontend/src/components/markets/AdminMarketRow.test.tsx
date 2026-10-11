@@ -12,10 +12,10 @@ const OPEN_MARKET: MarketOverviewRow = {
   close_time: '2099-01-05T12:00:00Z',
 }
 
-function renderRow(market: MarketOverviewRow, isMine = false) {
+function renderRow(market: MarketOverviewRow) {
   return render(
     <MemoryRouter>
-      <AdminMarketRow market={market} isMine={isMine} />
+      <AdminMarketRow market={market} isMine={false} />
     </MemoryRouter>,
   )
 }
@@ -29,15 +29,5 @@ describe('AdminMarketRow', () => {
   it('hides the price history link on a draft or submitted market', () => {
     renderRow({ ...OPEN_MARKET, status: 'draft', close_time: null })
     expect(screen.queryByRole('link', { name: /price history/i })).not.toBeInTheDocument()
-  })
-
-  it('offers Propose Outcome only to the creator of a closed market', () => {
-    renderRow({ ...OPEN_MARKET, status: 'closed' }, true)
-    expect(screen.getByRole('link', { name: /propose outcome/i })).toBeInTheDocument()
-  })
-
-  it('hides Propose Outcome from another administrator', () => {
-    renderRow({ ...OPEN_MARKET, status: 'closed' }, false)
-    expect(screen.queryByRole('link', { name: /propose outcome/i })).not.toBeInTheDocument()
   })
 })

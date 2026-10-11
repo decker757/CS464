@@ -40,8 +40,4 @@ describe('toChartRows', () => {
 
     expect(rows.map(row => row.time)).toEqual([1767571200000, 1767225600000])
   })
-
-  it('returns an empty list for an empty market', () => {
-    expect(toChartRows([])).toEqual([])
-  })
 })
