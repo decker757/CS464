@@ -268,11 +268,14 @@ a 24-hour window.
 > The rest of this section holds: one service decides both edges, the ledger
 > reads `settleable` and does not recompute it, the two writers read
 > `clock_timestamp()` after their row lock, and the gap absorbs clock skew.
-> What changes is that raising `dispute_window_seconds` no longer moves the
-> end of any window already running, so it can no longer reopen a window that
-> had closed. Without that, a raised window could let a market the ledger had
-> already paid, but not yet marked settled, be sent back and approved for a
-> different winner. ADR 0023.
+> What changes is that, for approvals after market revision 0002, raising
+> `dispute_window_seconds` no longer moves the end of any window already
+> running, so it can no longer reopen a window that had closed. Without that,
+> a raised window could let a market the ledger had already paid, but not yet
+> marked settled, be sent back and approved for a different winner. The one
+> exception is 0002's own backfill, which gives every earlier approval 24
+> hours: on a database that ran a shorter window it can reopen one once, and
+> ADR 0023 gives the manual fix. ADR 0023.
 >
 > DECISIONS.md: "`dispute_window_ends_at` is stored at approval, and market
 > revision 0002 backfills 24 hours".

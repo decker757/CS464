@@ -216,8 +216,13 @@ DATABASE_URL alone, not the service's settings"), so the revision cannot see
 `DISPUTE_WINDOW_SECONDS`. 86400 is the default, and the only databases holding
 approved markets are the team's local `cs464` ones: nothing is deployed, and
 `cs464_test` is rebuilt per test. A developer running a short demo window
-will see their already-approved local markets' windows become 24 hours, once,
-and can fix one by hand with an `UPDATE`. Reading the variable in the revision
+will see their already-approved local markets' windows become 24 hours, once.
+That can reopen a window that had closed: a market the ledger paid but whose
+step 5 failed still reads approved, and becomes sendable-back and not
+settleable again. Fix it by hand straight after the migrate step, with
+`UPDATE market.markets SET dispute_window_ends_at = approved_at + interval
+'<your window> seconds' WHERE approved_at IS NOT NULL`, or start again with
+`docker compose down -v`, which destroys local data. Reading the variable in the revision
 would make its result depend on where it runs, and would reverse a recorded
 decision to save a local demo market.
 
@@ -429,6 +434,6 @@ screen there shows a countdown.
 test already covers. See ADR 0020's dated note.
 
 > **Reversal trigger:** a payout delayed by repeated send-backs becomes a real
-> problem. A limit on send-backs per market, or a rule on who may send back,
-> is then a new decision. A trader-visible reason is asked for: it is
-> additive, a new column and a field.
+> problem; a limit on send-backs per market, or a rule on who may send back,
+> is then a new decision. Or a trader-visible reason is asked for, which is
+> additive: a new column and a field.
