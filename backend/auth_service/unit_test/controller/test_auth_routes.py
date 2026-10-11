@@ -119,6 +119,31 @@ async def test_a_suspended_account_maps_to_403(
     assert response.json()["error"]["code"] == "account_suspended"
 
 
+async def test_a_suspended_user_s_bearer_token_gets_403_from_me(
+    client: AsyncClient, registration_payload: dict[str, str], session
+) -> None:
+    """The ledger asks `/auth/me` on every trade with the trader's bearer token
+    and refuses on this answer, so the promise is pinned here. ADR 0022."""
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from model.entities import User  # noqa: PLC0415
+
+    registered = await client.post("/auth/register", json=registration_payload)
+    access_token = registered.json()["tokens"]["access_token"]
+    await session.execute(
+        update(User).where(User.username == "ernest_t").values(is_suspended=True)
+    )
+    await session.commit()
+    client.cookies.clear()
+
+    response = await client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {access_token}"}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "account_suspended"
+
+
 async def test_an_unauthenticated_request_is_401_with_a_challenge_header(
     client: AsyncClient,
 ) -> None:
