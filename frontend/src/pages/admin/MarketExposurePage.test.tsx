@@ -61,10 +61,12 @@ describe('MarketExposurePage', () => {
     mockMarket('mkt-1', market())
     mockExposure('mkt-1', {
       pool: '1250.0000',
-      exceeds_pool: false,
+      payout_exceeds_pool: false,
+      result: null,
+      winning_outcome_id: null,
       outcomes: [
-        { outcome_id: 'o-yes', position: 0, shares_outstanding: '120.0000', max_payout: '120.0000' },
-        { outcome_id: 'o-no', position: 1, shares_outstanding: '45.0000', max_payout: '45.0000' },
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '120.0000', payout_if_wins: '120.0000', residue_if_wins: '1130.0000' },
+        { outcome_id: 'o-no', position: 1, shares_outstanding: '45.0000', payout_if_wins: '45.0000', residue_if_wins: '1205.0000' },
       ],
     })
 
@@ -76,13 +78,15 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByText(/exceeds the pool/i)).not.toBeInTheDocument()
   })
 
-  it('flags when an outcome\'s max payout exceeds the pool', async () => {
+  it('flags when an outcome\'s payout exceeds the pool', async () => {
     mockMarket('mkt-1', market())
     mockExposure('mkt-1', {
       pool: '100.0000',
-      exceeds_pool: true,
+      payout_exceeds_pool: true,
+      result: null,
+      winning_outcome_id: null,
       outcomes: [
-        { outcome_id: 'o-yes', position: 0, shares_outstanding: '500.0000', max_payout: '500.0000' },
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '500.0000', payout_if_wins: '500.0000', residue_if_wins: '-400.0000' },
       ],
     })
 
@@ -92,10 +96,10 @@ describe('MarketExposurePage', () => {
   })
 
   it('shows a 200-with-nothing market as no trades yet, not an error', async () => {
-    // #6's notes: a market the ledger has never opened a book for reads as
-    // 200 with no outcomes, null figures and the flag down.
+    // docs/api/ledger-service.md: a market the ledger has never opened a book
+    // for reads as 200 with no outcomes, null figures and the flag down.
     mockMarket('mkt-1', market())
-    mockExposure('mkt-1', { pool: null, exceeds_pool: false, outcomes: [] })
+    mockExposure('mkt-1', { pool: null, payout_exceeds_pool: false, result: null, winning_outcome_id: null, outcomes: [] })
 
     renderPage()
 
@@ -103,9 +107,27 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('shows a settled market\'s result instead of a pool to protect', async () => {
+    mockMarket('mkt-1', market())
+    mockExposure('mkt-1', {
+      pool: null,
+      payout_exceeds_pool: false,
+      result: 'settled',
+      winning_outcome_id: 'o-yes',
+      outcomes: [
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '500.0000', payout_if_wins: null, residue_if_wins: null },
+      ],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText(/has settled/i)).toBeInTheDocument()
+    expect(screen.queryByText('Pool')).not.toBeInTheDocument()
+  })
+
   it('shows an error when the market fails to load', async () => {
     server.use(http.get(`${MARKET_BASE}/public/markets/mkt-1`, () => HttpResponse.error()))
-    mockExposure('mkt-1', { pool: null, exceeds_pool: false, outcomes: [] })
+    mockExposure('mkt-1', { pool: null, payout_exceeds_pool: false, result: null, winning_outcome_id: null, outcomes: [] })
 
     renderPage()
 
@@ -124,7 +146,7 @@ describe('MarketExposurePage', () => {
 
   it('shows a link back to all markets', async () => {
     mockMarket('mkt-1', market())
-    mockExposure('mkt-1', { pool: null, exceeds_pool: false, outcomes: [] })
+    mockExposure('mkt-1', { pool: null, payout_exceeds_pool: false, result: null, winning_outcome_id: null, outcomes: [] })
     const actor = userEvent.setup()
     renderPage()
     await screen.findByText('Will it rain in Singapore tomorrow?')
