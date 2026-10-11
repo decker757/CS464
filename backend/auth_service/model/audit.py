@@ -1,4 +1,4 @@
-"""The audit log's vocabulary, as this service writes it. [4.3] #15, [4.4] #16
+"""The audit log's vocabulary, as this service writes it. [4.3] #15, [4.4] #16, [4.2] #14
 
 The table and the insert are behind `core/audit.py`; only what differs by design
 lives here. `auth_svc` holds INSERT on `audit.admin_actions` and nothing else.
@@ -19,3 +19,5 @@ class AdminAction(StrEnum):
     """
 
     USER_ROLE_CHANGED = "user.role_changed"
+    USER_SUSPENDED = "user.suspended"  # [4.2] #14
+    USER_UNSUSPENDED = "user.unsuspended"  # [4.2] #14
