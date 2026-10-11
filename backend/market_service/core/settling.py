@@ -22,20 +22,19 @@ def is_settleable(
     *,
     approved: bool,
     settled: bool,
-    approved_at: datetime | None,
-    window: timedelta,
+    ends_at: datetime | None,
     now: datetime,
 ) -> bool:
     """May this market be paid out, as of `now`?
 
-    A settled market always is, whatever the window, so the flag never goes
-    back to false. An approved one is once `now` reaches `approved_at + window
-    + SETTLEMENT_GAP`, edge included. Fails closed: any other status, or an
-    approved market with no `approved_at`, is not settleable.
+    A settled market always is, so the flag never goes back to false. An
+    approved one is once `now` reaches `ends_at + SETTLEMENT_GAP`, edge
+    included, where `ends_at` is the window's end stored at approval. Fails
+    closed: any other status, or an approved market with no `ends_at`, is not
+    settleable. ADR 0023.
     """
     if settled:
         return True
-    if not approved or approved_at is None:
+    if not approved or ends_at is None:
         return False
-    opens_at = as_utc(approved_at) + window + SETTLEMENT_GAP
-    return as_utc(now) >= opens_at
+    return as_utc(now) >= as_utc(ends_at) + SETTLEMENT_GAP

@@ -143,7 +143,19 @@ class _Population:
 
 
 @pytest.fixture
-async def population(session: AsyncSession) -> _Population:
+def hour_long_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A one-hour dispute window, set before any market is approved.
+
+    Approval stores the window's end from the setting as it is then (ADR 0023),
+    so this has to run before `population` builds its approved market. An hour
+    keeps the injected clock, ten days ahead, past that market's edge whatever
+    the environment configures.
+    """
+    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 3600)
+
+
+@pytest.fixture
+async def population(session: AsyncSession, hour_long_window: None) -> _Population:
     caller = actor()
     other = actor(username="michelle_t")
     now = _injected_now()
@@ -623,19 +635,17 @@ async def test_the_settled_filter_lists_only_settled_markets(
 
 
 async def test_each_rows_settleable_follows_the_public_details_rule(
-    session: AsyncSession,
-    population: _Population,
-    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession, population: _Population
 ) -> None:
     """[3.4] #12: each row carries `settleable` "by the same rule as the public
     detail": true past the edge for approved, still true once settled, false
     for every other status.
 
-    The window is patched to an hour, so the injected clock ten days ahead is
-    past the edge whatever the environment configures. Fails with the settled
-    half of the rule dropped, or with the flag missing from the rows.
+    `population` approves under `hour_long_window`, so the injected clock ten
+    days ahead is past the approved row's stored edge whatever the environment
+    configures. Fails with the settled half of the rule dropped, or with the
+    flag missing from the rows.
     """
-    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 3600)
     decided = {population.ids["approved"], population.ids["settled"]}
 
     rows, _ = await _overview(session, population.caller, now=population.now)
@@ -645,26 +655,22 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
         assert row.settleable is (row.id in decided), row
 
 
-@pytest.mark.parametrize(
-    "keep_approved_at", [True, False], ids=["approved_a_moment_ago", "no_approved_at"]
-)
-async def test_a_settled_rows_settleable_stays_true_whatever_the_window(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, keep_approved_at: bool
+async def test_a_settled_rows_settleable_stays_true_even_with_no_window_end(
+    session: AsyncSession,
 ) -> None:
     """[3.4] #12: a row's `settleable` "stays true once the market is
-    `settled`", under a window raised to its 30-day ceiling and read a moment
-    after approval, and with no `approved_at` at all.
+    `settled`", even with no stored window end.
 
     Fails with SETTLED put through the time rule, or the null check.
     """
-    monkeypatch.setattr(get_settings(), "dispute_window_seconds", 2592000)
     caller = actor()
     market_id = (await settled_market(session, caller)).id
-    if not keep_approved_at:
-        await session.execute(
-            update(Market).where(Market.id == market_id).values(approved_at=None)
-        )
-        await session.commit()
+    await session.execute(
+        update(Market)
+        .where(Market.id == market_id)
+        .values(dispute_window_ends_at=None)
+    )
+    await session.commit()
 
     rows, _ = await _overview(session, caller, now=datetime.now(UTC))
 

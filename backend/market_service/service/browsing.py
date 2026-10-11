@@ -343,7 +343,9 @@ async def get_published(
         TRADER_FACING_STATUS,
         displayed_status(market.status, market.close_time, now=now),
     )
-    market.settleable = settleable(market.status, market.approved_at, now=now)
+    market.settleable = settleable(
+        market.status, market.dispute_window_ends_at, now=now
+    )
     return market
 
 
@@ -456,7 +458,7 @@ async def _list_overview_rows(
         Market.status,
         Market.question,
         Market.close_time,
-        Market.approved_at,
+        Market.dispute_window_ends_at,
         _overview_group().label("overview_group"),
     ).where(_visible_to_admin(caller_id))
 
@@ -570,7 +572,7 @@ async def overview(
             status=displayed_status(row.status, row.close_time, now=now),
             question=row.question,
             close_time=row.close_time,
-            settleable=settleable(row.status, row.approved_at, now=now),
+            settleable=settleable(row.status, row.dispute_window_ends_at, now=now),
         )
         for row in shown
     ]

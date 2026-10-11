@@ -332,10 +332,19 @@ class Market(Base):
     #
     # Null unless APPROVED, and set together. The proposal columns stay beside
     # them, so one row shows both identities. There are deliberately no
-    # `rejected_by_*` columns and no deadline column. ADR 0016.
+    # `rejected_by_*` columns. ADR 0016.
     approved_by_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     approved_by_username: Mapped[str | None] = mapped_column(String(32), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # [3.3] #11. When the dispute window ends: `approved_at` plus the window as
+    # the setting stood at approval, so a later change moves no running
+    # window. Set exactly when `approved_at` is; `settleable` reads this, not
+    # the setting. No CHECK, so a null can be written and fails closed.
+    # ADR 0023.
+    dispute_window_ends_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
