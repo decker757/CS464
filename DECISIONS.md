@@ -3341,7 +3341,7 @@ the gate. Recorded in #127 from the comment at
 **Date:** 2026-09-27 · **Ticket:** #137 · **Status:** active
 
 **Decision.** `rotate_refresh_token` looks up the token's owner without a lock,
-then locks the owner's row in `auth.users` (`_lock_user`), then the token's
+then locks the owner's row in `auth.users` (`lock_user`), then the token's
 row. The rotation and the replay take the same two locks in the same order.
 
 **Why.** A replay revokes every live token the user holds. It finds them with

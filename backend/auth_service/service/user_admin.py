@@ -18,7 +18,7 @@ from core.paging import decode_cursor, encode_cursor
 from core.roles import UserRole
 from model.audit import AdminAction
 from model.entities import User
-from service import audit
+from service import audit, auth_service
 from service.audit import Actor
 
 # LIKE's pattern characters, escaped so a query matches as typed: `_` is legal
@@ -136,12 +136,10 @@ async def change_role(
         raise CannotChangeOwnRole
 
     # The set first and the target second, on every path, or two of these
-    # deadlock. ADR 0015. `populate_existing` so the role comes from the locked
-    # row, never from an instance this session loaded before the lock.
+    # deadlock. ADR 0015. `lock_user` reads the role from the locked row,
+    # never from an instance this session loaded before the lock.
     remaining = await _lock_administrators(session)
-    target = await session.get(
-        User, target_id, with_for_update=True, populate_existing=True
-    )
+    target = await auth_service.lock_user(session, target_id)
     if target is None:
         raise UserNotFound
 
