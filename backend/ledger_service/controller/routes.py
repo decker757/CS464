@@ -503,6 +503,8 @@ async def market_exposure(
         seed_subsidy=result.seed_subsidy,
         pool=result.pool,
         payout_exceeds_pool=result.payout_exceeds_pool,
+        result=result.result,
+        winning_outcome_id=result.winning_outcome_id,
         outcomes=[
             ExposureOutcomeOut(
                 outcome_id=outcome.outcome_id,
