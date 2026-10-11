@@ -50,6 +50,11 @@ PROBE_TIMEOUT = 10.0
 WINNER = 1
 LOSER = 0
 
+# [3.4] #12's PR 7 reads: a winning and a losing holding, neither a round
+# number, so a figure rounded or rescaled on the way out shows.
+PAID = Decimal("41.3337")
+UNPAID = Decimal("17.2909")
+
 
 # --- lazy module handles --------------------------------------------------
 def settlement():
@@ -248,6 +253,21 @@ async def hold(
         q[position] += quantity
     await session.flush()
     await set_q(session, upstream.market_id, q)
+
+
+async def settled_market(
+    session: AsyncSession, holdings: Sequence[tuple[uuid.UUID, int, Decimal]]
+) -> SettleUpstream:
+    """A warm market holding `holdings` (as `hold` takes them), settled for
+    outcome `WINNER` through the real `pay_out`. Committed; the call counts
+    are reset, so a test counts only its own calls."""
+    upstream = SettleUpstream()
+    await warm(session, upstream)
+    await hold(session, upstream, holdings)
+    await settle(session, upstream)
+    upstream.gets = 0
+    upstream.posts = 0
+    return upstream
 
 
 # --- reading back -----------------------------------------------------------

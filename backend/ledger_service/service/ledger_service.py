@@ -74,7 +74,8 @@ _PageRow = tuple[
 
 
 def _trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
-    """market_id, outcome_id, side, quantity and average_price for one row.
+    """market_id, outcome_id, side, quantity and average_price for one row,
+    for the two trade kinds and for `settlement`.
 
     `side` comes from `kind`, never from `context` — `kind` is the column the
     ledger indexes and validates. The rest is read from `context` by
@@ -85,12 +86,26 @@ def _trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
     preview uses, so the two agree for the same trade at the same
     `state_version`.
 
+    A `settlement` row is a payout, not a trade: `result_of` does not read it,
+    its `context` names the market, the winning outcome and the winning
+    quantity, and `side` and `average_price` stay null. DECISIONS.md, "A
+    payout's history row is kind `settlement`, with market, outcome and
+    quantity".
+
     Every other kind — the grant, and anything this row builder does not
     recognise, `context` included — renders with all five fields null. Not an
     error: a new kind reaches the history the day it is written.
     """
+    context = transaction.context
+    if transaction.kind == TransactionKind.SETTLEMENT and context is not None:
+        return TradeFields(
+            market_id=uuid.UUID(str(context["market_id"])),
+            outcome_id=uuid.UUID(str(context["outcome_id"])),
+            quantity=Decimal(str(context["quantity"])).quantize(QUANTUM),
+        )
+
     side = _TRADE_SIDE_OF_KIND.get(transaction.kind)
-    if side is None or transaction.context is None:
+    if side is None or context is None:
         return TradeFields()
 
     trade = trading.result_of(transaction)

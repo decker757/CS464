@@ -29,7 +29,9 @@ from unit_test.history_fixtures import (
     stored_context,
     traded,
 )
+from unit_test.portfolio_fixtures import funded
 from unit_test.sell_fixtures import PROCEEDS
+from unit_test.settlement_fixtures import LOSER, PAID, UNPAID, WINNER, settled_market
 from unit_test.trade_fixtures import QUANTUM, entities
 
 MY_ENTRIES = "/ledger/entries/me"
@@ -150,6 +152,31 @@ async def test_amounts_quantities_and_prices_are_scale_four_strings(
         for key in ("amount", "balance_after", "quantity", "average_price"):
             if row[key] is not None:
                 assert _SCALE_FOUR.match(row[key]), f"{key} = {row[key]!r}"
+
+
+async def test_a_payout_is_a_settlement_row_on_the_wire(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """DECISIONS.md, "A payout's history row is kind `settlement`, with market,
+    outcome and quantity": the market and the winning outcome set, the
+    quantity a scale-4 string, and `side` and `average_price` null, because a
+    payout is not a trade. The figures are `test_trade_history.py`'s."""
+    user_id, _ = await funded(session)
+    settled = await settled_market(
+        session, [(user_id, WINNER, PAID), (uuid.uuid4(), LOSER, UNPAID)]
+    )
+
+    settlement_row = (await _my_entries(client, user_id))[0]
+
+    assert settlement_row["kind"] == "settlement"
+    assert {k: settlement_row[k] for k in TRADE_FIELDS} == {
+        "market_id": str(settled.market_id),
+        "outcome_id": str(settled.outcomes[WINNER]),
+        "side": None,
+        "quantity": str(PAID),
+        "average_price": None,
+    }
+    assert _SCALE_FOUR.match(settlement_row["quantity"]), settlement_row["quantity"]
 
 
 # =========================================================================

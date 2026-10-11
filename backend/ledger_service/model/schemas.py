@@ -27,6 +27,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
@@ -62,12 +63,27 @@ class BalanceOut(BaseModel):
         return str(value)
 
 
-class PortfolioPositionOut(BaseModel):
-    """One outcome the caller still holds, valued at liquidation. [T-4] #24
+class PositionResult(StrEnum):
+    """What a settled market did to one held outcome. [3.4] #12.
 
-    `value` is what selling the whole position now would credit — never
-    `quantity * price`. See `GET /ledger/portfolio/me` in
-    `docs/api/ledger-service.md` and ADR 0018 for why.
+    The wire's own values. A row the ledger has not settled has no result,
+    which is `None` and not a third member.
+    """
+
+    PAID_OUT = "paid_out"
+    WORTHLESS = "worthless"
+
+
+class PortfolioPositionOut(BaseModel):
+    """One outcome the caller still holds. [T-4] #24, [3.4] #12
+
+    On a market the ledger has not settled, `value` is what selling the whole
+    position now would credit — never `quantity * price` (ADR 0018) — and
+    `result` and `payout` are null. On a settled market it is the other way
+    round: `result` and `payout` are set, and `price`, `value` and
+    `unrealized_pnl` are null, because the payout is already in the balance.
+    Every key is always present. See `GET /ledger/portfolio/me` in
+    `docs/api/ledger-service.md`.
     """
 
     market_id: uuid.UUID
@@ -83,34 +99,46 @@ class PortfolioPositionOut(BaseModel):
     average_entry_price: Decimal = Field(
         description="cost_basis / quantity, ROUND_HALF_UP at scale 4."
     )
-    price: Decimal = Field(
+    price: Decimal | None = Field(
         description=(
             "The outcome's marginal price — informational only, and equal "
             "to the snapshot's for the same state_version. Not what `value` "
-            "is computed from."
+            "is computed from. Null on a settled row."
         )
     )
-    value: Decimal = Field(
+    value: Decimal | None = Field(
         description=(
             "What selling the whole position now would credit (ADR 0018), "
-            "not quantity * price."
+            "not quantity * price. Null on a settled row, whose payout is "
+            "already in the balance."
         )
     )
-    unrealized_pnl: Decimal = Field(description="value - cost_basis.")
+    unrealized_pnl: Decimal | None = Field(
+        description="value - cost_basis. Null on a settled row."
+    )
+    result: PositionResult | None = Field(
+        description=(
+            "`paid_out` for the winning outcome of a settled market, "
+            "`worthless` for any other. Null until the market is settled."
+        )
+    )
+    payout: Decimal | None = Field(
+        description=(
+            "What this row was paid: its quantity on a `paid_out` row, "
+            "`0.0000` on a `worthless` one. Null until the market is settled."
+        )
+    )
     state_version: int = Field(
         description="This market's book version this row was valued at."
     )
 
-    @field_serializer(
-        "quantity",
-        "cost_basis",
-        "average_entry_price",
-        "price",
-        "value",
-        "unrealized_pnl",
-    )
+    @field_serializer("quantity", "cost_basis", "average_entry_price")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+    @field_serializer("price", "value", "unrealized_pnl", "payout")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
 
 
 class PortfolioOut(BaseModel):
@@ -142,7 +170,8 @@ class PortfolioOut(BaseModel):
 
 @dataclass(frozen=True)
 class TradeFields:
-    """The five fields a history row carries for a trade. [T-5] #25.
+    """The five fields a history row carries for a trade or a payout. [T-5] #25,
+    [3.4] #12.
 
     All null by default: that is the grant's row, and any kind the history
     does not recognise. `service/ledger_service.py` fills them in; they live
@@ -210,8 +239,8 @@ class LedgerEntryOut(BaseModel):
     market_id: uuid.UUID | None = Field(
         default=None,
         description=(
-            "Set on a `trade_buy` or `trade_sell` row; `null` on every other "
-            "kind, the grant included. [T-5] #25."
+            "Set on a `trade_buy`, `trade_sell` or `settlement` row; `null` "
+            "on every other kind, the grant included. [T-5] #25, [3.4] #12."
         ),
     )
     outcome_id: uuid.UUID | None = Field(
@@ -222,14 +251,15 @@ class LedgerEntryOut(BaseModel):
         default=None,
         description=(
             "`buy` or `sell`, taken from `kind` rather than from `context`. "
-            "Null on every row that is not a trade."
+            "Null on every row that is not a trade, a payout included."
         ),
     )
     quantity: Decimal | None = Field(
         default=None,
         description=(
-            "The trade's quantity, at scale 4 whatever the trader sent. Null "
-            "on every row that is not a trade."
+            "The trade's quantity, or on a `settlement` row the winning "
+            "shares paid out, at scale 4 whatever the trader sent. Null on "
+            "every other row."
         ),
     )
     average_price: Decimal | None = Field(
@@ -237,7 +267,8 @@ class LedgerEntryOut(BaseModel):
         description=(
             "The average fill price, `|amount| ÷ quantity` rounded half-up "
             "at scale 4 — not the marginal price the portfolio and the "
-            "snapshot report. Null on every row that is not a trade."
+            "snapshot report. Null on every row that is not a trade, a "
+            "payout included."
         ),
     )
 

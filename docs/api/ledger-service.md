@@ -114,6 +114,23 @@ credits keeps them and stays readable.
 {
   "entries": [
     {
+      "id": "e41a...",
+      "created_at": "2026-10-10T08:12:44.501200Z",
+      "amount": "10.0000",
+      "balance_after": "986.4477",
+      "transaction_id": "b90f...",
+      "kind": "settlement",
+      "context": {
+        "user_id": "5f3e...", "market_id": "2b7e...",
+        "outcome_id": "c03d...", "quantity": "10.0000"
+      },
+      "market_id": "2b7e...",
+      "outcome_id": "c03d...",
+      "side": null,
+      "quantity": "10.0000",
+      "average_price": null
+    },
+    {
       "id": "0c9d...",
       "created_at": "2026-09-15T09:41:02.118000Z",
       "amount": "5.8905",
@@ -182,9 +199,8 @@ route that returns it.
 `kind` is the vocabulary of why credits moved. The values that reach a user's
 own history today are `signup_grant`, `trade_buy`, `trade_sell` and
 `settlement`, a winning holder's payout, which the settlement route below
-writes ([3.4] #12). Until [3.4] #12's history change, a `settlement` row's
-`market_id`, `outcome_id` and `quantity` are `null` here like any other
-non-trade kind.
+writes ([3.4] #12). A holder of only losing shares is paid nothing, and gets
+no row.
 `market_seed` and
 `settlement_residue` exist as kinds too, but never reach here: each moves
 credits between the platform and a market's pool, touching no USER account.
@@ -192,9 +208,10 @@ credits between the platform and a market's pool, touching no USER account.
 rather than as an error** — new ones will appear without a version bump. Same
 rule for `context`: render what you recognise, ignore the rest.
 
-**`market_id`, `outcome_id`, `side`, `quantity` and `average_price` are set
-only on a `trade_buy` or `trade_sell` row, and `null` on every other kind** —
-the grant, and any kind this service does not recognise. `side` comes from
+**`market_id`, `outcome_id` and `quantity` are set on a `trade_buy`,
+`trade_sell` or `settlement` row. `side` and `average_price` are set on the two
+trade kinds only. All five are `null` on every other kind**, which means the
+grant and any kind this service does not recognise. `side` comes from
 `kind` rather than from `context`. `quantity` is at scale 4 whatever the
 trader sent: `context.quantity` keeps the value exactly as it arrived (a sell
 of `10` stays `"10"` there), and this field is that value quantized.
@@ -202,6 +219,11 @@ of `10` stays `"10"` there), and this field is that value quantized.
 `ROUND_HALF_UP` at scale 4 — and equals the preview's `average_price` for the
 same trade at the same `state_version`. **It is not the marginal price** the
 portfolio and the snapshot report; it is what this trade actually averaged.
+
+On a `settlement` row, `outcome_id` is the winning outcome and `quantity` is
+the number of winning shares paid out, at one credit each, so `amount` equals
+`quantity`. `side` and `average_price` are `null` there: a payout is not a
+trade, and its price is always one.
 
 ### Paging
 
@@ -232,7 +254,8 @@ constructing one.
 
 ## GET /ledger/portfolio/me
 
-[T-4] #24. The caller's own positions and their current value: what they
+[T-4] #24, and [3.4] #12 for settled markets. The caller's own positions and
+their current value: what they
 hold in every market they have traded, each valued the way
 [ADR 0018](../adr/0018-positions-are-valued-at-liquidation.md) requires
 rather than at the marginal price.
@@ -244,10 +267,24 @@ else's; there is no admin variant.
 {
   "user_id": "5f3e...",
   "account_id": "a71c...",
-  "balance": "568.6431",
+  "balance": "572.5121",
   "positions_value": "431.3568",
-  "net_worth": "1000.0000",
+  "net_worth": "1003.8689",
   "positions": [
+    {
+      "market_id": "2b7e...",
+      "outcome_id": "c03d...",
+      "outcome_position": 0,
+      "quantity": "10.0000",
+      "cost_basis": "6.1310",
+      "average_entry_price": "0.6131",
+      "price": null,
+      "value": null,
+      "unrealized_pnl": null,
+      "result": "paid_out",
+      "payout": "10.0000",
+      "state_version": 57
+    },
     {
       "market_id": "9d1c...",
       "outcome_id": "4f2a...",
@@ -258,6 +295,8 @@ else's; there is no admin variant.
       "price": "0.9933",
       "value": "431.3568",
       "unrealized_pnl": "-0.0001",
+      "result": null,
+      "payout": null,
       "state_version": 1
     }
   ]
@@ -287,17 +326,34 @@ position equals the trade route's proceeds for that sell at the same
 `state_version`; a second held outcome in the same market is priced on a book
 no preview can quote, because the first sale would have to happen first.
 
+**A settled market's rows show what it paid, not a value.** Once this service
+has settled a market (`POST /ledger/markets/{id}/settlement`, below), each of
+its rows carries a `result` and a `payout`. `result` is `paid_out` for the
+winning outcome and `worthless` for any other. `payout` is the row's
+`quantity` on a `paid_out` row, at one credit per share, and `"0.0000"` on a
+`worthless` one. `price`, `value` and `unrealized_pnl` are `null`, and the row
+adds nothing to `positions_value`: the payout is already in `balance`, so
+`net_worth` counts it once. `quantity`, `cost_basis`, `average_entry_price` and
+`state_version` are unchanged, because settlement writes no position and no
+`q`.
+
+On every other row, `result` and `payout` are `null`. Every row carries all the
+keys, so branch on `result`, not on which keys are present. **`price`, `value`
+and `unrealized_pnl` can be `null`.** Guard them before formatting.
+
 `unrealized_pnl` is `value - cost_basis`. `average_entry_price` is
 `cost_basis / quantity`, `ROUND_HALF_UP` at scale 4, and is display only, the
 same rule the preview's `average_price` follows.
 
-**The balance and every position are read together, in one statement, with
-no lock.** So a trade committing mid-read cannot show its debit without its
-shares, or its shares without its debit. The read makes no call to
-market_service — valuation needs only `q`, `b` and the holding, all of them
-this service's own — so a market that has closed is valued at its last
-traded book like any other; there is nothing for the market's status to
-change here.
+**The balance, every position and every settlement record are read together,
+in one statement, with no lock.** So a trade committing mid-read cannot show
+its debit without its shares, or its shares without its debit. A settlement
+committing mid-read cannot put its payout in `balance` while its shares are
+still valued. The read makes no call to market_service. Valuation needs only
+`q`, `b` and the holding, and a settled row needs only this service's own
+settlement record. So a closed or approved market is valued at its last traded
+book until this service settles it, and market_service's status changes
+nothing here.
 
 **The first call for a user also mints their starting grant**, exactly as
 `/balances/me` does (above).
@@ -307,7 +363,7 @@ Errors:
 | Status | `code` | When |
 | --- | --- | --- |
 | 401 | `invalid_token` | Missing, malformed or expired access token. |
-| 500 | `market_book_incomplete` | A held market's book cannot be priced, or a position exceeds its outcome's shares outstanding. The whole read fails — no partial portfolio is returned. |
+| 500 | `market_book_incomplete` | A held market this service has not settled has a book that cannot be priced, or a position in it exceeds its outcome's shares outstanding. A settled market's book is not valued, so it cannot cause this. The whole read fails, and no partial portfolio is returned. |
 
 ## GET /ledger/users/{user_id}/balance and /entries
 
