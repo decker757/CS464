@@ -106,6 +106,8 @@ async def exposure_of_market(
     first = rows[0]
     has_result = first.result_kind is not None
     if has_result:
+        pool_figure = None
+        payout_exceeds_pool = False
         outcomes = [
             OutcomeExposure(
                 outcome_id=row.outcome_id,
@@ -116,38 +118,30 @@ async def exposure_of_market(
             )
             for row in rows
         ]
-        return Exposure(
-            market_id=market_id,
-            opened_at=first.opened_at,
-            state_version=first.state_version,
-            seed_subsidy=first.seed_subsidy,
-            pool=None,
-            payout_exceeds_pool=False,
-            result=first.result_kind,
-            winning_outcome_id=first.winning_outcome_id,
-            outcomes=outcomes,
+    else:
+        pool_figure = first.pool
+        payout_exceeds_pool = has_payout_over_pool(
+            payouts=[row.q for row in rows], pool=first.pool
         )
+        outcomes = [
+            OutcomeExposure(
+                outcome_id=row.outcome_id,
+                position=row.position,
+                shares_outstanding=row.q,
+                payout_if_wins=row.q,
+                residue_if_wins=row.pool - row.q,
+            )
+            for row in rows
+        ]
 
-    outcomes = [
-        OutcomeExposure(
-            outcome_id=row.outcome_id,
-            position=row.position,
-            shares_outstanding=row.q,
-            payout_if_wins=row.q,
-            residue_if_wins=row.pool - row.q,
-        )
-        for row in rows
-    ]
     return Exposure(
         market_id=market_id,
         opened_at=first.opened_at,
         state_version=first.state_version,
         seed_subsidy=first.seed_subsidy,
-        pool=first.pool,
-        payout_exceeds_pool=has_payout_over_pool(
-            payouts=[row.q for row in rows], pool=first.pool
-        ),
-        result=None,
-        winning_outcome_id=None,
+        pool=pool_figure,
+        payout_exceeds_pool=payout_exceeds_pool,
+        result=first.result_kind,
+        winning_outcome_id=first.winning_outcome_id,
         outcomes=outcomes,
     )
