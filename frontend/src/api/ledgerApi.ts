@@ -51,12 +51,14 @@ export interface Position {
   cost_basis: string
   average_entry_price: string
   // The outcome's marginal price, informational only — not the basis for `value`.
-  price: string
+  // These three are null on a position in a settled market: it is no longer
+  // valued, so they are not zero either ([3.4] #12).
+  price: string | null
   // What selling the whole position now would credit — a liquidation value,
   // never quantity × price (ledger-service.md, ADR 0018).
-  value: string
+  value: string | null
   // value − cost_basis. Can be negative.
-  unrealized_pnl: string
+  unrealized_pnl: string | null
   state_version: number
 }
 
