@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import raiseload
 
 from core import security
 from core.config import get_settings
@@ -89,10 +90,15 @@ async def lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
     so the decision is made from a row nobody else can change meanwhile (ADR
     0015). On the token paths it also makes a replay's revoke-all wait for a
     token a rotation is inserting. `populate_existing` so `is_suspended` and
-    `role` come from the locked row.
+    `role` come from the locked row. `raiseload` on the sessions: no caller
+    reads them, and `selectin` would reload all of them under the lock.
     """
     return await session.get(
-        User, user_id, with_for_update=True, populate_existing=True
+        User,
+        user_id,
+        with_for_update=True,
+        populate_existing=True,
+        options=[raiseload(User.refresh_tokens)],
     )
 
 
@@ -154,8 +160,9 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
     """Return the user these credentials prove. [A-2] #30
 
     Raises InvalidCredentials for a wrong password and an unknown account
-    alike, and AccountSuspended only after the password is proven. May rehash
-    `user.password_hash`, leaving that write pending for the caller to commit.
+    alike, and AccountSuspended only after the password is proven. Locks the
+    user's row once the password is proven, held until the caller commits. May
+    rehash `user.password_hash`, leaving that write pending for the caller.
     """
     user = await _find_by_identifier(session, identifier)
 
@@ -165,6 +172,13 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
         raise InvalidCredentials
 
     if not security.verify_password(user.password_hash, password):
+        raise InvalidCredentials
+
+    # Decided from the locked row, or a login racing a suspension issues a
+    # session after its revoke. DECISIONS.md, "Login decides suspension under
+    # the user's row lock".
+    user = await lock_user(session, user.id)
+    if user is None:
         raise InvalidCredentials
 
     # After the password, or suspended accounts could be enumerated.
