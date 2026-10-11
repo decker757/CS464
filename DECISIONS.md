@@ -7493,7 +7493,10 @@ The portfolio's `_read` stays one statement that reads balance and positions
 together, for one user. The refresh gets its own single statement with the
 same row shape, for every `USER` account, ordered by
 `(owner_id, market_id, position)`. Every holder is valued from one snapshot.
-The refactor PR changes no test assertion.
+`held_outcomes_query` shares the columns and the four joins, not just the row
+shape; each caller brings only its anchor (balance and holder), its
+`held_markets` filter and its ORDER BY. The refactor PR changes no test
+assertion.
 
 **Why.** ADR 0018's 2026-10-10 amendment: #38 "reuses the portfolio's
 valuation, its settled branch included", and calling
