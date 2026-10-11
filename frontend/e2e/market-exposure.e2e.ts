@@ -31,9 +31,13 @@ test('an admin sees shares outstanding for a traded outcome, with no flag', asyn
 
 test('a market nobody has traded shows no trades yet', async ({ page }) => {
   const admin = await registerAdmin('exp_empty_admin')
+  // Log in before publishing. logIn lands on /markets, which fetches a price
+  // snapshot for every market it lists, and the first snapshot opens the
+  // market's book. A market published first would reach the exposure page
+  // with a book and zero shares, not the "no book" state this test is about.
+  await logIn(page, admin)
   const market = await publishMarket(admin, `Will ${uniqueName('untraded')} resolve yes?`)
 
-  await logIn(page, admin)
   await page.goto('/admin/markets')
   const card = await loadUntilShown(page, market.question)
   await card.getByRole('link', { name: 'Exposure' }).click()
