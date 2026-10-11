@@ -166,6 +166,29 @@ would then be unable to start, test or fail without the other.
 > updates or deletes a `ledger.market_results` row, and the lookup can no
 > longer short-circuit without a lock.
 
+> **Amended 2026-10-11 by [3.3] #11. The example above can no longer happen;
+> the rule still stands.** The window's end is now stored at approval, in
+> `dispute_window_ends_at` (see the amendment under "Settlement waits for the
+> dispute window"). Raising `dispute_window_seconds` affects only later
+> approvals, so a paid market can no longer turn "not settleable" because the
+> window was raised.
+>
+> A repeat still has to replay before any status check, because a paid market
+> can still read "not settleable" another way: from a replica whose clock runs
+> behind. For example:
+>
+> 1. The window ends at 10:00, so `settleable` turns true at 10:05.
+> 2. At 10:05:01 the ledger reads `settleable: true` from one replica and
+>    pays. Step 5 fails.
+> 3. The administrator repeats at once. This time the public detail is
+>    answered by a replica whose clock is 10 seconds behind. It reads 10:04:52
+>    and reports `approved`, not `settleable`.
+>
+> In the original order that repeat answers `409 dispute_window_open`, a code
+> that means nothing was written, for a market whose winners were already
+> paid. In this order it replays and retries step 5. The rest of the
+> amendment above is unchanged.
+
 ### Who may settle: any administrator
 
 Any administrator may settle, including the market's creator, proposer or
@@ -231,6 +254,29 @@ a 24-hour window.
 > market_service. The gap must then exceed it, and can be sized from it
 > rather than chosen.
 
+> **Amended 2026-10-11 by [3.3] #11. Both edges are measured from
+> `dispute_window_ends_at`, stored at approval.** "market_service decides both
+> edges, on its own clock, from `approved_at`" now reads: from
+> `dispute_window_ends_at`, stored at approval as `approved_at` plus the
+> window. `approve_outcome` writes it in the same transaction and from the
+> same clock read as `approved_at`, with the setting as it is at that moment.
+> Every `window_ends_at` in this record means that column.
+>
+> - send-back is allowed while `now < dispute_window_ends_at`;
+> - settlement is allowed from `dispute_window_ends_at` plus five minutes.
+>
+> The rest of this section holds: one service decides both edges, the ledger
+> reads `settleable` and does not recompute it, the two writers read
+> `clock_timestamp()` after their row lock, and the gap absorbs clock skew.
+> What changes is that raising `dispute_window_seconds` no longer moves the
+> end of any window already running, so it can no longer reopen a window that
+> had closed. Without that, a raised window could let a market the ledger had
+> already paid, but not yet marked settled, be sent back and approved for a
+> different winner. ADR 0023.
+>
+> DECISIONS.md: "`dispute_window_ends_at` is stored at approval, and market
+> revision 0002 backfills 24 hours".
+
 ### Neither outbound call holds a database connection
 
 Both calls to market_service are made outside any database transaction:
@@ -284,6 +330,13 @@ for good, for a result that was sent back.
 > **Reversal trigger:** any further transition out of APPROVED, or send-back
 > allowed past `window_ends_at`. Either makes reading the status before the
 > lock unsafe again.
+
+> **Amended 2026-10-11 by [3.3] #11. Unchanged, and the trigger is not
+> tripped.** #11 builds send-back as this section describes it: the exit back
+> to CLOSED, allowed only while `now < dispute_window_ends_at`, the stored end
+> that `settleable` reads too. It is not a further transition and it does not
+> run past the window's end, so reading the status before the lock stays safe.
+> ADR 0023.
 
 ### The result is a record, and positions and `q` are never written
 
@@ -680,6 +733,12 @@ input by input. Neither route takes money from its caller.
 a Python change (CLAUDE.md, "A market's status is a Python enum").
 `settleable` is derived from `approved_at`, which already exists, so it is no
 column either.
+
+> *Amended 2026-10-11 by [3.3] #11: no longer "no migration".
+> `settleable` is still no column, but it is now derived from
+> `dispute_window_ends_at`, a column #11 adds, written at approval. Market
+> revision `0002` adds it and backfills `approved_at` plus 24 hours. See the
+> amendment under "Settlement waits for the dispute window", and ADR 0023.*
 
 **The settlement record needs an Alembic revision.** It is a new table, and
 [F-5] #75 moves the ledger's schema to Alembic. Whichever of this stack's
