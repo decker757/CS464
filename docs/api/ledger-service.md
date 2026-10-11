@@ -6,8 +6,8 @@ from the code and authoritative if this page ever disagrees, at
 
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 [T-1] #21's cost preview, the trade route that buys ([T-2] #22) and sells
-([T-3] #23), [T-5] #25's trade history, [3.4] #12's settlement route, and
-[2.2] #6's market exposure.
+([T-3] #23), [T-5] #25's trade history, [3.4] #12's settlement route, [2.2]
+#6's market exposure, and [L-1] #38's leaderboard, which also covers [L-3] #40.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -17,6 +17,8 @@ Why the ledger asks market_service whether a market is still open, once per
 trade: [ADR 0017](../adr/0017-the-ledger-and-a-stopped-market.md).
 Why settlement is the ledger's request and market_service is told
 afterwards: [ADR 0019](../adr/0019-settlement-across-services.md).
+Why the leaderboard is a snapshot the ledger refreshes, and how it learns
+usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md).
 
 ## Endpoints
 
@@ -25,6 +27,7 @@ afterwards: [ADR 0019](../adr/0019-settlement-across-services.md).
 | GET | `/ledger/balances/me` | My available balance |
 | GET | `/ledger/entries/me` | My ledger history |
 | GET | `/ledger/portfolio/me` | My positions and their current value |
+| GET | `/ledger/leaderboard` | Every ranked user's net worth, from the latest ranking |
 | GET | `/ledger/users/{user_id}/balance` | Any user's balance (admin) |
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
@@ -44,13 +47,13 @@ positions (ADR 0009's second amendment). Every other route reads, and no
 route ever edits or removes an entry. The ledger is append-only, enforced by
 a database trigger rather than by the absence of a route.
 
-The balance route, the portfolio route, the preview route and the snapshot
-route are each an exception to "reads don't write," and for the same reason:
-a balance or a portfolio mints a user's starting grant on first read (below
-and [T-4] #24), and the preview and the snapshot each open and fund a
-market's book on that market's first touch (D-008, D-037, and [F-9] #112 for
-the snapshot). All four are once-per-subject, idempotent, and invisible to
-every caller after the first.
+The balance route, the history route, the portfolio route, the preview route
+and the snapshot route are each an exception to "reads don't write," and for
+the same reason: a balance, a history or a portfolio mints a user's starting
+grant on first read (below and [T-4] #24), and the preview and the snapshot
+each open and fund a market's book on that market's first touch (D-008,
+D-037, and [F-9] #112 for the snapshot). All five are once-per-subject,
+idempotent, and invisible to every caller after the first.
 
 ## Authentication
 
@@ -366,6 +369,114 @@ Errors:
 | --- | --- | --- |
 | 401 | `invalid_token` | Missing, malformed or expired access token. |
 | 500 | `market_book_incomplete` | A held market this service has not settled has a book that cannot be priced, or a position in it exceeds its outcome's shares outstanding. A settled market's book is not valued, so it cannot cause this. The whole read fails, and no partial portfolio is returned. |
+
+## GET /ledger/leaderboard
+
+[L-1] #38, which also covers [L-3] #40. Every ranked user's rank, username
+and net worth, read from the most recent ranking the ledger has computed.
+Why it is a stored snapshot, and how the ledger learns usernames:
+[ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md).
+
+Any valid access token. Traders and administrators see the same board.
+
+| Query | Default | Notes |
+| --- | --- | --- |
+| `limit` | 50 | Clamped at 200. Asking for more is not an error. |
+| `cursor` | — | The `next_cursor` from the previous page, unmodified. |
+
+```jsonc
+{
+  "computed_at": "2026-10-11T09:14:00.123456Z",
+  "stale": false,
+  "ranked_users": 214,
+  "rows": [
+    { "rank": 1, "username": "michelle_l", "net_worth": "1431.3568" },
+    { "rank": 2, "username": "ernest_t",   "net_worth": "1003.8689" },
+    { "rank": 3, "username": "Ihsan",      "net_worth": "1003.8689" }
+  ],
+  "next_cursor": "MmY0ZS4uLnwz",
+  "has_more": true
+}
+```
+
+**`net_worth` is the portfolio's `net_worth`, computed the same way.** It is
+balance plus the liquidation value of every unsettled position, from the same
+code as `GET /ledger/portfolio/me` (ADR 0018), so a settled market counts
+once, through its payout. It is a decimal string, like every amount here. It
+can differ from the user's live portfolio by whatever has traded since
+`computed_at`.
+
+**The board is recomputed every 60 seconds, not on every trade.**
+`computed_at` is when the ranking that this page came from began. Show it as
+"Updated …". Every user on every page of one ranking was valued from the same
+instant, so a trade that commits mid-refresh is in the whole ranking or in
+none of it.
+
+**`stale: true` means the board has not been refreshed recently.** It is
+true when `computed_at` is more than two refresh intervals old (120 seconds
+by default), which means no refresh has completed recently. The ranking shown
+is still the last complete one. Nothing partial is ever served. Show the
+board with a "may be out of date" note, not an error. Before the ledger has
+ever completed a refresh, the answer is `computed_at: null`,
+`stale: true`, `rows: []`, `ranked_users: 0`.
+
+**`ranked_users` is how many users the whole ranking holds**, not how many
+are on this page. It is the same on every page of one ranking. Use it for
+"of 214" and for #39's not-enough-data state.
+
+**Who is ranked.**
+- Every user who has a ledger account: anyone who has read their own
+  balance, history or portfolio, or traded. That includes administrators.
+- A user with no trades is ranked at their balance.
+- A user who has never been granted credits is not on the board yet. They
+  appear on the first refresh after their account exists.
+- A suspended account is left out, and the ranks close up: there is no gap
+  where it was. It reappears on the first refresh after the suspension is
+  lifted.
+
+**Ranks run 1..N with no ties.** The order is `net_worth` descending, then
+username ascending ignoring case, so equal net worths get consecutive ranks
+in alphabetical order. That is why `ernest_t` is above `Ihsan` above. Do not
+re-sort the rows. `rank` is the order.
+
+**Only `rank`, `username` and `net_worth` are sent.** No user id, email or
+account id appears, on this route or anywhere else. [L-2] #39 will add the
+caller's own row as a separate field. Until it does, nothing on this route
+identifies the caller.
+
+**A cursor holds you to one ranking.** Every page reached through
+`next_cursor` comes from the same ranking as the first page, even if a
+refresh has happened since. Each page repeats that ranking's `computed_at`
+and `stale`. The ledger keeps the ranking before the current one. A cursor
+survives one refresh; after the second it is `409 leaderboard_refreshed`. Drop
+the cursor and load page one again. Do not show the older pages beside the
+new one.
+
+```js
+async function loadPage(cursor) {
+  const url = `/ledger/leaderboard?limit=50${cursor ? `&cursor=${cursor}` : ""}`;
+  const res = await fetch(url, { credentials: "include" });
+  if (res.status === 409) {
+    // leaderboard_refreshed: this is page one of a new ranking.
+    // Replace the whole list with it; do not append it to what is shown.
+    return { ...(await loadPage(null)), restarted: true };
+  }
+  return res.json();
+}
+```
+
+**This route writes nothing.** Unlike the balance, the history and the
+portfolio, reading the leaderboard does not mint the caller's starting
+grant.
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 400 | `malformed_cursor` | `cursor` was not one this service issued. |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 409 | `leaderboard_refreshed` | The cursor's ranking has been replaced twice since its first page. Start again from page one and replace the list. |
+| 422 | `invalid_request` | For example `limit=0`. |
 
 ## GET /ledger/users/{user_id}/balance and /entries
 
@@ -1103,7 +1214,9 @@ route: each outcome's shares outstanding equal the sum of its positions, so
 backstop and is out of the trade route's table on purpose; only the preview
 can return it. `market_not_approved` (409), `dispute_window_open` (409) and
 `settlement_unconfirmed` (503, new in [3.4] #12) are the settlement route's own,
-documented in its section above. `unbalanced_transaction` (422) is
+documented in its section above. `leaderboard_refreshed` (409, new in [L-1]
+#38) is the leaderboard's own, documented in its section above.
+`unbalanced_transaction` (422) is
 `core/errors.py`'s and no route can return it: `service/trading.py` always
 builds two balanced legs, so it is a guard against a bug in this service rather
 than a response any request can provoke. `pending_writes_on_replay` (500) is the

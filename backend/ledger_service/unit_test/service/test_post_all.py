@@ -34,6 +34,7 @@ from model.entities import (
 )
 from service import accounts, posting
 from unit_test.market_fixtures import market_with_outcomes
+from unit_test.schema_fixtures import refusing_constraint
 from unit_test.trade_fixtures import (
     assert_ledger_balances,
     capture_sql,
@@ -569,9 +570,7 @@ async def test_a_failure_mid_batch_commits_nothing(session: AsyncSession) -> Non
     with pytest.raises(IntegrityError) as refusal:
         await posting.post_all(session, movements)
 
-    # SQLAlchemy's asyncpg adapter raises its own error from asyncpg's, and
-    # only asyncpg's carries the constraint name.
-    assert refusal.value.orig.__cause__.constraint_name == "entries_account_id_fkey"
+    assert refusing_constraint(refusal) == "entries_account_id_fkey"
 
     assert await _keys_written(session, keys) == 0
     winner_entries = select(func.count()).select_from(Entry).where(
