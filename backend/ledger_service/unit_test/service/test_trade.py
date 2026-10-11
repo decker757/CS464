@@ -17,7 +17,12 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import idle_in_transaction, terms_client_over
+from unit_test.conftest import (
+    active_auth_transport,
+    auth_client_over,
+    idle_in_transaction,
+    terms_client_over,
+)
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -670,6 +675,7 @@ async def test_an_unknown_outcome_is_refused_and_writes_nothing(
             access_token=token(),
             redis_client=Recorder(),
             terms_client=terms_client_over(upstream.transport),
+            auth_client=auth_client_over(active_auth_transport()),
         )
     await session.rollback()
 

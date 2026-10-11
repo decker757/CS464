@@ -18,7 +18,7 @@ from controller.errors import register_error_handlers
 from controller.routes import router as ledger_router
 from core.config import get_settings
 from core.database import dispose_engine
-from service import market_terms
+from service import account_status, market_terms
 
 logging.basicConfig(level=logging.INFO)
 
@@ -46,10 +46,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
         # One market_service client for the process too, because the gate
-        # calls it on every trade that is not a replay (ADR 0017, D-047).
-        # `async with` closes it before the `finally`.
-        async with market_terms.open_client() as terms_client:
+        # calls it on every trade that is not a replay (ADR 0017, D-047), and
+        # one auth client for the account check on the same trades (ADR
+        # 0022). `async with` closes both before the `finally`.
+        async with (
+            market_terms.open_client() as terms_client,
+            account_status.open_client() as auth_client,
+        ):
             app.state.terms_client = terms_client
+            app.state.auth_client = auth_client
             yield
     finally:
         # Nested so a failing `aclose()` cannot skip the disposal: a leaked
