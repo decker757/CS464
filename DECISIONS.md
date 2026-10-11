@@ -7076,9 +7076,13 @@ the other side, and it would apply to the whole response.
   paid. On an unsettled row it would claim a payout that has not happened.
 
 **Notes.** The shipped portfolio page types `price`, `value` and
-`unrealized_pnl` as `string` (`frontend/src/api/ledgerApi.ts:53-59`) and
-formats them unguarded (`frontend/src/pages/PortfolioPage.tsx:145-147`). A
-settled row hands those formatters `null`. The page needs a null guard before
+`unrealized_pnl` as `string` (`frontend/src/api/ledgerApi.ts:53-59`), and the
+`Position` type has no `result` or `payout`. The formatters at
+`frontend/src/pages/PortfolioPage.tsx:145-147` already show "—" for anything
+that is not a decimal string, so a null `price` or `value` renders. The crash
+is the P&L cell: `PnlCell` colours the value through `isZeroCredits`, which
+calls `null.startsWith` and takes the page down for anyone holding a settled
+position. The page needs that guard, and the type its nullable fields, before
 this stack merges into `dev`, whether or not [FE][3.4] #216's settled
 rendering is ready by then.
 
