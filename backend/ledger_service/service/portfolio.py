@@ -44,16 +44,10 @@ async def _read(session: AsyncSession, user_id: uuid.UUID) -> tuple[Decimal, lis
     """The balance and every outcome of every market the caller holds
     `quantity > 0` in, in one statement, with no lock.
 
-    An anchor row carries the balance as a scalar subquery over the user's
-    entries, so it survives even where the user holds nothing. It is
-    left-joined to every outcome of each market the user holds a position in
-    — not only the held outcome, so the market's whole `q` is one join away —
-    and each outcome is joined a second time, by `(user, market, outcome)`,
-    to carry `quantity` and `cost_basis` beside it (both `None` for an
-    outcome the caller does not hold). Each market is also left-joined to its
-    `market_results` record, so the snapshot that holds a payout in the
-    balance holds the record that settled its rows: `settled_kind` and
-    `winning_outcome_id` are `None` for a market that has no record.
+    The anchor row carries the balance as a scalar subquery over the user's
+    entries, so it survives even where the user holds nothing. `held_markets`
+    keeps the markets with a position of `quantity > 0`. The joins from there
+    are `valuation.held_outcomes_query`'s.
     """
     balance = (
         select(func.coalesce(func.sum(Entry.amount), ZERO))
