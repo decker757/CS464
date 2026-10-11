@@ -15,11 +15,6 @@ reset_hub
 subscriber_count
 connection_count
 
-# [3.3] #11. The service lands one PR ahead of its route, which deletes this
-# entry. Stacked as `pay_out` was ("`pay_out` waits for its route on one
-# allowlist line").
-send_back_outcome
-
 
 # Alembic calls these by name in every migrations/versions/*.py; nothing
 # imports them. [F-5] #75.
