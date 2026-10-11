@@ -101,6 +101,23 @@ def has_pending_writes(session: AsyncSession) -> bool:
     )
 
 
+async def release_before_calling_out(session: AsyncSession, *, caller: str) -> None:
+    """Roll back the transaction a read autobegan, so the HTTP call that
+    follows holds no pooled connection. D-043.
+
+    Raises `AssertionError` if the session holds pending writes, which the
+    rollback would discard silently. It cannot see a `SELECT ... FOR UPDATE`:
+    a lock taken before this call would be released mid-request, which ADR
+    0015 forbids, so holding none is the caller's job. The rollback expires
+    every ORM instance the session has loaded.
+    """
+    assert not has_pending_writes(session), (
+        f"{caller} rolls back before it calls out: call it with nothing "
+        "pending on the session"
+    )
+    await session.rollback()
+
+
 async def dispose_engine() -> None:
     global _engine, _session_factory
     if _engine is not None:
