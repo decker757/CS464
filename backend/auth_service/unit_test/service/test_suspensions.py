@@ -320,3 +320,36 @@ async def test_a_refresh_racing_a_suspension_keeps_no_session(
     await asyncio.gather(refresh(), suspend())
 
     assert await live_token_count(session) == 0
+
+
+async def test_a_login_racing_a_suspension_is_refused(
+    session: AsyncSession, registered_user: User
+) -> None:
+    """DECISIONS.md, "Login decides suspension under the user's row lock".
+
+    The suspension is held open after its revoke, flushed and not committed.
+    The login must queue behind it on the user's row, and then decide from
+    the committed suspension. A login that read the row without the lock
+    would pass, and issue a session after the revoke.
+    """
+    target_id = registered_user.id
+    factory = get_session_factory()
+
+    async with factory() as suspension, factory() as login_session:
+        login_pid = await login_session.scalar(text("SELECT pg_backend_pid()"))
+
+        # `set_suspension` up to its commit, held open here.
+        await user_admin._lock_administrators(suspension)
+        target = await auth_service.lock_user(suspension, target_id)
+        await auth_service.revoke_all_for_user(suspension, target_id)
+        target.is_suspended = True
+        await suspension.flush()
+
+        login = asyncio.create_task(
+            auth_service.authenticate(login_session, "ernest_t", VALID_PASSWORD)
+        )
+        await wait_until_blocked_on_a_lock(suspension, login_pid)
+        await suspension.commit()
+
+        with pytest.raises(AccountSuspended):
+            await asyncio.wait_for(login, timeout=5)
