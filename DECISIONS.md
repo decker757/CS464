@@ -5325,6 +5325,15 @@ settings.
 
 **Reversal trigger.** None expected while #11's window exists.
 
+*Amended 2026-10-11 by [3.3] #11: market_service now derives both edges from
+`dispute_window_ends_at`, not from `approved_at`. Approval stores it as
+`approved_at` plus the window as the setting is then. Send-back is allowed
+while `now < dispute_window_ends_at`, and settlement from
+`dispute_window_ends_at` plus five minutes; `window_ends_at` above means that
+column. The ledger is unchanged: it still reads only `settleable`. See
+"`dispute_window_ends_at` is stored at approval, and market revision 0002
+backfills 24 hours" below, and ADR 0023.*
+
 ---
 
 ### D-NEW — Settlement opens five minutes after send-back closes
@@ -5423,6 +5432,18 @@ zero, it reopens the race that entry closes.
 
 **Reversal trigger.** A window longer than 30 days is needed.
 
+*Amended 2026-10-11 by [3.3] #11: the setting is read once, at approval, by
+`service/settling.dispute_window_ends_at`, and stored on the market as
+`dispute_window_ends_at`. A change to `DISPUTE_WINDOW_SECONDS` affects only
+approvals made after it: for approvals after revision 0002, a running
+countdown never jumps, and a closed window never reopens. The type, the
+default, `gt=0`, the ceiling and the constant gap are unchanged. Market
+revision 0002 backfills existing approvals with 86400 seconds, written into
+the revision, because the migrate step cannot see the setting; on a database
+that ran a shorter window, that backfill can reopen a closed window once (see
+the Notes of the entry below). See "`dispute_window_ends_at` is stored at approval, and market
+revision 0002 backfills 24 hours" below.*
+
 ---
 
 ### D-NEW — `settleable` is a pure function in `core/`, inclusive at its edge, true once settled, false without `approved_at`
@@ -5469,6 +5490,21 @@ built. It is never a computed field or a validator.
   that way, so raising the window turned a settled market false.
 
 **Reversal trigger.** A third status that should pay out.
+
+*Amended 2026-10-11 by [3.3] #11: the signature becomes
+`is_settleable(*, approved, settled, ends_at, now)`. On an APPROVED market it
+is true when `ends_at` is not null and `now >= ends_at + 5 minutes`, where
+`ends_at` is the stored `dispute_window_ends_at`. It is false without
+`dispute_window_ends_at`, for the same fail-closed reason the null
+`approved_at` gave. `service/settling.settleable(status,
+dispute_window_ends_at, *, now)` no longer reads the setting. The rejected "a
+stored column" is now taken, for Ernest's D2: deriving from the current
+setting let a raised window reopen windows that had closed, including on a
+market the ledger had already paid, and a send-back could then leave the two
+services naming different winners. "True on SETTLED, whatever the window"
+still holds, though a raised setting can no longer move a stored end anyway.
+See "`dispute_window_ends_at` is stored at approval, and market revision 0002
+backfills 24 hours" below, and ADR 0023.*
 
 ---
 
@@ -5532,6 +5568,14 @@ is a contract nobody has asked for.
 
 **Reversal trigger.** #11 adds a countdown that needs the instant on list
 views.
+
+*Amended 2026-10-11 by [3.3] #11: the reversal trigger fired. #11's countdown
+needs the instant on the admin overview, a list view, and on the trader's
+market page. The field is added to both the public detail and every overview
+row as `dispute_window_ends_at`, the stored column, rather than as
+`window_ends_at`. `settleable` stays as this entry decided. See
+"`dispute_window_ends_at` is on the public detail and on every overview row,
+as the raw column" below.*
 
 ---
 
@@ -5662,6 +5706,17 @@ market_already_settled`. "A settled market is refused after the locked read
 and before any write, and the status tables stay separate" says "every write
 path", but it predates this route, and ADR 0019's step 5 makes the exception.
 That entry carries a note saying so.
+
+*Amended 2026-10-11 by [3.3] #11: "An APPROVED market with a null
+`approved_at` fails closed" now reads a null `dispute_window_ends_at`, since
+step 5 judges the window against the stored end. The order is unchanged.
+SETTLED still answers before the clock is read. For approvals after revision
+0002, a raised `dispute_window_seconds` can no longer refuse a market already
+paid. Two reasons remain: the round trip saved, and revision 0002's backfill
+on a database that ran a window shorter than 24 hours, which can give a
+market already settled an end in the future. Answering SETTLED first means
+such a market is still `200`. See "`dispute_window_ends_at` is
+stored at approval, and market revision 0002 backfills 24 hours" below.*
 
 ---
 
@@ -7748,6 +7803,354 @@ check is owed by whichever of #6 and #258 lands second".
 
 **Reversal trigger.** Settlement resetting `q`, or leaving the pool funded.
 Then the figures mean something again after settlement.
+
+---
+
+### D-NEW — Send-back is `POST /markets/{id}/send-back-outcome`, quoting `proposal_id`, with a reason, by any administrator
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** An APPROVED market inside its dispute window is sent back to
+CLOSED by `POST /markets/{id}/send-back-outcome`, with an administrator's
+token. The body is `OutcomeSendBackRequest`:
+
+- `proposal_id`: a required key with a nullable value, the id of the approved
+  proposal the administrator is looking at, read from the latest
+  `market.outcome_approved` audit entry for the market. `null` only for an
+  approval whose proposal had none. Its field description is its own, not
+  approve's and reject's shared one, which talks about a pending proposal.
+- `reason`: a required `str`, at most `MAX_PROSE_LENGTH`. A missing key is
+  FastAPI's `422`. Its content (at least `MIN_SEND_BACK_REASON_LENGTH`, 10,
+  characters after trimming) is checked by `problems_blocking_send_back`,
+  through `_reason_problems`.
+
+It answers `200` with `MarketOut`, as reject does. Any administrator may call
+it, including the proposer and the approver (Ernest's D1). ADR 0023.
+
+**Why.**
+- *Its own endpoint*: the route list is the list of legal moves (ADR 0008,
+  0013, 0016).
+- *`proposal_id` required*: the approved result can be replaced on the same
+  row by a send-back, a new proposal and a new approval, all committed while
+  a reviewer reads. The lock cannot see that. CLAUDE.md, "A decision names
+  the proposal, because the lock cannot".
+- *Any administrator*: the AC says "any admin". The two-person rule protects
+  what gets paid, and every path after a send-back goes through propose and a
+  different administrator's approval again.
+- *A separate reason constant*, for the reason the close and reject
+  constants give each other: different rules that agree on a number today.
+
+**Rejected.**
+- *Widening `reject-outcome` to APPROVED*: reject refuses the proposer and has
+  no window. Two moves, two routes.
+- *Quoting `approved_at`*: a timestamp used as an identity, as ADR 0016
+  refused `proposed_at`.
+- *Refusing the proposer or the approver*: see Why.
+- *A "has traded" check like #221's*: market_service cannot see trades, and
+  asking the ledger is the cycle ADR 0019 refused.
+
+**Reversal trigger.** Repeated send-backs delaying payouts become a real
+problem. A limit, or a rule on who may send back, is then a new decision.
+
+---
+
+### D-NEW — Send-back checks the lock, the state, the clock, the window, the proposal and then the reason
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** `send_back_outcome` checks in this order:
+
+1. `401 invalid_token`, then `403 not_an_administrator`.
+2. `get_any` with the row locked; `404 market_not_found`.
+3. State: SETTLED is `409 market_already_settled`; PENDING_RESOLUTION is
+   `409 market_pending_resolution`; any other status that is not APPROVED is
+   `409 market_not_approved`.
+4. On the APPROVED branch only, `clock_timestamp()`, read after the lock.
+5. The window: allowed only while `now < dispute_window_ends_at`, through
+   `core/settling.is_in_dispute_window`. Otherwise, and on a null end,
+   `409 dispute_window_closed`.
+6. No identity check.
+7. `_refuse_if_superseded(market, proposal_id)`: `409 proposal_superseded`.
+8. The reason: `422 send_back_incomplete`.
+
+**Why.**
+- *State before the clock*, as the settle step does it: a market that writes
+  nothing needs no clock.
+- *Window before the proposal id*: if the window has closed on whatever is
+  approved now, "the result is final" is the useful answer, and it is true
+  for a stale page too.
+- *Proposal id before the reason*: nobody is asked to improve a reason about
+  an approval that no longer exists (ADR 0016's order).
+- *`clock_timestamp()` after the lock*: "Every decision a market records is
+  stamped with Postgres's `clock_timestamp()`, read after the row lock". The
+  settle step reads the same clock after the same lock, so the two writers
+  agree about the edge whatever any reader's clock says.
+- *Exclusive edge*: settlement opens at the end plus five minutes, inclusive,
+  so no instant allows both.
+- *PENDING_RESOLUTION keeps its own code*: its remedy differs (review the
+  proposal and reject it).
+
+**Rejected.**
+- *`func.now()`*: the transaction's start, read before the lock wait (#138).
+- *Python's clock*: a replica running ahead or behind would move the edge.
+- *The proposal id before the window*: a stale page would be told to reload
+  and review an approval it can no longer send back.
+
+**Reversal trigger.** market_service's decision stamps move off
+`clock_timestamp()`, or the five-minute gap is replaced by a lock-based claim.
+
+---
+
+### D-NEW — A send-back clears eleven columns, keeps `closed_at`, and logs a twelve-key snapshot taken before the clear
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** A send-back sets `status = CLOSED` and nulls eleven columns:
+the seven proposal columns (`proposal_id`, `proposed_outcome_id`,
+`proposed_by_id`, `proposed_by_username`, `proposed_at`,
+`proposal_evidence_url`, `proposal_evidence_note`), the three approval
+columns (`approved_by_id`, `approved_by_username`, `approved_at`) and
+`dispute_window_ends_at`. `closed_at`, the terms, the outcomes and the
+sources are untouched. Before the first column is nulled, it takes
+`market_audit.approval_snapshot(market)`: `decision_snapshot`'s eight keys
+plus `approved_by_id`, `approved_by_username`, `approved_at` and
+`dispute_window_ends_at`. `record_send_back` appends
+`market.outcome_sent_back` under the sender, with the trimmed `reason`, that
+snapshot as `context`, and the step's `clock_timestamp()` as `occurred_at`,
+in the request's transaction. The reason is stored nowhere else (Ernest's
+D3).
+
+**Why.**
+- *The approval columns go too*: ADR 0016 and `MarketOut` say they are null
+  unless the market is APPROVED. A CLOSED market with an approver would be
+  wrong, and the next approval overwrites them anyway.
+- *`closed_at` stays*: trading stopped when it stopped, as on a rejection.
+- *Snapshot before the clear*: after it, the entry is the only copy of what
+  was approved, by whom, and when its window would have ended, and
+  `audit_svc` cannot read `market.markets`.
+- *`record_send_back` takes the snapshot rather than building it*, for the
+  reason `record_rejection` gives.
+- *Log only*: it matches reject ("the audit entry is the record"). A
+  send-back is temporary and moves no money, unlike #221's void.
+
+**Rejected.**
+- *Keeping the approval columns*: see Why.
+- *`sent_back_by_*` columns, or a reason on the market*: after the clear
+  there is no approval on the row for them to describe.
+- *A trader-visible note*: not needed now, and additive later.
+
+**Reversal trigger.** Traders need to see why a result was sent back.
+
+---
+
+### D-NEW — `dispute_window_closed` is a new 409, and send-back's reason refusal is `send_back_incomplete`
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** Two new errors in `core/errors.py`:
+
+- `DisputeWindowClosed`, `409 dispute_window_closed`: "This market's dispute
+  window has ended. Its approved outcome is final and can no longer be sent
+  back." Also the answer for an APPROVED market with a null
+  `dispute_window_ends_at`.
+- `SendBackIncomplete(IncompleteError)`, `422 send_back_incomplete`, with
+  `details`: "This approved result cannot be sent back without a reason."
+
+**Why.** The window's end is a different remedy from every existing code:
+nothing the caller can do will help, and the result is final. `422` with
+`details` is the shape every other reason refusal here uses. A null end is
+damage, and the same refusal fails closed, as `settleable` does.
+
+**Rejected.**
+- *Reusing `dispute_window_open`*: it means the opposite (too early to
+  settle).
+- *Reusing `rejection_incomplete`*: a different form, answering a different
+  question.
+
+**Notes.** Reject's own copy already says "why this proposal was sent back".
+It is left alone. Send-back's copy says "approved result" every time, so the
+two never read as the same action. The frontend label is "Dispute result",
+never just "Send back".
+
+---
+
+### D-NEW — `market_not_approved`, `market_already_approved` and `proposal_superseded` are widened for send-back
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** The codes stay. The messages and docstrings change:
+
+- `market_not_approved`: "Only a market whose outcome has been approved can
+  be settled or sent back. This one has not been approved." The docstring
+  stops saying the ledger is its only caller.
+- `market_already_approved`: "A second administrator has already approved
+  this market's outcome. Next it is settled, unless it is sent back during
+  its dispute window." The docstring says "Any write but settle and
+  send-back".
+- `proposal_superseded`: "The proposal you reviewed has been replaced by a
+  newer one. Reload the market and review the current one." The docstring
+  names the send-back cycle beside the reject cycle.
+
+**Why.** Each old message stops being true. `market_not_approved` now has a
+second caller. "The next step is settlement" is false while a send-back is
+possible. "Review the proposal that is waiting now" is wrong for send-back,
+where the replacement is approved, not waiting.
+
+**Rejected.** *New codes for send-back's copies of these refusals*: the state
+and the remedy are the same, and the frontend already handles these codes.
+
+**Notes.** The ledger never reads market_service's codes from the settle
+step. It accepts only a `200`, so the wider `market_not_approved` changes
+nothing there.
+
+---
+
+### D-NEW — `dispute_window_ends_at` is stored at approval, and market revision 0002 backfills 24 hours
+
+**Date:** 2026-10-11 · **Ticket:** #11, #12 · **Status:** active
+
+**Decision.** `market.markets.dispute_window_ends_at`, `timestamptz`,
+nullable, no default, no CHECK, no index. `approve_outcome` writes it in the
+same transaction and from the same clock read as `approved_at`, through
+`service/settling.dispute_window_ends_at(approved_at)`: `approved_at` plus
+`dispute_window_seconds` as the setting is then. Send-back clears it; settle
+keeps it. `is_settleable(*, approved, settled, ends_at, now)` and
+`settleable(status, dispute_window_ends_at, *, now)` read it and no longer
+read the setting. Market revision `0002_dispute_window_ends_at` adds the
+column and a hand-written `UPDATE` sets `approved_at + interval '86400
+seconds'` on every row with an `approved_at`. Ernest's D2.
+
+**Why.** Deriving the end from the current setting let a raised window reopen
+windows that had closed, including on a market the ledger had already paid
+and not yet marked settled. A send-back and a new approval could then leave
+market_service naming one winner while the ledger had paid another, for good.
+Stored, the setting affects only later approvals. It is `close_time`'s shape:
+a stored instant the clock is compared against (ADR 0011).
+
+- *86400 hard-coded*: the migrate step reads `DATABASE_URL` alone ("The
+  migrate step reads DATABASE_URL alone, not the service's settings"), so it
+  cannot see `DISPUTE_WINDOW_SECONDS`. Only the team's local `cs464`
+  databases hold approved markets.
+- *No CHECK*: the approval columns have none, the damage tests must write a
+  null, and a CHECK naming `'approved'` would be the only database rule that
+  reads a status string.
+- *No index*: no query scans approved markets by window end.
+
+**Rejected.**
+- *Deriving the end on every read*: see Why.
+- *Reading the setting in the revision*: its result would depend on where it
+  runs.
+- *Migrating per test for the backfill*: ADR 0020's dated note. One targeted
+  test, `test_markets_approved_before_0002_get_a_window_end`, covers it.
+
+**Notes.** A database that ran a window shorter than 24 hours gets 24 hours
+for its existing approvals, once. That can reopen a window that had closed:
+a market the ledger paid but whose step 5 failed still reads approved, and
+becomes sendable-back and not settleable again. The fix is by hand, before
+anyone acts on it: `UPDATE market.markets SET dispute_window_ends_at =
+approved_at + interval '<your window> seconds' WHERE approved_at IS NOT NULL`,
+or `docker compose down -v`, which destroys local data. If #221's market
+revision merges first, this one is renumbered and its `down_revision`
+pointed at #221's.
+
+A pre-deploy check for [5.3] #19, which also covers every local database:
+before revision 0002 runs, does the database hold approved markets under a
+window other than 24 hours? If so, run the `UPDATE` above with that window
+right after the migrate step.
+
+---
+
+### D-NEW — `dispute_window_ends_at` is on the public detail and on every overview row, as the raw column
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** `PublicMarketOut` (`GET /public/markets/{id}`) and
+`MarketOverviewRowOut` (`GET /markets/overview`, through `AdminMarketCard`
+and the overview's column select) gain `dispute_window_ends_at: datetime |
+None`, a required key with a nullable value. It is the stored column, passed
+through: null on a market never approved and after a send-back, the instant
+on an APPROVED market, and kept on a SETTLED one. Not on `MarketOut` or the
+trader browse cards.
+
+**Why.** [3.3] #11's countdown, for traders on the market page and for admins
+on the overview, where the settle and dispute controls live. It is stored,
+not derived, so the "stamped, never a computed field" rule for `status` and
+`settleable` has nothing to stamp. A SETTLED market keeps it because it
+records when disputes closed. A required key so that a reader cannot mistake
+a missing field for "no window".
+
+**Rejected.**
+- *Null on a SETTLED market*: it would hide a true fact to make a display
+  rule simpler, and the frontend shows the countdown only on `approved`
+  anyway.
+- *On `MarketOut` and the browse cards*: no screen there shows a countdown.
+
+**Notes.** Display only. The browser shows time left and the absolute time,
+and decides nothing from it: the server decides send-back on the database's
+clock, and the settle control reads `settleable`. The ledger's `_parse`
+ignores keys it does not know, so the new field cannot break it.
+
+---
+
+### D-NEW — #11 lands as a stack of six PRs, docs first
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** Every PR says `Refs #11`, not `Closes`: [FE][3.3] #59 is open,
+and #11 closes when #59 merges. The first targets `dev`; each later one
+targets the branch below it and says `Stacked on #N`. Branches are
+`11-send-back-<n>-<slug>`.
+
+| # | Branch | Kind | Contents |
+| --- | --- | --- | --- |
+| 1 | `11-send-back-1-docs` | docs | ADR 0023; dated amendments to ADR 0016, 0019 and 0020; these entries and amendments; `docs/api/market-service.md` and `audit-service.md`; root CLAUDE.md |
+| 2 | `11-send-back-2-superseded-refactor` | refactor | `_refuse_if_superseded` and `_clear_proposal`, extracted; no test changes |
+| 3 | `11-send-back-3-stored-window` | behaviour | the column; revision 0002 and its backfill; `is_settleable` and `settleable` take the stored end; approve writes it; the three callers switch; the #227 and #237 tests that change; the three new tests |
+| 4 | `11-send-back-4-countdown` | behaviour | `dispute_window_ends_at` on the public detail and the overview, and its two tests |
+| 5 | `11-send-back-5-service` | behaviour | the action, the request, the errors, `is_in_dispute_window`, the reason rule, `approval_snapshot` and `record_send_back`, `send_back_outcome`, and its tests, including the races and the replacement cycle; one `dead_code_allowlist.py` line until its route lands |
+| 6 | `11-send-back-6-route` | controller | the route, its OpenAPI description and responses, the controller tests, and the allowlist line removed |
+| 7 | #59 | frontend | Michelle, against the merged contract, with its Playwright test |
+
+**Why.** CLAUDE.md: one layer or one behaviour per PR, each green on its own.
+Docs go first so the design is reviewed before the code, as "Settlement lands
+as a stack of eight PRs, docs first" did. PR 3 changes assertions written for
+#227 and #237, which is expected: it is a behaviour change, never a refactor.
+PR 4 is the countdown's backend half, usable by #59 before send-back exists.
+
+**Rejected.** *One PR*: a reviewer could not follow it. *A refactor PR for
+the window's arithmetic*: under D2 `is_settleable` stops computing the end,
+so the extraction would be undone in the next PR.
+
+**Notes.** Merge the bottom of the stack with a merge commit, or move the
+rest across with `git rebase --onto` (CLAUDE.md, "A squash merge kills the
+branch"). The ADR 0019 amendments and the amendments below to #12's entries
+wait for Ihsan's agreement, since they change his #227 code.
+
+**Reversal trigger.** Review asks for a different split.
+
+---
+
+### D-NEW — PR 2 extracts `_refuse_if_superseded` and `_clear_proposal`, as its own refactor
+
+**Date:** 2026-10-11 · **Ticket:** #11 · **Status:** active
+
+**Decision.** PR 2 extracts two private helpers in
+`service/market_service.py`, with no behaviour change and no test changes:
+
+- `_refuse_if_superseded(market, proposal_id)`: the `proposal_id` comparison
+  from `_proposal_to_decide`, with the null rule in its docstring (a null
+  matches only a proposal that has no id).
+- `_clear_proposal(market)`: reject's seven-column clear.
+
+**Why.** Send-back is the second caller of each, and CLAUDE.md makes the
+extraction part of the PR that adds the second copy. It goes in a refactor PR
+rather than in PR 5 because a refactor never shares a PR with a behaviour
+change.
+
+**Rejected.**
+- *Extracting in PR 5*: a refactor inside a behaviour PR.
+- *Copying the two pieces into send-back*: two copies of the rule that keeps
+  a stale page from deciding about a replacement, which would drift.
 
 ---
 
