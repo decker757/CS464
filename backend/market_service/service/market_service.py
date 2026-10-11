@@ -51,7 +51,7 @@ from model.schemas import (
 from service import market_audit
 from service.audit import Actor
 from service.closing import is_open_for_trading
-from service.settling import settleable
+from service.settling import dispute_window_ends_at, settleable
 from service.validation import (
     problems_blocking_close,
     problems_blocking_proposal,
@@ -560,8 +560,9 @@ async def approve_outcome(
     """A second administrator agrees with the pending proposal, and commits.
 
     [3.2] #10, ADR 0016. Gated, and the row locked, by `_proposal_to_decide`.
-    Sets APPROVED and the approver's id, name and time; the proposal, the
-    terms and `closed_at` stay as they were. There is no un-approve.
+    Sets APPROVED and the approver's id, name and time, and stores when the
+    dispute window ends ([3.3] #11, ADR 0023); the proposal, the terms and
+    `closed_at` stay as they were. There is no un-approve.
     """
     market = await _proposal_to_decide(
         session, actor, market_id, approval.proposal_id
@@ -575,6 +576,8 @@ async def approve_outcome(
     # Snapshotted, like `proposed_by_username`. ADR 0016.
     market.approved_by_username = actor.username
     market.approved_at = now
+    # From the same clock read, and the setting as it stands now. ADR 0023.
+    market.dispute_window_ends_at = dispute_window_ends_at(now)
 
     # One write with its audit entry. ADR 0006.
     await session.flush()
@@ -660,7 +663,7 @@ async def settle(
     # settle step's window check reads `clock_timestamp()` after the row lock".
     now = now or await _database_now(session)
 
-    if not settleable(market.status, market.approved_at, now=now):
+    if not settleable(market.status, market.dispute_window_ends_at, now=now):
         raise DisputeWindowOpen
 
     market.status = MarketStatus.SETTLED
