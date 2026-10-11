@@ -1,5 +1,5 @@
 import type { OutcomeExposure } from '../../api/ledgerApi'
-import { HeaderCell, NumberCell } from '../ui/Table'
+import { HeaderCell, NumberCell, TableFrame } from '../ui/Table'
 import { formatCreditsPrecise } from '../../utils/formatCredits'
 
 interface MarketExposureTableProps {
@@ -7,31 +7,34 @@ interface MarketExposureTableProps {
   outcomeLabels: Map<string, string>
 }
 
-/** Shares outstanding and the max payout per outcome ([2.2] #6's first two
- * acceptance criteria). Max payout is a hypothetical, not a balance someone
- * holds, but it is still a figure whose decimal places matter, the same
- * category formatCreditsPrecise is for. */
+function formatOrDash(value: string | null): string {
+  return value === null ? '—' : formatCreditsPrecise(value)
+}
+
+/** Shares outstanding, the payout if an outcome wins, and what the pool would
+ * have left over ([2.2] #6's acceptance criteria). Both payout figures are
+ * null once the market is settled (docs/api/ledger-service.md). */
 export default function MarketExposureTable({ outcomes, outcomeLabels }: MarketExposureTableProps) {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-smu-gold/15 bg-white shadow-card">
-      <table className="w-full text-left text-sm">
-        <thead>
-          <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
-            <HeaderCell>Outcome</HeaderCell>
-            <HeaderCell align="right">Shares outstanding</HeaderCell>
-            <HeaderCell align="right">Max payout if true</HeaderCell>
+    <TableFrame>
+      <thead>
+        <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
+          <HeaderCell>Outcome</HeaderCell>
+          <HeaderCell align="right">Shares outstanding</HeaderCell>
+          <HeaderCell align="right">Payout if wins</HeaderCell>
+          <HeaderCell align="right">Pool residue if wins</HeaderCell>
+        </tr>
+      </thead>
+      <tbody>
+        {outcomes.map(outcome => (
+          <tr key={outcome.outcome_id} className="border-b border-line last:border-0">
+            <td className="px-5 py-3 text-smu-navy">{outcomeLabels.get(outcome.outcome_id) ?? outcome.outcome_id}</td>
+            <NumberCell>{outcome.shares_outstanding}</NumberCell>
+            <NumberCell>{formatOrDash(outcome.payout_if_wins)}</NumberCell>
+            <NumberCell>{formatOrDash(outcome.residue_if_wins)}</NumberCell>
           </tr>
-        </thead>
-        <tbody>
-          {outcomes.map(outcome => (
-            <tr key={outcome.outcome_id} className="border-b border-line last:border-0">
-              <td className="px-5 py-3 text-smu-navy">{outcomeLabels.get(outcome.outcome_id) ?? outcome.outcome_id}</td>
-              <NumberCell>{outcome.shares_outstanding}</NumberCell>
-              <NumberCell>{formatCreditsPrecise(outcome.max_payout)}</NumberCell>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+        ))}
+      </tbody>
+    </TableFrame>
   )
 }
