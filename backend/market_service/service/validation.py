@@ -4,7 +4,7 @@ Pure functions: no session, no HTTP, and `now` is injected. Each returns every
 problem, addressed to a form field, so the administrator fixes them in one
 pass. Publishing re-runs the submission rules rather than restating them (ADR
 0004, ADR 0008). Nothing here runs on an autosave; a draft may break every rule.
-[1.1] #1, [2.3] #7, [3.1] #9, [3.2] #10.
+[1.1] #1, [2.3] #7, [3.1] #9, [3.2] #10, [3.3] #11.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from model.schemas import (
     MarketCloseRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
+    OutcomeSendBackRequest,
 )
 
 # Below two outcomes it is not a market, and b·ln(n) means nothing. The
@@ -36,6 +37,7 @@ MIN_CRITERIA_LENGTH = 10
 MIN_EVIDENCE_NOTE_LENGTH = 10  # [3.1] #9
 MIN_CLOSE_REASON_LENGTH = 10  # [2.3] #7
 MIN_REJECTION_REASON_LENGTH = 10  # [3.2] #10
+MIN_SEND_BACK_REASON_LENGTH = 10  # [3.3] #11
 
 # pydantic's parser, which already restricts the scheme to http and https.
 _URL = TypeAdapter(HttpUrl)
@@ -382,4 +384,19 @@ def problems_blocking_rejection(
         request.reason,
         minimum=MIN_REJECTION_REASON_LENGTH,
         record_of="why this proposal was sent back",
+    )
+
+
+def problems_blocking_send_back(
+    request: OutcomeSendBackRequest,
+) -> list[ValidationProblem]:
+    """Every reason this approved result cannot be sent back. Empty means it can.
+
+    Checks only the reason. State, the window and which approval are
+    `send_back_outcome`'s 409s, and are checked first. ADR 0023.
+    """
+    return _reason_problems(
+        request.reason,
+        minimum=MIN_SEND_BACK_REASON_LENGTH,
+        record_of="why this approved result was sent back",
     )
