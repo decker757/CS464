@@ -174,10 +174,13 @@ be recognised as one event, not so you can fetch the other half; there is no
 route that returns it.
 
 `kind` is the vocabulary of why credits moved. The values that reach a user's
-own history today are `signup_grant`, `trade_buy` and `trade_sell`;
-`settlement` arrives with [3.4] #12. `market_seed` exists as a kind too, but
-never reaches here — it moves credits between the platform and a market's
-pool, touching no USER account. **Treat an unrecognised value as opaque
+own history today are `signup_grant`, `trade_buy` and `trade_sell`.
+`settlement`, a winning holder's payout, joins them with [3.4] #12; until
+then nothing writes it, and its `market_id`, `outcome_id` and `quantity` are
+described here when they are filled in. `market_seed` and
+`settlement_residue` exist as kinds too, but never reach here: each moves
+credits between the platform and a market's pool, touching no USER account.
+**Treat an unrecognised value as opaque
 rather than as an error** — new ones will appear without a version bump. Same
 rule for `context`: render what you recognise, ignore the rest.
 
