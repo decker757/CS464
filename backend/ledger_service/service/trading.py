@@ -5,14 +5,22 @@ written into `ledger.entries`, `ledger.positions`, `market_outcomes.q` and
 `market_books.state_version` in one transaction, and announced after it
 commits.
 
-**The order, fixed by the issue and by ADR 0017, is the whole design here.**
+**The order, fixed by the issue, ADR 0017 and ADR 0022, is the whole design here.**
 
 1. The idempotency lookup, unlocked. A hit is compared against the request
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
    hit names a committed, append-only transaction, and a miss is trusted for
-   nothing except declining to skip the gate below. The gate rolls back the
-   transaction the miss opened, so its HTTP call holds no pooled connection.
+   nothing except declining to skip the checks below. The account check
+   rolls back the transaction the miss opened, so neither HTTP call holds a
+   pooled connection.
+1b. The account check, `service/account_status.py::refuse_if_suspended` —
+   one call to auth's `GET /auth/me`, forwarding the caller's own token,
+   refusing `403 account_suspended` and failing closed (ADR 0022). After the
+   replay, so a charged trade's retry still answers; before the gate, so a
+   suspended trader hears about themselves; before the first touch and the
+   grant, so a suspended account funds and mints nothing. It releases its
+   connection before calling out, as the gate does.
 2. The gate, `service/market_status.py::ensure_trading` — one call to
    market_service's public detail endpoint, forwarding the caller's own
    token, refusing `409 market_closed` on anything but a derived status of
@@ -104,7 +112,15 @@ from model.entities import (
     TransactionKind,
 )
 from model.schemas import OutcomePrice, PriceEvent
-from service import book_prices, books, bus, grants, market_status, posting
+from service import (
+    account_status,
+    book_prices,
+    books,
+    bus,
+    grants,
+    market_status,
+    posting,
+)
 from service.posting import Leg
 
 ZERO = Decimal(0)
@@ -305,14 +321,16 @@ async def execute(
     access_token: str,
     redis_client: redis.Redis,
     terms_client: httpx.AsyncClient,
+    auth_client: httpx.AsyncClient,
 ) -> TradeResult:
     """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
     key already named.
 
-    `access_token` is the caller's own, forwarded unchanged to the gate and
-    to a cold market's first touch — this function mints nothing. `idempotency_key`
-    is the client's own string; the stored key is derived from it, `user_id`
-    and `market_id` (`trade_key`), never stored as sent.
+    `access_token` is the caller's own, forwarded unchanged to the account
+    check, the gate and a cold market's first touch — this function mints
+    nothing. `idempotency_key` is the client's own string; the stored key is
+    derived from it, `user_id` and `market_id` (`trade_key`), never stored
+    as sent.
 
     Raises `ValueError` on a `quantity` that is not positive, before anything
     else: the route's `gt=0` is not the only caller this function can have,
@@ -331,11 +349,19 @@ async def execute(
     if pre_gate is not None:
         return pre_gate
 
+    # 1b. The account check. Raises `AccountSuspended`, `NotAuthenticated` or
+    # `AuthUnavailable` before anything below runs. One call after the other,
+    # never together, so a suspended trader on a closed market is told about
+    # the suspension (ADR 0022). Rolls back the lookup's transaction first.
+    await account_status.refuse_if_suspended(
+        session, access_token=access_token, auth_client=auth_client
+    )
+
     # 2. The gate. Refuses `MarketClosed`, `MarketTermsUnavailable` or
     # `MarketNotFound` before anything below writes a thing. It rolls back
-    # the transaction the lookup above autobegan before it calls out (D-043),
-    # which discards nothing: a miss loaded nothing, nothing is pending, no
-    # lock is held yet, and a miss is trusted for nothing below.
+    # before it calls out (D-043), which discards nothing: a miss loaded
+    # nothing, nothing is pending, no lock is held yet, and a miss is trusted
+    # for nothing below.
     await market_status.ensure_trading(
         session, market_id, access_token=access_token, terms_client=terms_client
     )
