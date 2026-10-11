@@ -7,18 +7,19 @@ per trade, each priced from the `q` every trade so far has built.
 The expected prices were worked out with float `math.exp`, not with
 `core/lmsr.py`, so a wrong engine cannot agree with itself here. Hence the
 tolerance: it is the float's, not a claim that the replay is approximate.
-Raw prices only; `outcome_id` and `position` are joined on in PR 5's service.
+Raw prices only; `outcome_id` and `position` are joined on by the route.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from types import ModuleType
 
 import pytest
 
+from core.price_history import ReplayedTrade, price_history_of
 from core.pricing import Side, quantize_price
 
 B = Decimal("100")
@@ -26,26 +27,16 @@ _TOLERANCE = Decimal("0.000001")
 _OPENED_AT = datetime(2026, 10, 8, 2, 15, 9, 441000, tzinfo=UTC)
 
 
-@pytest.fixture
-def replay() -> ModuleType:
-    """`core.price_history`, imported per test so each test reports its own
-    failure while the module does not exist."""
-    from core import price_history  # noqa: PLC0415
-
-    return price_history
-
-
 def _trade(
-    replay: ModuleType,
     state_version: int,
     *,
     position: int,
     side: Side,
     quantity: str,
-) -> object:
+) -> ReplayedTrade:
     """A trade one minute per `state_version` after the opening, so every
     point's time is distinct from the opening's and from every other's."""
-    return replay.ReplayedTrade(
+    return ReplayedTrade(
         position=position,
         side=side,
         quantity=Decimal(quantity),
@@ -60,25 +51,8 @@ def _assert_prices_near(actual: Sequence[Decimal], expected: Sequence[str]) -> N
         assert abs(got - Decimal(want)) < _TOLERANCE, (actual, expected)
 
 
-def test_the_first_point_is_the_books_opening_even_when_trades_follow(replay):
-    trades = [
-        _trade(replay, 1, position=0, side=Side.BUY, quantity="50"),
-        _trade(replay, 2, position=0, side=Side.SELL, quantity="20"),
-    ]
-
-    points = replay.price_history_of(
-        trades=trades, outcome_count=2, b=B, opened_at=_OPENED_AT
-    )
-
-    assert len(points) == len(trades) + 1
-    opening = points[0]
-    assert opening.state_version == 0
-    assert opening.occurred_at == _OPENED_AT
-    _assert_prices_near(opening.prices, ["0.5", "0.5"])
-
-
-def test_a_market_with_no_trades_replays_to_its_opening_alone(replay):
-    points = replay.price_history_of(
+def test_a_market_with_no_trades_replays_to_its_opening_alone():
+    points = price_history_of(
         trades=[], outcome_count=3, b=B, opened_at=_OPENED_AT
     )
 
@@ -89,13 +63,13 @@ def test_a_market_with_no_trades_replays_to_its_opening_alone(replay):
     _assert_prices_near(points[0].prices, [third, third, third])
 
 
-def test_the_docs_example_replays_to_the_docs_own_strings(replay):
+def test_the_docs_example_replays_to_the_docs_own_strings():
     """docs/api/ledger-service.md's first example: a buy of 50, then a sell
     of 20, at b = 100."""
-    buy = _trade(replay, 1, position=0, side=Side.BUY, quantity="50")
-    sell = _trade(replay, 2, position=0, side=Side.SELL, quantity="20")
+    buy = _trade(1, position=0, side=Side.BUY, quantity="50")
+    sell = _trade(2, position=0, side=Side.SELL, quantity="20")
 
-    points = replay.price_history_of(
+    points = price_history_of(
         trades=[buy, sell], outcome_count=2, b=B, opened_at=_OPENED_AT
     )
 
@@ -119,15 +93,15 @@ def test_the_docs_example_replays_to_the_docs_own_strings(replay):
     ]
 
 
-def test_a_sell_walks_the_price_back_along_the_same_path(replay):
+def test_a_sell_walks_the_price_back_along_the_same_path():
     trades = [
-        _trade(replay, 1, position=0, side=Side.BUY, quantity="50"),
-        _trade(replay, 2, position=0, side=Side.BUY, quantity="50"),
-        _trade(replay, 3, position=0, side=Side.SELL, quantity="50"),
-        _trade(replay, 4, position=0, side=Side.SELL, quantity="50"),
+        _trade(1, position=0, side=Side.BUY, quantity="50"),
+        _trade(2, position=0, side=Side.BUY, quantity="50"),
+        _trade(3, position=0, side=Side.SELL, quantity="50"),
+        _trade(4, position=0, side=Side.SELL, quantity="50"),
     ]
 
-    points = replay.price_history_of(
+    points = price_history_of(
         trades=trades, outcome_count=2, b=B, opened_at=_OPENED_AT
     )
 
@@ -137,15 +111,15 @@ def test_a_sell_walks_the_price_back_along_the_same_path(replay):
     assert points[4].prices == points[0].prices
 
 
-def test_three_outcomes_all_move_when_one_is_traded(replay):
+def test_three_outcomes_all_move_when_one_is_traded():
     """No assertion that the prices sum to 1: quantized, these sum to 0.9999,
     and the raw ones only to within the engine's precision."""
     trades = [
-        _trade(replay, 1, position=1, side=Side.BUY, quantity="100"),
-        _trade(replay, 2, position=2, side=Side.BUY, quantity="50"),
+        _trade(1, position=1, side=Side.BUY, quantity="100"),
+        _trade(2, position=2, side=Side.BUY, quantity="50"),
     ]
 
-    points = replay.price_history_of(
+    points = price_history_of(
         trades=trades, outcome_count=3, b=B, opened_at=_OPENED_AT
     )
 
@@ -154,18 +128,22 @@ def test_three_outcomes_all_move_when_one_is_traded(replay):
 
 
 @pytest.mark.parametrize(
-    "state_versions",
-    [pytest.param([1, 3], id="gap"), pytest.param([2, 1], id="reordered")],
+    ("state_versions", "expected", "actual"),
+    [
+        pytest.param([1, 3], 2, 3, id="gap"),
+        pytest.param([2, 1], 1, 2, id="reordered"),
+    ],
 )
-def test_a_trade_out_of_state_version_order_is_refused(replay, state_versions):
+def test_a_trade_out_of_state_version_order_is_refused(
+    state_versions, expected, actual
+):
     """A point labelled N must carry the prices after N trades, and only a
     trade bumps `state_version`, so a healthy feed runs 1, 2, 3, ..."""
     trades = [
-        _trade(replay, version, position=0, side=Side.BUY, quantity="10")
+        _trade(version, position=0, side=Side.BUY, quantity="10")
         for version in state_versions
     ]
 
-    with pytest.raises(ValueError):
-        replay.price_history_of(
-            trades=trades, outcome_count=2, b=B, opened_at=_OPENED_AT
-        )
+    message = f"expected state_version {expected}, got {actual}"
+    with pytest.raises(ValueError, match=re.escape(message)):
+        price_history_of(trades=trades, outcome_count=2, b=B, opened_at=_OPENED_AT)
