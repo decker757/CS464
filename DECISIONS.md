@@ -7090,7 +7090,7 @@ rendering is ready by then.
 
 ### D-NEW — `_trade_fields_of` keeps its name, and its docstring says it covers settlement
 
-**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** superseded by "The market's trade feed reads the pool account's feed, filtered to the trade kinds, and its rows are built by `trade_fields_of`"
 
 **Decision.** In PR 7 the history's row builder fills `settlement` rows. Its
 name stays `_trade_fields_of`, and its docstring says it covers the two trade
@@ -7285,6 +7285,8 @@ and `settlement_residue`. The kind filter leaves them out. There is no
 `balance_after`: a running balance on a pool account means nothing to someone
 reading trades. `total` is signed for the trader, like `TradeOut.total`: it is
 the negation of the pool's leg, which equals the trader's own leg.
+This supersedes "`_trade_fields_of` keeps its name, and its docstring says it
+covers settlement": the name is now public, and the rename goes under #63.
 
 **Reversal trigger.** A trade that touches no pool account, or more than one,
 such as a multi-market trade. Then the pool's feed no longer lists the market's
