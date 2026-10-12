@@ -669,6 +669,64 @@ class SnapshotOut(BaseModel):
         return value.isoformat()
 
 
+class PricePointOut(BaseModel):
+    """One price the market has had. [BE][2.4] #63.
+
+    A `price` socket frame without its `type` and `market_id`, so a chart
+    draws the history and appends live frames with one function, and drops any
+    frame whose `state_version` it already holds.
+    """
+
+    state_version: int = Field(
+        ge=0,
+        description="0 is the book's opening. Each trade after it adds one.",
+    )
+    occurred_at: datetime = Field(
+        description=(
+            "When the trade's entries landed, or the book's `opened_at` for "
+            "`state_version` 0. Dedupe on `state_version`, never on this."
+        )
+    )
+    prices: list[OutcomePriceOut] = Field(
+        min_length=2, description="One price per outcome, ordered by position."
+    )
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        """`.isoformat()`, as `SnapshotOut` does, so the string is the frame's."""
+        return value.isoformat()
+
+
+class PriceHistoryOut(BaseModel):
+    """Every price a market has had, one point per trade. [BE][2.4] #63.
+
+    A market this service holds no book for reads as an empty `points` and
+    nulls. DECISIONS.md, "Price history takes any valid token; the trade feed
+    takes an administrator's", Notes.
+    """
+
+    market_id: uuid.UUID
+    points: list[PricePointOut] = Field(
+        description="Oldest first. Settlement adds no point: the series ends at the last trade."
+    )
+    result: ResultKind | None = Field(
+        description=(
+            "Null until the ledger records how the market ended; then that "
+            "record's kind, today always `settled`. The exposure read's values."
+        )
+    )
+    winning_outcome_id: uuid.UUID | None = Field(
+        description="Null until the market is settled; then the outcome that paid."
+    )
+    result_recorded_at: datetime | None = Field(
+        description="Null until the market is settled; then the settlement's `recorded_at`."
+    )
+
+    @field_serializer("result_recorded_at")
+    def _result_recorded_at_as_string(self, value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat()
+
+
 class ExposureOutcomeOut(BaseModel):
     """One outcome's share of what resolving the market would cost. [2.2] #6"""
 
@@ -777,6 +835,71 @@ class LedgerEntryListResponse(BaseModel):
             "non-null, and stated so a client can drive a 'load more' control "
             "without reasoning about the cursor at all."
         ),
+    )
+
+
+class MarketTradeOut(BaseModel):
+    """One trade in a market's feed, for an administrator. [BE][2.4] #63.
+
+    The trader's own history row minus `balance_after`, which means nothing on
+    a pool account, plus `user_id`. DECISIONS.md, "The market's trade feed
+    reads the pool account's feed, filtered to the trade kinds, and its rows
+    are built by `trade_fields_of`".
+    """
+
+    transaction_id: uuid.UUID
+    created_at: datetime
+    user_id: uuid.UUID = Field(
+        description=(
+            "The trader. An id, not a name: this service holds no user table. "
+            "DECISIONS.md, \"A market's trades carry `user_id`, not "
+            "`username`\"."
+        )
+    )
+    outcome_id: uuid.UUID
+    side: Side
+    quantity: Decimal = Field(description="Shares, at scale 4.")
+    average_price: Decimal = Field(
+        description=(
+            "`|total| ÷ quantity` rounded half-up at scale 4, the same "
+            "function as the trader's own history row."
+        )
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed for the trader, as `TradeOut.total` is: negative on a "
+            "buy, positive on a sell."
+        )
+    )
+    state_version: int = Field(description="The book's counter after this trade.")
+
+    @field_serializer("quantity", "average_price", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_validator("created_at")
+    @classmethod
+    def _always_utc(cls, v: datetime) -> datetime:
+        """The same guard `LedgerEntryOut` carries, so the two spell one
+        trade's time the same way."""
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+
+
+class MarketTradeListResponse(BaseModel):
+    """One page of a market's trades, newest first."""
+
+    trades: list[MarketTradeOut]
+
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pass back as `cursor` for the next page. Null means this page is "
+            "the end. Opaque: echo it unmodified rather than constructing one."
+        ),
+    )
+
+    has_more: bool = Field(
+        description="Equivalent to `next_cursor` being non-null."
     )
 
 

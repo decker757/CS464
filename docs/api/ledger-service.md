@@ -7,7 +7,8 @@ from the code and authoritative if this page ever disagrees, at
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 [T-1] #21's cost preview, the trade route that buys ([T-2] #22) and sells
 ([T-3] #23), [T-5] #25's trade history, [3.4] #12's settlement route, [2.2]
-#6's market exposure, and [L-1] #38's leaderboard, which also covers [L-3] #40.
+#6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40, and
+[BE][2.4] #63's price history and trade feed.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -33,6 +34,8 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
 | GET | `/ledger/markets/{market_id}/exposure` | What resolving the market would pay out (admin) |
+| GET | `/ledger/markets/{market_id}/price-history` | Every price the market has had, one point per trade |
+| GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
 | GET | `/health` | Liveness and readiness probe |
@@ -1152,6 +1155,246 @@ writes nothing at all. A refusal at the winner step on a market nobody had
 touched comes after the book was opened, as a preview's first request would
 open it. That happens once per market, and it is the only write such a
 refusal leaves.
+
+## GET /ledger/markets/{market_id}/price-history
+
+[BE][2.4] #63, for [2.4] #8's price chart. Every price the market has had, one
+point per trade, oldest first. Rebuilt from the market's trades on every read
+(DECISIONS.md, "Price history is replayed from the trades on the pool's feed,
+and nothing stores it").
+
+Any valid access token, any role. Every point has already been broadcast to
+every subscriber of the market's price frames, so an admin gate would protect
+nothing (DECISIONS.md, "Price history takes any valid token; the trade feed
+takes an administrator's").
+
+| Query | Default | Notes |
+| --- | --- | --- |
+| `from` | — | ISO-8601 time with an offset. Points at or after it, plus one carry-in point (below). |
+| `to` | — | ISO-8601 time with an offset. Points at or before it. |
+
+Both must carry an offset: `Z` or `+08:00`. In a query string, send `+` as
+`%2B`. A raw `+` decodes to a space and the time is refused.
+
+```jsonc
+// GET /ledger/markets/9d1c.../price-history
+{
+  "market_id": "9d1c...",
+  "points": [
+    {
+      "state_version": 0,
+      "occurred_at": "2026-10-08T02:15:09.441000+00:00",
+      "prices": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.5000" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.5000" }
+      ]
+    },
+    {
+      "state_version": 1,
+      "occurred_at": "2026-10-08T02:16:40.102311+00:00",
+      "prices": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.6225" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.3775" }
+      ]
+    },
+    {
+      "state_version": 2,
+      "occurred_at": "2026-10-08T03:02:11.870954+00:00",
+      "prices": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.5744" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.4256" }
+      ]
+    }
+  ],
+  "result": null,
+  "winning_outcome_id": null,
+  "result_recorded_at": null
+}
+```
+
+**A point is a `price` socket frame without `type` and `market_id`.** It has
+the same `state_version`, the same `prices` in `position` order, and the same
+decimal strings from the same quantizer (`docs/api/realtime-service.md`). So a
+chart draws the history, then appends live frames and drops any frame whose
+`state_version` it already holds. One function renders both.
+
+**The first point is the book's opening.** `state_version` 0, every outcome at
+the same price, at the book's `opened_at`. After that there is one point per
+trade, in the order the trades committed, which is `state_version` order. A
+point's `occurred_at` is when that trade's entries landed. That can be later
+than the `occurred_at` on the frame for the same `state_version`, which is when
+the trade took its price under the book lock (#187). Across replicas the gap is
+clock skew. Dedupe on `state_version`, never on time.
+
+### `from` and `to`
+
+Points after `to` are left out. When `from` is given, the last point before
+`from` is included as the first point, **at its own `occurred_at`**: it is not
+moved to `from`. A chart drawn from `from` therefore starts at the price the
+market actually had then, and not at whatever its first trade inside the
+window moved it to:
+
+```jsonc
+// GET /ledger/markets/9d1c.../price-history?from=2026-10-09T00:00:00Z
+{
+  "market_id": "9d1c...",
+  "points": [
+    { "state_version": 41, "occurred_at": "2026-10-08T22:51:37.004118+00:00", "prices": [ ... ] },
+    { "state_version": 42, "occurred_at": "2026-10-09T08:12:44.501200+00:00", "prices": [ ... ] }
+  ],
+  "result": null,
+  "winning_outcome_id": null,
+  "result_recorded_at": null
+}
+```
+
+If nothing comes before `from`, nothing is carried in. That happens when
+`from` is at or before `opened_at`, and then the opening point is inside the
+window anyway. There is no bucketing and no paging: every trade in the window
+is a point, because #8 exists to spot manipulation, and a per-interval figure
+hides a spike inside one interval (DECISIONS.md, "Price history returns raw
+points…").
+
+### A settled market
+
+The points end at the last trade. **Settlement adds no point**, because no
+price frame announced one and the snapshot still shows the last traded price
+(DECISIONS.md, "Settlement adds no point to the price history"). The result is
+reported beside the points:
+
+```jsonc
+{
+  "market_id": "9d1c...",
+  "points": [ /* ... ending at the last trade ... */ ],
+  "result": "settled",
+  "winning_outcome_id": "b7e1...",
+  "result_recorded_at": "2026-10-10T09:41:02.118000+00:00"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `result` | `null` until the ledger records how the market ended. Then that record's kind, today always `"settled"`. The same values as the exposure read's `result`. Treat an unrecognised value as opaque. |
+| `winning_outcome_id` | `null` until the market is settled. Then the outcome that paid. |
+| `result_recorded_at` | `null` until the market is settled. Then the settlement's `recorded_at`, the same instant the settlement route reports. |
+
+### A market with no book
+
+A published market that nobody has previewed, traded or snapshotted has no
+book here yet. This route does not open one: it writes nothing and never calls
+market_service. So it answers `200` with nothing in it:
+
+```jsonc
+{
+  "market_id": "9d1c...",
+  "points": [],
+  "result": null,
+  "winning_outcome_id": null,
+  "result_recorded_at": null
+}
+```
+
+An id that names no market at all reads the same way. This service cannot tell
+the two apart without asking market_service. Like the snapshot, the route does
+not check the market's status: an open, closed or settled market reads the
+same way.
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 422 | `invalid_request` | `market_id` is not a UUID, `from` or `to` is not an ISO-8601 time with an offset, or `from` is later than `to`. `error.details` names each one. When `from` is later than `to`, `error.details` has an item for `from` and one for `to`. |
+| 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced: no outcome rows, only one, or a `liquidity_b` the engine cannot use. The same guard the snapshot uses. A server fault; not worth retrying. |
+| 500 | `price_history_inconsistent` | The market's trades on the pool's feed do not run `state_version` 1, 2, 3, … in order, so the history cannot be rebuilt. A server fault; not worth retrying. |
+
+## GET /ledger/markets/{market_id}/trades
+
+[BE][2.4] #63, for [2.4] #8's trade table. Every trade in one market, newest
+first, for an administrator investigating it. `403` for a trader. The same
+path with `POST` is the trade route above; this one only reads.
+
+```jsonc
+{
+  "trades": [
+    {
+      "transaction_id": "8a7e...",
+      "created_at": "2026-10-08T03:02:11.870954+00:00",
+      "user_id": "77c0...",
+      "outcome_id": "4f2a...",
+      "side": "sell",
+      "quantity": "20.0000",
+      "average_price": "0.5986",
+      "total": "11.9720",
+      "state_version": 2
+    },
+    {
+      "transaction_id": "36fd...",
+      "created_at": "2026-10-08T02:16:40.102311+00:00",
+      "user_id": "5f3e...",
+      "outcome_id": "4f2a...",
+      "side": "buy",
+      "quantity": "50.0000",
+      "average_price": "0.5619",
+      "total": "-28.0945",
+      "state_version": 1
+    }
+  ],
+  "next_cursor": "MjAyNi0xMC0wOFQwMjoxNjo0MC4xMDIzMTEr...",
+  "has_more": true
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `transaction_id` | The trade's transaction. The same id is on the trader's own history row. |
+| `created_at` | When the trade's entries landed, named as on `/ledger/entries/me`. It equals the matching price-history point's `occurred_at`. |
+| `user_id` | The trader. An id, not a name (below). |
+| `outcome_id` | The outcome traded. One of this market's outcomes. |
+| `side` | `"buy"` or `"sell"`. |
+| `quantity` | Shares, at scale 4. |
+| `average_price` | `\|total\| ÷ quantity`, `ROUND_HALF_UP` at scale 4: what this trade averaged, not a marginal price. The same function as the trader's own history row, so the two always agree. |
+| `total` | Signed for the trader, as on `TradeOut.total`: negative on a buy, positive on a sell. |
+| `state_version` | The book's counter after this trade. It names the price-history point the trade made. |
+
+**Every row is a trade.** The market's pool account also holds the seed,
+settlement payouts and the settlement residue, and none of them appears here.
+There is no `balance_after`: a running balance on a pool account means nothing
+to someone reading trades (DECISIONS.md, "The market's trade feed reads the
+pool account's feed…").
+
+**`user_id`, not a username.** This service holds no user table and knows a
+user only by the id in a signed token (ADR 0003). Resolve names in the browser
+through auth's batch lookup on port 8000, `POST /admin/users/lookup` with
+`{"user_ids": [...]}`, 1 to 200 ids per request, which answers
+`{"users": [{"id", "username"}]}` (#273). Until that route lands, show a short
+id that links to the user page (#259). DECISIONS.md, "A market's trades carry
+`user_id`, not `username`…".
+
+**A market with no book is an empty `200`**: `trades: []`, `next_cursor:
+null`, `has_more: false`. An id that names no market reads the same way. Like
+the price history, this route writes nothing, never calls market_service and
+does not check the market's status.
+
+### Paging
+
+| Query | Default | Notes |
+| --- | --- | --- |
+| `limit` | 50 | Clamped at 200. Asking for more is not an error. |
+| `cursor` | — | The `next_cursor` from the previous page, unmodified. |
+
+Keyset, the same scheme and cursor format as `/ledger/entries/me` (above). A
+trade committed while you page is newer than every row on screen, so it cannot
+shift a later page. Echo `next_cursor` back as it came; do not build one.
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 400 | `malformed_cursor` | `cursor` was not one this service issued. |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 403 | `not_an_administrator` | A trader. |
+| 422 | `invalid_request` | `market_id` is not a UUID, or `limit` is below 1. `error.details` names each one. |
 
 ## Errors
 

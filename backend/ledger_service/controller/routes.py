@@ -36,6 +36,8 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Query
+from fastapi.exceptions import RequestValidationError
+from pydantic import AwareDatetime
 
 from controller.dependencies import (
     AccessToken,
@@ -55,10 +57,13 @@ from model.schemas import (
     ExposureOutcomeOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
+    MarketTradeListResponse,
     OutcomePriceOut,
     PortfolioOut,
     PortfolioPositionOut,
     PreviewOut,
+    PriceHistoryOut,
+    PricePointOut,
     SettlementIn,
     SettlementOut,
     SnapshotOut,
@@ -71,10 +76,12 @@ from service import (
     ledger_service,
     portfolio as portfolio_service,
     preview as preview_service,
+    price_history as price_history_service,
     settlement,
     snapshot as snapshot_service,
     trading,
 )
+from service.book_prices import PricedOutcome
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -130,6 +137,14 @@ def _page_size(limit: int | None) -> int:
     """
     settings = get_settings()
     return min(limit or settings.default_page_size, settings.max_page_size)
+
+
+def _prices_out(priced: list[PricedOutcome]) -> list[OutcomePriceOut]:
+    """The wire form of a market's priced outcomes, in the order given."""
+    return [
+        OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
+        for p in priced
+    ]
 
 
 PageLimit = Annotated[
@@ -400,14 +415,8 @@ async def preview_trade(
         quantity=result.quantity,
         total=result.total,
         average_price=result.average_price,
-        prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.prices
-        ],
-        post_trade_prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.post_trade_prices
-        ],
+        prices=_prices_out(result.prices),
+        post_trade_prices=_prices_out(result.post_trade_prices),
     )
 
 
@@ -460,10 +469,7 @@ async def market_snapshot(
     return SnapshotOut(
         market_id=result.market_id,
         state_version=result.state_version,
-        prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.prices
-        ],
+        prices=_prices_out(result.prices),
         occurred_at=result.occurred_at,
     )
 
@@ -638,6 +644,160 @@ async def execute_trade(
         quantity=result.quantity,
         total=result.total,
         state_version=result.state_version,
+    )
+
+
+_TRADE_FEED_DESCRIPTION = (
+    "[BE][2.4] #63. Every trade in one market, newest first, for an "
+    "administrator investigating it. Each row names its trader by `user_id`; "
+    "resolve names through auth's batch lookup.\n\n"
+    "The market's pool account also holds the seed, the settlement payouts and "
+    "the residue, and none of them appears here. There is no `balance_after`.\n\n"
+    "**Writes nothing.** A market with no book, or an id that names no market, "
+    "is an empty `200`; this never opens a book, grants credits or calls "
+    "market_service, and does not check the market's status.\n\n"
+    "Paged by keyset with the same cursor as `/ledger/entries/me`: a trade "
+    "committed while you page is newer than every row on screen."
+)
+
+
+@router.get(
+    "/markets/{market_id}/trades",
+    response_model=MarketTradeListResponse,
+    summary="A market's trades",
+    description=_TRADE_FEED_DESCRIPTION,
+    responses={
+        400: {"description": "`cursor` was not one this service issued."},
+        401: {"description": "Missing, malformed or expired access token."},
+        403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request(
+            "`invalid_request`: `market_id` is not a UUID, or `limit` below 1."
+        ),
+    },
+)
+async def market_trades(
+    market_id: uuid.UUID,
+    admin: CurrentAdmin,
+    session: DbSession,
+    cursor: PageCursor = None,
+    limit: PageLimit = None,
+) -> MarketTradeListResponse:
+    page = await ledger_service.list_market_trades(
+        session, market_id, limit=_page_size(limit), cursor=cursor
+    )
+    return MarketTradeListResponse(
+        trades=page.rows, next_cursor=page.next_cursor, has_more=page.has_more
+    )
+
+
+def _point_out(point: price_history_service.PricedPoint) -> PricePointOut:
+    """The wire form of one price-history point."""
+    return PricePointOut(
+        state_version=point.state_version,
+        occurred_at=point.occurred_at,
+        prices=_prices_out(point.prices),
+    )
+
+
+PriceHistoryStart = Annotated[
+    AwareDatetime | None,
+    Query(
+        alias="from",
+        description=(
+            "ISO-8601 time with an offset (`Z` or `+08:00`; send `+` as `%2B`). "
+            "Points at or after it, plus the last point before it, at its own "
+            "time, so a chart starts at the price the market had then."
+        ),
+    ),
+]
+
+PriceHistoryEnd = Annotated[
+    AwareDatetime | None,
+    Query(
+        alias="to",
+        description="ISO-8601 time with an offset. Points at or before it.",
+    ),
+]
+
+_PRICE_HISTORY_DESCRIPTION = (
+    "[BE][2.4] #63. Every price the market has had, one point per trade, "
+    "oldest first, rebuilt from the market's trades on every read. Any valid "
+    "access token, any role: every point has already been broadcast to every "
+    "subscriber of the market's price frames.\n\n"
+    "A point is a `price` socket frame without `type` and `market_id`. The "
+    "first is the book's opening, `state_version` 0. Dedupe on "
+    "`state_version`, never on time.\n\n"
+    "**Nothing is bucketed or paged.** `from` and `to` bound the payload, and "
+    "`from` also returns the last point before it, at its own `occurred_at`. "
+    "`from` later than `to` is `422 invalid_request` naming both.\n\n"
+    "**Settlement adds no point.** The series ends at the last trade, and "
+    "`result`, `winning_outcome_id` and `result_recorded_at` report the "
+    "outcome beside it.\n\n"
+    "**Writes nothing and asks no other service anything.** A market with no "
+    "book here, including an id that names no market, is a `200` with an "
+    "empty `points`. It never checks the market's status."
+)
+
+
+def _refuse_if_window_reversed(
+    start: AwareDatetime | None, end: AwareDatetime | None
+) -> None:
+    """Raise `RequestValidationError` for a `from` later than `to`, so the one
+    handler in `controller/errors.py` answers it as `invalid_request`, with a
+    `details` item for each of the two parameters. #117."""
+    if start is None or end is None or start <= end:
+        return
+
+    raise RequestValidationError(
+        [
+            {
+                "type": "value_error",
+                "loc": ("query", parameter),
+                "msg": "`from` must not be later than `to`.",
+                "input": value,
+            }
+            for parameter, value in (("from", start), ("to", end))
+        ]
+    )
+
+
+@router.get(
+    "/markets/{market_id}/price-history",
+    response_model=PriceHistoryOut,
+    summary="Every price the market has had",
+    description=_PRICE_HISTORY_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        422: _invalid_request(
+            "`invalid_request`: `market_id` is not a UUID, `from` or `to` is "
+            "not a time with an offset, or `from` is later than `to`."
+        ),
+        500: {
+            "description": (
+                "`market_book_incomplete`: the book cannot be priced. "
+                "`price_history_inconsistent`: the market's trades skip or "
+                "reorder a `state_version`. Server faults, not retryable."
+            )
+        },
+    },
+)
+async def market_price_history(
+    market_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    start: PriceHistoryStart = None,
+    end: PriceHistoryEnd = None,
+) -> PriceHistoryOut:
+    _refuse_if_window_reversed(start, end)
+    history = await price_history_service.price_history_of_market(
+        session, market_id, start=start, end=end
+    )
+    return PriceHistoryOut(
+        market_id=history.market_id,
+        points=[_point_out(point) for point in history.points],
+        result=history.result,
+        winning_outcome_id=history.winning_outcome_id,
+        result_recorded_at=history.result_recorded_at,
     )
 
 
