@@ -175,11 +175,20 @@ jobs:
           PYTHONPATH: ..
         run: python migrate.py
 
-      # Minted per run and never stored. Nothing it signs outlives the job, so
-      # there is no key-shaped string to commit.
-      - name: Generate a throwaway signing key
+      # Minted per run and never stored. Nothing they protect outlives the job,
+      # so there is no key-shaped string to commit. Both are set for every
+      # service, not only the ones that read them: `shared/config.py` ignores
+      # an unknown variable, and a per-service condition here would rename
+      # every job (see the header).
+      #
+      # LEDGER_SERVICE_KEY is ADR 0021's, and it is the boot step below that
+      # needs it: the ledger refuses to start without it, while the suite's
+      # conftest mints its own.
+      - name: Generate throwaway keys
         run: |
           echo "JWT_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+            >> "$GITHUB_ENV"
+          echo "LEDGER_SERVICE_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
             >> "$GITHUB_ENV"
 
       # No --if-present equivalent on purpose: a failing or missing test run
