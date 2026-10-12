@@ -21,8 +21,5 @@ connection_count
 upgrade
 downgrade
 
-# [L-1] #38: the leaderboard refresh PR writes it; delete this line there
-LeaderboardGeneration
-
-# [L-1] #38: the leaderboard refresh PR writes it; delete this line there
-LeaderboardEntry
+# [L-1] #38: the leaderboard refresh loop PR calls it; delete this line there
+refresh

@@ -9,24 +9,30 @@ from pydantic import ValidationError
 
 from core.config import Settings, get_settings
 
+_SERVICE_KEY_32 = "0123456789abcdef0123456789abcdef"
+
 _REQUIRED = {
     "database_url": "postgresql+asyncpg://ledger_svc:pw@localhost:5432/cs464",
     "jwt_secret": "0123456789abcdef0123",
+    "ledger_service_key": _SERVICE_KEY_32,
 }
 
 
-@pytest.mark.parametrize("missing", ["DATABASE_URL", "JWT_SECRET"])
+@pytest.mark.parametrize("missing", ["DATABASE_URL", "JWT_SECRET", "LEDGER_SERVICE_KEY"])
 def test_the_required_settings_have_no_default(
     missing: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A default database URL is a credential in the repository, and a default
-    signing key is a published one.
+    signing key is a published one. ADR 0021 says the same of the service key:
+    "required in both and has no default ... a default key is a published
+    key".
 
     The environment is emptied rather than the arguments omitted:
     pydantic-settings reads os.environ whatever the caller passes.
     """
     monkeypatch.setenv("DATABASE_URL", _REQUIRED["database_url"])
     monkeypatch.setenv("JWT_SECRET", _REQUIRED["jwt_secret"])
+    monkeypatch.setenv("LEDGER_SERVICE_KEY", _REQUIRED["ledger_service_key"])
     monkeypatch.delenv(missing, raising=False)
 
     with pytest.raises(ValidationError):
@@ -36,6 +42,21 @@ def test_the_required_settings_have_no_default(
 def test_a_short_signing_key_is_refused() -> None:
     with pytest.raises(ValidationError):
         Settings(**{**_REQUIRED, "jwt_secret": "short"}, _env_file=None)
+
+
+def test_a_service_key_of_31_characters_is_refused() -> None:
+    """ADR 0021: "Settings refuse a value shorter than 32 characters"."""
+    with pytest.raises(ValidationError):
+        Settings(
+            **{**_REQUIRED, "ledger_service_key": _SERVICE_KEY_32[:31]}, _env_file=None
+        )
+
+
+def test_a_service_key_of_32_characters_is_accepted() -> None:
+    """The boundary from the other side: a floor of 33 would refuse it."""
+    settings = Settings(**_REQUIRED, _env_file=None)
+
+    assert settings.ledger_service_key == _SERVICE_KEY_32
 
 
 def test_starting_credits_has_a_default() -> None:

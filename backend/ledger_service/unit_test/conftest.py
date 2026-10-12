@@ -45,6 +45,9 @@ os.environ["DATABASE_URL"] = _test_db
 # Fresh per run. Nothing signed here outlives the process, and no key-shaped
 # string needs to sit in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
+# [L-1] #38, ADR 0021: required, with no default, like the signing key above.
+# Fresh per run for the same reason; the stand-in auth service checks it.
+os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
 
 # [3.4] #12. The audit reader's own connection, as market_service's: `ledger_svc`
 # holds INSERT on the log and no SELECT. ADR 0006.
