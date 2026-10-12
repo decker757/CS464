@@ -159,8 +159,15 @@ describe('AdminMarketRow', () => {
     expect(screen.getByRole('link', { name: /^exposure$/i })).toHaveAttribute('href', `/admin/markets/${OPEN_MARKET.id}/exposure`)
   })
 
-  it('hides the exposure link on a draft or submitted market', () => {
+  it('links to the price history on a published market, whether or not it has traded', () => {
+    renderRow(OPEN_MARKET)
+    expect(screen.getByRole('link', { name: /price history/i })).toHaveAttribute('href', `/admin/markets/${OPEN_MARKET.id}/price-history`)
+  })
+
+  // Both reads sit behind one condition in the row, so one test covers both.
+  it('hides the exposure and price history links on a draft or submitted market', () => {
     renderRow({ ...OPEN_MARKET, status: 'submitted', close_time: '2099-01-01T00:00:00Z' })
     expect(screen.queryByRole('link', { name: /^exposure$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /price history/i })).not.toBeInTheDocument()
   })
 })

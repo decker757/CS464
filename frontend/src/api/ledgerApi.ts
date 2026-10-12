@@ -252,3 +252,64 @@ export async function getMarketExposure(marketId: string): Promise<MarketExposur
   const res = await api.get<MarketExposure>(`${LEDGER_BASE}/ledger/markets/${marketId}/exposure`)
   return res.data
 }
+
+// --- [2.4] #8: price history and the per-market trade log ---------------
+//
+// Both shapes are Ihsan's for #63, sent ahead of docs/api/ landing there.
+
+/** Every outcome's price at one point in time — basically a price socket
+ * frame (same `state_version`/`occurred_at`/`prices` shape), so a live frame
+ * can be appended and deduped on `state_version`. The first point is the
+ * opening, uniform price. */
+export interface PricePoint {
+  state_version: number
+  occurred_at: string
+  prices: OutcomePrice[]
+}
+
+export interface PriceHistory {
+  market_id: string
+  // Oldest first. Empty, with every field below null, on a market the
+  // ledger has never opened a book for.
+  points: PricePoint[]
+  result: 'settled' | null
+  winning_outcome_id: string | null
+  result_recorded_at: string | null
+}
+
+/** The price chart data for one market, every outcome, oldest first (#8's
+ * "price chart per outcome over time"). */
+export async function getMarketPriceHistory(marketId: string): Promise<PriceHistory> {
+  const res = await api.get<PriceHistory>(`${LEDGER_BASE}/ledger/markets/${marketId}/price-history`)
+  return res.data
+}
+
+export interface MarketTrade {
+  transaction_id: string
+  // `created_at`, not `occurred_at`: a trade is a ledger transaction row
+  // (MarketTradeOut), while `occurred_at` belongs to a price point above.
+  created_at: string
+  // Not a username: the ledger holds no user table (ledger-service.md).
+  // Shown as a short id until an admin batch lookup on auth exists.
+  user_id: string
+  outcome_id: string
+  side: TradeSide
+  quantity: string
+  average_price: string
+  total: string
+  state_version: number
+}
+
+export interface MarketTradePage {
+  trades: MarketTrade[]
+  next_cursor: string | null
+  has_more: boolean
+}
+
+/** One page of every trade on one market, newest first, admin-only, for #8's
+ * trade log — unlike `getMyEntries`/`getUserEntries`, this crosses every
+ * trader, so each row names its own `user_id` rather than reading "me". */
+export async function getMarketTrades(marketId: string, params?: { cursor?: string; limit?: number }): Promise<MarketTradePage> {
+  const res = await api.get<MarketTradePage>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, { params })
+  return res.data
+}

@@ -1,3 +1,4 @@
+import { Suspense, lazy } from 'react'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import GuestOnly from './components/GuestOnly'
 import ProtectedRoute from './components/ProtectedRoute'
@@ -18,6 +19,11 @@ import DecideOutcomePage from './pages/admin/DecideOutcomePage'
 import MarketExposurePage from './pages/admin/MarketExposurePage'
 import ProposalsPage from './pages/admin/ProposalsPage'
 import ProposeOutcomePage from './pages/admin/ProposeOutcomePage'
+
+// recharts roughly doubles the main bundle, and only this one admin page
+// uses it, so it is its own chunk, downloaded on visiting this route rather
+// than on every page load.
+const MarketPriceHistoryPage = lazy(() => import('./pages/admin/MarketPriceHistoryPage'))
 
 export default function App() {
   return (
@@ -40,6 +46,16 @@ export default function App() {
             <Route path="/admin/proposals" element={<ProtectedRoute requireAdmin><ProposalsPage /></ProtectedRoute>} />
             <Route path="/admin/markets/:id/decide-outcome" element={<ProtectedRoute requireAdmin><DecideOutcomePage /></ProtectedRoute>} />
             <Route path="/admin/markets/:id/exposure" element={<ProtectedRoute requireAdmin><MarketExposurePage /></ProtectedRoute>} />
+            <Route
+              path="/admin/markets/:id/price-history"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <Suspense fallback={null}>
+                    <MarketPriceHistoryPage />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
           </Routes>
         </BalanceProvider>
       </AuthProvider>

@@ -33,6 +33,9 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
   const canClose = !tradingStopped(status, market.close_time ?? '')
+  // A draft or a submitted market has no book and no trades, so neither the
+  // exposure panel nor the price history has anything to show yet.
+  const isPublished = market.status !== 'draft' && market.status !== 'submitted'
 
   return (
     <Card className="flex items-center justify-between gap-4 px-6 py-4">
@@ -61,10 +64,15 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
             Propose Outcome
           </Link>
         )}
-        {market.status !== 'draft' && market.status !== 'submitted' && (
-          <Link to={`/admin/markets/${market.id}/exposure`} className={buttonClass('outline', 'xs')}>
-            Exposure
-          </Link>
+        {isPublished && (
+          <>
+            <Link to={`/admin/markets/${market.id}/exposure`} className={buttonClass('outline', 'xs')}>
+              Exposure
+            </Link>
+            <Link to={`/admin/markets/${market.id}/price-history`} className={buttonClass('outline', 'xs')}>
+              Price History
+            </Link>
+          </>
         )}
         {canClose && !superseded && (
           <Button variant="outline" size="xs" onClick={openCloseModal}>
