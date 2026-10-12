@@ -187,30 +187,35 @@ describe('MarketDetailPage', () => {
     expect(await screen.findByText(/awaiting outcome decision/i)).toBeInTheDocument()
   })
 
-  it('shows the winning outcome for settled markets', async () => {
+  it.each([
+    { status: 'pending_resolution', label: 'Proposed outcome', closed: 'Trading is closed while the outcome is decided.' },
+    { status: 'approved', label: 'Approved outcome', closed: 'The outcome is approved and payouts are pending. Trading is closed.' },
+    { status: 'settled', label: 'Settled', closed: 'This market has been settled. Trading is closed.' },
+  ])('names the outcome on record for a $status market as "$label"', async ({ status, label, closed }) => {
+    // Only a settled market is final, so only it may say "Settled", in the
+    // banner or in why trading is closed.
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
-        HttpResponse.json({ ...baseMarket, status: 'approved', proposed_outcome_id: 'o1' }),
+        HttpResponse.json({ ...baseMarket, status, proposed_outcome_id: 'o1' }),
       ),
     )
     renderPage()
-    // The settled banner contains "Settled: Yes" — use the strong element for the winner label
-    const banner = await screen.findByText(/settled:/i)
-    expect(banner).toBeInTheDocument()
+    const banner = await screen.findByText(`${label}:`, { exact: false })
     expect(banner.querySelector('strong')).toHaveTextContent('Yes')
+    expect(screen.getByText(closed)).toBeInTheDocument()
   })
 
-  // #12 adds a `settled` status the frontend does not know yet; the page must
-  // still render rather than go blank on an unknown value.
+  // A status the backend adds before the frontend knows it (as #12's `settled`
+  // once was); the page must still render rather than go blank on it.
   it('shows a market whose status the page does not know yet', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
-        HttpResponse.json({ ...baseMarket, status: 'settled' }),
+        HttpResponse.json({ ...baseMarket, status: 'under_review' }),
       ),
     )
     renderPage()
     expect(await screen.findByText(baseMarket.question)).toBeInTheDocument()
-    expect(screen.getByText('settled')).toBeInTheDocument()
+    expect(screen.getByText('under review')).toBeInTheDocument()
   })
 
   it('shows resolution criteria and sources', async () => {
