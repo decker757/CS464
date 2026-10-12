@@ -420,6 +420,28 @@ class QuoteStale(LedgerError):
         super().__init__(self.message)
 
 
+class LeaderboardRefreshed(LedgerError):
+    """A leaderboard cursor names a ranking that is no longer stored. [L-1] #38.
+
+    DECISIONS.md, "A leaderboard cursor names its generation; the current and
+    previous generations are served, and an older one is `409
+    leaderboard_refreshed`". A pruned generation and one that never existed
+    cannot be told apart, and the client's answer is the same: start again
+    from page one.
+
+    409 for `QuoteStale`'s reason: nothing about the request is malformed, and
+    the same cursor was good a minute ago. Not 410: the board still exists,
+    only the client's place in it has gone.
+    """
+
+    status_code = 409
+    code = "leaderboard_refreshed"
+    message = (
+        "The ranking this cursor belongs to has been replaced. Load the "
+        "leaderboard again from the first page."
+    )
+
+
 class PendingWritesOnReplay(LedgerError):
     """`posting.post` reached its replay branch with unwritten work already in
     the session. [T-2] #22.

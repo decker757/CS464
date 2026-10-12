@@ -53,6 +53,11 @@ class Settings(ServiceSettings):
     default_page_size: int = Field(default=50, gt=0)
     max_page_size: int = Field(default=200, gt=0)
 
+    # --- The leaderboard's staleness [L-1] #38, ADR 0021 ---------------------
+    # How often the stored ranking is meant to be rebuilt. The read derives
+    # `stale` from it: a ranking older than twice this is stale.
+    leaderboard_refresh_seconds: int = Field(default=60, gt=0)
+
 
 @lru_cache
 def get_settings() -> Settings:
