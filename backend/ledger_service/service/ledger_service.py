@@ -289,22 +289,13 @@ async def _history_of_account(
     )
 
 
-def _trade_page_query(
-    pool_account_id: uuid.UUID, position: Position | None, limit_plus_one: int
-) -> Select[_TradeRow]:
-    """The pool's trade entries and their transactions, in one statement.
+def pool_trade_query(pool_account_id: uuid.UUID) -> Select[_TradeRow]:
+    """The pool's trade entries and their transactions, unordered and uncut.
 
-    The kind filter is in the WHERE, before the LIMIT, so a pool whose newest
-    entries are the residue and the payouts still fills its page with trades.
-    Ordered and keyed like `_page_query`, on `ix_ledger_entries_account_feed`.
+    The kind filter is in the WHERE, so a caller's LIMIT still fills with
+    trades when the pool's newest entries are the residue and the payouts. The
+    caller adds the order, the keyset condition and the limit.
     """
-    conditions = [
-        Entry.account_id == pool_account_id,
-        Transaction.kind.in_(list(_TRADE_SIDE_OF_KIND)),
-    ]
-    if position is not None:
-        conditions.append(_keyset_condition_of(position))
-
     return (
         select(
             Entry.id,
@@ -315,10 +306,25 @@ def _trade_page_query(
             Transaction.context,
         )
         .join(Transaction, Transaction.id == Entry.transaction_id)
-        .where(*conditions)
-        .order_by(Entry.created_at.desc(), Entry.id.desc())
-        .limit(limit_plus_one)
+        .where(
+            Entry.account_id == pool_account_id,
+            Transaction.kind.in_(list(_TRADE_SIDE_OF_KIND)),
+        )
     )
+
+
+def _trade_page_query(
+    pool_account_id: uuid.UUID, position: Position | None, limit_plus_one: int
+) -> Select[_TradeRow]:
+    """The pool's trade entries newest first, cut to one page.
+
+    Ordered and keyed like `_page_query`, on `ix_ledger_entries_account_feed`.
+    """
+    query = pool_trade_query(pool_account_id)
+    if position is not None:
+        query = query.where(_keyset_condition_of(position))
+
+    return query.order_by(Entry.created_at.desc(), Entry.id.desc()).limit(limit_plus_one)
 
 
 def _market_trade_of(row: Row[_TradeRow]) -> MarketTradeOut:
