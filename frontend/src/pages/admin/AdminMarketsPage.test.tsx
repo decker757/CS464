@@ -120,7 +120,7 @@ describe('AdminMarketsPage', () => {
     expect(byName('Open')).toHaveTextContent('1')
     expect(byName('Closed')).toHaveTextContent('1')
     expect(byName('Pending')).toHaveTextContent('1')
-    expect(byName('Settled')).toHaveTextContent('1')
+    expect(byName('Approved')).toHaveTextContent('1')
   })
 
   it('keeps the server\'s order: soonest close time first, no close time last', async () => {
