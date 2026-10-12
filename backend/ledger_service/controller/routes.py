@@ -690,6 +690,15 @@ async def market_trades(
     )
 
 
+def _point_out(point: price_history_service.PricedPoint) -> PricePointOut:
+    """The wire form of one price-history point."""
+    return PricePointOut(
+        state_version=point.state_version,
+        occurred_at=point.occurred_at,
+        prices=_prices_out(point.prices),
+    )
+
+
 PriceHistoryStart = Annotated[
     AwareDatetime | None,
     Query(
@@ -785,21 +794,7 @@ async def market_price_history(
     )
     return PriceHistoryOut(
         market_id=history.market_id,
-        points=[
-            PricePointOut(
-                state_version=point.state_version,
-                occurred_at=point.occurred_at,
-                prices=[
-                    OutcomePriceOut(
-                        outcome_id=priced.outcome_id,
-                        position=priced.position,
-                        price=priced.price,
-                    )
-                    for priced in point.prices
-                ],
-            )
-            for point in history.points
-        ],
+        points=[_point_out(point) for point in history.points],
         result=history.result,
         winning_outcome_id=history.winning_outcome_id,
         result_recorded_at=history.result_recorded_at,
