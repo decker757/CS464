@@ -1,0 +1,96 @@
+import { useState } from 'react'
+import FilterPill from '../ui/FilterPill'
+import SearchForm from '../ui/SearchForm'
+import { STATUS_CONFIG } from './marketStatus'
+
+// The statuses GET /public/markets accepts, in the order market-service.md
+// lists them; draft and submitted are never listed to a trader.
+const STATUS_FILTERS = ['open', 'closed', 'pending_resolution', 'approved', 'settled'] as const
+export type StatusFilter = (typeof STATUS_FILTERS)[number]
+
+// null stands for "All", alongside every real status, so the pill list and
+// its label are drawn from one place instead of "All" being copied in by hand.
+const FILTER_OPTIONS: (StatusFilter | null)[] = [null, ...STATUS_FILTERS]
+
+function filterLabel(status: StatusFilter | null): string {
+  return status === null ? 'All' : STATUS_CONFIG[status].label
+}
+
+interface MarketFiltersProps {
+  /** The search that is applied to the list, not what is half typed in the box. */
+  query: string
+  status: StatusFilter | null
+  onQueryChange: (query: string) => void
+  onStatusChange: (status: StatusFilter | null) => void
+}
+
+function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clearLabel: string; onClear: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClear}
+      aria-label={clearLabel}
+      className="cursor-pointer rounded-full border border-smu-navy/20 px-3 py-1 text-xs font-semibold text-smu-navy hover:border-smu-navy/40"
+    >
+      {label} ×
+    </button>
+  )
+}
+
+export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
+  // A new key remounts the search box, which empties anything typed in it.
+  // Clearing needs that: with no search applied, the cleared query is the same
+  // empty string as before, so SearchForm has no change to follow.
+  const [searchBoxKey, setSearchBoxKey] = useState(0)
+  const hasActiveFilters = query !== '' || status !== null
+
+  function handleClearQuery() {
+    setSearchBoxKey(key => key + 1)
+    onQueryChange('')
+  }
+
+  function handleClearAll() {
+    handleClearQuery()
+    onStatusChange(null)
+  }
+
+  return (
+    <div className="mb-6 space-y-4">
+      <SearchForm
+        key={searchBoxKey}
+        id="market-search"
+        label="Search markets"
+        placeholder="Search markets by question"
+        query={query}
+        onSearch={onQueryChange}
+      />
+
+      <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
+        {FILTER_OPTIONS.map(option => (
+          <FilterPill
+            key={option ?? 'all'}
+            active={status === option}
+            aria-pressed={status === option}
+            onClick={() => onStatusChange(option)}
+          >
+            {filterLabel(option)}
+          </FilterPill>
+        ))}
+      </div>
+
+      {hasActiveFilters && (
+        <div role="group" aria-label="Active filters" className="flex flex-wrap items-center gap-2">
+          {query !== '' && (
+            <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={handleClearQuery} />
+          )}
+          {status !== null && (
+            <ActiveFilterChip label={`Status: ${STATUS_CONFIG[status].label}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
+          )}
+          <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy">
+            Clear all
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
