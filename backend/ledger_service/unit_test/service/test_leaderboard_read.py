@@ -113,6 +113,36 @@ async def test_the_newest_computed_at_is_served_not_the_last_inserted_or_an_id_o
     assert page.ranked_users == 1
 
 
+async def test_an_empty_generation_is_served_with_its_own_computed_at(
+    session: AsyncSession,
+) -> None:
+    """A generation with no entries is what a refresh writes when every
+    holder is suspended, and it is still the current ranking. Catches: the
+    page read inner-joining the generation to its entries, so the empty
+    generation yields no row and reads as no generation at all (null
+    `computed_at`); "the newest generation that has entries", which serves
+    the older one."""
+    await store_generation(
+        computed_at=T0,
+        rows=[
+            ("ann", Decimal("3.0000")),
+            ("bob", Decimal("2.0000")),
+            ("cat", Decimal("1.0000")),
+        ],
+    )
+    await store_generation(computed_at=at(200), rows=[])
+
+    page = await read_page(session, now=at(200))
+    stale_page = await read_page(session, now=at(200) + timedelta(seconds=121))
+
+    assert page.computed_at == at(200)
+    assert page.stale is False
+    assert stale_page.stale is True
+    assert page.ranked_users == 0
+    assert page.rows == []
+    assert page.next_cursor is None
+
+
 async def test_rows_come_in_rank_order_exactly_as_stored(session: AsyncSession) -> None:
     """Rank, username and net worth are the stored values, unrounded, in rank
     order. The rows are stored in rank order but in neither username nor net
