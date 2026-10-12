@@ -19,8 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.paging import Position, decode_cursor, encode_cursor
 from core.pricing import QUANTUM, Side, per_share
 from model.entities import Account, AccountKind, Entry, Transaction, TransactionKind
-from model.schemas import TradeFields
-from service import accounts, grants, trading
+from model.schemas import MarketTradeOut, TradeFields
+from service import accounts, books, grants, trading
 
 # Kind -> Side for the two trade kinds. Every other kind, the dict has nothing
 # to say about, which is exactly "any other kind renders with them null".
@@ -68,9 +68,22 @@ class EntryPage:
         return self.next_cursor is not None
 
 
+@dataclass(frozen=True)
+class TradePage:
+    """One page of a market's trades, newest first. [BE][2.4] #63."""
+
+    rows: list[MarketTradeOut]
+    next_cursor: str | None
+
+    @property
+    def has_more(self) -> bool:
+        return self.next_cursor is not None
+
+
 _PageRow = tuple[
     uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict[str, Any] | None, Decimal
 ]
+_TradeRow = tuple[uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict[str, Any] | None]
 
 
 def trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
@@ -276,6 +289,62 @@ async def _history_of_account(
     )
 
 
+def _trade_page_query(
+    pool_account_id: uuid.UUID, position: Position | None, limit_plus_one: int
+) -> Select[_TradeRow]:
+    """The pool's trade entries and their transactions, in one statement.
+
+    The kind filter is in the WHERE, before the LIMIT, so a pool whose newest
+    entries are the residue and the payouts still fills its page with trades.
+    Ordered and keyed like `_page_query`, on `ix_ledger_entries_account_feed`.
+    """
+    conditions = [
+        Entry.account_id == pool_account_id,
+        Transaction.kind.in_(list(_TRADE_SIDE_OF_KIND)),
+    ]
+    if position is not None:
+        conditions.append(_keyset_condition_of(position))
+
+    return (
+        select(
+            Entry.id,
+            Entry.transaction_id,
+            Entry.amount,
+            Entry.created_at,
+            Transaction.kind,
+            Transaction.context,
+        )
+        .join(Transaction, Transaction.id == Entry.transaction_id)
+        .where(*conditions)
+        .order_by(Entry.created_at.desc(), Entry.id.desc())
+        .limit(limit_plus_one)
+    )
+
+
+def _market_trade_of(row: Row[_TradeRow]) -> MarketTradeOut:
+    """One pool entry into a feed row.
+
+    `trade_fields_of` and `trading.result_of` build it, so it cannot disagree
+    with the trader's own history row or the trade response. `amount` is the
+    pool's leg: the trader's with the sign flipped, the same absolute value.
+    """
+    transaction = Transaction(id=row.transaction_id, kind=row.kind, context=row.context)
+    # trade_fields_of also reads the context; reading it again keeps one row builder.
+    fields = trade_fields_of(transaction, row.amount)
+    result = trading.result_of(transaction)
+    return MarketTradeOut(
+        transaction_id=row.transaction_id,
+        created_at=row.created_at,
+        user_id=result.user_id,
+        outcome_id=result.outcome_id,
+        side=fields.side,
+        quantity=fields.quantity,
+        average_price=fields.average_price,
+        total=result.total.quantize(QUANTUM),
+        state_version=result.state_version,
+    )
+
+
 async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
     """What this user holds right now, derived from their entries. [B-2] #33.
 
@@ -333,3 +402,39 @@ async def history_for_admin(
     """
     account = await accounts.find(session, AccountKind.USER, user_id)
     return await _history_of_account(session, account, limit=limit, cursor=cursor)
+
+
+async def list_market_trades(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    limit: int,
+    cursor: str | None = None,
+) -> TradePage:
+    """One page of this market's trades, newest first, for an administrator.
+    [BE][2.4] #63. Writes nothing.
+
+    Reads the market's pool account feed, so a market with no book, or an id
+    that names no market, is an empty page: this opens no book and never asks
+    market_service. DECISIONS.md, "The market's trade feed reads the pool
+    account's feed, filtered to the trade kinds, and its rows are built by
+    `trade_fields_of`". Raises `MalformedCursor`.
+    """
+    # Decoded first, as `_history_of_account` does, so a bad cursor is a 400
+    # on a market with no book too.
+    position = decode_cursor(cursor) if cursor is not None else None
+
+    book = await books.find(session, market_id)
+    if book is None:
+        return TradePage(rows=[], next_cursor=None)
+
+    fetched = list(
+        (
+            await session.execute(
+                _trade_page_query(book.pool_account_id, position, limit + 1)
+            )
+        ).all()
+    )
+
+    page, next_cursor = _page_cut_of(fetched, limit)
+    return TradePage(rows=[_market_trade_of(row) for row in page], next_cursor=next_cursor)
