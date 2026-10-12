@@ -73,7 +73,7 @@ _PageRow = tuple[
 ]
 
 
-def _trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
+def trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
     """market_id, outcome_id, side, quantity and average_price for one row,
     for the two trade kinds and for `settlement`.
 
@@ -222,7 +222,7 @@ def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
     return HistoryRow(
         entry=entry,
         balance_after=row.balance_after,
-        trade=_trade_fields_of(transaction, row.amount),
+        trade=trade_fields_of(transaction, row.amount),
     )
 
 
