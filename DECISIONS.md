@@ -8620,6 +8620,77 @@ gaps, and the replay has to be told which events move `q` and which do not.
 
 ---
 
+### D-NEW — A price history whose trades skip or reorder a state version answers 500 `price_history_inconsistent`
+
+**Date:** 2026-10-12 · **Ticket:** #63 · **Status:** active
+
+**Decision.** The service catches the replay's `ValueError`, around that call
+only, and raises `PriceHistoryInconsistent` (500, `price_history_inconsistent`).
+The existing handler logs it at ERROR, as it does every 5xx `LedgerError` other
+than a 503.
+
+**Why.**
+- *The two faults have different causes.* `market_book_incomplete` means a book
+  that cannot be priced: no outcome rows, one, or a `b` the engine cannot use.
+  A gap or a reorder on the pool's feed is a different fault, in the trades
+  and not in the book. With two codes, the log says which one to go and look
+  at.
+- *Nothing the caller does changes it.* The same feed gives the same gap on
+  the next read, so a client has no reason to retry.
+
+**Rejected.**
+- *Reusing `market_book_incomplete`.* It would put two causes behind one code,
+  and the operator reading the log would have to open the traceback to tell
+  them apart.
+
+**Notes.** This answers "The route PR decides how a refusal reaches the
+caller", the note on "The price-history replay refuses trades whose state
+versions do not run 1, 2, 3, … in order". The catch wraps only the call to the
+replay, so a `ValueError` raised anywhere else on the route is still a bare
+500 and not this error. Not worth retrying.
+
+**Reversal trigger.** A legitimate cause of a gap that is not corruption. Then
+a gap is an event to handle and not a fault to report.
+
+---
+
+### D-NEW — The `from`/`to` window and the carry-in point are applied in `core`, after the replay of every trade
+
+**Date:** 2026-10-12 · **Ticket:** #63 · **Status:** active
+
+**Decision.** The replay always starts at `state_version` 1 and runs over every
+trade the market has had. Then a pure function in `core/`, next to the replay,
+cuts the points by `from` and `to` and picks the carry-in point. The query
+that reads the feed has no time condition.
+
+**Why.**
+- *A price at `from` depends on every earlier trade.* `q` at that moment is
+  the sum of all trades before it. Starting the replay at `from` would start
+  `q` at zero and price the whole window wrong.
+- *The `state_version` run needs the start.* "The price-history replay refuses
+  trades whose state versions do not run 1, 2, 3, … in order" checks the run
+  from 1. A feed that starts at the window would fail the check on every
+  window that does not begin at the market's opening.
+- *Pure logic is tested without a database.* The cut and the carry-in rule are
+  the boundary cases of "Price history returns raw points, one per trade,
+  filtered by `from` and `to` with a carry-in point; nothing is bucketed". That
+  is the logic a unit test should be able to reach without a session.
+
+**Rejected.**
+- *Filtering the trades by time in SQL.* It drops the earlier trades the
+  replay needs, and moves the window's edge cases into a query that only an
+  integration test can reach.
+
+**Notes.** The window bounds the payload and not the work: a request for the
+last hour still reads and replays the whole feed. "Price history is replayed
+from the trades on the pool's feed, and nothing stores it" measured that cost
+at about 0.12 s for 10,000 trades.
+
+**Reversal trigger.** The same as that entry: a request measured as too slow.
+Then a stored table, which would also take over the window.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.

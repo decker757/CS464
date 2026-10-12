@@ -26,6 +26,3 @@ LeaderboardGeneration
 
 # [L-1] #38: the leaderboard refresh PR writes it; delete this line there
 LeaderboardEntry
-
-# [BE][2.4] #63: the price-history route PR calls it; delete this line there
-price_history_of

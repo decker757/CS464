@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import pytest
 
-from core.price_history import ReplayedTrade, price_history_of
+from core.price_history import PricePoint, ReplayedTrade, price_history_of, window_of
 from core.pricing import Side, quantize_price
 
 B = Decimal("100")
@@ -147,3 +147,60 @@ def test_a_trade_out_of_state_version_order_is_refused(
     message = f"expected state_version {expected}, got {actual}"
     with pytest.raises(ValueError, match=re.escape(message)):
         price_history_of(trades=trades, outcome_count=2, b=B, opened_at=_OPENED_AT)
+
+
+# =========================================================================
+# The window: `from`, `to` and the carry-in point
+# =========================================================================
+def _points() -> list[PricePoint]:
+    """The opening and three trades, one minute apart, each with prices of
+    its own so a point returned in another's place shows."""
+    return [
+        PricePoint(
+            state_version=version,
+            occurred_at=_OPENED_AT + timedelta(minutes=version),
+            prices=(Decimal(version) / 10, 1 - Decimal(version) / 10),
+        )
+        for version in range(4)
+    ]
+
+
+def test_from_and_to_each_include_a_point_exactly_at_them():
+    """DECISIONS.md, "Price history returns raw points...": both bounds include
+    a point at exactly that time. `start` is trade 1's time, so the opening is
+    the carry-in and trade 1 appears once, not again as the carry-in.
+    Catches: `occurred_at > start` in place of `>=`, which gives `[0, 2]`
+    (and `<` in place of `<=` on `end`, or a carry-in taken by `<=`)."""
+    points = _points()
+
+    window = window_of(points, start=points[1].occurred_at, end=points[2].occurred_at)
+
+    assert window == points[0:3]
+
+
+@pytest.mark.parametrize(
+    "before_opening",
+    [pytest.param(timedelta(days=1), id="earlier"), pytest.param(timedelta(0), id="at")],
+)
+def test_a_from_at_or_before_the_opening_carries_nothing_in(before_opening):
+    """"If nothing comes before `from`, nothing is carried in." Catches: a
+    carry-in emitted whenever `start` is given, such as
+    `points[max(index - 1, 0)]`, which repeats the opening."""
+    points = _points()
+
+    window = window_of(points, start=_OPENED_AT - before_opening, end=None)
+
+    assert window == points
+
+
+def test_the_carry_in_is_the_last_point_before_from_at_its_own_time():
+    """"The last point before `from` is included as the first point, at its
+    own `occurred_at`: it is not moved to `from`." `start` falls between
+    trades 1 and 2. Catches: the carry-in restamped to `start`."""
+    points = _points()
+    start = points[1].occurred_at + timedelta(seconds=30)
+
+    window = window_of(points, start=start, end=None)
+
+    assert window == points[1:]
+    assert window[0].occurred_at == points[1].occurred_at

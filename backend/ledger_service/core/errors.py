@@ -495,3 +495,22 @@ class MarketBookIncomplete(LedgerError):
     status_code = 500
     code = "market_book_incomplete"
     message = "This market's book is missing its outcomes. This is a server fault."
+
+
+class PriceHistoryInconsistent(LedgerError):
+    """A market's trades do not run `state_version` 1, 2, 3, ... in order.
+
+    The price-history replay refuses such a feed, and the service raises this
+    around that call. It is not `MarketBookIncomplete`: that is a book the
+    engine cannot price, this is a fault in the trades, and two codes tell the
+    operator reading the log which to go and look at. DECISIONS.md, "A price
+    history whose trades skip or reorder a state version answers 500
+    `price_history_inconsistent`".
+
+    500 because the ledger's own data is wrong, and the same feed gives the
+    same gap on the next read: nothing the caller does changes it.
+    """
+
+    status_code = 500
+    code = "price_history_inconsistent"
+    message = "This market's trade history is inconsistent. This is a server fault."

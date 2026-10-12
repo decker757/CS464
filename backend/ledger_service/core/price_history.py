@@ -5,9 +5,13 @@ and nothing stores it": the first point is the book's opening, then one point
 per trade, each priced from the `q` every trade so far has built.
 
 Prices are `core/lmsr.py`'s raw Decimals in position order. Rounding them to
-the wire's scale is the route's, through `book_prices.priced`, the quantizer
+the wire's scale is the service's, through `book_prices.priced`, the quantizer
 the price frame uses, so a point and a frame for one `state_version` give the
 same strings. `outcome_id` is joined on there too.
+
+`window_of` then cuts the replayed points by `from` and `to`, and picks the
+carry-in point. DECISIONS.md, "The `from`/`to` window and the carry-in point
+are applied in `core`, after the replay of every trade".
 
 Pure. No session, no clock.
 """
@@ -73,3 +77,40 @@ def price_history_of(
             PricePoint(trade.state_version, trade.occurred_at, tuple(prices(q, b)))
         )
     return points
+
+
+def window_of(
+    points: Sequence[PricePoint],
+    *,
+    start: datetime | None,
+    end: datetime | None,
+) -> list[PricePoint]:
+    """The points a `from` and a `to` ask for, oldest first. None is no bound.
+
+    Both bounds include a point at exactly that time. When `start` is given,
+    the last point strictly before it comes first, at its own `occurred_at`,
+    so a chart drawn from `start` begins at the level the market had then.
+    Nothing is carried in when no point precedes `start`. `start` later than
+    `end` is the route's to refuse. DECISIONS.md, "Price history returns raw
+    points, one per trade, filtered by `from` and `to` with a carry-in point;
+    nothing is bucketed".
+
+    `start` and `end` share a type, so they are keyword-only (backend/CLAUDE.md:
+    "Arguments after the first two are keyword-only (`*,`) when two of them
+    share a type — two `uuid.UUID`s passed positionally is a swap waiting to
+    happen"). The rule's letter would let one of them be positional; both are
+    keyword-only because a swapped pair here silently moves the window.
+    """
+    carry_in: PricePoint | None = None
+    window: list[PricePoint] = []
+    for point in points:
+        from_start = start is None or point.occurred_at >= start
+        until_end = end is None or point.occurred_at <= end
+        if not from_start:
+            carry_in = point
+        elif until_end:
+            window.append(point)
+
+    if carry_in is None:
+        return window
+    return [carry_in, *window]
