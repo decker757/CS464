@@ -19,13 +19,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from core.errors import MalformedCursor
+from core.leaderboard import is_stale
+from core.paging import decode_rank_cursor, encode_rank_cursor
 from shared.paging import encode_cursor, encode_fields
-from unit_test.leaderboard_read_fixtures import (
-    RANK_OVERFLOW,
-    is_stale,
-    paging,
-    rank_cursor,
-)
+from unit_test.leaderboard_read_fixtures import RANK_OVERFLOW, rank_cursor
 
 _COMPUTED_AT = datetime(2026, 10, 12, 9, 0, 0, 123456, tzinfo=UTC)
 _GENERATION = uuid.UUID("2f4e0c1a-9b7d-4e5f-8a6b-1c2d3e4f5a6b")
@@ -59,10 +56,10 @@ def test_stale_is_false_at_exactly_twice_the_interval_and_true_one_microsecond_p
 def test_a_rank_cursor_round_trips_and_is_the_decided_format() -> None:
     """The format is the decision's: `encode_fields(generation_id, last_rank)`.
     Catches: another format, or the two fields swapped."""
-    cursor = paging().encode_rank_cursor(_GENERATION, 7)
+    cursor = encode_rank_cursor(_GENERATION, 7)
 
     assert cursor == encode_fields(str(_GENERATION), "7")
-    assert paging().decode_rank_cursor(cursor) == (_GENERATION, 7)
+    assert decode_rank_cursor(cursor) == (_GENERATION, 7)
 
 
 def _unpadded(raw: bytes) -> str:
@@ -94,4 +91,4 @@ def test_a_rank_cursor_we_did_not_issue_is_malformed(cursor: str) -> None:
     refuse the bound parameter: a 500), lets `UnicodeDecodeError` escape, or
     returns None instead of raising."""
     with pytest.raises(MalformedCursor):
-        paging().decode_rank_cursor(cursor)
+        decode_rank_cursor(cursor)

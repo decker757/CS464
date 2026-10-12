@@ -13,7 +13,6 @@ as `+` and not as a space.
 
 from __future__ import annotations
 
-import base64
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -23,7 +22,6 @@ import pytest
 from httpx import AsyncClient
 
 from core.roles import UserRole
-from shared.paging import encode_cursor
 from unit_test.conftest import bearer
 from unit_test.leaderboard_read_fixtures import (
     PATH,
@@ -228,15 +226,8 @@ async def test_a_limit_below_one_or_not_a_number_is_invalid_request(
 # =========================================================================
 # The cursor's errors
 # =========================================================================
-def _not_utf_8() -> str:
-    return base64.urlsafe_b64encode(b"\xff\xfe|1").decode().rstrip("=")
-
-
 _MALFORMED = {
     "garbage": lambda generation_id: "nonsense",
-    "plus-slash-padding": lambda generation_id: "a+b/c==",
-    "history-cursor": lambda generation_id: encode_cursor(_COMPUTED_AT, generation_id),
-    "not-utf-8": lambda generation_id: _not_utf_8(),
     "rank-above-the-column": lambda generation_id: rank_cursor(
         generation_id, RANK_OVERFLOW
     ),
@@ -247,9 +238,10 @@ _MALFORMED = {
 async def test_a_cursor_we_did_not_issue_is_malformed_cursor(
     client: AsyncClient, trader_headers: dict[str, str], cursor_of
 ) -> None:
-    """`400 malformed_cursor`, never a 500. The overflowing rank names the
-    generation that exists, so an unbounded decoder would send it to
-    Postgres. Catches: the error not mapped; `UnicodeDecodeError` or
+    """`400 malformed_cursor`, never a 500. Two cases only: that the error is
+    mapped, and that a rank beyond the column, on a cursor naming a stored
+    generation, is refused here and not by Postgres. Every other shape is
+    `core/test_leaderboard_read_rules.py`'s. Catches: the error not mapped;
     asyncpg's integer overflow escaping as a 500."""
     generation_id = uuid.uuid4()
     await store_generation(

@@ -149,23 +149,17 @@ def test_the_leaderboard_refresh_interval_defaults_to_60(
 
 
 @pytest.mark.parametrize("value", ["0", "-1"])
-@pytest.mark.parametrize("source", ["argument", "environment"])
 def test_the_leaderboard_refresh_interval_refuses_zero_and_negative(
-    value: str, source: str, monkeypatch: pytest.MonkeyPatch
+    value: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`gt=0`: an interval of zero is a loop that never sleeps, and `stale`
     would read true for every ranking. Fed for real, through the environment
     as a deploy would, and the error must name this field. Catches: `ge=0`,
-    or no bound."""
-    monkeypatch.delenv("LEADERBOARD_REFRESH_SECONDS", raising=False)
-    overrides: dict[str, int] = {}
-    if source == "environment":
-        monkeypatch.setenv("LEADERBOARD_REFRESH_SECONDS", value)
-    else:
-        overrides["leaderboard_refresh_seconds"] = int(value)
+    or no bound; the variable not bound to the field."""
+    monkeypatch.setenv("LEADERBOARD_REFRESH_SECONDS", value)
 
     with pytest.raises(ValidationError) as refused:
-        Settings(**_REQUIRED, **overrides, _env_file=None)
+        Settings(**_REQUIRED, _env_file=None)
 
     assert [error["loc"] for error in refused.value.errors()] == [
         ("leaderboard_refresh_seconds",)

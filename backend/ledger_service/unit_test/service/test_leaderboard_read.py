@@ -21,7 +21,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
-from core.errors import MalformedCursor
+from core.errors import LeaderboardRefreshed, MalformedCursor
+from core.paging import encode_rank_cursor
 from unit_test.leaderboard_fixtures import (
     T0,
     Directory,
@@ -31,7 +32,6 @@ from unit_test.leaderboard_fixtures import (
     refresh_with,
 )
 from unit_test.leaderboard_read_fixtures import (
-    leaderboard_refreshed,
     numbered_rows,
     rank_cursor,
     read_page,
@@ -263,7 +263,7 @@ async def test_a_cursor_is_refused_once_its_generation_has_been_pruned(
 
     assert [(row.rank, row.username) for row in survived.rows] == [(2, "bob")]
     assert survived.computed_at == at(0)
-    with pytest.raises(leaderboard_refreshed()):
+    with pytest.raises(LeaderboardRefreshed):
         await read_page(session, now=at(120), limit=1, cursor=first.next_cursor)
 
 
@@ -272,12 +272,42 @@ async def test_a_cursor_is_decoded_before_the_board_is_read(
 ) -> None:
     """On an empty board, so the empty answer cannot be what replies. A
     malformed cursor is 400 and a well-formed one names a generation that is
-    not there, which is 409 (ruled: pruned and never-existed cannot be told
-    apart). Catches: returning the empty board before decoding the cursor."""
+    not there, which is 409 (a pruned and a never-existed generation cannot
+    be told apart). Catches: returning the empty board before decoding the cursor."""
     with pytest.raises(MalformedCursor):
         await read_page(session, now=T0, cursor="nonsense")
-    with pytest.raises(leaderboard_refreshed()):
+    with pytest.raises(LeaderboardRefreshed):
         await read_page(session, now=T0, cursor=rank_cursor(uuid.uuid4(), 1))
+
+
+async def test_a_cursor_past_the_end_of_a_stored_ranking_is_an_empty_page(
+    session: AsyncSession,
+) -> None:
+    """A cursor can only name a rank this service issued, but a well-formed one
+    past the end of a ranking that is stored is not a vanished generation: the
+    ranking is still there, with nothing left in it. Two rows, a cursor after
+    rank 5. Catches: the rank condition in the WHERE clause, where it drops the
+    generation row along with the entries and the read raises
+    `LeaderboardRefreshed`; an exception for a rank beyond the last."""
+    generation_id = uuid.uuid4()
+    await store_generation(
+        computed_at=T0,
+        rows=[("ann", Decimal("2.0000")), ("bob", Decimal("1.0000"))],
+        generation_id=generation_id,
+    )
+    cursor = encode_rank_cursor(generation_id, 5)
+
+    page = await read_page(session, now=T0, cursor=cursor)
+    stale_page = await read_page(
+        session, now=T0 + timedelta(seconds=121), cursor=cursor
+    )
+
+    assert page.rows == []
+    assert page.next_cursor is None
+    assert page.computed_at == T0
+    assert page.stale is False
+    assert stale_page.stale is True
+    assert page.ranked_users == 2
 
 
 async def test_a_page_never_reaches_into_the_other_generation(

@@ -1,11 +1,10 @@
 """Fixtures the [L-1] #38 read tests share.
 
-Three files test PR 6: the pure rules (`core/test_leaderboard_read_rules.py`),
+Three files share these: the pure rules (`core/test_leaderboard_read_rules.py`),
 the read (`service/test_leaderboard_read.py`) and the route
 (`controller/test_leaderboard_routes.py`). The spec is
 `docs/api/ledger-service.md`'s `GET /ledger/leaderboard` and #270's entries in
-DECISIONS.md. Project modules are reached through functions, so a missing name
-fails each test on its own rather than collection (D-007).
+DECISIONS.md.
 
 **Generations are stored directly, not through the refresh.** The read's
 contract is "serve what is committed", and only a direct insert can choose
@@ -25,6 +24,7 @@ from decimal import Decimal
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from service import leaderboard as leaderboard_service
 from shared.paging import encode_fields
 from unit_test.trade_fixtures import entities, session_factory
 
@@ -34,35 +34,6 @@ PATH = "/ledger/leaderboard"
 RANK_OVERFLOW = 2_147_483_648
 
 
-# --- lazy module handles --------------------------------------------------
-def paging():
-    """`core/paging.py`; `encode_rank_cursor` and `decode_rank_cursor` are new in PR 6."""
-    from core import paging  # noqa: PLC0415
-
-    return paging
-
-
-def core_leaderboard():
-    """`core/leaderboard.py`, PR 6's `is_stale`. Does not exist yet."""
-    from core import leaderboard  # noqa: PLC0415
-
-    return leaderboard
-
-
-def leaderboard_refreshed() -> type[Exception]:
-    """`core/errors.py::LeaderboardRefreshed`, new in PR 6."""
-    from core import errors  # noqa: PLC0415
-
-    return errors.LeaderboardRefreshed
-
-
-def is_stale(computed_at: datetime, *, now: datetime, refresh_seconds: int) -> bool:
-    """The signature ruled for PR 6. The single place it is written down."""
-    return core_leaderboard().is_stale(
-        computed_at, now=now, refresh_seconds=refresh_seconds
-    )
-
-
 async def read_page(
     session: AsyncSession,
     *,
@@ -70,12 +41,11 @@ async def read_page(
     limit: int = 50,
     cursor: str | None = None,
 ):
-    """One page of the board, with the signature ruled for PR 6:
-    `list_page(session, *, limit, cursor, now)`. The single place it is
-    written down."""
-    from service import leaderboard  # noqa: PLC0415
-
-    return await leaderboard.list_page(session, limit=limit, cursor=cursor, now=now)
+    """One page of the board through `list_page`, defaulting to the route's
+    page size of 50."""
+    return await leaderboard_service.list_page(
+        session, limit=limit, cursor=cursor, now=now
+    )
 
 
 # --- cursors built by hand ------------------------------------------------
