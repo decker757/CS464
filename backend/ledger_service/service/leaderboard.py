@@ -36,8 +36,6 @@ from service import user_directory, valuation
 
 logger = logging.getLogger(__name__)
 
-ZERO = Decimal(0)
-
 # The new generation and the one before it. DECISIONS.md, "The leaderboard is
 # stored as generations, and a refresh swaps the whole ranking in one commit".
 _GENERATIONS_KEPT = 2
@@ -55,7 +53,7 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-async def _net_worths_of_holders(session: AsyncSession) -> dict[uuid.UUID, Decimal]:
+async def _list_net_worths(session: AsyncSession) -> dict[uuid.UUID, Decimal]:
     """Every USER account holder's net worth, from one statement with no lock.
 
     DECISIONS.md, "The refresh values holders through the portfolio's
@@ -67,7 +65,7 @@ async def _net_worths_of_holders(session: AsyncSession) -> dict[uuid.UUID, Decim
     `Position` too, and auto-correlation would take that one away.
     """
     balance = (
-        select(func.coalesce(func.sum(Entry.amount), ZERO))
+        select(func.coalesce(func.sum(Entry.amount), valuation.ZERO))
         .where(Entry.account_id == Account.id)
         .scalar_subquery()
     )
@@ -103,6 +101,12 @@ async def _net_worths_of_holders(session: AsyncSession) -> dict[uuid.UUID, Decim
     return net_worths
 
 
+def _rank_order(entry: tuple[user_directory.DirectoryUser, Decimal]) -> tuple[Decimal, str]:
+    """Net worth descending, then `lower(username)` ascending."""
+    user, net_worth = entry
+    return (-net_worth, user.username.lower())
+
+
 def _ranking_of(
     net_worths: dict[uuid.UUID, Decimal],
     users: list[user_directory.DirectoryUser],
@@ -131,7 +135,7 @@ def _ranking_of(
 
     # "Ranks run 1..N by net worth descending, then `lower(username)`
     # ascending, decided in Python at refresh": never the database's collation.
-    eligible.sort(key=lambda pair: (-pair[1], pair[0].username.lower()))
+    eligible.sort(key=_rank_order)
     return [
         _RankedUser(rank=rank, user_id=user.id, username=user.username, net_worth=net_worth)
         for rank, (user, net_worth) in enumerate(eligible, start=1)
@@ -239,7 +243,7 @@ async def refresh(
     # ADR 0021: "The refresh reads and values the holders in one transaction,
     # ends it, then calls auth." The session is closed before the lookup.
     async with session_factory() as session:
-        net_worths = await _net_worths_of_holders(session)
+        net_worths = await _list_net_worths(session)
         await release_before_calling_out(session, caller="leaderboard.refresh()")
 
     # The refresh-loop entry's step 3: auth's lookup, holding no connection.

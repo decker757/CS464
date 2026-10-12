@@ -45,6 +45,7 @@ from unit_test.settlement_fixtures import B as SETTLED_B
 from unit_test.settlement_fixtures import LOSER, PAID, UNPAID, WINNER
 from unit_test.trade_fixtures import (
     SMALL_QUANTITY,
+    ZERO,
     capture_sql,
     entities,
     errors,
@@ -52,6 +53,7 @@ from unit_test.trade_fixtures import (
     ledger_counts,
     locks,
     session_factory,
+    set_q,
     writes,
 )
 
@@ -436,6 +438,58 @@ async def test_a_refresh_that_cannot_name_its_holders_writes_nothing(
         await refresh_with(directory, clock=fixed_clock(at(60)))
 
     assert await generations() == before
+
+
+async def test_a_damaged_book_fails_the_whole_refresh_and_writes_nothing(
+    session: AsyncSession,
+) -> None:
+    """"Any failure means nothing is written ... The previous generation stays
+    current." One holder's market has `q` set below their holding, the damage
+    `test_settled_portfolio.py` uses: `strip_outcomes` cannot reach a held
+    market, whose positions reference its outcome rows. Two holders of a
+    healthy market are still there to rank. Catches a refresh that skips the
+    holder whose book the valuation refuses and ranks the rest."""
+    directory = Directory()
+    healthy = await market_at(session)
+    damaged = await market_at(session)
+    first = await granted(session, directory, "first_healthy")
+    second = await granted(session, directory, "second_healthy")
+    on_damaged = await granted(session, directory, "on_damaged_book")
+    await hold(session, healthy, user_id=first)
+    await hold(session, healthy, user_id=second, outcome=1)
+    await hold(session, damaged, user_id=on_damaged)
+    await refresh_with(directory, clock=fixed_clock(at(0)))
+    before = await generations()
+    assert len(before) == 1
+    await set_q(session, damaged.market_id, [ZERO])
+
+    with pytest.raises(errors().MarketBookIncomplete):
+        await refresh_with(directory, clock=fixed_clock(at(60)))
+
+    assert await generations() == before
+
+
+async def test_a_refresh_with_nobody_to_rank_still_writes_an_empty_generation(
+    session: AsyncSession,
+) -> None:
+    """"A suspended account is left out of the ranking", taken to its end:
+    every holder is suspended, so the ranking is empty. The generation is
+    still written, stamped, and counts nobody. Catches an insert that sends
+    the entries with no rows to send, which fails the refresh."""
+    directory = Directory()
+    market = await market_at(session)
+    first = await granted(session, directory, "first_suspended")
+    second = await granted(session, directory, "second_suspended")
+    directory.name(first, "first_suspended", suspended=True)
+    directory.name(second, "second_suspended", suspended=True)
+    await hold(session, market, user_id=first)
+
+    await refresh_with(directory, clock=fixed_clock(at(0)))
+
+    [generation] = await generations()
+    assert generation.ranked_users == 0
+    assert generation.entries == ()
+    assert generation.computed_at == at(0)
 
 
 async def test_a_refresh_keeps_only_its_own_generation_and_the_one_before(
