@@ -1304,8 +1304,9 @@ Errors:
 | Status | `code` | When |
 | --- | --- | --- |
 | 401 | `invalid_token` | Missing, malformed or expired access token. |
-| 422 | `invalid_request` | `market_id` is not a UUID, `from` or `to` is not an ISO-8601 time with an offset, or `from` is later than `to`. `error.details` names each one. |
+| 422 | `invalid_request` | `market_id` is not a UUID, `from` or `to` is not an ISO-8601 time with an offset, or `from` is later than `to`. `error.details` names each one. When `from` is later than `to`, `error.details` has an item for `from` and one for `to`. |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced: no outcome rows, only one, or a `liquidity_b` the engine cannot use. The same guard the snapshot uses. A server fault; not worth retrying. |
+| 500 | `price_history_inconsistent` | The market's trades on the pool's feed do not run `state_version` 1, 2, 3, … in order, so the history cannot be rebuilt. A server fault; not worth retrying. |
 
 ## GET /ledger/markets/{market_id}/trades
 
