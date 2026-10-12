@@ -7145,7 +7145,7 @@ rendering is ready by then.
 
 ### D-NEW — `_trade_fields_of` keeps its name, and its docstring says it covers settlement
 
-**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** active
+**Date:** 2026-10-10 · **Ticket:** #12 · **Status:** superseded by "The market's trade feed reads the pool account's feed, filtered to the trade kinds, and its rows are built by `trade_fields_of`"
 
 **Decision.** In PR 7 the history's row builder fills `settlement` rows. Its
 name stays `_trade_fields_of`, and its docstring says it covers the two trade
@@ -8314,6 +8314,277 @@ change.
 - *Extracting in PR 5*: a refactor inside a behaviour PR.
 - *Copying the two pieces into send-back*: two copies of the rule that keeps
   a stale page from deciding about a replacement, which would drift.
+
+---
+
+### D-NEW — Price history is replayed from the trades on the pool's feed, and nothing stores it
+
+**Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
+
+**Decision.** `GET /ledger/markets/{id}/price-history` stores nothing. On each
+read it takes the market's trade entries from its pool account's feed, oldest
+first, and rebuilds `q` one trade at a time from each trade's outcome, side and
+quantity. Each rebuilt `q` is priced with the book's `b`. The first point is
+the book's opening: `state_version` 0, every `q` at zero, so uniform prices, at
+`opened_at`. There is no new table and no migration.
+
+**Why.**
+- *The order is already there.* Every trade posts a leg on its market's pool
+  account (`service/trading.py:453-456`). That account's entries are stamped
+  in commit order with strictly increasing times (`service/posting.py:143-167`,
+  #187; "A movement's timestamp is fixed under its account locks"). So the
+  pool's feed lists the market's trades in `state_version` order, and
+  `ix_ledger_entries_account_feed` (`model/entities.py:348-353`) already
+  serves that read.
+- *The replay is exact.* `TradeIn.quantity` refuses a fifth decimal
+  (`model/schemas.py:465-475`). `q` is written as `q + delta` at precision 50
+  (`core/pricing.py:169-173`) into `Numeric(18, 4)`. `b` is copied once and
+  never updated (`entities.py:382-385`). Settlement never writes `q`
+  ("`ledger.market_settlements` is the latch, and positions and `q` are never
+  written", the part that stands). So summing the signed quantities gives back
+  every `q` the book has held.
+- *It is cheap enough.* A price vector was measured at 12 µs, so 10,000
+  trades take about 0.12 s.
+- *A stored table costs more than it saves.*
+  - Its insert would run under the book lock and make every trade hold that
+    lock longer.
+  - `books.ensure_open` would become a second writer, because it would have to
+    write the opening point.
+  - It needs an Alembic revision that collides with #270's planned `0003`, and
+    a CHECK that autogenerate cannot see (ADR 0020).
+  - It is a stored copy of something derivable, which ADR 0009 declines for
+    balances.
+  - Trades made before the revision would need a backfill, and that backfill
+    is the replay anyway.
+
+**Rejected.**
+- *A `ledger.price_points` table written by the trade.* See above.
+- *Scanning `transactions` by `context->>'market_id'`.* That needs an
+  expression index and a migration. The pool's feed needs neither.
+
+**Notes.** The replay is right only while the stored `q` equals the sum of the
+signed trade quantities. A `q` repaired by hand would make the history
+disagree with the snapshot, and nothing on this route detects that. The prices
+come from `book_prices.priced`, the quantizer the snapshot and the price frame
+use. So a point and a frame for the same `state_version` give the same strings.
+
+**Reversal trigger.** A request measured as too slow. Then a stored table,
+backfilled by this replay function, which is pure and in `core/` (the replay
+PR) so the backfill can call it unchanged.
+
+---
+
+### D-NEW — Settlement adds no point to the price history; the series ends at the last trade
+
+**Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
+
+**Decision.** A settled market's price history ends at its last trade. No
+point at 1 and 0 is added for the result. The result is reported beside the
+points instead, as `result`, `winning_outcome_id` and `result_recorded_at`,
+read from `ledger.market_results`.
+
+**Why.**
+- *It would disagree with the snapshot.* The snapshot of a settled market
+  still shows the last traded price ("Settlement … the preview and the
+  snapshot keep quoting the frozen book").
+- *No frame announced it.* "A settlement publishes no realtime frame." A chart
+  that appends live frames would never receive such a point, so a page loaded
+  before settlement and one loaded after it would draw different lines.
+- *The result is a fact, not a price.* The three result fields carry it
+  exactly, without making it look like a trade.
+
+**Rejected.**
+- *A final point at `1.0000` and `0.0000`, at `recorded_at`.* See above.
+
+**Notes.** `result` takes the exposure read's values: the record's `kind` as a
+string, today always `"settled"`. When [BE] #221 adds a void it arrives here
+with a null `winning_outcome_id`. As on every other reader of
+`market_results` ("A settled row's payout is its quantity…", Notes), #221 has
+to check this read.
+
+**Reversal trigger.** A frame type for settlement. That would be a realtime
+contract change, which "A settlement publishes no realtime frame" leaves to its
+consumer. Once a client can receive the result live, a point for it no longer
+disagrees with what a live chart shows.
+
+---
+
+### D-NEW — Price history returns raw points, one per trade, filtered by `from` and `to` with a carry-in point; nothing is bucketed
+
+**Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
+
+**Decision.** One point per trade, plus the opening point. `from` and `to` are
+optional ISO-8601 times with an offset, and both include a point at exactly
+that time. When `from` is given, the last point before it is returned as the
+first point, at its own `occurred_at` (it is not moved to `from`), so the line
+starts at the right level. Points after `to` are left out. A `from` later than
+`to`, or a time with no offset, is `422 invalid_request`.
+
+**Why.**
+- *#8 exists to spot manipulation.* A bucket that keeps the last price in each
+  interval hides a pump-and-revert that happens inside one interval, which is
+  exactly what an administrator is looking for.
+- *A server-chosen interval silently decides what the admin sees.*
+- *A carry-in point keeps the line honest.* Without it, a window that starts
+  between two trades begins at its first trade, and the chart draws no level
+  before it. The point keeps its own time, so a point's `occurred_at` is always
+  when that trade happened.
+- *`from` after `to` has no sensible answer.* The carry-in point could fall
+  after `to`. Refusing it is plainer than defining that case.
+
+**Rejected.**
+- *Bucketing by a fixed or server-chosen interval.* See above.
+- *Paging the points.* A chart wants the whole window. `from` and `to` already
+  bound the payload, and the series is append-only, so a client can fetch from
+  its last point onwards.
+
+**Notes.** A point is a `price` socket frame without `type` and `market_id`.
+The chart appends live frames and dedupes on `state_version`. A point's
+`occurred_at` is when the trade's entries landed, which can be later than
+the frame's `occurred_at` (the book's `state_changed_at`) for the same
+`state_version`. Across replicas the gap is clock skew. The snapshot section
+already says this about the entries (#187).
+
+**Reversal trigger.** The payload size, measured, is a problem. Then a bucket
+the client chooses from a fixed list, with high and low in each bucket so a
+spike inside one stays visible.
+
+---
+
+### D-NEW — The market's trade feed reads the pool account's feed, filtered to the trade kinds, and its rows are built by `trade_fields_of`
+
+**Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
+
+**Decision.** `GET /ledger/markets/{id}/trades` reads the market's pool account
+feed newest first, keeps the `trade_buy` and `trade_sell` entries, and pages
+it by keyset on `(created_at, id)` with the `/entries/me` cursor. Each row is
+built by `_trade_fields_of`, which the refactor PR makes public as
+`trade_fields_of`, ahead of the feed. That PR changes no test assertion.
+`user_id`, `total` and `state_version` come from `trading.result_of`, the
+reader of a trade's `context` that `trade_fields_of` already calls.
+
+**Why.**
+- *The index is already there.* The pool's feed is
+  `ix_ledger_entries_account_feed`, the same index the history pages through.
+  Finding a market's trades through `transactions.context` needs an
+  expression index and a migration (the replay entry above).
+- *One builder, one price.* The market's feed and the trader's own history
+  give the same `average_price` for the same trade, because both call one
+  function: `per_share(|amount|, quantity)`. The pool's leg is the trader's
+  leg with the sign flipped, so its absolute amount is the same.
+- *A second caller makes the name public.* "`_trade_fields_of` keeps its name,
+  and its docstring says it covers settlement" left the rename to a refactor
+  PR. The second caller is the reason it happens now. The PR goes under #63,
+  as 4a, 5a and 6a went under #12, rather than under an issue of its own as
+  that entry's Notes said: the rename has no reason to exist apart from this
+  caller.
+
+**Rejected.**
+- *A second row builder for the market's feed.* Two builders would be two
+  answers to what a trade averaged.
+- *Renaming it inside the feed's PR.* A refactor never shares a PR with a
+  behaviour change.
+
+**Notes.** The pool's feed also holds `market_seed`, the settlement payouts
+and `settlement_residue`. The kind filter leaves them out. There is no
+`balance_after`: a running balance on a pool account means nothing to someone
+reading trades. `total` is signed for the trader, like `TradeOut.total`: it is
+the negation of the pool's leg, which equals the trader's own leg.
+This supersedes "`_trade_fields_of` keeps its name, and its docstring says it
+covers settlement": the name is now public, and the rename goes under #63.
+
+**Reversal trigger.** A trade that touches no pool account, or more than one,
+such as a multi-market trade. Then the pool's feed no longer lists the market's
+trades one each.
+
+---
+
+### D-NEW — A market's trades carry `user_id`, not `username`, and the admin's browser names them through a batch lookup on auth
+
+**Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
+
+**Decision.** Each row in the trade feed carries the trader's `user_id`. The
+ledger stores no username and asks auth for none. The administrator's browser
+resolves names through a new admin-only batch lookup on auth,
+`POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
+returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021,
+`POST /internal/users/lookup`, but it takes an
+administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
+User column shows a short id that links to #259's user page.
+
+**Why.**
+- *ADR 0021's lookup is the wrong credential for this.* It is scoped to one
+  key, one caller and one route, for a background job with nobody behind it. This request has an administrator's token behind it.
+  Sending the service key per request would widen that ADR beyond what it
+  argues.
+- *The leaderboard's snapshot names the wrong set.* It leaves suspended users
+  off the board, so the traders an administrator most likely investigates
+  would have no names. It would also tie #63 to the unbuilt #38.
+- *ADR 0021's objection to a browser-side join does not apply here.* It
+  rejects "the frontend joins usernames" for a public route that anyone could
+  enumerate. This one is admin-only, and administrators can already list every
+  user through `GET /admin/users` with a blank `q`.
+- *No name at all fails #8.* Its trade table asks for "user". "You" means
+  nothing on an admin page.
+- *Privacy.* For an administrator this is data that
+  `/ledger/users/{id}/entries` already gives, grouped by market. For a trader
+  it would be new exposure, which is why the trade feed is admin-only (the
+  next entry).
+- *Its own path, and a body.* One path answers one shape, so the paged search
+  on `GET /admin/users` keeps its contract. 200 UUIDs in a query string are
+  about 7.4 KB, close to common URL limits.
+
+**Rejected.**
+- *ADR 0021's `POST /internal/users/lookup`, called per request with
+  `LEDGER_SERVICE_KEY`.* See above.
+- *Reading names from the leaderboard's generation rows.* See above.
+- *A `username` column on `ledger.accounts`, copied at grant time.* ADR 0021
+  rejects this as its own fallback. Accounts granted before the column existed
+  would have no name.
+- *A repeated `id` parameter on `GET /admin/users`.* Two response shapes on
+  one path, and a URL near its length limit at 200 ids.
+- *No names.* See above.
+
+**Notes.** The ledger still knows a user only by the `sub` of a token (ADR
+0003), and auth still does not know that credits exist: the lookup carries ids
+and returns names. Suspended users are included, an unknown id is left out,
+and an id sent twice is answered once.
+
+**Reversal trigger.** ADR 0021, or a later record, gives the ledger a general
+way to name users that includes suspended ones. Then the feed can carry
+`username` itself, and the browser-side join goes.
+
+---
+
+### D-NEW — Price history takes any valid token; the trade feed takes an administrator's
+
+**Date:** 2026-10-11 · **Ticket:** #63 · **Status:** active
+
+**Decision.** `GET .../price-history` needs any valid access token, like the
+snapshot. `GET .../trades` needs `role: admin` (`require_admin`), and a trader
+gets `403 not_an_administrator`.
+
+**Why.**
+- *Every point has already been broadcast.* The realtime service sends each
+  price frame to every subscriber of the market. An admin gate on the history
+  would protect nothing, and it would stop the market page from reusing the
+  route.
+- *The trade feed says who traded.* That is the exposure the previous entry's
+  Why describes. Administrators can already read it through
+  `/ledger/users/{id}/entries`, and traders cannot.
+
+**Rejected.**
+- *Admin-only price history.* It protects nothing, as above.
+- *A trader's feed with `user_id` removed.* It answers no story on the board,
+  and a size and a time are still enough to recognise a trader.
+
+**Notes.** Neither route writes or calls market_service, so neither can mint a
+grant or open a book. A market with no book reads empty with `200`, the same
+as the exposure read ("Exposure on a market with no book is a 200 with nothing
+in it, and writes nothing").
+
+**Reversal trigger.** A story asks for a public trade tape. It decides how to
+show traders, and goes through this entry and the one above.
 
 ---
 
