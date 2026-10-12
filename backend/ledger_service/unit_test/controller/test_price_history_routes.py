@@ -27,8 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.roles import UserRole
 from unit_test.conftest import bearer, strip_outcomes
-from unit_test.price_history_fixtures import gapped, traded
+from unit_test.price_history_fixtures import gapped, result_row_of, traded
 from unit_test.sell_fixtures import footprint, open_at_zero
+from unit_test.trade_feed_fixtures import settled_feed
 from unit_test.trade_fixtures import (
     Upstream,
     accounts_module,
@@ -314,6 +315,31 @@ async def test_a_point_is_a_price_frame_without_type_and_market_id(
         assert point["occurred_at"].endswith(("Z", "+00:00"))
         for price in point["prices"]:
             assert set(price) == _PRICE_FIELDS
+
+
+async def test_a_settled_market_s_result_is_on_the_wire_beside_its_points(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """The result's three fields as JSON: `result` the string `settled`, the
+    winner an id string, the time an aware instant, each equal to
+    `ledger.market_results`' own row read from a fresh session. The series
+    still ends at the last trade. Catches: the route building the response
+    without the result fields."""
+    scenario = await settled_feed(session)
+    market_id = scenario.upstream.market_id
+    async with session_factory()() as fresh:
+        winner, recorded_at = await result_row_of(fresh, market_id)
+
+    body = await _history(client, market_id, trader_headers)
+
+    assert type(body["result"]) is str
+    assert body["result"] == "settled"
+    assert type(body["winning_outcome_id"]) is str
+    assert body["winning_outcome_id"] == str(winner)
+    result_recorded_at = datetime.fromisoformat(body["result_recorded_at"])
+    assert result_recorded_at.tzinfo is not None
+    assert result_recorded_at == recorded_at
+    assert body["points"][-1]["state_version"] == scenario.loser_buy.state_version
 
 
 # =========================================================================

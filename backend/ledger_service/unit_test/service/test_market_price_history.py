@@ -13,13 +13,14 @@ are `core/test_price_history.py`'s; the wire shape and the guard are
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.errors import PriceHistoryInconsistent
+from service.price_history import price_history_of_market
 from unit_test.price_history_fixtures import (
     RAW_PRICES,
     WIRE_PRICES,
@@ -34,26 +35,6 @@ from unit_test.trade_fixtures import entities
 
 _PLUS_EIGHT = timezone(timedelta(hours=8))
 _HALF_A_QUANTUM = Decimal("0.00005")
-
-
-async def _price_history(
-    session: AsyncSession,
-    market_id: uuid.UUID,
-    *,
-    start: datetime | None = None,
-    end: datetime | None = None,
-):
-    """The read, with the signature agreed for this PR. The single place it is
-    written down."""
-    from service.price_history import price_history_of_market  # noqa: PLC0415
-
-    return await price_history_of_market(session, market_id, start=start, end=end)
-
-
-def _price_history_inconsistent():
-    from core.errors import PriceHistoryInconsistent  # noqa: PLC0415
-
-    return PriceHistoryInconsistent
 
 
 def _versions(history) -> list[int]:
@@ -77,7 +58,9 @@ async def test_a_buy_of_50_at_b_100_prices_outcome_0_at_0_6225(
     `b`, which gives 0.5498; raw engine prices that skip `priced`."""
     scenario = await traded(session)
 
-    history = await _price_history(session, scenario.market_id)
+    history = await price_history_of_market(
+        session, scenario.market_id, start=None, end=None
+    )
 
     by_version = {point.state_version: point for point in history.points}
     for state_version in (1, 2, 3):
@@ -98,7 +81,9 @@ async def test_the_opening_point_is_at_the_book_s_opened_at_at_even_prices(
     scenario = await traded(session)
     opened_at = await opened_at_of(session, scenario.market_id)
 
-    history = await _price_history(session, scenario.market_id)
+    history = await price_history_of_market(
+        session, scenario.market_id, start=None, end=None
+    )
 
     opening = history.points[0]
     assert opening.state_version == 0
@@ -111,8 +96,11 @@ async def test_the_opening_point_is_at_the_book_s_opened_at_at_even_prices(
 async def test_start_and_end_reach_the_window(session: AsyncSession) -> None:
     """The window's rules are core's; this is the wiring. `start` is the
     midpoint of trades 1 and 2 in +08:00, so trade 1 is the carry-in, and
-    `end` is trade 2's own time. Catches: the service dropping `start`
-    (`[0, 1, 2]`) or dropping `end` (`[1, 2, 3]`)."""
+    `end` is trade 2's own time. Each returned point's prices are the full
+    history's for the same `state_version`, the ticket's "same price as in the
+    full history". Catches: the service dropping `start` (`[0, 1, 2]`) or
+    dropping `end` (`[1, 2, 3]`); a windowed point priced from another
+    point's `q`."""
     scenario = await traded(session)
     times = await entry_times(
         session, [scenario.a_buy.transaction_id, scenario.b_buy.transaction_id]
@@ -122,9 +110,17 @@ async def test_start_and_end_reach_the_window(session: AsyncSession) -> None:
     assert t2 - t1 > timedelta(microseconds=2), "the midpoint needs room"
     midpoint = (t1 + (t2 - t1) / 2).astimezone(_PLUS_EIGHT)
 
-    history = await _price_history(session, scenario.market_id, start=midpoint, end=t2)
+    history = await price_history_of_market(
+        session, scenario.market_id, start=midpoint, end=t2
+    )
 
     assert _versions(history) == [1, 2]
+    full = await price_history_of_market(
+        session, scenario.market_id, start=None, end=None
+    )
+    full_prices = {point.state_version: point.prices for point in full.points}
+    for point in history.points:
+        assert point.prices == full_prices[point.state_version], point.state_version
 
 
 async def test_a_market_s_history_holds_only_its_own_trades(
@@ -140,8 +136,12 @@ async def test_a_market_s_history_holds_only_its_own_trades(
         [trade.transaction_id for trade in (*m1_trades, scenario.m2_buy)],
     )
 
-    m1 = await _price_history(session, scenario.m1.market_id)
-    m2 = await _price_history(session, scenario.m2.market_id)
+    m1 = await price_history_of_market(
+        session, scenario.m1.market_id, start=None, end=None
+    )
+    m2 = await price_history_of_market(
+        session, scenario.m2.market_id, start=None, end=None
+    )
 
     assert _versions(m1) == [0, 1, 2, 3]
     assert _times(m1)[1:] == [times[trade.transaction_id] for trade in m1_trades]
@@ -168,7 +168,7 @@ async def test_a_settled_market_reports_its_result_and_ends_at_its_last_trade(
         await entry_times(session, [scenario.loser_buy.transaction_id])
     )[scenario.loser_buy.transaction_id]
 
-    history = await _price_history(session, market_id)
+    history = await price_history_of_market(session, market_id, start=None, end=None)
 
     assert _versions(history) == [0, 1, 2]
     assert history.points[-1].occurred_at == last_trade_at
@@ -186,7 +186,9 @@ async def test_an_unsettled_market_reports_no_result_while_another_is_settled(
     await settled_feed(session)
     scenario = await traded(session)
 
-    history = await _price_history(session, scenario.market_id)
+    history = await price_history_of_market(
+        session, scenario.market_id, start=None, end=None
+    )
 
     assert history.result is None
     assert history.winning_outcome_id is None
@@ -204,10 +206,6 @@ async def test_a_gap_in_the_trades_is_price_history_inconsistent(
     `gapped`). Catches: the replay's `ValueError` escaping unmapped, or
     swallowed into a series labelled wrong."""
     upstream = await gapped(session)
-    refusal = _price_history_inconsistent()
 
-    with pytest.raises(refusal) as raised:
-        await _price_history(session, upstream.market_id)
-
-    assert raised.value.status_code == 500
-    assert raised.value.code == "price_history_inconsistent"
+    with pytest.raises(PriceHistoryInconsistent):
+        await price_history_of_market(session, upstream.market_id, start=None, end=None)

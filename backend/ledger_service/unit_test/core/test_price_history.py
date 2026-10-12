@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import pytest
 
-from core.price_history import PricePoint, ReplayedTrade, price_history_of
+from core.price_history import PricePoint, ReplayedTrade, price_history_of, window_of
 from core.pricing import Side, quantize_price
 
 B = Decimal("100")
@@ -152,14 +152,6 @@ def test_a_trade_out_of_state_version_order_is_refused(
 # =========================================================================
 # The window: `from`, `to` and the carry-in point
 # =========================================================================
-def _window_of():
-    """`core/price_history.py::window_of`, the route PR's. Reached lazily so
-    the replay's tests above stay green until it lands."""
-    from core.price_history import window_of  # noqa: PLC0415
-
-    return window_of
-
-
 def _points() -> list[PricePoint]:
     """The opening and three trades, one minute apart, each with prices of
     its own so a point returned in another's place shows."""
@@ -181,9 +173,7 @@ def test_from_and_to_each_include_a_point_exactly_at_them():
     (and `<` in place of `<=` on `end`, or a carry-in taken by `<=`)."""
     points = _points()
 
-    window = _window_of()(
-        points, start=points[1].occurred_at, end=points[2].occurred_at
-    )
+    window = window_of(points, start=points[1].occurred_at, end=points[2].occurred_at)
 
     assert window == points[0:3]
 
@@ -198,7 +188,7 @@ def test_a_from_at_or_before_the_opening_carries_nothing_in(before_opening):
     `points[max(index - 1, 0)]`, which repeats the opening."""
     points = _points()
 
-    window = _window_of()(points, start=_OPENED_AT - before_opening, end=None)
+    window = window_of(points, start=_OPENED_AT - before_opening, end=None)
 
     assert window == points
 
@@ -210,7 +200,7 @@ def test_the_carry_in_is_the_last_point_before_from_at_its_own_time():
     points = _points()
     start = points[1].occurred_at + timedelta(seconds=30)
 
-    window = _window_of()(points, start=start, end=None)
+    window = window_of(points, start=start, end=None)
 
     assert window == points[1:]
     assert window[0].occurred_at == points[1].occurred_at
