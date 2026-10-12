@@ -76,6 +76,7 @@ from service import (
     snapshot as snapshot_service,
     trading,
 )
+from service.book_prices import PricedOutcome
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -131,6 +132,14 @@ def _page_size(limit: int | None) -> int:
     """
     settings = get_settings()
     return min(limit or settings.default_page_size, settings.max_page_size)
+
+
+def _prices_out(priced: list[PricedOutcome]) -> list[OutcomePriceOut]:
+    """The wire form of a market's priced outcomes, in the order given."""
+    return [
+        OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
+        for p in priced
+    ]
 
 
 PageLimit = Annotated[
@@ -401,14 +410,8 @@ async def preview_trade(
         quantity=result.quantity,
         total=result.total,
         average_price=result.average_price,
-        prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.prices
-        ],
-        post_trade_prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.post_trade_prices
-        ],
+        prices=_prices_out(result.prices),
+        post_trade_prices=_prices_out(result.post_trade_prices),
     )
 
 
@@ -461,10 +464,7 @@ async def market_snapshot(
     return SnapshotOut(
         market_id=result.market_id,
         state_version=result.state_version,
-        prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.prices
-        ],
+        prices=_prices_out(result.prices),
         occurred_at=result.occurred_at,
     )
 
