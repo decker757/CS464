@@ -153,12 +153,15 @@ class AccountSuspended(LedgerError):
 
 class AuthUnavailable(LedgerError):
     """[4.2] #14 - the auth service did not say whether this account may trade.
+    [L-1] #38 - or did not name the leaderboard's holders.
 
-    A refused connection, a timeout, a 5xx, or any answer that is not a `200`,
-    a `401` or a `403 account_suspended`. Fails closed, as ADR 0017's gate
-    does. Its own code rather than `market_terms_unavailable`, which would
-    name the wrong service (ADR 0022). 503 because a retry in a moment may
-    work.
+    For the account check: a refused connection, a timeout, a 5xx, or any
+    answer that is not a `200`, a `401` or a `403 account_suspended`. For the
+    lookup (ADR 0021): a refused connection, a timeout, any answer but a
+    `200`, or a `200` whose body is not the documented list of users, on any
+    chunk. Fails closed, as ADR 0017's gate does. Its own code rather than
+    `market_terms_unavailable`, which would name the wrong service (ADR
+    0022). 503 because a retry in a moment may work.
     """
 
     status_code = 503

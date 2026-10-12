@@ -35,6 +35,12 @@ class Settings(ServiceSettings):
     # same reasons as `market_service_url`.
     auth_service_url: str = Field(default="http://auth:8000")
 
+    # --- The leaderboard's lookup key [L-1] #38, ADR 0021 -------------------
+    # Sent as `X-Service-Key` to auth's `/internal/users/lookup`. Required,
+    # with no default, for `jwt_secret`'s reason: a default key is a published
+    # key. ADR 0021 sets the 32-character floor.
+    ledger_service_key: str = Field(min_length=32)
+
     # --- The price broadcast's bus [F-9] #112, ADR 0010 --------------------
     # A default, unlike the realtime service's required one: a wrong Redis
     # here costs a broadcast, not the service (D-046). It must still parse, or
