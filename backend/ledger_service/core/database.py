@@ -20,7 +20,8 @@ from core.config import get_settings
 # public.
 SCHEMA = "ledger"
 
-# "A refresh writes under a transaction-level advisory lock, and writes nothing if a generation at least as new exists".
+# "A refresh writes under a transaction-level advisory lock, and writes
+# nothing if a generation at least as new exists".
 LEADERBOARD_REFRESH_LOCK_KEY = 464_038
 
 # A `session.info` flag, set by a successful flush and cleared when the
