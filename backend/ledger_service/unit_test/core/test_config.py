@@ -131,3 +131,53 @@ def test_the_app_boots_with_no_redis_url_in_the_environment(
         get_settings.cache_clear()
 
     assert app is not None
+
+
+# =========================================================================
+# LEADERBOARD_REFRESH_SECONDS — the board's interval. [L-1] #38
+# =========================================================================
+def test_the_leaderboard_refresh_interval_defaults_to_60(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DECISIONS.md, "The refresh runs every 60 seconds …": default `60`.
+    `stale` is twice it, so the default is the doc's "120 seconds by default"."""
+    monkeypatch.delenv("LEADERBOARD_REFRESH_SECONDS", raising=False)
+
+    settings = Settings(**_REQUIRED, _env_file=None)
+
+    assert settings.leaderboard_refresh_seconds == 60
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+@pytest.mark.parametrize("source", ["argument", "environment"])
+def test_the_leaderboard_refresh_interval_refuses_zero_and_negative(
+    value: str, source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`gt=0`: an interval of zero is a loop that never sleeps, and `stale`
+    would read true for every ranking. Fed for real, through the environment
+    as a deploy would, and the error must name this field. Catches: `ge=0`,
+    or no bound."""
+    monkeypatch.delenv("LEADERBOARD_REFRESH_SECONDS", raising=False)
+    overrides: dict[str, int] = {}
+    if source == "environment":
+        monkeypatch.setenv("LEADERBOARD_REFRESH_SECONDS", value)
+    else:
+        overrides["leaderboard_refresh_seconds"] = int(value)
+
+    with pytest.raises(ValidationError) as refused:
+        Settings(**_REQUIRED, **overrides, _env_file=None)
+
+    assert [error["loc"] for error in refused.value.errors()] == [
+        ("leaderboard_refresh_seconds",)
+    ]
+
+
+def test_the_leaderboard_refresh_interval_accepts_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The boundary from the other side. Catches: `gt=1`."""
+    monkeypatch.delenv("LEADERBOARD_REFRESH_SECONDS", raising=False)
+
+    settings = Settings(**_REQUIRED, leaderboard_refresh_seconds=1, _env_file=None)
+
+    assert settings.leaderboard_refresh_seconds == 1
