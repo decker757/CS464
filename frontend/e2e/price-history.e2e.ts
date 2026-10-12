@@ -18,9 +18,10 @@ test('an admin sees a trade in the price history and the trade log', async ({ pa
 
   await expect(page.getByText(market.question)).toBeVisible()
 
-  // The chart got points: wait until it stops loading, then neither the
-  // empty nor the failed message is showing.
-  await expect(page.getByText('Loading price history…')).toHaveCount(0)
+  // The chart drew one line per outcome. This has to be waited on first:
+  // the two "not showing" checks below are both true while the request is
+  // still in flight, so on their own they pass with the chart broken.
+  await expect(page.locator('.recharts-line-curve')).toHaveCount(market.outcomes.length)
   await expect(page.getByText('No price history yet.')).toHaveCount(0)
   await expect(page.getByText('Failed to load price history.')).toHaveCount(0)
 
