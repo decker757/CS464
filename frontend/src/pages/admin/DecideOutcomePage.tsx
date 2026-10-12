@@ -7,10 +7,9 @@ import { useAuth } from '../../context/AuthContext'
 import AppLayout from '../../components/layout/AppLayout'
 import BackLink from '../../components/ui/BackLink'
 import Button from '../../components/ui/Button'
-import Field from '../../components/ui/Field'
 import PageTitle from '../../components/ui/PageTitle'
+import ReasonModal from '../../components/ui/ReasonModal'
 import SectionCard from '../../components/ui/SectionCard'
-import TextArea from '../../components/ui/TextArea'
 import { latestProposalPerMarket, toPendingProposal, type PendingProposal } from '../../utils/proposals'
 
 const MIN_REASON_LENGTH = 10
@@ -218,30 +217,21 @@ export default function DecideOutcomePage() {
       </div>
 
       {showRejectModal && (
-        <div role="dialog" aria-modal="true" aria-label="Reject proposal" className="fixed inset-0 flex items-center justify-center bg-smu-navy/40 px-4">
-          <div className="w-full max-w-[480px] rounded-2xl border border-smu-gold/15 bg-white p-6 shadow-card">
-            <h2 className="mb-1 text-[17px] font-bold text-smu-navy">Reject this proposal?</h2>
-            <p className="mb-4 text-xs text-subtle">
-              This goes into the admin log and cannot be edited afterwards. The proposal will be cleared from the market.
-            </p>
-            <Field id="reject-reason" label="Reason *">
-              <TextArea
-                id="reject-reason"
-                value={reason}
-                onChange={e => setReason(e.target.value)}
-                placeholder="Explain why this proposal is being rejected."
-              />
-            </Field>
-            <div className="mt-4 flex justify-end gap-3">
-              <Button variant="outline" size="sm" onClick={() => setShowRejectModal(false)} disabled={rejecting}>
-                Cancel
-              </Button>
-              <Button variant="primary" size="sm" onClick={handleReject} disabled={!canDecideReason || rejecting}>
-                {rejecting ? 'Rejecting…' : 'Confirm Rejection'}
-              </Button>
-            </div>
-          </div>
-        </div>
+        <ReasonModal
+          ariaLabel="Reject proposal"
+          title="Reject this proposal?"
+          description="This goes into the admin log and cannot be edited afterwards. The proposal will be cleared from the market."
+          fieldId="reject-reason"
+          reason={reason}
+          onReasonChange={setReason}
+          placeholder="Explain why this proposal is being rejected."
+          canConfirm={canDecideReason}
+          isSubmitting={rejecting}
+          confirmLabel="Confirm Rejection"
+          confirmingLabel="Rejecting…"
+          onCancel={() => setShowRejectModal(false)}
+          onConfirm={handleReject}
+        />
       )}
     </AppLayout>
   )

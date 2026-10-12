@@ -43,6 +43,26 @@ export async function getMyBalance(): Promise<Balance> {
   return res.data
 }
 
+export interface AdminBalance {
+  user_id: string
+  // null for an id the ledger has never opened an account for — not an
+  // error, and not grounds to mint one: this route mints nothing
+  // (ledger-service.md, #188). balance reads "0.0000" in that case too.
+  account_id: string | null
+  balance: string
+}
+
+/**
+ * An administrator's read of any user's balance ([4.1] #13), by the id
+ * `GET /admin/users` on the auth service returns. Unlike `getMyBalance`,
+ * never mints a starting grant — a user who has not read their own balance
+ * or history yet still shows zero here.
+ */
+export async function getUserBalance(userId: string): Promise<AdminBalance> {
+  const res = await api.get<AdminBalance>(`${LEDGER_BASE}/ledger/users/${userId}/balance`)
+  return res.data
+}
+
 export interface Position {
   market_id: string
   outcome_id: string
@@ -125,6 +145,17 @@ export async function getMyEntries(params?: { cursor?: string }): Promise<Ledger
   return res.data
 }
 
+/**
+ * One page of any user's ledger history ([4.1] #13), by the id
+ * `GET /admin/users` returns — same shape and order as `getMyEntries`, and
+ * an id with no account reads as an empty page rather than an error. Never
+ * mints a grant, unlike the `/me` route.
+ */
+export async function getUserEntries(userId: string, params?: { cursor?: string }): Promise<LedgerEntryPage> {
+  const res = await api.get<LedgerEntryPage>(`${LEDGER_BASE}/ledger/users/${userId}/entries`, { params })
+  return res.data
+}
+
 export interface TradePreview {
   market_id: string
   state_version: number
@@ -180,5 +211,44 @@ export interface TradeResult {
  */
 export async function postTrade(marketId: string, data: TradeRequest): Promise<TradeResult> {
   const res = await api.post<TradeResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, data)
+  return res.data
+}
+
+// --- [2.2] #55: market exposure --------------------------------------
+
+export interface OutcomeExposure {
+  outcome_id: string
+  position: number
+  shares_outstanding: string
+  // What this outcome would pay out if it resolved true: null once the
+  // market is settled (docs/api/ledger-service.md).
+  payout_if_wins: string | null
+  // pool - payout_if_wins. Negative is what the platform would have to top
+  // up; null once the market is settled.
+  residue_if_wins: string | null
+}
+
+export interface MarketExposure {
+  market_id: string
+  // null when the ledger has never opened a book for this market yet.
+  opened_at: string | null
+  state_version: number | null
+  seed_subsidy: string | null
+  // seed_subsidy plus everything traders have paid in, minus everything
+  // sold. Null when there is no book yet, or once the market is settled.
+  pool: string | null
+  // True when any outcome's payout_if_wins is strictly greater than pool.
+  // Always false once the market is settled.
+  payout_exceeds_pool: boolean
+  // null until the ledger records how the market ended.
+  result: 'settled' | null
+  winning_outcome_id: string | null
+  outcomes: OutcomeExposure[]
+}
+
+/** Per-outcome shares outstanding and payout for one market, plus whether
+ * any outcome's payout would exceed the pool ([2.2] #6, admin panel #55). */
+export async function getMarketExposure(marketId: string): Promise<MarketExposure> {
+  const res = await api.get<MarketExposure>(`${LEDGER_BASE}/ledger/markets/${marketId}/exposure`)
   return res.data
 }
