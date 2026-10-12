@@ -8,10 +8,6 @@ replay (DECISIONS.md, "The `from`/`to` window and the carry-in point are
 applied in `core`, after the replay of every trade"). The result sits beside
 the points, which end at the last trade ("Settlement adds no point to the
 price history; the series ends at the last trade").
-
-Like the exposure read, it writes nothing, opens no book, mints no grant and
-never calls market_service or auth ("Price history takes any valid token; the
-trade feed takes an administrator's", Notes).
 """
 
 from __future__ import annotations
@@ -91,7 +87,10 @@ async def price_history_of_market(
     end: datetime | None,
 ) -> PriceHistory:
     """Every price this market has had inside `start` and `end`, plus the
-    carry-in point when `start` is given. None is no bound. Writes nothing.
+    carry-in point when `start` is given. None is no bound.
+
+    Writes nothing and never calls market_service or auth ("Price history takes
+    any valid token; the trade feed takes an administrator's", Notes).
 
     Raises `MarketBookIncomplete` for a book the engine cannot price, and
     `PriceHistoryInconsistent` for trades whose `state_version`s do not run
@@ -107,7 +106,7 @@ async def price_history_of_market(
             result_recorded_at=None,
         )
 
-    outcomes = await book_prices._read(session, market_id)
+    outcomes = await book_prices.list_book_outcomes(session, market_id)
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
 
     trades = await _replayed_trades_of(session, book.pool_account_id, outcomes)
