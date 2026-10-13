@@ -179,7 +179,8 @@ def _transaction_of(
     """The transaction and one entry per leg, all carrying `stamp`.
 
     Builds only: the caller adds, flushes and commits. It returns the entries
-    as well as the transaction so `post` keeps its explicit `add_all`.
+    as well as the transaction so `post_all` adds a batch's entries with one
+    explicit `add_all`.
     """
     transaction = Transaction(
         kind=kind,
@@ -288,72 +289,18 @@ async def post(
     the newest entry on its accounts, whichever is later. Assert on the
     returned transaction's `occurred_at`.
     """
-    legs = _quantized_legs(legs)
-
-    _require_balanced(legs)
-    fingerprint = _fingerprint(kind, legs)
-
-    # Recorded on entry, not asked at each replay branch: by the second, the
-    # SAVEPOINT has flushed the caller's writes and its rollback has expired
-    # them, so only the flush flag still sees them. An answer taken here does
-    # not depend on it. DECISIONS.md, "`posting.post` refuses to replay into a
-    # dirty session".
-    caller_pending = has_pending_writes(session)
-
-    await accounts.lock(session, [leg.account.id for leg in legs])
-
-    existing = await find_by_idempotency_key(session, idempotency_key)
-    if existing is not None:
-        # The commit below would flush the caller's pending writes (a trade's
-        # `q` and position) beside a transaction that wrote nothing. Raised
-        # before it: nothing can discard only the caller's writes.
-        if caller_pending:
-            raise PendingWritesOnReplay
-
-        # Committed although nothing was written, to release the account
-        # locks rather than hold them for the rest of the request. ADR 0015.
-        transaction = _replay(existing, fingerprint)
-        await session.commit()
-        return transaction
-
-    await _refuse_overdrafts(session, legs)
-
-    # Under the lock, never on the way in: a stamp taken before it lets a
-    # movement that queued behind a later-stamped one commit second and list
-    # first, with a running balance the user never had. #187.
-    stamp = await _stamp_after_newest(
-        session, {leg.account.id for leg in legs}, now or datetime.now(UTC)
+    (transaction,) = await post_all(
+        session,
+        [
+            Movement(
+                idempotency_key=idempotency_key,
+                kind=kind,
+                legs=legs,
+                context=context,
+            )
+        ],
+        now=now,
     )
-
-    transaction, entries = _transaction_of(
-        kind=kind,
-        idempotency_key=idempotency_key,
-        fingerprint=fingerprint,
-        legs=legs,
-        context=context,
-        stamp=stamp,
-    )
-
-    try:
-        async with session.begin_nested():
-            session.add(transaction)
-            session.add_all(entries)
-            await session.flush()
-    except IntegrityError:
-        # A race on one key that the account locks did not queue, so the legs
-        # share no account: a key reused for different money. Re-read so
-        # `_replay` refuses it; the savepoint keeps the caller's earlier work.
-        existing = await find_by_idempotency_key(session, idempotency_key)
-        if existing is None:
-            raise
-        # Same refusal, same reason: `begin_nested` flushed the caller's writes
-        # before the SAVEPOINT, so its rollback kept them and the commit below
-        # would land them beside another request's transaction.
-        if caller_pending:
-            raise PendingWritesOnReplay
-        transaction = _replay(existing, fingerprint)
-
-    await session.commit()
     return transaction
 
 
@@ -372,12 +319,13 @@ async def post_all(
     `PendingWritesOnReplay` when a replay would commit the caller's pending
     writes.
 
-    `post`'s order over a list: every account in the batch is locked once,
-    ascending by id (the caller's book lock comes first), then the keys are
-    looked up, USER overdrafts are checked netted across the whole batch, and
-    one stamp is taken under the locks. Movement *i* lands at that stamp plus
-    *i* µs. `now` is one floor for the batch. DECISIONS.md, "`posting.post_all`
-    takes a list of `Movement`s, commits once, and keeps `post`'s SAVEPOINT".
+    The order is the design: round, refuse unbalanced legs, lock every account
+    in the batch once, ascending by id (the caller's book lock comes first),
+    then look the keys up, check USER overdrafts netted across the whole batch,
+    and take one stamp, all under the locks. Movement *i* lands at that stamp
+    plus *i* µs. `now` is one floor for the batch. DECISIONS.md,
+    "`posting.post_all` takes a list of `Movement`s, commits once, and keeps
+    `post`'s SAVEPOINT".
     """
     _refuse_if_malformed_batch(movements)
 
@@ -390,7 +338,10 @@ async def post_all(
         for movement, legs in zip(movements, batch_legs, strict=True)
     }
 
-    # Recorded on entry, as in `post`.
+    # Recorded on entry, not asked at each replay branch: by the second, the
+    # SAVEPOINT has flushed the caller's writes and its rollback has expired
+    # them, so only the flush flag still sees them. DECISIONS.md,
+    # "`posting.post` refuses to replay into a dirty session".
     caller_pending = has_pending_writes(session)
 
     all_legs: list[Leg] = []
@@ -431,8 +382,9 @@ async def post_all(
             session.add_all(entries)
             await session.flush()
     except IntegrityError:
-        # `post`'s race handler over the batch: a key raced on accounts the
-        # locks did not share. The savepoint kept the caller's earlier work.
+        # A race on a key that the account locks did not queue, so the legs
+        # share no account: a key reused for different money. Re-read so
+        # `_replay_batch` refuses it; the savepoint kept the caller's work.
         existing = await _list_by_idempotency_keys(session, keys)
         if not existing:
             raise
