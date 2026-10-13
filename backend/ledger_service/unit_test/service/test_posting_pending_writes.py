@@ -175,15 +175,15 @@ async def test_a_replay_found_by_the_insert_race_is_refused_too(
     """
     user, platform = await _seed_with_a_dirty_outcome(session)
 
-    real = posting().find_by_idempotency_key
+    real = posting()._list_by_idempotency_keys
     lookups = 0
 
-    async def miss_the_first(own: AsyncSession, key: str):
+    async def miss_the_first(own: AsyncSession, keys: list[str]):
         nonlocal lookups
         lookups += 1
-        return None if lookups == 1 else await real(own, key)
+        return [] if lookups == 1 else await real(own, keys)
 
-    monkeypatch.setattr(posting(), "find_by_idempotency_key", miss_the_first)
+    monkeypatch.setattr(posting(), "_list_by_idempotency_keys", miss_the_first)
 
     with pytest.raises(errors().PendingWritesOnReplay):
         await _replay(session, user, platform)
