@@ -903,12 +903,8 @@ class MarketTradeListResponse(BaseModel):
     )
 
 
-class LeaderboardRowOut(BaseModel):
-    """One user's place on the board. [L-1] #38
-
-    Only these three fields: the stored `user_id` is never sent, so nothing
-    on this route identifies a caller.
-    """
+class LeaderboardStandingOut(BaseModel):
+    """A user's rank, username and net worth on one stored ranking. [L-1] #38"""
 
     rank: int = Field(description="1..N with no ties: the order is the rank.")
     username: str
@@ -919,6 +915,14 @@ class LeaderboardRowOut(BaseModel):
     @field_serializer("net_worth")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+
+class LeaderboardRowOut(LeaderboardStandingOut):
+    """One user's place on the board. [L-1] #38
+
+    Only these three fields: the stored `user_id` is never sent, so nothing
+    on this route identifies a caller.
+    """
 
 
 class LeaderboardPageOut(BaseModel):
