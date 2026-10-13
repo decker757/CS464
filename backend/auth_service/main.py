@@ -10,8 +10,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from controller.admin_routes import router as admin_router
-from controller.internal_routes import router as internal_router
 from controller.errors import register_error_handlers
+from controller.internal_routes import router as internal_router
 from controller.routes import router as auth_router
 from core.config import get_settings
 from core.database import dispose_engine
