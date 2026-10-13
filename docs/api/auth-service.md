@@ -370,8 +370,6 @@ Show the message and leave the row as it was.
 
 ## POST /internal/users/lookup
 
-Accepted under ADR 0021 and not built yet.
-
 `200`. **Not for the frontend.** It is a service-to-service read with
 exactly one caller: the ledger's leaderboard refresh ([L-1] #38). A browser
 cannot use it, because it needs a key no browser holds. Why it exists, and

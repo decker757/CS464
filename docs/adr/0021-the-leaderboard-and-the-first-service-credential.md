@@ -3,7 +3,10 @@
 - **Status:** Accepted. Ernest agreed to the lookup route, its key and its settings on 2026-10-11.
 - **Date:** 2026-10-11
 - **Affects:** [L-1] #38, [L-2] #39, [L-3] #40, [FE][L-1] #58, [4.2] #14, [BE] #221, [T-7] #27, ADR 0002, ADR 0003, ADR 0009, ADR 0010, ADR 0015, ADR 0018, ADR 0019
-- **Implemented in:** nothing yet. This record precedes [L-1] #38, which is the first code that has to obey it.
+- **Implemented in:** the ledger's half of [L-1] #38 — the generations, the
+  refresh, its client and the read route — and auth's half, #306's
+  `POST /internal/users/lookup`. The loop that runs the refresh, [L-3] #40,
+  is not built yet.
 
 ## Context
 

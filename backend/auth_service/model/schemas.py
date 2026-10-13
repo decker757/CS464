@@ -222,3 +222,36 @@ class SuspensionResponse(BaseModel):
         ),
         examples=[900],
     )
+
+
+class UserLookupIn(BaseModel):
+    """Which accounts to name, for another service. [L-1] #38, ADR 0021.
+
+    Bounded because the ledger sends larger sets in chunks of 500. Anything
+    else in the body is refused, so a caller cannot ask for more than the
+    three fields `DirectoryUserOut` holds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class DirectoryUserOut(BaseModel):
+    """One account as another service sees it: exactly three fields.
+
+    No email and no role. A separate class rather than a subset of `UserOut`,
+    so a field added there can never reach this answer by inheritance.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    username: str
+    is_suspended: bool
+
+
+class UserLookupOut(BaseModel):
+    """The accounts that exist among those asked for, ordered by `id`."""
+
+    users: list[DirectoryUserOut]

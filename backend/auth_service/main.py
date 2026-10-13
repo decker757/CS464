@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from controller.admin_routes import router as admin_router
 from controller.errors import register_error_handlers
+from controller.internal_routes import router as internal_router
 from controller.routes import router as auth_router
 from core.config import get_settings
 from core.database import dispose_engine
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(internal_router)
 
     @app.get("/health", tags=["ops"], summary="Liveness and readiness probe")
     async def health() -> dict[str, str]:

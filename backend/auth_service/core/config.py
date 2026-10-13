@@ -32,6 +32,12 @@ class Settings(ServiceSettings):
     cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     cookie_domain: str | None = None
 
+    # --- The leaderboard's lookup key [L-1] #38, ADR 0021 -----------------
+    # What the ledger presents as `X-Service-Key` to `/internal/users/lookup`.
+    # Required, with no default, for `jwt_secret`'s reason: a default key is a
+    # published key. ADR 0021 sets the 32-character floor.
+    ledger_service_key: str = Field(min_length=32)
+
     # --- Registration policy --------------------------------------------
     password_min_length: int = 12
 

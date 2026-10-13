@@ -38,6 +38,30 @@ def test_a_short_jwt_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
         Settings()
 
 
+def test_a_short_ledger_service_key_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[L-1] #38, ADR 0021. A short key is a guessable one, and it opens a read
+    of every username."""
+    monkeypatch.setenv("LEDGER_SERVICE_KEY", "x" * 31)
+
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_a_missing_ledger_service_key_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Required, has no default ... or the service refuses to boot", in
+    `docs/api/auth-service.md`. Catches a default being added later, which the
+    length test alone would not: a default long enough to pass it is a
+    published key, the reason JWT_SECRET has none either."""
+    monkeypatch.delenv("LEDGER_SERVICE_KEY", raising=False)
+
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)
+
+
 @pytest.mark.parametrize("field", ["DEFAULT_PAGE_SIZE", "MAX_PAGE_SIZE"])
 def test_a_page_size_of_zero_is_refused(
     monkeypatch: pytest.MonkeyPatch, field: str
