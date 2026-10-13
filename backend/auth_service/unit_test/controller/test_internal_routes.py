@@ -106,15 +106,16 @@ async def test_the_key_does_not_open_another_route(client: AsyncClient) -> None:
 
 # --- the request ----------------------------------------------------------
 @pytest.mark.parametrize("count", [0, 501])
-async def test_a_count_outside_one_to_five_hundred_is_422_invalid_request(
+async def test_a_count_outside_one_to_five_hundred_is_422(
     client: AsyncClient, count: int
 ) -> None:
     ids = [str(uuid.uuid4()) for _ in range(count)]
 
     response = await client.post(LOOKUP, json={"user_ids": ids}, headers=_key())
 
+    # FastAPI's own 422: auth has no `invalid_request` envelope (the ledger
+    # does), and docs/api/auth-service.md lists this one as "a different shape".
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_request"
 
 
 async def test_five_hundred_ids_are_accepted(client: AsyncClient) -> None:
@@ -135,5 +136,6 @@ async def test_any_other_field_in_the_body_is_refused(
         headers=_key(),
     )
 
+    # FastAPI's own 422: auth has no `invalid_request` envelope (the ledger
+    # does), and docs/api/auth-service.md lists this one as "a different shape".
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_request"
