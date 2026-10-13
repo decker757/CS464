@@ -6098,6 +6098,10 @@ matter. What the guard needs is the record, as an ORM write, pending when
 This corrects the Why of "The ledger writes the settlement's audit entry,
 through its own seam onto `shared/audit.py`", which says the order matters.
 
+*Amended 2026-10-13 by #315: `post` is now `post_all` of one movement, so
+this check is the only copy. The rule, and the answer recorded on entry,
+are unchanged. See "`post` is `post_all` of one movement".*
+
 ---
 
 ### D-NEW — `post_all` nets each USER account across the whole batch, through `_refuse_overdrafts`
