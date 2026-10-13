@@ -478,7 +478,7 @@ Errors:
 | --- | --- | --- |
 | 400 | `malformed_cursor` | `cursor` was not one this service issued. |
 | 401 | `invalid_token` | Missing, malformed or expired access token. |
-| 409 | `leaderboard_refreshed` | The cursor's ranking has been replaced twice since its first page. Start again from page one and replace the list. |
+| 409 | `leaderboard_refreshed` | The cursor's ranking has been replaced twice since its first page. A cursor whose ranking no longer exists, or never did, is also `409 leaderboard_refreshed`. Start again from page one and replace the list. |
 | 422 | `invalid_request` | For example `limit=0`. |
 
 ## GET /ledger/users/{user_id}/balance and /entries

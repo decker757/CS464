@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import ColumnElement, Row, Select, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.paging import Position, decode_cursor, encode_cursor
+from core.paging import Position, decode_cursor, encode_cursor, page_cut_of
 from core.pricing import QUANTUM, Side, per_share
 from model.entities import Account, AccountKind, Entry, Transaction, TransactionKind
 from model.schemas import MarketTradeOut, TradeFields
@@ -220,18 +220,9 @@ def _page_query(
     ).order_by(page.c.created_at.desc(), page.c.id.desc())
 
 
-def _page_cut_of(
-    fetched: list[Row[Any]], limit: int
-) -> tuple[list[Row[Any]], str | None]:
-    """The first `limit` of the rows fetched with `limit + 1`, and the cursor
-    after them: None unless the extra row proves there is more."""
-    page = fetched[:limit]
-    next_cursor = (
-        encode_cursor(page[-1].created_at, page[-1].id)
-        if len(fetched) > limit
-        else None
-    )
-    return page, next_cursor
+def _cursor_of(row: Row[Any]) -> str:
+    """The cursor that resumes the feed just after `row`."""
+    return encode_cursor(row.created_at, row.id)
 
 
 def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
@@ -281,7 +272,7 @@ async def _history_of_account(
         (await session.execute(_page_query(account.id, position, limit + 1))).all()
     )
 
-    page, next_cursor = _page_cut_of(fetched, limit)
+    page, next_cursor = page_cut_of(fetched, limit, cursor_of=_cursor_of)
 
     return EntryPage(
         rows=[_history_row_of(account.id, row) for row in page],
@@ -442,5 +433,5 @@ async def list_market_trades(
         ).all()
     )
 
-    page, next_cursor = _page_cut_of(fetched, limit)
+    page, next_cursor = page_cut_of(fetched, limit, cursor_of=_cursor_of)
     return TradePage(rows=[_market_trade_of(row) for row in page], next_cursor=next_cursor)

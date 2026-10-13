@@ -32,6 +32,7 @@ administrator reading somebody else's writes nothing (#188).
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
 
@@ -55,6 +56,7 @@ from model.schemas import (
     BalanceOut,
     ExposureOut,
     ExposureOutcomeOut,
+    LeaderboardPageOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
     MarketTradeListResponse,
@@ -73,6 +75,7 @@ from model.schemas import (
 )
 from service import (
     exposure as exposure_service,
+    leaderboard as leaderboard_service,
     ledger_service,
     portfolio as portfolio_service,
     preview as preview_service,
@@ -687,6 +690,61 @@ async def market_trades(
     )
     return MarketTradeListResponse(
         trades=page.rows, next_cursor=page.next_cursor, has_more=page.has_more
+    )
+
+
+_LEADERBOARD_DESCRIPTION = (
+    "[L-1] #38. Every ranked user's rank, username and net worth, from the "
+    "most recent ranking the ledger has computed, in rank order. Any valid "
+    "access token.\n\n"
+    "`stale` is true when `computed_at` is more than two refresh intervals "
+    "old. Before any refresh, `computed_at` is null, `stale` is true and "
+    "`rows` is empty.\n\n"
+    "A cursor holds you to the ranking its first page came from. The ledger "
+    "keeps the ranking before the current one, so a cursor survives one "
+    "refresh; after the second it is `409 leaderboard_refreshed`: start again "
+    "from page one.\n\n"
+    "**Writes nothing.** Unlike the balance, history and portfolio, reading "
+    "the leaderboard does not mint the caller's starting grant."
+)
+
+
+@router.get(
+    "/leaderboard",
+    response_model=LeaderboardPageOut,
+    summary="The leaderboard",
+    description=_LEADERBOARD_DESCRIPTION,
+    responses={
+        400: {"description": "`cursor` was not one this service issued."},
+        401: {"description": "Missing, malformed or expired access token."},
+        409: {
+            "description": (
+                "`leaderboard_refreshed`: the cursor's ranking has been "
+                "replaced. Start again from page one."
+            )
+        },
+        422: _invalid_request("`invalid_request`: `limit` below 1."),
+    },
+)
+async def leaderboard(
+    user: CurrentUser,
+    session: DbSession,
+    cursor: PageCursor = None,
+    limit: PageLimit = None,
+) -> LeaderboardPageOut:
+    # DECISIONS.md, "One clock per request, read at the controller, Python's
+    # not the transaction's": `stale` is judged against this one reading.
+    now = datetime.now(UTC)
+    page = await leaderboard_service.list_page(
+        session, limit=_page_size(limit), cursor=cursor, now=now
+    )
+    return LeaderboardPageOut(
+        computed_at=page.computed_at,
+        stale=page.stale,
+        ranked_users=page.ranked_users,
+        rows=page.rows,
+        next_cursor=page.next_cursor,
+        has_more=page.has_more,
     )
 
 

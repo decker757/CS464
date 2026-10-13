@@ -903,6 +903,49 @@ class MarketTradeListResponse(BaseModel):
     )
 
 
+class LeaderboardRowOut(BaseModel):
+    """One user's place on the board. [L-1] #38
+
+    Only these three fields: the stored `user_id` is never sent, so nothing
+    on this route identifies a caller.
+    """
+
+    rank: int = Field(description="1..N with no ties: the order is the rank.")
+    username: str
+    net_worth: Decimal = Field(
+        description="The portfolio's `net_worth`, at scale 4, as of `computed_at`."
+    )
+
+    @field_serializer("net_worth")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class LeaderboardPageOut(BaseModel):
+    """One page of one stored ranking. [L-1] #38, [L-3] #40"""
+
+    computed_at: datetime | None = Field(
+        description="When this ranking's valuation began. Null before any refresh."
+    )
+    stale: bool = Field(
+        description="True when `computed_at` is more than two refresh intervals old."
+    )
+    ranked_users: int = Field(
+        description="Users in the whole ranking, the same on every page of it."
+    )
+    rows: list[LeaderboardRowOut]
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pass back as `cursor` for the next page of this same ranking. "
+            "Null means this page is the end. Opaque: echo it unmodified."
+        ),
+    )
+    has_more: bool = Field(
+        description="Equivalent to `next_cursor` being non-null."
+    )
+
+
 class InvalidFieldOut(BaseModel):
     """One part of a request that failed validation, as pydantic reported it."""
 

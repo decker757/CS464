@@ -17,12 +17,27 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import groupby
+from typing import Any
 
 import httpx
-from sqlalchemy import delete, func, insert, select, true
+from sqlalchemy import (
+    Row,
+    ScalarSelect,
+    Select,
+    and_,
+    delete,
+    func,
+    insert,
+    select,
+    true,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.config import get_settings
 from core.database import LEADERBOARD_REFRESH_LOCK_KEY, release_before_calling_out
+from core.errors import LeaderboardRefreshed
+from core.leaderboard import is_stale
+from core.paging import decode_rank_cursor, encode_rank_cursor, page_cut_of
 from model.entities import (
     Account,
     AccountKind,
@@ -32,6 +47,7 @@ from model.entities import (
     MarketOutcome,
     Position,
 )
+from model.schemas import LeaderboardRowOut
 from service import user_directory, valuation
 
 logger = logging.getLogger(__name__)
@@ -39,6 +55,22 @@ logger = logging.getLogger(__name__)
 # The new generation and the one before it. DECISIONS.md, "The leaderboard is
 # stored as generations, and a refresh swaps the whole ranking in one commit".
 _GENERATIONS_KEPT = 2
+
+
+@dataclass(frozen=True)
+class LeaderboardPage:
+    """One page of one stored ranking. `computed_at` is None, and `stale`
+    true, when no refresh has completed."""
+
+    computed_at: datetime | None
+    stale: bool
+    ranked_users: int
+    rows: list[LeaderboardRowOut]
+    next_cursor: str | None
+
+    @property
+    def has_more(self) -> bool:
+        return self.next_cursor is not None
 
 
 @dataclass(frozen=True)
@@ -223,6 +255,53 @@ async def _write_generation(
         await session.commit()
 
 
+def _page_query(
+    generation_id: uuid.UUID | None, last_rank: int | None, limit: int
+) -> Select[Any]:
+    """The served generation joined to its entries after `last_rank`, in rank
+    order, `limit + 1` of them.
+
+    An outer join, so a generation with no entries still comes back as one row
+    with null entry columns, and its `computed_at` is served.
+    """
+    served_generation: uuid.UUID | ScalarSelect[uuid.UUID]
+    if generation_id is not None:
+        served_generation = generation_id
+    else:
+        served_generation = (
+            select(LeaderboardGeneration.id)
+            .order_by(LeaderboardGeneration.computed_at.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+
+    entries_on = LeaderboardEntry.generation_id == LeaderboardGeneration.id
+    if last_rank is not None:
+        entries_on = and_(entries_on, LeaderboardEntry.rank > last_rank)
+
+    return (
+        select(
+            LeaderboardGeneration.id.label("generation_id"),
+            LeaderboardGeneration.computed_at,
+            LeaderboardGeneration.ranked_users,
+            LeaderboardEntry.rank,
+            LeaderboardEntry.username,
+            LeaderboardEntry.net_worth,
+        )
+        .select_from(LeaderboardGeneration)
+        .outerjoin(LeaderboardEntry, entries_on)
+        .where(LeaderboardGeneration.id == served_generation)
+        .order_by(LeaderboardEntry.rank)
+        .limit(limit + 1)
+    )
+
+
+def _empty_board() -> LeaderboardPage:
+    return LeaderboardPage(
+        computed_at=None, stale=True, ranked_users=0, rows=[], next_cursor=None
+    )
+
+
 async def refresh(
     session_factory: async_sessionmaker[AsyncSession],
     auth_client: httpx.AsyncClient,
@@ -251,3 +330,48 @@ async def refresh(
 
     ranking = _ranking_of(net_worths, users)
     await _write_generation(session_factory, computed_at, ranking)
+
+
+async def list_page(
+    session: AsyncSession, *, limit: int, cursor: str | None, now: datetime
+) -> LeaderboardPage:
+    """One page of the stored ranking, in rank order. [L-1] #38
+
+    Without a cursor it reads the newest generation; with one, the generation
+    the cursor names. Raises `MalformedCursor` before any query, and
+    `LeaderboardRefreshed` when the named generation is not stored. Writes
+    nothing, takes no lock and mints no grant. `now` is the request's one
+    clock, read at the controller.
+    """
+    generation_id: uuid.UUID | None = None
+    last_rank: int | None = None
+    if cursor is not None:
+        generation_id, last_rank = decode_rank_cursor(cursor)
+
+    fetched = (await session.execute(_page_query(generation_id, last_rank, limit))).all()
+    if not fetched:
+        if cursor is not None:
+            raise LeaderboardRefreshed
+        return _empty_board()
+
+    generation = fetched[0]
+    entries = [row for row in fetched if row.rank is not None]
+
+    def cursor_of(row: Row[Any]) -> str:
+        return encode_rank_cursor(generation.generation_id, row.rank)
+
+    page, next_cursor = page_cut_of(entries, limit, cursor_of=cursor_of)
+    return LeaderboardPage(
+        computed_at=generation.computed_at,
+        stale=is_stale(
+            generation.computed_at,
+            now=now,
+            refresh_seconds=get_settings().leaderboard_refresh_seconds,
+        ),
+        ranked_users=generation.ranked_users,
+        rows=[
+            LeaderboardRowOut(rank=row.rank, username=row.username, net_worth=row.net_worth)
+            for row in page
+        ],
+        next_cursor=next_cursor,
+    )
