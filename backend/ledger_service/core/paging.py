@@ -43,7 +43,8 @@ def page_cut_of(
     """The first `limit` of the rows fetched with `limit + 1`, and the cursor
     after them: None unless the extra row proves there is more.
 
-    `cursor_of` turns the page's last row into the next cursor.
+    `cursor_of` turns the page's last row into the next cursor. `limit` is at
+    least 1, which every caller's `_page_size` guarantees.
     """
     page = fetched[:limit]
     next_cursor = cursor_of(page[-1]) if len(fetched) > limit else None
