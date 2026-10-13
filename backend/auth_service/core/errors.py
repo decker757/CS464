@@ -73,6 +73,18 @@ class InvalidToken(AuthError):
     message = "Not authenticated."
 
 
+class InvalidServiceKey(AuthError):
+    """[L-1] #38 - `/internal/users/lookup` without the right `X-Service-Key`.
+
+    One error for a missing and a wrong key, so the refusal tells a caller
+    nothing about which. ADR 0021.
+    """
+
+    status_code = 401
+    code = "invalid_service_key"
+    message = "Missing or incorrect service key."
+
+
 class NotAnAdministrator(AuthError):
     """[4.4] #16 - authenticated, but not an admin.
 
