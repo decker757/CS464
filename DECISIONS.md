@@ -8691,6 +8691,63 @@ Then a stored table, which would also take over the window.
 
 ---
 
+### D-NEW — The caller's own row is read in the page's statement, from the generation served
+
+**Date:** 2026-10-13 · **Ticket:** #269 · **Status:** active
+
+**Decision.** `GET /ledger/leaderboard` returns `me`, which is the caller's
+`{rank, username, net_worth}` or `null`, and an `is_me` on every row. Both
+are read from the generation the page is served from. That is the cursor's
+generation when there is a cursor, and the newest otherwise, so `me` is the
+same on every page of one walk.
+
+Both are read in the page's one statement. `_page_query` gains a second outer
+join to `ledger.leaderboard_entries` on `generation_id` = the served
+generation and `user_id` = the token's `sub`. The unique
+`(generation_id, user_id)` index limits that join to one row, so it adds
+columns to the page and never rows. `is_me` is computed in SQL as
+`user_id = <the caller>`. `me.username` is the stored username, so it matches
+the caller's row character for character. No user id appears in any response.
+
+`me` is `null` when there is no generation, when the caller has no ledger
+account, when the caller was granted after the generation was computed, or
+when the caller was suspended at the time it was computed. A later suspension
+still shows `me` until the next refresh. The response does not say which case
+applies.
+
+**Why.** `core/database.py` sets no isolation level, so the session runs at
+Postgres's default READ COMMITTED, and each statement takes its own snapshot.
+Between two statements a refresh can commit, and its prune can delete the
+cursor's generation. The second statement would then find no entry for the
+caller and answer `me: null` beside rows the caller is in. One statement sees
+one snapshot, so the page and `me` cannot disagree. That is the argument of
+"Preview reads `q` and `state_version` in one SQL statement", applied to a
+generation instead of a book.
+
+**Rejected.**
+- *A second query for `me`.* It has the race above.
+- *`REPEATABLE READ` on this route.* It would make the two statements
+  consistent. But it would be the only ledger read that sets an isolation
+  level, and it would buy what one statement already gives.
+- *`is_me` derived from `rank == me.rank`.* One bug in `me` would then break
+  two fields. Computed in SQL from `user_id`, each field is checked on its
+  own.
+- *`me` from the newest generation.* On a page reached by a cursor into the
+  previous generation, its rank and net worth would not match the rows
+  served.
+
+**Notes.** No test that is free of timing can tell one statement from two:
+the race needs a refresh to commit between them. The PR says so under Known
+gaps. This entry settles the Notes of "The leaderboard read writes nothing,
+and mints no grant": a caller with no account gets `me: null` and still has
+no account afterwards.
+
+**Reversal trigger.** The read moves into a transaction that pins one
+snapshot for other reasons, or pruning stops happening in the refresh's
+commit. Either way, `me` could then be a second query.
+
+---
+
 ## Open — decided by nobody yet
 
 Move these into the log above when they're settled.

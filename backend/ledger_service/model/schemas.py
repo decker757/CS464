@@ -903,12 +903,8 @@ class MarketTradeListResponse(BaseModel):
     )
 
 
-class LeaderboardRowOut(BaseModel):
-    """One user's place on the board. [L-1] #38
-
-    Only these three fields: the stored `user_id` is never sent, so nothing
-    on this route identifies a caller.
-    """
+class LeaderboardStandingOut(BaseModel):
+    """A user's rank, username and net worth on one stored ranking. [L-1] #38"""
 
     rank: int = Field(description="1..N with no ties: the order is the rank.")
     username: str
@@ -921,8 +917,21 @@ class LeaderboardRowOut(BaseModel):
         return str(value)
 
 
+class LeaderboardRowOut(LeaderboardStandingOut):
+    """One user's place on the board. [L-1] #38, [BE][L-2] #269
+
+    The standing's three fields and `is_me`, true on the caller's own row. The
+    stored `user_id` is never sent: `is_me` is the only thing on a row that
+    depends on the caller, and it identifies them only to themselves.
+    """
+
+    is_me: bool = Field(
+        description="True on the caller's own row, false on every other."
+    )
+
+
 class LeaderboardPageOut(BaseModel):
-    """One page of one stored ranking. [L-1] #38, [L-3] #40"""
+    """One page of one stored ranking. [L-1] #38, [L-3] #40, [BE][L-2] #269"""
 
     computed_at: datetime | None = Field(
         description="When this ranking's valuation began. Null before any refresh."
@@ -932,6 +941,13 @@ class LeaderboardPageOut(BaseModel):
     )
     ranked_users: int = Field(
         description="Users in the whole ranking, the same on every page of it."
+    )
+    me: LeaderboardStandingOut | None = Field(
+        description=(
+            "The caller's own row in the ranking this page came from, on this "
+            "page or not. Null when the caller is not in that ranking, and the "
+            "response does not say why."
+        )
     )
     rows: list[LeaderboardRowOut]
     next_cursor: str | None = Field(

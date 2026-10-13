@@ -1,10 +1,12 @@
-"""Who may read the leaderboard, and its shape on the wire. [L-1] #38, [L-3] #40
+"""Who may read the leaderboard, and its shape on the wire. [L-1] #38, [L-3] #40,
+[BE][L-2] #269
 
 `GET /ledger/leaderboard`, docs/api/ledger-service.md. Which generation is
 served, the keyset walk and `stale`'s edge are `service/test_leaderboard_read.py`'s.
 What this file owns: the token, the exact fields and their JSON types, the
 request's own clock, the page size and its clamp, each error's status and
-code, and a read that mints nothing (DECISIONS.md, "The leaderboard read
+code, `me` and `is_me` following the token's caller, and a read that mints
+nothing (DECISIONS.md, "The leaderboard read
 writes nothing, and mints no grant").
 
 Every query goes through `params=`, so a `+` in a cursor reaches the server
@@ -39,8 +41,17 @@ from unit_test.trade_fixtures import (
     transaction_count,
 )
 
-_PAGE_FIELDS = {"computed_at", "stale", "ranked_users", "rows", "next_cursor", "has_more"}
-_ROW_FIELDS = {"rank", "username", "net_worth"}
+_PAGE_FIELDS = {
+    "computed_at",
+    "stale",
+    "ranked_users",
+    "me",
+    "rows",
+    "next_cursor",
+    "has_more",
+}
+_ROW_FIELDS = {"rank", "username", "net_worth", "is_me"}
+_ME_FIELDS = {"rank", "username", "net_worth"}
 _SCALE_FOUR = re.compile(r"^\d+\.\d{4}$")
 _COMPUTED_AT = datetime(2026, 10, 11, 9, 14, 0, 123456, tzinfo=UTC)
 
@@ -55,6 +66,20 @@ async def _board(
 
 def _error_of(response) -> str:
     return response.json()["error"]["code"]
+
+
+def _rows_without_is_me(rows: list[dict]) -> list[dict]:
+    """The rows as every caller sees them: `is_me` is the one per-caller field."""
+    stripped = []
+    for row in rows:
+        shared = dict(row)
+        del shared["is_me"]
+        stripped.append(shared)
+    return stripped
+
+
+def _is_me_flags(body: dict) -> list:
+    return [row["is_me"] for row in body["rows"]]
 
 
 def _instant(text: str) -> datetime:
@@ -81,20 +106,54 @@ async def test_an_anonymous_or_expired_caller_is_refused(
     assert _error_of(response) == "invalid_token"
 
 
-async def test_a_trader_and_an_administrator_see_the_same_board(
-    client: AsyncClient, trader_headers: dict[str, str], admin_headers: dict[str, str]
+async def test_a_trader_and_an_administrator_see_the_same_ranking(
+    client: AsyncClient, user_id: uuid.UUID, trader_headers: dict[str, str]
 ) -> None:
-    """"Traders and administrators see the same board." Catches: `CurrentAdmin`
-    on the route; anything in the body that depends on the caller."""
+    """"Traders and administrators see the same board." Both are ranked, so
+    `me` and `is_me` differ by caller and are left out of the comparison;
+    whose they are is the next test's. Catches: `CurrentAdmin` on the route
+    (the trader's 403 fails `_board`); anything else in the body that depends
+    on the caller."""
+    admin_id = uuid.uuid4()
     await store_generation(
-        computed_at=datetime.now(UTC), rows=[("ann", Decimal("12.3400"))]
+        computed_at=datetime.now(UTC),
+        rows=[("ann", Decimal("12.3400")), ("root", Decimal("5.0000"))],
+        user_ids=[user_id, admin_id],
     )
 
     as_trader = await _board(client, trader_headers)
-    as_admin = await _board(client, admin_headers)
+    as_admin = await _board(client, bearer(admin_id, UserRole.ADMIN))
 
-    assert as_trader == as_admin
-    assert [row["username"] for row in as_trader["rows"]] == ["ann"]
+    for field in ("computed_at", "stale", "ranked_users", "next_cursor"):
+        assert as_trader[field] == as_admin[field], field
+    assert _rows_without_is_me(as_trader["rows"]) == _rows_without_is_me(as_admin["rows"])
+    assert [row["username"] for row in as_trader["rows"]] == ["ann", "root"]
+
+
+async def test_each_caller_gets_their_own_me_and_their_own_is_me_row(
+    client: AsyncClient,
+) -> None:
+    """"The caller is matched by the token's `sub`." Two ranked callers, read
+    one after the other. Catches: the route passing a fixed or fresh caller id
+    instead of the token's."""
+    first_caller, second_caller = uuid.uuid4(), uuid.uuid4()
+    await store_generation(
+        computed_at=datetime.now(UTC),
+        rows=[
+            ("ann", Decimal("12.3400")),
+            ("bob", Decimal("5.0000")),
+            ("cat", Decimal("1.0000")),
+        ],
+        user_ids=[first_caller, second_caller, uuid.uuid4()],
+    )
+
+    as_first = await _board(client, bearer(first_caller, UserRole.TRADER))
+    as_second = await _board(client, bearer(second_caller, UserRole.TRADER))
+
+    assert as_first["me"] == {"rank": 1, "username": "ann", "net_worth": "12.3400"}
+    assert _is_me_flags(as_first) == [True, False, False]
+    assert as_second["me"] == {"rank": 2, "username": "bob", "net_worth": "5.0000"}
+    assert _is_me_flags(as_second) == [False, True, False]
 
 
 # =========================================================================
@@ -111,19 +170,22 @@ async def test_an_empty_board_is_null_stale_and_no_rows_on_the_wire(
         "computed_at": None,
         "stale": True,
         "ranked_users": 0,
+        "me": None,
         "rows": [],
         "next_cursor": None,
         "has_more": False,
     }
 
 
-async def test_a_row_is_rank_username_and_net_worth_as_a_scale_four_string(
-    client: AsyncClient, trader_headers: dict[str, str]
+async def test_a_row_and_me_are_rank_username_and_net_worth_as_a_scale_four_string(
+    client: AsyncClient, user_id: uuid.UUID, trader_headers: dict[str, str]
 ) -> None:
-    """"Only `rank`, `username` and `net_worth` are sent. No user id …", and
-    amounts are decimal strings. Catches: `user_id` leaking; a float, a
-    number or a Decimal re-rendered without its trailing zeros; a rounded
-    amount; `computed_at` losing its microseconds."""
+    """"No user id, email or account id appears on this route", amounts are
+    decimal strings, and `me` "has the same three fields as a row". The
+    caller is `Amy_b`. Catches: `user_id` leaking into a row or `me`; a
+    float, a number or a Decimal re-rendered without its trailing zeros; a
+    rounded amount; `computed_at` losing its microseconds; `is_me` sent as
+    0/1 rather than a boolean."""
     await store_generation(
         computed_at=_COMPUTED_AT,
         rows=[
@@ -131,6 +193,7 @@ async def test_a_row_is_rank_username_and_net_worth_as_a_scale_four_string(
             ("Amy_b", Decimal("1000.0000")),
             ("x-1", Decimal("0.0001")),
         ],
+        user_ids=[uuid.uuid4(), user_id, uuid.uuid4()],
     )
 
     body = await _board(client, trader_headers)
@@ -142,7 +205,14 @@ async def test_a_row_is_rank_username_and_net_worth_as_a_scale_four_string(
         assert set(row) == _ROW_FIELDS
         assert type(row["net_worth"]) is str
         assert type(row["rank"]) is int
+        assert type(row["is_me"]) is bool
         assert _SCALE_FOUR.match(row["net_worth"]), row["net_worth"]
+    assert set(body["me"]) == _ME_FIELDS
+    assert type(body["me"]["rank"]) is int
+    assert type(body["me"]["net_worth"]) is str
+    assert _SCALE_FOUR.match(body["me"]["net_worth"]), body["me"]["net_worth"]
+    assert body["me"] == {"rank": 2, "username": "Amy_b", "net_worth": "1000.0000"}
+    assert _is_me_flags(body) == [False, True, False]
     assert [(row["rank"], row["username"], row["net_worth"]) for row in body["rows"]] == [
         (1, "zed", "1234.5678"),
         (2, "Amy_b", "1000.0000"),
@@ -283,8 +353,9 @@ async def test_reading_the_board_mints_no_grant_and_writes_nothing(
     client: AsyncClient,
 ) -> None:
     """"This route writes nothing … does not mint the caller's starting
-    grant." A caller with no account, read back from fresh sessions.
-    Catches: `ensure_granted` on this route."""
+    grant." A caller with no account, read back from fresh sessions, and
+    "A caller with no account gets `me: null`, and still has no account
+    afterwards." Catches: `ensure_granted` on this route."""
     caller = uuid.uuid4()
     await store_generation(
         computed_at=datetime.now(UTC), rows=[("ann", Decimal("1.0000"))]
@@ -294,6 +365,8 @@ async def test_reading_the_board_mints_no_grant_and_writes_nothing(
     body = await _board(client, bearer(caller, UserRole.TRADER))
 
     assert [row["username"] for row in body["rows"]] == ["ann"]
+    assert body["me"] is None
+    assert _is_me_flags(body) == [False]
     async with session_factory()() as fresh:
         assert (
             await accounts_module().find(fresh, entities().AccountKind.USER, caller)
