@@ -40,11 +40,17 @@ async def read_page(
     now: datetime,
     limit: int = 50,
     cursor: str | None = None,
+    caller_id: uuid.UUID | None = None,
 ):
     """One page of the board through `list_page`, defaulting to the route's
-    page size of 50."""
+    page size of 50. Without `caller_id` the caller is a fresh id, so in no
+    generation."""
     return await leaderboard_service.list_page(
-        session, limit=limit, cursor=cursor, now=now
+        session,
+        caller_id=caller_id or uuid.uuid4(),
+        limit=limit,
+        cursor=cursor,
+        now=now,
     )
 
 

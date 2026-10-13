@@ -694,9 +694,13 @@ async def market_trades(
 
 
 _LEADERBOARD_DESCRIPTION = (
-    "[L-1] #38. Every ranked user's rank, username and net worth, from the "
-    "most recent ranking the ledger has computed, in rank order. Any valid "
-    "access token.\n\n"
+    "[L-1] #38, [BE][L-2] #269. Every ranked user's rank, username and net "
+    "worth, from the most recent ranking the ledger has computed, in rank "
+    "order. Any valid access token.\n\n"
+    "`me` is the caller's own row in the ranking this page came from, on this "
+    "page or not, and `null` when the caller is not in it. `is_me` is true on "
+    "the caller's own row. The caller is matched by the access token, and no "
+    "user id is sent.\n\n"
     "`stale` is true when `computed_at` is more than two refresh intervals "
     "old. Before any refresh, `computed_at` is null, `stale` is true and "
     "`rows` is empty.\n\n"
@@ -705,7 +709,8 @@ _LEADERBOARD_DESCRIPTION = (
     "refresh; after the second it is `409 leaderboard_refreshed`: start again "
     "from page one.\n\n"
     "**Writes nothing.** Unlike the balance, history and portfolio, reading "
-    "the leaderboard does not mint the caller's starting grant."
+    "the leaderboard does not mint the caller's starting grant, so a caller "
+    "with no account gets `me: null`."
 )
 
 
@@ -736,12 +741,17 @@ async def leaderboard(
     # not the transaction's": `stale` is judged against this one reading.
     now = datetime.now(UTC)
     page = await leaderboard_service.list_page(
-        session, limit=_page_size(limit), cursor=cursor, now=now
+        session,
+        caller_id=user.user_id,
+        limit=_page_size(limit),
+        cursor=cursor,
+        now=now,
     )
     return LeaderboardPageOut(
         computed_at=page.computed_at,
         stale=page.stale,
         ranked_users=page.ranked_users,
+        me=page.me,
         rows=page.rows,
         next_cursor=page.next_cursor,
         has_more=page.has_more,

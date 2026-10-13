@@ -1,10 +1,11 @@
-"""Reading the leaderboard: which generation, which rows, stale, and the
-cursor. [L-1] #38, [L-3] #40
+"""Reading the leaderboard: which generation, which rows, stale, the cursor,
+and the caller's own row. [L-1] #38, [L-3] #40, [BE][L-2] #269
 
 The spec is `docs/api/ledger-service.md`'s `GET /ledger/leaderboard` and
 DECISIONS.md's "The leaderboard is stored as generations …", "A refresh's
 `computed_at` is Python's clock … `stale` is derived on read against the same
-clock" and "A leaderboard cursor names its generation …". The wire shape, the
+clock", "A leaderboard cursor names its generation …" and "The caller's own
+row is read in the page's statement, from the generation served". The wire shape, the
 page size, the token and the grant are `controller/test_leaderboard_routes.py`'s.
 
 Every generation here has a twin, so a read that forgets which generation it
@@ -44,6 +45,17 @@ _HIGH_ID = uuid.UUID("ffffffff-ffff-4fff-bfff-ffffffffffff")
 
 def _listed(page) -> list[tuple[int, str, Decimal]]:
     return [(row.rank, row.username, row.net_worth) for row in page.rows]
+
+
+def _standing(me) -> tuple[int, str, Decimal] | None:
+    """`me` as plain values, so a test compares it with literals."""
+    if me is None:
+        return None
+    return (me.rank, me.username, me.net_worth)
+
+
+def _is_me_flags(page) -> list[bool]:
+    return [row.is_me for row in page.rows]
 
 
 async def _walk(session: AsyncSession, *, limit: int, now) -> list:
@@ -121,7 +133,11 @@ async def test_an_empty_generation_is_served_with_its_own_computed_at(
     page read inner-joining the generation to its entries, so the empty
     generation yields no row and reads as no generation at all (null
     `computed_at`); "the newest generation that has entries", which serves
-    the older one."""
+    the older one. The caller is in the older generation only, so `me` is
+    null: "`me` is `null` when the caller is not in that ranking". Catches
+    also: `me` joined without the generation filter, or taken from the
+    newest generation that holds the caller."""
+    caller = uuid.uuid4()
     await store_generation(
         computed_at=T0,
         rows=[
@@ -129,12 +145,14 @@ async def test_an_empty_generation_is_served_with_its_own_computed_at(
             ("bob", Decimal("2.0000")),
             ("cat", Decimal("1.0000")),
         ],
+        user_ids=[uuid.uuid4(), caller, uuid.uuid4()],
     )
     await store_generation(computed_at=at(200), rows=[])
 
-    page = await read_page(session, now=at(200))
+    page = await read_page(session, now=at(200), caller_id=caller)
     stale_page = await read_page(session, now=at(200) + timedelta(seconds=121))
 
+    assert page.me is None
     assert page.computed_at == at(200)
     assert page.stale is False
     assert stale_page.stale is True
@@ -288,20 +306,27 @@ async def test_a_cursor_past_the_end_of_a_stored_ranking_is_an_empty_page(
     ranking is still there, with nothing left in it. Two rows, a cursor after
     rank 5. Catches: the rank condition in the WHERE clause, where it drops the
     generation row along with the entries and the read raises
-    `LeaderboardRefreshed`; an exception for a rank beyond the last."""
+    `LeaderboardRefreshed`; an exception for a rank beyond the last.
+
+    The caller is `bob`, and `me` "is present on every page", this one
+    included. Catches: `me` taken from the page's rows; `me`'s join carrying
+    the cursor's `rank > last_rank`."""
     generation_id = uuid.uuid4()
+    bob = uuid.uuid4()
     await store_generation(
         computed_at=T0,
         rows=[("ann", Decimal("2.0000")), ("bob", Decimal("1.0000"))],
         generation_id=generation_id,
+        user_ids=[uuid.uuid4(), bob],
     )
     cursor = encode_rank_cursor(generation_id, 5)
 
-    page = await read_page(session, now=T0, cursor=cursor)
+    page = await read_page(session, now=T0, cursor=cursor, caller_id=bob)
     stale_page = await read_page(
         session, now=T0 + timedelta(seconds=121), cursor=cursor
     )
 
+    assert _standing(page.me) == (2, "bob", Decimal("1.0000"))
     assert page.rows == []
     assert page.next_cursor is None
     assert page.computed_at == T0
@@ -341,3 +366,155 @@ async def test_a_page_never_reaches_into_the_other_generation(
     assert page.next_cursor is None
     assert page.ranked_users == 2
     assert _listed(whole) == expected
+
+
+# =========================================================================
+# The caller's own row
+# =========================================================================
+_ANN_ID = uuid.UUID("aaaaaaaa-0000-4000-8000-000000000001")
+_BOB_ID = uuid.UUID("bbbbbbbb-0000-4000-8000-000000000002")
+_CAT_ID = uuid.UUID("cccccccc-0000-4000-8000-000000000003")
+_DAN_ID = uuid.UUID("dddddddd-0000-4000-8000-000000000004")
+
+
+@pytest.mark.parametrize(
+    ("limit", "caller", "expected_me", "expected_rows", "expected_is_me"),
+    [
+        # Also kills the `me` join without the generation filter: the rows
+        # double to six.
+        (
+            50,
+            _BOB_ID,
+            (2, "Bob", Decimal("20.0001")),
+            [
+                (1, "ann", Decimal("30.5000")),
+                (2, "Bob", Decimal("20.0001")),
+                (3, "cat", Decimal("0.0001")),
+            ],
+            [False, True, False],
+        ),
+        # Kills `me` read from the page's rows. Not the missing generation
+        # filter: the page cut hides the doubled rows here.
+        (
+            1,
+            _CAT_ID,
+            (3, "cat", Decimal("0.0001")),
+            [(1, "ann", Decimal("30.5000"))],
+            [False],
+        ),
+    ],
+    ids=["on-the-page", "off-the-page"],
+)
+async def test_me_is_the_caller_s_stored_row_on_the_page_or_off_it(
+    session: AsyncSession,
+    limit: int,
+    caller: uuid.UUID,
+    expected_me: tuple[int, str, Decimal],
+    expected_rows: list[tuple[int, str, Decimal]],
+    expected_is_me: list[bool],
+) -> None:
+    """"`me.net_worth` and `me.rank` equal the caller's row in that
+    generation, character for character. One test covers a caller on the page
+    and one off it." `is_me` is true on the caller's row only. The older
+    generation holds the same users at other ranks and net worths. Catches:
+    `me` or `is_me` fixed or taken from the first row; `me.username` not the
+    stored one (`Bob`, capital B)."""
+    await store_generation(
+        computed_at=T0,
+        rows=[
+            ("Bob", Decimal("40.0000")),
+            ("ann", Decimal("30.0000")),
+            ("cat", Decimal("5.0000")),
+        ],
+        user_ids=[_BOB_ID, _ANN_ID, _CAT_ID],
+    )
+    await store_generation(
+        computed_at=at(60),
+        rows=[
+            ("ann", Decimal("30.5000")),
+            ("Bob", Decimal("20.0001")),
+            ("cat", Decimal("0.0001")),
+        ],
+        user_ids=[_ANN_ID, _BOB_ID, _CAT_ID],
+    )
+
+    page = await read_page(session, now=at(60), limit=limit, caller_id=caller)
+
+    assert _standing(page.me) == expected_me
+    assert _listed(page) == expected_rows
+    assert _is_me_flags(page) == expected_is_me
+
+
+async def test_through_a_cursor_me_and_is_me_come_from_the_cursor_s_generation(
+    session: AsyncSession,
+) -> None:
+    """"`me` comes from the ranking the page is served from, not the newest
+    one. So every page of one walk carries the same `me`, including a page
+    reached by a cursor into the previous ranking." The caller is `cat`, rank
+    3 in the older generation and rank 1 in the newer. Catches: `me` from the
+    newest generation; the `me` join without the generation filter (`cat`
+    twice on page two); `is_me` matched across generations."""
+    await store_generation(
+        computed_at=T0,
+        rows=[
+            ("ann", Decimal("50.0000")),
+            ("bob", Decimal("40.0000")),
+            ("cat", Decimal("30.0000")),
+            ("dan", Decimal("20.0000")),
+        ],
+        user_ids=[_ANN_ID, _BOB_ID, _CAT_ID, _DAN_ID],
+    )
+    first = await read_page(session, now=T0, limit=2, caller_id=_CAT_ID)
+    await store_generation(
+        computed_at=at(60),
+        rows=[
+            ("cat", Decimal("99.9999")),
+            ("ann", Decimal("50.0001")),
+            ("bob", Decimal("40.0001")),
+            ("dan", Decimal("20.0001")),
+        ],
+        user_ids=[_CAT_ID, _ANN_ID, _BOB_ID, _DAN_ID],
+    )
+
+    second = await read_page(
+        session, now=at(60), limit=2, cursor=first.next_cursor, caller_id=_CAT_ID
+    )
+
+    assert _standing(first.me) == (3, "cat", Decimal("30.0000"))
+    assert _is_me_flags(first) == [False, False]
+    assert _standing(second.me) == (3, "cat", Decimal("30.0000"))
+    assert _listed(second) == [
+        (3, "cat", Decimal("30.0000")),
+        (4, "dan", Decimal("20.0000")),
+    ]
+    assert _is_me_flags(second) == [True, False]
+
+
+async def test_a_caller_not_in_the_served_generation_gets_no_me_and_every_row(
+    session: AsyncSession,
+) -> None:
+    """"`me` is `null` when the caller is not in that ranking … `null` is not
+    an error." The caller is in the older generation and not the newest, as
+    after a suspension; no account and a later grant are the same branch
+    here. Catches: the `me` join made inner, which drops the page to the
+    empty board; the `me` join without the generation filter, which returns
+    the older row."""
+    caller = uuid.uuid4()
+    await store_generation(
+        computed_at=T0,
+        rows=[("gone", Decimal("9.0000")), ("ann", Decimal("2.0000"))],
+        user_ids=[caller, _ANN_ID],
+    )
+    await store_generation(
+        computed_at=at(60),
+        rows=[("ann", Decimal("2.0000")), ("bob", Decimal("1.0000"))],
+        user_ids=[_ANN_ID, _BOB_ID],
+    )
+
+    page = await read_page(session, now=at(60), caller_id=caller)
+
+    assert page.me is None
+    assert _listed(page) == [(1, "ann", Decimal("2.0000")), (2, "bob", Decimal("1.0000"))]
+    assert _is_me_flags(page) == [False, False]
+    assert page.computed_at == at(60)
+    assert page.ranked_users == 2

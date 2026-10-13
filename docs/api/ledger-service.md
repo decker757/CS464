@@ -392,10 +392,11 @@ Any valid access token. Traders and administrators see the same board.
   "computed_at": "2026-10-11T09:14:00.123456Z",
   "stale": false,
   "ranked_users": 214,
+  "me": { "rank": 3, "username": "Ihsan", "net_worth": "1003.8689" },
   "rows": [
-    { "rank": 1, "username": "michelle_l", "net_worth": "1431.3568" },
-    { "rank": 2, "username": "ernest_t",   "net_worth": "1003.8689" },
-    { "rank": 3, "username": "Ihsan",      "net_worth": "1003.8689" }
+    { "rank": 1, "username": "michelle_l", "net_worth": "1431.3568", "is_me": false },
+    { "rank": 2, "username": "ernest_t",   "net_worth": "1003.8689", "is_me": false },
+    { "rank": 3, "username": "Ihsan",      "net_worth": "1003.8689", "is_me": true }
   ],
   "next_cursor": "MmY0ZS4uLnwz",
   "has_more": true
@@ -421,7 +422,7 @@ by default), which means no refresh has completed recently. The ranking shown
 is still the last complete one. Nothing partial is ever served. Show the
 board with a "may be out of date" note, not an error. Before the ledger has
 ever completed a refresh, the answer is `computed_at: null`,
-`stale: true`, `rows: []`, `ranked_users: 0`.
+`stale: true`, `rows: []`, `ranked_users: 0`, `me: null`.
 
 **`ranked_users` is how many users the whole ranking holds**, not how many
 are on this page. It is the same on every page of one ranking. Use it for
@@ -442,10 +443,43 @@ username ascending ignoring case, so equal net worths get consecutive ranks
 in alphabetical order. That is why `ernest_t` is above `Ihsan` above. Do not
 re-sort the rows. `rank` is the order.
 
-**Only `rank`, `username` and `net_worth` are sent.** No user id, email or
-account id appears, on this route or anywhere else. [L-2] #39 will add the
-caller's own row as a separate field. Until it does, nothing on this route
-identifies the caller.
+**`me` is the caller's own row in the ranking this page came from, or
+`null`.** It has the same three fields as a row: `rank`, `username` and
+`net_worth`. Their values are the caller's row in that ranking, character
+for character, whether or not that row is on this page. `me` comes from the
+ranking the page is served from, not the newest one. So every page of one
+walk carries the same `me`, including a page reached by a cursor into the
+previous ranking.
+
+**`me` is `null` when the caller is not in that ranking.** That happens when:
+- no ranking exists yet;
+- the caller has no ledger account yet (see "Who is ranked"). Reading the
+  leaderboard does not create one;
+- the caller's account was created after the ranking was computed;
+- the caller was suspended when the ranking was computed.
+
+The response does not say which. `null` is not an error, and the answer is
+still `200`. "Suspended" means suspended when the ranking was computed. A
+suspension after that leaves `me` set until the next refresh drops the
+caller from the ranking.
+
+**"No ranking yet" and "not ranked yet" are different answers.**
+
+| `computed_at` | `me` | Show |
+| --- | --- | --- |
+| `null` | `null` | No ranking yet. Nothing is ranked, so show #39's insufficient-data state for the whole board. |
+| set | `null` | Not ranked yet. Show the board, with no rank for the caller. |
+| set | an object | The caller's rank. |
+
+**`is_me` is on every row.** It is `true` on the caller's own row and
+`false` on every other row. A page has at most one `true`, and none when the
+caller's row is on another page or in no ranking. Use it to highlight the
+row. Do not compare usernames. When a row has `is_me: true`, its `rank`,
+`username` and `net_worth` equal `me`'s.
+
+**No user id is sent.** No user id, email or account id appears on this
+route. The server matches the caller to their row by the access token. `me`
+and the one row with `is_me: true` identify the caller only to the caller.
 
 **A cursor holds you to one ranking.** Every page reached through
 `next_cursor` comes from the same ranking as the first page, even if a
