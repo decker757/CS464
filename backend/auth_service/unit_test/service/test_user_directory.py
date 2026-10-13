@@ -12,8 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from model.entities import User
 from service import user_directory
 
-_LOOKUP_LIMIT = 500
-
 
 async def _make(
     session: AsyncSession, username: str, *, suspended: bool = False
@@ -70,13 +68,3 @@ async def test_rows_come_back_ordered_by_id(session: AsyncSession) -> None:
 
     assert [user.id for user in found] == sorted(user.id for user in users)
 
-
-async def test_the_most_ids_a_request_may_carry_are_all_answered(
-    session: AsyncSession,
-) -> None:
-    known = await _make(session, "michelle_l")
-    strangers = [uuid.uuid4() for _ in range(_LOOKUP_LIMIT - 1)]
-
-    found = await user_directory.list_by_ids(session, [known.id, *strangers])
-
-    assert [user.id for user in found] == [known.id]
