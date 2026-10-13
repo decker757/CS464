@@ -744,7 +744,7 @@ async def leaderboard(
         ranked_users=page.ranked_users,
         rows=page.rows,
         next_cursor=page.next_cursor,
-        has_more=page.next_cursor is not None,
+        has_more=page.has_more,
     )
 
 

@@ -68,6 +68,10 @@ class LeaderboardPage:
     rows: list[LeaderboardRowOut]
     next_cursor: str | None
 
+    @property
+    def has_more(self) -> bool:
+        return self.next_cursor is not None
+
 
 @dataclass(frozen=True)
 class _RankedUser:

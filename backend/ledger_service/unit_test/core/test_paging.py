@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from core.errors import MalformedCursor
-from core.paging import decode_cursor, encode_cursor
+from core.paging import decode_cursor, encode_cursor, page_cut_of
 
 
 def test_a_cursor_round_trips() -> None:
@@ -69,3 +69,42 @@ def test_a_naive_timestamp_is_read_as_utc() -> None:
     decoded, _ = decode_cursor(cursor)
 
     assert decoded.tzinfo is not None
+
+
+# =========================================================================
+# The page cut
+# =========================================================================
+def _fetched(count: int) -> list[str]:
+    """`count` rows, standing in for whatever a feed selected."""
+    return [f"row-{number}" for number in range(count)]
+
+
+def _after(row: str) -> str:
+    return f"after-{row}"
+
+
+def test_the_extra_row_is_dropped_and_names_the_next_cursor() -> None:
+    """A caller fetches `limit + 1`, so the extra row is the only evidence that
+    another page exists. It is not served, and the cursor names the last row
+    that was."""
+    page, next_cursor = page_cut_of(_fetched(4), 3, cursor_of=_after)
+
+    assert page == ["row-0", "row-1", "row-2"]
+    assert next_cursor == "after-row-2"
+
+
+def test_a_full_page_with_nothing_behind_it_offers_no_cursor() -> None:
+    """`limit` rows and no extra row is the end of the feed. A cursor here
+    would send the client to an empty page."""
+    page, next_cursor = page_cut_of(_fetched(3), 3, cursor_of=_after)
+
+    assert page == ["row-0", "row-1", "row-2"]
+    assert next_cursor is None
+
+
+def test_an_empty_fetch_is_an_empty_page() -> None:
+    """Nothing to serve and nothing to build a cursor from."""
+    page, next_cursor = page_cut_of([], 3, cursor_of=_after)
+
+    assert page == []
+    assert next_cursor is None
