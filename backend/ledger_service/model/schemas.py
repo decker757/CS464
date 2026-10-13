@@ -25,15 +25,21 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer
 
+from core.clock import as_utc
 from core.pricing import Side
 from model.entities import Entry, ResultKind, TransactionKind
+
+# A naive value is UTC, and leaves with the offset that says so. Without it a
+# naive datetime would reach the wire with no offset, which every browser
+# reads as local time.
+UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 
 class BalanceOut(BaseModel):
@@ -195,7 +201,7 @@ class LedgerEntryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    created_at: datetime
+    created_at: UtcDatetime
 
     amount: Decimal = Field(
         description=(
@@ -279,17 +285,6 @@ class LedgerEntryOut(BaseModel):
     @field_serializer("quantity", "average_price")
     def _as_optional_string(self, value: Decimal | None) -> str | None:
         return str(value) if value is not None else None
-
-    @field_validator("created_at")
-    @classmethod
-    def _always_utc(cls, v: datetime) -> datetime:
-        """Guarantee an explicit offset on the way out.
-
-        The same guard the other three services carry. A driver handing back a
-        naive datetime would make one entry serialise with a trailing Z and
-        another without, leaving the frontend to special-case which.
-        """
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
     @classmethod
     def of(
@@ -611,19 +606,7 @@ class PriceEvent(BaseModel):
     market_id: uuid.UUID
     state_version: int = Field(ge=0)
     prices: list[OutcomePrice] = Field(min_length=2)
-    occurred_at: datetime
-
-    @field_validator("occurred_at")
-    @classmethod
-    def _always_utc(cls, v: datetime) -> datetime:
-        """A naive value is UTC, and leaves with the offset that says so.
-
-        `SnapshotOut` below does the same to its copy of this field. Without
-        it a naive datetime from [T-2] #22 would reach the socket with no
-        offset, and every browser would read it as local time. Naive versus
-        aware has already caused bugs in this repository (CLAUDE.md).
-        """
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+    occurred_at: UtcDatetime
 
     @field_serializer("occurred_at")
     def _occurred_at_as_string(self, value: datetime) -> str:
@@ -648,12 +631,7 @@ class SnapshotOut(BaseModel):
     # a second caller does not go through it.
     state_version: int = Field(ge=0)
     prices: list[OutcomePriceOut] = Field(min_length=2)
-    occurred_at: datetime
-
-    @field_validator("occurred_at")
-    @classmethod
-    def _always_utc(cls, v: datetime) -> datetime:
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+    occurred_at: UtcDatetime
 
     @field_serializer("occurred_at")
     def _occurred_at_as_string(self, value: datetime) -> str:
@@ -764,7 +742,7 @@ class ExposureOut(BaseModel):
     """
 
     market_id: uuid.UUID
-    opened_at: datetime | None = Field(
+    opened_at: UtcDatetime | None = Field(
         description="When this service opened the book. Null means it never has."
     )
     state_version: int | None = Field(
@@ -798,13 +776,6 @@ class ExposureOut(BaseModel):
     outcomes: list[ExposureOutcomeOut] = Field(
         description="Every outcome, ordered by position. Empty when there is no book."
     )
-
-    @field_validator("opened_at")
-    @classmethod
-    def _always_utc(cls, v: datetime | None) -> datetime | None:
-        if v is not None and v.tzinfo is None:
-            return v.replace(tzinfo=UTC)
-        return v
 
     @field_serializer("opened_at")
     def _opened_at_as_string(self, value: datetime | None) -> str | None:
@@ -848,7 +819,7 @@ class MarketTradeOut(BaseModel):
     """
 
     transaction_id: uuid.UUID
-    created_at: datetime
+    created_at: UtcDatetime
     user_id: uuid.UUID = Field(
         description=(
             "The trader. An id, not a name: this service holds no user table. "
@@ -876,13 +847,6 @@ class MarketTradeOut(BaseModel):
     @field_serializer("quantity", "average_price", "total")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
-
-    @field_validator("created_at")
-    @classmethod
-    def _always_utc(cls, v: datetime) -> datetime:
-        """The same guard `LedgerEntryOut` carries, so the two spell one
-        trade's time the same way."""
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
 
 class MarketTradeListResponse(BaseModel):
