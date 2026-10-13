@@ -2224,6 +2224,11 @@ so the response keeps the one error envelope `controller/errors.py` exists to
 preserve. 500 and not 409: nothing the client sent is wrong and nothing it can
 do differently helps. It is this service reporting a bug in itself.
 
+*Amended 2026-10-13 by #315: `post` is now `post_all` of one movement, so
+both replay branches above are `post_all`'s, and the refusal is
+`_replay_batch`'s first check. The rule, and the answer recorded on entry,
+are unchanged. See "`post` is `post_all` of one movement".*
+
 ---
 
 ### D-NEW — The trade's idempotency key is derived by the server; the client's value is one component of it
@@ -5970,6 +5975,10 @@ Without the handler, a race on a key reaches the client as the unique index's
 - *Results keyed by idempotency key*: the caller already holds the order it
   built, and a dict would make it look its own keys up again.
 
+*Amended 2026-10-13 by #315: `post` no longer has a body of its own. It
+posts a batch of one through `post_all`, so this SAVEPOINT and its race
+handler are the only copy. See "`post` is `post_all` of one movement".*
+
 ---
 
 ### D-NEW — An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500
@@ -6197,7 +6206,7 @@ account, about 1,000. The single union query is option B, which is not built.
 
 ### D-NEW — `post` is not `post_all` of one movement
 
-**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** superseded by "`post` is `post_all` of one movement"
 
 **Decision.** Deliberately not abstracted. `post` and `post_all` each keep
 their own body. They share helpers, including `_quantized_legs` and
@@ -8688,6 +8697,64 @@ at about 0.12 s for 10,000 trades.
 
 **Reversal trigger.** The same as that entry: a request measured as too slow.
 Then a stored table, which would also take over the window.
+
+---
+
+### D-NEW — `post` is `post_all` of one movement
+
+**Date:** 2026-10-13 · **Ticket:** #315 · **Status:** active
+
+**Decision.** `posting.post` keeps its signature and docstring and posts a
+batch of one: `(transaction,) = await post_all(session, [Movement(...)],
+now=now)`. Its own copy of the write sequence is gone, so `post_all` is the one
+place the steps run: round, refuse unbalanced legs, lock, look the key up, the
+pending-writes check, the overdraft check, the stamp, the SAVEPOINT insert,
+the race handler and the commit. `find_by_idempotency_key` stays public for
+`grants.ensure_granted` and the trade path's unlocked lookup.
+
+**Why.** One sequence of write steps, so a fix to their order reaches trades
+and settlement together. With two copies, a fix could land in `post` and miss
+`post_all`, and settlement would keep the bug (#250). With one movement,
+every rule only a batch has is inert:
+- `_refuse_if_malformed_batch` raises on an empty list or a repeated key, and
+  a list of one is neither.
+- `_replay_batch`'s whole-batch match cannot fire: with one key, the lookup
+  returns a row only when it found that key.
+- Netting across movements is `_refuse_overdrafts` over one movement's legs,
+  the call `post` made.
+- Movement *i* lands at the first stamp plus *i* µs, and *i* is 0.
+
+The two behaviours "`post` is not `post_all` of one movement" protected still
+hold: pending writes are refused before a match is classified, on both replay
+branches, from the answer recorded on entry, and a replay commits to release
+the account locks. #315 checked each against the code, and the ledger suite
+passes unchanged across the refactor.
+
+**Rejected.**
+- *Keeping both bodies*: the drift risk raised on #250, the reason for this
+  entry.
+- *One private core with flags for the differences*: each flag would have
+  one caller (backend/CLAUDE.md, "Reuse").
+
+**Notes.**
+- The lookup under the lock is `IN (key)` through `_list_by_idempotency_keys`,
+  not `= key`. `idempotency_key` is unique, so both return the same row or
+  nothing.
+- `accounts.lock` now gets the set of account ids, so a movement naming one
+  account twice locks it once. Locking a row the transaction already holds
+  was a no-op.
+- One test's setup changed: `test_a_replay_found_by_the_insert_race_is_refused_too`
+  hides the first call of `_list_by_idempotency_keys` instead of
+  `find_by_idempotency_key`, as `test_post_all.py` already does. No assertion
+  changed.
+- Every write step is guarded by a test that goes through `post`, checked by
+  breaking each in `post_all` in turn. Two steps rest on one test each: the
+  lookup under the lock on
+  `test_a_retry_racing_its_original_is_answered_with_its_transaction`, and the
+  SAVEPOINT on `test_a_replay_found_by_the_insert_race_is_refused_too`.
+
+**Reversal trigger.** The trade path needs a write step that settlement must
+not have, or the reverse.
 
 ---
 
