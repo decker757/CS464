@@ -27,6 +27,7 @@ from unit_test.trade_fixtures import (
     entities,
     errors,
     grants,
+    hide_the_first_lookup,
     posting,
     session_factory,
     token,
@@ -175,19 +176,11 @@ async def test_a_replay_found_by_the_insert_race_is_refused_too(
     """
     user, platform = await _seed_with_a_dirty_outcome(session)
 
-    real = posting().find_by_idempotency_key
-    lookups = 0
-
-    async def miss_the_first(own: AsyncSession, key: str):
-        nonlocal lookups
-        lookups += 1
-        return None if lookups == 1 else await real(own, key)
-
-    monkeypatch.setattr(posting(), "find_by_idempotency_key", miss_the_first)
+    lookups = hide_the_first_lookup(monkeypatch)
 
     with pytest.raises(errors().PendingWritesOnReplay):
         await _replay(session, user, platform)
-    assert lookups == 2, "the replay was not reached through the INSERT race"
+    assert lookups[0] == 2, "the replay was not reached through the INSERT race"
 
 
 async def test_the_refusal_commits_nothing(session: AsyncSession) -> None:

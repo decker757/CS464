@@ -40,6 +40,7 @@ from unit_test.trade_fixtures import (
     capture_sql,
     capture_sql_with_parameters,
     count_commits,
+    hide_the_first_lookup,
     ledger_counts,
 )
 
@@ -766,22 +767,6 @@ async def test_the_lookup_overdraft_and_stamp_reads_run_under_every_lock(
     assert min(entry_read_positions) > last_lock
 
 
-def _hide_the_first_lookup(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Make `_list_by_idempotency_keys`'s first call find nothing, so the key is
-    met only at the INSERT, as two sessions sharing no account meet it.
-    Returns a one-item counter of the calls. Later calls, the re-read among
-    them if it uses this function, go to the real one."""
-    real = posting._list_by_idempotency_keys
-    calls = [0]
-
-    async def miss_the_first(own: AsyncSession, keys: list[str]):
-        calls[0] += 1
-        return [] if calls[0] == 1 else await real(own, keys)
-
-    monkeypatch.setattr(posting, "_list_by_idempotency_keys", miss_the_first)
-    return calls
-
-
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
 async def test_a_key_found_only_by_the_insert_race_is_refused(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch, dirty: bool
@@ -804,7 +789,7 @@ async def test_a_key_found_only_by_the_insert_race_is_refused(
     )
     fresh = _key("fresh")
     stowaway = _stage_stowaway(session) if dirty else None
-    calls = _hide_the_first_lookup(monkeypatch)
+    calls = hide_the_first_lookup(monkeypatch)
     expected = errors.PendingWritesOnReplay if dirty else errors.IdempotencyKeyReused
 
     with capture_sql() as statements:
@@ -838,7 +823,7 @@ async def test_a_whole_batch_found_only_by_the_insert_race_replays(
     async with get_session_factory()() as other:
         before = await ledger_counts(other)
     assert not has_pending_writes(session)
-    calls = _hide_the_first_lookup(monkeypatch)
+    calls = hide_the_first_lookup(monkeypatch)
 
     with capture_sql() as statements:
         replayed = await posting.post_all(session, movements)

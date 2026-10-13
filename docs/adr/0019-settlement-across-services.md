@@ -544,6 +544,16 @@ waits on his agreement.
 >   live, and needs a minimum seed in market_service's validation, or a
 >   decision that settlement may commit its record and audit entry alone.
 
+> **Amended 2026-10-13 by #315. `post` is now `post_all` of one
+> movement.** "`posting.post_all` is a batch form of `post`" and "It runs
+> `post`'s checks on each transaction" are now the other way round: `post`
+> posts a batch of one through `post_all`, so `post_all`'s write sequence is
+> the only copy. The checks are unchanged, and so is each choice listed
+> above except the last bullet of the 2026-10-09 amendment, "`post` is not
+> rewritten as `post_all` of one movement", which this supersedes.
+>
+> DECISIONS.md: "`post` is `post_all` of one movement".
+
 ### Stamps continue every account's feed
 
 The first payout is stamped one tick after the newest entry on **any** of the
