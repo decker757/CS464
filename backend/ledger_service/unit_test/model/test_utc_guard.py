@@ -8,10 +8,12 @@ local time. Naive versus aware has already caused bugs here (CLAUDE.md).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from pydantic import BaseModel
 
 from core.pricing import Side
 from model.entities import TransactionKind
@@ -98,7 +100,7 @@ _GUARDED_FIELDS = [
 
 @pytest.mark.parametrize(("build", "field"), _GUARDED_FIELDS)
 def test_a_naive_datetime_is_stamped_utc_with_the_same_wall_clock(
-    build, field: str
+    build: Callable[[datetime | None], BaseModel], field: str
 ) -> None:
     out = build(datetime(2026, 3, 4, 5, 6, 7))
 
