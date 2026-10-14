@@ -36,9 +36,7 @@ from core.clock import as_utc
 from core.pricing import Side
 from model.entities import Entry, ResultKind, TransactionKind
 
-# A naive value is UTC, and leaves with the offset that says so. Without it a
-# naive datetime would reach the wire with no offset, which every browser
-# reads as local time.
+# `as_utc` stamps a naive value UTC on the way out.
 UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 
