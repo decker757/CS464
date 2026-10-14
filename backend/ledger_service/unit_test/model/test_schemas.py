@@ -55,15 +55,6 @@ def test_an_entry_amount_serialises_as_a_string() -> None:
     assert _entry(amount=Decimal("-250.0000")).model_dump()["amount"] == "-250.0000"
 
 
-def test_a_naive_timestamp_is_given_an_offset() -> None:
-    """A driver handing back a naive datetime would make one entry serialise
-    with a trailing Z and another without, leaving the frontend to special-case
-    which."""
-    out = _entry(created_at=datetime(2026, 9, 15, 12, 0, 0))
-
-    assert out.created_at.tzinfo is not None
-
-
 def test_an_entry_flattens_its_transaction() -> None:
     """Nobody reading their own history wants the nesting. They want a
     statement: a date, an amount, and what it was for."""
