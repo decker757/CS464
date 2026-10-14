@@ -918,28 +918,18 @@ async def test_a_cold_trade_reaches_ensure_open_with_nothing_pending(
 
 
 async def _damage(session: AsyncSession, upstream: Upstream, how: str) -> None:
-    from sqlalchemy import delete, update  # noqa: PLC0415
+    from unit_test.conftest import (  # noqa: PLC0415
+        drop_outcome_row,
+        set_b,
+        strip_outcomes,
+    )
 
-    from unit_test.conftest import strip_outcomes  # noqa: PLC0415
-
-    ents = entities()
     if how == "no_outcomes":
         await strip_outcomes(session, upstream.market_id)
-        return
-    if how == "one_outcome":
-        await session.execute(
-            delete(ents.MarketOutcome).where(
-                ents.MarketOutcome.market_id == upstream.market_id,
-                ents.MarketOutcome.position == 1,
-            )
-        )
+    elif how == "one_outcome":
+        await drop_outcome_row(session, upstream.market_id, 1)
     else:
-        await session.execute(
-            update(ents.MarketBook)
-            .where(ents.MarketBook.market_id == upstream.market_id)
-            .values(liquidity_b=Decimal(how))
-        )
-    await session.commit()
+        await set_b(session, upstream.market_id, Decimal(how))
 
 
 # No `Infinity`: `numeric(18, 4)` refuses to store one, so it cannot be

@@ -22,11 +22,11 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.roles import UserRole
-from unit_test.conftest import bearer, strip_outcomes
+from unit_test.conftest import bearer, drop_outcome_row, set_b, strip_outcomes
 from unit_test.price_history_fixtures import gapped, result_row_of, traded
 from unit_test.sell_fixtures import footprint, open_at_zero
 from unit_test.trade_feed_fixtures import settled_feed
@@ -87,26 +87,14 @@ async def _book_count(market_id: uuid.UUID) -> int:
 async def _break_book(session: AsyncSession, market_id: uuid.UUID, how: str) -> None:
     """The three books `book_prices.refuse_unpriceable` refuses. No outcome
     rows is the snapshot's own case (`strip_outcomes`); one row and a `b` of
-    zero are `test_trade.py`'s. No CHECK on `liquidity_b` refuses the zero.
-    Committed."""
-    ents = entities()
+    zero come from conftest.py's `drop_outcome_row` and `set_b`. No CHECK on
+    `liquidity_b` refuses the zero. Committed."""
     if how == "no_outcomes":
         await strip_outcomes(session, market_id)
-        return
-    if how == "one_outcome":
-        await session.execute(
-            delete(ents.MarketOutcome).where(
-                ents.MarketOutcome.market_id == market_id,
-                ents.MarketOutcome.position == 1,
-            )
-        )
+    elif how == "one_outcome":
+        await drop_outcome_row(session, market_id, 1)
     else:
-        await session.execute(
-            update(ents.MarketBook)
-            .where(ents.MarketBook.market_id == market_id)
-            .values(liquidity_b=Decimal(how))
-        )
-    await session.commit()
+        await set_b(session, market_id, Decimal(how))
 
 
 # =========================================================================

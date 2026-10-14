@@ -32,9 +32,10 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import drop_outcome_row, set_b
 from unit_test.portfolio_fixtures import (
     ADR_B,
     funded,
@@ -219,22 +220,6 @@ async def test_after_the_grant_the_balance_and_positions_are_one_statement(
 # =========================================================================
 # A damaged book fails the whole read
 # =========================================================================
-async def _set_b(session: AsyncSession, market_id: uuid.UUID, b: Decimal) -> None:
-    book = entities().MarketBook
-    await session.execute(
-        update(book).where(book.market_id == market_id).values(liquidity_b=b)
-    )
-    await session.commit()
-
-
-async def _drop_outcome_row(session: AsyncSession, market_id: uuid.UUID, position: int) -> None:
-    outcome = entities().MarketOutcome
-    await session.execute(
-        delete(outcome).where(outcome.market_id == market_id, outcome.position == position)
-    )
-    await session.commit()
-
-
 def _assert_market_book_incomplete(raised: pytest.ExceptionInfo) -> None:
     assert isinstance(raised.value, errors().LedgerError), (
         f"raised an unmapped {type(raised.value).__name__}: {raised.value!r}"
@@ -254,9 +239,9 @@ async def test_a_book_that_cannot_be_priced_fails_the_whole_read(
     await hold(session, damaged, user_id=user_id, quantity=SOLD)
 
     if damage == "one-outcome-row":
-        await _drop_outcome_row(session, damaged.market_id, 1)
+        await drop_outcome_row(session, damaged.market_id, 1)
     else:
-        await _set_b(session, damaged.market_id, Decimal(damage.removeprefix("b=")))
+        await set_b(session, damaged.market_id, Decimal(damage.removeprefix("b=")))
 
     with pytest.raises(Exception) as raised:
         await read_portfolio(session, user_id)
