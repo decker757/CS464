@@ -16,7 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 import pytest
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine
@@ -42,7 +42,9 @@ from unit_test.book_fixtures import (
     writes,
 )
 from unit_test.conftest import (
+    drop_outcome_row,
     idle_in_transaction,
+    set_b,
     strip_outcomes,
     terms_client_over,
 )
@@ -755,15 +757,6 @@ async def test_an_ordinary_large_quantity_is_still_quoted(
 # =========================================================================
 # Precision, zero totals and raw-string sides
 # =========================================================================
-async def _set_b(session: AsyncSession, upstream: Upstream, b: Decimal) -> None:
-    """`b` written directly, as `set_q` writes `q`: `Upstream` serves one `b`."""
-    book = entities().MarketBook
-    await session.execute(
-        update(book).where(book.market_id == upstream.market_id).values(liquidity_b=b)
-    )
-    await session.commit()
-
-
 async def test_a_sell_s_magnitude_is_not_rounded_up_by_the_ambient_context(
     session: AsyncSession,
 ) -> None:
@@ -800,7 +793,7 @@ async def test_a_buy_priced_at_exactly_zero_is_refused(
     """100 real shares for zero credits, refused rather than quoted."""
     upstream = Upstream()
     await warm(session, upstream, q)
-    await _set_b(session, upstream, b)
+    await set_b(session, upstream.market_id, b)
 
     with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream, outcome=1, side="buy", quantity=Decimal("100"))
@@ -936,19 +929,11 @@ async def test_a_book_left_with_one_outcome_row_is_a_named_error_too(
     """A book cut to one outcome row reads as a book, so the guard must run on
     the warm path, not only after the cold one.
     """
-    from sqlalchemy import delete  # noqa: PLC0415
-
     from core.errors import LedgerError  # noqa: PLC0415
 
     upstream = Upstream()
     await warm(session, upstream)
-    outcome = entities().MarketOutcome
-    await session.execute(
-        delete(outcome).where(
-            outcome.market_id == upstream.market_id, outcome.position == 1
-        )
-    )
-    await session.commit()
+    await drop_outcome_row(session, upstream.market_id, 1)
 
     with pytest.raises(Exception) as raised:
         await _quote(session, upstream)
@@ -976,7 +961,7 @@ async def test_a_book_whose_b_cannot_price_is_a_named_error_not_a_value_error(
     """
     upstream = Upstream()
     await warm(session, upstream)
-    await _set_b(session, upstream, Decimal(bad_b))
+    await set_b(session, upstream.market_id, Decimal(bad_b))
 
     with pytest.raises(errors().LedgerError) as raised:
         await _quote(session, upstream)
