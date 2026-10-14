@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 
+# Twin of `backend/ledger_service/core/clock.py::as_utc`; copied, not shared.
 def as_utc(value: datetime) -> datetime:
     """Return `value` as an aware UTC datetime, assuming UTC if it has no offset.
 
