@@ -87,8 +87,8 @@ async def _book_count(market_id: uuid.UUID) -> int:
 async def _break_book(session: AsyncSession, market_id: uuid.UUID, how: str) -> None:
     """The three books `book_prices.refuse_unpriceable` refuses. No outcome
     rows is the snapshot's own case (`strip_outcomes`); one row and a `b` of
-    zero are `test_trade.py`'s. No CHECK on `liquidity_b` refuses the zero.
-    Committed."""
+    zero come from conftest.py's `drop_outcome_row` and `set_b`. No CHECK on
+    `liquidity_b` refuses the zero. Committed."""
     if how == "no_outcomes":
         await strip_outcomes(session, market_id)
     elif how == "one_outcome":
