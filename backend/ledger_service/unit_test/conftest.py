@@ -320,6 +320,43 @@ async def strip_outcomes(session, market_id: uuid.UUID) -> None:
     await session.commit()
 
 
+async def drop_outcome_row(session, market_id: uuid.UUID, position: int) -> None:
+    """Delete one outcome row of a market, leaving the rest. Committed.
+
+    `strip_outcomes` for a book that keeps some rows: a book cut to one row
+    still reads as a book, so `MarketBookIncomplete` has to catch it.
+    """
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    from model.entities import MarketOutcome  # noqa: PLC0415
+
+    await session.execute(
+        delete(MarketOutcome).where(
+            MarketOutcome.market_id == market_id,
+            MarketOutcome.position == position,
+        )
+    )
+    await session.commit()
+
+
+async def set_b(session, market_id: uuid.UUID, b: Decimal) -> None:
+    """Overwrite a book's `liquidity_b`, as `set_q` overwrites `q`. Committed.
+
+    The fixtures serve one `b`, so this is how a test gets another: one the
+    book cannot price on, or a valid one the fixtures do not offer.
+    """
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from model.entities import MarketBook  # noqa: PLC0415
+
+    await session.execute(
+        update(MarketBook)
+        .where(MarketBook.market_id == market_id)
+        .values(liquidity_b=b)
+    )
+    await session.commit()
+
+
 async def idle_in_transaction() -> int:
     """Backends of this role in this database sitting `idle in transaction`,
     from Postgres's own view. D-043's third witness, beside the session and
