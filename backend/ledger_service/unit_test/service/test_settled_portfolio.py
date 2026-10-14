@@ -18,9 +18,9 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import drop_outcome_row, set_b
 from unit_test.portfolio_fixtures import (
     HOLDING_VALUE,
     entries_sum,
@@ -185,25 +185,13 @@ async def test_a_settled_market_whose_book_cannot_be_priced_does_not_fail_the_re
     outcome row 0 leaves their row and breaks the book."""
     user_id, _ = await funded(session)
     upstream = await settled_market(session, [(user_id, WINNER, PAID)])
-    ents = entities()
 
     if damage == "one-outcome-row":
-        await session.execute(
-            delete(ents.MarketOutcome).where(
-                ents.MarketOutcome.market_id == upstream.market_id,
-                ents.MarketOutcome.position == LOSER,
-            )
-        )
-        await session.commit()
+        await drop_outcome_row(session, upstream.market_id, LOSER)
     elif damage == "q-below-holding":
         await set_q(session, upstream.market_id, [ZERO, Decimal("10.0000")])
     else:
-        await session.execute(
-            update(ents.MarketBook)
-            .where(ents.MarketBook.market_id == upstream.market_id)
-            .values(liquidity_b=Decimal(damage.removeprefix("b=")))
-        )
-        await session.commit()
+        await set_b(session, upstream.market_id, Decimal(damage.removeprefix("b=")))
 
     result = await read_portfolio(session, user_id)
 
