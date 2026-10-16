@@ -175,3 +175,23 @@ def test_the_leaderboard_refresh_interval_accepts_one(
     settings = Settings(**_REQUIRED, leaderboard_refresh_seconds=1, _env_file=None)
 
     assert settings.leaderboard_refresh_seconds == 1
+
+
+# =========================================================================
+# LEADERBOARD_REFRESH_ENABLED — whether this replica runs the loop. [L-3] #40
+# =========================================================================
+def test_the_leaderboard_refresh_is_on_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DECISIONS.md, "The refresh runs every 60 seconds in a loop on each
+    replica, behind `LEADERBOARD_REFRESH_ENABLED`": "which is the default". The
+    suite's conftest turns it off, so the variable is removed here. Catches:
+    `default=False`, which ships a board that never updates."""
+    monkeypatch.delenv("LEADERBOARD_REFRESH_ENABLED", raising=False)
+
+    settings = Settings(**_REQUIRED, _env_file=None)
+
+    # RED-PHASE SCAFFOLDING: delete once the setting exists; a missing field's
+    # AttributeError prints the whole Settings repr.
+    assert "leaderboard_refresh_enabled" in Settings.model_fields
+    assert settings.leaderboard_refresh_enabled is True
