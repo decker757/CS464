@@ -278,12 +278,7 @@ async def post(
     `PendingWritesOnReplay` when a replay would commit the caller's pending
     writes.
 
-    The order is the design: round, refuse unbalanced legs, lock every account
-    ascending by id (ADR 0009), then look the key up and check overdrafts under
-    that lock. Looked up before the lock, a retry racing its original is
-    refused as an overdraft for a trade that succeeded (ADR 0015). The
-    timestamp is fixed under the lock too, so a history lists movements in
-    the order they committed (#187).
+    Its steps, and their order, are `post_all`'s, called with a batch of one.
 
     `now` is a floor, not the stamp: the movement lands at `now` or just after
     the newest entry on its accounts, whichever is later. Assert on the
@@ -323,7 +318,10 @@ async def post_all(
     in the batch once, ascending by id (the caller's book lock comes first),
     then look the keys up, check USER overdrafts netted across the whole batch,
     and take one stamp, all under the locks. Movement *i* lands at that stamp
-    plus *i* µs. `now` is one floor for the batch. DECISIONS.md,
+    plus *i* µs. Looked up before the lock, a retry racing its original is
+    refused as an overdraft for a trade that succeeded (ADR 0015). The stamp is
+    taken under the lock too, so a history lists movements in the order they
+    committed (#187). `now` is one floor for the batch. DECISIONS.md,
     "`posting.post_all` takes a list of `Movement`s, commits once, and keeps
     `post`'s SAVEPOINT".
     """
