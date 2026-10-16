@@ -7544,6 +7544,17 @@ market_service.
 interval, or a product requirement that the board move within seconds of a
 trade.
 
+*Amended 2026-10-16 by #40: built as specified, with two readings made
+explicit. "Then one every `LEADERBOARD_REFRESH_SECONDS`" and "waits for the
+next tick" mean the loop sleeps that long after each refresh finishes. It is
+not a fixed rate, so a refresh that outlasts its interval delays the next one
+and cannot overlap it on one replica, which is what "A refresh writes under a
+transaction-level advisory lock" assumes. And a failed refresh is logged once,
+with its traceback, by `logger.exception` before the sleep. `CancelledError`
+is not an `Exception`, so it passes through and shutdown still stops the loop.
+The loop's module, its first refresh, its shutdown order and the disabled
+warning are in the entries #40 appends at the end of this file.*
+
 ---
 
 ### D-NEW — The refresh values holders through the portfolio's valuation, and the portfolio keeps its one-statement read
@@ -8925,3 +8936,178 @@ Move these into the log above when they're settled.
   `unit_test/conftest.py` gains an `audit_svc` engine from
   `AUDIT_TEST_DATABASE_URL`, as market_service's and auth_service's already
   do. Whether it moves into `shared/testing.py` is #<N>.
+
+---
+
+### D-NEW — The first refresh runs inside the refresher's task, and the lifespan yields without waiting for it
+
+**Date:** 2026-10-16 · **Ticket:** #40 · **Status:** active
+
+**Decision.** The loop is `run_leaderboard_refresher`, in
+`service/leaderboard_refresher.py`, and `main.py`'s lifespan starts it as a
+task named `leaderboard-refresh`. The first refresh is the task's first
+iteration. The lifespan never awaits a refresh, bare or inside a `try`,
+before it yields.
+
+**Why.** [L-3] #40's fourth acceptance criterion: "The refresh process does
+not block trade execution." The ledger serves no request, trades included,
+until its lifespan yields, so a lifespan that waited for the first refresh
+would make trade execution wait for it. A refresh values every holder and then
+calls auth, with a five-second timeout on each call ("One auth client in the
+ledger"), so an auth outage would hold the boot for as long as the refresh
+took to give up. Until the first refresh commits, `GET /ledger/leaderboard`
+answers `computed_at: null` and `stale: true` (`_empty_board`,
+`service/leaderboard.py:324`; the "`stale: true` means the board has not been
+refreshed recently" paragraph of `docs/api/ledger-service.md`), which is the
+designed answer for a board that does not exist yet. The loop starts at once,
+as `market_service`'s sweeper does.
+
+**Rejected.**
+- *Awaiting the first refresh before the yield.* Boot becomes hostage to auth.
+  Wrapping the await in a `try` still waits out the timeouts before the
+  service answers anything.
+- *Sleeping one interval before the first refresh.* A fresh database, or a
+  ledger that was down for a while, would show no ranking or an old one for a
+  full interval after boot, for no gain.
+
+**Notes.** The criterion is about trade execution, and this entry decides only
+the boot. Once the loop is running, a refresh cannot block a trade for the
+reason "A refresh writes under a transaction-level advisory lock" gives: it
+takes no row lock on any trade table.
+`test_the_app_boots_and_serves_with_auth_unreachable`
+(`unit_test/controller/test_leaderboard_refresh_lifespan.py:87`) holds a
+refresh open and requires `/health` and the stored ranking to answer meanwhile.
+The task's name is `_TASK_NAME` in that file (`:34`), and the shutdown test
+finds the task by it, so renaming the task fails that test.
+
+---
+
+### D-NEW — Shutdown cancels the refresher and awaits it inside the clients' block, before the auth client closes and the engine is disposed
+
+**Date:** 2026-10-16 · **Ticket:** #40 · **Status:** active
+
+**Decision.** In `main.py`'s lifespan, after the `yield` and still inside the
+`async with` that holds the terms and auth clients, the refresher's task is
+cancelled and awaited. Only then do the clients close, and after them
+`dispose_engine()` runs.
+
+**Why.** The task depends on both: a refresh in flight holds a request on the
+auth client and a connection from the engine's pool. Closing the client first
+makes that refresh call a closed client, and the loop's `except Exception`
+logs an ERROR with a traceback during an ordinary shutdown. Disposing the
+engine first loses the pool under it, and shutdown ends in a stack trace, as
+`market_service/main.py:53-54` says of its sweep. Awaiting, not just
+cancelling, means no task outlives the app.
+
+**Rejected.**
+- *Cancelling in the `finally`, after the `async with` has closed the
+  clients.* That is the closed-client case above. The sweeper's placement
+  works for `market_service` because it holds no client. The ledger has a
+  second dependency, so the cancel moves inside it.
+- *Cancelling without awaiting.* The cancellation lands at the task's next
+  checkpoint, which can be after the engine is gone.
+
+**Notes.** The shutdown test,
+`test_shutdown_cancels_the_refresh_before_the_auth_client_closes`
+(`unit_test/controller/test_leaderboard_refresh_lifespan.py:194`), pins the
+placement against the auth client: its stand-in reads `auth_client.is_closed`
+when it is cancelled and requires `False`, and the test requires the task to
+be done and cancelled once the lifespan exits. Nothing tests the order against
+`dispose_engine()` or the terms client. That half holds by the placement alone.
+
+---
+
+### D-NEW — A replica with the refresher off logs a WARNING at startup
+
+**Date:** 2026-10-16 · **Ticket:** #40 · **Status:** active
+
+**Decision.** When `LEADERBOARD_REFRESH_ENABLED` is false, the lifespan starts
+no task and logs once, at WARNING, that this replica does not refresh. The
+message names the setting and says that with it off on every replica the
+ranking stops updating and turns stale after two intervals.
+
+**Why.** The switch's cost does not show on the replica that has it. Off
+everywhere, the board freezes, and the only sign is `stale: true` on a read,
+two intervals later. A line at boot is where an operator reading one replica's
+log would see it. `market_service` does the same for `CLOSE_SWEEP_ENABLED`
+(`market_service/main.py:44-48`).
+
+**Rejected.**
+- *No log.* A frozen board with nothing in any log to explain it.
+- *INFO.* It is the line to find when the board is stale, and a log filter at
+  WARNING would hide it.
+- *Refusing to boot when it is off.* The setting exists so that a second
+  replica can turn it off ("A leaderboard cursor names its generation"), and a
+  suite or a developer may want the service without the loop.
+
+**Notes.** The warning cannot tell whether another replica has it on, and does
+not try.
+
+---
+
+### D-NEW — The ledger's suite forces the refresher off by assignment, and a test that needs it turns it on itself
+
+**Date:** 2026-10-16 · **Ticket:** #40 · **Status:** active
+
+**Decision.** `unit_test/conftest.py:55` sets `LEADERBOARD_REFRESH_ENABLED` to
+`false` in `os.environ` by plain assignment, before any project module is
+imported, and not with `setdefault`. A test that needs the loop sets the field
+on the cached settings object with
+`monkeypatch.setattr(get_settings(), "leaderboard_refresh_enabled", True)`,
+and `leaderboard_refresh_seconds` the same way. The lifespan tests do it
+through `_refresh_enabled`
+(`unit_test/controller/test_leaderboard_refresh_lifespan.py:58`). They do not
+touch the environment.
+
+**Why.** Every test that builds the app enters its lifespan. With the loop on,
+each would run a real refresh against the test database while the next test's
+fixture drops and recreates the schema, and the failure would show up in a
+test that has nothing to do with the leaderboard. `load_repo_env()`
+(`conftest.py:30`) copies the repo `.env` into `os.environ` first, and keeps
+anything already exported (`shared/testing.py:76`, `setdefault`). A
+`setdefault` in the conftest would therefore let a `.env` or a CI export of
+`true` win. The assignment does not.
+
+**Rejected.**
+- *`setdefault`.* See above.
+- *A default of false in `Settings`.* The production default stays true: a
+  ledger that boots without refreshing is the silent stale board "The refresh
+  runs every 60 seconds" exists to avoid.
+- *A per-test fixture.* One forgotten test starts a loop on a schema that is
+  about to be dropped.
+
+---
+
+### D-NEW — Compose and `.env.example` pass both refresh settings to the ledger, with their defaults filled in
+
+**Date:** 2026-10-16 · **Ticket:** #40 · **Status:** active
+
+**Decision.** `docker-compose.yml` passes `LEADERBOARD_REFRESH_SECONDS` and
+`LEADERBOARD_REFRESH_ENABLED` to the `ledger` service with `:-` defaults of
+`60` and `true`, the form `CLOSE_SWEEP_SECONDS`, `CLOSE_SWEEP_BATCH` and
+`CLOSE_SWEEP_ENABLED` use for `market_service`. `.env.example` lists both
+with those defaults as their values, under a comment that says what each does.
+
+**Why.** Compose hands a container only the variables its entry lists, and
+`ledger`'s `environment:` (`docker-compose.yml:190`) is a list with no
+`env_file`, so without the pass-through a value in `.env` reaches nothing and
+the setting appears to do nothing. They are optional with sensible defaults,
+so they take `:-` and not the `:?` that compose uses for secrets. In
+`.env.example` a blank line is worse than a missing one:
+`.github/workflows/e2e.yml:55` replaces every line matching `^(\w+)=$` with a
+random `secrets.token_urlsafe(48)`, and the ledger's
+`leaderboard_refresh_seconds` is an `int` with `gt=0`
+(`core/config.py:59`), so it would fail to parse that and the stack would not
+boot in CI.
+
+**Rejected.**
+- *Leaving them to the ledger's own defaults.* Correct until somebody sets one
+  in `.env` and sees no effect.
+- *`:?`, required.* It would force every deployer to choose a value for a
+  setting with a good default, and break an existing `.env`.
+- *Blank in `.env.example`.* See above.
+
+**Notes.** This entry is written first and the two files change later in this
+PR. Compose runs one ledger today. A second replica sets
+`LEADERBOARD_REFRESH_ENABLED=false` on the others ("A leaderboard cursor names
+its generation").

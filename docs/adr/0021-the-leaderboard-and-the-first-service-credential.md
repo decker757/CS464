@@ -8,6 +8,12 @@
   `POST /internal/users/lookup`. The loop that runs the refresh, [L-3] #40,
   is not built yet.
 
+> **Amended 2026-10-16 by #40.** The loop is built, so "is not built yet"
+> above is superseded. It is `service/leaderboard_refresher.py`, started from
+> the ledger's lifespan, and its decisions are the entries of DECISIONS.md
+> that cite #40, beginning with "The refresh runs every 60 seconds in a loop
+> on each replica". Nothing in sections 1 or 2 below changes.
+
 ## Context
 
 [L-1] #38 asks for a ranked list of every eligible user, showing a username
