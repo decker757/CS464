@@ -191,7 +191,4 @@ def test_the_leaderboard_refresh_is_on_by_default(
 
     settings = Settings(**_REQUIRED, _env_file=None)
 
-    # RED-PHASE SCAFFOLDING: delete once the setting exists; a missing field's
-    # AttributeError prints the whole Settings repr.
-    assert "leaderboard_refresh_enabled" in Settings.model_fields
     assert settings.leaderboard_refresh_enabled is True

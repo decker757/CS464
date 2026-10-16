@@ -58,11 +58,6 @@ def _app() -> FastAPI:
 
 
 def _refresh_enabled(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
-    # RED-PHASE SCAFFOLDING: delete once the setting exists. Without it a
-    # missing field raises pydantic's AttributeError, whose message is the
-    # whole Settings repr, database password included.
-    if "leaderboard_refresh_enabled" not in type(get_settings()).model_fields:
-        pytest.fail("Settings has no leaderboard_refresh_enabled yet")
     monkeypatch.setattr(get_settings(), "leaderboard_refresh_enabled", enabled)
 
 
