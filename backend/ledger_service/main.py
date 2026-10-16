@@ -39,11 +39,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # (migrate.py) brought the schema to head before this process started.
     # ADR 0020.
     try:
+        settings = get_settings()
+
         # One client for the process (D-047). `from_url` dials lazily, so an
         # unreachable Redis does not stop boot, but parses eagerly, so a
         # mistyped REDIS_URL does (D-051).
         app.state.redis = redis.from_url(
-            get_settings().redis_url,
+            settings.redis_url,
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )
@@ -62,7 +64,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # The first refresh runs inside the task, so boot never waits for
             # auth (DECISIONS.md, "The first refresh runs inside the
             # refresher's task").
-            settings = get_settings()
             refresher: asyncio.Task[None] | None = None
             if settings.leaderboard_refresh_enabled:
                 refresher = asyncio.create_task(
