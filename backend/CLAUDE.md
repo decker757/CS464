@@ -115,11 +115,13 @@ One error class per distinct thing the client can do about it, each with a
 stable `snake_case` code. `service/` raises them; only `controller/` turns
 them into HTTP. No `HTTPException` below `controller/`.
 
-Do not catch bare `Exception`. The four sanctioned places are the price
-publish after a trade commits (root `CLAUDE.md`, ADR 0010), the realtime bus's
-reconnect loop (ADR 0010, and DECISIONS.md, "The bus waits between retries
-outside the error branch"), the market close sweeper (ADR 0011) and the
-leaderboard refresher (ADR 0021).
+Do not catch bare `Exception` to swallow it. The four sanctioned places are
+the price publish after a trade commits (root `CLAUDE.md`, ADR 0010), the
+realtime bus's reconnect loop (ADR 0010, and DECISIONS.md, "The bus waits
+between retries outside the error branch"), the market close sweeper
+(ADR 0011) and the leaderboard refresher (ADR 0021). Each service's
+`core/database.py` catches it too, in `get_session`, to roll back and
+re-raise: that is not a swallow and needs no sanctioning.
 
 ## Tests
 

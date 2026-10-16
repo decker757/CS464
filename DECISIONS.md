@@ -8957,7 +8957,7 @@ calls auth, with a five-second timeout on each call ("One auth client in the
 ledger"), so an auth outage would hold the boot for as long as the refresh
 took to give up. Until the first refresh commits, `GET /ledger/leaderboard`
 answers `computed_at: null` and `stale: true` (`_empty_board`,
-`service/leaderboard.py:324`; the "`stale: true` means the board has not been
+`service/leaderboard.py:322`; the "`stale: true` means the board has not been
 refreshed recently" paragraph of `docs/api/ledger-service.md`), which is the
 designed answer for a board that does not exist yet. The loop starts at once,
 as `market_service`'s sweeper does.
@@ -8975,9 +8975,9 @@ the boot. Once the loop is running, a refresh cannot block a trade for the
 reason "A refresh writes under a transaction-level advisory lock" gives: it
 takes no row lock on any trade table.
 `test_the_app_boots_and_serves_with_auth_unreachable`
-(`unit_test/controller/test_leaderboard_refresh_lifespan.py:87`) holds a
+(`unit_test/controller/test_leaderboard_refresh_lifespan.py:84`) holds a
 refresh open and requires `/health` and the stored ranking to answer meanwhile.
-The task's name is `_TASK_NAME` in that file (`:34`), and the shutdown test
+The task's name is `_TASK_NAME` in that file (`:35`), and the shutdown test
 finds the task by it, so renaming the task fails that test.
 
 ---
@@ -9009,22 +9009,28 @@ cancelling, means no task outlives the app.
 
 **Notes.** The shutdown test,
 `test_shutdown_cancels_the_refresh_before_the_auth_client_closes`
-(`unit_test/controller/test_leaderboard_refresh_lifespan.py:194`), pins the
+(`unit_test/controller/test_leaderboard_refresh_lifespan.py:217`), pins the
 placement against the auth client: its stand-in reads `auth_client.is_closed`
 when it is cancelled and requires `False`, and the test requires the task to
-be done and cancelled once the lifespan exits. Nothing tests the order against
-`dispose_engine()` or the terms client. That half holds by the placement alone.
+be done and cancelled once the lifespan exits. That one assertion pins all
+three positions: `dispose_engine()` runs in the outer `finally`, after the
+`async with` has closed both clients, so a cancel moved anywhere past the
+clients' block reads `is_closed` true and fails the test. No separate test
+for the engine or the terms client is needed.
 
 ---
 
-### D-NEW — A replica with the refresher off logs a WARNING at startup
+### D-NEW — The refresher says at startup whether this replica is running it: WARNING when it is off, INFO with the interval when it is on
 
 **Date:** 2026-10-16 · **Ticket:** #40 · **Status:** active
 
 **Decision.** When `LEADERBOARD_REFRESH_ENABLED` is false, the lifespan starts
 no task and logs once, at WARNING, that this replica does not refresh. The
 message names the setting and says that with it off on every replica the
-ranking stops updating and turns stale after two intervals.
+ranking stops updating and turns stale after two intervals. With it on, the
+loop logs one INFO naming the interval, as `run_close_sweeper` does
+(`market_service/service/sweeper.py:76-80`), so a replica's log answers
+"is this one refreshing, and how often" either way.
 
 **Why.** The switch's cost does not show on the replica that has it. Off
 everywhere, the board freezes, and the only sign is `stale: true` on a read,
@@ -9034,8 +9040,9 @@ log would see it. `market_service` does the same for `CLOSE_SWEEP_ENABLED`
 
 **Rejected.**
 - *No log.* A frozen board with nothing in any log to explain it.
-- *INFO.* It is the line to find when the board is stale, and a log filter at
-  WARNING would hide it.
+- *INFO for the disabled case.* It is the line to find when the board is
+  stale, and a log filter at WARNING would hide it. The enabled case is INFO
+  because a loop that is running is not news.
 - *Refusing to boot when it is off.* The setting exists so that a second
   replica can turn it off ("A leaderboard cursor names its generation"), and a
   suite or a developer may want the service without the loop.
@@ -9056,7 +9063,7 @@ on the cached settings object with
 `monkeypatch.setattr(get_settings(), "leaderboard_refresh_enabled", True)`,
 and `leaderboard_refresh_seconds` the same way. The lifespan tests do it
 through `_refresh_enabled`
-(`unit_test/controller/test_leaderboard_refresh_lifespan.py:58`). They do not
+(`unit_test/controller/test_leaderboard_refresh_lifespan.py:60`). They do not
 touch the environment.
 
 **Why.** Every test that builds the app enters its lifespan. With the loop on,
