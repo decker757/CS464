@@ -199,6 +199,11 @@ services:
       # [B-1] #32. Optional, like DEFAULT_LIQUIDITY_B above and unlike the two
       # required values: a starting grant is a number, not a credential.
       STARTING_CREDITS: ${STARTING_CREDITS:-1000}
+      # [L-3] #40, ADR 0021. How often this replica rebuilds the leaderboard,
+      # in seconds, and whether it does at all. Both optional. A second
+      # replica sets ENABLED=false so only one refreshes.
+      LEADERBOARD_REFRESH_SECONDS: ${LEADERBOARD_REFRESH_SECONDS:-60}
+      LEADERBOARD_REFRESH_ENABLED: ${LEADERBOARD_REFRESH_ENABLED:-true}
       # [F-9] #112. The bus the ledger publishes prices to, and the same string
       # the realtime service below subscribes on — move one, move both. Written
       # out rather than read from .env: `.env`'s REDIS_URL is the host-side
