@@ -35,13 +35,14 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 import httpx
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import (
     active_auth_transport,
     auth_client_over,
     mint_token,
+    set_q,
     terms_client_over,
 )
 
@@ -354,19 +355,6 @@ async def warm(
     upstream.calls = 0
     upstream.tokens.clear()
     return book
-
-
-async def set_q(
-    session: AsyncSession, market_id: uuid.UUID, q: Sequence[Decimal]
-) -> None:
-    outcome = entities().MarketOutcome
-    for position, value in enumerate(q):
-        await session.execute(
-            update(outcome)
-            .where(outcome.market_id == market_id, outcome.position == position)
-            .values(q=value)
-        )
-    await session.commit()
 
 
 async def fund(session: AsyncSession, user_id: uuid.UUID) -> Decimal:

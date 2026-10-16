@@ -53,6 +53,7 @@ os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
 # holds INSERT on the log and no SELECT. ADR 0006.
 _audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 
+from collections.abc import Sequence  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
@@ -336,6 +337,24 @@ async def drop_outcome_row(session, market_id: uuid.UUID, position: int) -> None
             MarketOutcome.position == position,
         )
     )
+    await session.commit()
+
+
+async def set_q(session, market_id: uuid.UUID, q: Sequence[Decimal]) -> None:
+    """Write `q` directly, as a trade would have left it. Committed."""
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from model.entities import MarketOutcome  # noqa: PLC0415
+
+    for position, value in enumerate(q):
+        await session.execute(
+            update(MarketOutcome)
+            .where(
+                MarketOutcome.market_id == market_id,
+                MarketOutcome.position == position,
+            )
+            .values(q=value)
+        )
     await session.commit()
 
 

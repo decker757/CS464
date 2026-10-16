@@ -25,14 +25,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.roles import UserRole
-from unit_test.conftest import mint_token, terms_client_over
+from unit_test.conftest import mint_token, set_q, terms_client_over
 from unit_test.trade_fixtures import (
     accounts_module,
     books,
     entities,
     ledger_counts,
     session_factory,
-    set_q,
 )
 
 QUANTUM = Decimal("0.0001")

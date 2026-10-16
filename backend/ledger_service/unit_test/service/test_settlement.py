@@ -26,7 +26,7 @@ from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine
-from unit_test.conftest import idle_in_transaction
+from unit_test.conftest import idle_in_transaction, set_q
 from unit_test.history_fixtures import read_history
 from unit_test.settlement_fixtures import (
     LOSER,
@@ -65,7 +65,6 @@ from unit_test.trade_fixtures import (
     pool_balance,
     posting,
     session_factory,
-    set_q,
 )
 
 # Shares held by the holder of both outcomes, and by the pure loser. Four

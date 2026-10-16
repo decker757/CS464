@@ -20,7 +20,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import drop_outcome_row, set_b
+from unit_test.conftest import drop_outcome_row, set_b, set_q
 from unit_test.portfolio_fixtures import (
     HOLDING_VALUE,
     entries_sum,
@@ -45,7 +45,7 @@ from unit_test.settlement_fixtures import (
     warm,
 )
 from unit_test.settlement_fixtures import hold as hold_shares
-from unit_test.trade_fixtures import ZERO, entities, set_q
+from unit_test.trade_fixtures import ZERO, entities
 
 
 async def _paid_to(
