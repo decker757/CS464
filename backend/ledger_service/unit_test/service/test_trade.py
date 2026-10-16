@@ -20,7 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from unit_test.conftest import (
     active_auth_transport,
     auth_client_over,
+    drop_outcome_row,
     idle_in_transaction,
+    set_b,
+    strip_outcomes,
     terms_client_over,
 )
 from unit_test.trade_fixtures import (
@@ -918,12 +921,6 @@ async def test_a_cold_trade_reaches_ensure_open_with_nothing_pending(
 
 
 async def _damage(session: AsyncSession, upstream: Upstream, how: str) -> None:
-    from unit_test.conftest import (  # noqa: PLC0415
-        drop_outcome_row,
-        set_b,
-        strip_outcomes,
-    )
-
     if how == "no_outcomes":
         await strip_outcomes(session, upstream.market_id)
     elif how == "one_outcome":
