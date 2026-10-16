@@ -14,6 +14,7 @@ on one; `PROBE_TIMEOUT` only turns a hang into a failure.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -32,6 +33,7 @@ from unit_test.settlement_fixtures import PROBE_TIMEOUT, reached
 from unit_test.trade_fixtures import fund
 
 _TASK_NAME = "leaderboard-refresh"
+_MAIN_LOGGER = "main"
 
 # A port nothing listens on, so auth refuses at once rather than not answering.
 _UNREACHABLE_AUTH = "http://127.0.0.1:9"
@@ -88,8 +90,9 @@ async def test_the_app_boots_and_serves_with_auth_unreachable(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """[L-3] #40: "A leaderboard refresh failure retains the previous valid
-    ranking", and the refresh "does not block" the service. The first refresh
-    runs on a task, never before the lifespan yields.
+    ranking". The lifespan yields without waiting for the first refresh, so
+    the app boots and serves while that refresh is still running and auth is
+    unreachable.
 
     The real refresh is wrapped to block before it starts. While it is
     blocked the app answers `/health` and serves the stored ranking. Released,
@@ -189,6 +192,31 @@ async def test_disabled_starts_no_refresh_task(monkeypatch: pytest.MonkeyPatch) 
         assert _refresh_tasks() == []
 
     assert calls == []
+
+
+async def test_disabled_logs_a_warning_naming_the_setting(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A replica with the loop off says so at startup, naming the setting, so
+    a board that is going stale because every replica was switched off is
+    traceable from the logs. Level and setting name only, never the full text.
+
+    Catches: the warning removed, or logged at INFO.
+    """
+    _refresh_enabled(monkeypatch, False)
+    caplog.set_level(logging.INFO, logger=_MAIN_LOGGER)
+    app = _app()
+
+    async with _running(app):
+        pass
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == _MAIN_LOGGER and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1, f"expected one WARNING from {_MAIN_LOGGER!r}, found {warnings}"
+    assert "LEADERBOARD_REFRESH_ENABLED" in warnings[0].getMessage()
 
 
 async def test_shutdown_cancels_the_refresh_before_the_auth_client_closes(
