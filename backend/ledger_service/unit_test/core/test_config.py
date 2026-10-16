@@ -192,3 +192,20 @@ def test_the_leaderboard_refresh_is_on_by_default(
     settings = Settings(**_REQUIRED, _env_file=None)
 
     assert settings.leaderboard_refresh_enabled is True
+
+
+def test_the_leaderboard_refresh_is_switched_off_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fed for real, through the environment as compose does
+    (`docker-compose.yml`, `LEADERBOARD_REFRESH_ENABLED: ${...:-true}`), which
+    is the only way a replica is ever told not to refresh. The whole suite
+    leans on the same path: `unit_test/conftest.py` exports `"false"` so no
+    test's lifespan refreshes against a schema the next test drops. Catches:
+    the variable not bound to the field, which would leave the switch doing
+    nothing in a deployment and the suite refreshing behind itself."""
+    monkeypatch.setenv("LEADERBOARD_REFRESH_ENABLED", "false")
+
+    settings = Settings(**_REQUIRED, _env_file=None)
+
+    assert settings.leaderboard_refresh_enabled is False
