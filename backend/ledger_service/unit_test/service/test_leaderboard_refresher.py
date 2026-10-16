@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+from collections.abc import Awaitable, Callable
 
 import pytest
 
@@ -30,7 +32,7 @@ def _leaderboard():
 
 
 def _refresher():
-    """`service/leaderboard_refresher.py`, #40's loop. Does not exist yet."""
+    """`service/leaderboard_refresher.py`."""
     from service import leaderboard_refresher  # noqa: PLC0415
 
     return leaderboard_refresher
@@ -53,13 +55,36 @@ class _FailsThenWaits:
         await asyncio.Event().wait()
 
 
+class _SlowRefresh:
+    """Takes `duration` seconds per call and records when each call started and
+    ended. `third_call_started` is set as the third call begins."""
+
+    def __init__(self, duration: float) -> None:
+        self.duration = duration
+        self.started_at: list[float] = []
+        self.ended_at: list[float] = []
+        self.third_call_started = asyncio.Event()
+
+    async def __call__(self, *args, **kwargs) -> None:
+        self.started_at.append(time.monotonic())
+        if len(self.started_at) == 3:
+            self.third_call_started.set()
+        await asyncio.sleep(self.duration)
+        self.ended_at.append(time.monotonic())
+
+
 @contextlib.asynccontextmanager
-async def _loop_running(monkeypatch: pytest.MonkeyPatch, stand_in: _FailsThenWaits):
+async def _loop_running(
+    monkeypatch: pytest.MonkeyPatch,
+    stand_in: Callable[..., Awaitable[None]],
+    *,
+    interval_seconds: float = _TICK,
+):
     """The loop on a task, over the stand-in, cancelled and awaited on exit."""
     monkeypatch.setattr(_leaderboard(), "refresh", stand_in)
     task = asyncio.create_task(
         _refresher().run_leaderboard_refresher(
-            object(), object(), interval_seconds=_TICK
+            object(), object(), interval_seconds=interval_seconds
         )
     )
     try:
@@ -103,3 +128,29 @@ async def test_a_refresh_that_raises_is_logged_at_error(
         if record.exc_info is not None and record.exc_info[1] is failure
     ]
     assert [record.levelno for record in logged] == [logging.ERROR]
+
+
+async def test_the_refresher_sleeps_after_each_refresh_not_at_a_fixed_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop "sleeps after each refresh rather than at a fixed rate": a
+    refresh slower than the interval is followed by a full interval, never by
+    an immediate next one. The stand-in takes four times the interval; the
+    third call starting means two full refresh-then-sleep cycles completed.
+    Catches: a sleep that subtracts the refresh's duration."""
+    interval_seconds = 0.05
+    stand_in = _SlowRefresh(duration=0.2)
+
+    async with _loop_running(
+        monkeypatch, stand_in, interval_seconds=interval_seconds
+    ) as task:
+        await reached(
+            stand_in.third_call_started, "the loop never refreshed a third time", [task]
+        )
+
+    gaps = [
+        started - ended
+        for started, ended in zip(stand_in.started_at[1:], stand_in.ended_at)
+    ]
+    assert len(gaps) == 2
+    assert all(gap >= interval_seconds for gap in gaps)
