@@ -5,6 +5,9 @@ rules. This owns the timer and the promise that a failed refresh does not stop
 the next one. Why the first refresh runs inside the task, why it sleeps after
 each refresh rather than at a fixed rate, and what a failure leaves behind are
 the DECISIONS.md entries that cite #40. ADR 0021.
+
+Twin: `market_service/service/sweeper.py::run_close_sweeper`, the same loop
+shape. Kept copied, not shared: ADR 0012's bar.
 """
 
 from __future__ import annotations
@@ -34,6 +37,10 @@ async def run_leaderboard_refresher(
     `BaseException`, so shutdown still works. A failed refresh writes nothing,
     so the previous ranking stays. ADR 0021.
     """
+    logger.info(
+        "leaderboard refresher started: a refresh now, then every %.1fs",
+        interval_seconds,
+    )
     while True:
         try:
             await leaderboard.refresh(session_factory, auth_client)
