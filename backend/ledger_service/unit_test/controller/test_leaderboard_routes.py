@@ -111,9 +111,14 @@ async def test_a_trader_and_an_administrator_see_the_same_ranking(
 ) -> None:
     """"Traders and administrators see the same board." Both are ranked, so
     `me` and `is_me` differ by caller and are left out of the comparison;
-    whose they are is the next test's. Catches: `CurrentAdmin` on the route
-    (the trader's 403 fails `_board`); anything else in the body that depends
-    on the caller."""
+    whose they are is the next test's. Every other field is compared, so a
+    field added later is too. Catches: `CurrentAdmin` on the route (the
+    trader's 403 fails `_board`); anything else in the body that depends on
+    the caller, such as `has_more`.
+
+    `limit=1`, so there is a next page: `has_more` is true and `next_cursor`
+    is set. On one page holding the whole board both are false and null for
+    every caller, and a `has_more` that depended on the caller would pass."""
     admin_id = uuid.uuid4()
     await store_generation(
         computed_at=datetime.now(UTC),
@@ -121,13 +126,14 @@ async def test_a_trader_and_an_administrator_see_the_same_ranking(
         user_ids=[user_id, admin_id],
     )
 
-    as_trader = await _board(client, trader_headers)
-    as_admin = await _board(client, bearer(admin_id, UserRole.ADMIN))
+    as_trader = await _board(client, trader_headers, limit=1)
+    as_admin = await _board(client, bearer(admin_id, UserRole.ADMIN), limit=1)
 
-    for field in ("computed_at", "stale", "ranked_users", "next_cursor"):
+    for field in _PAGE_FIELDS - {"me", "rows"}:
         assert as_trader[field] == as_admin[field], field
+    assert as_trader["has_more"] is True, "the page holds the whole board"
     assert _rows_without_is_me(as_trader["rows"]) == _rows_without_is_me(as_admin["rows"])
-    assert [row["username"] for row in as_trader["rows"]] == ["ann", "root"]
+    assert [row["username"] for row in as_trader["rows"]] == ["ann"]
 
 
 async def test_each_caller_gets_their_own_me_and_their_own_is_me_row(
