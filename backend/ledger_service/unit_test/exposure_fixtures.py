@@ -3,8 +3,9 @@
 Built on `sell_fixtures.py`: every book here is opened by its first touch,
 `books.ensure_open`, so the pool really holds the seed through its
 MARKET_SEED entry, and every share outstanding was bought through
-`trading.execute`. Never `warm()`: its `set_q` writes `q` without paying the
-pool, and a pool that does not match `q` is exactly what this read reports on.
+`trading.execute`. Never `warm()`: the `set_q` in `unit_test/conftest.py` writes
+`q` without paying the pool, and a pool that does not match `q` is exactly what
+this read reports on.
 
 Expected pools are built from each trade's returned `total`, never from a
 fresh LMSR call: `total` is signed for the trader (negative on a buy,
