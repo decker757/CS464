@@ -317,13 +317,12 @@ async def post_all(
     The order is the design: round, refuse unbalanced legs, lock every account
     in the batch once, ascending by id (the caller's book lock comes first),
     then look the keys up, check USER overdrafts netted across the whole batch,
-    and take one stamp, all under the locks. Movement *i* lands at that stamp
-    plus *i* µs. Looked up before the lock, a retry racing its original is
-    refused as an overdraft for a trade that succeeded (ADR 0015). The stamp is
-    taken under the lock too, so a history lists movements in the order they
-    committed (#187). `now` is one floor for the batch. DECISIONS.md,
-    "`posting.post_all` takes a list of `Movement`s, commits once, and keeps
-    `post`'s SAVEPOINT".
+    and take one stamp, all under the locks, so a history lists movements in
+    the order they committed (#187). Movement *i* lands at that stamp plus *i*
+    µs. Looked up before the lock, a retry racing its original is refused as an
+    overdraft for a trade that succeeded (ADR 0015). `now` is one floor for the
+    batch. DECISIONS.md, "`posting.post_all` takes a list of `Movement`s,
+    commits once, and keeps `post`'s SAVEPOINT".
     """
     _refuse_if_malformed_batch(movements)
 
