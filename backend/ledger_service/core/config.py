@@ -58,6 +58,11 @@ class Settings(ServiceSettings):
     # `stale` from it: a ranking older than twice this is stale.
     leaderboard_refresh_seconds: int = Field(default=60, gt=0)
 
+    # Stops this replica running the refresh loop without a code change. With
+    # it off on every replica the ranking stops updating and turns stale after
+    # two intervals. ADR 0021.
+    leaderboard_refresh_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

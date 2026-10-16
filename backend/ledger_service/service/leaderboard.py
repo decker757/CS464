@@ -1,11 +1,11 @@
 """The leaderboard refresh: value every holder, name them through auth, and
 store the ranking as one generation. [L-1] #38, [L-3] #40, ADR 0021.
 
-Nothing calls `refresh` yet; the loop that runs it every
-`LEADERBOARD_REFRESH_SECONDS` is the next PR. DECISIONS.md, "The refresh runs
-every 60 seconds in a loop on each replica, behind
-`LEADERBOARD_REFRESH_ENABLED`, and a failed refresh writes nothing": any
-failure raises before the write transaction, so nothing is written.
+`service/leaderboard_refresher.py` calls `refresh` every
+`LEADERBOARD_REFRESH_SECONDS`. DECISIONS.md, "The refresh runs every 60
+seconds in a loop on each replica, behind `LEADERBOARD_REFRESH_ENABLED`, and a
+failed refresh writes nothing": any failure raises before the write
+transaction, so nothing is written.
 """
 
 from __future__ import annotations

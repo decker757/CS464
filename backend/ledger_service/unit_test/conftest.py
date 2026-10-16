@@ -48,6 +48,11 @@ os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 # [L-1] #38, ADR 0021: required, with no default, like the signing key above.
 # Fresh per run for the same reason; the stand-in auth service checks it.
 os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
+# [L-3] #40. Off for the suite, by assignment so a `.env` cannot turn it on:
+# every lifespan test would otherwise run a real refresh against the test
+# database while the next test drops it. A test that needs the loop turns it
+# on itself.
+os.environ["LEADERBOARD_REFRESH_ENABLED"] = "false"
 
 # [3.4] #12. The audit reader's own connection, as market_service's: `ledger_svc`
 # holds INSERT on the log and no SELECT. ADR 0006.

@@ -414,7 +414,10 @@ can differ from the user's live portfolio by whatever has traded since
 `computed_at` is when the ranking that this page came from began. Show it as
 "Updated …". Every user on every page of one ranking was valued from the same
 instant, so a trade that commits mid-refresh is in the whole ranking or in
-none of it.
+none of it. The ranking this route serves is refreshed at startup and then
+every `LEADERBOARD_REFRESH_SECONDS` (default 60); a failed refresh writes
+nothing and the previous ranking stays, marked stale once it is more than two
+intervals old.
 
 **`stale: true` means the board has not been refreshed recently.** It is
 true when `computed_at` is more than two refresh intervals old (120 seconds
@@ -483,11 +486,12 @@ and the one row with `is_me: true` identify the caller only to the caller.
 
 **A cursor holds you to one ranking.** Every page reached through
 `next_cursor` comes from the same ranking as the first page, even if a
-refresh has happened since. Each page repeats that ranking's `computed_at`
-and `stale`. The ledger keeps the ranking before the current one. A cursor
-survives one refresh; after the second it is `409 leaderboard_refreshed`. Drop
-the cursor and load page one again. Do not show the older pages beside the
-new one.
+refresh has happened since. `stale` is recalculated on every request against
+that request's clock, so two pages of one walk can differ in `stale` even
+though they share `computed_at`. The ledger keeps the ranking before the
+current one. A cursor survives one refresh; after the second it is
+`409 leaderboard_refreshed`. Drop the cursor and load page one again. Do not
+show the older pages beside the new one.
 
 ```js
 async function loadPage(cursor) {

@@ -6,9 +6,10 @@ place that decides which concrete implementations run.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as redis
 from fastapi import FastAPI
@@ -17,10 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from controller.errors import register_error_handlers
 from controller.routes import router as ledger_router
 from core.config import get_settings
-from core.database import dispose_engine
+from core.database import dispose_engine, get_session_factory
 from service import account_status, market_terms
+from service.leaderboard_refresher import run_leaderboard_refresher
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Seconds, for connect and every read and write on the price bus (D-051).
 # Without it a Redis that never answers makes the publish wait instead of
@@ -36,11 +39,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # (migrate.py) brought the schema to head before this process started.
     # ADR 0020.
     try:
+        settings = get_settings()
+
         # One client for the process (D-047). `from_url` dials lazily, so an
         # unreachable Redis does not stop boot, but parses eagerly, so a
         # mistyped REDIS_URL does (D-051).
         app.state.redis = redis.from_url(
-            get_settings().redis_url,
+            settings.redis_url,
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )
@@ -55,7 +60,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ):
             app.state.terms_client = terms_client
             app.state.auth_client = auth_client
-            yield
+
+            # The first refresh runs inside the task, so boot never waits for
+            # auth (DECISIONS.md, "The first refresh runs inside the
+            # refresher's task").
+            refresher: asyncio.Task[None] | None = None
+            if settings.leaderboard_refresh_enabled:
+                refresher = asyncio.create_task(
+                    run_leaderboard_refresher(
+                        get_session_factory(),
+                        auth_client,
+                        interval_seconds=settings.leaderboard_refresh_seconds,
+                    ),
+                    name="leaderboard-refresh",
+                )
+            else:
+                logger.warning(
+                    "leaderboard refresh disabled by LEADERBOARD_REFRESH_ENABLED "
+                    "on this replica; if it is off on every replica, the ranking "
+                    "stops updating and turns stale after two intervals"
+                )
+
+            try:
+                yield
+            finally:
+                # Stop the refresher while the auth client is still open and
+                # before the engine goes, or a refresh in flight calls a closed
+                # client. Awaited so no task outlives the app. ADR 0021.
+                if refresher is not None:
+                    refresher.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await refresher
     finally:
         # Nested so a failing `aclose()` cannot skip the disposal: a leaked
         # engine is every asyncpg connection this process opened.

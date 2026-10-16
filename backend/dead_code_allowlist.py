@@ -20,6 +20,3 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
-
-# [L-1] #38: the leaderboard refresh loop PR calls it; delete this line there
-refresh
