@@ -405,11 +405,6 @@ async def test_a_refused_market_leaves_no_book_behind(session: AsyncSession) -> 
 # =========================================================================
 # One read and one quantizer, shared with the preview (D-052)
 # =========================================================================
-async def _strip_outcomes(session: AsyncSession, upstream: Upstream) -> None:
-    """A book with no outcome rows, as a hand-run repair could leave it."""
-    await strip_outcomes(session, upstream.market_id)
-
-
 async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(
     session: AsyncSession,
 ) -> None:
@@ -419,7 +414,7 @@ async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(
 
     upstream = Upstream()
     await warm(session, upstream)
-    await _strip_outcomes(session, upstream)
+    await strip_outcomes(session, upstream.market_id)
 
     with pytest.raises(Exception) as raised:
         await _read(session, upstream)

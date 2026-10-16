@@ -20,10 +20,10 @@ from typing import Any, Protocol
 
 import httpx
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import mint_token, terms_client_over
+from unit_test.conftest import mint_token, set_q, terms_client_over
 
 QUANTUM = Decimal("0.0001")
 B = Decimal("100.0000")
@@ -197,23 +197,6 @@ def fresh_token() -> str:
 
 
 # --- the book -------------------------------------------------------------
-async def set_q(
-    session: AsyncSession, upstream: Upstream, q: Sequence[Decimal]
-) -> None:
-    """Write `q` directly, as a trade would have left it. Committed."""
-    outcome = entities().MarketOutcome
-    for position, value in enumerate(q):
-        await session.execute(
-            update(outcome)
-            .where(
-                outcome.market_id == upstream.market_id,
-                outcome.position == position,
-            )
-            .values(q=value)
-        )
-    await session.commit()
-
-
 async def warm(
     session: AsyncSession, upstream: Upstream, q: Sequence[Decimal] = tuple(Q)
 ):
@@ -228,7 +211,7 @@ async def warm(
         access_token=fresh_token(),
         terms_client=terms_client_over(upstream.transport),
     )
-    await set_q(session, upstream, q)
+    await set_q(session, upstream.market_id, q)
     upstream.calls = 0
     upstream.tokens.clear()
     return book

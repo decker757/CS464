@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import BindParameter
 
 from core.database import get_engine
-from unit_test.conftest import idle_in_transaction
+from unit_test.conftest import idle_in_transaction, set_q
 from unit_test.leaderboard_fixtures import (
     Directory,
     at,
@@ -53,7 +53,6 @@ from unit_test.trade_fixtures import (
     ledger_counts,
     locks,
     session_factory,
-    set_q,
     writes,
 )
 

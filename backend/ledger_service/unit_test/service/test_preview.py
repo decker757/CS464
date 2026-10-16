@@ -37,7 +37,6 @@ from unit_test.book_fixtures import (
     expected_prices,
     fresh_token,
     mentioning,
-    set_q,
     warm,
     writes,
 )
@@ -45,6 +44,7 @@ from unit_test.conftest import (
     drop_outcome_row,
     idle_in_transaction,
     set_b,
+    set_q,
     strip_outcomes,
     terms_client_over,
 )
@@ -179,7 +179,7 @@ async def test_the_q_vector_is_ordered_by_position(session: AsyncSession) -> Non
     await warm(session, upstream)
     straight = await _quote(session, upstream, outcome=0)
 
-    await set_q(session, upstream, list(reversed(Q)))
+    await set_q(session, upstream.market_id, list(reversed(Q)))
     reversed_q = await _quote(session, upstream, outcome=0)
 
     assert straight.total != reversed_q.total
@@ -296,7 +296,7 @@ async def test_buying_then_selling_the_same_quantity_never_profits(
     bought = await _quote(session, upstream, side="buy")
 
     after = [a + d for a, d in zip(Q, _delta(Q, 0, "buy", _QUANTITY))]
-    await set_q(session, upstream, after)
+    await set_q(session, upstream.market_id, after)
     sold = await _quote(session, upstream, side="sell")
 
     assert sold.total <= abs(bought.total), (

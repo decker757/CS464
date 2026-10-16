@@ -72,9 +72,7 @@ def _rows_without_is_me(rows: list[dict]) -> list[dict]:
     """The rows as every caller sees them: `is_me` is the one per-caller field."""
     stripped = []
     for row in rows:
-        shared = dict(row)
-        del shared["is_me"]
-        stripped.append(shared)
+        stripped.append({key: value for key, value in row.items() if key != "is_me"})
     return stripped
 
 

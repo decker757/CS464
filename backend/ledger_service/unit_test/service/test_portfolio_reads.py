@@ -35,7 +35,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import drop_outcome_row, set_b
+from unit_test.conftest import drop_outcome_row, set_b, set_q
 from unit_test.portfolio_fixtures import (
     ADR_B,
     funded,
@@ -53,7 +53,6 @@ from unit_test.trade_fixtures import (
     errors,
     grants,
     session_factory,
-    set_q,
     transaction_count,
 )
 

@@ -6,14 +6,14 @@ module handles. What is added here is only what a sell needs and a buy did
 not.
 
 **Every book here is opened at zero, by its first touch.** Never `warm()`,
-whose `set_q` writes `q` directly. #23's invariants — each outcome's `q`
-equals the sum of positions in it, and the pool never holds less than its
-seed subsidy — are both false on a book whose `q` was written by hand: that
-`q` is above the positions and was never paid for. "Shares outstanding equal
-the sum of positions, so the outstanding check is a backstop on the trade
-route" says so in its Notes. Every holding is created by a real buy. The one
-test that writes `q` directly is the backstop's own, and it does so in its
-own body, not through anything here.
+whose `set_q` (in `unit_test/conftest.py`) writes `q` directly. #23's
+invariants — each outcome's `q` equals the sum of positions in it, and the pool
+never holds less than its seed subsidy — are both false on a book whose `q` was
+written by hand: that `q` is above the positions and was never paid for.
+"Shares outstanding equal the sum of positions, so the outstanding check is a
+backstop on the trade route" says so in its Notes. Every holding is created by
+a real buy. The one test that writes `q` directly is the backstop's own, and it
+does so in its own body, not through anything here.
 
 **The numbers are the issue's worked example, reached through real trades.**
 At `b = 137`, buying `54.3333` of outcome 0 on a book opened at zero costs a
