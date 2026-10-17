@@ -8,6 +8,7 @@ import { server } from '../../test/server'
 import AdminMarketRow from './AdminMarketRow'
 
 const CLOSE = (id: string) => `http://localhost:8001/markets/${id}/close`
+const SETTLE = (id: string) => `http://localhost:8003/ledger/markets/${id}/settlement`
 
 const OPEN_MARKET: MarketOverviewRow = {
   id: 'm1',
@@ -17,6 +18,16 @@ const OPEN_MARKET: MarketOverviewRow = {
   close_time: '2099-01-05T12:00:00Z',
   settleable: false,
   dispute_window_ends_at: null,
+}
+
+const SETTLEABLE_MARKET: MarketOverviewRow = {
+  id: 'm2',
+  creator_id: 'u1',
+  status: 'approved',
+  question: 'Did it rain yesterday?',
+  close_time: '2025-01-01T00:00:00Z',
+  settleable: true,
+  dispute_window_ends_at: '2025-01-01T00:05:00Z',
 }
 
 function renderRow(market: MarketOverviewRow, isMine = false) {
@@ -171,5 +182,98 @@ describe('AdminMarketRow', () => {
     renderRow({ ...OPEN_MARKET, status: 'submitted', close_time: '2099-01-01T00:00:00Z' })
     expect(screen.queryByRole('link', { name: /^exposure$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /price history/i })).not.toBeInTheDocument()
+  })
+
+  describe('settling', () => {
+    it('hides the Settle control on an approved market still in its dispute window', () => {
+      renderRow({ ...SETTLEABLE_MARKET, settleable: false })
+      expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
+    })
+
+    it('offers Settle once a market is settleable', () => {
+      renderRow(SETTLEABLE_MARKET)
+      expect(screen.getByRole('button', { name: /^settle$/i })).toBeInTheDocument()
+    })
+
+    it('settles the market and repaints the row as settled, without a refetch', async () => {
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json({
+        market_id: SETTLEABLE_MARKET.id, outcome_id: 'o1', recorded_at: '2026-01-01T00:00:00Z',
+        holders_paid: 3, total_paid: '140.0000', residue: '0.0000',
+      })))
+      renderRow(SETTLEABLE_MARKET)
+      const actor = userEvent.setup()
+
+      await actor.click(screen.getByRole('button', { name: /^settle$/i }))
+
+      await screen.findByText('Settled')
+      expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
+    })
+
+    it('shows that nothing was paid and keeps Settle available when the dispute window is still open at the edge', async () => {
+      // ledger-service.md: settleable can read true here and still race the
+      // window's edge, since the row's settleable was read on an earlier request.
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
+        { error: { code: 'dispute_window_open', message: 'not yet' } }, { status: 409 },
+      )))
+      renderRow(SETTLEABLE_MARKET)
+      const actor = userEvent.setup()
+
+      await actor.click(screen.getByRole('button', { name: /^settle$/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/dispute window has not closed/i)
+      expect(screen.queryByRole('alert')).not.toHaveTextContent(/failed/i)
+      expect(screen.getByRole('button', { name: /^settle$/i })).toBeEnabled()
+    })
+
+    it('offers a Reload control and drops Settle once the market is no longer approved', async () => {
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
+        { error: { code: 'market_not_approved', message: 'not approved' } }, { status: 409 },
+      )))
+      renderRow(SETTLEABLE_MARKET)
+      const actor = userEvent.setup()
+
+      await actor.click(screen.getByRole('button', { name: /^settle$/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/no longer approved/i)
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
+    })
+
+    it('retries on settlement_unconfirmed and settles silently once the retry confirms it', async () => {
+      // ledger-service.md: the payouts already committed; only the last step
+      // (telling market_service) failed. This must read as success, not failure.
+      let calls = 0
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => {
+        calls += 1
+        if (calls === 1) {
+          return HttpResponse.json({ error: { code: 'settlement_unconfirmed', message: 'unconfirmed' } }, { status: 503 })
+        }
+        return HttpResponse.json({
+          market_id: SETTLEABLE_MARKET.id, outcome_id: 'o1', recorded_at: '2026-01-01T00:00:00Z',
+          holders_paid: 3, total_paid: '140.0000', residue: '0.0000',
+        })
+      }))
+      renderRow(SETTLEABLE_MARKET)
+      const actor = userEvent.setup()
+
+      await actor.click(screen.getByRole('button', { name: /^settle$/i }))
+
+      await screen.findByText('Settled')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(calls).toBe(2)
+    })
+
+    it('tells the admin payouts are confirmed, not failed, if the retry also fails to confirm', async () => {
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
+        { error: { code: 'settlement_unconfirmed', message: 'unconfirmed' } }, { status: 503 },
+      )))
+      renderRow(SETTLEABLE_MARKET)
+      const actor = userEvent.setup()
+
+      await actor.click(screen.getByRole('button', { name: /^settle$/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/settlement is recorded/i)
+      expect(screen.queryByRole('alert')).not.toHaveTextContent(/^settling this market failed/i)
+    })
   })
 })
