@@ -51,11 +51,17 @@ export default function LeaderboardPage() {
               {rows.map(row => (
                 <tr
                   key={row.rank}
-                  data-is-me={row.is_me || undefined}
+                  // The data attribute is a hook for tests; the highlight
+                  // itself is colour, which a screen reader does not read, so
+                  // the visually-hidden "(you)" is what actually marks the row.
+                  data-is-me={row.is_me ? true : undefined}
                   className={`border-b border-line last:border-0 ${row.is_me ? 'bg-smu-gold/10' : ''}`}
                 >
                   <NumberCell>{row.rank}</NumberCell>
-                  <td className="px-5 py-3 text-smu-navy">{row.username}</td>
+                  <td className="px-5 py-3 text-smu-navy">
+                    {row.username}
+                    {row.is_me && <span className="sr-only"> (you)</span>}
+                  </td>
                   <NumberCell>{formatCreditsPrecise(row.net_worth)}</NumberCell>
                 </tr>
               ))}
