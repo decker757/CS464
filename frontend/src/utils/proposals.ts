@@ -48,3 +48,41 @@ export function toPendingProposal(market: { id: string; question: string }, entr
     evidenceNote: context.evidence_note ?? null,
   }
 }
+
+export interface ApprovedResult {
+  marketId: string
+  question: string
+  // The id to quote on send-back ([3.3] #11) — from the entry's own context,
+  // never refetched, so a stale page cannot pass a check against an approval
+  // it has not read (market-service.md's dispute-screen notes, point 4).
+  proposalId: string | null
+  winningOutcome: string
+  evidenceUrl: string | null
+  evidenceNote: string | null
+  proposedByUsername: string
+  // The approver is who acted, not who is in the context — the entry itself
+  // is the market.outcome_approved action (dispute-screen notes, point 3).
+  approvedByUsername: string
+  approvedAt: string
+}
+
+export function toApprovedResult(market: { id: string; question: string }, entry: AdminAction): ApprovedResult {
+  const context = entry.context as {
+    proposal_id?: string | null
+    winning_outcome?: string
+    evidence_url?: string | null
+    evidence_note?: string | null
+    proposed_by_username?: string
+  }
+  return {
+    marketId: market.id,
+    question: market.question,
+    proposalId: context.proposal_id ?? null,
+    winningOutcome: context.winning_outcome ?? '',
+    evidenceUrl: context.evidence_url ?? null,
+    evidenceNote: context.evidence_note ?? null,
+    proposedByUsername: context.proposed_by_username ?? '',
+    approvedByUsername: entry.actor_username,
+    approvedAt: entry.occurred_at,
+  }
+}
