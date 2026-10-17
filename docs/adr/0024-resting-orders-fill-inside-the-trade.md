@@ -1,15 +1,19 @@
 # ADR 0024: Resting orders fill against the AMM inside the trade that moved the price
 
-- **Status:** Proposed. It becomes Accepted once three sign-offs are recorded
+- **Status:** Proposed. It becomes Accepted once four sign-offs are recorded
   on this line: [4.2] #14's owner accepts the narrowing in "A suspended
   owner's orders are checked at placement only"; the team accepts that a
   cascade inside a tokened trade is not "a caller with nobody behind it"
-  ("The cascade runs inside the trade that moved the price"); and Ernest, who
+  ("The cascade runs inside the trade that moved the price"); Ernest, who
   owns `service/posting.py` and `service/accounts.py`, accepts the
   order-aware running check in `_refuse_overdrafts`: a floor at the account's
   reservation, checked after each debit in movement order, with each movement
   carrying the reservation it releases ("A reservation is derived from the
-  order rows, and it is `posting`'s floor").
+  order rows, and it is `posting`'s floor"); and the team accepts three scope
+  changes to #26 and #27: binary markets only, refusing a placement that
+  crosses the book, and "resting" meaning not executable to within one tick
+  ("Binary markets only, and no crossed book"). The tickets are edited once
+  the team accepts.
 - **Date:** 2026-10-17
 - **Affects:** [T-6] #26, [T-7] #27, [T-8] #28, [FE][T-6] #61, [4.2] #14, [T-5] #25, [4.1] #13, [X-4] #37, [BE] #221, ADR 0005, ADR 0009, ADR 0010, ADR 0015, ADR 0017, ADR 0018, ADR 0021, ADR 0022
 - **Implemented in:** nothing yet. This record precedes the limit-order stack
@@ -121,6 +125,29 @@ back what the batch's movements release for that account gives the figure
 before it. For a placement, that comes to the new order's whole budget: the
 read sees `budget - cost` for the order's own fill, and that fill releases
 `cost`.
+
+**A placement locks the placer's account by one of two paths, and never both.**
+Both take the book lock first, then accounts, as ADR 0015 orders them.
+
+- *A placement that rests entirely* writes no movement, so `post_all` is not
+  called. Under the book lock it takes the placer's account lock
+  (`accounts.lock`), reads `available`, inserts the order and commits. The
+  account lock is held to the commit. A trade in another market, which reads
+  this user's reservation under the same lock, therefore waits for the
+  placement, or the placement waits for it. Without the lock both read the
+  reservation before the other's write commits, both pass, and the balance
+  ends below the reservation. A resting sell takes no account lock: it checks
+  shares, and shares change only under the book lock.
+- *A placement that fills on arrival, fully or in part*, takes no lock of its
+  own. `post_all` locks the placer's account in its single ascending sweep
+  over every account in the batch, and its running check sees the new order's
+  flushed row. A pre-lock on this path would put the placer's account ahead of
+  the other owners' in lock order, out of ascending order, and two such
+  placements can deadlock.
+
+A fill refused by the running check inside a cascade is impossible by
+construction, because every fill is bounded by its own reservation. If one
+happens it is a bug: the commit rolls back with a 500, and the ledger logs it.
 
 **Why not the batch's net, or the reservation after it.** A trader's own
 resting sell can fill in the cascade their own buy triggered. Netted across
@@ -336,9 +363,22 @@ without it.
 **[BE] #221's refund must decide how it meets the reservation floor if it
 debits a USER account.**
 
-**The cascade PR must have a test that an order fills at most once per
-commit.** The termination argument implies it, and the realtime contract's
-one order frame per fill depends on it.
+**Tests owed.** Each is a criterion the code PRs are reviewed against.
+
+- The "big trade crosses 3 resting orders" scenario, asserting the final
+  price and the fill order (price, then `seq`).
+- Entries sum to zero per transaction and overall under concurrent trading
+  plus cascades, with balance at least the reservation for every user and
+  position at least reserved shares.
+- A resting placement in one market racing an instant buy in another by the
+  same user, with `asyncio.Barrier` and `pg_stat_activity` lock waits, no
+  timing. It must fail with the placement's account lock removed.
+- A cancel racing a fill, in both orderings, plus the partial case.
+- A self-fill: the triggering trade is refused unless it is affordable before
+  any resting order fills (the 100 and 60 example above).
+- `order_crosses_book`, one case per row of the threshold table.
+- An order fills at most once per commit. The termination argument implies
+  it, and the realtime contract's one order frame per fill depends on it.
 
 **Placement and cancel write no entries**, so neither appears in the money
 history. They belong in an order history, which is not in this iteration.
