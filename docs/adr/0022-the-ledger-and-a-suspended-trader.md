@@ -188,6 +188,10 @@ the ledger exists.
 > narrowing of [4.2] #14's "suspension blocks trading", and it needs #14's
 > owner's sign-off before it does. A cancel makes no account check.
 
+> **Amended 2026-10-17. ADR 0024 is Accepted.** ADR 0024 was Accepted on
+> 2026-10-17, so the narrowing of [4.2] #14's "suspension blocks trading"
+> described above is decided, not pending.
+
 > **Amended 2026-10-17. True of the code today.** The auth client's timeout
 > is five seconds on each of httpx's four phases, connect, write, read and
 > pool. They are bounded separately, so one call can wait about 20 seconds

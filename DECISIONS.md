@@ -6193,6 +6193,11 @@ a reservation dropped later in the batch can pay for it. ADR 0024 works both
 cases through. An account the batch only credits is still not read. The owner
 of `posting.py` signs this off before it is built.
 
+*Amended 2026-10-17.* ADR 0024 was Accepted on 2026-10-17. The owner of
+`posting.py` signed this off in his approving review of #324: "sign-off 3 is
+a yes", and sign-off 3 is this running check in `_refuse_overdrafts`. The
+running check is built in the limit-order stack's PR 4a.
+
 ---
 
 ### D-NEW — `post_all` locks the union of the batch's accounts once, ascending, after the caller's book lock

@@ -38,9 +38,9 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
-| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (proposed, ADR 0024) |
-| GET | `/ledger/orders/me` | My live limit orders (proposed, ADR 0024) |
-| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (proposed, ADR 0024) |
+| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024, not built yet) |
+| GET | `/ledger/orders/me` | My live limit orders (ADR 0024, not built yet) |
+| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024, not built yet) |
 | GET | `/health` | Liveness and readiness probe |
 
 **Two routes write, and neither takes money.** `POST .../trades` takes no
@@ -1820,5 +1820,5 @@ residue, so no request can provoke it.
 
 `market_not_binary`, `order_crosses_book`, `order_not_found`,
 `order_already_filled`, `order_already_cancelled` and `order_released` are
-proposed by ADR 0024 for the limit-order routes and are not built yet. They
+decided by ADR 0024 for the limit-order routes and are not built yet. They
 are documented in "Limit orders" above.
