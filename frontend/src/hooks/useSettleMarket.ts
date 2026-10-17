@@ -20,6 +20,7 @@ const SUPERSEDING_CODES = new Set(['market_not_approved'])
  * so it retries on its own rather than asking the admin to click again, and
  * `onSettled` still fires once that retry confirms it. */
 export function useSettleMarket(marketId: string, onSettled: () => void) {
+  const [showSettleModal, setShowSettleModal] = useState(false)
   const [settling, setSettling] = useState(false)
   const [formError, setFormError] = useState('')
   const [superseded, setSuperseded] = useState(false)
@@ -35,25 +36,37 @@ export function useSettleMarket(marketId: string, onSettled: () => void) {
     setFormError('')
     try {
       await attempt()
+      setShowSettleModal(false)
     } catch (err) {
       const code = errorCode(err)
       if (code === 'settlement_unconfirmed') {
         try {
           await attempt()
+          setShowSettleModal(false)
           return
         } catch (retryErr) {
           const retryCode = errorCode(retryErr)
           setFormError((retryCode && CODE_MESSAGES[retryCode]) || 'Settlement is recorded, but confirming it with the market failed. Try again.')
           setSuperseded(!!retryCode && SUPERSEDING_CODES.has(retryCode))
+          setShowSettleModal(false)
           return
         }
       }
       setFormError((code && CODE_MESSAGES[code]) || 'Settling this market failed. Please try again.')
       setSuperseded(!!code && SUPERSEDING_CODES.has(code))
+      setShowSettleModal(false)
     } finally {
       setSettling(false)
     }
   }
 
-  return { settling, formError, superseded, handleSettle }
+  return {
+    showSettleModal,
+    openSettleModal: () => setShowSettleModal(true),
+    closeSettleModal: () => setShowSettleModal(false),
+    settling,
+    formError,
+    superseded,
+    handleSettle,
+  }
 }
