@@ -1238,7 +1238,8 @@ rest, holding `48.1848` of a `60.0000` budget.
   reservation.
 - **A buy's whole budget has to fit in `available`**, even when it would fill
   completely on arrival for less. Such a buy is refused
-  `409 insufficient_funds` with `required` as the budget, and nothing fills.
+  `409 insufficient_funds` with `shortfall`, how much more you need, and
+  nothing fills.
 
 **A retry with the same key** returns `201` with the order as it stands now,
 which may have filled further since, the `book_state_version` stored when it
@@ -1278,7 +1279,7 @@ Errors:
 | 409 | `market_closed` | The market's derived status is not `"open"`, or it has a result. |
 | 409 | `market_not_binary` | The market has more than two outcomes. |
 | 409 | `order_crosses_book` | The order would fire, or be fired by, a resting order that pushes the price the other way. `error.details` carries `side` and the bound: `max_limit_price` for a buy, which the limit must be strictly below, or `min_limit_price` for a sell, which it must be strictly above. Show it as "an order is in the way at this price". Your own orders count. |
-| 409 | `insufficient_funds` | A buy whose budget does not fit in `available`, including one that would fill completely on arrival for less than its budget. `error.details` carries `balance`, `reserved`, `available` and `required`, `required` being the budget. |
+| 409 | `insufficient_funds` | A buy whose budget does not fit in `available`, including one that would fill completely on arrival for less than its budget. `error.details` carries `balance`, `reserved`, `available` and `shortfall`, how much more credit you need for the budget to fit, and no `required`. A resting placement's `shortfall` is the budget less `available`. A placement that fills in the same batch is refused by the start-of-batch check, and its `shortfall` is the reservation at the start of the batch, including the new order's budget, less `balance`. The trade route's `insufficient_funds` keeps `required`, unchanged. |
 | 409 | `insufficient_shares_held` | A sell larger than your position less the shares your other sell orders in that outcome reserve. `error.details` carries `held`, `reserved` and `requested`. |
 | 409 | `idempotency_key_reused` | The key already names a different order. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |

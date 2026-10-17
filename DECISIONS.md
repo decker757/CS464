@@ -6185,11 +6185,13 @@ A placement's new buy order therefore counts at its full budget from the
 start of the batch, whether it fills in part or completely on arrival, and
 the check at the start refuses a placement whose budget does not fit in
 `available`, `409 insufficient_funds`, even one that would fill completely
-for less. So a trade has to be affordable before any resting order fills:
-neither a self-fill's proceeds nor a reservation dropped later in the batch
-can pay for it. ADR 0024 works both cases through. An account the batch only
-credits is still not read. The owner of `posting.py` signs this off before
-it is built.
+for less. That refusal carries `balance`, `reserved`, `available` and
+`shortfall`, how much more the user needs, and not `required`; the trade
+route's `insufficient_funds` keeps `required`. So a trade has to be
+affordable before any resting order fills: neither a self-fill's proceeds nor
+a reservation dropped later in the batch can pay for it. ADR 0024 works both
+cases through. An account the batch only credits is still not read. The owner
+of `posting.py` signs this off before it is built.
 
 ---
 

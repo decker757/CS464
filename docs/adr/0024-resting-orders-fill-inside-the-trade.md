@@ -184,7 +184,17 @@ Had the fill carried its cost, 28, the figure before the batch would have
 been 98, and the fill would have left 72 against 70 and passed. The drop of
 40 alone does not refuse it either: without the check at the start, the fill
 leaves 72 against 110 - 40 = 70 and passes. The check at the start is what
-refuses it. `error.details.required` is the budget, 40.
+refuses it. `error.details.shortfall` is 110 - 100 = 10.
+
+**A refused placement carries `shortfall`, not `required`.** The details are
+`balance`, `reserved`, `available` and `shortfall`, how much more the user
+needs. On the `post_all` path the start-of-batch check computes it: the
+reservation at the start of the batch, including the new order's budget, less
+the balance. On the resting path it is the budget less `available`. Both give
+10 in the second worked case (40 - 30 on the resting path). The check has the
+balance and the reservation and not the budget, so a `required` would have
+needed a figure handed to it. The trade route's `insufficient_funds` keeps
+`required`, unchanged, so the two refusals are not to be confused.
 
 **A placement locks the placer's account by one of two paths, and never both.**
 Both take the book lock first, then accounts, as ADR 0015 orders them.
@@ -475,7 +485,15 @@ debits a USER account.**
   affordable before the fill (the first worked case above).
 - A placement whose budget exceeds `available` but which would fill
   completely on arrival: refused, `409 insufficient_funds` (the second worked
-  case above).
+  case above), with `shortfall` 10 and no `required`.
+- Two of the owner's buy orders filling in one batch, one exhausted and one
+  partial. Balance 100, order X budget 60 and order Y budget 30, both
+  unspent. A trade of 5, then X fills completely for 50 and Y partially for
+  10. The walk passes at every step and ends at balance 35 against a
+  reservation of 20.
+- A self-fill sell crediting the account before a buy-order fill debits it:
+  allowed. It is safe because a buy-order fill lowers the reservation by at
+  least its cost, so the floor rises to meet the debit.
 - A first-ever placement by a user with no ledger account: the signup grant
   is minted and the order is accepted.
 - A retried placement returns only the fills the original request made,
