@@ -1,5 +1,5 @@
 import AppLayout from '../components/layout/AppLayout'
-import { HeaderCell, NumberCell, TableFrame } from '../components/ui/Table'
+import { HeaderCell, NumberCell, TableFrame, TableHeaderRow } from '../components/ui/Table'
 import LoadMoreControl from '../components/ui/LoadMoreControl'
 import PageTitle from '../components/ui/PageTitle'
 import { useLeaderboard } from '../hooks/useLeaderboard'
@@ -41,11 +41,11 @@ export default function LeaderboardPage() {
 
           <TableFrame>
             <thead>
-              <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
+              <TableHeaderRow>
                 <HeaderCell align="right">Rank</HeaderCell>
                 <HeaderCell>Username</HeaderCell>
                 <HeaderCell align="right">Net worth</HeaderCell>
-              </tr>
+              </TableHeaderRow>
             </thead>
             <tbody>
               {rows.map(row => (

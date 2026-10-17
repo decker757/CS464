@@ -1,5 +1,5 @@
 import type { OutcomeExposure } from '../../api/ledgerApi'
-import { HeaderCell, NumberCell, TableFrame } from '../ui/Table'
+import { HeaderCell, NumberCell, TableFrame, TableHeaderRow } from '../ui/Table'
 import { formatCreditsPrecise } from '../../utils/formatCredits'
 
 interface MarketExposureTableProps {
@@ -18,12 +18,12 @@ export default function MarketExposureTable({ outcomes, outcomeLabels }: MarketE
   return (
     <TableFrame>
       <thead>
-        <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
+        <TableHeaderRow>
           <HeaderCell>Outcome</HeaderCell>
           <HeaderCell align="right">Shares outstanding</HeaderCell>
           <HeaderCell align="right">Payout if wins</HeaderCell>
           <HeaderCell align="right">Pool residue if wins</HeaderCell>
-        </tr>
+        </TableHeaderRow>
       </thead>
       <tbody>
         {outcomes.map(outcome => (

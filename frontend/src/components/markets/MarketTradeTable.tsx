@@ -1,5 +1,5 @@
 import type { MarketTrade } from '../../api/ledgerApi'
-import { HeaderCell, NumberCell, TableFrame } from '../ui/Table'
+import { HeaderCell, NumberCell, TableFrame, TableHeaderRow } from '../ui/Table'
 import { formatAveragePrice } from '../../utils/formatCredits'
 import { shortId } from '../../utils/shortId'
 
@@ -18,14 +18,14 @@ export default function MarketTradeTable({ trades, outcomeLabels }: MarketTradeT
   return (
     <TableFrame>
       <thead>
-        <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
+        <TableHeaderRow>
           <HeaderCell>Date</HeaderCell>
           <HeaderCell>User</HeaderCell>
           <HeaderCell>Outcome</HeaderCell>
           <HeaderCell align="right">Side</HeaderCell>
           <HeaderCell align="right">Quantity</HeaderCell>
           <HeaderCell align="right">Avg. price</HeaderCell>
-        </tr>
+        </TableHeaderRow>
       </thead>
       <tbody>
         {trades.map(trade => (

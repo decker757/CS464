@@ -6,7 +6,7 @@ import AppLayout from '../components/layout/AppLayout'
 import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import PageTitle from '../components/ui/PageTitle'
-import { HeaderCell, NumberCell } from '../components/ui/Table'
+import { HeaderCell, NumberCell, TableHeaderRow } from '../components/ui/Table'
 import { formatAveragePrice, formatCreditsPrecise, signedAmountColor } from '../utils/formatCredits'
 import { formatPrice } from '../utils/formatPrice'
 import { labelsFor, loadMarketsById } from '../utils/marketLabels'
@@ -91,7 +91,7 @@ export default function PortfolioPage() {
             <div className="overflow-x-auto rounded-2xl border border-smu-gold/15 bg-white shadow-card">
               <table className="w-full text-left text-sm">
                 <thead>
-                  <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
+                  <TableHeaderRow>
                     <HeaderCell>Market</HeaderCell>
                     <HeaderCell>Outcome</HeaderCell>
                     <HeaderCell align="right">Quantity</HeaderCell>
@@ -100,7 +100,7 @@ export default function PortfolioPage() {
                     <HeaderCell align="right">Price</HeaderCell>
                     <HeaderCell align="right">Value</HeaderCell>
                     <HeaderCell align="right">Unrealized P&L</HeaderCell>
-                  </tr>
+                  </TableHeaderRow>
                 </thead>
                 <tbody>
                   {rows.map(row => (
