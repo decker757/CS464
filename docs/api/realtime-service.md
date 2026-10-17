@@ -290,7 +290,7 @@ Rules that are not negotiable:
 [T-7] #27's fifth criterion: "filled and partially-filled orders push
 notifications to the owner via websocket". **Nothing in this section exists
 yet.** Why: [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md),
-which is Proposed. The order routes are in `docs/api/ledger-service.md`,
+which is Accepted. The order routes are in `docs/api/ledger-service.md`,
 "Limit orders".
 
 **No subscribe.** A connection receives the `order` frames of the user its

@@ -9505,3 +9505,26 @@ changes both of its guard tests.
 **Notes.** A trade recorded before this field existed has no
 `book_state_version` in its `context`. `result_of` returns its
 `state_version`, which is the same number, because no cascade ran then.
+
+---
+
+### D-NEW — An order's `spent` is what its fills moved, on either side
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** `ledger.orders.spent` is the sum of the credits an order's
+fills have moved: a buy's costs, a sell's proceeds. A buy's reservation is
+`budget - spent`, as "A buy reserves `limit × quantity` rounded up to the
+tick, its reservation is `budget - spent`, and it cannot go negative" says.
+A sell reserves no credits, so its `spent` is read only for
+`average_fill_price`, which is `spent / filled_quantity` on either side.
+
+**Why.** The order object carries `average_fill_price` for buys and sells
+alike. Reading a sell's from its fills is a query on `context->>'order_id'`,
+whose index is a stretch item ("A fill's `context` is a trade's, plus
+`order_id`"), on every `GET /ledger/orders/me`. One rollup serves both
+sides, updated under the book lock beside `filled_quantity`.
+
+**Rejected.** *A `proceeds` column for sells*: two rollups where one
+serves, each bound to its side by a CHECK. *A sell's average from its
+fills*: the unindexed query above.
