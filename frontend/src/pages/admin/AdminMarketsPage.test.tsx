@@ -18,10 +18,10 @@ const admin: User = { id: 'u1', username: 'admin1', email: 'admin@smu.edu.sg', r
 const OTHER_ADMIN_ID = 'u2'
 
 // Every row carries settleable/dispute_window_ends_at regardless of status
-// (market-service.md); false/null fits every status in this fixture set,
-// none of which is an approved market past its dispute window.
-function row(overrides: Omit<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>): MarketOverviewRow {
-  return { ...overrides, settleable: false, dispute_window_ends_at: null }
+// (market-service.md); false/null fits every status in this fixture set
+// unless a test overrides it for a market past its dispute window.
+function row(overrides: Partial<Pick<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>> & Omit<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>): MarketOverviewRow {
+  return { settleable: false, dispute_window_ends_at: null, ...overrides }
 }
 
 // The admin's own markets, one in each status, in the order the server sends
