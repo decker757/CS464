@@ -25,7 +25,8 @@ async def list_by_ids(session: AsyncSession, user_ids: Sequence[uuid.UUID]) -> l
     internal lookup and by the admin lookup, which promises no order.
     """
     # `raiseload`, for `get_current_user`'s reason: `lazy="selectin"` would
-    # load every refresh token of up to 500 users, and nothing here reads them.
+    # load every refresh token of the users asked for (the internal lookup
+    # sends up to 500, the admin lookup up to 200), and nothing here reads them.
     stmt = (
         select(User)
         .where(User.id.in_(user_ids))
