@@ -159,9 +159,12 @@ async def test_a_row_on_the_edge_of_a_rule_is_accepted(
 
     session.add(order)
     await session.flush()
+    # Read the id before expiring: an expired attribute lazy-loads, and
+    # under asyncio that raises MissingGreenlet instead of querying.
+    order_id = order.id
     session.expire_all()
 
-    stored = (await session.execute(select(Order).where(Order.id == order.id))).scalar_one()
+    stored = (await session.execute(select(Order).where(Order.id == order_id))).scalar_one()
     for column, value in overrides.items():
         assert getattr(stored, column) == value
 
