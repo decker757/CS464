@@ -8578,6 +8578,9 @@ and an id sent twice is answered once.
 way to name users that includes suspended ones. Then the feed can carry
 `username` itself, and the browser-side join goes.
 
+Amended 2026-10-17 by #273: built by ihsankoolz, with Ernest's agreement, as
+POST /admin/users/lookup. The contract above is unchanged.
+
 ---
 
 ### D-NEW — Price history takes any valid token; the trade feed takes an administrator's

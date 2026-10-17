@@ -255,3 +255,39 @@ class UserLookupOut(BaseModel):
     """The accounts that exist among those asked for, ordered by `id`."""
 
     users: list[DirectoryUserOut]
+
+
+# The administrator's twin of `UserLookupIn`.
+class AdminUserLookupIn(BaseModel):
+    """Which accounts to name, for an administrator's trade table. [2.4] #273.
+
+    Anything else in the body is refused, so a caller cannot believe it asked
+    for more than the two fields `UserNameOut` holds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The ledger's trades page is clamped at 200 (ledger_service/core/config.py),
+    # so one page names at most 200 traders.
+    user_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+
+
+# The administrator's twin of `DirectoryUserOut`, without `is_suspended`.
+class UserNameOut(BaseModel):
+    """One account as a trade table names it: exactly `id` and `username`.
+
+    A separate class rather than a subset of `UserOut`, so a field added there
+    can never reach this answer by inheritance.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    username: str
+
+
+# The administrator's twin of `UserLookupOut`.
+class AdminUserLookupOut(BaseModel):
+    """The accounts that exist among those asked for. No order is promised."""
+
+    users: list[UserNameOut]
