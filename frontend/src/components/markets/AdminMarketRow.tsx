@@ -6,6 +6,7 @@ import Card from '../ui/Card'
 import ReasonModal from '../ui/ReasonModal'
 import { buttonClass } from '../ui/buttonClass'
 import { useCloseMarket } from '../../hooks/useCloseMarket'
+import { useSettleMarket } from '../../hooks/useSettleMarket'
 import StatusBadge from './StatusBadge'
 import { formatCloseTime, tradingStopped } from './marketStatus'
 
@@ -15,20 +16,25 @@ interface AdminMarketRowProps {
 }
 
 // One market on the admin markets list ([2.1] #5). Only its creator can act on
-// it, e.g. propose its outcome. Closing it early ([2.3] #7) is the one control
-// any administrator may use on anybody's market (market-service.md's notes
-// for #56, point 7), so it is driven from this row rather than the creator check.
+// it, e.g. propose its outcome. Closing it early ([2.3] #7) and settling
+// ([3.4] #12) are controls any administrator may use on anybody's market
+// (market-service.md's notes for #56, point 7), so both are driven from this
+// row rather than the creator check.
 export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) {
   // Set once the close succeeds, so the row repaints without waiting for the
   // list's next fetch (market-service.md's notes for #56, point 5).
   const [closedJustNow, setClosedJustNow] = useState(false)
+  const [settledJustNow, setSettledJustNow] = useState(false)
   const {
     showCloseModal, openCloseModal, closeCloseModal,
     reason, setReason, closing, formError, reasonError, superseded,
     canConfirmClose, handleClose,
   } = useCloseMarket(market.id, () => setClosedJustNow(true))
+  const {
+    settling, formError: settleError, superseded: settleSuperseded, handleSettle,
+  } = useSettleMarket(market.id, () => setSettledJustNow(true))
 
-  const status = closedJustNow ? 'closed' : market.status
+  const status = settledJustNow ? 'settled' : closedJustNow ? 'closed' : market.status
   // Same derivation as everywhere else on this page: a market whose countdown
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
@@ -57,6 +63,16 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
             )}
           </div>
         )}
+        {settleError && (
+          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
+            <span>{settleError}</span>
+            {settleSuperseded && (
+              <Button variant="outline" size="xs" onClick={() => window.location.reload()}>
+                Reload
+              </Button>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-3">
         {isMine && status === 'closed' && (
@@ -77,6 +93,11 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
         {canClose && !superseded && (
           <Button variant="outline" size="xs" onClick={openCloseModal}>
             Close
+          </Button>
+        )}
+        {market.settleable && status !== 'settled' && !settleSuperseded && (
+          <Button variant="outline" size="xs" disabled={settling} onClick={handleSettle}>
+            {settling ? 'Settling…' : 'Settle'}
           </Button>
         )}
         <StatusBadge status={status} />
