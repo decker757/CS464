@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { HeaderCell, NumberCell } from '../ui/Table'
+import { HeaderCell, NumberCell, TableHeaderRow } from '../ui/Table'
 import { formatAveragePrice, formatCreditsPrecise, signedAmountColor } from '../../utils/formatCredits'
 import { kindLabel, type EntryRow } from '../../utils/ledgerEntries'
 
@@ -25,14 +25,14 @@ export default function LedgerEntryTable({ rows }: { rows: EntryRow[] }) {
     <div className="overflow-x-auto rounded-2xl border border-smu-gold/15 bg-white shadow-card">
       <table className="w-full text-left text-sm">
         <thead>
-          <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
+          <TableHeaderRow>
             <HeaderCell>Date</HeaderCell>
             <HeaderCell>Activity</HeaderCell>
             <HeaderCell align="right">Quantity</HeaderCell>
             <HeaderCell align="right">Avg. price</HeaderCell>
             <HeaderCell align="right">Amount</HeaderCell>
             <HeaderCell align="right">Balance after</HeaderCell>
-          </tr>
+          </TableHeaderRow>
         </thead>
         <tbody>
           {rows.map(row => (
