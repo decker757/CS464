@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import type { MarketOverviewRow } from '../../api/marketApi'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
+import ConfirmModal from '../ui/ConfirmModal'
 import ReasonModal from '../ui/ReasonModal'
 import { buttonClass } from '../ui/buttonClass'
 import { useCloseMarket } from '../../hooks/useCloseMarket'
@@ -31,6 +32,7 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
     canConfirmClose, handleClose,
   } = useCloseMarket(market.id, () => setClosedJustNow(true))
   const {
+    showSettleModal, openSettleModal, closeSettleModal,
     settling, formError: settleError, superseded: settleSuperseded, handleSettle,
   } = useSettleMarket(market.id, () => setSettledJustNow(true))
 
@@ -96,8 +98,8 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
           </Button>
         )}
         {market.settleable && status !== 'settled' && !settleSuperseded && (
-          <Button variant="outline" size="xs" disabled={settling} onClick={handleSettle}>
-            {settling ? 'Settling…' : 'Settle'}
+          <Button variant="outline" size="xs" onClick={openSettleModal}>
+            Settle
           </Button>
         )}
         <StatusBadge status={status} />
@@ -119,6 +121,19 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
           confirmingLabel="Closing…"
           onCancel={closeCloseModal}
           onConfirm={handleClose}
+        />
+      )}
+
+      {showSettleModal && (
+        <ConfirmModal
+          ariaLabel="Settle market"
+          title="Settle this market?"
+          description="Every winning holder is paid out immediately. This cannot be undone."
+          isSubmitting={settling}
+          confirmLabel="Confirm Settle"
+          confirmingLabel="Settling…"
+          onCancel={closeSettleModal}
+          onConfirm={handleSettle}
         />
       )}
     </Card>
