@@ -34,7 +34,7 @@ commits.
    trader who has never been read gets their starting credits before the
    lock, for the same commit-boundary reason.
 5. The book row, `SELECT ... FROM market_books ... FOR UPDATE` — the wider
-   lock, taken before `posting.post` takes the account locks inside it
+   lock, taken before `posting.post_all` takes the account locks inside it
    ("Lock order: book row before account rows", ADR 0015).
 6. The idempotency key, looked up again, now under the lock. "A caller
    holding pending writes must establish under its own lock that the
@@ -65,13 +65,14 @@ commits.
     outcome's `q`, and the position —
     added to on a buy, released at average cost on a sell — all as pending ORM
     changes, none of them committed yet.
-11. `posting.post`, last, because it is the one statement in this whole path
-    that commits. "The stored key is derived by the server; the client's
-    value is one component of it" is why it is not handed the client's raw
-    string.
-12. The response, built by `result_of` from the transaction `post` returned —
-    the same function every replay path uses too ("The trade response is
-    reconstructed from `Transaction.context`, and carries no prices").
+11. `posting.post_all`, with a batch of one, last, because it is the one
+    statement in this whole path that commits. "The stored key is derived by
+    the server; the client's value is one component of it" is why it is not
+    handed the client's raw string.
+12. The response, built by `result_of` from the transaction `post_all`
+    returned — the same function every replay path uses too ("The trade
+    response is reconstructed from `Transaction.context`, and carries no
+    prices").
 13. The publish, after the commit and never before it (ADR 0010), and never
     on a rejection or a replay.
 
@@ -103,9 +104,10 @@ from core.errors import (
     UnknownOutcome,
 )
 from core.lmsr import prices as lmsr_prices
-from core.pricing import QUANTUM, Side, release_basis, trade_cost_of
+from core.pricing import QUANTUM, Side, TradeCost, release_basis, trade_cost_of
 from model.entities import (
     Account,
+    MarketBook,
     MarketOutcome,
     Position,
     Transaction,
@@ -121,7 +123,7 @@ from service import (
     market_status,
     posting,
 )
-from service.posting import Leg
+from service.posting import Leg, Movement
 
 ZERO = Decimal(0)
 
@@ -308,6 +310,83 @@ def _release_from_position(
     position.updated_at = now
 
 
+def _write_trade(
+    session: AsyncSession,
+    book: MarketBook,
+    *,
+    outcomes: Sequence[MarketOutcome],
+    index: int,
+    position: Position | None,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    side: Side,
+    quantity: Decimal,
+    cost: TradeCost,
+    now: datetime,
+) -> None:
+    """The trade's pending writes: `state_version` up by one,
+    `state_changed_at`, the traded outcome's `q`, and the position. Commits
+    nothing; the caller's `posting.post_all` commits them."""
+    book.state_version += 1
+    book.state_changed_at = now
+    outcomes[index].q = cost.after_q[index]
+
+    if side is Side.BUY:
+        _add_to_position(
+            session,
+            position,
+            user_id=user_id,
+            market_id=market_id,
+            outcome_id=outcome_id,
+            quantity=quantity,
+            cost=cost.magnitude,
+            now=now,
+        )
+    else:
+        assert position is not None  # the holding check above
+        _release_from_position(position, quantity=quantity, now=now)
+
+
+def _trade_movement_of(
+    user_account: Account,
+    pool_account: Account,
+    *,
+    idempotency_key: str,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    side: Side,
+    quantity: Decimal,
+    cost: TradeCost,
+    state_version: int,
+) -> Movement:
+    """The trade's one movement: the trader's leg and the pool's, under the
+    derived key, with the `context` the response is rebuilt from ("The trade
+    response is reconstructed from `Transaction.context`"). `state_version` is
+    the book's counter after the bump."""
+    context = {
+        "user_id": str(user_id),
+        "market_id": str(market_id),
+        "outcome_id": str(outcome_id),
+        "side": side.value,
+        "quantity": str(quantity),
+        "total": str(cost.total),
+        "state_version": state_version,
+    }
+
+    kind = TransactionKind.TRADE_BUY if side is Side.BUY else TransactionKind.TRADE_SELL
+    return Movement(
+        idempotency_key=idempotency_key,
+        kind=kind,
+        legs=[
+            Leg(account=user_account, amount=cost.total),
+            Leg(account=pool_account, amount=-cost.total),
+        ],
+        context=context,
+    )
+
+
 async def execute(
     session: AsyncSession,
     market_id: uuid.UUID,
@@ -376,7 +455,7 @@ async def execute(
     user_account = await grants.ensure_granted(session, user_id)
 
     # 5. The book row, locked — the wider lock, ahead of the account locks
-    # `posting.post` takes inside it.
+    # `posting.post_all` takes inside it.
     book = await books.lock_book(session, market_id)
 
     # 6. The re-check. Nothing below this line has written anything yet, so a
@@ -435,56 +514,45 @@ async def execute(
     # hand-repaired book and a negative `q`.
     cost = trade_cost_of(q, b, index=index, side=side, quantity=quantity)
 
-    # 10. The writes. Pending, not yet committed — `posting.post` below is
+    # 10. The writes. Pending, not yet committed — `posting.post_all` below is
     # the one statement that commits them.
     now = datetime.now(UTC)
-    book.state_version += 1
-    book.state_changed_at = now
-    outcomes[index].q = cost.after_q[index]
-
-    if side is Side.BUY:
-        _add_to_position(
-            session,
-            position,
-            user_id=user_id,
-            market_id=market_id,
-            outcome_id=outcome_id,
-            quantity=quantity,
-            cost=cost.magnitude,
-            now=now,
-        )
-    else:
-        assert position is not None  # the holding check above
-        _release_from_position(position, quantity=quantity, now=now)
-
-    pool_account = await session.get(Account, book.pool_account_id)
-
-    context = {
-        "user_id": str(user_id),
-        "market_id": str(market_id),
-        "outcome_id": str(outcome_id),
-        "side": side.value,
-        "quantity": str(quantity),
-        "total": str(cost.total),
-        "state_version": book.state_version,
-    }
-
-    # 11. `post`. Commits everything pending above, together with the two
-    # legs below, or none of it if this raises.
-    kind = TransactionKind.TRADE_BUY if side is Side.BUY else TransactionKind.TRADE_SELL
-    transaction = await posting.post(
+    _write_trade(
         session,
-        idempotency_key=key,
-        kind=kind,
-        legs=[
-            Leg(account=user_account, amount=cost.total),
-            Leg(account=pool_account, amount=-cost.total),
-        ],
-        context=context,
+        book,
+        outcomes=outcomes,
+        index=index,
+        position=position,
+        user_id=user_id,
+        market_id=market_id,
+        outcome_id=outcome_id,
+        side=side,
+        quantity=quantity,
+        cost=cost,
         now=now,
     )
 
-    # 12. The response, from the transaction `post` actually committed.
+    pool_account = await session.get(Account, book.pool_account_id)
+
+    # After the writes, so the context carries the bumped `state_version`.
+    movement = _trade_movement_of(
+        user_account,
+        pool_account,
+        idempotency_key=key,
+        user_id=user_id,
+        market_id=market_id,
+        outcome_id=outcome_id,
+        side=side,
+        quantity=quantity,
+        cost=cost,
+        state_version=book.state_version,
+    )
+
+    # 11. `post_all`, with a batch of one. Commits everything pending above,
+    # together with the movement's two legs, or none of it if this raises.
+    (transaction,) = await posting.post_all(session, [movement], now=now)
+
+    # 12. The response, from the transaction `post_all` actually committed.
     result = result_of(transaction)
 
     # 13. The publish. After the commit, never before it, and never on a
