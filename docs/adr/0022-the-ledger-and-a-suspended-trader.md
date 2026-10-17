@@ -187,11 +187,11 @@ the ledger exists.
 > them only until their last access token expires. ADR 0024 accepts that as a
 > narrowing of [4.2] #14's "suspension blocks trading", and it needs #14's
 > owner's sign-off before it does. A cancel makes no account check.
->
-> Separately, and true of the code today: the auth client's timeout is five
-> seconds on each of httpx's four phases, connect, write, read and pool. They
-> are bounded separately, so one call can wait about 20 seconds before it
-> fails, and longer only if a response trickles in. The market gate's call
-> comes after this one and has the same four limits, so a trade can wait on
-> both in turn. "The same explicit five-second timeouts" under Consequences
-> means that.
+
+> **Amended 2026-10-17. True of the code today.** The auth client's timeout
+> is five seconds on each of httpx's four phases, connect, write, read and
+> pool. They are bounded separately, so one call can wait about 20 seconds
+> before it fails, and longer only if a response trickles in. The market
+> gate's call comes after this one and has the same four limits, so a trade
+> can wait on both in turn. "The same explicit five-second timeouts" under
+> Consequences means that.
