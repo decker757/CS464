@@ -1,19 +1,25 @@
 # ADR 0024: Resting orders fill against the AMM inside the trade that moved the price
 
-- **Status:** Proposed. It becomes Accepted once four sign-offs are recorded
-  on this line: [4.2] #14's owner accepts the narrowing in "A suspended
-  owner's orders are checked at placement only"; the team accepts that a
-  cascade inside a tokened trade is not "a caller with nobody behind it"
-  ("The cascade runs inside the trade that moved the price"); Ernest, who
-  owns `service/posting.py` and `service/accounts.py`, accepts the
-  order-aware running check in `_refuse_overdrafts`: a floor at the account's
-  reservation, checked after each debit in movement order, with each movement
-  carrying the reservation it releases ("A reservation is derived from the
-  order rows, and it is `posting`'s floor"); and the team accepts three scope
-  changes to #26 and #27: binary markets only, refusing a placement that
-  crosses the book, and "resting" meaning not executable to within one tick
-  ("Binary markets only, and no crossed book"). The tickets are edited once
-  the team accepts.
+- **Status:** Proposed. It becomes Accepted once all four sign-offs below
+  are ticked. Answers from Ernest's review of #324.
+  - [x] 1. [4.2] #14's owner accepts the narrowing in "A suspended owner's
+    orders are checked at placement only". Accepted, on condition that the
+    administrator's cancel stays on the board as the follow-up: #326.
+  - [x] 2. The team accepts that a cascade inside a tokened trade is not "a
+    caller with nobody behind it" ("The cascade runs inside the trade that
+    moved the price"). Accepted.
+  - [ ] 3. Ernest, who owns `service/posting.py` and `service/accounts.py`,
+    accepts the order-aware running check in `_refuse_overdrafts`: a floor at
+    the account's reservation, checked at the start of the batch and after
+    each debit in movement order, with each movement carrying the drop in
+    its account's reservation that it causes ("A reservation is derived from
+    the order rows, and it is `posting`'s floor"). Pending: held until the
+    arithmetic fix from his review is in, which it now is.
+  - [x] 4. The team accepts three scope changes to #26 and #27: binary
+    markets only, refusing a placement that crosses the book, and "resting"
+    meaning not executable to within one tick ("Binary markets only, and no
+    crossed book"). Accepted. #26 and #27 are edited once this record is
+    Accepted.
 - **Date:** 2026-10-17
 - **Affects:** [T-6] #26, [T-7] #27, [T-8] #28, [FE][T-6] #61, [4.2] #14, [T-5] #25, [4.1] #13, [X-4] #37, [BE] #221, ADR 0005, ADR 0009, ADR 0010, ADR 0015, ADR 0017, ADR 0018, ADR 0021, ADR 0022
 - **Implemented in:** nothing yet. This record precedes the limit-order stack
@@ -110,21 +116,75 @@ entries. `GET /ledger/balances/me` gains `reserved` and `available`, and
 **The overdraft floor is the reservation, not zero, and it is checked in
 movement order.** `_refuse_overdrafts` walks the batch's movements in order
 and keeps two running totals for each USER account: its balance and its
-reservation. After each movement that debits the account, the balance must
-be at least the reservation at that point. The reservation starts at its
-value before the batch and falls by what each of the account's own buy-order
-fills earlier in the batch spent. So each movement carries the reservation it
-releases: its cost for a buy-order fill, a placement's own fill included, and
-zero otherwise, the triggering trade included.
+reservation. Both start at their values before the batch, and the balance
+must be at least the reservation there. Then, after each movement that
+debits the account, the balance must be at least the reservation at that
+point.
+
+**A movement carries the drop in its account's reservation that it causes,
+not its cost.**
+
+- A buy-order fill that leaves the order open drops it by the fill's cost.
+- A buy-order fill that exhausts the order drops it by the order's whole
+  remaining budget, `budget - spent` with `spent` read before the fill. The
+  order stops being live, so all of what it held goes, and a buy that fills
+  completely almost always spends less than its budget: it buys from the
+  current price up to its limit, so it averages better than the limit.
+- A sell-order fill and a plain trade drop it by zero.
+
+A placement's own fill follows the same rule.
 
 **Where the figure before the batch comes from.** The reservation is read
 after `accounts.lock`, so it is read under the lock that serialises every
 write that can raise it (ADR 0015). The caller flushes its order-row updates
 before `post_all`, so that read sees the reservation after the batch. Adding
-back what the batch's movements release for that account gives the figure
-before it. For a placement, that comes to the new order's whole budget: the
-read sees `budget - cost` for the order's own fill, and that fill releases
-`cost`.
+back each movement's drop for that account gives the figure before it.
+
+**A placement's new buy order counts at its full budget from the start of
+the batch.** The read sees `budget - cost` for an order that filled in part on
+arrival, and its fill drops the reservation by `cost`. It sees nothing for an
+order that filled completely, and its fill drops the reservation by the whole
+`budget`. Either way the figure before the batch includes the whole budget.
+So the check at the start of the batch refuses a placement whose budget does
+not fit in `available`, `409 insufficient_funds`, even one that would fill
+completely on arrival for less than `available`. That is the contract's
+error table: the budget has to fit, whatever the fill comes to.
+
+**Two worked cases.** Both are refused, and both would have passed had a
+movement carried its cost.
+
+*A trade beside a buy order that fills completely.* A trader holds 100 and
+has one buy order resting, budget 60, nothing spent. Available is 40. They
+trade for 45, and the cascade fills their order completely for 50. The read
+after the batch sees 0, because the order is `filled`. The trade drops the
+reservation by 0 and the fill by 60, so the figure before the batch is 60.
+
+| step | balance | reservation | check |
+| --- | --- | --- | --- |
+| start of batch | 100 | 0 + 0 + 60 = 60 | 100 ≥ 60, passes |
+| the trade, cost 45, drop 0 | 55 | 60 | 55 < 60, refused |
+| the fill, cost 50, drop 60 | not reached | | |
+
+Had the fill carried its cost, 50, the figure before the batch would have
+been 50, and the trade would have passed with 55 ≥ 50, paid for by the 10 of
+budget that went when the order filled.
+
+*A placement whose budget does not fit.* A trader holds 100, with 70
+reserved by another buy order. Available is 30. They place a buy with budget
+40, which fills completely on arrival for 28. The read after the batch sees
+70, the other order's, and the new order's fill drops the reservation by its
+whole budget, 40, so the figure before the batch is 110.
+
+| step | balance | reservation | check |
+| --- | --- | --- | --- |
+| start of batch | 100 | 70 + 40 = 110 | 100 < 110, refused |
+| the fill, cost 28, drop 40 | not reached | | |
+
+Had the fill carried its cost, 28, the figure before the batch would have
+been 98, and the fill would have left 72 against 70 and passed. The drop of
+40 alone does not refuse it either: without the check at the start, the fill
+leaves 72 against 110 - 40 = 70 and passes. The check at the start is what
+refuses it. `error.details.required` is the budget, 40.
 
 **A placement locks the placer's account by one of two paths, and never both.**
 Both take the book lock first, then accounts, as ADR 0015 orders them.
@@ -162,13 +222,14 @@ The trade's movement would leave 50 against a final reservation of 40, and
 pass. With the running reservation it is checked against 60, and refused. So
 **the trade has to be affordable before any resting order fills.** After it,
 no fill can take an account's available credits lower: a buy-order fill
-lowers the balance and the reservation by the same amount, and a sell-order
-fill only credits.
+lowers the reservation by at least what it lowers the balance, by exactly
+that unless it exhausts the order, and a sell-order fill only credits.
 
 **A buy can never spend more than it reserved.** Its budget is
-`ceil4(limit × quantity)`, fixed at placement. A fill is taken only if its
-priced cost is at most `limit × fill quantity` (a sell: proceeds at least
-that). Summed over the fills, the cost is at most `limit × quantity`, which is
+`quantize_cost(limit × quantity, side=Side.BUY)`
+(`core/pricing.py:99`), which rounds up to `QUANTUM` (`core/pricing.py:54`),
+fixed at placement. A fill is taken only if its priced cost is at most
+`limit × fill quantity` (a sell: proceeds at least that). Summed over the fills, the cost is at most `limit × quantity`, which is
 at most the budget. So `budget - spent` never goes negative and no order
 needs an "exhausted" state.
 
@@ -223,9 +284,12 @@ path.
 
 **The fill quantity is in closed form.** On a binary market,
 `k = b·logit(L) - (q_i - q_j)` for a buy of outcome `i` and the negation for a
-sell, floored to the tick and capped at the remainder. Its cost is not in
-closed form: `trade_cost_of` prices the floored quantity, so a fill costs
-exactly what an instant trade of that size would.
+sell, floored to `QUANTUM` and capped at the remainder. `k` is a quantity,
+not a cost, so it is floored with `ROUND_FLOOR` directly: `quantize_cost`
+refuses a result of zero, and a `k` that floors to zero means the order is
+not executable, not an error. Its cost is not in closed form:
+`trade_cost_of` prices the floored quantity, so a fill costs exactly what an
+instant trade of that size would.
 
 **More than two outcomes is `409 market_not_binary`.** With three or more
 there is no single price to sort on. A buy of one outcome lowers every other,
@@ -295,7 +359,7 @@ the order.
   is released by derivation. Until then the orders may still fill.
 - A market that never receives a result never releases it. Nothing in this
   iteration releases it sooner. An administrator's cancel would, and it is a
-  stretch item.
+  stretch item, #326.
 
 [T-8] #28's "never a stuck reservation" is met only under the reading "held
 with no path to release": for a suspended owner the path is the market's
@@ -310,7 +374,7 @@ by the same `trade_cost_of` call before its cascade runs. `post_trade_prices`
 is the price after the trade alone. When resting orders fill, the price the
 market ends at is closer to where it started. The contract says so.
 
-### The trade response gains `book_state_version`, and still carries no prices
+### The trade response carries `book_state_version`, and still no prices
 
 `TradeOut.state_version` stays "the book's counter after this trade". A new
 field, `book_state_version`, is the counter after the trade and its cascade:
@@ -325,6 +389,32 @@ The limit is what protects the trader. A quoted version would refuse a limit
 order because the price moved, which is the thing a limit order exists to
 tolerate. The D-NEW "The trade's staleness check is strict `state_version`
 equality, and the field is required" covers trades, not placements.
+
+### A placement checks in the trade's order
+
+The retry lookup, then the placer's account (ADR 0022), then the market
+gate, then `books.ensure_open`, then `grants.ensure_granted`, then the book
+lock and everything under it. The two middle steps are the trade path's, in
+its place (`service/trading.py`), for its reason: each can commit, so each
+runs before the book lock. Without the grant, a trader whose first ever
+action is a limit order has no account and a balance of zero, and is refused
+`insufficient_funds` despite `STARTING_CREDITS`.
+
+### A placement stores its own `book_state_version`, and a replay answers from it
+
+`ledger.orders` has a `book_state_version` column, created with the table in
+ledger revision `0004`: the book's counter after the placement request. It is
+the last fill's `state_version` when the order filled on arrival, and the
+counter the order was placed against, read under the book lock, when it
+rested entirely. A placement that rests writes no transaction, so this column
+is the only place that counter is recorded.
+
+A retry with the same key returns the order as it stands now, the stored
+`book_state_version`, and as `fills` only that order's fills with a
+`state_version` at or below it. Those are exactly the fills the placement
+request made: the order did not exist before it, and every later fill,
+from anyone's cascade, has a higher `state_version`. Finding fills by
+`context->>'order_id'` alone would return every fill the order has ever had.
 
 ## Consequences
 
@@ -342,10 +432,14 @@ trade feed lists fills as trades by their owners. Each fill is a `trade_buy`
 or `trade_sell` entry in its owner's history, with its own average price.
 
 **The shared write path changes.** `_refuse_overdrafts` becomes order-aware:
-a floor at the reservation, a walk in movement order, and an amount released
-on each movement. Every caller of `post` and `post_all` gets the walk.
-Settlement and the grant debit no USER account and release nothing, so
+a floor at the reservation, checked at the start of the batch and then in
+movement order, and on each movement the drop in its account's reservation
+that it causes. Every caller of `post` and `post_all` gets the walk.
+Settlement and the grant debit no USER account and drop no reservation, so
 neither is affected.
+
+**`ledger.orders` carries the placement's `book_state_version`**, in
+revision `0004` with the table, so a replay can name its own fills.
 
 **The order rows' status column is not the authority on liveness.** An
 order on a settled market reads `open` for ever. Every read of live orders
@@ -376,6 +470,16 @@ debits a USER account.**
 - A cancel racing a fill, in both orderings, plus the partial case.
 - A self-fill: the triggering trade is refused unless it is affordable before
   any resting order fills (the 100 and 60 example above).
+- A buy order that fills completely for less than its budget, in the same
+  batch as a trade by its owner: the trade is refused unless it was
+  affordable before the fill (the first worked case above).
+- A placement whose budget exceeds `available` but which would fill
+  completely on arrival: refused, `409 insufficient_funds` (the second worked
+  case above).
+- A first-ever placement by a user with no ledger account: the signup grant
+  is minted and the order is accepted.
+- A retried placement returns only the fills the original request made,
+  after another trader's cascade has filled the order further.
 - `order_crosses_book`, one case per row of the threshold table.
 - An order fills at most once per commit. The termination argument implies
   it, and the realtime contract's one order frame per fill depends on it.
