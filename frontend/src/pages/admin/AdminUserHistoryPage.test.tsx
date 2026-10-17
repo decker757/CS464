@@ -70,6 +70,20 @@ function mockMarket(id: string, body: Record<string, unknown>) {
   server.use(http.get(`${MARKET_BASE}/public/markets/${id}`, () => HttpResponse.json(body)))
 }
 
+const AUTH_BASE = 'http://localhost:8000'
+
+function suspensionResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    user: { id: 'trader-1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', is_suspended: true, created_at: '2026-01-01' },
+    takes_effect_within_seconds: 900,
+    ...overrides,
+  }
+}
+
+function mockSuspension(userId: string, handler: () => Response | Promise<Response>) {
+  server.use(http.patch(`${AUTH_BASE}/admin/users/${userId}/suspension`, handler))
+}
+
 function renderPage(userId = 'trader-1', state?: Record<string, unknown>) {
   return render(
     <WithProviders user={admin}>
@@ -190,6 +204,166 @@ describe('AdminUserHistoryPage', () => {
     await actor.click(screen.getByRole('link', { name: '← Users' }))
 
     expect(screen.getByText('users list')).toBeInTheDocument()
+  })
+
+  describe('suspending and unsuspending', () => {
+    it('offers both Suspend and Unsuspend regardless of the account\'s current state', async () => {
+      // [4.2] #14: suspended is the state to end up in, not a toggle, and
+      // there is no GET /admin/users/{id} to know current state after a
+      // reload — the control must work without ever having read it.
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      renderPage('trader-1')
+
+      await screen.findByRole('heading', { name: /trader-1/i })
+      expect(screen.getByRole('button', { name: /^suspend$/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^unsuspend$/i })).toBeInTheDocument()
+    })
+
+    it('requires a reason before Confirm Suspend is enabled', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+
+      const confirm = screen.getByRole('button', { name: /confirm suspend/i })
+      expect(confirm).toBeDisabled()
+
+      await actor.type(screen.getByLabelText(/reason/i), 'Second account of the same person')
+      expect(confirm).toBeEnabled()
+    })
+
+    it('suspends the account and repaints the badge and balance page from the response, without a refetch', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(suspensionResponse()))
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), 'Second account of the same person')
+      await actor.click(screen.getByRole('button', { name: /confirm suspend/i }))
+
+      expect(await screen.findByText('Suspended')).toBeInTheDocument()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      // The response names alice, not the id — the page now shows the name.
+      expect(screen.getByRole('heading', { name: /alice/i })).toBeInTheDocument()
+    })
+
+    it('unsuspends the account and drops the Suspended badge from the response', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(suspensionResponse({
+        user: { id: 'trader-1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', is_suspended: false, created_at: '2026-01-01' },
+      })))
+      const actor = userEvent.setup()
+      renderPage('trader-1', { user: { id: 'trader-1', username: 'alice', email: 'alice@smu.edu.sg', is_suspended: true } })
+      await screen.findByText('Suspended')
+
+      await actor.click(screen.getByRole('button', { name: /^unsuspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), 'Appeal reviewed and accepted')
+      await actor.click(screen.getByRole('button', { name: /confirm unsuspend/i }))
+
+      await screen.findByRole('heading', { name: /alice/i })
+      expect(screen.queryByText('Suspended')).not.toBeInTheDocument()
+    })
+
+    it('shows a field-level error on a reason the server rejects, the same shape as close\'s, and keeps the modal open', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(
+        { error: { code: 'suspension_incomplete', message: 'bad reason', details: [{ field: 'reason', message: 'The reason must be at least 10 characters.' }] } },
+        { status: 422 },
+      ))
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), '1234567890')
+      await actor.click(screen.getByRole('button', { name: /confirm suspend/i }))
+
+      expect(await screen.findByText(/at least 10 characters/i)).toBeInTheDocument()
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+    })
+
+    it('shows the cannot_suspend_self message and leaves the account unchanged', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(
+        { error: { code: 'cannot_suspend_self', message: 'no' } }, { status: 403 },
+      ))
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), 'Testing my own account')
+      await actor.click(screen.getByRole('button', { name: /confirm suspend/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/cannot suspend your own account/i)
+      expect(screen.queryByText('Suspended')).not.toBeInTheDocument()
+    })
+
+    it('shows the last_administrator message and lets the admin retry rather than disabling the control', async () => {
+      // Unlike a superseded Close or Settle, this is not a stale view: the
+      // fix is to promote someone else first, and a retry after that could
+      // succeed, so nothing here should be permanently disabled.
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(
+        { error: { code: 'last_administrator', message: 'no' } }, { status: 409 },
+      ))
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), 'Last admin standing')
+      await actor.click(screen.getByRole('button', { name: /confirm suspend/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/no administrator who can log in/i)
+      expect(screen.getByRole('button', { name: /^suspend$/i })).toBeEnabled()
+    })
+
+    it('cancels without changing the account', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.click(screen.getByRole('button', { name: /cancel/i }))
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByText('Suspended')).not.toBeInTheDocument()
+    })
+
+    it('drops the changed user\'s state when navigating to a different user', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(suspensionResponse()))
+      mockBalance('trader-2', { user_id: 'trader-2', account_id: 'acc-2', balance: '500.0000' })
+      mockEntries('trader-2', [])
+      const actor = userEvent.setup()
+      const router = renderMovableRouter('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), 'Second account of the same person')
+      await actor.click(screen.getByRole('button', { name: /confirm suspend/i }))
+      await screen.findByText('Suspended')
+
+      await act(() => router.navigate('/admin/users/trader-2'))
+
+      await screen.findByRole('heading', { name: /trader-2/i })
+      expect(screen.queryByText('Suspended')).not.toBeInTheDocument()
+    })
   })
 
   it('appends the next page when Load more is clicked', async () => {
