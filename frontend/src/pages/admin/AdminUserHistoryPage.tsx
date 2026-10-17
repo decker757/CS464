@@ -5,8 +5,11 @@ import { getUserBalance, getUserEntries, type AdminBalance } from '../../api/led
 import AppLayout from '../../components/layout/AppLayout'
 import LedgerEntryTable from '../../components/ledger/LedgerEntryTable'
 import BackLink from '../../components/ui/BackLink'
+import Button from '../../components/ui/Button'
 import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
+import ReasonModal from '../../components/ui/ReasonModal'
+import { useSuspension } from '../../hooks/useSuspension'
 import { usePagedList } from '../../hooks/usePagedList'
 import { formatCreditsPrecise } from '../../utils/formatCredits'
 import { joinEntryPage, pagedEntryOptions } from '../../utils/ledgerEntries'
@@ -22,6 +25,20 @@ export default function AdminUserHistoryPage() {
   // reload, since router state does not survive one — the id is the fallback.
   const location = useLocation()
   const linkedUser = (location.state as { user?: AdminUser } | null)?.user
+  // Tagged with the user id it was changed for, so navigating to another
+  // user's page shows that one rather than carrying this one's state along
+  // (MarketDetailPage's `loaded` does the same for its own id). Replaces
+  // linkedUser once a suspend/unsuspend call answers, so the badge and the
+  // control repaint from what the server actually did, not from router
+  // state that may already be stale by then (useSuspension.ts).
+  const [changed, setChanged] = useState<{ userId: string; user: AdminUser } | null>(null)
+  const changedUser = changed !== null && changed.userId === userId ? changed.user : null
+  const currentUser = changedUser ?? linkedUser ?? null
+
+  const {
+    direction, openSuspend, openUnsuspend, closeModal,
+    reason, setReason, submitting, formError, reasonError, canConfirm, handleConfirm,
+  } = useSuspension(userId ?? '', user => setChanged({ userId: userId ?? '', user }))
 
   const [balance, setBalance] = useState<AdminBalance | null>(null)
   const [balanceError, setBalanceError] = useState(false)
@@ -52,8 +69,26 @@ export default function AdminUserHistoryPage() {
   return (
     <AppLayout width="max-w-[1100px]">
       <BackLink to="/admin/users" label="Users" className="mb-4 block" />
-      <PageTitle className="mb-2">{linkedUser ? `${linkedUser.username}'s History` : `History for ${userId}`}</PageTitle>
-      {linkedUser && <p className="mb-6 text-sm text-subtle">{linkedUser.email}</p>}
+      <div className="mb-2 flex items-center gap-3">
+        <PageTitle>{currentUser ? `${currentUser.username}'s History` : `History for ${userId}`}</PageTitle>
+        {currentUser?.is_suspended && (
+          <span className="rounded-full border border-danger/25 bg-danger/10 px-2.5 py-[3px] text-[11px] font-bold tracking-[0.5px] text-danger uppercase">
+            Suspended
+          </span>
+        )}
+      </div>
+      {currentUser && <p className="mb-2 text-sm text-subtle">{currentUser.email}</p>}
+
+      <div className="mb-6 flex items-center gap-3">
+        <Button variant="outline" size="sm" onClick={openSuspend}>
+          Suspend
+        </Button>
+        <Button variant="outline" size="sm" onClick={openUnsuspend}>
+          Unsuspend
+        </Button>
+      </div>
+
+      {formError && <p role="alert" className="mb-6 text-sm text-danger">{formError}</p>}
 
       {balanceError && <p role="alert" className="mb-6 text-sm text-danger">Failed to load balance.</p>}
       {balance && (
@@ -78,6 +113,29 @@ export default function AdminUserHistoryPage() {
             <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="history" onLoadMore={loadMore} />
           )}
         </>
+      )}
+
+      {direction !== null && (
+        <ReasonModal
+          ariaLabel={direction ? 'Suspend account' : 'Unsuspend account'}
+          title={direction ? 'Suspend this account?' : 'Unsuspend this account?'}
+          description={
+            direction
+              ? 'The account cannot log in or trade. Existing positions are kept and settle as usual. The reason goes into the admin log and cannot be edited afterwards.'
+              : 'The account can log in and trade again. The reason goes into the admin log and cannot be edited afterwards.'
+          }
+          fieldId="suspension-reason"
+          reason={reason}
+          onReasonChange={setReason}
+          reasonError={reasonError}
+          placeholder={direction ? 'Explain why this account is being suspended.' : 'Explain why this account is being unsuspended.'}
+          canConfirm={canConfirm}
+          isSubmitting={submitting}
+          confirmLabel={direction ? 'Confirm Suspend' : 'Confirm Unsuspend'}
+          confirmingLabel={direction ? 'Suspending…' : 'Unsuspending…'}
+          onCancel={closeModal}
+          onConfirm={handleConfirm}
+        />
       )}
     </AppLayout>
   )
