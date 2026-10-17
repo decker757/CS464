@@ -320,6 +320,8 @@ APPROVED market and never asks this question — but [T-7] #27's auto-execution
 and cascade would, and ADR 0009's deferred service-auth question stops being
 academic on that day.
 
+> *Amended 2026-10-17: see the ADR 0024 note under the reversal below.*
+
 **A new caller on a public endpoint written for a display read.** `browse` and
 `get_published` were sized for a trader loading a page. They now take one
 request per trade, and [5.4] #20's load test measures market_service whether or
@@ -417,3 +419,15 @@ first move if [5.4] #20 says otherwise.
 > endpoint. Another caller gating on that derived status is this rule, not an
 > exception to it — the whole reason the check reads that projection is that
 > there is one predicate and everybody asks it.
+
+> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
+> and not built yet.** Neither this reversal note nor the consequence "Token
+> forwarding becomes load-bearing on the hot path" is tripped by [T-7] #27 as
+> ADR 0024 designs it. The question this record asks is about a market, not a
+> trader. The request that moved the price asks it once, with its own token,
+> and the latch re-checks it under the book lock. Every fill in that commit is
+> in the same market under the same lock, so the one answer covers all of
+> them. No trade arrives without a caller token. A placement asks the gate
+> with the placer's token, like a trade. A cancel does not ask, because it only
+> releases and a closed market's orders must stay cancellable. If ADR 0024 is
+> not accepted, the reversal stands as written.

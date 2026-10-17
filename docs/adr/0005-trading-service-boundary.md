@@ -84,6 +84,14 @@ down -v` for everybody.
 > composition stops being one client's problem. Until one of those lands, a
 > composite is a container that forwards a token.
 
+> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
+> and not built yet.** The reversal above is not tripped by [T-7] #27 as ADR
+> 0024 designs it. The cascade runs inside the ledger's own transaction for the
+> trade that moved the price, under that trade's book lock, and commits with it.
+> Nothing needs the trade path without holding the ledger's transaction, so the
+> composite stays a container that forwards a token. If ADR 0024 is not
+> accepted, this note is withdrawn and the reversal stands as written.
+
 **Positions live with the ledger.** `q`, the shares outstanding per outcome, is
 `ledger.*` state, written in the same transaction as the debit and credit rows
 it has to balance against. This is what makes [T-2] #22's acceptance criteria
