@@ -10,7 +10,7 @@ import { buttonClass } from '../ui/buttonClass'
 import { useCloseMarket } from '../../hooks/useCloseMarket'
 import { useDisputeMarket } from '../../hooks/useDisputeMarket'
 import { useSettleMarket } from '../../hooks/useSettleMarket'
-import { formatCountdown } from '../../utils/formatCountdown'
+import { disputeWindowOpen, formatCountdown } from '../../utils/formatCountdown'
 import { toApprovedResult } from '../../utils/proposals'
 import StatusBadge from './StatusBadge'
 import { formatCloseTime, tradingStopped } from './marketStatus'
@@ -96,7 +96,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
   // The countdown is display only; the server still decides on its own clock
   // (market-service.md's dispute-screen notes, point 8), so a window that
   // reads as still open here can still be refused as dispute_window_closed.
-  const windowOpen = status === 'approved' && !!market.dispute_window_ends_at && new Date(market.dispute_window_ends_at) > new Date()
+  const windowOpen = status === 'approved' && disputeWindowOpen(market.dispute_window_ends_at)
 
   return (
     <Card className="flex items-center justify-between gap-4 px-6 py-4">
@@ -159,7 +159,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
             Settle
           </Button>
         )}
-        {windowOpen && !disputeSuperseded && (
+        {windowOpen && approvedResult && !disputeSuperseded && (
           <Button variant="outline" size="xs" onClick={openDisputeModal}>
             Dispute result
           </Button>

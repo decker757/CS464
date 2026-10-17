@@ -444,6 +444,15 @@ describe('AdminMarketRow', () => {
       expect(screen.queryByText('Result is final; payout pending.')).not.toBeInTheDocument()
     })
 
+    it('hides Dispute result on an approved market still within its window while the approval entry has not loaded yet', () => {
+      // AdminMarketsPage fetches the approval entry separately from the
+      // market list; before it answers, approvalEntry is undefined even on a
+      // genuinely disputable row. The button must not render clickable with
+      // nothing behind it to send.
+      renderRow(DISPUTABLE_MARKET, false, undefined)
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
+
     it('hides Dispute result on an approved market with no dispute window left', () => {
       renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: '2020-01-01T00:00:00Z' }, false, approvedEntry())
       expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
