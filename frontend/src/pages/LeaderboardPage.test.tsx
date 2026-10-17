@@ -86,6 +86,27 @@ describe('LeaderboardPage', () => {
     const [impostorRow, meRow] = screen.getAllByRole('row').slice(1)
     expect(impostorRow).not.toHaveAttribute('data-is-me')
     expect(meRow).toHaveAttribute('data-is-me', 'true')
+    // The highlight is colour, which a screen reader does not read — the
+    // marker a non-visual user gets is this text, on the right row only.
+    expect(impostorRow).not.toHaveTextContent('(you)')
+    expect(meRow).toHaveTextContent('(you)')
+  })
+
+  it('shows only the username, never an email or an id the server sends alongside it', async () => {
+    // #38's AC: emails and other private account information are never
+    // exposed. The server never actually sends these on this route, but the
+    // test proves the page renders only the fields it names, not whatever
+    // a future "helpful" extra field on the row happens to carry.
+    mockLeaderboard(page({
+      rows: [
+        { rank: 1, username: 'michelle_l', net_worth: '1431.3568', is_me: false, email: 'michelle_l@smu.edu.sg', user_id: 'u-42' },
+      ],
+    }))
+    renderPage()
+
+    await screen.findByText('michelle_l')
+    expect(screen.queryByText('michelle_l@smu.edu.sg')).not.toBeInTheDocument()
+    expect(screen.queryByText('u-42')).not.toBeInTheDocument()
   })
 
   it('shows when the board was last updated', async () => {
