@@ -27,6 +27,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     Numeric,
@@ -41,6 +42,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import SCHEMA, Base
+from core.pricing import Side
 
 # Money, everywhere in this service. Matches `market.markets.seed_subsidy`,
 # which is the same credits seen from the other side of a service boundary:
@@ -125,6 +127,19 @@ class ResultKind(StrEnum):
     SETTLED = "settled"
 
 
+class OrderStatus(StrEnum):
+    """Where a limit order is in its life. [T-6] #26, ADR 0024.
+
+    `released` is not a member: it is derived on every read from the status and
+    the rollups, and never stored. Non-native like the rest, so the column is a
+    plain varchar with no CHECK on its values.
+    """
+
+    OPEN = "open"
+    FILLED = "filled"
+    CANCELLED = "cancelled"
+
+
 _ACCOUNT_KIND_COLUMN = Enum(
     AccountKind,
     name="ledger_account_kind",
@@ -144,6 +159,22 @@ _TRANSACTION_KIND_COLUMN = Enum(
 _RESULT_KIND_COLUMN = Enum(
     ResultKind,
     name="ledger_result_kind",
+    native_enum=False,
+    length=24,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+_ORDER_SIDE_COLUMN = Enum(
+    Side,
+    name="ledger_order_side",
+    native_enum=False,
+    length=24,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+_ORDER_STATUS_COLUMN = Enum(
+    OrderStatus,
+    name="ledger_order_status",
     native_enum=False,
     length=24,
     values_callable=lambda enum: [member.value for member in enum],
@@ -654,6 +685,119 @@ class LeaderboardEntry(Base):
             "generation_id", "user_id", name="uq_leaderboard_entries_generation_user"
         ),
         CheckConstraint("rank > 0", name="ck_leaderboard_entries_rank_positive"),
+    )
+
+
+class Order(Base):
+    """A limit order resting against the AMM. [T-6] #26, ADR 0024.
+
+    The credits an order holds back are never a column: a buy's reservation is
+    `budget - spent`, derived on every read, for the reason `Account` has no
+    balance. `budget`, `spent` and `filled_quantity` are rollups, updated under
+    the book row's lock as fills land. `spent` is what the fills moved on
+    either side, a buy's costs or a sell's proceeds (D-NEW "An order's `spent`
+    is what its fills moved, on either side"), so `average_fill_price` is one
+    division for both. `released` is derived and never stored, and so is the
+    reservation: D-NEW "A buy reserves `limit × quantity` rounded up to the
+    tick, its reservation is `budget - spent`, and it cannot go negative".
+
+    `seq` is `GENERATED ALWAYS`, so a writer cannot supply one: D-NEW
+    "Priority is price, then an identity `seq` assigned under the book lock".
+    Every writer takes the book row lock first, and
+    `unit_test/test_order_writers.py` fails on a writer it does not know.
+    """
+
+    __tablename__ = "orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    # Time priority. The database numbers the row, so the sequence is the order
+    # the inserts took the book lock in.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), nullable=False)
+
+    # Names a row in `auth.users`: not a foreign key, for `Account.owner_id`'s
+    # reason (ADR 0003).
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+    # `(market_id, outcome_id)` is a composite foreign key, below, to this
+    # service's own `market_outcomes`, as `Position` does.
+    market_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    outcome_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+    side: Mapped[Side] = mapped_column(_ORDER_SIDE_COLUMN, nullable=False)
+
+    limit_price: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    filled_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False, default=Decimal(0), server_default=text("0")
+    )
+
+    # A buy's `limit × quantity` rounded up to the tick; null for a sell, which
+    # reserves no credits.
+    budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    spent: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False, default=Decimal(0), server_default=text("0")
+    )
+
+    # No default: the placement says which, and an order is never born FILLED
+    # or CANCELLED by accident.
+    status: Mapped[OrderStatus] = mapped_column(_ORDER_STATUS_COLUMN, nullable=False)
+
+    # The book's `state_version` after the placement, so a replay answers from
+    # the row.
+    book_state_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["market_id", "outcome_id"],
+            ["market_outcomes.market_id", "market_outcomes.outcome_id"],
+            name="fk_orders_market_outcome",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_orders_idempotency_key"),
+        CheckConstraint(
+            "limit_price > 0 AND limit_price < 1",
+            name="ck_orders_limit_price_between_0_and_1",
+        ),
+        CheckConstraint("quantity > 0", name="ck_orders_quantity_positive"),
+        CheckConstraint("filled_quantity >= 0", name="ck_orders_filled_quantity_nonneg"),
+        CheckConstraint(
+            "filled_quantity <= quantity", name="ck_orders_filled_quantity_within_quantity"
+        ),
+        # A buy has a budget and a sell has none, in both directions.
+        CheckConstraint("(side = 'buy') = (budget IS NOT NULL)", name="ck_orders_budget_iff_buy"),
+        CheckConstraint("spent >= 0", name="ck_orders_spent_nonneg"),
+        CheckConstraint("budget IS NULL OR spent <= budget", name="ck_orders_spent_within_budget"),
+        CheckConstraint(
+            "(status = 'filled') = (filled_quantity = quantity)",
+            name="ck_orders_filled_iff_nothing_remains",
+        ),
+        CheckConstraint(
+            "(status = 'cancelled') = (cancelled_at IS NOT NULL)",
+            name="ck_orders_cancelled_at_iff_cancelled",
+        ),
+        # The cascade reads one market's open orders in priority order, and
+        # the order list reads one user's. Partial, so a filled or cancelled
+        # order costs neither index anything.
+        Index(
+            "ix_ledger_orders_open_by_market",
+            "market_id",
+            "seq",
+            postgresql_where=text("status = 'open'"),
+        ),
+        Index(
+            "ix_ledger_orders_open_by_user",
+            "user_id",
+            postgresql_where=text("status = 'open'"),
+        ),
     )
 
 
