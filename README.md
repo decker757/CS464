@@ -162,3 +162,34 @@ to make and would be expensive to reverse.
   balances, and a lazily minted starting grant
 - [0010](docs/adr/0010-realtime-price-broadcast.md) a relay that owns nothing,
   and a bus that is not the database
+- [0011](docs/adr/0011-market-auto-close.md) the clock closes a market, and
+  the sweep only writes it down
+- [0012](docs/adr/0012-the-shared-package.md) a shared package, and the build
+  contexts that had to move first
+- [0013](docs/adr/0013-proposing-an-outcome.md) proposing an outcome, from
+  CLOSED only, with evidence, one at a time
+- [0014](docs/adr/0014-closing-a-market-early.md) closing a market early, by
+  any admin, with the reason in the log
+- [0015](docs/adr/0015-locking-the-read-that-decides-a-write.md) every read
+  that decides a write is locked, and the wider lock goes first
+- [0016](docs/adr/0016-deciding-a-proposal.md) deciding a proposal, by any
+  admin but the proposer, with APPROVED as a status
+- [0017](docs/adr/0017-the-ledger-and-a-stopped-market.md) the ledger asks
+  market_service whether a market is still trading, once per trade
+- [0018](docs/adr/0018-positions-are-valued-at-liquidation.md) positions are
+  valued at liquidation, not at the marginal price
+- [0019](docs/adr/0019-settlement-across-services.md) settlement is the
+  ledger's request, paid in one transaction, and market_service is told
+  afterwards
+- [0020](docs/adr/0020-migrations-by-alembic.md) migrations by Alembic, per
+  service, run as a one-off step
+- [0021](docs/adr/0021-the-leaderboard-and-the-first-service-credential.md) the
+  leaderboard is a snapshot on the ledger, and auth names its users through
+  the first service credential
+- [0022](docs/adr/0022-the-ledger-and-a-suspended-trader.md) the ledger asks
+  auth whether a trader is still active, once per trade
+- [0023](docs/adr/0023-sending-an-approved-outcome-back.md) sending an approved
+  outcome back inside its stored dispute window, by any admin
+- [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
+  fill against the AMM inside the trade that moved the price — Proposed, and
+  not built
