@@ -1,14 +1,16 @@
-"""HTTP wiring for the administrative routes: status codes and the guard. [4.4] #16, [4.1] #13, [4.2] #14"""
+"""HTTP wiring for the administrative routes: status codes and the guard. [4.4] #16, [4.1] #13, [4.2] #14, [2.4] #273"""
 
 from __future__ import annotations
 
 import uuid
 
+import pytest
 from httpx import AsyncClient
 
 from unit_test.conftest import VALID_PASSWORD
 
 USERS = "/admin/users"
+LOOKUP = "/admin/users/lookup"
 
 
 def _url(user_id: str) -> str:
@@ -331,3 +333,143 @@ async def test_an_oversized_limit_is_clamped_not_refused(
 async def test_a_zero_limit_is_refused(admin_client: AsyncClient) -> None:
     """A page of nothing is a caller bug, so it is refused, not clamped."""
     assert (await admin_client.get(USERS, params={"limit": 0})).status_code == 422
+
+
+# --- the lookup [2.4] #273 ------------------------------------------------
+async def test_an_administrator_gets_each_known_id_once_as_id_and_username_only(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """A duplicate is answered once, an unknown id is left out, and nothing
+    else of the row leaves: no email, role, `is_suspended` or `created_at`."""
+    response = await admin_client.post(
+        LOOKUP,
+        json={"user_ids": [target_user_id, target_user_id, str(uuid.uuid4())]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "users": [{"id": target_user_id, "username": "michelle_l"}]
+    }
+    for user in response.json()["users"]:
+        assert set(user) == {"id", "username"}
+
+
+async def test_a_suspended_user_is_named(
+    admin_client: AsyncClient, target_user_id: str, session
+) -> None:
+    """The trader an administrator is most likely investigating."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    await session.execute(
+        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = 'michelle_l'")
+    )
+    await session.commit()
+    me = await admin_client.get("/auth/me")
+
+    response = await admin_client.post(
+        LOOKUP, json={"user_ids": [me.json()["id"], target_user_id]}
+    )
+
+    assert response.status_code == 200
+    # No order is promised, so compare as a set.
+    assert {(user["id"], user["username"]) for user in response.json()["users"]} == {
+        (me.json()["id"], "admin_one"),
+        (target_user_id, "michelle_l"),
+    }
+
+
+@pytest.mark.parametrize("count", [0, 201])
+async def test_a_count_outside_one_to_two_hundred_is_422(
+    admin_client: AsyncClient, count: int
+) -> None:
+    ids = [str(uuid.uuid4()) for _ in range(count)]
+
+    response = await admin_client.post(LOOKUP, json={"user_ids": ids})
+
+    # FastAPI's own 422: auth has no `invalid_request` envelope (the ledger
+    # does), and docs/api/auth-service.md lists this one as "a different shape".
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("count", [1, 200])
+async def test_one_and_two_hundred_ids_are_accepted(
+    admin_client: AsyncClient, target_user_id: str, count: int
+) -> None:
+    """Both edges of 1 to 200. The single id names a real user, so the answer
+    shows the request was read rather than only let through."""
+    ids = [target_user_id] + [str(uuid.uuid4()) for _ in range(count - 1)]
+
+    response = await admin_client.post(LOOKUP, json={"user_ids": ids})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "users": [{"id": target_user_id, "username": "michelle_l"}]
+    }
+
+
+async def test_an_entry_that_is_not_a_uuid_is_422(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """Beside a valid id, so only the bad entry can be what is refused."""
+    response = await admin_client.post(
+        LOOKUP, json={"user_ids": [target_user_id, "5f3e"]}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_an_unknown_field_in_the_body_is_422(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """So a caller cannot believe it asked for more than two fields."""
+    response = await admin_client.post(
+        LOOKUP, json={"user_ids": [target_user_id], "include_email": True}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_an_anonymous_caller_cannot_look_up_users(
+    client: AsyncClient, target_user_id: str
+) -> None:
+    response = await client.post(LOOKUP, json={"user_ids": [target_user_id]})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_a_trader_cannot_look_up_users(
+    client: AsyncClient, target_user_id: str
+) -> None:
+    await client.post(
+        "/auth/register",
+        json={
+            "username": "nosy_trader",
+            "email": "nosy@example.com",
+            "password": VALID_PASSWORD,
+        },
+    )
+
+    response = await client.post(LOOKUP, json={"user_ids": [target_user_id]})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+async def test_a_lookup_makes_no_audit_entry(
+    admin_client: AsyncClient, target_user_id: str, audit_reader
+) -> None:
+    """A read, like the search: the log records decisions. The admin's id is
+    fresh per test, which is the scope ADR 0006 requires of the log."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    admin_id = (await admin_client.get("/auth/me")).json()["id"]
+
+    response = await admin_client.post(LOOKUP, json={"user_ids": [target_user_id]})
+
+    assert response.status_code == 200
+    entries = await audit_reader.execute(
+        text("SELECT count(*) FROM audit.admin_actions WHERE actor_id = :actor"),
+        {"actor": uuid.UUID(admin_id)},
+    )
+    assert entries.scalar_one() == 0
