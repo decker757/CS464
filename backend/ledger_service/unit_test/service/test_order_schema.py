@@ -3,10 +3,11 @@
 ADR 0024, "Resting orders fill against the AMM inside the trade that moved the
 price". Asserted against Postgres, for `test_book_schema.py`'s reason. Each
 refusal is pinned to the constraint that made it, so a refusal from some other
-rule does not pass for this one. Postgres applies a row's CHECKs in name order
-and names only the first that fails, so every refused row below breaks exactly
-one rule. Column types, nullability and every constraint's definition are held
-by the catalog comparison in `test_migrations.py`.
+rule does not pass for this one. Every refused row below is built to break
+exactly one rule; Postgres names only the first failing CHECK in name order,
+which is why `no_shares` is FILLED. Column types, nullability and every
+constraint's definition are held by the catalog comparison in
+`test_migrations.py`.
 """
 
 from __future__ import annotations
@@ -142,6 +143,7 @@ async def test_a_row_breaking_one_rule_is_refused_by_that_rule(
     [
         pytest.param({"limit_price": Decimal("0.0001")}, id="limit_one_tick_above_0"),
         pytest.param({"limit_price": Decimal("0.9999")}, id="limit_one_tick_below_1"),
+        pytest.param({"quantity": Decimal("0.0001")}, id="quantity_one_tick"),
         pytest.param({"spent": Decimal("60.0000")}, id="spent_equal_to_budget"),
         pytest.param(
             {"status": OrderStatus.FILLED, "filled_quantity": Decimal("100.0000")},

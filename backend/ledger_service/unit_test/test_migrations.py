@@ -66,8 +66,8 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
     # The cascade reads a market's open orders in `seq` order and a reservation
     # reads a trader's own (ADR 0024). Both indexes are partial, and
     # compare_metadata never compares a partial index's predicate (Alembic
-    # 1.20), so these lines and the catalog above are the only things that
-    # notice revision 0004 losing one.
+    # 1.20). By name as well, so an index leaving or changing in the models
+    # and revision 0004 together still goes red.
     assert (
         "CREATE INDEX ix_ledger_orders_open_by_market ON ledger.orders USING btree "
         "(market_id, seq) WHERE ((status)::text = 'open'::text)"

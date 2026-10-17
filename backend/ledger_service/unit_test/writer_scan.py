@@ -41,8 +41,8 @@ def _entity_names(tree: ast.Module, entity_name: str) -> set[str]:
 
 
 def _module_aliases(tree: ast.Module) -> set[str]:
-    """Local names for the `model.entities` module itself, so
-    `entities.Position` is recognised as well as a bare `Position`."""
+    """Local names for the `model.entities` module itself, so the entity
+    is recognised as `entities.<Entity>` as well as bare."""
     names = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "model":
