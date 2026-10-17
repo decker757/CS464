@@ -651,6 +651,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0021** the leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
 - **0022** the ledger asks auth whether a trader is still active, once per trade
 - **0023** sending an approved outcome back inside its stored dispute window, by any admin
+- **0024** resting orders fill against the AMM inside the trade that moved the price
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

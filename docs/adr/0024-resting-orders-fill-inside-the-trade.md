@@ -1,20 +1,20 @@
 # ADR 0024: Resting orders fill against the AMM inside the trade that moved the price
 
-- **Status:** Proposed. It becomes Accepted once all four sign-offs below
-  are ticked. Answers from Ernest's review of #324.
+- **Status:** Accepted, 2026-10-17, with all four sign-offs below ticked.
+  Answers from Ernest's review of #324.
   - [x] 1. [4.2] #14's owner accepts the narrowing in "A suspended owner's
     orders are checked at placement only". Accepted, on condition that the
     administrator's cancel stays on the board as the follow-up: #326.
   - [x] 2. The team accepts that a cascade inside a tokened trade is not "a
     caller with nobody behind it" ("The cascade runs inside the trade that
     moved the price"). Accepted.
-  - [ ] 3. Ernest, who owns `service/posting.py` and `service/accounts.py`,
+  - [x] 3. Ernest, who owns `service/posting.py` and `service/accounts.py`,
     accepts the order-aware running check in `_refuse_overdrafts`: a floor at
     the account's reservation, checked at the start of the batch and after
     each debit in movement order, with each movement carrying the drop in
     its account's reservation that it causes ("A reservation is derived from
-    the order rows, and it is `posting`'s floor"). Pending: held until the
-    arithmetic fix from his review is in, which it now is.
+    the order rows, and it is `posting`'s floor"). Accepted in his approving
+    review of #324 on 2026-10-17: "sign-off 3 is a yes".
   - [x] 4. The team accepts three scope changes to #26 and #27: binary
     markets only, refusing a placement that crosses the book, and "resting"
     meaning not executable to within one tick ("Binary markets only, and no
