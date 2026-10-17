@@ -1033,8 +1033,10 @@ or from `GET .../snapshot` instead.
   `state_version` there. Wait for the `price` frame at `book_state_version`.
   The response still carries no prices.
 - `insufficient_funds` is checked against `available`, not `balance`: credits
-  reserved by your own buy orders cannot pay for a trade. `error.details`
-  gains `reserved` and `available` beside `balance` and `required`.
+  reserved by your own buy orders cannot pay for a trade. It is `available`
+  before the trade, even when the trade's cascade then fills one of your buy
+  orders and frees what it held. `error.details` gains `reserved` and
+  `available` beside `balance` and `required`.
 - `insufficient_shares_held` is checked against your position less the shares
   your live sell orders in that outcome reserve. `error.details` gains
   `reserved` beside `held` and `requested`.
@@ -1231,20 +1233,30 @@ rest, holding `48.1848` of a `60.0000` budget.
   filled on arrival.
 - `book_state_version` is the book's counter after this request. It equals
   the last fill's `state_version`, or, when nothing filled, the counter the
-  order was placed against.
+  order was placed against. The ledger stores it on the order.
 - An order that filled completely on arrival comes back `filled`, with no
   reservation.
+- **A buy's whole budget has to fit in `available`**, even when it would fill
+  completely on arrival for less. Such a buy is refused
+  `409 insufficient_funds` with `required` as the budget, and nothing fills.
 
-**A retry with the same key** returns `201` with the same `fills` and the
-order as it stands now, which may have filled further since. A key already
+**A retry with the same key** returns `201` with the order as it stands now,
+which may have filled further since, the `book_state_version` stored when it
+was placed, and as `fills` only this order's fills with a `state_version` at
+or below that, which are the fills the first request made. Fills a later
+trade's cascade made are not in `fills`, but they are in the order's
+`filled_quantity` and `reserved_credits` or `reserved_shares`. A key already
 used for a different order, by outcome, side, limit price or quantity, is
 `409 idempotency_key_reused`. Like the trade route, the stored key is
 `order:<user_id>:<market_id>:<idempotency_key>`, so your key only has to be
 unique to you.
 
 **The order of checks** is the trade route's: the retry lookup, then your
-account (ADR 0022), then the market gate, then everything under the book
-lock.
+account (ADR 0022), then the market gate, then opening the market's book on
+its first touch, then minting your starting credits if you have never been
+granted them, then everything under the book lock. So a limit order can be
+your first action on the platform: the grant is minted before the budget is
+checked.
 
 **What a placement locks.** Under the book lock, a buy that rests entirely
 also locks your account until it commits, so a trade of yours in another
@@ -1266,7 +1278,7 @@ Errors:
 | 409 | `market_closed` | The market's derived status is not `"open"`, or it has a result. |
 | 409 | `market_not_binary` | The market has more than two outcomes. |
 | 409 | `order_crosses_book` | The order would fire, or be fired by, a resting order that pushes the price the other way. `error.details` carries `side` and the bound: `max_limit_price` for a buy, which the limit must be strictly below, or `min_limit_price` for a sell, which it must be strictly above. Show it as "an order is in the way at this price". Your own orders count. |
-| 409 | `insufficient_funds` | A buy whose budget does not fit in `available`. `error.details` carries `balance`, `reserved`, `available` and `required`, `required` being the budget. |
+| 409 | `insufficient_funds` | A buy whose budget does not fit in `available`, including one that would fill completely on arrival for less than its budget. `error.details` carries `balance`, `reserved`, `available` and `required`, `required` being the budget. |
 | 409 | `insufficient_shares_held` | A sell larger than your position less the shares your other sell orders in that outcome reserve. `error.details` carries `held`, `reserved` and `requested`. |
 | 409 | `idempotency_key_reused` | The key already names a different order. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
