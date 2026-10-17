@@ -79,6 +79,13 @@ export interface Position {
   value: string | null
   // value − cost_basis. Can be negative.
   unrealized_pnl: string | null
+  // Null on every row until the ledger settles its market. `result` is
+  // `paid_out` for the winning outcome and `worthless` for any other;
+  // `payout` is the credits this row was paid — the row's quantity on a
+  // `paid_out` row, "0.0000" on a `worthless` one. Already in `balance`, so
+  // it is not added into `positions_value` again (ledger-service.md).
+  result: 'paid_out' | 'worthless' | null
+  payout: string | null
   state_version: number
 }
 
