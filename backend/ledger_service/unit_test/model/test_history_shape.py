@@ -30,6 +30,9 @@ def test_the_history_adds_no_table_and_no_column() -> None:
         # itself still adds none.
         "leaderboard_generations",
         "leaderboard_entries",
+        # [T-6] #26's PR 2 adds the limit orders' table; the history itself
+        # still adds none.
+        "orders",
     }
     assert {column.name for column in Entry.__table__.columns} == {
         "id",

@@ -63,6 +63,19 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
         "CREATE TRIGGER entries_append_only BEFORE DELETE OR UPDATE OR TRUNCATE "
         "ON ledger.entries FOR EACH STATEMENT EXECUTE FUNCTION ledger.reject_mutation()"
     ) in migrated["triggers"]
+    # The cascade reads a market's open orders in `seq` order and a reservation
+    # reads a trader's own (ADR 0024). Both indexes are partial, and
+    # compare_metadata never compares a partial index's predicate (Alembic
+    # 1.20), so these lines and the catalog above are the only things that
+    # notice revision 0004 losing one.
+    assert (
+        "CREATE INDEX ix_ledger_orders_open_by_market ON ledger.orders USING btree "
+        "(market_id, seq) WHERE ((status)::text = 'open'::text)"
+    ) in migrated["indexes"]
+    assert (
+        "CREATE INDEX ix_ledger_orders_open_by_user ON ledger.orders USING btree "
+        "(user_id) WHERE ((status)::text = 'open'::text)"
+    ) in migrated["indexes"]
 
 
 @pytest.mark.parametrize(
