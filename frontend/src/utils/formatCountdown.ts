@@ -33,3 +33,15 @@ export function formatCountdown(endsAtIso: string, now: Date = new Date()): stri
   const ms = new Date(endsAtIso).getTime() - now.getTime()
   return `${formatTimeLeft(ms)} (${formatAbsolute(endsAtIso)})`
 }
+
+/**
+ * Whether a dispute window, as `endsAtIso` names it, is still open — the same
+ * display-only check the market detail page and the admin markets list both
+ * need to decide between showing the countdown and "Result is final" (and,
+ * on the admin list, whether Dispute result can be offered at all). `null`
+ * reads as closed: a market with no stored window end has never been
+ * approved, or was sent back, either way nothing to dispute right now.
+ */
+export function disputeWindowOpen(endsAtIso: string | null, now: Date = new Date()): boolean {
+  return endsAtIso !== null && new Date(endsAtIso).getTime() > now.getTime()
+}

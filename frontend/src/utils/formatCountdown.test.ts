@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCountdown } from './formatCountdown'
+import { disputeWindowOpen, formatCountdown } from './formatCountdown'
 
 // The absolute half is locale- and timezone-formatted (market-service.md's
 // dispute-screen notes, point 1, wants it beside the relative time because
@@ -33,5 +33,22 @@ describe('formatCountdown', () => {
     const now = new Date('2026-09-17T12:00:00Z')
     const endsAt = '2026-09-17T11:12:00Z'
     expect(formatCountdown(endsAt, now)).toBe(`0m (${absolute(endsAt)})`)
+  })
+})
+
+describe('disputeWindowOpen', () => {
+  const now = new Date('2026-09-17T06:00:00Z')
+
+  it('is true while the stored end is still in the future', () => {
+    expect(disputeWindowOpen('2026-09-17T11:12:00Z', now)).toBe(true)
+  })
+
+  it('is false once the stored end has passed', () => {
+    expect(disputeWindowOpen('2026-09-17T05:00:00Z', now)).toBe(false)
+  })
+
+  it('is false for a market with no stored window end', () => {
+    // Never approved, or sent back and not yet re-approved (market-service.md).
+    expect(disputeWindowOpen(null, now)).toBe(false)
   })
 })
