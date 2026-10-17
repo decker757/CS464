@@ -20,7 +20,9 @@ const CODE_MESSAGES: Record<string, string> = {
  * becomes the page's source of truth, since nothing here assumed what the
  * account's state was before the call. */
 export function useSuspension(userId: string, onChanged: (user: AdminUser) => void) {
-  // Which direction the open modal is asking for; null when it is closed.
+  // Which direction the open modal is asking for: true to suspend, false to
+  // unsuspend (the same orientation as `suspended` in the request body),
+  // null when no modal is open.
   const [direction, setDirection] = useState<boolean | null>(null)
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)

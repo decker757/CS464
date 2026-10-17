@@ -79,6 +79,10 @@ export default function AdminUserHistoryPage() {
       </div>
       {currentUser && <p className="mb-2 text-sm text-subtle">{currentUser.email}</p>}
 
+      {/* Both always shown, not one state-aware toggle: there is no
+          GET /admin/users/{id} to confirm current state after a reload, so a
+          toggle here could show the wrong label. The Suspended badge above
+          is the only state indicator; these two just pick a direction. */}
       <div className="mb-6 flex items-center gap-3">
         <Button variant="outline" size="sm" onClick={openSuspend}>
           Suspend
