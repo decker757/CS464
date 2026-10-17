@@ -225,6 +225,21 @@ describe('AdminMarketRow', () => {
       expect(screen.getByRole('button', { name: /^settle$/i })).toBeEnabled()
     })
 
+    it('keeps Settle available for a retry when market_service could not be reached', async () => {
+      // ledger-service.md: nothing was paid when the book read fails, unlike
+      // settlement_unconfirmed below, where the payouts already committed.
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
+        { error: { code: 'market_terms_unavailable', message: 'unreachable' } }, { status: 503 },
+      )))
+      renderRow(SETTLEABLE_MARKET)
+      const actor = userEvent.setup()
+
+      await actor.click(screen.getByRole('button', { name: /^settle$/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/nothing was paid/i)
+      expect(screen.getByRole('button', { name: /^settle$/i })).toBeEnabled()
+    })
+
     it('offers a Reload control and drops Settle once the market is no longer approved', async () => {
       server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
         { error: { code: 'market_not_approved', message: 'not approved' } }, { status: 409 },
