@@ -102,12 +102,17 @@ superuser. That is what makes the cross-schema denial tests mean something.
 
 ```
 backend/auth_service/     registration, login, logout, sessions
-backend/market_service/   drafting and submitting markets
+backend/market_service/   markets from draft to publication, closing them,
+                          and the outcome a second administrator approves
 backend/audit_service/    reading the shared admin action log
-backend/ledger_service/   credits: append-only entries, derived balances
+backend/ledger_service/   credits, trades, positions, settlement and the
+                          leaderboard: append-only entries, derived balances
 backend/realtime_service/ live prices over a websocket; owns no data
+backend/shared/           the only code the services import from each other
 backend/*/migrations/     auth, market, ledger: each schema's Alembic history,
                           run by compose's <service>-migrate step before the app
+frontend/                 React, Vite and Tailwind; the Playwright end-to-end
+                          suite lives in frontend/e2e/
 sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/           0002 only: a login role, and 02-schemas.sql re-run
 docs/adr/                 decisions and why they were made
