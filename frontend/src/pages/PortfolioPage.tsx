@@ -24,7 +24,12 @@ function toRow(position: Position, markets: Map<string, PublicMarketDetail>): Po
   return { ...position, ...labelsFor(position.market_id, position.outcome_id, markets) }
 }
 
-function PnlCell({ pnl }: { pnl: string | null }) {
+// A settled row has no P&L — it is no longer valued — so this cell shows
+// what it paid instead: the result and, for the winner, the payout. Never
+// recomputed and never rendered as a zero P&L ([3.4] #12).
+function PnlCell({ pnl, result, payout }: { pnl: string | null; result: Position['result']; payout: string | null }) {
+  if (result === 'worthless') return <span className="text-muted">Worthless</span>
+  if (result === 'paid_out') return <span className="text-success">Paid out {formatCreditsPrecise(payout ?? '0')}</span>
   if (pnl === null) return <span className="text-muted">{NOT_VALUED}</span>
 
   return (
@@ -111,7 +116,7 @@ export default function PortfolioPage() {
                       <NumberCell>{formatCreditsPrecise(row.cost_basis)}</NumberCell>
                       <NumberCell>{row.price === null ? NOT_VALUED : formatPrice(row.price)}</NumberCell>
                       <NumberCell>{row.value === null ? NOT_VALUED : formatCreditsPrecise(row.value)}</NumberCell>
-                      <td className="px-5 py-3 text-right"><PnlCell pnl={row.unrealized_pnl} /></td>
+                      <td className="px-5 py-3 text-right"><PnlCell pnl={row.unrealized_pnl} result={row.result} payout={row.payout} /></td>
                     </tr>
                   ))}
                 </tbody>
