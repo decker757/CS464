@@ -34,4 +34,15 @@ describe('MarketTradeTable', () => {
     render(<MarketTradeTable trades={TRADES} outcomeLabels={new Map()} />)
     expect(screen.getByText('o-yes')).toBeInTheDocument()
   })
+
+  it('shows average price as credits per share, not a percentage', () => {
+    // #247: the same format as the trading panel and the portfolio, not
+    // formatPrice's percentage — average_price can pass 1.0000 on a skewed
+    // book (ledger-service.md).
+    const skewed: MarketTrade[] = [
+      { ...TRADES[0], transaction_id: 't3', average_price: '2.0000' },
+    ]
+    render(<MarketTradeTable trades={skewed} outcomeLabels={OUTCOME_LABELS} />)
+    expect(screen.getByText('2.0000')).toBeInTheDocument()
+  })
 })

@@ -65,3 +65,12 @@ export function formatCreditsPrecise(value: string, { showSign = false } = {}): 
   else if (showSign && !isZeroCredits(value)) sign = '+'
   return `${sign}${integerPart}.${fractionPart}`
 }
+
+// `average_price` / `average_entry_price`: credits per share, not a
+// probability — it can reach 1.0000 and pass it on a skewed book
+// (ledger-service.md), so it is never shown as a percentage. #247 picks this
+// format as the one shown on every screen (frontend/CLAUDE.md); every caller
+// goes through this function so the three screens cannot drift again.
+export function formatAveragePrice(value: string): string {
+  return formatCreditsPrecise(value)
+}

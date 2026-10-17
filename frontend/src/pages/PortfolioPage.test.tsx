@@ -119,6 +119,19 @@ describe('PortfolioPage', () => {
     expect(screen.queryByText('0.5125')).not.toBeInTheDocument()
   })
 
+  it('shows average entry as credits per share, not a percentage', async () => {
+    // #247: average_entry_price is credits per share and can pass 1.0000 on
+    // a skewed book (ledger-service.md), so it is shown through the same
+    // formatter as every other credits figure, never through formatPrice.
+    mockPortfolio(portfolio())
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    await screen.findByText('Will it rain in Singapore tomorrow?')
+    expect(screen.getByText('0.5063')).toBeInTheDocument()
+    expect(screen.queryByText('50.6%')).not.toBeInTheDocument()
+  })
+
   it('shows cost basis distinctly from value and unrealized P&L', async () => {
     // [T-4] #24's AC lists cost basis as one of the fields shown per
     // position, alongside quantity, average entry, price, value and P&L.

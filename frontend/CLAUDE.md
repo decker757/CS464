@@ -102,6 +102,12 @@ If a helper is used by two files, it moves to `src/utils/` (pure) or
   message text. Pages call that function; they do not parse axios errors.
 - Money arrives as decimal **strings**. Never `parseFloat` a balance or cost
   to do arithmetic with it; display it through one formatting helper.
+- An average price (`average_price`, `average_entry_price`) is credits per
+  share, not a probability — it can reach `1.0000` and pass it on a skewed
+  book (ledger-service.md) — so it is always shown through
+  `formatAveragePrice`, never through `formatPrice`'s percentage. The
+  marginal `price` a market quotes is a different number and stays a
+  percentage. #247.
 - The server is the authority. Show the cost the preview endpoint returns and
   the balance the ledger returns; do not recompute either in the browser.
 - Auth rides in cookies (ADR 0002). Never put a token in `localStorage`, a
