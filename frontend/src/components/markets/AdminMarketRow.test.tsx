@@ -15,6 +15,8 @@ const OPEN_MARKET: MarketOverviewRow = {
   status: 'open',
   question: 'Will SMU win SUNIG?',
   close_time: '2099-01-05T12:00:00Z',
+  settleable: false,
+  dispute_window_ends_at: null,
 }
 
 function renderRow(market: MarketOverviewRow, isMine = false) {
