@@ -1,4 +1,5 @@
 import AppLayout from '../components/layout/AppLayout'
+import Card from '../components/ui/Card'
 import { HeaderCell, NumberCell, TableFrame, TableHeaderRow } from '../components/ui/Table'
 import LoadMoreControl from '../components/ui/LoadMoreControl'
 import PageTitle from '../components/ui/PageTitle'
@@ -13,7 +14,7 @@ function formatUpdatedAt(computedAt: string): string {
 }
 
 export default function LeaderboardPage() {
-  const { rows, computedAt, stale, rankedUsers, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = useLeaderboard()
+  const { rows, me, computedAt, stale, rankedUsers, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = useLeaderboard()
 
   // "No ranking yet" (ledger-service.md): nothing is ranked at all, as
   // opposed to a ranking that exists but the caller is not on — that case is
@@ -38,6 +39,17 @@ export default function LeaderboardPage() {
             Updated {formatUpdatedAt(computedAt)} · {rankedUsers} ranked
             {stale && ' · may be out of date'}
           </p>
+
+          {/* `me` comes from this same ranking regardless of which page is
+              loaded (ledger-service.md), so the caller's rank is shown here
+              whether or not their row is among the ones fetched so far —
+              the row highlight below only ever catches it when it is. */}
+          {me && (
+            <Card borderColor="border-smu-gold/40" className="mb-6 flex items-center justify-between px-5 py-3">
+              <p className="text-sm font-semibold text-smu-navy">Your rank: #{me.rank}</p>
+              <p className="text-sm text-smu-navy">{formatCreditsPrecise(me.net_worth)} credits</p>
+            </Card>
+          )}
 
           <TableFrame>
             <thead>
