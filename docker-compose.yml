@@ -40,6 +40,25 @@ services:
       retries: 10
       start_period: 10s
 
+  # [F-5] #75. Brings the auth schema to head and exits; `auth` starts only if
+  # this exited 0, so a migration that fails stops new code before it serves a
+  # request. The app's own image and role: no superuser, and no signing key,
+  # because the step only issues DDL. ADR 0020.
+  auth-migrate:
+    build:
+      context: ./backend
+      dockerfile: auth_service/Dockerfile
+    command: ["python", "migrate.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://auth_svc:${AUTH_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+    # The image's HEALTHCHECK probes the API, which this container never serves.
+    healthcheck:
+      disable: true
+    restart: "no"
+
   auth:
     build:
       # backend/, not the service directory: a build context cannot reach
@@ -49,6 +68,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      auth-migrate:
+        condition: service_completed_successfully
     environment:
       # Connects as auth_svc, not the superuser, so the grants in
       # sql/02-schemas.sql actually constrain this service.
@@ -56,11 +77,32 @@ services:
       # Required, same as POSTGRES_PASSWORD above. Copy .env.example to .env
       # and fill both in.
       JWT_SECRET: ${JWT_SECRET:?}
+      # [L-1] #38, ADR 0021. The key the ledger presents to
+      # `/internal/users/lookup`; auth compares it. Required on both sides, for
+      # JWT_SECRET's reason: a default would be a published credential.
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
     ports:
       - "${AUTH_PORT:-8000}:8000"
     restart: unless-stopped
+
+  # [F-5] #75. Brings the market schema to head and exits; `market` starts only
+  # if this exited 0. Same shape and reasons as `auth-migrate`. ADR 0020.
+  market-migrate:
+    build:
+      context: ./backend
+      dockerfile: market_service/Dockerfile
+    command: ["python", "migrate.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://market_svc:${MARKET_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+    # The image's HEALTHCHECK probes the API, which this container never serves.
+    healthcheck:
+      disable: true
+    restart: "no"
 
   # [1.1] #1. Owns the market schema, connects as market_svc, and cannot read
   # auth.users. It recognises an administrator from the signed access token
@@ -74,6 +116,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      market-migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://market_svc:${MARKET_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
       # The same value the auth service signs with. Under HS256 that means this
@@ -97,17 +141,39 @@ services:
       CLOSE_SWEEP_SECONDS: ${CLOSE_SWEEP_SECONDS:-10}
       CLOSE_SWEEP_BATCH: ${CLOSE_SWEEP_BATCH:-100}
       CLOSE_SWEEP_ENABLED: ${CLOSE_SWEEP_ENABLED:-true}
+      # [3.3] #11, [3.4] #12. Seconds after an approval during which any
+      # administrator may send the result back; settlement opens five minutes
+      # after it ends. 1 to 2592000 (30 days).
+      DISPUTE_WINDOW_SECONDS: ${DISPUTE_WINDOW_SECONDS:-86400}
     ports:
       - "${MARKET_PORT:-8001}:8000"
     restart: unless-stopped
+
+  # [F-5] #75. Brings the ledger schema to head and exits; `ledger` starts only
+  # if this exited 0. Same shape and reasons as `auth-migrate`. ADR 0020.
+  ledger-migrate:
+    build:
+      context: ./backend
+      dockerfile: ledger_service/Dockerfile
+    command: ["python", "migrate.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ledger_svc:${LEDGER_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
+    # The image's HEALTHCHECK probes the API, which this container never serves.
+    healthcheck:
+      disable: true
+    restart: "no"
 
   # [F-1] #41. Owns the ledger schema, connects as ledger_svc, and holds every
   # credit in the system. Like the market service it cannot read auth.users and
   # identifies a caller from the signed access token alone, so it needs the same
   # JWT_SECRET and nothing else from auth.
   #
-  # Note what is missing: no service depends on this one, and it depends on
-  # none. The starting grant [B-1] #32 is minted here, lazily, on the first read
+  # Note what is missing: no service depends on this one, and it depends on no
+  # other service, only on its own migrate step above. The starting grant
+  # [B-1] #32 is minted here, lazily, on the first read
   # of a balance — there is no event from the auth service to wait for, and no
   # window in which a new account's balance is observably wrong.
   ledger:
@@ -119,15 +185,25 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      ledger-migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://ledger_svc:${LEDGER_DB_PASSWORD}@db:5432/${POSTGRES_DB:-cs464}
       # The same value the auth service signs with. Verification only; there is
       # no encode path in this service and a test asserts one does not appear.
       JWT_SECRET: ${JWT_SECRET:?}
+      # [L-1] #38, ADR 0021. The same value auth holds above: the ledger sends
+      # it as `X-Service-Key` to name the leaderboard's holders.
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
       # [B-1] #32. Optional, like DEFAULT_LIQUIDITY_B above and unlike the two
       # required values: a starting grant is a number, not a credential.
       STARTING_CREDITS: ${STARTING_CREDITS:-1000}
+      # [L-3] #40, ADR 0021. How often this replica rebuilds the leaderboard,
+      # in seconds, and whether it does at all. Both optional. A second
+      # replica sets ENABLED=false so only one refreshes.
+      LEADERBOARD_REFRESH_SECONDS: ${LEADERBOARD_REFRESH_SECONDS:-60}
+      LEADERBOARD_REFRESH_ENABLED: ${LEADERBOARD_REFRESH_ENABLED:-true}
       # [F-9] #112. The bus the ledger publishes prices to, and the same string
       # the realtime service below subscribes on — move one, move both. Written
       # out rather than read from .env: `.env`'s REDIS_URL is the host-side

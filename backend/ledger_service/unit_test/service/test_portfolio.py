@@ -21,6 +21,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.portfolio_fixtures import (
     ADR_AVERAGE,
     ADR_B,
@@ -92,7 +93,7 @@ async def _preview_sale(
         side=pricing().Side.SELL,
         quantity=quantity,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
 
@@ -179,7 +180,10 @@ async def test_price_is_the_snapshots_price_at_the_same_state_version(
     result = await read_portfolio(session, user_id)
     await session.rollback()
     snapshot = await snapshot_module().snapshot(
-        session, upstream.market_id, access_token=token(), transport=upstream.transport
+        session,
+        upstream.market_id,
+        access_token=token(),
+        terms_client=terms_client_over(upstream.transport),
     )
 
     by_outcome = {p.outcome_id: p.price for p in snapshot.prices}

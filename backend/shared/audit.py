@@ -10,8 +10,8 @@ amendment. Three details are load-bearing:
 - The id is generated in Python. A server default would need RETURNING, which
   needs SELECT, which no writer holds.
 - `admin_actions` sits on its own `MetaData` and must never join any service's
-  `Base.metadata`: `create_all` and the test rebuild would issue DDL against a
-  table no service role may create or drop, and the service would die at boot.
+  `Base.metadata`: the migrate step and the test rebuild would issue DDL against
+  a table no service role may create or drop, and both would fail.
 
 What differs by design stays in each service: its `AdminAction` vocabulary in
 `model/audit.py`, and the `source_service` it reports in `core/audit.py`.
@@ -39,6 +39,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from shared.security import TokenClaims
 
 AUDIT_SCHEMA = "audit"
 
@@ -94,6 +96,16 @@ class Entry:
     reason: str | None = None
     context: dict[str, Any] | None = None
     occurred_at: datetime | None = None
+
+
+def actor_of(claims: TokenClaims) -> Actor:
+    """Narrow verified token claims to the `Actor` the audit log names.
+
+    One copy for the services that authorise from the token alone. The auth
+    service builds its `Actor` from the live user row instead and does not call
+    this (ADR 0007).
+    """
+    return Actor(id=claims.user_id, username=claims.username, role=claims.role.value)
 
 
 async def record(session: AsyncSession, entry: Entry, *, source_service: str) -> None:

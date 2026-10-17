@@ -122,6 +122,18 @@ class RejectionIncomplete(IncompleteError):
     DEFAULT_MESSAGE = "This proposal cannot be rejected without a reason."
 
 
+class SendBackIncomplete(IncompleteError):
+    """The reason given for sending an approved result back is not usable. [3.3] #11
+
+    Its own code, not `rejection_incomplete`: a different form, undoing a
+    different thing. ADR 0023.
+    """
+
+    code = "send_back_incomplete"
+
+    DEFAULT_MESSAGE = "This approved result cannot be sent back without a reason."
+
+
 class MarketNotEditable(MarketError):
     """An autosave tried to write over an already-submitted market. ADR 0004.
 
@@ -232,9 +244,9 @@ class MarketNotOpen(MarketError):
 class MarketNotPendingResolution(MarketError):
     """An approval or rejection arrived for a market with no proposal. [3.2] #10.
 
-    Every state but PENDING_RESOLUTION and APPROVED, including a proposal just
-    rejected by a racing request. Not `MarketAlreadyApproved`: this market may
-    still get a proposal. ADR 0016.
+    Every state but PENDING_RESOLUTION, APPROVED and SETTLED, including a
+    proposal just rejected by a racing request. Not `MarketAlreadyApproved`:
+    this market may still get a proposal. ADR 0016.
     """
 
     status_code = 409
@@ -245,8 +257,58 @@ class MarketNotPendingResolution(MarketError):
     )
 
 
+class MarketNotApproved(MarketError):
+    """A settle or a send-back arrived for a market whose outcome is not approved.
+    [3.4] #12, [3.3] #11.
+
+    For settle, one code for every status short of APPROVED, because the
+    ledger maps this one alone (ADR 0019, step 5). Send-back gives a pending
+    proposal its own code first, since its remedy differs. ADR 0023.
+    """
+
+    status_code = 409
+    code = "market_not_approved"
+    message = (
+        "Only a market whose outcome has been approved can be settled or sent "
+        "back. This one has not been approved."
+    )
+
+
+class DisputeWindowOpen(MarketError):
+    """A settle arrived for an approved market that is not yet settleable. [3.4] #12.
+
+    409: the market is in the wrong state, and waiting fixes it. Settlement
+    opens five minutes after the dispute window ends, judged on Postgres's
+    clock. ADR 0019.
+    """
+
+    status_code = 409
+    code = "dispute_window_open"
+    message = (
+        "This market's outcome can still be disputed. It can be settled five "
+        "minutes after its dispute window ends."
+    )
+
+
+class DisputeWindowClosed(MarketError):
+    """A send-back arrived at or after the approved market's dispute window ended. [3.3] #11.
+
+    Judged on Postgres's clock, read after the row lock, against the stored
+    `dispute_window_ends_at`; a null end is refused the same way. 409: the
+    result is final, and nothing the caller does changes that. ADR 0023.
+    """
+
+    status_code = 409
+    code = "dispute_window_closed"
+    message = (
+        "This market's dispute window has ended. Its approved outcome is final "
+        "and can no longer be sent back."
+    )
+
+
 class MarketAlreadyApproved(MarketError):
-    """Any write or decision arrived for a market whose outcome is approved. [3.2] #10.
+    """Any write but settle and send-back arrived for a market whose outcome is approved.
+    [3.2] #10, [3.3] #11.
 
     Checked before who is asking, so the proposer is told it is approved.
     ADR 0016.
@@ -256,7 +318,23 @@ class MarketAlreadyApproved(MarketError):
     code = "market_already_approved"
     message = (
         "A second administrator has already approved this market's outcome. "
-        "The proposal is final and the next step is settlement."
+        "Next it is settled, unless it is sent back during its dispute window."
+    )
+
+
+class MarketAlreadySettled(MarketError):
+    """Any write but settle arrived for a market that is SETTLED. [3.4] #12.
+
+    The message says the market is settled and nothing about payouts: SETTLED
+    here does not prove the ledger paid, because the settle route can be
+    called directly. ADR 0019.
+    """
+
+    status_code = 409
+    code = "market_already_settled"
+    message = (
+        "This market has been settled. Its terms and its outcome are final "
+        "and can no longer be changed."
     )
 
 
@@ -276,15 +354,30 @@ class SecondAdministratorRequired(MarketError):
 
 
 class ProposalSuperseded(MarketError):
-    """A decision quoted a proposal that has since been replaced. [3.2] #10.
+    """A decision or a send-back quoted a proposal that has since been replaced.
+    [3.2] #10, [3.3] #11.
 
-    The row lock cannot catch this: the reject-and-repropose cycle had already
-    committed. 409: reload and review the proposal now waiting. ADR 0016.
+    The row lock cannot catch this: the reject-and-repropose cycle, or the
+    send-back, repropose and re-approve cycle, had already committed. 409:
+    reload and review the current one. ADR 0016, ADR 0023.
     """
 
     status_code = 409
     code = "proposal_superseded"
     message = (
         "The proposal you reviewed has been replaced by a newer one. Reload the "
-        "market and review the proposal that is waiting now."
+        "market and review the current one."
     )
+
+
+class MalformedCursor(MarketError):
+    """[X-1] #104 - the `cursor` parameter did not come from a previous response.
+
+    Refused rather than restarting from page one, which would loop a client
+    forever. Same status, code and message as the audit, auth and ledger
+    services'.
+    """
+
+    status_code = 400
+    code = "malformed_cursor"
+    message = "Pass back the `next_cursor` from the previous response, unmodified."

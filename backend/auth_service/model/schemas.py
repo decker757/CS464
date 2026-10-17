@@ -1,7 +1,7 @@
 """Request and response contracts, published at /docs for the frontend.
 
-[A-1] #29, [A-2] #30, [A-3] #31, [4.1] #13, [4.4] #16. Class docstrings and
-field descriptions here are the /docs text.
+[A-1] #29, [A-2] #30, [A-3] #31, [4.1] #13, [4.4] #16, [4.2] #14. Class
+docstrings and field descriptions here are the /docs text.
 """
 
 from __future__ import annotations
@@ -189,3 +189,69 @@ class RoleChangeResponse(BaseModel):
         ),
         examples=[900],
     )
+
+
+class SuspensionRequest(BaseModel):
+    """[4.2] #14. Suspend or unsuspend one account, and say why.
+
+    `suspended` is the state the account should end up in, not an action, so
+    the same request repeated is the same outcome. `reason` is required both
+    ways, at least ten characters once trimmed, and is stored only in the
+    audit log.
+    """
+
+    suspended: bool
+    reason: str = Field(
+        max_length=500,
+        examples=["Second account of bob_1, same device and same card."],
+    )
+
+
+class SuspensionResponse(BaseModel):
+    """The account as it now is, and how long its old token can linger."""
+
+    user: AdminUserOut
+
+    takes_effect_within_seconds: int = Field(
+        description=(
+            "Upper bound, in seconds, on how long other services may still "
+            "honour the account's current access token. Login, refresh and "
+            "trading are refused at once (ADR 0022); reads on the ledger and "
+            "the market service, and a suspended administrator's market "
+            "service actions, ride the token until it expires (ADR 0003)."
+        ),
+        examples=[900],
+    )
+
+
+class UserLookupIn(BaseModel):
+    """Which accounts to name, for another service. [L-1] #38, ADR 0021.
+
+    Bounded because the ledger sends larger sets in chunks of 500. Anything
+    else in the body is refused, so a caller cannot ask for more than the
+    three fields `DirectoryUserOut` holds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class DirectoryUserOut(BaseModel):
+    """One account as another service sees it: exactly three fields.
+
+    No email and no role. A separate class rather than a subset of `UserOut`,
+    so a field added there can never reach this answer by inheritance.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    username: str
+    is_suspended: bool
+
+
+class UserLookupOut(BaseModel):
+    """The accounts that exist among those asked for, ordered by `id`."""
+
+    users: list[DirectoryUserOut]

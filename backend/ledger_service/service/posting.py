@@ -1,4 +1,5 @@
-"""The write path: `post` moves credits. [F-1] #41, ADR 0009.
+"""The write path: `post` moves credits, `post_all` moves a batch. [F-1] #41,
+[3.4] #12, ADR 0009.
 
 Every movement is legs that sum to zero, keyed for idempotency and
 fingerprinted so a reused key is told apart from a retry, and serialised on
@@ -22,6 +23,7 @@ from core.database import has_pending_writes
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientFunds,
+    MalformedBatch,
     PendingWritesOnReplay,
     UnbalancedTransaction,
 )
@@ -58,11 +60,26 @@ class Leg:
     amount: Decimal
 
 
+@dataclass(frozen=True)
+class Movement:
+    """One transaction of a batch: `post`'s keyword arguments as a record."""
+
+    idempotency_key: str
+    kind: TransactionKind
+    legs: list[Leg]
+    context: dict[str, Any] | None = None
+
+
 def _quantize(amount: Decimal) -> Decimal:
     """Round half up, as Postgres numeric does, not banker's rounding: a
     retry rounded the other way would not match the stored fingerprint.
     """
     return amount.quantize(_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def _quantized_legs(legs: list[Leg]) -> list[Leg]:
+    """The same legs with every amount rounded to the column's scale."""
+    return [Leg(account=leg.account, amount=_quantize(leg.amount)) for leg in legs]
 
 
 def _require_balanced(legs: list[Leg]) -> None:
@@ -150,6 +167,88 @@ async def _stamp_after_newest(
     return stamp
 
 
+def _transaction_of(
+    *,
+    kind: TransactionKind,
+    idempotency_key: str,
+    fingerprint: str,
+    legs: list[Leg],
+    context: dict[str, Any] | None,
+    stamp: datetime,
+) -> tuple[Transaction, list[Entry]]:
+    """The transaction and one entry per leg, all carrying `stamp`.
+
+    Builds only: the caller adds, flushes and commits. It returns the entries
+    as well as the transaction so `post_all` adds a batch's entries with one
+    explicit `add_all`.
+    """
+    transaction = Transaction(
+        kind=kind,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
+        occurred_at=stamp,
+        context=context,
+    )
+    entries = [
+        # created_at copied from the transaction, not defaulted per row, so
+        # both legs share one timestamp and a history page cannot split them.
+        Entry(
+            transaction=transaction,
+            account_id=leg.account.id,
+            amount=leg.amount,
+            created_at=stamp,
+        )
+        for leg in legs
+    ]
+    return transaction, entries
+
+
+def _refuse_if_malformed_batch(movements: list[Movement]) -> None:
+    """Raise `MalformedBatch` for no movements, or one key named twice. Before
+    any SQL: an empty batch would still commit the caller's pending writes, and
+    a repeated key would surface as the unique index's bare `IntegrityError`.
+    """
+    keys = [movement.idempotency_key for movement in movements]
+    if not keys or len(set(keys)) != len(keys):
+        raise MalformedBatch
+
+
+async def _replay_batch(
+    session: AsyncSession,
+    keys: list[str],
+    fingerprints: dict[str, str],
+    existing: list[Transaction],
+    *,
+    caller_pending: bool,
+) -> list[Transaction]:
+    """The existing transactions, in `keys` order, if the batch is a whole
+    replay; otherwise raise. Pending writes are refused before the match is
+    classified, so a settlement past its latch is the alarm, whatever its
+    winners. A key found and another missing is `IdempotencyKeyReused`: one
+    batch is one commit, so it is never half replayed. Commits to release the
+    account locks. DECISIONS.md, "`post_all` asks about pending writes before
+    it classifies a match".
+    """
+    if caller_pending:
+        raise PendingWritesOnReplay
+
+    found = {transaction.idempotency_key: transaction for transaction in existing}
+    if any(key not in found for key in keys):
+        raise IdempotencyKeyReused
+
+    replayed = [_replay(found[key], fingerprints[key]) for key in keys]
+    await session.commit()
+    return replayed
+
+
+async def _list_by_idempotency_keys(
+    session: AsyncSession, idempotency_keys: list[str]
+) -> list[Transaction]:
+    """The transactions these keys already named, in no particular order."""
+    stmt = select(Transaction).where(Transaction.idempotency_key.in_(idempotency_keys))
+    return list((await session.execute(stmt)).scalars())
+
+
 async def find_by_idempotency_key(
     session: AsyncSession, idempotency_key: str
 ) -> Transaction | None:
@@ -179,91 +278,116 @@ async def post(
     `PendingWritesOnReplay` when a replay would commit the caller's pending
     writes.
 
-    The order is the design: round, refuse unbalanced legs, lock every account
-    ascending by id (ADR 0009), then look the key up and check overdrafts under
-    that lock. Looked up before the lock, a retry racing its original is
-    refused as an overdraft for a trade that succeeded (ADR 0015). The
-    timestamp is fixed under the lock too, so a history lists movements in
-    the order they committed (#187).
+    Its steps, and their order, are `post_all`'s, called with a batch of one.
 
     `now` is a floor, not the stamp: the movement lands at `now` or just after
     the newest entry on its accounts, whichever is later. Assert on the
     returned transaction's `occurred_at`.
     """
-    legs = [Leg(account=leg.account, amount=_quantize(leg.amount)) for leg in legs]
+    (transaction,) = await post_all(
+        session,
+        [
+            Movement(
+                idempotency_key=idempotency_key,
+                kind=kind,
+                legs=legs,
+                context=context,
+            )
+        ],
+        now=now,
+    )
+    return transaction
 
-    _require_balanced(legs)
-    fingerprint = _fingerprint(kind, legs)
+
+async def post_all(
+    session: AsyncSession,
+    movements: list[Movement],
+    *,
+    now: datetime | None = None,
+) -> list[Transaction]:
+    """Record a batch of movements in one commit, or replay the batch whole.
+
+    Returns one transaction per movement, in input order, written or replayed.
+    Commits once before it returns, so a caller writes nothing after it.
+    Otherwise it raises before any commit: `MalformedBatch`,
+    `UnbalancedTransaction`, `IdempotencyKeyReused`, `InsufficientFunds`, or
+    `PendingWritesOnReplay` when a replay would commit the caller's pending
+    writes.
+
+    The order is the design: round, refuse unbalanced legs, lock every account
+    in the batch once, ascending by id (the caller's book lock comes first),
+    then look the keys up, check USER overdrafts netted across the whole batch,
+    and take one stamp, all under the locks, so a history lists movements in
+    the order they committed (#187). Movement *i* lands at that stamp plus *i*
+    µs. Looked up before the lock, a retry racing its original is refused as an
+    overdraft for a trade that succeeded (ADR 0015). `now` is one floor for the
+    batch. DECISIONS.md, "`posting.post_all` takes a list of `Movement`s,
+    commits once, and keeps `post`'s SAVEPOINT".
+    """
+    _refuse_if_malformed_batch(movements)
+
+    keys = [movement.idempotency_key for movement in movements]
+    batch_legs = [_quantized_legs(movement.legs) for movement in movements]
+    for legs in batch_legs:
+        _require_balanced(legs)
+    fingerprints = {
+        movement.idempotency_key: _fingerprint(movement.kind, legs)
+        for movement, legs in zip(movements, batch_legs, strict=True)
+    }
 
     # Recorded on entry, not asked at each replay branch: by the second, the
     # SAVEPOINT has flushed the caller's writes and its rollback has expired
-    # them, so only the flush flag still sees them. An answer taken here does
-    # not depend on it. DECISIONS.md, "`posting.post` refuses to replay into a
-    # dirty session".
+    # them, so only the flush flag still sees them. DECISIONS.md,
+    # "`posting.post` refuses to replay into a dirty session".
     caller_pending = has_pending_writes(session)
 
-    await accounts.lock(session, [leg.account.id for leg in legs])
+    all_legs: list[Leg] = []
+    for legs in batch_legs:
+        all_legs.extend(legs)
+    account_ids = {leg.account.id for leg in all_legs}
+    await accounts.lock(session, list(account_ids))
 
-    existing = await find_by_idempotency_key(session, idempotency_key)
-    if existing is not None:
-        # The commit below would flush the caller's pending writes (a trade's
-        # `q` and position) beside a transaction that wrote nothing. Raised
-        # before it: nothing can discard only the caller's writes.
-        if caller_pending:
-            raise PendingWritesOnReplay
+    existing = await _list_by_idempotency_keys(session, keys)
+    if existing:
+        return await _replay_batch(
+            session, keys, fingerprints, existing, caller_pending=caller_pending
+        )
 
-        # Committed although nothing was written, to release the account
-        # locks rather than hold them for the rest of the request. ADR 0015.
-        transaction = _replay(existing, fingerprint)
-        await session.commit()
-        return transaction
+    await _refuse_overdrafts(session, all_legs)
 
-    await _refuse_overdrafts(session, legs)
-
-    # Under the lock, never on the way in: a stamp taken before it lets a
-    # movement that queued behind a later-stamped one commit second and list
-    # first, with a running balance the user never had. #187.
-    stamp = await _stamp_after_newest(
-        session, {leg.account.id for leg in legs}, now or datetime.now(UTC)
+    first_stamp = await _stamp_after_newest(
+        session, account_ids, now or datetime.now(UTC)
     )
 
-    transaction = Transaction(
-        kind=kind,
-        idempotency_key=idempotency_key,
-        request_fingerprint=fingerprint,
-        occurred_at=stamp,
-        context=context,
-    )
+    transactions: list[Transaction] = []
+    entries: list[Entry] = []
+    for index, (movement, legs) in enumerate(zip(movements, batch_legs, strict=True)):
+        transaction, movement_entries = _transaction_of(
+            kind=movement.kind,
+            idempotency_key=movement.idempotency_key,
+            fingerprint=fingerprints[movement.idempotency_key],
+            legs=legs,
+            context=movement.context,
+            stamp=first_stamp + index * _TICK,
+        )
+        transactions.append(transaction)
+        entries.extend(movement_entries)
 
     try:
         async with session.begin_nested():
-            session.add(transaction)
-            session.add_all(
-                # created_at copied from the transaction, not defaulted per
-                # row, so both legs share one timestamp and a history page
-                # cannot split them.
-                Entry(
-                    transaction=transaction,
-                    account_id=leg.account.id,
-                    amount=leg.amount,
-                    created_at=stamp,
-                )
-                for leg in legs
-            )
+            session.add_all(transactions)
+            session.add_all(entries)
             await session.flush()
     except IntegrityError:
-        # A race on one key that the account locks did not queue, so the legs
+        # A race on a key that the account locks did not queue, so the legs
         # share no account: a key reused for different money. Re-read so
-        # `_replay` refuses it; the savepoint keeps the caller's earlier work.
-        existing = await find_by_idempotency_key(session, idempotency_key)
-        if existing is None:
+        # `_replay_batch` refuses it; the savepoint kept the caller's work.
+        existing = await _list_by_idempotency_keys(session, keys)
+        if not existing:
             raise
-        # Same refusal, same reason: `begin_nested` flushed the caller's writes
-        # before the SAVEPOINT, so its rollback kept them and the commit below
-        # would land them beside another request's transaction.
-        if caller_pending:
-            raise PendingWritesOnReplay
-        transaction = _replay(existing, fingerprint)
+        return await _replay_batch(
+            session, keys, fingerprints, existing, caller_pending=caller_pending
+        )
 
     await session.commit()
-    return transaction
+    return transactions

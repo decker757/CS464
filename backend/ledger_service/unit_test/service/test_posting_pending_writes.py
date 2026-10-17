@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import terms_client_over
 from unit_test.trade_fixtures import (
     TIMEOUT,
     Upstream,
@@ -26,6 +27,7 @@ from unit_test.trade_fixtures import (
     entities,
     errors,
     grants,
+    hide_the_first_lookup,
     posting,
     session_factory,
     token,
@@ -69,7 +71,7 @@ async def _seed_with_a_dirty_outcome(session: AsyncSession):
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     user, platform = await _seed(session)
     outcome = (
@@ -174,19 +176,11 @@ async def test_a_replay_found_by_the_insert_race_is_refused_too(
     """
     user, platform = await _seed_with_a_dirty_outcome(session)
 
-    real = posting().find_by_idempotency_key
-    lookups = 0
-
-    async def miss_the_first(own: AsyncSession, key: str):
-        nonlocal lookups
-        lookups += 1
-        return None if lookups == 1 else await real(own, key)
-
-    monkeypatch.setattr(posting(), "find_by_idempotency_key", miss_the_first)
+    lookups = hide_the_first_lookup(monkeypatch)
 
     with pytest.raises(errors().PendingWritesOnReplay):
         await _replay(session, user, platform)
-    assert lookups == 2, "the replay was not reached through the INSERT race"
+    assert lookups[0] == 2, "the replay was not reached through the INSERT race"
 
 
 async def test_the_refusal_commits_nothing(session: AsyncSession) -> None:
@@ -330,7 +324,7 @@ async def test_a_lost_first_touch_race_still_opens_one_book(
                     own,
                     upstream.market_id,
                     access_token=token(),
-                    transport=upstream.transport,
+                    terms_client=terms_client_over(upstream.transport),
                 )
             except Exception as exc:  # noqa: BLE001 - the assertion is below
                 return exc
@@ -360,7 +354,7 @@ async def test_a_warm_second_touch_never_reaches_post(
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     async def explode(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -372,7 +366,7 @@ async def test_a_warm_second_touch_never_reaches_post(
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     assert book.market_id == upstream.market_id

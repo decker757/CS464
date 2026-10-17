@@ -14,11 +14,7 @@ from controller.errors import register_error_handlers
 from controller.public_routes import router as public_market_router
 from controller.routes import router as market_router
 from core.config import get_settings
-from core.database import create_all, dispose_engine, get_session_factory
-
-# Imported for its side effect: registering the mappers on Base before
-# create_all runs. Do not rely on another module pulling it in transitively.
-from model import entities  # noqa: F401
+from core.database import dispose_engine, get_session_factory
 from service.sweeper import run_close_sweeper
 
 logging.basicConfig(level=logging.INFO)
@@ -27,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Creates missing tables only; a new column needs a hand-applied migration.
-    await create_all()
+    # No DDL here: `market-migrate` (migrate.py) brought the schema to head
+    # before this process started. ADR 0020.
 
     # [F-4] #44. Started here, the composition root, so the sweeper is handed
     # its session factory and a test can drive it without the app. Switching

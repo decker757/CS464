@@ -9,6 +9,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+from shared.testing import compose_service
+
 # `unit_test/` -> `ledger_service/` -> `backend/`.
 _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 
@@ -64,27 +66,14 @@ def test_realtime_service_no_longer_claims_to_be_the_only_redis_client() -> None
 # =========================================================================
 # The deployment's wiring, which is where the bus is actually chosen
 # =========================================================================
-_REPO = _BACKEND.parent
-_COMPOSE = _REPO / "docker-compose.yml"
-
-
-def _compose_service(name: str) -> dict:
-    """One service's block from `docker-compose.yml`, parsed rather than
-    pattern-matched. PyYAML arrives with `uvicorn[standard]`.
-    """
-    import yaml  # noqa: PLC0415
-
-    return yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))["services"][name]
-
-
 def test_compose_hands_the_ledger_the_bus_the_realtime_service_listens_on() -> None:
     """The producer and the consumer, pointed at one Redis by compose.
 
     On the compiled-in default instead, moving the bus would leave every
     publish "succeeding" into a Redis nobody subscribes to.
     """
-    ledger = _compose_service("ledger").get("environment", {})
-    realtime = _compose_service("realtime").get("environment", {})
+    ledger = compose_service("ledger").get("environment", {})
+    realtime = compose_service("realtime").get("environment", {})
 
     assert "REDIS_URL" in ledger, (
         "docker-compose.yml's ledger service sets no REDIS_URL, so the "
@@ -102,7 +91,7 @@ def test_compose_does_not_hold_the_ledger_back_until_redis_is_up() -> None:
     A `depends_on: redis` would make a Redis that never comes up a ledger that
     never comes up, to protect a broadcast `service/bus.py` is written to lose.
     """
-    depends_on = _compose_service("ledger").get("depends_on", {})
+    depends_on = compose_service("ledger").get("depends_on", {})
 
     assert "redis" not in depends_on, (
         "docker-compose.yml makes the ledger wait on Redis; an unreachable bus "

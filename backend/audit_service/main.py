@@ -14,8 +14,8 @@ from controller.routes import router as audit_router
 from core.config import get_settings
 from core.database import dispose_engine
 
-# No `create_all` and no `model.entities` import, unlike the other services:
-# sql/02-schemas.sql creates the table and the superuser owns it. ADR 0006.
+# No migrate step, unlike auth, market and ledger: sql/02-schemas.sql creates
+# the table and the superuser owns it. ADR 0006.
 
 logging.basicConfig(level=logging.INFO)
 

@@ -5,6 +5,9 @@ owns the timer, the session, and the promise that a database error does not
 stop markets closing. Why a sweep rather than Redis or cron, and what it
 costs, is ADR 0011. A per-market in-process timer would die with a deploy and
 need re-arming by a sweep at boot anyway.
+
+Twin: `ledger_service/service/leaderboard_refresher.py`, the same loop shape.
+Kept copied, not shared: ADR 0012's bar.
 """
 
 from __future__ import annotations

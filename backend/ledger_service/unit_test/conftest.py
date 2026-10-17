@@ -15,7 +15,14 @@ import os
 import secrets
 import uuid
 
-from shared.testing import load_repo_env
+import pytest
+
+# Before the first import of shared.testing: pytest rewrites asserts only in
+# modules it sees imported after this call, so without it the shared helpers'
+# asserts fail with no diff.
+pytest.register_assert_rewrite("shared.testing")
+
+from shared.testing import load_repo_env  # noqa: E402
 
 
 # Before any project module is imported. `get_settings` is lru_cached, so the
@@ -38,12 +45,25 @@ os.environ["DATABASE_URL"] = _test_db
 # Fresh per run. Nothing signed here outlives the process, and no key-shaped
 # string needs to sit in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
+# [L-1] #38, ADR 0021: required, with no default, like the signing key above.
+# Fresh per run for the same reason; the stand-in auth service checks it.
+os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
+# [L-3] #40. Off for the suite, by assignment so a `.env` cannot turn it on:
+# every lifespan test would otherwise run a real refresh against the test
+# database while the next test drops it. A test that needs the loop turns it
+# on itself.
+os.environ["LEADERBOARD_REFRESH_ENABLED"] = "false"
 
+# [3.4] #12. The audit reader's own connection, as market_service's: `ledger_svc`
+# holds INSERT on the log and no SELECT. ADR 0006.
+_audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
+
+from collections.abc import Sequence  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
+import httpx  # noqa: E402
 import jwt  # noqa: E402
-import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
@@ -60,6 +80,16 @@ _UNREACHABLE = (
     "Cannot reach the test database.\n"
     "Start it with:  docker compose up -d db\n"
     "Or point LEDGER_TEST_DATABASE_URL at your own Postgres."
+)
+
+_NO_AUDIT_READER = (
+    "No audit reader configured.\n"
+    "The settlement tests read back the entry this service appended, and they "
+    "must do it as audit_svc, because ledger_svc holds INSERT on "
+    "audit.admin_actions and no SELECT.\n"
+    "Add AUDIT_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
+    "  export AUDIT_TEST_DATABASE_URL="
+    "postgresql+asyncpg://audit_svc:PASSWORD@localhost:PORT/cs464_test"
 )
 
 
@@ -97,6 +127,67 @@ def bearer(user_id: uuid.UUID, role: UserRole = UserRole.TRADER, **kwargs) -> di
     return {"Authorization": f"Bearer {mint_token(user_id, role, **kwargs)}"}
 
 
+def terms_client_over(transport: httpx.AsyncBaseTransport) -> httpx.AsyncClient:
+    """The production market_service client, with a test transport under it,
+    so the real base URL, timeout and request building still run (#114)."""
+    from service import market_terms  # noqa: PLC0415
+
+    return market_terms.open_client(transport=transport)
+
+
+def auth_client_over(transport: httpx.AsyncBaseTransport) -> httpx.AsyncClient:
+    """The production auth client, with a test transport under it, so the real
+    base URL, timeout and request building still run. ADR 0022."""
+    from service import account_status  # noqa: PLC0415
+
+    return account_status.open_client(transport=transport)
+
+
+def active_auth_transport() -> httpx.MockTransport:
+    """auth's answer for an account in good standing: `200` on `/auth/me`.
+
+    Every trade asks it since ADR 0022, so every test that trades without
+    being about suspension gets this one. The body is not read.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    return httpx.MockTransport(handler)
+
+
+class ManualClock:
+    """A monotonic clock a test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture(autouse=True)
+def not_found_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+    """The production 404 memory, emptied for this test and put on a clock
+    the test moves. DECISIONS.md, "A market_service 404 is remembered for ten
+    seconds, per process".
+
+    The memory lasts as long as the process, so without this one test's 404
+    would answer another test's fetch of the same id. The object itself is
+    kept, not replaced, so its real window and bound are what the tests see.
+    Both patches are undone after the test.
+    """
+    from collections import OrderedDict  # noqa: PLC0415
+
+    from service import market_terms  # noqa: PLC0415
+
+    clock = ManualClock()
+    memory = market_terms._recent_not_found
+    monkeypatch.setattr(memory, "_expiry_by_id", OrderedDict())
+    monkeypatch.setattr(memory, "_clock", clock)
+    return clock
+
+
 @pytest.fixture
 async def clean_database():
     """Drop and rebuild the schema, then hand over an empty database.
@@ -122,6 +213,30 @@ async def clean_database():
 
 
 @pytest.fixture
+async def audit_reader():
+    """A session on `audit.admin_actions`, connected as `audit_svc`, which may read it.
+
+    It cannot clean up: nobody may delete from the log. Tests filter on a
+    fresh actor id instead.
+    """
+    from sqlalchemy import NullPool  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    if not _audit_db:
+        pytest.fail(_NO_AUDIT_READER)
+
+    engine = create_async_engine(_audit_db, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+            yield s
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
 async def session(clean_database):
     """A session for driving the service layer directly, without HTTP."""
     async with get_session_factory()() as s:
@@ -129,15 +244,42 @@ async def session(clean_database):
 
 
 @pytest.fixture
-async def client(clean_database):
-    """An HTTP client bound to the app, for controller-layer tests.
+async def app_under_test(clean_database):
+    """The app, with the market_service and auth clients its lifespan would
+    open.
+
+    `ASGITransport` runs no lifespan, so `app.state.terms_client` does not
+    exist under test. The dependency is overridden rather than the attribute
+    set, because the override is the seam the routes read through. The terms
+    client is the production one, so a route test that does not stub
+    `market_terms.fetch` makes a real connection attempt, never a silent
+    success. The auth client answers every trade's account check with `200`
+    (ADR 0022); the refusals are tested in `test_account_status.py`.
 
     `create_app` is imported here so the pure layers never construct the app.
     """
+    from controller.dependencies import (  # noqa: PLC0415
+        get_auth_client,
+        get_terms_client,
+    )
     from main import create_app  # noqa: PLC0415
+    from service import market_terms  # noqa: PLC0415
 
+    app = create_app()
+    async with (
+        market_terms.open_client() as terms_client,
+        auth_client_over(active_auth_transport()) as auth_client,
+    ):
+        app.dependency_overrides[get_terms_client] = lambda: terms_client
+        app.dependency_overrides[get_auth_client] = lambda: auth_client
+        yield app
+
+
+@pytest.fixture
+async def client(app_under_test):
+    """An HTTP client bound to the app, for controller-layer tests."""
     async with AsyncClient(
-        transport=ASGITransport(app=create_app()), base_url="http://test"
+        transport=ASGITransport(app=app_under_test), base_url="http://test"
     ) as c:
         yield c
 
@@ -182,3 +324,78 @@ async def strip_outcomes(session, market_id: uuid.UUID) -> None:
         delete(MarketOutcome).where(MarketOutcome.market_id == market_id)
     )
     await session.commit()
+
+
+async def drop_outcome_row(session, market_id: uuid.UUID, position: int) -> None:
+    """Delete one outcome row of a market, leaving the rest. Committed.
+
+    `strip_outcomes` for a book that keeps some rows: a book cut to one row
+    still reads as a book, so `MarketBookIncomplete` has to catch it.
+    """
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    from model.entities import MarketOutcome  # noqa: PLC0415
+
+    await session.execute(
+        delete(MarketOutcome).where(
+            MarketOutcome.market_id == market_id,
+            MarketOutcome.position == position,
+        )
+    )
+    await session.commit()
+
+
+async def set_q(session, market_id: uuid.UUID, q: Sequence[Decimal]) -> None:
+    """Write `q` directly, as a trade would have left it. Committed."""
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from model.entities import MarketOutcome  # noqa: PLC0415
+
+    for position, value in enumerate(q):
+        await session.execute(
+            update(MarketOutcome)
+            .where(
+                MarketOutcome.market_id == market_id,
+                MarketOutcome.position == position,
+            )
+            .values(q=value)
+        )
+    await session.commit()
+
+
+async def set_b(session, market_id: uuid.UUID, b: Decimal) -> None:
+    """Overwrite a book's `liquidity_b`, as `set_q` overwrites `q`. Committed.
+
+    The fixtures serve one `b`, so this is how a test gets another: one the
+    book cannot price on, or a valid one the fixtures do not offer.
+    """
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from model.entities import MarketBook  # noqa: PLC0415
+
+    await session.execute(
+        update(MarketBook)
+        .where(MarketBook.market_id == market_id)
+        .values(liquidity_b=b)
+    )
+    await session.commit()
+
+
+async def idle_in_transaction() -> int:
+    """Backends of this role in this database sitting `idle in transaction`,
+    from Postgres's own view. D-043's third witness, beside the session and
+    the pool."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    async with get_engine().connect() as conn:
+        return (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() "
+                    "AND usename = current_user "
+                    "AND state = 'idle in transaction' "
+                    "AND pid <> pg_backend_pid()"
+                )
+            )
+        ).scalar_one()

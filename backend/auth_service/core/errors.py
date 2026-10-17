@@ -73,6 +73,18 @@ class InvalidToken(AuthError):
     message = "Not authenticated."
 
 
+class InvalidServiceKey(AuthError):
+    """[L-1] #38 - `/internal/users/lookup` without the right `X-Service-Key`.
+
+    One error for a missing and a wrong key, so the refusal tells a caller
+    nothing about which. ADR 0021.
+    """
+
+    status_code = 401
+    code = "invalid_service_key"
+    message = "Missing or incorrect service key."
+
+
 class NotAnAdministrator(AuthError):
     """[4.4] #16 - authenticated, but not an admin.
 
@@ -119,13 +131,40 @@ class MalformedCursor(AuthError):
 
 
 class LastAdministrator(AuthError):
-    """[4.4] #16 - demoting this user would leave no administrator.
+    """[4.4] #16, [4.2] #14 - demoting or suspending this user would leave no
+    administrator who can log in.
 
-    Reachable only when two admins demote each other at once. ADR 0007. A 409,
+    Reachable only when two admins act on each other at once. ADR 0007. A 409,
     not a 403: the state refuses, and the same request succeeds once somebody
-    else is promoted.
+    else is promoted. One code for both: the fix is the same.
     """
 
     status_code = 409
     code = "last_administrator"
     message = "This is the only administrator. Promote another one first."
+
+
+class CannotSuspendSelf(AuthError):
+    """[4.2] #14 - an administrator may not suspend their own account.
+
+    ADR 0007's identity rule, as for the role change.
+    """
+
+    status_code = 403
+    code = "cannot_suspend_self"
+    message = "An administrator cannot suspend their own account."
+
+
+class SuspensionIncomplete(AuthError):
+    """[4.2] #14 - the reason for suspending or unsuspending is not usable.
+
+    Names the field, like `DuplicateUser`. The message fits both directions.
+    """
+
+    status_code = 422
+    code = "suspension_incomplete"
+    message = "A reason is required to suspend or unsuspend an account."
+
+    def __init__(self, problems: Sequence[FieldProblem]) -> None:
+        self.problems = tuple(problems)
+        super().__init__(self.message)

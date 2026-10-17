@@ -29,15 +29,22 @@ there instead of silently hollowing out every rounding test.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 import httpx
-from sqlalchemy import func, select, update
+import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import mint_token
+from unit_test.conftest import (
+    active_auth_transport,
+    auth_client_over,
+    mint_token,
+    set_q,
+    terms_client_over,
+)
 
 ZERO = Decimal(0)
 QUANTUM = Decimal("0.0001")
@@ -182,6 +189,8 @@ class Upstream:
             "liquidity_b": str(B),
             "seed_subsidy": str(SUBSIDY),
             "published_at": published_at,
+            "proposed_outcome_id": None,
+            "settleable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)
@@ -268,6 +277,7 @@ async def buy(
     access_token: str | None = None,
     redis_client: Recorder | None = None,
     transport: httpx.MockTransport | None = None,
+    auth_transport: httpx.MockTransport | None = None,
 ):
     """One trade, with the interface these tests assume.
 
@@ -279,7 +289,8 @@ async def buy(
     and market id positionally, everything else keyword-only, `access_token`
     forwarded rather than minted, `transport` and `redis_client` the two
     injectable seams. If the implementation lands on other names, this helper
-    is the one place to change.
+    is the one place to change. `auth_transport` answers the account check
+    (ADR 0022), active unless a test says otherwise.
 
     `side` arrives as the wire string and is converted at the boundary,
     because that is what the route does: parsed once, passed down as the enum.
@@ -295,7 +306,12 @@ async def buy(
         idempotency_key=client_key,
         access_token=access_token if access_token is not None else token(),
         redis_client=redis_client if redis_client is not None else Recorder(),
-        transport=upstream.transport if transport is None else transport,
+        terms_client=terms_client_over(
+            upstream.transport if transport is None else transport
+        ),
+        auth_client=auth_client_over(
+            active_auth_transport() if auth_transport is None else auth_transport
+        ),
     )
 
 
@@ -333,28 +349,12 @@ async def warm(
         session,
         upstream.market_id,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
-    await set_q(session, upstream, q)
+    await set_q(session, upstream.market_id, q)
     upstream.calls = 0
     upstream.tokens.clear()
     return book
-
-
-async def set_q(
-    session: AsyncSession, upstream: Upstream, q: Sequence[Decimal]
-) -> None:
-    outcome = entities().MarketOutcome
-    for position, value in enumerate(q):
-        await session.execute(
-            update(outcome)
-            .where(
-                outcome.market_id == upstream.market_id,
-                outcome.position == position,
-            )
-            .values(q=value)
-        )
-    await session.commit()
 
 
 async def fund(session: AsyncSession, user_id: uuid.UUID) -> Decimal:
@@ -455,6 +455,23 @@ async def transaction_count(session: AsyncSession, *, key: str | None = None) ->
     if key is not None:
         stmt = stmt.where(transaction.idempotency_key == key)
     return (await session.execute(stmt)).scalar_one()
+
+
+async def ledger_counts(session: AsyncSession) -> tuple[int, int]:
+    """Transactions and entries in the whole ledger, as this session sees them.
+
+    Not built on `transaction_count` and `entry_count`: those expire the
+    session, and a caller still holding loaded accounts to post with would
+    then lazy-load them outside the event loop.
+    """
+    ents = entities()
+    transactions = (
+        await session.execute(select(func.count()).select_from(ents.Transaction))
+    ).scalar_one()
+    entries = (
+        await session.execute(select(func.count()).select_from(ents.Entry))
+    ).scalar_one()
+    return transactions, entries
 
 
 # --- the invariants ------------------------------------------------------
@@ -623,6 +640,25 @@ def assert_rounding_is_load_bearing(
 
 
 @contextmanager
+def _on_each_statement(record: Callable[[str, object], None]) -> Iterator[None]:
+    """Call `record(statement, parameters)` for every statement the block sends."""
+    from sqlalchemy import event  # noqa: PLC0415
+
+    from core.database import get_engine  # noqa: PLC0415
+
+    engine = get_engine().sync_engine
+
+    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        record(statement, parameters)
+
+    event.listen(engine, "before_cursor_execute", before)
+    try:
+        yield
+    finally:
+        event.remove(engine, "before_cursor_execute", before)
+
+
+@contextmanager
 def capture_sql() -> Iterator[list[str]]:
     """Every statement the block sends to Postgres, in order.
 
@@ -632,21 +668,56 @@ def capture_sql() -> Iterator[list[str]]:
     structural assertion, and `before_cursor_execute` sees the compiled
     statement text without pinning any SQL syntax.
     """
+    statements: list[str] = []
+
+    def keep_the_text(statement: str, _parameters: object) -> None:
+        statements.append(statement)
+
+    with _on_each_statement(keep_the_text):
+        yield statements
+
+
+@contextmanager
+def capture_sql_with_parameters() -> Iterator[list[tuple[str, tuple]]]:
+    """Every statement the block sends, with its parameters, in order.
+
+    For a claim that lives in the parameters rather than the text, such as
+    the order accounts are locked in. The twin is market_service's
+    `recorded_statements`, which this service cannot import
+    (`test_import_boundary.py`).
+    """
+    captured: list[tuple[str, tuple]] = []
+
+    def keep_both(statement: str, parameters: object) -> None:
+        captured.append((statement, tuple(parameters or ())))
+
+    with _on_each_statement(keep_both):
+        yield captured
+
+
+@contextmanager
+def count_commits() -> Iterator[list[int]]:
+    """Root COMMITs on the engine's connections, counted in `[0]`.
+
+    Not the session's `after_commit`, which a released SAVEPOINT fires too.
+    On the engine it still sees a commit made after the session has moved to
+    a new connection.
+    """
     from sqlalchemy import event  # noqa: PLC0415
 
     from core.database import get_engine  # noqa: PLC0415
 
-    statements: list[str] = []
+    commits = [0]
     engine = get_engine().sync_engine
 
-    def before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        statements.append(statement)
+    def count(_conn) -> None:  # noqa: ANN001
+        commits[0] += 1
 
-    event.listen(engine, "before_cursor_execute", before)
+    event.listen(engine, "commit", count)
     try:
-        yield statements
+        yield commits
     finally:
-        event.remove(engine, "before_cursor_execute", before)
+        event.remove(engine, "commit", count)
 
 
 def writes(statements: Sequence[str]) -> list[str]:
@@ -659,3 +730,26 @@ def writes(statements: Sequence[str]) -> list[str]:
 
 def locks(statements: Sequence[str]) -> list[str]:
     return [s for s in statements if "for update" in s.lower()]
+
+
+# --- forcing a branch -----------------------------------------------------
+def hide_the_first_lookup(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Make `_list_by_idempotency_keys`'s first call find nothing, so the key is
+    met only at the INSERT, as two sessions sharing no account meet it.
+
+    Returns a one-item counter of the calls. Later calls, the re-read among
+    them, go to the real one. Shared by `test_post_all.py` and
+    `test_posting_pending_writes.py`: `post` posts a batch of one, so the two
+    reach this lookup through the same function (DECISIONS.md, "`post` is
+    `post_all` of one movement").
+    """
+    module = posting()
+    real = module._list_by_idempotency_keys
+    calls = [0]
+
+    async def miss_the_first(own: AsyncSession, keys: list[str]):
+        calls[0] += 1
+        return [] if calls[0] == 1 else await real(own, keys)
+
+    monkeypatch.setattr(module, "_list_by_idempotency_keys", miss_the_first)
+    return calls

@@ -14,7 +14,14 @@ import os
 import secrets
 import uuid
 
-from shared.testing import load_repo_env
+import pytest
+
+# Before the first import of shared.testing: pytest rewrites asserts only in
+# modules it sees imported after this call, so without it the shared helpers'
+# asserts fail with no diff.
+pytest.register_assert_rewrite("shared.testing")
+
+from shared.testing import load_repo_env  # noqa: E402
 
 
 # Before any project module is imported: `get_settings` is cached, so the first
@@ -40,13 +47,16 @@ os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 # grants weaker than they are. ADR 0006.
 _audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 
+from collections.abc import Iterator  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from sqlalchemy import NullPool, update  # noqa: E402
+from sqlalchemy import NullPool, event, func, select, update  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -64,6 +74,7 @@ from model.schemas import (  # noqa: E402
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
+    OutcomeSendBackRequest,
 )
 from service import closing, market_service  # noqa: E402
 from service.audit import Actor  # noqa: E402
@@ -117,6 +128,34 @@ def mint_token(
 
 def bearer(user_id: uuid.UUID, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint_token(user_id, role)}"}
+
+
+@dataclass(frozen=True)
+class RecordedStatement:
+    """One statement's SQL text, and the parameters it was sent with."""
+
+    sql: str
+    parameters: tuple[object, ...]
+
+
+@contextmanager
+def recorded_statements() -> Iterator[list[RecordedStatement]]:
+    """Every SQL statement this service's engine sends while the block runs.
+
+    For tests that pin how many queries a read costs, or what it asked for,
+    not what it returns.
+    """
+    statements: list[RecordedStatement] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
+        statements.append(RecordedStatement(statement, tuple(parameters or ())))
+
+    sync_engine = get_engine().sync_engine
+    event.listen(sync_engine, "before_cursor_execute", _record)
+    try:
+        yield statements
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _record)
 
 
 def actor(username: str = "ernest_t", role: str = "admin") -> Actor:
@@ -422,24 +461,118 @@ def rejection_request(
     return OutcomeRejectionRequest(**rejection_terms(proposal_id, **overrides))  # type: ignore[arg-type]
 
 
-async def proposed_market(session, actor: Actor, **overrides: object) -> Market:
-    """The same closed market, with its first outcome proposed by `actor`.
+# [3.3] #11. One send-back's reason, shared by both suites.
+SEND_BACK_REASON = "The source cited was revised; the first print says No, not Yes."
+
+
+def send_back_terms(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> dict[str, object]:
+    """A send-back that passes every rule; `proposal_id` defaults as in `approval_terms`."""
+    base: dict[str, object] = {
+        "proposal_id": str(proposal_id or uuid.uuid4()),
+        "reason": SEND_BACK_REASON,
+    }
+    base.update(overrides)
+    return base
+
+
+def send_back_request(
+    proposal_id: uuid.UUID | None = None, **overrides: object
+) -> OutcomeSendBackRequest:
+    """`send_back_terms` parsed, for driving the service layer without HTTP."""
+    return OutcomeSendBackRequest(**send_back_terms(proposal_id, **overrides))  # type: ignore[arg-type]
+
+
+async def proposed_market(
+    session, actor: Actor, *, winning_position: int = 0, **overrides: object
+) -> Market:
+    """The same closed market, with the outcome at `winning_position` (the
+    first, by default) proposed by `actor`.
 
     `actor` is the creator and so the proposer; a decision in a test must come
     from a second administrator. Overrides are the market's terms.
+    `approved_market` and `settled_market` pass `winning_position` through.
     """
     market = await closed_market(session, actor, **overrides)
     return await market_service.propose_outcome(
-        session, actor, market.id, proposal_request(market.outcomes[0].id)
+        session,
+        actor,
+        market.id,
+        proposal_request(market.outcomes[winning_position].id),
     )
 
 
-async def approved_market(session, creator: Actor) -> Market:
-    """An approved market, standing in for "settled" until [3.4] #12."""
-    market = await proposed_market(session, creator)
+async def approved_market(
+    session,
+    creator: Actor,
+    *,
+    approver: Actor | None = None,
+    approved_at: datetime | None = None,
+    **overrides: object,
+) -> Market:
+    """A market whose proposal a second administrator has approved. [3.2] #10.
+
+    `approver` defaults to a fresh administrator. `approved_at` is handed to
+    `approve_outcome` as its clock, so a test can approve in the past through
+    the real path. Overrides are `proposed_market`'s.
+    """
+    market = await proposed_market(session, creator, **overrides)
     return await market_service.approve_outcome(
-        session, actor(), market.id, approval_request(market.proposal_id)
+        session,
+        approver or actor(),
+        market.id,
+        approval_request(market.proposal_id),
+        now=approved_at,
     )
+
+
+async def database_now(session) -> datetime:
+    """Postgres's `clock_timestamp()`, the clock every market decision is stamped with."""
+    return (await session.execute(select(func.clock_timestamp()))).scalar_one()
+
+
+# "Settlement opens five minutes after send-back closes" (ADR 0019). A
+# constant, not a setting, so the tests name it too rather than import it:
+# a gap shortened in `core/settling.py` must turn them red.
+_SETTLEMENT_GAP = timedelta(minutes=5)
+
+
+def time_until_settleable() -> timedelta:
+    """How long after approval a market becomes settleable, under the current settings.
+
+    Read at call time, so a test that raised the window before approving sees
+    the raised one: approval stores the window's end from the setting as it is
+    then (ADR 0023).
+    """
+    return timedelta(seconds=get_settings().dispute_window_seconds) + _SETTLEMENT_GAP
+
+
+def settleable_edge(approved_at: datetime) -> datetime:
+    """The first instant settlement is allowed for a market approved at `approved_at`.
+
+    The stored window end plus the gap, for a market approved under the
+    current settings.
+    """
+    return approved_at + time_until_settleable()
+
+
+async def settled_market(session, creator: Actor, **overrides: object) -> Market:
+    """The same market, approved long enough ago to settle, then settled. [3.4] #12.
+
+    Approved at the database's clock minus the window and the gap, then
+    settled through `market_service.settle` on the real clock, so no audit
+    entry is dated in the future. Settled by a fresh administrator, so no
+    caller's actor gains an entry. Overrides are `proposed_market`'s. Returns
+    the market reloaded from the database.
+    """
+    approved_at = await database_now(session) - time_until_settleable()
+    market_id = (
+        await approved_market(session, creator, approved_at=approved_at, **overrides)
+    ).id
+    await market_service.settle(session, actor(), market_id)
+    session.expire_all()
+    return await market_service.get(session, creator.id, market_id)
 
 
 async def proposed_before_ids(session, actor: Actor) -> Market:

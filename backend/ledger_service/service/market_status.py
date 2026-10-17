@@ -3,8 +3,9 @@
 The book holds no status or `close_time` and cannot, so this asks
 market_service, whose `status` already answers both the clock's close and an
 administrator's (ADR 0011). The replay-before-gate and gate-before-lock order
-belongs to the trade path. Returns `None`, never `MarketTerms`: fresh terms
-here are one refactor from pricing off the wire instead of the book (ADR 0005).
+belongs to the trade path. `ensure_trading` returns `None`, never `MarketTerms`:
+fresh terms there are one refactor from pricing off the wire instead of the
+book (ADR 0005).
 """
 
 from __future__ import annotations
@@ -14,8 +15,10 @@ import uuid
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.database import release_before_calling_out
 from core.errors import MarketClosed, MarketNotFound, MarketTermsUnavailable
 from service import books, market_terms
+from service.market_terms import MarketTerms
 
 # The one status a trade may proceed against, restated rather than imported
 # (see `books.MIN_OUTCOMES`). A wrong value would refuse every trade silently,
@@ -23,30 +26,35 @@ from service import books, market_terms
 _OPEN = "open"
 
 
-async def ensure_trading(
+async def read_terms(
     session: AsyncSession,
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> None:
-    """Raise if this market is not open for trading. Otherwise return `None`.
+    terms_client: httpx.AsyncClient,
+) -> MarketTerms:
+    """The market's terms from market_service, read holding no connection.
 
-    Raises `MarketClosed` for any status but "open". A 404 is
-    `MarketTermsUnavailable` if the market has a book (market_service is
-    wrong) and `MarketNotFound` if not (ADR 0017). That `books.find` is
+    A 404 is `MarketTermsUnavailable` if the market has a book (market_service
+    is wrong) and `MarketNotFound` if not (ADR 0017). That `books.find` is
     unlocked: ADR 0015 locks reads that decide a write, and this one decides
     only an error code. Every other upstream failure propagates from
-    `market_terms.fetch`, so a sick dependency is never read as closed.
+    `market_terms.fetch`, so a failing dependency always surfaces as its own
+    error.
 
-    Unlike `books.ensure_open`, this cannot roll back before the HTTP call:
-    its caller may hold pending writes or locks, which a rollback would lose.
-    So a caller holding a transaction pins a pooled connection for up to five
-    seconds. The trade path releases its own first; #115 moves that in here.
+    **Call this with nothing pending and no row lock held.** It rolls back
+    before the HTTP call, as `books.ensure_open` does (D-043), so a lock taken
+    before it would be released mid-request, which ADR 0015 forbids.
+    `release_before_calling_out` asserts against a pending write and cannot
+    see a `SELECT ... FOR UPDATE`. The rollback also expires every ORM
+    instance the session has loaded.
     """
+    # D-043: release the connection a read before this autobegan, so the call
+    # (up to 5s) holds none. The `books.find` below autobegins its own.
+    await release_before_calling_out(session, caller="read_terms()")
     try:
-        terms = await market_terms.fetch(
-            market_id, access_token=access_token, transport=transport
+        return await market_terms.fetch(
+            market_id, access_token=access_token, terms_client=terms_client
         )
     except MarketNotFound as not_found:
         book = await books.find(session, market_id)
@@ -54,6 +62,23 @@ async def ensure_trading(
             raise MarketTermsUnavailable from not_found
         raise
 
+
+async def ensure_trading(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    access_token: str,
+    terms_client: httpx.AsyncClient,
+) -> None:
+    """Raise if this market is not open for trading. Otherwise return `None`.
+
+    Raises `MarketClosed` for any status but "open", and whatever `read_terms`
+    raises. **Call this with nothing pending and no row lock held**: the gate
+    runs before the book lock, and `read_terms` rolls back before it calls out.
+    """
+    terms = await read_terms(
+        session, market_id, access_token=access_token, terms_client=terms_client
+    )
+
     if terms.status != _OPEN:
         raise MarketClosed
-

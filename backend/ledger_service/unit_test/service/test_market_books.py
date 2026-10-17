@@ -25,7 +25,7 @@ from model.entities import (
 )
 from core.database import get_engine
 from service import accounts, posting
-from unit_test.conftest import mint_token
+from unit_test.conftest import mint_token, terms_client_over
 
 
 def _books():
@@ -97,6 +97,8 @@ class _Upstream:
             "liquidity_b": None if liquidity_b is None else str(liquidity_b),
             "seed_subsidy": None if seed_subsidy is None else str(seed_subsidy),
             "published_at": published_at,
+            "proposed_outcome_id": None,
+            "settleable": False,
             # Raw dicts pass straight through, for a malformed outcome list.
             # `is not None`, not truthiness: `outcomes=[]` must stay empty.
             "outcomes": (
@@ -127,7 +129,7 @@ async def _open(session: AsyncSession, upstream: _Upstream, **kwargs):
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
         **kwargs,
     )
 
@@ -350,7 +352,7 @@ async def test_the_book_survives_a_market_service_that_has_since_gone_down(
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=httpx.MockTransport(dead),
+        terms_client=terms_client_over(httpx.MockTransport(dead)),
     )
 
     assert book.liquidity_b == _B
@@ -418,7 +420,7 @@ async def test_an_unreachable_market_service_leaves_nothing_behind(
             session,
             market_id,
             access_token=_token(),
-            transport=httpx.MockTransport(dead),
+            terms_client=terms_client_over(httpx.MockTransport(dead)),
         )
 
     await session.rollback()
@@ -586,7 +588,7 @@ async def test_no_connection_is_held_while_the_terms_are_fetched(
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=httpx.MockTransport(handler),
+        terms_client=terms_client_over(httpx.MockTransport(handler)),
     )
 
     assert observed["in_transaction"] is False, (
@@ -632,3 +634,22 @@ async def test_a_non_positive_liquidity_b_is_refused_before_the_book_is_written(
         assert await _books().find(session, upstream.market_id) is None, (
             f"a b of {bad} left a book behind"
         )
+
+
+async def test_a_warm_book_still_refuses_a_caller_with_pending_writes(
+    session: AsyncSession,
+) -> None:
+    """The precondition is checked on every call, not only on the cold path
+    that rolls back, so a caller that breaks it fails on the first market it
+    touches rather than on the first cold one."""
+    upstream = _Upstream()
+    await _open(session, upstream)
+    pending = _entities().Account(
+        kind=_entities().AccountKind.USER, owner_id=uuid.uuid4()
+    )
+    session.add(pending)
+
+    with pytest.raises(AssertionError, match="nothing pending"):
+        await _open(session, upstream)
+
+    assert pending in session.new, "the pending write was discarded"

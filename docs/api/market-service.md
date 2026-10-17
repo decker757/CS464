@@ -5,11 +5,12 @@ from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8001/docs).
 
 Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
-[BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
+[3.3] #11 (send-back and `dispute_window_ends_at`),
+[3.4] #12 (the `settled` status, `settleable` and the ledger's settle step), [BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
 [FE][3.1] #52.
 
-A successful submission, publication, early close, outcome proposal, approval
-or rejection also appends an entry to the shared audit log, in the same database
+A successful submission, publication, early close, outcome proposal, approval,
+rejection, send-back or settle also appends an entry to the shared audit log, in the same database
 transaction, so the two can never disagree. An autosave does not, and neither
 does an automatic close — the clock is not an actor. See
 [`audit-service.md`](audit-service.md) and
@@ -29,7 +30,10 @@ the status column anyway, and why the evidence is two fields:
 opposite and gates on the clock, and why any administrator may call it:
 [ADR 0014](../adr/0014-closing-a-market-early.md). Why an approved outcome is a
 status of its own, and why the proposer is refused a `403` on both decisions:
-[ADR 0016](../adr/0016-deciding-a-proposal.md).
+[ADR 0016](../adr/0016-deciding-a-proposal.md). Why an approved outcome can be
+sent back by any administrator inside its dispute window, and why the window's
+end is stored at approval:
+[ADR 0023](../adr/0023-sending-an-approved-outcome-back.md).
 
 ## Endpoints
 
@@ -41,8 +45,10 @@ status of its own, and why the proposer is refused a `403` on both decisions:
 | POST | `/markets/{id}/propose-outcome` | Propose the winner of a closed market |
 | POST | `/markets/{id}/approve-outcome` | Approve another administrator's proposal |
 | POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
+| POST | `/markets/{id}/send-back-outcome` | Send an approved result back to `closed` during its dispute window, with a reason |
+| POST | `/markets/{id}/settle` | Mark an approved market settled — **the ledger's call only** |
 | GET | `/markets` | List my own markets |
-| GET | `/markets/overview` | Every market I can see, by status, with counts |
+| GET | `/markets/overview` | Every market I can see, a page at a time, by status, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
 
@@ -50,36 +56,44 @@ Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is
 [`/public/markets`](#public-market-api--bex-62), below.
 
-Every route but three is scoped to the administrator who created the market,
+Every route but five is scoped to the administrator who created the market,
 and answers `404` to any other. The exceptions are `POST /markets/{id}/close`,
 which any administrator may call on any open market
-([ADR 0014](../adr/0014-closing-a-market-early.md)), and
+([ADR 0014](../adr/0014-closing-a-market-early.md)),
 `POST /markets/{id}/approve-outcome` and `/reject-outcome`, which any
 administrator **except the one who proposed** may call
-([ADR 0016](../adr/0016-deciding-a-proposal.md)). In each case the audit entry
-names who acted. Those three answer another administrator's draft or submitted
-market with a `409`, not a `404`: the id is confirmed to exist, and nothing in
-it is shown. ADR 0016.
+([ADR 0016](../adr/0016-deciding-a-proposal.md)),
+`POST /markets/{id}/send-back-outcome`, which any administrator may call
+([ADR 0023](../adr/0023-sending-an-approved-outcome-back.md)), and
+`POST /markets/{id}/settle`, which the ledger calls with any administrator's
+token ([ADR 0019](../adr/0019-settlement-across-services.md)). In each case the
+audit entry names who acted. Those five answer another administrator's draft or
+submitted market with a `409`, not a `404`: the id is confirmed to exist, and
+nothing in it is shown. ADR 0016.
 
-## The six statuses
+## The seven statuses
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
 | `draft` | the three-second autosave | no |
 | `submitted` | the submit button | no |
 | `open` | `POST /markets/{id}/publish` | yes |
-| `closed` | the clock at `close_time`, `POST /markets/{id}/close`, or `POST /markets/{id}/reject-outcome` | yes, but not tradeable |
+| `closed` | the clock at `close_time`, `POST /markets/{id}/close`, `POST /markets/{id}/reject-outcome`, or `POST /markets/{id}/send-back-outcome` | yes, but not tradeable |
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 | `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
+| `settled` | `POST /markets/{id}/settle`, which the ledger calls after its payouts commit ([3.4] #12); the status alone does not prove the ledger paid ([ADR 0019](../adr/0019-settlement-across-services.md)) | yes, with the winning outcome |
 
 The path is `draft → submitted → open → closed → pending_resolution →
-approved` and nothing skips a step. Every save on a market past `submitted` is
+approved → settled` and nothing skips a step. Every save on a market past `submitted` is
 a `409`, whatever the request asks for — the terms are final from `open`
 onwards.
 
-Only one transition is ever reversed: [3.2] #10's rejection sends a market from
-`pending_resolution` back to `closed`, with a reason. There is no unpublish, no
-reopen and no un-approve.
+Only two transitions are ever reversed, and both go back to `closed`, with a
+reason. [3.2] #10's rejection sends a market from `pending_resolution` back.
+[3.3] #11's send-back sends a market from `approved` back, but only during its
+dispute window. There is no unpublish and no reopen. `settled` is final: every write on a settled market but
+the settle itself is a `409 market_already_settled`, and the message says the
+market is settled and nothing about payouts. A repeated settle answers `200`.
 
 `closed` is the only one two different things produce. A market reaches it on
 its own when `close_time` passes, and an administrator can reach it early with
@@ -364,6 +378,7 @@ rather than issuing a second `GET`.
 | 409 | `market_not_submitted` | it is still a draft | press submit first |
 | 409 | `market_already_open` | it is already live | reload; hide the button |
 | 409 | `market_closed` | it has passed its closing time | reload; it is finished |
+| 409 | `market_already_settled` | it has been settled | reload; it is finished |
 | 422 | `draft_incomplete` | the terms no longer pass | fix the fields in `details` |
 
 **Every submission rule runs again, against the clock now.** That is not
@@ -449,6 +464,7 @@ seconds *after* `close_time`.
 | 409 | `market_closed` | it has already stopped | reload; hide the control |
 | 409 | `market_pending_resolution` | stopped, and an outcome is proposed | reload; show whose proposal is waiting |
 | 409 | `market_already_approved` | stopped, and its outcome is approved | reload; hide the control |
+| 409 | `market_already_settled` | stopped, and settled | reload; hide the control |
 | 422 | `close_incomplete` | the reason is missing or too short | fix `reason` and resend |
 
 **A market whose closing time has just passed is a `409 market_closed`, even
@@ -562,6 +578,7 @@ expecting it twice.
 | 409 | `market_not_closed` | it is still running | wait; the market has not finished |
 | 409 | `market_pending_resolution` | an outcome is already proposed | reload; show whose proposal is waiting |
 | 409 | `market_already_approved` | an outcome is already proposed and approved | reload; show who approved it |
+| 409 | `market_already_settled` | it has been settled | reload; hide the control |
 | 422 | `proposal_incomplete` | the winner or the evidence is wrong | fix the fields in `details` |
 
 **A market whose closing time has just passed is a `409`.** For a few seconds
@@ -686,7 +703,8 @@ criterion. `approved_by_id` never equals `proposed_by_id`. The three
 | 404 | `market_not_found` | no such market | nothing; it is not there |
 | 409 | `market_not_pending_resolution` | no proposal is waiting — draft, submitted (yours or another administrator's), open, or closed with none | reload; hide the control |
 | 409 | `market_already_approved` | somebody has already approved it | reload; show who and when |
-| 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
+| 409 | `market_already_settled` | it has been settled | reload; hide the control |
+| 409 | `proposal_superseded` | the proposal you reviewed was rejected or sent back, and replaced by a newer one | reload; review the proposal that is waiting now |
 
 State first, then who is asking, then which proposal. A proposer looking at a
 market somebody else has already approved gets `market_already_approved`, not
@@ -706,11 +724,19 @@ The read is *not* widened with it, as for an early close. `GET /markets/{id}`
 still answers `404` to another administrator. See the notes for the approval
 screen below for how to find a proposal to decide.
 
-### An approval is final here
+### An approval is final here, with one exception
 
 Every later save, publish, proposal, early close, approval or rejection on the
-market is a `409 market_already_approved`. There is no un-approve; [3.3] #11 is
-where an approved outcome can be disputed.
+market is a `409 market_already_approved`. The one exception is
+[send-back](#post-marketsidsend-back-outcome--33-11): during the dispute
+window, any administrator may send the approved result back to `closed`, and
+it is then proposed and approved again. Once the window has ended, the result
+is final and the next step is settlement.
+
+An approval also stores when its dispute window ends, as
+`dispute_window_ends_at`: the approval time plus the configured window, as
+the setting is at that moment. `MarketOut` does not carry it; the public
+detail and the overview do.
 
 ## POST /markets/{id}/reject-outcome — [3.2] #10
 
@@ -773,7 +799,8 @@ Nothing on the market says a proposal was ever rejected; the audit log does.
 | 404 | `market_not_found` | no such market | nothing; it is not there |
 | 409 | `market_not_pending_resolution` | no proposal is waiting — including one somebody else has just rejected, and another administrator's draft or submitted market | reload; hide the control |
 | 409 | `market_already_approved` | it has already been approved, so it is too late to reject | reload; show who approved it |
-| 409 | `proposal_superseded` | the proposal you reviewed was rejected and replaced by a newer one | reload; review the proposal that is waiting now |
+| 409 | `market_already_settled` | it has been settled, so it is too late to reject | reload; hide the control |
+| 409 | `proposal_superseded` | the proposal you reviewed was rejected or sent back, and replaced by a newer one | reload; review the proposal that is waiting now |
 | 422 | `rejection_incomplete` | the reason is missing or too short | fix `reason` and resend |
 
 State first, then who is asking, then which proposal, then the reason. A
@@ -808,6 +835,210 @@ would be a path back to `closed` with no second administrator in it, which is
 the thing this story exists to prevent. A proposer who has changed their mind
 asks somebody else to reject it.
 
+## POST /markets/{id}/send-back-outcome — [3.3] #11
+
+Sends an `approved` market back to `closed` during its dispute window, with a
+reason. The approved result is undone: every proposal and approval field is
+cleared, the creator may propose again, and a different administrator then
+approves again, which starts a fresh window. Nothing has been paid, so no
+credits move. [ADR 0023](../adr/0023-sending-an-approved-outcome-back.md).
+
+### Request
+
+```json
+{
+  "proposal_id": "6f1c9a2e-8b4d-4c1a-9e2f-3a4b5c6d7e8f",
+  "reason": "The source cited was revised; the first print says No, not Yes."
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `proposal_id` | required key; the `proposal_id` of the approved proposal the administrator reviewed, from the latest `market.outcome_approved` audit entry for this market, or `null` for an approval whose proposal had none |
+| `reason` | required; at least 10 characters after trimming, at most 5000 |
+
+`proposal_id` is a precondition, as on approve and reject. **Send the id from
+the entry the administrator is looking at**, never one fetched at the moment
+of the click. If that approval has since been sent back and replaced by a new
+one, the request is refused as `409 proposal_superseded` and nothing is
+cleared. So a reason written about one approved result can never be recorded
+against another. A body without the key is FastAPI's `422`.
+
+The reason is recorded in the audit log against the administrator who sent the
+result back, beside a copy of the approval it cleared, in the same
+transaction. **It is kept nowhere else.** It is not a field on the market and
+it does not come back in the response. Traders see the market go back to
+closed and awaiting a result.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it:
+
+```json
+{
+  "status": "closed",
+  "closed_at": "2026-09-16T09:14:02.118374Z",
+  "proposal_id": null,
+  "proposed_outcome_id": null,
+  "proposed_by_id": null,
+  "proposed_by_username": null,
+  "proposed_at": null,
+  "proposal_evidence_url": null,
+  "proposal_evidence_note": null,
+  "approved_by_id": null,
+  "approved_by_username": null,
+  "approved_at": null
+}
+```
+
+Every `proposed_*`, `proposal_*` and `approved_*` field is null, and so is the
+stored `dispute_window_ends_at` (which `MarketOut` does not carry; the public
+detail and the overview do). `closed_at` is **not** rewritten: it says when
+trading stopped, and a send-back does not change that. The market is now
+exactly what a rejected market is.
+
+### When it is refused
+
+Checked in this order, and the first that applies answers.
+
+| Status | `code` | Meaning | What the admin should do |
+| --- | --- | --- | --- |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed | log in again |
+| 403 | `not_an_administrator` | a trader | nothing; only an administrator can send back |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_already_settled` | it has been settled, so it is too late to send back | reload; hide the control |
+| 409 | `market_pending_resolution` | a proposal is waiting and has not been approved yet | reload; review it, and reject it if it is wrong |
+| 409 | `market_not_approved` | anything else short of `approved`, including one somebody else has just sent back, and another administrator's draft or submitted market | reload; hide the control |
+| 409 | `dispute_window_closed` | approved, but its dispute window has ended, so the result is final | reload; hide the control |
+| 409 | `proposal_superseded` | the approval you reviewed was sent back and replaced by a newer one | reload; review the approval that is there now |
+| 422 | `send_back_incomplete` | the reason is missing or too short | fix `reason` and resend |
+
+State first, then the window, then which approval, then the reason. A
+settled market is told it is settled, not that its window has ended. A page
+left open from an earlier approval is told the window has ended if it has,
+since that is true whichever approval it shows. A stale page with a
+one-letter reason gets the `409`, not the `422`.
+
+The `422` is this service's own envelope:
+
+```json
+{
+  "error": {
+    "code": "send_back_incomplete",
+    "message": "This approved result cannot be sent back without a reason.",
+    "details": [
+      { "field": "reason", "message": "The reason must be at least 10 characters, so that somebody reading the log later can tell what happened." }
+    ]
+  }
+}
+```
+
+A body with no `reason` or no `proposal_id` key at all never reaches this
+service and comes back as FastAPI's `{"detail": [...]}` instead. Branch on the
+presence of `error`.
+
+**A refused send-back writes nothing.** The market keeps its status and its
+approval, and no audit entry is appended.
+
+### Who may send back
+
+**Any administrator**, including the one who proposed and the one who
+approved. This does not weaken the two-person rule: the market goes back to
+`closed`, and the result can only come back through a new proposal and a
+*different* administrator's approval. The audit entry names who sent it back.
+
+### The edge
+
+Send-back is allowed while `now < dispute_window_ends_at`. The edge is
+**exclusive**: at the stored end itself, it is `409 dispute_window_closed`.
+
+`now` is **the database's clock**, read after the market row is locked, not
+the browser's and not the clock the public detail was built with. The
+countdown a page shows is a guide only, so a click in the last seconds can
+still be refused.
+
+Settlement opens five minutes after the same stored end
+(`settleable`, and the settle step below), so the two never meet: no instant
+allows both a send-back and a settlement.
+
+### The audit entry
+
+A send-back appends `market.outcome_sent_back` in the same transaction, under
+the administrator who sent it back. It carries the trimmed `reason`, and a
+`context` with twelve keys: the eight `market.outcome_approved` carries
+(`proposal_id`, `winning_outcome_id`, `winning_outcome`, `evidence_url`,
+`evidence_note`, `proposed_by_id`, `proposed_by_username`, `proposed_at`),
+plus `approved_by_id`, `approved_by_username`, `approved_at` and
+`dispute_window_ends_at`. They are copied **before** the market is cleared, so
+the log keeps what was approved, by whom, and when its window would have
+ended. See [`audit-service.md`](audit-service.md).
+
+## POST /markets/{id}/settle — [3.4] #12
+
+**Only the ledger calls this.** Clients settle a market with
+`POST /ledger/markets/{id}/settlement`, which pays the winners, commits, and
+then calls this route with the administrator's token as its last step
+([ADR 0019](../adr/0019-settlement-across-services.md), step 5). A direct call
+marks the market `settled` and **pays nobody**. The frontend must never call it.
+
+Moves an `approved` market to `settled`. **No request body**; anything sent is
+ignored.
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns it,
+with `status` `settled`.
+
+A market that is **already `settled`** is answered the same way: `200` and the
+same market, with nothing written and no audit entry. That is what makes the
+ledger's request safe to repeat when this step failed the first time.
+
+### When it is refused
+
+Checked in this order, and the first that applies answers.
+
+| Status | `code` | Meaning | What the caller should do |
+| --- | --- | --- | --- |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed | log in again |
+| 403 | `not_an_administrator` | a trader | nothing; only an administrator can settle |
+| 404 | `market_not_found` | no such market | nothing; it is not there |
+| 409 | `market_not_approved` | its outcome has not been approved — any status short of `approved`, including another administrator's draft or submitted market | nothing to settle yet |
+| 409 | `dispute_window_open` | approved, but not yet `settleable`: settlement opens five minutes after the dispute window ends | retry once it is `settleable` |
+
+`settled` is answered before the clock is read, so a market already settled is
+`200` whatever its window says. For example, market revision 0002 gives every
+market approved before it a 24-hour window. On a database that ran a shorter
+window, that can put a settled market's window end back in the future, and a
+repeat is still answered `200`.
+
+The window is judged on **the database's clock**, read after the market row is
+locked, not on the clock the public detail's `settleable` was derived from. Near
+the edge the two can disagree: the ledger may read `settleable: true` and this
+route still answer `dispute_window_open`. The payouts have then already
+committed, the ledger answers `503 settlement_unconfirmed`, and repeating the
+request once the edge has passed completes it. An approved market with no
+`dispute_window_ends_at` is never settleable here.
+
+**A refused settle writes nothing.** The market keeps its status and no audit
+entry is appended.
+
+### Who may call it
+
+Any administrator's token is accepted, including the creator's, the proposer's
+and the approver's: the two-person rule was spent at approval. The route cannot
+tell the ledger's forwarded token from an administrator calling it directly,
+which is why the flip is logged.
+
+### The audit entry
+
+Moving `approved` to `settled` appends `market.marked_settled` in the same
+transaction: the acting administrator, the market, the proposal it settled on
+(as `market.outcome_approved` carries it), no reason, and the database time the
+window check read. A repeat appends nothing. The ledger's own `market.settled`
+entry, written with the payouts, comes before it in a normal settlement; a
+`market.marked_settled` with no `market.settled` before it for the same market
+is the trace of a direct call.
+
 ## GET /markets
 
 Every market belonging to the calling administrator, most recently updated
@@ -828,15 +1059,15 @@ first. A summary, not the whole market:
 }
 ```
 
-## GET /markets/overview — [2.1] #5
+## GET /markets/overview — [2.1] #5, #210
 
-Every market the calling administrator can see, filtered by status, with a
-count for every status beside the list. Declared before `GET /markets/{id}`, so
-`overview` is never parsed as an id. A trader is refused with
-`403 not_an_administrator`.
+One page of the markets the calling administrator can see, filtered by status,
+with a count for every status over all of them. Declared before
+`GET /markets/{id}`, so `overview` is never parsed as an id. A trader is
+refused with `403 not_an_administrator`.
 
 ```
-GET /markets/overview?status=closed
+GET /markets/overview?status=closed&limit=50
 ```
 
 ```json
@@ -847,7 +1078,9 @@ GET /markets/overview?status=closed
       "creator_id": "7c1d5a0e-3b52-4f0a-9d0e-6f2b8a4c1e93",
       "status": "closed",
       "question": "Will Singapore core inflation be below 2% for December 2026?",
-      "close_time": "2026-12-31T16:00:00Z"
+      "close_time": "2026-12-31T16:00:00Z",
+      "settleable": false,
+      "dispute_window_ends_at": null
     }
   ],
   "counts": {
@@ -856,8 +1089,10 @@ GET /markets/overview?status=closed
     "open": 4,
     "closed": 1,
     "pending_resolution": 0,
-    "approved": 2
-  }
+    "approved": 2,
+    "settled": 0
+  },
+  "next_cursor": null
 }
 ```
 
@@ -871,21 +1106,81 @@ GET /markets/overview?status=closed
   status field. Proposing gates on the stored column (ADR 0013), so for up to
   one sweep interval a market shown here as `closed` refuses a proposal with
   `409 market_not_closed`; handle that 409.
-- **`?status=`** accepts any of the six statuses, including `draft` and
-  `submitted`, which the trader filter refuses. Anything else is a `422`.
-  `settled` arrives with [3.4] #12, which adds it to the filter and the counts.
+- **`?status=`** accepts any of the seven statuses, including `draft` and
+  `submitted`, which the trader filter refuses, and `settled`. Anything else is
+  a `422`.
+- **`settleable`** ([3.4] #12) is a boolean on every row, so the settle control
+  can be hidden until a click could succeed. It is `true` on an `approved`
+  market from five minutes after the dispute window ends, and always `true` on
+  a `settled` one, whatever the window. It is `false` for every other status
+  and for an `approved` market with no `dispute_window_ends_at`. It is derived against the
+  same instant as the list and the counts, so a row's `status` and
+  `settleable` never disagree.
+- **`dispute_window_ends_at`** ([3.3] #11) is on every row: a required key
+  whose value may be `null`. It is when the market's dispute window ends,
+  stored when the outcome was approved. It is `null` on a market never
+  approved and on one whose result was sent back, holds the instant on an
+  `approved` market, and is kept on a `settled` one, where it says when
+  disputes closed. It is for display: the countdown, and hiding the dispute
+  control once the time has passed. The server still decides send-back on
+  its own clock, so a click in the last seconds can be refused, and the
+  settle control reads `settleable`, never this.
 - **`counts`** is an object of integers keyed by every status, `0` when there
-  are none, over every market the caller can see. **It ignores `?status=`**, so
-  each count equals the length of that status's filtered list and the counts
-  sum to the length of the unfiltered list. Both come from one read at one
-  instant.
+  are none, over **every market the caller can see — every page, not just this
+  one**. It ignores `?status=` and `cursor`, so each count equals the length of
+  that status's whole filtered list and the counts sum to the length of the
+  whole unfiltered list. An "All" total is the sum of the counts, not the
+  length of `markets`. The page and the counts are two reads in one
+  transaction at `REPEATABLE READ`, so they describe the same snapshot of the
+  data, and both judge `status` by the same instant.
 - **Order** is soonest `close_time` first, markets with no `close_time` last,
   then by `id`, with or without a filter. So the `closed` tab reads oldest
   close first: the one waiting longest for an administrator. This differs from
-  `GET /public/markets` on purpose.
+  `GET /public/markets` on purpose. Settled markets sort last, after all of
+  those, in the unfiltered view.
 - **`creator_id`** is on every row, so the caller can tell their own by
   comparing it with their own id.
-- Not paged; #104 owns that.
+
+| Query parameter | Rule |
+| --- | --- |
+| `status` | one of the seven statuses above; anything else is a `422` |
+| `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
+| `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
+
+### Paging
+
+Paged by keyset (#210). Send the previous response's `next_cursor` back as
+`cursor`, with the same `status` and `limit`, for the next page.
+`next_cursor: null` means there is nothing after this page, including when the
+page is empty. The cursor is opaque: do not build or edit one.
+
+Pages read in turn do not repeat or skip a market that kept its place:
+
+- The order does not read the clock. A market whose `close_time` passes while
+  you page keeps its place, and its `status` reads `closed` on whatever page it
+  appears. Under `status=open` it is left out of later pages, because it no
+  longer matches; under `status=closed` it is missing if it sorts before the
+  point you have reached.
+- A market published after the first page appears on a later page if it sorts
+  after the point you have reached, and not at all if it sorts before it.
+- Two moves the order cannot see. A draft's `close_time` changes as its
+  creator edits it, so a draft edited while you page can appear twice or be
+  missed. A market settled while you page moves to the
+  end and can appear twice. Show each `id` once, and start again without a
+  cursor for an exact list.
+
+The cursor does not record `status`. Changing the filter and sending an old
+cursor is not an error, but it continues from a position in the old list;
+start again without a cursor instead.
+
+### When it is refused
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 403 | `not_an_administrator` | a trader |
+| 422 | — | `status` is not one of the seven, or `limit` is below 1 |
 
 ## GET /markets/{id}
 
@@ -962,14 +1257,33 @@ itself.
 
 The derivation only ever makes a market *less* tradeable. An early close
 ([2.3] #7) leaves `close_time` in the future on purpose and is never reopened
-by it, and `pending_resolution` and `approved` pass through unchanged.
+by it, and `pending_resolution`, `approved` and `settled` pass through
+unchanged.
 [ADR 0011](../adr/0011-market-auto-close.md)'s amendment has the full
 argument for why the split is by audience rather than by rule.
 
 ### GET /public/markets
 
 The default view, with no query parameters: **every published market**, the
-ones still trading first and then by soonest closing time within each group.
+ones still trading first.
+
+**Order.** The same rule with or without `status` and `q`:
+
+1. Markets still trading, **soonest `close_time` first** — the one about to
+   stop is at the top.
+2. Every other market, **most recently stopped first** — whatever its status,
+   so `closed`, `pending_resolution`, `approved` and `settled` share one
+   ordering and an approved or settled market gets no place of its own. "Stopped" is when trading
+   actually stopped: `close_time` for a market the clock closed, and the
+   moment of the close for one an administrator closed early ([2.3] #7), whose
+   `close_time` is still in the future.
+3. Within either group, markets that tie come back in `id` order, so a refresh
+   never reshuffles them.
+
+Which group a market is in comes from the clock, the same rule as `status`
+below. Keep the server's order rather than re-sorting by `close_time` in the
+browser: an early-closed market would jump to the wrong place, because this
+response does not carry the time it was closed.
 
 It is not an open-only list, and that is deliberate. [X-1] #34 asks for two
 things from this view — "open markets ordered by soonest closing time", which
@@ -983,16 +1297,48 @@ the first group explicitly.
 
 | Query parameter | Rule |
 | --- | --- |
-| `status` | one of `open`, `closed`, `pending_resolution`, `approved`; anything else is a `422` |
+| `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
+| `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
+| `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
 `draft` and `submitted` are never returned, whether asked for by `status` or
 not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
 
+#### Paging
+
+The list is paged by keyset ([X-1] #104). Send the previous response's
+`next_cursor` back as `cursor`, with the same `q`, `status` and `limit`, for
+the next page. `next_cursor: null` means there is nothing after this page,
+including when the page is empty. The cursor is opaque: do not build or edit
+one.
+
+Pages read in turn never repeat a market, and never skip one that was there
+throughout, even while markets are published and closed between reads:
+
+- Which markets count as "still trading" is fixed at the moment the first page
+  was read, and the cursor carries that moment. A market that stops trading
+  while you page keeps its place in the order. It is not listed a second time
+  among the stopped markets.
+- Its `status` is always read now, so that market shows `closed` on whatever
+  page it appears. Under `status=open` it is left out of later pages, because
+  it no longer matches.
+- Under `status=closed` the move runs the other way. A market that stops
+  trading mid-browse is still in the trading group at the first page's instant
+  but now matches the filter, so it is missing from every later page until you
+  fetch a fresh first page. It is never repeated.
+- A market published after the first page appears on a later page if it sorts
+  after the point you have reached, and not at all if it sorts before it.
+  Start again without a cursor to see everything as of now.
+
+The cursor does not record `q` or `status`. Changing either and sending an
+old cursor is not an error, but it continues from a position in the old list;
+start again without a cursor instead.
+
 #### Response
 
-`200`, always — an empty result is `{"markets": []}`, never a `404`. [X-1]
-#34's "an appropriate empty state" is the frontend's job once this returns
+`200`, always — an empty result is `{"markets": [], "next_cursor": null}`,
+never a `404`. [X-1] #34's "an appropriate empty state" is the frontend's job once this returns
 nothing to render.
 
 ```json
@@ -1002,11 +1348,42 @@ nothing to render.
       "id": "410465f3-2852-4833-964b-f42e23b8227c",
       "status": "open",
       "question": "Will Singapore core inflation be below 2% for December 2026?",
-      "close_time": "2027-01-05T12:00:00Z"
+      "close_time": "2027-01-05T12:00:00Z",
+      "outcomes": [
+        { "id": "8b4c0f21-2f7a-4a1e-8a0f-1d2c3b4a5e6f", "position": 0, "label": "Yes" },
+        { "id": "9c5d1e32-3a8b-4b2f-9b1e-2e3f4c5d6a7b", "position": 1, "label": "No" }
+      ]
+    },
+    {
+      "id": "5d2a9e04-7b31-4c8e-a6f2-3e9b1c7d0a58",
+      "status": "open",
+      "question": "Who wins the 2027 NBA Finals?",
+      "close_time": "2027-06-01T00:00:00Z",
+      "outcomes": [
+        { "id": "0f6e2d1c-4b3a-4e9d-8c7b-6a5f4e3d2c1b", "position": 0, "label": "Lakers" },
+        { "id": "1a7f3e2d-5c4b-4f0e-9d8c-7b6a5f4e3d2c", "position": 1, "label": "Celtics" },
+        { "id": "2b8a4f3e-6d5c-4a1f-8e9d-8c7b6a5f4e3d", "position": 2, "label": "Another team" }
+      ]
     }
-  ]
+  ],
+  "next_cursor": "MjAyNi0xMC0wNFQwOToxNTowMCswMDowMHwxfDIwMjctMDYtMDFUMDA6MDA6MDArMDA6MDB8NWQyYTllMDQtN2IzMS00YzhlLWE2ZjItM2U5YjFjN2QwYTU4"
 }
 ```
+
+**`outcomes`** (#214) is every outcome of the market, ordered by `position`,
+in the same `{id, position, label}` shape as `GET /public/markets/{id}`
+returns — so a card can name each outcome without fetching the detail per row.
+A market has two or more outcomes with any labels; render the labels given
+rather than assuming `Yes` and `No`. Like the rest of this response, it
+carries no prices.
+
+#### When it is refused
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 422 | — | `status` is not an accepted value, `q` is too long or holds a NUL, or `limit` is below 1 |
 
 ### GET /public/markets/{id}
 
@@ -1039,9 +1416,34 @@ rule is protecting.
   "liquidity_b": "100.0000",
   "seed_subsidy": "250.0000",
   "published_at": "2026-09-13T14:12:03.118374Z",
-  "proposed_outcome_id": null
+  "proposed_outcome_id": null,
+  "settleable": false,
+  "dispute_window_ends_at": null
 }
 ```
+
+`settleable` ([3.4] #12) is a boolean, always present. It is `true` on an
+`approved` market from five minutes after the dispute window ends, and always
+`true` on a `settled` one, whatever the window. It is `false` for every other
+status and for an `approved` market with no `dispute_window_ends_at`. The ledger reads it
+before paying out and does not recompute it, so a client that shows a settle
+control should do the same and not work it out from `dispute_window_ends_at`.
+
+`dispute_window_ends_at` ([3.3] #11) is always present, and its value may be
+`null`. It is when the market's dispute window ends, stored when the outcome
+was approved, as the approval time plus the window configured at that moment.
+It is:
+
+- `null` on a market that has never been approved, and on one whose approved
+  result was sent back (until it is approved again);
+- the instant on an `approved` market;
+- kept on a `settled` market, where it says when disputes closed.
+
+It is **display only**. Show the countdown on an `approved` market as time
+left until `dispute_window_ends_at` and the absolute time, because the
+browser's clock can be wrong. Hiding a control once the time has passed is
+fine, but the server still decides send-back on its own clock, and
+settlement is `settleable`'s job.
 
 `proposed_outcome_id` is [X-3] #36's "settled markets display the winning
 outcome". When it is set it names a member of this same response's `outcomes`
@@ -1057,8 +1459,9 @@ and the proposer may re-propose a different outcome. Shipping it earlier would
 show every trader a "winning outcome" the platform then reversed, with no
 correction and before [3.3] #11's dispute window exists to contest it.
 
-So `proposed_outcome_id !== null` on this endpoint means decided, and you may
-render it as the result without checking the status first. To show that a
+So `proposed_outcome_id !== null` on this endpoint means decided (`approved`
+or `settled`), and you may render it as the result without checking the status
+first. To show that a
 market is *awaiting* a decision, read `status === "pending_resolution"` — the
 identity of the proposed outcome is not available to a trader until it is
 approved. An administrator who needs the pending value reads `GET
@@ -1080,8 +1483,8 @@ The same envelope the auth service uses, so one parser covers both:
 { "error": { "code": "not_an_administrator", "message": "This action requires an administrator account." } }
 ```
 
-`draft_incomplete`, `proposal_incomplete`, `close_incomplete` and
-`rejection_incomplete` add a `details` array. Nothing else does, and it is additive, so a client that ignores
+`draft_incomplete`, `proposal_incomplete`, `close_incomplete`,
+`rejection_incomplete` and `send_back_incomplete` add a `details` array. Nothing else does, and it is additive, so a client that ignores
 it still reads `code` and `message`:
 
 ```json
@@ -1099,6 +1502,7 @@ it still reads `code` and `message`:
 | Status | `code` | When |
 | --- | --- | --- |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 400 | `malformed_cursor` | a browse or overview `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | valid session, but a trader |
 | 403 | `second_administrator_required` | the proposer tried to approve or reject their own proposal |
 | 404 | `market_not_found` | no such market, or it is not yours |
@@ -1108,22 +1512,42 @@ it still reads `code` and `message`:
 | 409 | `market_closed` | a publish, save or early close arrived for a market past its closing time |
 | 409 | `market_not_closed` | an outcome was proposed for a market that is still running |
 | 409 | `market_not_open` | an early close arrived for a market that is not published, whoever created it |
-| 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one |
+| 409 | `market_pending_resolution` | a proposal, publish, save or close arrived for a market already awaiting one, or a send-back arrived for a market whose proposal is not yet approved |
 | 409 | `market_not_pending_resolution` | an approval or rejection arrived for a market with no proposal waiting, whoever created it |
-| 409 | `market_already_approved` | anything but a read arrived for a market whose outcome is approved |
-| 409 | `proposal_superseded` | an approval or rejection quoted a `proposal_id` that is no longer the proposal waiting |
+| 409 | `market_already_approved` | anything but a read, a settle or a send-back arrived for a market whose outcome is approved |
+| 409 | `market_already_settled` | anything but a read or a settle arrived for a settled market. Checked before who is asking, so a proposer is told it is settled |
+| 409 | `market_not_approved` | a settle or a send-back arrived for a market whose outcome is not approved, whoever created it |
+| 409 | `dispute_window_open` | a settle arrived for an approved market that is not yet `settleable` |
+| 409 | `dispute_window_closed` | a send-back arrived for an approved market whose dispute window has ended |
+| 409 | `proposal_superseded` | an approval, rejection or send-back quoted a `proposal_id` that is no longer the proposal on the market |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | `proposal_incomplete` | outcome proposal refused; see `details` |
 | 422 | `close_incomplete` | early close refused; see `details` |
 | 422 | `rejection_incomplete` | rejection refused; see `details` |
+| 422 | `send_back_incomplete` | send-back refused; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
+
+The messages that come with three of these name send-back too, since
+[3.3] #11:
+
+- `market_not_approved`: "Only a market whose outcome has been approved can
+  be settled or sent back. This one has not been approved."
+- `market_already_approved`: "A second administrator has already approved
+  this market's outcome. Next it is settled, unless it is sent back during
+  its dispute window."
+- `proposal_superseded`: "The proposal you reviewed has been replaced by a
+  newer one. Reload the market and review the current one."
+
+`dispute_window_closed`'s message is "This market's dispute window has ended.
+Its approved outcome is final and can no longer be sent back."
 
 Note that `market_closed` and `market_not_closed` are not opposites of each
 other in any useful sense — one is a save or publish that arrived too late, the
 other a proposal that arrived too early. They never appear on the same route.
 
 Two kinds of `422` exist and they do not look alike. `draft_incomplete`,
-`proposal_incomplete`, `close_incomplete` and `rejection_incomplete` are ours
+`proposal_incomplete`, `close_incomplete`, `rejection_incomplete` and
+`send_back_incomplete` are ours
 and carry the envelope above. A malformed body — a missing `draft_key`, a missing `reason`, a naive
 timestamp, a non-UUID — is FastAPI's, and comes back as `{"detail": [...]}`.
 Branch on the presence of `error`.
@@ -1264,3 +1688,52 @@ the screen.
    market can be proposed for more than once. For an entry with no
    `proposal_id`, a later decision on the same `target_id` carrying
    `"proposal_id": null` is the match.
+
+## Notes for the dispute screen — [3.3] #11
+
+For [FE][3.3] #59. Send-back is the backend; the control is labelled
+**"Dispute result"**, never just "Send back", so it never reads like the
+reject control on the approval screen.
+
+1. **The countdown.** On an `approved` market, show the time left until
+   `dispute_window_ends_at` **and** the absolute time, for example "Disputes
+   close in 5h 12m (Tue 11:00)". The browser's clock can be wrong, which is
+   why the absolute time is there too. Once the time has passed, show "Result
+   is final; payout pending". The trader's market page reads it from
+   `GET /public/markets/{id}`, the admin markets page from each
+   `GET /markets/overview` row. Show no countdown on any other status.
+2. Offer "Dispute result" only on an `approved` market whose countdown has not
+   reached zero. It is for any administrator, including whoever proposed or
+   approved it, so do not disable it for them.
+3. **Show what was approved**, from the latest `market.outcome_approved` audit
+   entry for the market (`GET /audit/actions?action_type=market.outcome_approved`,
+   newest first, so the first entry whose `target_id` is the market; the same
+   way the approval screen reads `market.outcome_proposed`): the winner
+   (`context.winning_outcome`), the evidence (`context.evidence_url` and
+   `context.evidence_note`), the proposer (`context.proposed_by_username`) and
+   the approver (the entry's `actor_username`).
+4. **Keep the `proposal_id` from the entry you rendered in step 3, and send
+   that one.** Do not fetch it again when the button is pressed: the check
+   exists for the case where the approval was sent back and replaced while
+   the administrator was reading, and a fresh id would pass it against an
+   approval they have not seen. Send exactly the value you read,
+   **including `null`**.
+5. The modal has one required input. Enable its confirm button at 10 trimmed
+   characters and you will never see a `422 send_back_incomplete`. Say in the
+   modal: "The market goes back to closed. The outcome must be proposed and
+   approved again." Also say that the reason goes into the admin log and
+   cannot be edited.
+6. Repaint from the `200` response; it is the whole market. It is `closed`
+   with no proposal and no approval, and the creator's propose control comes
+   back.
+7. Handle the `409`s:
+   - `dispute_window_closed`: "Too late. The dispute window has closed." Then
+     reload.
+   - `proposal_superseded`: "This result was already replaced." Then reload
+     and show the new approval, for review from the start. Do not resend
+     automatically.
+   - `market_not_approved`, `market_already_settled` or
+     `market_pending_resolution`: someone else acted first. Reload.
+8. The countdown is display only. The server decides on its own clock, so the
+   button can still get `dispute_window_closed` in the last seconds, even
+   while the countdown shows a little time left.

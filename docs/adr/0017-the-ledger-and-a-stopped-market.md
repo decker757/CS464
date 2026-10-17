@@ -237,6 +237,38 @@ structurally needs — an object, a matching id, a parseable status — and the
 arguments on the rules that move survive the move unchanged, because they were
 always arguments about writing.
 
+> **Amended 2026-10-09 by [3.4] #12. `_parse` keeps two fields the trade path
+> does not read.** The section above keeps in `_parse` only what every caller
+> structurally needs: an object, a matching id and a parseable status.
+> Settlement (ADR 0019) adds `proposed_outcome_id` and `settleable` to
+> `MarketTerms`, and `_parse` requires both on every pull, the trade path's
+> included. A missing key, a `settleable` that is not a JSON boolean, or an id
+> that is not a uuid string is `503 market_terms_unavailable` for a trade, a
+> first touch and a snapshot alike.
+>
+> This is not the kind of rule the section moved out. Those rules were about
+> values: a null `b` is a value the contract allows, and refusing trades on it
+> would refuse books that price correctly. A missing key is not a value.
+> market_service sends both fields on every public detail, so a body without
+> one comes from a broken deploy, which this record already fails closed on
+> when `status` is missing. A null `proposed_outcome_id` is a value, and it
+> is accepted: the field is null on every market not yet decided.
+>
+> `fetch` still gates on nothing it carries. Only settlement reads the two
+> fields.
+>
+> *Rejected:* parsing both leniently and letting settlement refuse a missing
+> value. The trade path would then depend on nothing new, but one client
+> would parse in two styles, since `published_at` and `status` already refuse
+> a missing key.
+>
+> DECISIONS.md: "`MarketTerms` carries `proposed_outcome_id` and
+> `settleable`, parsed strictly on every pull".
+>
+> **Reversal trigger:** the ledger must trade against a producer of the
+> public detail that omits either field. The trade path's parse then relaxes,
+> and settlement refuses the missing value itself.
+
 ### `settled` is refused by the comparison and not by the path
 
 `status != "open"` needs no list, so a member added to `MarketStatus` on the
@@ -261,6 +293,13 @@ warns about it for its own reasons.
 Whoever lands [3.4] #12 adds SETTLED to `PublicMarketStatus` in the same
 commit as `MarketStatus`, and this entry is the second place that says so.
 
+> **Amended 2026-10-04 by [3.4] #12.** Settlement reads the same public detail
+> for its status, approved outcome and `settleable` flag, but it never asks
+> the open-or-not question this record is about. It accepts `approved` once
+> `settleable` is true, or `settled`, and gates on nothing else, so it is a
+> second reader of the projection and not a second trade gate
+> ([ADR 0019](0019-settlement-across-services.md)).
+
 ## Consequences
 
 **market_service is now a runtime and availability dependency of every trade.**
@@ -280,6 +319,8 @@ every trade. [3.4] #12 does not add such a caller — settlement runs on an
 APPROVED market and never asks this question — but [T-7] #27's auto-execution
 and cascade would, and ADR 0009's deferred service-auth question stops being
 academic on that day.
+
+> *Amended 2026-10-17: see the ADR 0024 note under the reversal below.*
 
 **A new caller on a public endpoint written for a display read.** `browse` and
 `get_published` were sized for a trader loading a page. They now take one
@@ -378,3 +419,15 @@ first move if [5.4] #20 says otherwise.
 > endpoint. Another caller gating on that derived status is this rule, not an
 > exception to it — the whole reason the check reads that projection is that
 > there is one predicate and everybody asks it.
+
+> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
+> and not built yet.** Neither this reversal note nor the consequence "Token
+> forwarding becomes load-bearing on the hot path" is tripped by [T-7] #27 as
+> ADR 0024 designs it. The question this record asks is about a market, not a
+> trader. The request that moved the price asks it once, with its own token,
+> and the latch re-checks it under the book lock. Every fill in that commit is
+> in the same market under the same lock, so the one answer covers all of
+> them. No trade arrives without a caller token. A placement asks the gate
+> with the placer's token, like a trade. A cancel does not ask, because it only
+> releases and a closed market's orders must stay cancellable. If ADR 0024 is
+> not accepted, the reversal stands as written.

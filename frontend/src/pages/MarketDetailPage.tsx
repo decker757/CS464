@@ -4,10 +4,13 @@ import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
 import StatusBadge from '../components/markets/StatusBadge'
+import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
+import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
+import { formatPrice } from '../utils/formatPrice'
 
 // setTimeout overflows a 32-bit int at ~24.8 days; a close further out than
 // that gets no timer, since the page will be refetched long before then.
@@ -20,28 +23,25 @@ function formatDate(iso: string) {
   })
 }
 
-function formatPrice(price: string): string {
-  return `${(parseFloat(price) * 100).toFixed(1)}%`
-}
-
 // Why trading is closed, for a market that cannot be traded right now.
 function closedMessage(status: MarketStatus): string {
   if (status === 'pending_resolution') return 'Trading is closed while the outcome is decided.'
-  if (status === 'approved') return 'This market has been settled. Trading is closed.'
+  if (status === 'approved') return 'The outcome is approved and payouts are pending. Trading is closed.'
+  if (status === 'settled') return 'This market has been settled. Trading is closed.'
   return 'Trading is closed for this market.'
+}
+
+// What the banner calls the outcome on record: only a settled market is final,
+// an approved one is waiting on the ledger's payout, and a pending one on a
+// second administrator.
+function outcomeBannerLabel(status: MarketStatus): string {
+  if (status === 'settled') return 'Settled'
+  if (status === 'approved') return 'Approved outcome'
+  return 'Proposed outcome'
 }
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
   return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
-}
-
-function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <p className="mb-1 text-xs font-semibold tracking-[0.5px] text-subtle uppercase">{label}</p>
-      {children}
-    </div>
-  )
 }
 
 export default function MarketDetailPage() {
@@ -127,7 +127,7 @@ export default function MarketDetailPage() {
 
           {winningOutcome && (
             <Banner className="border-info/20 bg-info/5 font-semibold text-info-strong">
-              Settled: <strong>{winningOutcome.label}</strong>
+              {outcomeBannerLabel(market.status)}: <strong>{winningOutcome.label}</strong>
             </Banner>
           )}
 
@@ -165,21 +165,7 @@ export default function MarketDetailPage() {
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
-              <div>
-                <div className="flex gap-2.5">
-                  {market.outcomes.map(outcome => (
-                    <button
-                      key={outcome.id}
-                      type="button"
-                      disabled
-                      className="flex-1 cursor-not-allowed rounded-control border border-smu-navy/20 bg-smu-cream p-3 text-sm font-semibold text-smu-navy opacity-60"
-                    >
-                      Buy {outcome.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-2.5 text-xs text-subtle">Trading coming soon.</p>
-              </div>
+              <TradingPanel marketId={market.id} outcomes={market.outcomes} />
             ) : (
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
             )}

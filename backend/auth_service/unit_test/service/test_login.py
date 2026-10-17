@@ -56,3 +56,31 @@ async def test_suspension_is_not_revealed_before_the_password_is_proven(
 
     with pytest.raises(InvalidCredentials):
         await auth_service.authenticate(session, "ernest_t", "wrong-password-here")
+
+
+async def test_login_loads_no_refresh_tokens_while_it_holds_the_user_lock(
+    registered_user: User,
+) -> None:
+    """The lock is held until the login commits, so nothing slow belongs under
+    it. `User.refresh_tokens` is `lazy="selectin"`, and an active user gains a
+    token every refresh, so `lock_user` must not reload them. Review of #14."""
+    from sqlalchemy import event  # noqa: PLC0415
+
+    from core.database import get_engine, get_session_factory  # noqa: PLC0415
+
+    statements: list[str] = []
+
+    def keep(conn, cursor, statement, parameters, context, executemany) -> None:  # noqa: ANN001
+        statements.append(statement)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", keep)
+    try:
+        async with get_session_factory()() as fresh:
+            await auth_service.authenticate(fresh, "ernest_t", VALID_PASSWORD)
+    finally:
+        event.remove(engine, "before_cursor_execute", keep)
+
+    locked_at = next(i for i, sql in enumerate(statements) if "FOR UPDATE" in sql)
+    under_the_lock = statements[locked_at:]
+    assert not [sql for sql in under_the_lock if "auth.refresh_tokens" in sql]

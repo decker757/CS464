@@ -9,9 +9,10 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from model.entities import PLATFORM_OWNER_ID, Account, AccountKind, Entry
 
@@ -75,6 +76,25 @@ async def lock(session: AsyncSession, account_ids: list[uuid.UUID]) -> None:
         )
 
 
+def balance_query_of(
+    *, account_id: uuid.UUID | InstrumentedAttribute[uuid.UUID]
+) -> Select[tuple[Decimal]]:
+    """The sum of one account's entries, zero when it has none.
+
+    A single-column SELECT, so a caller can narrow it with `.where()` or turn
+    it into a value inside another statement with `.scalar_subquery()`. A
+    balance is never stored (ADR 0009); `balance_of`, the history's running
+    balance and the exposure read all sum through this.
+
+    `account_id` is an id, or a column of the enclosing statement
+    (`MarketBook.pool_account_id` in the exposure read) that the subquery
+    correlates on.
+    """
+    return select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
+        Entry.account_id == account_id
+    )
+
+
 async def balance_of(session: AsyncSession, account_id: uuid.UUID) -> Decimal:
     """What this account holds: the sum of its entries, derived on every read,
     never stored (ADR 0009). [B-1] #32, [B-2] #33.
@@ -83,7 +103,5 @@ async def balance_of(session: AsyncSession, account_id: uuid.UUID) -> Decimal:
     read here: `ledger_service._page_query` sums to a position inside the
     page's own statement.
     """
-    stmt = select(func.coalesce(func.sum(Entry.amount), ZERO)).where(
-        Entry.account_id == account_id
-    )
+    stmt = balance_query_of(account_id=account_id)
     return (await session.execute(stmt)).scalar_one()

@@ -32,7 +32,7 @@ from unit_test.book_fixtures import (
     warm,
     writes,
 )
-from unit_test.conftest import mint_token, strip_outcomes
+from unit_test.conftest import mint_token, strip_outcomes, terms_client_over
 
 
 def _snapshot_service():
@@ -56,7 +56,9 @@ async def _read(
         session,
         upstream.market_id,
         access_token=access_token if access_token is not None else fresh_token(),
-        transport=upstream.transport if transport is None else transport,
+        terms_client=terms_client_over(
+            upstream.transport if transport is None else transport
+        ),
     )
 
 
@@ -148,7 +150,7 @@ async def test_a_never_traded_markets_occurred_at_is_its_opened_at(
         session,
         upstream.market_id,
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     await session.commit()
 
@@ -403,11 +405,6 @@ async def test_a_refused_market_leaves_no_book_behind(session: AsyncSession) -> 
 # =========================================================================
 # One read and one quantizer, shared with the preview (D-052)
 # =========================================================================
-async def _strip_outcomes(session: AsyncSession, upstream: Upstream) -> None:
-    """A book with no outcome rows, as a hand-run repair could leave it."""
-    await strip_outcomes(session, upstream.market_id)
-
-
 async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(
     session: AsyncSession,
 ) -> None:
@@ -417,7 +414,7 @@ async def test_a_book_with_no_outcome_rows_is_a_ledger_error_not_an_index_error(
 
     upstream = Upstream()
     await warm(session, upstream)
-    await _strip_outcomes(session, upstream)
+    await strip_outcomes(session, upstream.market_id)
 
     with pytest.raises(Exception) as raised:
         await _read(session, upstream)
@@ -449,7 +446,7 @@ async def test_the_snapshot_and_the_preview_quote_the_same_price_strings(
         side=Side.BUY,
         quantity=Decimal("1.0000"),
         access_token=fresh_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     assert [(p.outcome_id, p.position, str(p.price)) for p in snap.prices] == [

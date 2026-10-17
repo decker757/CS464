@@ -3,10 +3,12 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-One request model, `TradeIn`, for the one route that writes: [T-2] #22's
-`POST /ledger/markets/{market_id}/trades`. It carries no account, no amount
-and no leg — `extra="forbid"` refuses a body naming one — which is the answer
-ADR 0009's amendment gives to how a caller authenticates to the write path.
+Two request models, for the two routes that write: `TradeIn` for [T-2] #22's
+`POST /ledger/markets/{market_id}/trades`, and `SettlementIn` for [3.4] #12's
+`POST /ledger/markets/{market_id}/settlement`. Neither carries an account, an
+amount or a leg — `extra="forbid"` refuses a body naming one — which is the
+answer ADR 0009's amendments give to how a caller authenticates to a write
+path.
 
 **Amounts are strings, and that is the one deliberate departure from the market
 service**, whose `MarketOut` serialises `liquidity_b` as a JSON number. That was
@@ -23,14 +25,19 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from enum import StrEnum
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer
 
+from core.clock import as_utc
 from core.pricing import Side
-from model.entities import Entry, TransactionKind
+from model.entities import Entry, ResultKind, TransactionKind
+
+# `as_utc` stamps a naive value UTC on the way out.
+UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 
 class BalanceOut(BaseModel):
@@ -60,12 +67,27 @@ class BalanceOut(BaseModel):
         return str(value)
 
 
-class PortfolioPositionOut(BaseModel):
-    """One outcome the caller still holds, valued at liquidation. [T-4] #24
+class PositionResult(StrEnum):
+    """What a settled market did to one held outcome. [3.4] #12.
 
-    `value` is what selling the whole position now would credit — never
-    `quantity * price`. See `GET /ledger/portfolio/me` in
-    `docs/api/ledger-service.md` and ADR 0018 for why.
+    The wire's own values. A row the ledger has not settled has no result,
+    which is `None` and not a third member.
+    """
+
+    PAID_OUT = "paid_out"
+    WORTHLESS = "worthless"
+
+
+class PortfolioPositionOut(BaseModel):
+    """One outcome the caller still holds. [T-4] #24, [3.4] #12
+
+    On a market the ledger has not settled, `value` is what selling the whole
+    position now would credit — never `quantity * price` (ADR 0018) — and
+    `result` and `payout` are null. On a settled market it is the other way
+    round: `result` and `payout` are set, and `price`, `value` and
+    `unrealized_pnl` are null, because the payout is already in the balance.
+    Every key is always present. See `GET /ledger/portfolio/me` in
+    `docs/api/ledger-service.md`.
     """
 
     market_id: uuid.UUID
@@ -81,34 +103,46 @@ class PortfolioPositionOut(BaseModel):
     average_entry_price: Decimal = Field(
         description="cost_basis / quantity, ROUND_HALF_UP at scale 4."
     )
-    price: Decimal = Field(
+    price: Decimal | None = Field(
         description=(
             "The outcome's marginal price — informational only, and equal "
             "to the snapshot's for the same state_version. Not what `value` "
-            "is computed from."
+            "is computed from. Null on a settled row."
         )
     )
-    value: Decimal = Field(
+    value: Decimal | None = Field(
         description=(
             "What selling the whole position now would credit (ADR 0018), "
-            "not quantity * price."
+            "not quantity * price. Null on a settled row, whose payout is "
+            "already in the balance."
         )
     )
-    unrealized_pnl: Decimal = Field(description="value - cost_basis.")
+    unrealized_pnl: Decimal | None = Field(
+        description="value - cost_basis. Null on a settled row."
+    )
+    result: PositionResult | None = Field(
+        description=(
+            "`paid_out` for the winning outcome of a settled market, "
+            "`worthless` for any other. Null until the market is settled."
+        )
+    )
+    payout: Decimal | None = Field(
+        description=(
+            "What this row was paid: its quantity on a `paid_out` row, "
+            "`0.0000` on a `worthless` one. Null until the market is settled."
+        )
+    )
     state_version: int = Field(
         description="This market's book version this row was valued at."
     )
 
-    @field_serializer(
-        "quantity",
-        "cost_basis",
-        "average_entry_price",
-        "price",
-        "value",
-        "unrealized_pnl",
-    )
+    @field_serializer("quantity", "cost_basis", "average_entry_price")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+    @field_serializer("price", "value", "unrealized_pnl", "payout")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
 
 
 class PortfolioOut(BaseModel):
@@ -140,7 +174,8 @@ class PortfolioOut(BaseModel):
 
 @dataclass(frozen=True)
 class TradeFields:
-    """The five fields a history row carries for a trade. [T-5] #25.
+    """The five fields a history row carries for a trade or a payout. [T-5] #25,
+    [3.4] #12.
 
     All null by default: that is the grant's row, and any kind the history
     does not recognise. `service/ledger_service.py` fills them in; they live
@@ -164,7 +199,7 @@ class LedgerEntryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    created_at: datetime
+    created_at: UtcDatetime
 
     amount: Decimal = Field(
         description=(
@@ -208,8 +243,8 @@ class LedgerEntryOut(BaseModel):
     market_id: uuid.UUID | None = Field(
         default=None,
         description=(
-            "Set on a `trade_buy` or `trade_sell` row; `null` on every other "
-            "kind, the grant included. [T-5] #25."
+            "Set on a `trade_buy`, `trade_sell` or `settlement` row; `null` "
+            "on every other kind, the grant included. [T-5] #25, [3.4] #12."
         ),
     )
     outcome_id: uuid.UUID | None = Field(
@@ -220,14 +255,15 @@ class LedgerEntryOut(BaseModel):
         default=None,
         description=(
             "`buy` or `sell`, taken from `kind` rather than from `context`. "
-            "Null on every row that is not a trade."
+            "Null on every row that is not a trade, a payout included."
         ),
     )
     quantity: Decimal | None = Field(
         default=None,
         description=(
-            "The trade's quantity, at scale 4 whatever the trader sent. Null "
-            "on every row that is not a trade."
+            "The trade's quantity, or on a `settlement` row the winning "
+            "shares paid out, at scale 4 whatever the trader sent. Null on "
+            "every other row."
         ),
     )
     average_price: Decimal | None = Field(
@@ -235,7 +271,8 @@ class LedgerEntryOut(BaseModel):
         description=(
             "The average fill price, `|amount| ÷ quantity` rounded half-up "
             "at scale 4 — not the marginal price the portfolio and the "
-            "snapshot report. Null on every row that is not a trade."
+            "snapshot report. Null on every row that is not a trade, a "
+            "payout included."
         ),
     )
 
@@ -246,17 +283,6 @@ class LedgerEntryOut(BaseModel):
     @field_serializer("quantity", "average_price")
     def _as_optional_string(self, value: Decimal | None) -> str | None:
         return str(value) if value is not None else None
-
-    @field_validator("created_at")
-    @classmethod
-    def _always_utc(cls, v: datetime) -> datetime:
-        """Guarantee an explicit offset on the way out.
-
-        The same guard the other three services carry. A driver handing back a
-        naive datetime would make one entry serialise with a trailing Z and
-        another without, leaving the frontend to special-case which.
-        """
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
     @classmethod
     def of(
@@ -505,6 +531,54 @@ class TradeOut(BaseModel):
         return str(value)
 
 
+class SettlementIn(BaseModel):
+    """The body of a settlement: nothing. [3.4] #12, ADR 0009's second amendment.
+
+    No fields and `extra="forbid"`, so a body naming an outcome, an account or
+    an amount is `422 invalid_request` rather than silently dropped — a
+    dropped `outcome_id` would let a client believe it had chosen the winner.
+    The route never reads it; it exists to refuse what it cannot hold.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SettlementOut(BaseModel):
+    """What one settlement paid. [3.4] #12.
+
+    Built from `service/settlement.py::SettlementResult`, which is the same on
+    the request that pays and on every repeat, so a repeat returns this
+    byte-for-byte.
+    """
+
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID = Field(
+        description=(
+            "The winning outcome. On a repeat, the one this service "
+            "recorded, whatever market_service reports now."
+        )
+    )
+    recorded_at: datetime = Field(
+        description="When the settlement was recorded, with its UTC offset."
+    )
+    holders_paid: int = Field(
+        description=(
+            "One payout for each holder of more than zero winning shares; "
+            "0 if nobody held the winner."
+        )
+    )
+    total_paid: Decimal = Field(
+        description="What the payouts add up to: one credit per winning share."
+    )
+    residue: Decimal = Field(
+        description=(
+            "What was left in the market's pool after the payouts, signed. "
+            "Positive went to the platform, negative came from it, and the "
+            "pool ends at exactly 0.0000 either way."
+        )
+    )
+
+
 # One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared
 # separately and field for field the same — same three fields, same bounds,
 # same `str(value)` serializer — with only `OutcomePrice` pinned against
@@ -530,19 +604,7 @@ class PriceEvent(BaseModel):
     market_id: uuid.UUID
     state_version: int = Field(ge=0)
     prices: list[OutcomePrice] = Field(min_length=2)
-    occurred_at: datetime
-
-    @field_validator("occurred_at")
-    @classmethod
-    def _always_utc(cls, v: datetime) -> datetime:
-        """A naive value is UTC, and leaves with the offset that says so.
-
-        `SnapshotOut` below does the same to its copy of this field. Without
-        it a naive datetime from [T-2] #22 would reach the socket with no
-        offset, and every browser would read it as local time. Naive versus
-        aware has already caused bugs in this repository (CLAUDE.md).
-        """
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+    occurred_at: UtcDatetime
 
     @field_serializer("occurred_at")
     def _occurred_at_as_string(self, value: datetime) -> str:
@@ -567,12 +629,7 @@ class SnapshotOut(BaseModel):
     # a second caller does not go through it.
     state_version: int = Field(ge=0)
     prices: list[OutcomePriceOut] = Field(min_length=2)
-    occurred_at: datetime
-
-    @field_validator("occurred_at")
-    @classmethod
-    def _always_utc(cls, v: datetime) -> datetime:
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
+    occurred_at: UtcDatetime
 
     @field_serializer("occurred_at")
     def _occurred_at_as_string(self, value: datetime) -> str:
@@ -586,6 +643,145 @@ class SnapshotOut(BaseModel):
         only asserted the offset was present, which is true of both.
         """
         return value.isoformat()
+
+
+class PricePointOut(BaseModel):
+    """One price the market has had. [BE][2.4] #63.
+
+    A `price` socket frame without its `type` and `market_id`, so a chart
+    draws the history and appends live frames with one function, and drops any
+    frame whose `state_version` it already holds.
+    """
+
+    state_version: int = Field(
+        ge=0,
+        description="0 is the book's opening. Each trade after it adds one.",
+    )
+    occurred_at: datetime = Field(
+        description=(
+            "When the trade's entries landed, or the book's `opened_at` for "
+            "`state_version` 0. Dedupe on `state_version`, never on this."
+        )
+    )
+    prices: list[OutcomePriceOut] = Field(
+        min_length=2, description="One price per outcome, ordered by position."
+    )
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        """`.isoformat()`, as `SnapshotOut` does, so the string is the frame's."""
+        return value.isoformat()
+
+
+class PriceHistoryOut(BaseModel):
+    """Every price a market has had, one point per trade. [BE][2.4] #63.
+
+    A market this service holds no book for reads as an empty `points` and
+    nulls. DECISIONS.md, "Price history takes any valid token; the trade feed
+    takes an administrator's", Notes.
+    """
+
+    market_id: uuid.UUID
+    points: list[PricePointOut] = Field(
+        description="Oldest first. Settlement adds no point: the series ends at the last trade."
+    )
+    result: ResultKind | None = Field(
+        description=(
+            "Null until the ledger records how the market ended; then that "
+            "record's kind, today always `settled`. The exposure read's values."
+        )
+    )
+    winning_outcome_id: uuid.UUID | None = Field(
+        description="Null until the market is settled; then the outcome that paid."
+    )
+    result_recorded_at: datetime | None = Field(
+        description="Null until the market is settled; then the settlement's `recorded_at`."
+    )
+
+    @field_serializer("result_recorded_at")
+    def _result_recorded_at_as_string(self, value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat()
+
+
+class ExposureOutcomeOut(BaseModel):
+    """One outcome's share of what resolving the market would cost. [2.2] #6"""
+
+    outcome_id: uuid.UUID
+    position: int = Field(ge=0, description="The outcome's order within its market.")
+    shares_outstanding: Decimal = Field(
+        description="Every trader's shares in this outcome, summed."
+    )
+    payout_if_wins: Decimal | None = Field(
+        description="One credit per share outstanding. Null once the market has a result."
+    )
+    residue_if_wins: Decimal | None = Field(
+        description=(
+            "pool - payout_if_wins. Positive goes to the platform at "
+            "settlement; negative is what the platform tops up. Null once "
+            "the market has a result."
+        )
+    )
+
+    @field_serializer("shares_outstanding")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("payout_if_wins", "residue_if_wins")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class ExposureOut(BaseModel):
+    """What resolving a market would pay out, for an administrator. [2.2] #6
+
+    A market this service holds no book for reads as nulls and an empty
+    `outcomes`, with `payout_exceeds_pool` false. DECISIONS.md, "Exposure on a
+    market with no book is a 200 with nothing in it, and writes nothing".
+    """
+
+    market_id: uuid.UUID
+    opened_at: UtcDatetime | None = Field(
+        description="When this service opened the book. Null means it never has."
+    )
+    state_version: int | None = Field(
+        description="Which trade this read reflects. Null when there is no book."
+    )
+    seed_subsidy: Decimal | None = Field(
+        description="What the platform put up at book creation."
+    )
+    pool: Decimal | None = Field(
+        description=(
+            "What the market pool holds now, derived from its entries. Null "
+            "when there is no book, and once the market has a result: "
+            "settlement drained it."
+        )
+    )
+    payout_exceeds_pool: bool = Field(
+        description=(
+            "True when any outcome's payout is strictly greater than `pool`. "
+            "False once the market has a result."
+        )
+    )
+    result: ResultKind | None = Field(
+        description=(
+            "Null until the ledger records how the market ended; then that "
+            "record's kind, today always `settled`."
+        )
+    )
+    winning_outcome_id: uuid.UUID | None = Field(
+        description="Null until the market is settled; then the outcome that paid."
+    )
+    outcomes: list[ExposureOutcomeOut] = Field(
+        description="Every outcome, ordered by position. Empty when there is no book."
+    )
+
+    @field_serializer("opened_at")
+    def _opened_at_as_string(self, value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat()
+
+    @field_serializer("seed_subsidy", "pool")
+    def _as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
 
 
 class LedgerEntryListResponse(BaseModel):
@@ -609,3 +805,167 @@ class LedgerEntryListResponse(BaseModel):
             "without reasoning about the cursor at all."
         ),
     )
+
+
+class MarketTradeOut(BaseModel):
+    """One trade in a market's feed, for an administrator. [BE][2.4] #63.
+
+    The trader's own history row minus `balance_after`, which means nothing on
+    a pool account, plus `user_id`. DECISIONS.md, "The market's trade feed
+    reads the pool account's feed, filtered to the trade kinds, and its rows
+    are built by `trade_fields_of`".
+    """
+
+    transaction_id: uuid.UUID
+    created_at: UtcDatetime
+    user_id: uuid.UUID = Field(
+        description=(
+            "The trader. An id, not a name: this service holds no user table. "
+            "DECISIONS.md, \"A market's trades carry `user_id`, not "
+            "`username`\"."
+        )
+    )
+    outcome_id: uuid.UUID
+    side: Side
+    quantity: Decimal = Field(description="Shares, at scale 4.")
+    average_price: Decimal = Field(
+        description=(
+            "`|total| ÷ quantity` rounded half-up at scale 4, the same "
+            "function as the trader's own history row."
+        )
+    )
+    total: Decimal = Field(
+        description=(
+            "Signed for the trader, as `TradeOut.total` is: negative on a "
+            "buy, positive on a sell."
+        )
+    )
+    state_version: int = Field(description="The book's counter after this trade.")
+
+    @field_serializer("quantity", "average_price", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class MarketTradeListResponse(BaseModel):
+    """One page of a market's trades, newest first."""
+
+    trades: list[MarketTradeOut]
+
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pass back as `cursor` for the next page. Null means this page is "
+            "the end. Opaque: echo it unmodified rather than constructing one."
+        ),
+    )
+
+    has_more: bool = Field(
+        description="Equivalent to `next_cursor` being non-null."
+    )
+
+
+class LeaderboardStandingOut(BaseModel):
+    """A user's rank, username and net worth on one stored ranking. [L-1] #38"""
+
+    rank: int = Field(description="1..N with no ties: the order is the rank.")
+    username: str
+    net_worth: Decimal = Field(
+        description="The portfolio's `net_worth`, at scale 4, as of `computed_at`."
+    )
+
+    @field_serializer("net_worth")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class LeaderboardRowOut(LeaderboardStandingOut):
+    """One user's place on the board. [L-1] #38, [BE][L-2] #269
+
+    The standing's three fields and `is_me`, true on the caller's own row. The
+    stored `user_id` is never sent: `is_me` is the only thing on a row that
+    depends on the caller, and it identifies them only to themselves.
+    """
+
+    is_me: bool = Field(
+        description="True on the caller's own row, false on every other."
+    )
+
+
+class LeaderboardPageOut(BaseModel):
+    """One page of one stored ranking. [L-1] #38, [L-3] #40, [BE][L-2] #269"""
+
+    computed_at: datetime | None = Field(
+        description="When this ranking's valuation began. Null before any refresh."
+    )
+    stale: bool = Field(
+        description="True when `computed_at` is more than two refresh intervals old."
+    )
+    ranked_users: int = Field(
+        description="Users in the whole ranking, the same on every page of it."
+    )
+    me: LeaderboardStandingOut | None = Field(
+        description=(
+            "The caller's own row in the ranking this page came from, on this "
+            "page or not. Null when the caller is not in that ranking, and the "
+            "response does not say why."
+        )
+    )
+    rows: list[LeaderboardRowOut]
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pass back as `cursor` for the next page of this same ranking. "
+            "Null means this page is the end. Opaque: echo it unmodified."
+        ),
+    )
+    has_more: bool = Field(
+        description="Equivalent to `next_cursor` being non-null."
+    )
+
+
+class InvalidFieldOut(BaseModel):
+    """One part of a request that failed validation, as pydantic reported it."""
+
+    loc: list[str | int] = Field(
+        description=(
+            "Where the problem is: the part of the request first, then the "
+            "field, e.g. `[\"query\", \"quantity\"]`, `[\"path\", "
+            "\"market_id\"]` or `[\"body\", \"side\"]`."
+        ),
+    )
+    msg: str = Field(description="A sentence for a person. Do not parse it.")
+    type: str = Field(
+        description=(
+            "pydantic's stable name for the problem, e.g. `greater_than` or "
+            "`extra_forbidden`. Branch on this rather than on `msg`."
+        ),
+    )
+
+
+class ErrorOut(BaseModel):
+    """The inside of the envelope every ledger error carries."""
+
+    code: str = Field(
+        description=(
+            "Stable and `snake_case`. `invalid_request` when the request did "
+            "not match the route's parameters or body; a route's own 422 "
+            "codes are listed in its description."
+        ),
+        examples=["invalid_request"],
+    )
+    message: str
+    details: list[InvalidFieldOut] | None = Field(
+        default=None,
+        description=(
+            "On `invalid_request`, every part of the request that was wrong. "
+            "Absent on a route's own 422 codes."
+        ),
+    )
+
+
+class ValidationErrorOut(BaseModel):
+    """Every ledger 422, whichever layer refused the request: `invalid_request`
+    with `details`, or one of the route's own codes without them."""
+
+    error: ErrorOut

@@ -4,7 +4,10 @@ import { logIn } from './support/browser'
 
 // [X-3] #36 and [F-2] #42: a trade on the ledger reaches an open page through
 // Redis and the realtime socket, with the socket's cookie auth and origin
-// check in the way. Buying through the browser waits on #49's trading panel.
+// check in the way. The buyer here acts through the buy() backend helper
+// rather than the trading panel on purpose: this test is about the socket
+// delivering the update to the *watcher's* page, not about placing the
+// trade — trading-panel.e2e.ts covers buying and selling through the panel.
 test("a trader's market page moves when someone else buys", async ({ page }) => {
   const admin = await registerAdmin('lp_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('live')} move?`)
@@ -30,6 +33,7 @@ test("a trader's market page moves when someone else buys", async ({ page }) => 
   const after = await snapshot(buyer, market.id)
   const yes = market.outcomes.find(outcome => outcome.label === 'Yes')
   const expected = after.prices.find(price => price.outcome_id === yes?.id)
-  await expect(yesPrice).toHaveText(`${(Number(expected?.price) * 100).toFixed(1)}%`)
-  await expect(yesPrice).not.toHaveText('50.0%')
+  // 50 Yes shares at b = 100 (support/backend.ts) move Yes to 0.6225.
+  expect(expected?.price).toBe('0.6225')
+  await expect(yesPrice).toHaveText('62.3%')
 })

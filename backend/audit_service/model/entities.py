@@ -1,7 +1,7 @@
 """The read model for `audit.admin_actions`. [4.3] #15
 
 sql/02-schemas.sql defines the table (ADR 0006), so this mapping is kept in
-step with it by hand until [F-5] #75; `test_entities.py` checks the two agree.
+step with it by hand, for good (ADR 0020); `test_entities.py` checks the two agree.
 """
 
 from __future__ import annotations

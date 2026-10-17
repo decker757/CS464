@@ -84,8 +84,8 @@ class TransactionKind(StrEnum):
     """Why credits moved.
 
     SIGNUP_GRANT is the oldest member. TRADE_BUY and TRADE_SELL arrived with
-    [T-2] #22 and [T-3] #23, and SETTLEMENT arrives with [3.4] #12. Each is a
-    Python-only addition for the same reason as `AccountKind`.
+    [T-2] #22 and [T-3] #23, and SETTLEMENT and SETTLEMENT_RESIDUE with [3.4]
+    #12. Each is a Python-only addition for the same reason as `AccountKind`.
     """
 
     SIGNUP_GRANT = "signup_grant"
@@ -104,6 +104,26 @@ class TransactionKind(StrEnum):
     # rest, so it needs no migration either.
     TRADE_SELL = "trade_sell"
 
+    # MARKET_POOL -> USER, posted once per holder of the winning outcome when a
+    # market settles. [3.4] #12, ADR 0019. Non-native like the rest.
+    SETTLEMENT = "settlement"
+
+    # MARKET_POOL -> PLATFORM, posted once per settled market: whatever the pool
+    # holds after the holders are paid. [3.4] #12, ADR 0019.
+    SETTLEMENT_RESIDUE = "settlement_residue"
+
+
+class ResultKind(StrEnum):
+    """How a market ended. [3.4] #12, D-NEW "`ledger.market_results` is one
+    record per finished market, with a `kind`".
+
+    Only SETTLED exists. A second member is [BE] #221's, and arrives with its
+    own columns and CHECK clauses. Non-native like the rest, so the column is a
+    plain varchar with no CHECK on its values.
+    """
+
+    SETTLED = "settled"
+
 
 _ACCOUNT_KIND_COLUMN = Enum(
     AccountKind,
@@ -118,6 +138,14 @@ _TRANSACTION_KIND_COLUMN = Enum(
     name="ledger_transaction_kind",
     native_enum=False,
     length=32,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+_RESULT_KIND_COLUMN = Enum(
+    ResultKind,
+    name="ledger_result_kind",
+    native_enum=False,
+    length=24,
     values_callable=lambda enum: [member.value for member in enum],
 )
 
@@ -210,8 +238,7 @@ class Transaction(Base):
     # (`signup-grant:<uuid>`, 49 characters) to prove the derivation confines
     # a collision to one caller. 120 truncates that combination; 255 leaves
     # room for a client key longer than any of this service's own namespaced
-    # keys with margin to spare. Needs `sql/migrations/0007-ledger-trade-idempotency-key-width.sql`
-    # against a database that already has this column.
+    # keys with margin to spare. The baseline revision carries 255.
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
     # A hash of the legs, so a replayed key can be told from a reused one.
@@ -526,6 +553,110 @@ class Position(Base):
     )
 
 
+class MarketResult(Base):
+    """How a market ended: one row per finished market. [3.4] #12, ADR 0019.
+
+    The primary key is `market_id` alone, so a market cannot end twice, with a
+    different winner or otherwise. The trade latch and the settlement both read
+    a row of this table under the book lock and never filter on `kind`.
+
+    `outcome_id` is nullable so a later kind that names no winner needs no
+    ALTER ([BE] #221). The paired CHECK is what binds the two columns, and the
+    composite key is what makes a winner one of this market's own outcomes:
+    Postgres skips a composite key when any column is null, which is why
+    `market_id` also has the plain foreign key. Neither key has an ON DELETE,
+    for the reason `Entry.transaction_id` has none.
+
+    Not append-only at the database, on purpose: D-NEW "`ledger.market_results`
+    carries no append-only trigger".
+    """
+
+    __tablename__ = "market_results"
+
+    market_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("market_books.market_id", name="fk_market_results_book"),
+        primary_key=True,
+    )
+
+    kind: Mapped[ResultKind] = mapped_column(_RESULT_KIND_COLUMN, nullable=False)
+
+    outcome_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
+    # No default, like `MarketBook.opened_at`: the settlement supplies it.
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["market_id", "outcome_id"],
+            ["market_outcomes.market_id", "market_outcomes.outcome_id"],
+            name="fk_market_results_market_outcome",
+        ),
+        CheckConstraint(
+            "(kind = 'settled') = (outcome_id IS NOT NULL)",
+            name="ck_market_results_outcome_iff_settled",
+        ),
+    )
+
+
+class LeaderboardGeneration(Base):
+    """One complete ranking, written once and later deleted. [L-1] #38
+
+    D-NEW "The leaderboard is stored as generations, and a refresh swaps the
+    whole ranking in one commit". Nothing points at the current generation:
+    it is the newest `computed_at`, so there is no pointer to disagree with.
+    Rows are never updated.
+    """
+
+    __tablename__ = "leaderboard_generations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    # No default, like `MarketResult.recorded_at`: the refresh supplies it, and
+    # the advisory-lock guard compares it against the newest generation.
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # How many entries this generation holds, so a page reports it without a count.
+    ranked_users: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class LeaderboardEntry(Base):
+    """One user's place in one generation. [L-1] #38
+
+    `user_id` is stored so [L-2]'s own-row lookup can use the unique index; it
+    is never in a response, and it is not a foreign key for the reason
+    `Account.owner_id` is not (ADR 0003). The cascade is what the refresh's
+    prune relies on: it deletes generations and nothing else.
+    """
+
+    __tablename__ = "leaderboard_entries"
+
+    generation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "leaderboard_generations.id",
+            name="fk_leaderboard_entries_generation",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    rank: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+    # Copied from `auth.users.username`, which is 32 characters.
+    username: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    net_worth: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "generation_id", "user_id", name="uq_leaderboard_entries_generation_user"
+        ),
+        CheckConstraint("rank > 0", name="ck_leaderboard_entries_rank_positive"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Append-only, at the database.
 # ---------------------------------------------------------------------------
@@ -539,10 +670,10 @@ class Position(Base):
 # the statement matches no rows.
 #
 # Attached as an `after_create` DDL event rather than written into `sql/`,
-# because these tables are this service's own: `create_all` makes them at
-# startup and `unit_test/conftest.py` rebuilds them per test, and a trigger
-# that lived in `sql/` would be dropped by the first rebuild and never come
-# back. Here it ships with the table, everywhere the table ships.
+# because these tables are this service's own: the baseline revision makes them
+# and `unit_test/conftest.py` rebuilds them per test, and a trigger that lived
+# in `sql/` would be dropped by the first rebuild and never come back. Here it
+# ships with the table, everywhere the table ships.
 #
 # Be honest about what this is worth. It is one step weaker than the audit
 # log's, because ledger_svc owns `ledger.entries` and could therefore drop its
@@ -557,10 +688,21 @@ class Position(Base):
 # The message is assembled with `||` rather than RAISE's `%` placeholder,
 # which is what `sql/02-schemas.sql` uses. Not a style preference: SQLAlchemy
 # runs every DDL string through Python's `%` interpolation before sending it,
-# so a literal percent sign in the body raises at create_all time. Doubling it
+# so a literal percent sign in the body raises whenever the DDL runs: in the
+# suite's rebuild and in the baseline migration alike. Doubling it
 # would work and would also be the kind of thing somebody quietly un-doubles
 # while editing the SQL.
-_REJECT_MUTATION = DDL(
+
+APPEND_ONLY_TRIGGER = "entries_append_only"
+
+# One copy of this SQL, run in two places: by the `after_create` events below,
+# which the suite's per-test rebuild fires, and by
+# migrations/versions/0001_baseline.py. Both run these DDL elements as they
+# are, so the %-interpolation note above applies to each the same way. Editing
+# them changes what a fresh database gets and nothing else: the baseline has
+# already run everywhere it will, so a new trigger body needs a revision of its
+# own with its own copy of the SQL. ADR 0020.
+REJECT_MUTATION_FUNCTION = DDL(
     f"""
     CREATE OR REPLACE FUNCTION {SCHEMA}.reject_mutation() RETURNS trigger
     LANGUAGE plpgsql AS $$
@@ -576,13 +718,13 @@ _REJECT_MUTATION = DDL(
     """
 )
 
-_INSTALL_TRIGGER = DDL(
+INSTALL_APPEND_ONLY_TRIGGER = DDL(
     f"""
-    CREATE TRIGGER entries_append_only
+    CREATE TRIGGER {APPEND_ONLY_TRIGGER}
         BEFORE UPDATE OR DELETE OR TRUNCATE ON {SCHEMA}.entries
         FOR EACH STATEMENT EXECUTE FUNCTION {SCHEMA}.reject_mutation();
     """
 )
 
-event.listen(Entry.__table__, "after_create", _REJECT_MUTATION)
-event.listen(Entry.__table__, "after_create", _INSTALL_TRIGGER)
+event.listen(Entry.__table__, "after_create", REJECT_MUTATION_FUNCTION)
+event.listen(Entry.__table__, "after_create", INSTALL_APPEND_ONLY_TRIGGER)

@@ -45,6 +45,12 @@ http://localhost:8001, the audit service on http://localhost:8002 and the
 ledger on http://localhost:8003, each with interactive API docs at `/docs`. Those pages are the contract the frontend
 codes against, alongside [`docs/api/`](docs/api/).
 
+Before auth, market and ledger start, compose runs `auth-migrate`,
+`market-migrate` and `ledger-migrate`. Each brings its service's tables up to
+date and exits. If one fails, its service does not start, and
+`docker compose logs market-migrate` (or `auth-migrate`, `ledger-migrate`) says
+why.
+
 The realtime service comes up on http://localhost:8004 and is the exception:
 its `/docs` describes only `/health`, because OpenAPI has no vocabulary for a
 WebSocket. Its contract is
@@ -94,8 +100,10 @@ backend/market_service/   drafting and submitting markets
 backend/audit_service/    reading the shared admin action log
 backend/ledger_service/   credits: append-only entries, derived balances
 backend/realtime_service/ live prices over a websocket; owns no data
+backend/*/migrations/     auth, market, ledger: each schema's Alembic history,
+                          run by compose's <service>-migrate step before the app
 sql/                      roles, schemas and grants for the shared Postgres
-sql/migrations/           hand-applied ALTERs, until Alembic ([F-5] #75)
+sql/migrations/           0002 only: a login role, and 02-schemas.sql re-run
 docs/adr/                 decisions and why they were made
 docs/api/                 endpoint contracts for the frontend
 scripts/                  weekly sprint digest to Telegram

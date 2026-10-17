@@ -317,6 +317,45 @@ class OutcomeRejectionRequest(BaseModel):
     )
 
 
+class OutcomeSendBackRequest(BaseModel):
+    """The body of POST /markets/{id}/send-back-outcome. [3.3] #11
+
+    `proposal_id` names the approved proposal the administrator is looking
+    at, for the reason the decisions carry one: within the window an approval
+    can be sent back, re-proposed and re-approved on the same market row, and
+    a send-back keyed by the market would then undo an approval nobody on
+    that screen saw. Its own description, because it is read from a different
+    audit entry. Required key, nullable value. ADR 0016, ADR 0023.
+
+    `reason` is split as `OutcomeRejectionRequest` splits it: a missing key is
+    FastAPI's 422, and what it says is `send_back_incomplete`.
+    """
+
+    proposal_id: uuid.UUID | None = Field(
+        description=(
+            "The `proposal_id` of the approved result the administrator "
+            "reviewed, exactly as it was read from the latest "
+            "`market.outcome_approved` audit entry's `context` for this "
+            "market. Send `null` only for an approval whose proposal had "
+            "none, which is one made before proposal ids existed. If that "
+            "approval has since been sent back and another approved in its "
+            "place, the send-back is refused as `409 proposal_superseded` "
+            "rather than applied to a result nobody here has read."
+        )
+    )
+
+    reason: str = Field(
+        max_length=MAX_PROSE_LENGTH,
+        description=(
+            "Why this approved result is being sent back. At least 10 "
+            "characters. Recorded in the audit log against the administrator "
+            "who sent it back, and kept nowhere else: it is not a field on "
+            "the market, and the approval it undoes is cleared from the market."
+        ),
+        examples=["The source cited was revised; the first print says No, not Yes."],
+    )
+
+
 class OutcomeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -388,8 +427,8 @@ class MarketOut(_UtcTimestamps):
 
     # --- the proposed outcome. [3.1] #9 -------------------------------------
     # All null or all set, together with `pending_resolution` or `approved`,
-    # with one exception: a proposal pending since before
-    # sql/migrations/0006 has `proposal_id` null, and is decided by sending
+    # with one exception: a proposal pending since before the `proposal_id`
+    # column existed ([3.2] #10) has it null, and is decided by sending
     # the null back. `proposal_id` is what approve and reject send back: read
     # it from the response the reviewer is looking at, never a later fetch
     # (ADR 0016).
@@ -546,6 +585,17 @@ class PublicMarketOut(_UtcTimestamps):
     # administrator has agreed. D-026.
     proposed_outcome_id: uuid.UUID | None
 
+    # [3.4] #12. Stamped by `get_published` onto the market, like `status`
+    # above, and required with no default: the ledger pays out on it, and a
+    # missing flag must not read as true. ADR 0019.
+    settleable: bool
+
+    # [3.3] #11. When the dispute window ends, the stored column as it is:
+    # null until approved and after a send-back, kept once settled. For the
+    # countdown only; nothing decides from it here. Required, so a missing
+    # field cannot read as "no window". ADR 0023.
+    dispute_window_ends_at: datetime | None
+
     @model_validator(mode="after")
     def _hide_an_undecided_proposal(self) -> PublicMarketOut:
         """Hide a proposed winner until it is decided. D-026.
@@ -565,17 +615,25 @@ class PublicMarketSummaryOut(_UtcTimestamps):
 
     Prices are not here either, for the same reason they are not on the
     detail read: a card renders them from the snapshot endpoint once [F-3]
-    #43 and [T-2] #22 land.
+    #43 and [T-2] #22 land. The outcomes are, in the detail read's own shape,
+    so a card can name each price without guessing "Yes" and "No". #214.
     """
 
     id: uuid.UUID
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    outcomes: list[PublicOutcomeOut]
 
 
 class PublicMarketListResponse(BaseModel):
+    """One page of the browse list. [X-1] #34, #104.
+
+    `next_cursor` is null on the last page, an empty one included.
+    """
+
     markets: list[PublicMarketSummaryOut]
+    next_cursor: str | None
 
 
 # --- the administrator's overview. [2.1] #5 --------------------------------
@@ -590,10 +648,18 @@ class MarketOverviewRowOut(_UtcTimestamps):
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    settleable: bool
+    # [3.3] #11. The stored column, for the countdown, as on the public detail.
+    dispute_window_ends_at: datetime | None
 
 
 class MarketOverviewResponse(BaseModel):
-    """Rows for the chosen filter, and a count for every status regardless of it."""
+    """One page of rows for the chosen filter, and a count for every status over
+    every page, regardless of the filter. [2.1] #5, #210.
+
+    `next_cursor` is null on the last page, an empty one included.
+    """
 
     markets: list[MarketOverviewRowOut]
     counts: dict[MarketStatus, int]
+    next_cursor: str | None

@@ -135,6 +135,8 @@ was dropped" both look like silence.
 }
 ```
 
+**`order`** — proposed, ADR 0024: not built yet. See "Order updates" below.
+
 **`error`** — the same envelope the four HTTP services return, so the frontend
 parses one error shape across the whole backend.
 
@@ -282,6 +284,68 @@ Rules that are not negotiable:
 - **Extra fields are rejected.** The consumer validates with `extra="forbid"`,
   so adding a field means changing the model and this page in the same pull
   request.
+
+## Order updates — Proposed, ADR 0024: not built yet
+
+[T-7] #27's fifth criterion: "filled and partially-filled orders push
+notifications to the owner via websocket". **Nothing in this section exists
+yet.** Why: [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md),
+which is Proposed. The order routes are in `docs/api/ledger-service.md`,
+"Limit orders".
+
+**No subscribe.** A connection receives the `order` frames of the user its
+token names, on every socket that user has open, whatever markets it is
+subscribed to. There is no command to add, and the subscription ceiling does
+not count them.
+
+```jsonc
+{
+  "type": "order",
+  "order_id": "0b6e…",
+  "user_id": "5f3e…",
+  "market_id": "9d1c…",
+  "outcome_id": "4f2a…",
+  "side": "buy",
+  "status": "open",
+  "quantity": "100.0000",
+  "filled_quantity": "20.5465",
+  "fill": {
+    "transaction_id": "36fd…",
+    "quantity": "20.5465",
+    "total": "-11.8152",
+    "state_version": 43
+  },
+  "occurred_at": "2026-10-20T09:12:44.318000+00:00"
+}
+```
+
+- **One frame per fill.** An order fills at most once per commit, so one
+  commit sends each owner at most one frame per order. `status` is `open` for
+  a partial fill and `filled` for the last.
+- **A cancel and a placement that does not fill send none.** The response to
+  your own request carries the order. Another tab learns of it from
+  `GET /ledger/orders/me`.
+- **Order them by `fill.state_version`.** Keep the highest you have applied
+  per `order_id`, and discard a frame at or below it. Two fills of one order
+  are in one market, so their versions are ordered.
+- Amounts are decimal strings, as in the `price` frame.
+
+**Reconnecting.** Frames published while you were away are gone, as price
+frames are. After a reconnect, fetch `GET /ledger/orders/me` and the balance
+again. That is [X-4] #37's recovery path, applied to orders.
+
+**Publishing.** The ledger publishes one message per fill on the Redis channel
+**`order.update`**, after the commit that wrote the fill, beside the one
+`price` frame for that commit. The rules in "Publishing an event" hold
+unchanged: after the commit, never before; the publish never fails the trade;
+extra fields are rejected. This service indexes connections by the token's
+user id and forwards each message to that user's sockets. It still owns no
+data and reads no database.
+
+A connection closed with `4408` for an expired token stops receiving order
+frames with everything else. A suspended owner's orders can keep filling
+after their last token has expired (ADR 0024), and those fills reach no
+socket.
 
 ## Operations
 

@@ -161,3 +161,42 @@ def test_no_authentication_policy_knobs_live_here() -> None:
         for f in fields
         if "password" in f or "cookie_secure" in f or "ttl" in f or "refresh" in f
     }
+
+
+# --- [3.4] #12 / [3.3] #11 dispute window -----------------------------------
+# "The dispute window is `dispute_window_seconds`, an int with a 30-day
+# ceiling, and the five-minute gap is a constant".
+def test_the_dispute_window_defaults_to_twenty_four_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[3.3] #11: "configurable, with a 24-hour default"."""
+    monkeypatch.delenv("DISPUTE_WINDOW_SECONDS", raising=False)
+    _env(monkeypatch)
+
+    assert Settings(_env_file=None).dispute_window_seconds == 86400
+
+
+@pytest.mark.parametrize(("raw", "parsed"), [("1", 1), ("2592000", 2592000)])
+def test_the_dispute_window_is_read_from_the_environment_as_whole_seconds(
+    raw: str, parsed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One second is allowed, for a demo; exactly thirty days is the ceiling,
+    inclusive. Fails with `lt` in place of `le`."""
+    _env(monkeypatch, DISPUTE_WINDOW_SECONDS=raw)
+
+    settings = Settings(_env_file=None)
+
+    assert type(settings.dispute_window_seconds) is int
+    assert settings.dispute_window_seconds == parsed
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "2592001", "24h", "1.5"])
+def test_a_nonsensical_dispute_window_refuses_to_boot(
+    bad: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero lets nobody send a result back; past thirty days is a mistyped unit;
+    `24h` and `1.5` are not whole seconds, and a float field would take `1.5`."""
+    _env(monkeypatch, DISPUTE_WINDOW_SECONDS=bad)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

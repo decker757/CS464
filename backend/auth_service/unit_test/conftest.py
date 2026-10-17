@@ -10,7 +10,14 @@ from __future__ import annotations
 import os
 import secrets
 
-from shared.testing import load_repo_env
+import pytest
+
+# Before the first import of shared.testing: pytest rewrites asserts only in
+# modules it sees imported after this call, so without it the shared helpers'
+# asserts fail with no diff.
+pytest.register_assert_rewrite("shared.testing")
+
+from shared.testing import load_repo_env  # noqa: E402
 
 
 # Before any project module is imported: `get_settings` is cached on first call.
@@ -40,6 +47,7 @@ os.environ["DATABASE_URL"] = _test_db
 _audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 # Fresh per run, so no key-shaped string sits in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
+os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
 os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("PASSWORD_MIN_LENGTH", "12")
 

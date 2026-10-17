@@ -86,17 +86,25 @@ class MarketStatus(StrEnum):
     # market's legal moves change here. ADR 0016.
     APPROVED = "approved"
 
+    # [3.4] #12. Terminal: the market has been settled. Every write path
+    # refuses it with `market_already_settled`. Reaching it does not prove the
+    # ledger paid, because a direct call to the settle route gets here without
+    # the ledger. ADR 0019.
+    SETTLED = "settled"
+
 
 # The statuses a trader may see, defined once. [1.1] #1.
 #
 # Read by `service/browsing.py::_visible` and by the public route's `status`
-# parameter, so the SQL filter, the accepted values and /docs cannot disagree
-# when SETTLED lands. DRAFT and SUBMITTED must stay absent.
+# parameter, so the SQL filter, the accepted values and /docs cannot disagree.
+# DRAFT and SUBMITTED must stay absent. Changes together with `MarketStatus`,
+# in one commit. ADR 0017.
 class PublicMarketStatus(StrEnum):
     OPEN = MarketStatus.OPEN.value
     CLOSED = MarketStatus.CLOSED.value
     PENDING_RESOLUTION = MarketStatus.PENDING_RESOLUTION.value
     APPROVED = MarketStatus.APPROVED.value
+    SETTLED = MarketStatus.SETTLED.value
 
 
 PUBLIC_STATUSES: tuple[MarketStatus, ...] = tuple(
@@ -105,8 +113,12 @@ PUBLIC_STATUSES: tuple[MarketStatus, ...] = tuple(
 
 # The statuses in which a proposed winner is decided and may be shown to
 # traders. PENDING_RESOLUTION is absent on purpose: it can still be rejected.
-# D-026.
-DECIDED_STATUSES: tuple[MarketStatus, ...] = (MarketStatus.APPROVED,)
+# D-026. SETTLED is here so the winner stays public once the market is
+# settled. [3.4] #12.
+DECIDED_STATUSES: tuple[MarketStatus, ...] = (
+    MarketStatus.APPROVED,
+    MarketStatus.SETTLED,
+)
 
 
 # The unmapped attribute `get_published` stamps the derived status onto. Do not
@@ -117,19 +129,29 @@ TRADER_FACING_STATUS = "trader_facing_status"
 
 
 @dataclass(frozen=True)
+class CardOutcome:
+    """One outcome on a browse card: what a trader needs to name it. #214."""
+
+    id: uuid.UUID
+    position: int
+    label: str
+
+
+@dataclass(frozen=True)
 class MarketCard:
     """One row of the trader-facing browse list. [X-1] #34, D-027.
 
-    Built from a column select, so it loads no children, never enters the
+    Built from column selects, so it loads no children, never enters the
     identity map and cannot be flushed. `status` is the derived value, with
     deliberately no raw one beside it. Frozen: it is an answer computed
-    against one clock.
+    against one clock. `outcomes` is in position order. #214.
     """
 
     id: uuid.UUID
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    outcomes: tuple[CardOutcome, ...]
 
 
 @dataclass(frozen=True)
@@ -138,6 +160,9 @@ class AdminMarketCard:
 
     `MarketCard` plus `creator_id`, which the trader projection deliberately
     lacks (D-019). `status` is the derived value with no raw one beside it.
+    `settleable` is derived against the same `now`. [3.4] #12.
+    `dispute_window_ends_at` is the stored column, passed through for the
+    countdown. [3.3] #11, ADR 0023.
     """
 
     id: uuid.UUID
@@ -145,14 +170,33 @@ class AdminMarketCard:
     status: MarketStatus
     question: str | None
     close_time: datetime | None
+    settleable: bool
+    dispute_window_ends_at: datetime | None
 
 
 @dataclass(frozen=True)
 class MarketOverview:
-    """The overview's rows and per-status counts, read against one clock."""
+    """One page of the overview's rows, and per-status counts over every row. [2.1] #5, #210.
+
+    Read in one snapshot against one clock. `next_cursor` continues after the
+    last row and is None on the last page, an empty one included.
+    """
 
     markets: list[AdminMarketCard]
     counts: dict[MarketStatus, int]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True)
+class MarketPage:
+    """One page of the trader-facing browse list. [X-1] #104.
+
+    `next_cursor` continues after the last market and is None on the last page,
+    an empty one included.
+    """
+
+    markets: list[MarketCard]
+    next_cursor: str | None
 
 
 def displayed_status(
@@ -291,10 +335,19 @@ class Market(Base):
     #
     # Null unless APPROVED, and set together. The proposal columns stay beside
     # them, so one row shows both identities. There are deliberately no
-    # `rejected_by_*` columns and no deadline column. ADR 0016.
+    # `rejected_by_*` columns. ADR 0016.
     approved_by_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     approved_by_username: Mapped[str | None] = mapped_column(String(32), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # [3.3] #11. When the dispute window ends: `approved_at` plus the window as
+    # the setting stood at approval, so a later change moves no running
+    # window. Set exactly when `approved_at` is; `settleable` reads this, not
+    # the setting. No CHECK, so a null can be written and fails closed.
+    # ADR 0023.
+    dispute_window_ends_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -317,8 +370,8 @@ class Market(Base):
         Index("ix_markets_creator_updated", "creator_id", "updated_at"),
         # [F-4] #44. The close sweep's working set: partial on open markets and
         # keyed on `close_time`, so the sweep is an ordered scan that stops at
-        # its limit. ADR 0011. The predicate is spelled out because
-        # sql/migrations/0004 must match it literally; change both together.
+        # its limit. ADR 0011. The predicate is spelled out because the
+        # baseline revision repeats it literally; changing it needs a revision.
         Index("ix_markets_due_close", "close_time", postgresql_where=text("status = 'open'")),
     )
 

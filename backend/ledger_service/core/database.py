@@ -20,6 +20,10 @@ from core.config import get_settings
 # public.
 SCHEMA = "ledger"
 
+# "A refresh writes under a transaction-level advisory lock, and writes
+# nothing if a generation at least as new exists".
+LEADERBOARD_REFRESH_LOCK_KEY = 464_038
+
 # A `session.info` flag, set by a successful flush and cleared when the
 # outermost transaction ends. A flushed row leaves `session.new`, but a
 # commit still lands it.
@@ -101,16 +105,21 @@ def has_pending_writes(session: AsyncSession) -> bool:
     )
 
 
-async def create_all() -> None:
-    """Create this service's tables, and with them the append-only trigger on
-    `ledger.entries` (an `after_create` event, ADR 0009).
+async def release_before_calling_out(session: AsyncSession, *, caller: str) -> None:
+    """Roll back the transaction a read autobegan, so the HTTP call that
+    follows holds no pooled connection. D-043.
 
-    Callers must import `model.entities` first; core must not reach up into
-    `model` to do it. Becomes Alembic before a column changes on a table
-    holding data worth keeping.
+    Raises `AssertionError` if the session holds pending writes, which the
+    rollback would discard silently. It cannot see a `SELECT ... FOR UPDATE`:
+    a lock taken before this call would be released mid-request, which ADR
+    0015 forbids, so holding none is the caller's job. The rollback expires
+    every ORM instance the session has loaded.
     """
-    async with get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    assert not has_pending_writes(session), (
+        f"{caller} rolls back before it calls out: call it with nothing "
+        "pending on the session"
+    )
+    await session.rollback()
 
 
 async def dispose_engine() -> None:

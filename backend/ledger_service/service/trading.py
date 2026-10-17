@@ -5,14 +5,22 @@ written into `ledger.entries`, `ledger.positions`, `market_outcomes.q` and
 `market_books.state_version` in one transaction, and announced after it
 commits.
 
-**The order, fixed by the issue and by ADR 0017, is the whole design here.**
+**The order, fixed by the issue, ADR 0017 and ADR 0022, is the whole design here.**
 
 1. The idempotency lookup, unlocked. A hit is compared against the request
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
    hit names a committed, append-only transaction, and a miss is trusted for
-   nothing except declining to skip the gate below. A miss is then rolled
-   back, so the gate's HTTP call holds no pooled connection.
+   nothing except declining to skip the checks below. The account check
+   rolls back the transaction the miss opened, so neither HTTP call holds a
+   pooled connection.
+1b. The account check, `service/account_status.py::refuse_if_suspended` —
+   one call to auth's `GET /auth/me`, forwarding the caller's own token,
+   refusing `403 account_suspended` and failing closed (ADR 0022). After the
+   replay, so a charged trade's retry still answers; before the gate, so a
+   suspended trader hears about themselves; before the first touch and the
+   grant, so a suspended account funds and mints nothing. It releases its
+   connection before calling out, as the gate does.
 2. The gate, `service/market_status.py::ensure_trading` — one call to
    market_service's public detail endpoint, forwarding the caller's own
    token, refusing `409 market_closed` on anything but a derived status of
@@ -32,7 +40,9 @@ commits.
    holding pending writes must establish under its own lock that the
    idempotency key is absent": this is that establishment, and it runs
    before this function writes anything of its own, so a hit here still
-   costs nothing to return.
+   costs nothing to return. Then the latch ([3.4] #12): a
+   `ledger.market_results` row for the market is `409 market_closed`,
+   whatever the gate said, before anything below is read.
 7. `q`, `b` and the outcomes, read fresh — cheap, because the book row's lock
    makes this session's own prior read of `state_version` already correct,
    but read again anyway so the statement log shows a read after the lock
@@ -85,10 +95,10 @@ import redis.asyncio as redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import has_pending_writes
 from core.errors import (
     IdempotencyKeyReused,
     InsufficientSharesHeld,
+    MarketClosed,
     QuoteStale,
     UnknownOutcome,
 )
@@ -96,14 +106,21 @@ from core.lmsr import prices as lmsr_prices
 from core.pricing import QUANTUM, Side, release_basis, trade_cost_of
 from model.entities import (
     Account,
-    MarketBook,
     MarketOutcome,
     Position,
     Transaction,
     TransactionKind,
 )
 from model.schemas import OutcomePrice, PriceEvent
-from service import book_prices, books, bus, grants, market_status, posting
+from service import (
+    account_status,
+    book_prices,
+    books,
+    bus,
+    grants,
+    market_status,
+    posting,
+)
 from service.posting import Leg
 
 ZERO = Decimal(0)
@@ -215,12 +232,6 @@ async def _replay_if_present(
     return result_of(existing)
 
 
-async def _lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
-    """"Lock order: book row before account rows" — the wider lock, first."""
-    stmt = select(MarketBook).where(MarketBook.market_id == market_id).with_for_update()
-    return (await session.execute(stmt)).scalar_one()
-
-
 async def _read_outcomes(
     session: AsyncSession, market_id: uuid.UUID
 ) -> Sequence[MarketOutcome]:
@@ -309,15 +320,17 @@ async def execute(
     idempotency_key: str,
     access_token: str,
     redis_client: redis.Redis,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
+    auth_client: httpx.AsyncClient,
 ) -> TradeResult:
     """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
     key already named.
 
-    `access_token` is the caller's own, forwarded unchanged to the gate and
-    to a cold market's first touch — this function mints nothing. `idempotency_key`
-    is the client's own string; the stored key is derived from it, `user_id`
-    and `market_id` (`trade_key`), never stored as sent.
+    `access_token` is the caller's own, forwarded unchanged to the account
+    check, the gate and a cold market's first touch — this function mints
+    nothing. `idempotency_key` is the client's own string; the stored key is
+    derived from it, `user_id` and `market_id` (`trade_key`), never stored
+    as sent.
 
     Raises `ValueError` on a `quantity` that is not positive, before anything
     else: the route's `gt=0` is not the only caller this function can have,
@@ -336,30 +349,27 @@ async def execute(
     if pre_gate is not None:
         return pre_gate
 
-    # "The cold path holds no connection across the terms pull", for the
-    # gate. The lookup above autobegan a transaction nothing ends, and the
-    # gate's first act is an HTTP call — so without this, one pooled
-    # connection sits `idle in transaction` for up to the terms timeout on
-    # every trade that is not a replay. Rolling back discards nothing: a miss
-    # loaded nothing, nothing is pending and no lock is held yet, and a miss
-    # is trusted for nothing below. #115 carries the release inside the gate
-    # itself, for every caller.
-    assert not has_pending_writes(session), (
-        "trading.execute() rolls back before the gate: nothing may be "
-        "pending on the session when it is called"
+    # 1b. The account check. Raises `AccountSuspended`, `NotAuthenticated` or
+    # `AuthUnavailable` before anything below runs. One call after the other,
+    # never together, so a suspended trader on a closed market is told about
+    # the suspension (ADR 0022). Rolls back the lookup's transaction first.
+    await account_status.refuse_if_suspended(
+        session, access_token=access_token, auth_client=auth_client
     )
-    await session.rollback()
 
     # 2. The gate. Refuses `MarketClosed`, `MarketTermsUnavailable` or
-    # `MarketNotFound` before anything below writes a thing.
+    # `MarketNotFound` before anything below writes a thing. It rolls back
+    # before it calls out (D-043), which discards nothing: a miss loaded
+    # nothing, nothing is pending, no lock is held yet, and a miss is trusted
+    # for nothing below.
     await market_status.ensure_trading(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     # 3. The book, opened and funded on a market's first touch only. Commits
     # internally when it writes, so it must finish before the lock below.
     await books.ensure_open(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     # 4. The trader's starting grant, same shape, same reason.
@@ -367,7 +377,7 @@ async def execute(
 
     # 5. The book row, locked — the wider lock, ahead of the account locks
     # `posting.post` takes inside it.
-    book = await _lock_book(session, market_id)
+    book = await books.lock_book(session, market_id)
 
     # 6. The re-check. Nothing below this line has written anything yet, so a
     # hit here still costs nothing to return.
@@ -376,6 +386,14 @@ async def execute(
     )
     if under_lock is not None:
         return under_lock
+
+    # The latch: a market that has ended refuses here, under the book lock, a
+    # trade the gate let through or that queued behind a settlement. After the
+    # re-check, so a charged trade's retry still replays; before the staleness
+    # check, so a settled market is never `quote_stale`. DECISIONS.md, "The
+    # trade latch sits after the key re-check under the book lock".
+    if await books.find_result(session, market_id) is not None:
+        raise MarketClosed
 
     # 7. Read fresh, after the lock. Local rather than
     # `book_prices.read_or_open`: the trade writes `q` through these entities,

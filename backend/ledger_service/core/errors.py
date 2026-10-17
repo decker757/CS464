@@ -138,6 +138,59 @@ class MarketTermsUnavailable(LedgerError):
     message = "Could not read this market's terms right now. Try again shortly."
 
 
+class AccountSuspended(LedgerError):
+    """[4.2] #14 - the auth service says this account is suspended. ADR 0022.
+
+    Same code and message as auth_service's `AccountSuspended`, so the
+    frontend has one handler for both. Not retryable: the account, not the
+    request, is refused.
+    """
+
+    status_code = 403
+    code = "account_suspended"
+    message = "This account is suspended. Contact an administrator."
+
+
+class AuthUnavailable(LedgerError):
+    """[4.2] #14 - the auth service did not say whether this account may trade.
+    [L-1] #38 - or did not name the leaderboard's holders.
+
+    For the account check: a refused connection, a timeout, a 5xx, or any
+    answer that is not a `200`, a `401` or a `403 account_suspended`. For the
+    lookup (ADR 0021): a refused connection, a timeout, any answer but a
+    `200`, or a `200` whose body is not the documented list of users, on any
+    chunk. Fails closed, as ADR 0017's gate does. Its own code rather than
+    `market_terms_unavailable`, which would name the wrong service (ADR
+    0022). 503 because a retry in a moment may work.
+    """
+
+    status_code = 503
+    code = "auth_unavailable"
+    message = "Could not check this account right now. Try again shortly."
+
+
+class SettlementUnconfirmed(LedgerError):
+    """The payouts committed and market_service was not told. [3.4] #12.
+
+    Raised for every answer to the settle call but a `200`, and for a call
+    that never got an answer. Money has moved and the market is not marked
+    SETTLED, so every failure means the same thing and has the same remedy:
+    the administrator repeats the request, which writes nothing in the ledger.
+    Mapping a 401 or a 404 the way `fetch` does, to `NotAuthenticated` or
+    `MarketNotFound`, would tell the administrator that nothing happened.
+    DECISIONS.md, "`market_terms.mark_settled` accepts only a `200`".
+
+    503 because the dependency did not confirm, and a repeat is the fix.
+    """
+
+    status_code = 503
+    code = "settlement_unconfirmed"
+    message = (
+        "The payouts were made, but the market could not be marked settled. "
+        "Repeat the request."
+    )
+
+
 class MarketClosed(LedgerError):
     """This market is not open for trading. [F-8] #109, ADR 0017.
 
@@ -157,6 +210,36 @@ class MarketClosed(LedgerError):
     status_code = 409
     code = "market_closed"
     message = "This market is not open for trading."
+
+
+class MarketNotApproved(LedgerError):
+    """A settlement asked for a market that is neither approved nor settled.
+    [3.4] #12, ADR 0019.
+
+    Read off market_service's public detail, and only when the ledger holds no
+    record for the market: a recorded settlement replays whatever the status
+    now says. Spelled as market_service's settle step spells it. 409: the
+    request is well formed and the market's state refuses it.
+    """
+
+    status_code = 409
+    code = "market_not_approved"
+    message = "This market has no approved outcome to settle."
+
+
+class DisputeWindowOpen(LedgerError):
+    """A settlement asked for an approved market that is not yet `settleable`.
+    [3.4] #12, ADR 0019.
+
+    market_service decides the edge on its own clock and the ledger reads the
+    flag rather than recomputing it. Its own code, apart from
+    `MarketNotApproved`, because the remedy differs: wait, and repeat. 409, as
+    market_service's settle step answers the same case.
+    """
+
+    status_code = 409
+    code = "dispute_window_open"
+    message = "This market's dispute window has not closed yet."
 
 
 class MarketNotFound(LedgerError):
@@ -337,6 +420,28 @@ class QuoteStale(LedgerError):
         super().__init__(self.message)
 
 
+class LeaderboardRefreshed(LedgerError):
+    """A leaderboard cursor names a ranking that is no longer stored. [L-1] #38.
+
+    DECISIONS.md, "A leaderboard cursor names its generation; the current and
+    previous generations are served, and an older one is `409
+    leaderboard_refreshed`". A pruned generation and one that never existed
+    cannot be told apart, and the client's answer is the same: start again
+    from page one.
+
+    409 for `QuoteStale`'s reason: nothing about the request is malformed, and
+    the same cursor was good a minute ago. Not 410: the board still exists,
+    only the client's place in it has gone.
+    """
+
+    status_code = 409
+    code = "leaderboard_refreshed"
+    message = (
+        "The ranking this cursor belongs to has been replaced. Load the "
+        "leaderboard again from the first page."
+    )
+
+
 class PendingWritesOnReplay(LedgerError):
     """`posting.post` reached its replay branch with unwritten work already in
     the session. [T-2] #22.
@@ -359,6 +464,25 @@ class PendingWritesOnReplay(LedgerError):
     message = (
         "A caller reached a replay with unwritten work already pending in "
         "the session. This is a bug in this service, not in the request."
+    )
+
+
+class MalformedBatch(LedgerError):
+    """`posting.post_all` was handed no movements, or one key twice.
+    [3.4] #12.
+
+    "An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500":
+    the server builds every movement and every key, and the settlement
+    request has no body to fix, so this is a bug in the server like
+    `PendingWritesOnReplay`, and takes its status. Raised before any SQL, so
+    nothing is locked and nothing the caller has pending is committed.
+    """
+
+    status_code = 500
+    code = "malformed_batch"
+    message = (
+        "A batch of movements was empty or named one idempotency key twice. "
+        "This is a bug in this service, not in the request."
     )
 
 
@@ -396,3 +520,22 @@ class MarketBookIncomplete(LedgerError):
     status_code = 500
     code = "market_book_incomplete"
     message = "This market's book is missing its outcomes. This is a server fault."
+
+
+class PriceHistoryInconsistent(LedgerError):
+    """A market's trades do not run `state_version` 1, 2, 3, ... in order.
+
+    The price-history replay refuses such a feed, and the service raises this
+    around that call. It is not `MarketBookIncomplete`: that is a book the
+    engine cannot price, this is a fault in the trades, and two codes tell the
+    operator reading the log which to go and look at. DECISIONS.md, "A price
+    history whose trades skip or reorder a state version answers 500
+    `price_history_inconsistent`".
+
+    500 because the ledger's own data is wrong, and the same feed gives the
+    same gap on the next read: nothing the caller does changes it.
+    """
+
+    status_code = 500
+    code = "price_history_inconsistent"
+    message = "This market's trade history is inconsistent. This is a server fault."

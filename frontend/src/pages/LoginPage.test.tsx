@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../context/AuthContext'
+import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
 import LoginPage from './LoginPage'
 
@@ -248,10 +249,10 @@ describe('LoginPage — integration', () => {
   // not exist yet; the next submit, stopped by client validation, must.
   it('clears a banner from a request answered after an edit on the next submit', async () => {
     const user = userEvent.setup()
-    let releaseResponse!: () => void
+    const { held, release: releaseResponse } = holdUntilReleased()
     server.use(
       http.post('http://localhost:8000/auth/login', async () => {
-        await new Promise<void>((resolve) => { releaseResponse = resolve })
+        await held
         return HttpResponse.json(
           { error: { code: 'invalid_credentials', message: 'Invalid credentials' } },
           { status: 401 },

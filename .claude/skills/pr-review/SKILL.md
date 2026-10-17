@@ -149,7 +149,8 @@ Read the changed logic for real bugs, using the root `CLAUDE.md`'s "Things
 that will waste your time" as the checklist for this repo: reads that decide a
 write without `with_for_update()`, gating trading on `status == OPEN`, a stored
 balance, an audit entry committed separately from its action, a publish before
-commit, a new column without a `sql/migrations/` file, a credential in any file.
+commit, a model change without an Alembic revision in that service's
+`migrations/versions/`, a credential in any file.
 
 Every correctness finding needs a concrete scenario: "if two requests do X at
 the same time, Y happens." If you cannot write the scenario, do not report it.

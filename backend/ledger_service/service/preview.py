@@ -47,7 +47,7 @@ async def quote(
     side: Side | str,
     quantity: Decimal,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> Quote:
     """Price one trade against this market's current state.
 
@@ -60,7 +60,7 @@ async def quote(
     """
     side = Side(side)
     rows = await book_prices.read_or_open(
-        session, market_id, access_token=access_token, transport=transport
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
 
     # `read_or_open` has refused an unpriceable book, so this is arithmetic

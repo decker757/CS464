@@ -30,6 +30,17 @@ class Settings(ServiceSettings):
     # is not a credential, and CI's boot check does not set it.
     market_service_url: str = Field(default="http://market:8000")
 
+    # --- The account check [4.2] #14, ADR 0022 ------------------------------
+    # `auth` is compose's hostname for the auth service, defaulted for the
+    # same reasons as `market_service_url`.
+    auth_service_url: str = Field(default="http://auth:8000")
+
+    # --- The leaderboard's lookup key [L-1] #38, ADR 0021 -------------------
+    # Sent as `X-Service-Key` to auth's `/internal/users/lookup`. Required,
+    # with no default, for `jwt_secret`'s reason: a default key is a published
+    # key. ADR 0021 sets the 32-character floor.
+    ledger_service_key: str = Field(min_length=32)
+
     # --- The price broadcast's bus [F-9] #112, ADR 0010 --------------------
     # A default, unlike the realtime service's required one: a wrong Redis
     # here costs a broadcast, not the service (D-046). It must still parse, or
@@ -41,6 +52,16 @@ class Settings(ServiceSettings):
     # Bounded because a ledger only grows. Same ceilings as the audit service.
     default_page_size: int = Field(default=50, gt=0)
     max_page_size: int = Field(default=200, gt=0)
+
+    # --- The leaderboard's staleness [L-1] #38, ADR 0021 ---------------------
+    # How often the stored ranking is meant to be rebuilt. The read derives
+    # `stale` from it: a ranking older than twice this is stale.
+    leaderboard_refresh_seconds: int = Field(default=60, gt=0)
+
+    # Stops this replica running the refresh loop without a code change. With
+    # it off on every replica the ranking stops updating and turns stale after
+    # two intervals. ADR 0021.
+    leaderboard_refresh_enabled: bool = True
 
 
 @lru_cache

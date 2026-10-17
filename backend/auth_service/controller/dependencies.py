@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import hmac
 from typing import Annotated
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import raiseload
 
 from controller import transport
 from core import security
 from core.database import get_session
-from core.errors import AccountSuspended, InvalidToken, NotAnAdministrator
+from core.config import get_settings
+from core.errors import (
+    AccountSuspended,
+    InvalidServiceKey,
+    InvalidToken,
+    NotAnAdministrator,
+)
 from core.roles import UserRole
 from model.entities import User
 from service.audit import Actor
@@ -32,7 +40,12 @@ async def get_current_user(request: Request, session: DbSession) -> User:
     if claims is None:
         raise InvalidToken
 
-    user = await session.get(User, claims.user_id)
+    # `raiseload`: `lazy="selectin"` would load every refresh token the user
+    # has ever had, and the ledger calls `/auth/me` on every trade (ADR 0022).
+    # Nothing reached through this dependency reads the collection.
+    user = await session.get(
+        User, claims.user_id, options=[raiseload(User.refresh_tokens)]
+    )
     if user is None:
         raise InvalidToken
 
@@ -69,3 +82,20 @@ async def get_actor(user: CurrentAdmin) -> Actor:
 
 
 CurrentActor = Annotated[Actor, Depends(get_actor)]
+
+
+async def require_service_key(request: Request) -> None:
+    """Pass if `X-Service-Key` is the ledger's key. [L-1] #38, ADR 0021
+
+    Raises InvalidServiceKey. A missing header is compared as an empty string,
+    so a missing and a wrong key take one code path and the same time. Guards
+    `/internal/users/lookup` and nothing else; an access token does not pass
+    here, and this key does not pass `get_current_user`.
+    """
+    presented = request.headers.get("X-Service-Key") or ""
+    expected = get_settings().ledger_service_key
+    if not hmac.compare_digest(presented.encode(), expected.encode()):
+        raise InvalidServiceKey
+
+
+ServiceKeyChecked = Annotated[None, Depends(require_service_key)]

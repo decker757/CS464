@@ -4,9 +4,10 @@ Base URL `http://localhost:8000` in development. Interactive docs, generated
 from the code and authoritative if this page ever disagrees, at
 [`/docs`](http://localhost:8000/docs).
 
-Covers [A-1] #29, [A-2] #30, [A-3] #31, [4.4] #16 and the user-search half of
-[4.1] #13, and the frontend halves [FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48
-and [FE][4.1] #57.
+Covers [A-1] #29, [A-2] #30, [A-3] #31, [4.4] #16, [4.2] #14 and the
+user-search half of [4.1] #13, the user lookup [L-1] #38's leaderboard reads,
+and the frontend halves [FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48,
+[FE][4.1] #57 and [FE][4.2] #60.
 
 Why we host this ourselves rather than buying it:
 [ADR 0001](../adr/0001-self-host-authentication.md). Why browsers get cookies and
@@ -27,6 +28,8 @@ a balance field anywhere below.
 | GET | `/auth/me` | The current user |
 | GET | `/admin/users` | Search user accounts |
 | PATCH | `/admin/users/{user_id}/role` | Move a user between `trader` and `admin` |
+| PATCH | `/admin/users/{user_id}/suspension` | Suspend or unsuspend an account, with a reason |
+| POST | `/internal/users/lookup` | Usernames and suspension, for the ledger only (service key) |
 
 ## Authentication
 
@@ -38,6 +41,9 @@ Two ways in, one verification.
 - **Service:** `Authorization: Bearer <jwt>`, and `X-Refresh-Token` for the
   refresh call. **The header wins over the cookie**, so a service call carrying
   its own token is never reinterpreted as whoever happens to be logged in.
+- **Service key:** `X-Service-Key`, accepted by `/internal/users/lookup` and
+  by nothing else. It belongs to the ledger, not to a person; see that
+  route below.
 
 | Cookie | Path | Lifetime |
 | --- | --- | --- |
@@ -165,9 +171,15 @@ The `user` object above, on its own. The reference protected route: `401`
 without a valid access token, `403` if the account has been suspended since the
 token was issued.
 
+**The ledger relies on that `403 account_suspended`.** It calls this route
+with the trader's own bearer token on every trade that is not a replay, and
+refuses the trade when this route says the account is suspended
+([ADR 0022](../adr/0022-the-ledger-and-a-suspended-trader.md)). Changing the
+code or the status here changes the ledger's answer.
+
 ## GET /admin/users
 
-`200`. Administrator only. [4.1] #13, and the list [4.2] #14 will act on.
+`200`. Administrator only. [4.1] #13, and the list [4.2] #14 acts on.
 
 | Query | Default | Notes |
 | --- | --- | --- |
@@ -219,9 +231,11 @@ const entries = await fetch(
 beside each entry. **No balance appears here**, on this or any other route:
 this service does not know that credits exist.
 
-`is_suspended` is readable here and written by [4.2] #14. It appears on this
-route only — on register, login and `/auth/me` it could only ever read `false`,
-because a suspended account cannot reach any of the three.
+`is_suspended` is readable here and written by
+`PATCH /admin/users/{user_id}/suspension` below. It appears here and in the
+suspension route's response only — on register, login and `/auth/me` it could
+only ever read `false`, because a suspended account cannot reach any of the
+three.
 
 ### Paging
 
@@ -292,6 +306,121 @@ be granted it, so administrator number one is a manual `UPDATE` against the
 database — permanently, by design. Everyone after that comes through this
 route.
 
+## PATCH /admin/users/{user_id}/suspension
+
+`200` on success. Administrator only. [4.2] #14.
+
+```json
+{ "suspended": true, "reason": "Second account of bob_1, same device and same card." }
+```
+
+The same shape as the role change: `suspended` is the state the user should
+end up in, not an action, so a double-submitted form is the same outcome and
+not an error. One route covers both directions, so the screen needs one
+function and one modal.
+
+**A reason is required both ways**, to suspend and to unsuspend. It is trimmed,
+and must then be at least 10 characters; anything shorter is
+`422 suspension_incomplete` with `details` naming `reason`, the same shape as
+`duplicate_user`'s. Over 500 characters, or a missing `reason` or `suspended`
+key, is FastAPI's own `422`. The reason is stored only in the audit log, as
+`user.suspended` or `user.unsuspended`; this service keeps no copy of it.
+
+```jsonc
+{
+  "user": { "id": "...", "username": "bob_2", "email": "...", "role": "trader",
+            "is_suspended": true, "created_at": "..." },
+  "takes_effect_within_seconds": 900
+}
+```
+
+`user` is the same object as one row of `GET /admin/users`, `is_suspended`
+included, so the screen can replace the row with it.
+
+**What suspending does, at once:**
+
+- the account cannot log in: `403 account_suspended`, with a message to show;
+- every session it has is ended. A refresh fails, so the browser falls back to
+  the login page, and **unsuspending does not bring any of them back**: the user
+  logs in again;
+- it cannot trade: the ledger asks this service on every trade and refuses with
+  `403 account_suspended` (ADR 0022);
+- `/auth/me` and every `/admin/*` route refuse it with `403 account_suspended`.
+
+**What a suspended user can still do for up to `takes_effect_within_seconds`.**
+The other services authorise from the access token, which stays valid until it
+expires. Until then the user can still preview a trade, read prices, their
+balance and their history, and keep the live price socket open. A suspended
+*administrator* can still use the market service's admin routes and the
+ledger's settlement route in that window. So `takes_effect_within_seconds` is
+the access-token lifetime, not zero. **Existing positions are untouched**: a
+suspended user's shares wait for their market to settle and pay out as usual.
+
+Asking for the state the user is already in changes nothing and records
+nothing.
+
+**An administrator cannot suspend themselves** (`403 cannot_suspend_self`), so
+do not offer the control on the signed-in user's own row.
+
+**`409 last_administrator` means the suspension would leave no administrator
+who can log in** — the same code and message as the role change, because the
+fix is the same: make somebody else an administrator first. Like the role
+change, you will only see it when two administrators act at the same instant.
+Show the message and leave the row as it was.
+
+## POST /internal/users/lookup
+
+`200`. **Not for the frontend.** It is a service-to-service read with
+exactly one caller: the ledger's leaderboard refresh ([L-1] #38). A browser
+cannot use it, because it needs a key no browser holds. Why it exists, and
+why it is a key rather than a token:
+[ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md).
+
+```
+POST /internal/users/lookup
+X-Service-Key: <LEDGER_SERVICE_KEY>
+Content-Type: application/json
+
+{ "user_ids": ["5f3e...", "9a01..."] }
+```
+
+```json
+{
+  "users": [
+    { "id": "5f3e...", "username": "michelle_l", "is_suspended": false },
+    { "id": "9a01...", "username": "suspended_user", "is_suspended": true }
+  ]
+}
+```
+
+**The request.**
+- `user_ids` is required and holds between 1 and 500 UUIDs. The ledger
+  sends larger sets in chunks of 500.
+- A duplicate id is answered once.
+- Any other field in the body is refused.
+
+**The answer.**
+- One row per id that names a user, ordered by `id`.
+- An id that names no user is left out, not refused: the caller decides what
+  a missing user means.
+- `is_suspended` is the same flag `GET /admin/users` shows, written by
+  [4.2] #14.
+
+**Exactly three fields per user.** No email, no role, no `created_at`, and no
+balance: this service still does not know that credits exist.
+
+**The key, and only the key.**
+- `X-Service-Key` must equal `LEDGER_SERVICE_KEY`, compared in constant time.
+- A missing or wrong key is `401 invalid_service_key`, the same for both.
+- An access token, by cookie or bearer header, does not open this route, and
+  the key opens no other route.
+- `LEDGER_SERVICE_KEY` is required, has no default, and must be at least 32
+  characters, or the service refuses to boot. Generate one with
+  `python -c "import secrets; print(secrets.token_urlsafe(48))"` and put the
+  same value in the ledger's environment.
+
+**Not audited**, like the user search above: it is a read.
+
 ## Errors
 
 The same envelope the market service uses, so one parser covers both:
@@ -304,13 +433,16 @@ The same envelope the market service uses, so one parser covers both:
 | --- | --- | --- |
 | 401 | `invalid_credentials` | wrong password, or no such account — deliberately the same |
 | 401 | `invalid_token` | no access token, or it is expired, forged or malformed |
+| 401 | `invalid_service_key` | `/internal/users/lookup` without the right `X-Service-Key` |
 | 403 | `account_suspended` | credentials were right; the account is suspended |
 | 400 | `malformed_cursor` | `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | signed in, but not an admin — same code the market service uses |
 | 403 | `cannot_change_own_role` | an administrator targeting their own row |
+| 403 | `cannot_suspend_self` | an administrator suspending their own account |
 | 404 | `user_not_found` | no user with that id |
-| 409 | `last_administrator` | the demotion would leave no administrator; see above |
+| 409 | `last_administrator` | the demotion or suspension would leave no administrator who can log in; see above |
 | 409 | `duplicate_user` | username or email already registered; see `details` |
+| 422 | `suspension_incomplete` | the suspension's `reason` is blank or under 10 characters once trimmed; see `details` |
 | 422 | — | FastAPI's own body-validation error, a different shape |
 
 Two failure shapes exist and they do not look alike. Ours carries the envelope
@@ -321,8 +453,8 @@ presence of `error`.**
 ### Duplicate registration
 
 `duplicate_user` adds a `details` array naming every field that clashed.
-Nothing else in this service does, and it is additive, so a client that ignores
-it still reads `code` and `message`:
+`suspension_incomplete` is the only other error here that does. It is
+additive, so a client that ignores it still reads `code` and `message`:
 
 ```json
 {
@@ -368,6 +500,7 @@ applies. Rare enough that you will never see it, cheap enough to guard.
    the signal: call `/auth/refresh` once, retry the original request, and send
    the user to log in only if the refresh also fails.
 4. `403 account_suspended` is not retryable. Refreshing will not fix it — show
-   the message and stop.
+   the message and stop. The ledger's trade route answers it too, with the
+   same code and message (ADR 0022).
 5. Render `details` on the register form, `error.message` everywhere else.
 6. Registration does not return a balance and never will. Ask the ledger.

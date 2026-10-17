@@ -36,7 +36,11 @@ class PricedOutcome:
     price: Decimal
 
 
-async def _read(session: AsyncSession, market_id: uuid.UUID) -> Sequence[Row]:
+async def list_book_outcomes(
+    session: AsyncSession, market_id: uuid.UUID
+) -> Sequence[Row]:
+    """This market's book joined to its outcomes, one row per outcome ordered
+    by position. Empty when no book exists; never opens one, never locks."""
     stmt = (
         select(
             MarketBook.state_version,
@@ -76,7 +80,7 @@ async def read_or_open(
     market_id: uuid.UUID,
     *,
     access_token: str,
-    transport: httpx.AsyncBaseTransport | None = None,
+    terms_client: httpx.AsyncClient,
 ) -> Sequence[Row]:
     """This market's book, one row per outcome, ordered by position. Opens the
     book first if nobody has yet, forwarding `access_token` unchanged.
@@ -88,12 +92,12 @@ async def read_or_open(
     `outcome_id`, `position` and `q`. Raises `MarketBookIncomplete` rather
     than return a book the engine cannot price.
     """
-    rows = await _read(session, market_id)
+    rows = await list_book_outcomes(session, market_id)
     if not rows:
         await books.ensure_open(
-            session, market_id, access_token=access_token, transport=transport
+            session, market_id, access_token=access_token, terms_client=terms_client
         )
-        rows = await _read(session, market_id)
+        rows = await list_book_outcomes(session, market_id)
 
     # On both paths: a book damaged down to one row is warm and never
     # reaches the cold path.

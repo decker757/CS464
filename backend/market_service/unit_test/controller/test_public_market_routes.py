@@ -13,16 +13,21 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model.entities import MarketStatus
+from core.config import get_settings
+from model.entities import Market, MarketStatus
 from unit_test.conftest import (
     SOURCE_URL,
     actor,
+    approved_market,
     closed_market,
     draft_request,
     overdue_market,
     published_market,
+    settleable_edge,
+    settled_market,
 )
 from service import market_service
 
@@ -142,6 +147,22 @@ async def test_a_market_card_carries_what_the_browse_page_renders(
     assert card["status"] == MarketStatus.OPEN.value
     assert card["close_time"]
     assert card["id"]
+
+
+async def test_a_market_card_names_its_outcomes_as_the_detail_read_does(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """#214: the card's outcomes are the detail's `{id, position, label}`, no more.
+
+    Without them the browse page guessed "Yes" and "No" for every market.
+    """
+    market = await _published(session)
+
+    card = (await client.get(_LIST, headers=trader_headers)).json()["markets"][0]
+    detail = (await client.get(_detail(market.id), headers=trader_headers)).json()
+
+    assert [outcome["label"] for outcome in card["outcomes"]] == ["Yes", "No"]
+    assert card["outcomes"] == detail["outcomes"]
 
 
 # --- refusals -------------------------------------------------------------
@@ -265,6 +286,103 @@ async def test_an_empty_result_is_200_with_an_empty_list(
 
     assert response.status_code == 200
     assert response.json()["markets"] == []
+    assert response.json()["next_cursor"] is None
+
+
+# --- paging, #104 ---------------------------------------------------------
+async def test_next_cursor_continues_the_list_and_is_null_on_the_last_page(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """#104's contract: send `next_cursor` back as `cursor`; null is the end.
+    The wiring only; the order and the rows are `test_browsing.py`'s job."""
+    created = set()
+    for _ in range(3):
+        created.add(str((await _published(session)).id))
+
+    first = (
+        await client.get(_LIST, params={"limit": 2}, headers=trader_headers)
+    ).json()
+    second = (
+        await client.get(
+            _LIST,
+            params={"limit": 2, "cursor": first["next_cursor"]},
+            headers=trader_headers,
+        )
+    ).json()
+
+    assert len(first["markets"]) == 2
+    assert first["next_cursor"]
+    assert len(second["markets"]) == 1
+    assert second["next_cursor"] is None
+    assert {m["id"] for m in first["markets"] + second["markets"]} == created
+
+
+async def test_a_cursor_this_service_did_not_issue_is_400_with_the_service_envelope(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """#104: one error for every bad cursor, the code the other services use."""
+    response = await client.get(
+        _LIST, params={"cursor": "made-this-up"}, headers=trader_headers
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "malformed_cursor"
+
+
+async def test_with_no_limit_a_page_is_the_configured_default(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#104: "default 50", from settings. Shrunk to 2 so three markets show it."""
+    for _ in range(3):
+        await _published(session)
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEFAULT_PAGE_SIZE", "2")
+    try:
+        payload = (await client.get(_LIST, headers=trader_headers)).json()
+    finally:
+        # Settings cached under the patched environment must not leak.
+        get_settings.cache_clear()
+
+    assert len(payload["markets"]) == 2
+    assert payload["next_cursor"]
+
+
+async def test_a_limit_above_the_ceiling_is_clamped_rather_than_refused(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#104: "oversized clamped, not refused" — a caller asking for more than
+    the ceiling wants as much as it can get."""
+    for _ in range(3):
+        await _published(session)
+    get_settings.cache_clear()
+    monkeypatch.setenv("MAX_PAGE_SIZE", "2")
+    try:
+        response = await client.get(
+            _LIST, params={"limit": 1000}, headers=trader_headers
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert len(response.json()["markets"]) == 2
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_a_limit_below_one_is_422(
+    client: AsyncClient, trader_headers: dict[str, str], limit: int
+) -> None:
+    """#104: a page of nothing makes no progress, so it is refused, not clamped."""
+    response = await client.get(
+        _LIST, params={"limit": limit}, headers=trader_headers
+    )
+
+    assert response.status_code == 422
 
 
 # --- ADR 0011, as the wire reports it -------------------------------------
@@ -348,3 +466,64 @@ async def test_the_browse_list_derived_status_reaches_the_wire_too(
     payload = (await client.get(_LIST, headers=trader_headers)).json()
 
     assert [m["status"] for m in payload["markets"]] == [MarketStatus.OPEN.value]
+
+
+# --- [3.4] #12: settled, and settleable ------------------------------------
+async def test_the_browse_accepts_a_settled_filter(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """[3.4] #12: `settled` "is an accepted status on the trader browse".
+
+    The literal string, so it fails while `PublicMarketStatus` lacks it. The
+    approved decoy fails a filter that matches every decided market.
+    """
+    await _published(session)
+    await approved_market(session, actor())
+    settled_id = (await settled_market(session, actor())).id
+
+    response = await client.get(
+        _LIST, params={"status": "settled"}, headers=trader_headers
+    )
+
+    assert response.status_code == 200
+    assert [m["id"] for m in response.json()["markets"]] == [str(settled_id)]
+    assert response.json()["markets"][0]["status"] == "settled"
+
+
+async def test_settleable_on_the_wire_follows_the_routes_clock(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"`settleable` reads the request's one Python clock": the controller's
+    `now` must reach the flag and survive FastAPI's re-validation. D-027.
+
+    Approved a moment ago, so the real clock reads false. At the edge the
+    route's clock reads true, one second earlier false. Fails if the service
+    reads `datetime.now(UTC)` instead of the `now` it is handed: both sides
+    then read false.
+    """
+    import controller.public_routes as routes  # noqa: PLC0415
+
+    market_id = (await approved_market(session, actor())).id
+    approved_at = await session.scalar(
+        select(Market.approved_at).where(Market.id == market_id)
+    )
+    edge = settleable_edge(approved_at)
+
+    route_clock = {"now": edge}
+
+    class _RouteClock:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return route_clock["now"]
+
+    monkeypatch.setattr(routes, "datetime", _RouteClock)
+
+    at_the_edge = (await client.get(_detail(market_id), headers=trader_headers)).json()
+    route_clock["now"] = edge - timedelta(seconds=1)
+    just_before = (await client.get(_detail(market_id), headers=trader_headers)).json()
+
+    assert at_the_edge["settleable"] is True
+    assert just_before["settleable"] is False

@@ -10,13 +10,18 @@ DELETE anywhere on this service. That is the whole design, it is enforced by
 a trigger rather than by this file being short, and a route added here in a
 hurry would fail against the database.
 
-**`POST /markets/{market_id}/trades` is this service's first write route.**
-[T-2] #22 answers ADR 0009's deferred service-auth question for exactly this
-shape of caller: the route takes no account, no amount and no leg — the
-request model is `extra="forbid"` over five fields, none of them money — so
-the trader's account is `accounts.ensure(USER, claims.sub)` rather than
-anything in the body, and a trader's own token is safe to accept because
-there is nothing in the request for it to mint. See ADR 0009's amendment.
+**Two routes write, and neither takes money.** `POST /markets/{market_id}/trades`
+([T-2] #22) answers ADR 0009's deferred service-auth question for exactly this
+shape of caller: the request model is `extra="forbid"` over five fields, none
+of them money, so the trader's account is `accounts.ensure(USER, claims.sub)`
+rather than anything in the body, and a trader's own token is safe to accept
+because there is nothing in the request for it to mint. See ADR 0009's
+amendment.
+
+`POST /markets/{market_id}/settlement` ([3.4] #12) takes an administrator's
+token and an empty body: the winner comes from market_service and the holders
+and amounts from the ledger's own positions (ADR 0009's second amendment, ADR
+0019). It publishes nothing, so unlike the trade it holds no Redis client.
 
 The grant is the older exception that proves the same rule from the read
 side: a user reading their own balance can write, because [B-1] #32's starting
@@ -27,39 +32,59 @@ administrator reading somebody else's writes nothing (#188).
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Query
+from fastapi.exceptions import RequestValidationError
+from pydantic import AwareDatetime
 
 from controller.dependencies import (
     AccessToken,
+    AuthClient,
+    CurrentActor,
     CurrentAdmin,
     CurrentUser,
     DbSession,
     RedisClient,
+    TermsClient,
 )
 from core.config import get_settings
 from core.pricing import Side
 from model.schemas import (
     BalanceOut,
+    ExposureOut,
+    ExposureOutcomeOut,
+    LeaderboardPageOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
+    MarketTradeListResponse,
     OutcomePriceOut,
     PortfolioOut,
     PortfolioPositionOut,
     PreviewOut,
+    PriceHistoryOut,
+    PricePointOut,
+    SettlementIn,
+    SettlementOut,
     SnapshotOut,
     TradeIn,
     TradeOut,
+    ValidationErrorOut,
 )
 from service import (
+    exposure as exposure_service,
+    leaderboard as leaderboard_service,
     ledger_service,
     portfolio as portfolio_service,
     preview as preview_service,
+    price_history as price_history_service,
+    settlement,
     snapshot as snapshot_service,
     trading,
 )
+from service.book_prices import PricedOutcome
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -96,6 +121,16 @@ _ENTRIES_DESCRIPTION = (
 )
 
 
+def _invalid_request(description: str) -> dict[str, object]:
+    """A route's 422 entry: its own description, the one envelope. #117
+
+    Without the model, `/docs` describes FastAPI's `HTTPValidationError`,
+    which this service never sends: `errors.py` answers every 422 as
+    `ValidationErrorOut`.
+    """
+    return {"model": ValidationErrorOut, "description": description}
+
+
 def _page_size(limit: int | None) -> int:
     """Clamped rather than rejected.
 
@@ -105,6 +140,14 @@ def _page_size(limit: int | None) -> int:
     """
     settings = get_settings()
     return min(limit or settings.default_page_size, settings.max_page_size)
+
+
+def _prices_out(priced: list[PricedOutcome]) -> list[OutcomePriceOut]:
+    """The wire form of a market's priced outcomes, in the order given."""
+    return [
+        OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
+        for p in priced
+    ]
 
 
 PageLimit = Annotated[
@@ -177,6 +220,7 @@ async def my_balance(user: CurrentUser, session: DbSession) -> BalanceOut:
     responses={
         400: {"description": "`cursor` was not one this service issued."},
         401: {"description": "Missing, malformed or expired access token."},
+        422: _invalid_request("`invalid_request`: `limit` below 1."),
     },
 )
 async def my_entries(
@@ -201,6 +245,10 @@ _PORTFOLIO_DESCRIPTION = (
     "first read exactly as `/balances/me` does. Makes no call to "
     "market_service — a market that has closed is valued at its frozen "
     "book like any other.\n\n"
+    "A market this service has settled is not valued: its rows carry "
+    "`result` and `payout`, and `price`, `value` and `unrealized_pnl` are "
+    "null. The payout is already in `balance`, so such a row adds nothing "
+    "to `positions_value`. Every key is on every row; branch on `result`.\n\n"
     "Only positions with quantity > 0 are shown, ordered by `market_id` "
     "then `outcome_position`; there is no admin variant."
 )
@@ -242,6 +290,8 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
                 price=p.price,
                 value=p.value,
                 unrealized_pnl=p.unrealized_pnl,
+                result=p.result,
+                payout=p.payout,
                 state_version=p.state_version,
             )
             for p in result.positions
@@ -262,6 +312,7 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
     responses={
         401: {"description": "Missing, malformed or expired access token."},
         403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request("`invalid_request`: `user_id` is not a UUID."),
     },
 )
 async def user_balance(
@@ -285,6 +336,9 @@ async def user_balance(
         400: {"description": "`cursor` was not one this service issued."},
         401: {"description": "Missing, malformed or expired access token."},
         403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request(
+            "`invalid_request`: `user_id` is not a UUID, or `limit` below 1."
+        ),
     },
 )
 async def user_entries(
@@ -318,15 +372,14 @@ async def user_entries(
                 "This sell is larger than the outcome's shares outstanding."
             )
         },
-        422: {
-            "description": (
-                "A malformed query string, an `outcome_id` that is not this "
-                "market's, a quantity whose cost or resulting shares "
-                "outstanding exceed what the ledger can store, or a trade "
-                "whose total rounds to nothing (D-041): `proceeds_below_tick` "
-                "on a sell, `cost_below_tick` on a buy."
-            )
-        },
+        422: _invalid_request(
+            "`invalid_request`: a malformed query string. "
+            "`unknown_outcome`: an `outcome_id` that is not this market's. "
+            "`quantity_too_large`: a quantity whose cost or resulting shares "
+            "outstanding exceed what the ledger can store. A trade whose "
+            "total rounds to nothing (D-041): `proceeds_below_tick` on a "
+            "sell, `cost_below_tick` on a buy."
+        ),
         500: {
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
@@ -345,6 +398,7 @@ async def preview_trade(
     side: Side,
     quantity: PreviewQuantity,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
 ) -> PreviewOut:
     result = await preview_service.quote(
@@ -354,6 +408,7 @@ async def preview_trade(
         side=side,
         quantity=quantity,
         access_token=access_token,
+        terms_client=terms_client,
     )
     return PreviewOut(
         market_id=result.market_id,
@@ -363,14 +418,8 @@ async def preview_trade(
         quantity=result.quantity,
         total=result.total,
         average_price=result.average_price,
-        prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.prices
-        ],
-        post_trade_prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.post_trade_prices
-        ],
+        prices=_prices_out(result.prices),
+        post_trade_prices=_prices_out(result.post_trade_prices),
     )
 
 
@@ -401,7 +450,7 @@ _SNAPSHOT_DESCRIPTION = (
     responses={
         401: {"description": "Missing, malformed or expired access token."},
         404: {"description": "No such market."},
-        422: {"description": "`market_id` is not a UUID."},
+        422: _invalid_request("`invalid_request`: `market_id` is not a UUID."),
         500: {
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
@@ -414,19 +463,69 @@ _SNAPSHOT_DESCRIPTION = (
 async def market_snapshot(
     market_id: uuid.UUID,
     access_token: AccessToken,
+    terms_client: TermsClient,
     session: DbSession,
 ) -> SnapshotOut:
     result = await snapshot_service.snapshot(
-        session, market_id, access_token=access_token
+        session, market_id, access_token=access_token, terms_client=terms_client
     )
     return SnapshotOut(
         market_id=result.market_id,
         state_version=result.state_version,
-        prices=[
-            OutcomePriceOut(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in result.prices
-        ],
+        prices=_prices_out(result.prices),
         occurred_at=result.occurred_at,
+    )
+
+
+_EXPOSURE_DESCRIPTION = (
+    "[2.2] #6. What resolving a market would cost: for each outcome, the "
+    "shares outstanding, what the market would pay if that outcome won, and "
+    "what the pool would have left over. Any administrator, not only the "
+    "market's creator.\n\n"
+    "`payout_exceeds_pool` is true when any payout is strictly greater than "
+    "the pool, not the seed. One statement reads `q` and the pool together, "
+    "with no lock. Once `result` is set, `pool`, `payout_if_wins` and "
+    "`residue_if_wins` are null, and `payout_exceeds_pool` is false.\n\n"
+    "**Writes nothing and asks market_service nothing.** A market with no "
+    "book here, including an id that names no market, is a `200` with nulls "
+    "and an empty `outcomes`. Never checks the market's status."
+)
+
+
+@router.get(
+    "/markets/{market_id}/exposure",
+    response_model=ExposureOut,
+    summary="What resolving the market would pay out",
+    description=_EXPOSURE_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request("`invalid_request`: `market_id` is not a UUID."),
+    },
+)
+async def market_exposure(
+    market_id: uuid.UUID, admin: CurrentAdmin, session: DbSession
+) -> ExposureOut:
+    result = await exposure_service.exposure_of_market(session, market_id=market_id)
+    return ExposureOut(
+        market_id=result.market_id,
+        opened_at=result.opened_at,
+        state_version=result.state_version,
+        seed_subsidy=result.seed_subsidy,
+        pool=result.pool,
+        payout_exceeds_pool=result.payout_exceeds_pool,
+        result=result.result,
+        winning_outcome_id=result.winning_outcome_id,
+        outcomes=[
+            ExposureOutcomeOut(
+                outcome_id=outcome.outcome_id,
+                position=outcome.position,
+                shares_outstanding=outcome.shares_outstanding,
+                payout_if_wins=outcome.payout_if_wins,
+                residue_if_wins=outcome.residue_if_wins,
+            )
+            for outcome in result.outcomes
+        ],
     )
 
 
@@ -471,6 +570,12 @@ _TRADE_DESCRIPTION = (
                 "`invalid_token`: missing, malformed or expired access token."
             )
         },
+        403: {
+            "description": (
+                "`account_suspended`: an administrator has suspended this "
+                "account. Nothing was written (ADR 0022)."
+            )
+        },
         404: {"description": "`market_not_found`: no such market."},
         409: {
             "description": (
@@ -483,16 +588,14 @@ _TRADE_DESCRIPTION = (
                 "different trade."
             )
         },
-        422: {
-            "description": (
-                "A malformed body, an extra field, `side` other than "
-                "\"buy\" or \"sell\", a quantity at five decimal places, "
-                "<= 0 or wider than 18 digits; `unknown_outcome`; "
-                "`quantity_too_large`; `cost_below_tick` on a buy whose "
-                "cost rounds to nothing; `proceeds_below_tick` on a sell "
-                "whose proceeds round to nothing (D-041)."
-            )
-        },
+        422: _invalid_request(
+            "`invalid_request`: a malformed body, an extra field, `side` "
+            "other than \"buy\" or \"sell\", a quantity at five decimal "
+            "places, <= 0 or wider than 18 digits. `unknown_outcome`; "
+            "`quantity_too_large`; `cost_below_tick` on a buy whose cost "
+            "rounds to nothing; `proceeds_below_tick` on a sell whose "
+            "proceeds round to nothing (D-041)."
+        ),
         500: {
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
@@ -505,7 +608,8 @@ _TRADE_DESCRIPTION = (
             "description": (
                 "`market_terms_unavailable`: market_service could not be "
                 "reached right now, or returned unusable terms on a first "
-                "trade."
+                "trade. `auth_unavailable`: the auth service could not say "
+                "whether this account may trade."
             )
         },
     },
@@ -515,6 +619,8 @@ async def execute_trade(
     body: TradeIn,
     user: CurrentUser,
     access_token: AccessToken,
+    terms_client: TermsClient,
+    auth_client: AuthClient,
     session: DbSession,
     redis: RedisClient,
 ) -> TradeOut:
@@ -528,6 +634,8 @@ async def execute_trade(
         state_version=body.state_version,
         idempotency_key=body.idempotency_key,
         access_token=access_token,
+        terms_client=terms_client,
+        auth_client=auth_client,
         redis_client=redis,
     )
     return TradeOut(
@@ -539,6 +647,308 @@ async def execute_trade(
         quantity=result.quantity,
         total=result.total,
         state_version=result.state_version,
+    )
+
+
+_TRADE_FEED_DESCRIPTION = (
+    "[BE][2.4] #63. Every trade in one market, newest first, for an "
+    "administrator investigating it. Each row names its trader by `user_id`; "
+    "resolve names through auth's batch lookup.\n\n"
+    "The market's pool account also holds the seed, the settlement payouts and "
+    "the residue, and none of them appears here. There is no `balance_after`.\n\n"
+    "**Writes nothing.** A market with no book, or an id that names no market, "
+    "is an empty `200`; this never opens a book, grants credits or calls "
+    "market_service, and does not check the market's status.\n\n"
+    "Paged by keyset with the same cursor as `/ledger/entries/me`: a trade "
+    "committed while you page is newer than every row on screen."
+)
+
+
+@router.get(
+    "/markets/{market_id}/trades",
+    response_model=MarketTradeListResponse,
+    summary="A market's trades",
+    description=_TRADE_FEED_DESCRIPTION,
+    responses={
+        400: {"description": "`cursor` was not one this service issued."},
+        401: {"description": "Missing, malformed or expired access token."},
+        403: {"description": "Authenticated, but not an administrator."},
+        422: _invalid_request(
+            "`invalid_request`: `market_id` is not a UUID, or `limit` below 1."
+        ),
+    },
+)
+async def market_trades(
+    market_id: uuid.UUID,
+    admin: CurrentAdmin,
+    session: DbSession,
+    cursor: PageCursor = None,
+    limit: PageLimit = None,
+) -> MarketTradeListResponse:
+    page = await ledger_service.list_market_trades(
+        session, market_id, limit=_page_size(limit), cursor=cursor
+    )
+    return MarketTradeListResponse(
+        trades=page.rows, next_cursor=page.next_cursor, has_more=page.has_more
+    )
+
+
+_LEADERBOARD_DESCRIPTION = (
+    "[L-1] #38, [BE][L-2] #269. Every ranked user's rank, username and net "
+    "worth, from the most recent ranking the ledger has computed, in rank "
+    "order. Any valid access token.\n\n"
+    "`me` is the caller's own row in the ranking this page came from, on this "
+    "page or not, and `null` when the caller is not in it. `is_me` is true on "
+    "the caller's own row. The caller is matched by the access token, and no "
+    "user id is sent.\n\n"
+    "`stale` is true when `computed_at` is more than two refresh intervals "
+    "old. Before any refresh, `computed_at` is null, `stale` is true and "
+    "`rows` is empty.\n\n"
+    "A cursor holds you to the ranking its first page came from. The ledger "
+    "keeps the ranking before the current one, so a cursor survives one "
+    "refresh; after the second it is `409 leaderboard_refreshed`: start again "
+    "from page one.\n\n"
+    "**Writes nothing.** Unlike the balance, history and portfolio, reading "
+    "the leaderboard does not mint the caller's starting grant, so a caller "
+    "with no account gets `me: null`."
+)
+
+
+@router.get(
+    "/leaderboard",
+    response_model=LeaderboardPageOut,
+    summary="The leaderboard",
+    description=_LEADERBOARD_DESCRIPTION,
+    responses={
+        400: {"description": "`cursor` was not one this service issued."},
+        401: {"description": "Missing, malformed or expired access token."},
+        409: {
+            "description": (
+                "`leaderboard_refreshed`: the cursor's ranking has been "
+                "replaced. Start again from page one."
+            )
+        },
+        422: _invalid_request("`invalid_request`: `limit` below 1."),
+    },
+)
+async def leaderboard(
+    user: CurrentUser,
+    session: DbSession,
+    cursor: PageCursor = None,
+    limit: PageLimit = None,
+) -> LeaderboardPageOut:
+    # DECISIONS.md, "One clock per request, read at the controller, Python's
+    # not the transaction's": `stale` is judged against this one reading.
+    now = datetime.now(UTC)
+    page = await leaderboard_service.list_page(
+        session,
+        caller_id=user.user_id,
+        limit=_page_size(limit),
+        cursor=cursor,
+        now=now,
+    )
+    return LeaderboardPageOut(
+        computed_at=page.computed_at,
+        stale=page.stale,
+        ranked_users=page.ranked_users,
+        me=page.me,
+        rows=page.rows,
+        next_cursor=page.next_cursor,
+        has_more=page.has_more,
+    )
+
+
+def _point_out(point: price_history_service.PricedPoint) -> PricePointOut:
+    """The wire form of one price-history point."""
+    return PricePointOut(
+        state_version=point.state_version,
+        occurred_at=point.occurred_at,
+        prices=_prices_out(point.prices),
+    )
+
+
+PriceHistoryStart = Annotated[
+    AwareDatetime | None,
+    Query(
+        alias="from",
+        description=(
+            "ISO-8601 time with an offset (`Z` or `+08:00`; send `+` as `%2B`). "
+            "Points at or after it, plus the last point before it, at its own "
+            "time, so a chart starts at the price the market had then."
+        ),
+    ),
+]
+
+PriceHistoryEnd = Annotated[
+    AwareDatetime | None,
+    Query(
+        alias="to",
+        description="ISO-8601 time with an offset. Points at or before it.",
+    ),
+]
+
+_PRICE_HISTORY_DESCRIPTION = (
+    "[BE][2.4] #63. Every price the market has had, one point per trade, "
+    "oldest first, rebuilt from the market's trades on every read. Any valid "
+    "access token, any role: every point has already been broadcast to every "
+    "subscriber of the market's price frames.\n\n"
+    "A point is a `price` socket frame without `type` and `market_id`. The "
+    "first is the book's opening, `state_version` 0. Dedupe on "
+    "`state_version`, never on time.\n\n"
+    "**Nothing is bucketed or paged.** `from` and `to` bound the payload, and "
+    "`from` also returns the last point before it, at its own `occurred_at`. "
+    "`from` later than `to` is `422 invalid_request` naming both.\n\n"
+    "**Settlement adds no point.** The series ends at the last trade, and "
+    "`result`, `winning_outcome_id` and `result_recorded_at` report the "
+    "outcome beside it.\n\n"
+    "**Writes nothing and asks no other service anything.** A market with no "
+    "book here, including an id that names no market, is a `200` with an "
+    "empty `points`. It never checks the market's status."
+)
+
+
+def _refuse_if_window_reversed(
+    start: AwareDatetime | None, end: AwareDatetime | None
+) -> None:
+    """Raise `RequestValidationError` for a `from` later than `to`, so the one
+    handler in `controller/errors.py` answers it as `invalid_request`, with a
+    `details` item for each of the two parameters. #117."""
+    if start is None or end is None or start <= end:
+        return
+
+    raise RequestValidationError(
+        [
+            {
+                "type": "value_error",
+                "loc": ("query", parameter),
+                "msg": "`from` must not be later than `to`.",
+                "input": value,
+            }
+            for parameter, value in (("from", start), ("to", end))
+        ]
+    )
+
+
+@router.get(
+    "/markets/{market_id}/price-history",
+    response_model=PriceHistoryOut,
+    summary="Every price the market has had",
+    description=_PRICE_HISTORY_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        422: _invalid_request(
+            "`invalid_request`: `market_id` is not a UUID, `from` or `to` is "
+            "not a time with an offset, or `from` is later than `to`."
+        ),
+        500: {
+            "description": (
+                "`market_book_incomplete`: the book cannot be priced. "
+                "`price_history_inconsistent`: the market's trades skip or "
+                "reorder a `state_version`. Server faults, not retryable."
+            )
+        },
+    },
+)
+async def market_price_history(
+    market_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    start: PriceHistoryStart = None,
+    end: PriceHistoryEnd = None,
+) -> PriceHistoryOut:
+    _refuse_if_window_reversed(start, end)
+    history = await price_history_service.price_history_of_market(
+        session, market_id, start=start, end=end
+    )
+    return PriceHistoryOut(
+        market_id=history.market_id,
+        points=[_point_out(point) for point in history.points],
+        result=history.result,
+        winning_outcome_id=history.winning_outcome_id,
+        result_recorded_at=history.result_recorded_at,
+    )
+
+
+_SETTLEMENT_DESCRIPTION = (
+    "[3.4] #12. Pay every winning share of an approved market once, then "
+    "tell market_service the market is settled. Administrators only; any "
+    "administrator may settle, including the proposer and the approver "
+    "(ADR 0019).\n\n"
+    "**The request chooses nothing.** The body is empty: no body, `{}` or "
+    "`null`. Any field is `422 invalid_request`, not ignored, because a "
+    "dropped `outcome_id` would let a client believe it had picked the "
+    "winner. The winner is the outcome market_service approved, and the "
+    "holders and amounts come from this service's own positions, read under "
+    "the book lock (ADR 0009's second amendment).\n\n"
+    "**`200` on the request that pays and on every repeat**, with the same "
+    "six fields rebuilt from the entries the first request wrote. A repeat "
+    "writes nothing here and retries the last step, so it is how a "
+    "`503 settlement_unconfirmed` is finished.\n\n"
+    "**No price frame is published**: settlement moves neither `q` nor any "
+    "position."
+)
+
+
+@router.post(
+    "/markets/{market_id}/settlement",
+    response_model=SettlementOut,
+    status_code=200,
+    summary="Pay out an approved market",
+    description=_SETTLEMENT_DESCRIPTION,
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access "
+                "token, or market_service refused the forwarded one."
+            )
+        },
+        403: {"description": "`not_an_administrator`: authenticated, but a trader."},
+        404: {"description": "`market_not_found`: no such market."},
+        409: {
+            "description": (
+                "`market_not_approved`: nothing is recorded here and the "
+                "market is in a status other than `approved` or `settled`. "
+                "`dispute_window_open`: approved, but not yet `settleable`."
+            )
+        },
+        422: _invalid_request(
+            "`invalid_request`: a body with any field, a body that is not "
+            "an object, or a `market_id` that is not a UUID."
+        ),
+        503: {
+            "description": (
+                "`market_terms_unavailable`: market_service could not be "
+                "reached, or answered with terms no settlement can use; "
+                "nothing was paid. `settlement_unconfirmed`: every winner is "
+                "paid and the settlement is recorded, and market_service did "
+                "not confirm. Repeat the request."
+            )
+        },
+    },
+)
+async def settle_market(
+    market_id: uuid.UUID,
+    actor: CurrentActor,
+    access_token: AccessToken,
+    terms_client: TermsClient,
+    session: DbSession,
+    body: SettlementIn | None = None,
+) -> SettlementOut:
+    # `body` is never read: it is declared so that a field in it is refused.
+    result = await settlement.pay_out(
+        session,
+        market_id,
+        actor=actor,
+        access_token=access_token,
+        terms_client=terms_client,
+    )
+    return SettlementOut(
+        market_id=result.market_id,
+        outcome_id=result.outcome_id,
+        recorded_at=result.recorded_at,
+        holders_paid=result.holders_paid,
+        total_paid=result.total_paid,
+        residue=result.residue,
     )
 
 

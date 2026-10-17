@@ -11,20 +11,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from controller.admin_routes import router as admin_router
 from controller.errors import register_error_handlers
+from controller.internal_routes import router as internal_router
 from controller.routes import router as auth_router
 from core.config import get_settings
-from core.database import create_all, dispose_engine
-
-# Registers the mappers on Base before create_all runs. Keep it explicit.
-from model import entities  # noqa: F401
+from core.database import dispose_engine
 
 logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Replace with Alembic: [F-5] #75.
-    await create_all()
+    # No DDL here: `auth-migrate` (migrate.py) brought the schema to head
+    # before this process started. ADR 0020.
     yield
     await dispose_engine()
 
@@ -55,6 +53,7 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(internal_router)
 
     @app.get("/health", tags=["ops"], summary="Liveness and readiness probe")
     async def health() -> dict[str, str]:

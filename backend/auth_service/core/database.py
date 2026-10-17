@@ -63,16 +63,6 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-async def create_all() -> None:
-    """Create any missing table in this service's schema. Until [F-5] #75.
-
-    The caller must import `model.entities` first; core does not reach up into
-    `model`. Never alters an existing table.
-    """
-    async with get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 async def dispose_engine() -> None:
     global _engine, _session_factory
     if _engine is not None:

@@ -10,6 +10,10 @@ pydantic-settings==2.15.0
 SQLAlchemy[asyncio]==2.0.52
 asyncpg==0.31.0
 
+# [F-5] #75. Schema migrations, run by `ledger-migrate` before the app starts.
+# In the runtime image because the migrate step is this image. ADR 0020.
+alembic==1.20.0
+
 # Token verification only. This service never signs.
 PyJWT==2.14.0
 

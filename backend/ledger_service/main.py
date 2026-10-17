@@ -6,9 +6,10 @@ place that decides which concrete implementations run.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as redis
 from fastapi import FastAPI
@@ -17,14 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from controller.errors import register_error_handlers
 from controller.routes import router as ledger_router
 from core.config import get_settings
-from core.database import create_all, dispose_engine
-
-# Imported for its side effect: registering the mappers on Base, and the
-# append-only trigger on `ledger.entries`, before create_all runs. Do not rely
-# on another module pulling it in transitively.
-from model import entities  # noqa: F401
+from core.database import dispose_engine, get_session_factory
+from service import account_status, market_terms
+from service.leaderboard_refresher import run_leaderboard_refresher
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Seconds, for connect and every read and write on the price bus (D-051).
 # Without it a Redis that never answers makes the publish wait instead of
@@ -35,23 +34,63 @@ _REDIS_TIMEOUT_SECONDS = 5.0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Setup sits inside the `try`: `create_all()` opens the engine, and any
-    # failure after that (Postgres unreachable, a mistyped REDIS_URL) would
-    # otherwise leak its pool for the life of the process.
+    # Setup sits inside the `try`, so a failure partway (a mistyped REDIS_URL)
+    # still reaches the disposal below. No DDL here: `ledger-migrate`
+    # (migrate.py) brought the schema to head before this process started.
+    # ADR 0020.
     try:
-        # Safe while this service alone owns the ledger schema. Move to
-        # Alembic before the first column change against data worth keeping.
-        await create_all()
+        settings = get_settings()
 
         # One client for the process (D-047). `from_url` dials lazily, so an
         # unreachable Redis does not stop boot, but parses eagerly, so a
         # mistyped REDIS_URL does (D-051).
         app.state.redis = redis.from_url(
-            get_settings().redis_url,
+            settings.redis_url,
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )
-        yield
+
+        # One market_service client for the process too, because the gate
+        # calls it on every trade that is not a replay (ADR 0017, D-047), and
+        # one auth client for the account check on the same trades (ADR
+        # 0022). `async with` closes both before the `finally`.
+        async with (
+            market_terms.open_client() as terms_client,
+            account_status.open_client() as auth_client,
+        ):
+            app.state.terms_client = terms_client
+            app.state.auth_client = auth_client
+
+            # The first refresh runs inside the task, so boot never waits for
+            # auth (DECISIONS.md, "The first refresh runs inside the
+            # refresher's task").
+            refresher: asyncio.Task[None] | None = None
+            if settings.leaderboard_refresh_enabled:
+                refresher = asyncio.create_task(
+                    run_leaderboard_refresher(
+                        get_session_factory(),
+                        auth_client,
+                        interval_seconds=settings.leaderboard_refresh_seconds,
+                    ),
+                    name="leaderboard-refresh",
+                )
+            else:
+                logger.warning(
+                    "leaderboard refresh disabled by LEADERBOARD_REFRESH_ENABLED "
+                    "on this replica; if it is off on every replica, the ranking "
+                    "stops updating and turns stale after two intervals"
+                )
+
+            try:
+                yield
+            finally:
+                # Stop the refresher while the auth client is still open and
+                # before the engine goes, or a refresh in flight calls a closed
+                # client. Awaited so no task outlives the app. ADR 0021.
+                if refresher is not None:
+                    refresher.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await refresher
     finally:
         # Nested so a failing `aclose()` cannot skip the disposal: a leaked
         # engine is every asyncpg connection this process opened.

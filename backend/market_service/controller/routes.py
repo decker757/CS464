@@ -11,7 +11,14 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Query, Response, status
 
-from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
+from controller.dependencies import (
+    CurrentActor,
+    CurrentAdmin,
+    DbSession,
+    PageCursor,
+    PageLimit,
+)
+from core.paging import page_size_of
 from model.entities import MarketStatus
 from model.schemas import (
     MarketCloseRequest,
@@ -25,6 +32,7 @@ from model.schemas import (
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
+    OutcomeSendBackRequest,
     ValidationProblemOut,
 )
 from service import browsing, market_service
@@ -332,6 +340,106 @@ async def reject_market_outcome(
     return MarketOut.model_validate(market)
 
 
+@router.post(
+    "/{market_id}/send-back-outcome",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Send an approved result back during its dispute window, with a reason",
+    description=(
+        "[3.3] #11. Sends an `approved` market back to `closed` while its "
+        "dispute window is open, clearing every `proposed_*`, `proposal_*` "
+        "and `approved_*` field. The creator may then propose again, and a "
+        "second administrator approve again, which starts a fresh window. "
+        "`closed_at` is unchanged.\n\n"
+        "**Any administrator may send back**, including the one who proposed "
+        "the outcome and the one who approved it.\n\n"
+        "The window is open while the database's clock, read once the market "
+        "is locked, is before the market's `dispute_window_ends_at` (the "
+        "field on the public detail and the overview). At that instant or "
+        "after it, the result is final and this is a `409 "
+        "dispute_window_closed`. A countdown in the browser can be a few "
+        "seconds off; the server decides.\n\n"
+        "`proposal_id` must be the one in the latest `market.outcome_approved` "
+        "audit entry the administrator reviewed, `null` only for an approval "
+        "whose proposal had none. If that approval has since been sent back "
+        "and another approved in its place, this is a `409 "
+        "proposal_superseded` and changes nothing.\n\n"
+        "`reason` is required and is recorded in the audit log against the "
+        "administrator who sent the result back, beside a copy of the "
+        "approval it cleared, in the same transaction. It is kept nowhere "
+        "else, and this response does not carry it back."
+    ),
+    responses={
+        403: {"description": "`not_an_administrator` — a trader."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_already_settled` — it has been settled. "
+                "`market_pending_resolution` — its outcome is proposed but not "
+                "yet approved; review it instead. `market_not_approved` — no "
+                "outcome is approved. `dispute_window_closed` — the window has "
+                "ended and the result is final. `proposal_superseded` — "
+                "`proposal_id` is not the approval in place now."
+            )
+        },
+        422: {"description": "Send-back refused; `error.details` names `reason`."},
+    },
+)
+async def send_back_market_outcome(
+    market_id: uuid.UUID,
+    payload: OutcomeSendBackRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    # No `now` from here: the window is judged on Postgres's clock, read
+    # after the row lock, never the request's. ADR 0023.
+    market = await market_service.send_back_outcome(session, actor, market_id, payload)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/settle",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Mark an approved market settled (the ledger's last step)",
+    description=(
+        "[3.4] #12. **Called by the ledger's settlement route only.** Clients "
+        "settle a market with `POST /ledger/markets/{id}/settlement`, which "
+        "pays the winners and then calls this. A direct call marks the market "
+        "settled and **pays nobody**.\n\n"
+        "Moves an `approved` market to `settled` once it is `settleable` — "
+        "five minutes after its dispute window ends, judged on the database's "
+        "clock. Any administrator's token is accepted. No body is read.\n\n"
+        "A market already `settled` is answered `200` with the same market "
+        "and nothing written, so the ledger can repeat a request whose last "
+        "step failed.\n\n"
+        "The flip appends a `market.marked_settled` entry to the audit log "
+        "([4.3] #15) in the same transaction. A repeat appends nothing. One "
+        "with no `market.settled` from the ledger before it is the trace of a "
+        "direct call (ADR 0019)."
+    ),
+    responses={
+        403: {"description": "`not_an_administrator` — a trader."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_not_approved` — the market's outcome has not been "
+                "approved. `dispute_window_open` — it is approved, but not "
+                "yet settleable."
+            )
+        },
+    },
+)
+async def settle_market(
+    market_id: uuid.UUID, actor: CurrentActor, session: DbSession
+) -> MarketOut:
+    # No `now` from here: the window is judged on Postgres's clock, read
+    # after the row lock, never the request's. DECISIONS.md, "The settle
+    # step's window check reads `clock_timestamp()` after the row lock".
+    market = await market_service.settle(session, actor, market_id)
+    return MarketOut.model_validate(market)
+
+
 @router.get(
     "",
     response_model=MarketListResponse,
@@ -351,19 +459,38 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
 @router.get(
     "/overview",
     response_model=MarketOverviewResponse,
-    summary="Every market I can see, filtered by status, with counts",
+    summary="Every market I can see, a page at a time, filtered by status, with counts",
     description=(
-        "[2.1] #5. Every published market, plus the calling administrator's "
-        "own drafts and submissions; another administrator's are neither "
-        "listed nor counted.\n\n"
+        "[2.1] #5, #210. Every published market, plus the calling "
+        "administrator's own drafts and submissions; another administrator's "
+        "are neither listed nor counted.\n\n"
         "`status` is derived from the clock (ADR 0011): a market past its "
         "`close_time` is `closed` here even before the sweep writes it. "
         "`counts` has a key for every status, zero when none, over every "
-        "market the caller can see, and ignores the `status` filter, so each "
-        "count equals the length of that status's filtered list.\n\n"
-        "Ordered by soonest `close_time`, markets with none last, then by id."
+        "market the caller can see — every page, not this one — and ignores "
+        "the `status` filter, so each count equals the length of that "
+        "status's whole filtered list. The page and the counts are read from "
+        "one snapshot.\n\n"
+        "Each row's `settleable` ([3.4] #12) is derived against the same "
+        "instant: true from five minutes after the dispute window ends, "
+        "still true once `settled`, false otherwise.\n\n"
+        "Ordered by soonest `close_time`, markets with none last, then by id. "
+        "Settled markets sort last, after all of those, in the unfiltered "
+        "view.\n\n"
+        "Paged by keyset (#210). Send `next_cursor` back as `cursor`, with the "
+        "same `status` and `limit`, to continue; null means there is nothing "
+        "after this page. `limit` defaults to the server's page size (50) and "
+        "a value above its maximum (200) is clamped."
     ),
-    responses={403: {"description": "`not_an_administrator` — a trader."}},
+    responses={
+        400: {
+            "description": (
+                "`malformed_cursor` — `cursor` was not one this service issued."
+            )
+        },
+        403: {"description": "`not_an_administrator` — a trader."},
+        422: {"description": "`status` is not one of the seven, or `limit` is below 1."},
+    },
 )
 async def market_overview(
     admin: CurrentAdmin,
@@ -372,17 +499,25 @@ async def market_overview(
         default=None,
         description="Restrict the list to one status. Counts are unaffected.",
     ),
+    limit: PageLimit = None,
+    cursor: PageCursor = None,
 ) -> MarketOverviewResponse:
     # One clock for the request, so the list and the counts agree. Same as
     # `public_routes.py`.
     now = datetime.now(UTC)
 
     result = await browsing.overview(
-        session, caller_id=admin.user_id, status=status, now=now
+        session,
+        caller_id=admin.user_id,
+        limit=page_size_of(limit),
+        status=status,
+        now=now,
+        cursor=cursor,
     )
     return MarketOverviewResponse(
         markets=[MarketOverviewRowOut.model_validate(card) for card in result.markets],
         counts=result.counts,
+        next_cursor=result.next_cursor,
     )
 
 

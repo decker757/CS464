@@ -35,7 +35,7 @@ the same job, so `ensure_` means the same thing in every file:
 | `get` | fetch by id, raise `...NotFound` if missing | `market_service.get` |
 | `find_` | fetch, return `None` if missing | `_find_by_draft_key` |
 | `list_` | fetch many | `list_for_creator` |
-| `lock_` | `SELECT ... FOR UPDATE` and return the row | `trading._lock_book` |
+| `lock_` | `SELECT ... FOR UPDATE` and return the row | `books.lock_book` |
 | `ensure_` | idempotent: create or check if needed, no-op otherwise | `grants.ensure_granted` |
 | `refuse_if_` | raise a domain error, return nothing | `_refuse_if_frozen` |
 | `is_` / `has_` / `can_` | return a bool, no side effects | `is_open_for_trading` |
@@ -115,8 +115,13 @@ One error class per distinct thing the client can do about it, each with a
 stable `snake_case` code. `service/` raises them; only `controller/` turns
 them into HTTP. No `HTTPException` below `controller/`.
 
-Do not catch bare `Exception`. The one sanctioned place is the price publish
-after a trade commits (root `CLAUDE.md`, ADR 0010).
+Do not catch bare `Exception` to swallow it. The four sanctioned places are
+the price publish after a trade commits (root `CLAUDE.md`, ADR 0010), the
+realtime bus's reconnect loop (ADR 0010, and DECISIONS.md, "The bus waits
+between retries outside the error branch"), the market close sweeper
+(ADR 0011) and the leaderboard refresher (ADR 0021). Each service's
+`core/database.py` catches it too, in `get_session`, to roll back and
+re-raise: that is not a swallow and needs no sanctioning.
 
 ## Tests
 

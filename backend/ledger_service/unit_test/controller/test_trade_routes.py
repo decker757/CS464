@@ -15,14 +15,10 @@ no leg, so the debited account is not an input and the amount is not an input.
 That claim is only true if the body is refused when it tries to name one,
 which is what `test_a_body_naming_an_account_is_refused` holds.
 
-**Two things about the 422s.** FastAPI's own validation — a missing
-`state_version`, a quantity at five decimal places, `side: "sell"`, an unknown
-field — does not pass through `controller/errors.py`, so those responses carry
-`{"detail": [...]}` rather than the `{"error": {"code": ...}}` envelope every
-other service uses. That is pre-existing: the preview route has behaved this
-way since [T-1] #21. These tests assert the **status only** and deliberately
-do not pin the body, so that a later ticket unifying the envelope does not
-have to edit them.
+**The validation 422s assert the status only.** A missing `state_version`, a
+quantity at five decimal places or an unknown field all answer
+`invalid_request` in the envelope, and `test_validation_envelope.py` owns that
+shape for every route at once.
 
 **The cold path is stubbed at `market_terms.fetch` rather than at a
 transport**, the same way `test_snapshot_routes.py` and
@@ -34,6 +30,7 @@ the controller becomes the right status and the right code.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -44,7 +41,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import bearer, mint_token
+from unit_test.conftest import (
+    auth_client_over,
+    bearer,
+    mint_token,
+    terms_client_over,
+)
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -118,6 +120,8 @@ class _Market:
                     "liquidity_b": str(B),
                     "seed_subsidy": str(SUBSIDY),
                     "published_at": "2026-09-01T09:00:00Z",
+                    "proposed_outcome_id": None,
+                    "settleable": False,
                     "outcomes": [
                         {"id": str(o), "position": i, "label": f"Outcome {i}"}
                         for i, o in enumerate(self.outcomes)
@@ -137,7 +141,7 @@ async def _warm(
         session,
         market.market_id,
         access_token=mint_token(uuid.uuid4()),
-        transport=market.transport,
+        terms_client=terms_client_over(market.transport),
     )
     outcome = _entities().MarketOutcome
     for position, value in enumerate(q):
@@ -169,7 +173,7 @@ class _Terms:
     def install(self, monkeypatch: pytest.MonkeyPatch, market: _Market):
         from service import market_terms  # noqa: PLC0415
 
-        async def fake(market_id, *, access_token, transport=None):  # noqa: ANN001
+        async def fake(market_id, *, access_token, terms_client=None):  # noqa: ANN001
             self.calls += 1
             if self._raises is not None:
                 raise self._raises
@@ -183,6 +187,8 @@ class _Terms:
                     for i, o in enumerate(market.outcomes)
                 ],
                 status=self.status,
+                proposed_outcome_id=None,
+                settleable=False,
             )
 
         monkeypatch.setattr(market_terms, "fetch", fake)
@@ -190,7 +196,7 @@ class _Terms:
 
 
 @pytest.fixture
-async def trade_client(clean_database):
+async def trade_client(app_under_test):
     """A client whose app has a Redis stand-in bound to it.
 
     `httpx`'s `ASGITransport` does not run the lifespan, so `app.state.redis`
@@ -198,20 +204,18 @@ async def trade_client(clean_database):
     dependency is overridden rather than the attribute set, because the
     override is the seam the route actually reads through, and a test that
     poked `app.state` would keep passing if the route stopped using
-    `get_redis` at all.
+    `get_redis` at all. `app_under_test` does the same for the terms client.
 
     Yields the client and the recorder, so a controller test can also assert
     that a refused request published nothing.
     """
     from controller.dependencies import get_redis  # noqa: PLC0415
-    from main import create_app  # noqa: PLC0415
 
-    app = create_app()
     recorder = Recorder()
-    app.dependency_overrides[get_redis] = lambda: recorder
+    app_under_test.dependency_overrides[get_redis] = lambda: recorder
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app_under_test), base_url="http://test"
     ) as client:
         yield client, recorder
 
@@ -631,6 +635,83 @@ async def test_an_unreachable_market_service_is_503(
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "market_terms_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("auth_status", "auth_body", "status", "code"),
+    [
+        (
+            403,
+            {"error": {"code": "account_suspended", "message": "Suspended."}},
+            403,
+            "account_suspended",
+        ),
+        (500, {}, 503, "auth_unavailable"),
+    ],
+    ids=["suspended", "auth-down"],
+)
+async def test_auth_s_refusal_reaches_the_trader_in_the_envelope(
+    trade_client,
+    app_under_test,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    auth_status: int,
+    auth_body: dict,
+    status: int,
+    code: str,
+) -> None:
+    """ADR 0022's two new answers on this route, in the error envelope the
+    frontend parses. Nothing is published for a refused trade."""
+    import httpx  # noqa: PLC0415
+
+    from controller.dependencies import get_auth_client  # noqa: PLC0415
+
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    def auth_answers(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(auth_status, json=auth_body)
+
+    async with auth_client_over(httpx.MockTransport(auth_answers)) as auth_client:
+        app_under_test.dependency_overrides[get_auth_client] = lambda: auth_client
+        response = await client.post(
+            _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
+        )
+
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
+    assert recorder.calls == []
+
+
+async def test_market_terms_unavailable_is_logged_at_warning_not_error(
+    trade_client,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """DECISIONS.md: `settlement_unconfirmed` is the only 503 logged above
+    WARNING. A market_service restart answers every trade with this one, and
+    at ERROR it would bury the 5xx that mean our own data is wrong.
+    """
+    client, _ = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms(raises=_errors().MarketTermsUnavailable()).install(monkeypatch, market)
+
+    with caplog.at_level(logging.DEBUG):
+        response = await client.post(
+            _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
+        )
+
+    assert response.status_code == 503
+    assert any(
+        record.levelno == logging.WARNING
+        and "market_terms_unavailable" in record.getMessage()
+        for record in caplog.records
+    ), "the 503 was not logged at WARNING"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 async def test_a_market_that_does_not_exist_is_404(

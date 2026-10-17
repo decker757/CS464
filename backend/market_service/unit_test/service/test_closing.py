@@ -23,7 +23,17 @@ from model.entities import Market, MarketStatus
 from model.schemas import MarketDraftRequest
 from service import closing, market_service, sweeper
 from service.sweeper import run_close_sweeper
-from unit_test.conftest import actor
+from unit_test.conftest import (
+    actor,
+    approved_market,
+    close_request,
+    closed_market,
+    overdue_market,
+    proposal_request,
+    proposed_market,
+    published_market,
+    rejection_request,
+)
 
 # Small enough to keep the suite quick, large enough that a sweeper ticking on
 # it is not racing the event loop.
@@ -119,6 +129,114 @@ async def test_the_sql_predicate_agrees_with_the_python_one(session: AsyncSessio
     assert set(rows) == {live.id}
     assert closing.is_open_for_trading(live)
     assert not closing.is_open_for_trading(expired)
+
+
+async def _closed_early(session: AsyncSession, creator, *, at: datetime) -> Market:
+    """A market `creator` published, stopped by hand at `at` with its
+    `close_time` still a month ahead. [2.3] #7, ADR 0014."""
+    market_id = (await published_market(session, creator)).id
+    return await market_service.close_early(
+        session, actor(), market_id, close_request(), now=at
+    )
+
+
+async def test_the_paging_predicate_agrees_with_the_live_one_at_now(
+    session: AsyncSession,
+) -> None:
+    """#104: at `as_of = now`, `was_open_for_trading_at` picks exactly what
+    `open_for_trading` picks, so grouping by it changes no first page.
+
+    Covers every status a trader can see (`PUBLIC_STATUSES`), including ADR
+    0011's unswept gap and early closes that later gained a proposal or had one
+    rejected: a rejection keeps `closed_at` (ADR 0016), which is what keeps the
+    time-only answer right. Drafts and submitted markets legitimately disagree
+    (the time-only rule may read them as trading) and `browse` filters them out
+    first, so they are absent on purpose.
+    """
+    creator = actor()
+    a_minute_ago = datetime.now(UTC) - timedelta(minutes=1)
+
+    trading_id = (await published_market(session, creator)).id
+    early_id = (await _closed_early(session, creator, at=a_minute_ago)).id
+
+    early_pending = await _closed_early(session, creator, at=a_minute_ago)
+    early_pending_id = (
+        await market_service.propose_outcome(
+            session, creator, early_pending.id,
+            proposal_request(early_pending.outcomes[0].id),
+        )
+    ).id
+
+    early_rejected = await _closed_early(session, creator, at=a_minute_ago)
+    proposed = await market_service.propose_outcome(
+        session, creator, early_rejected.id,
+        proposal_request(early_rejected.outcomes[0].id),
+    )
+    rejected_id = (
+        await market_service.reject_outcome(
+            session, actor(), proposed.id, rejection_request(proposed.proposal_id)
+        )
+    ).id
+
+    # Ids held as they are created; the sweep in these fixtures expires the
+    # session. The unswept market comes last, or their sweeps would close it.
+    swept_id = (await closed_market(session, creator)).id
+    pending_id = (await proposed_market(session, creator)).id
+    approved_id = (await approved_market(session, creator)).id
+    unswept_id = (await overdue_market(session, creator)).id
+    now = datetime.now(UTC)
+
+    live = set(
+        (
+            await session.execute(
+                select(Market.id).where(closing.open_for_trading(now))
+            )
+        ).scalars()
+    )
+    historical = set(
+        (
+            await session.execute(
+                select(Market.id).where(closing.was_open_for_trading_at(now))
+            )
+        ).scalars()
+    )
+
+    assert live == {trading_id}
+    assert historical == live
+    assert {early_id, early_pending_id, rejected_id, unswept_id, swept_id,
+            pending_id, approved_id}.isdisjoint(historical)
+
+
+async def test_the_paging_predicate_ignores_a_status_written_after_as_of(
+    session: AsyncSession,
+) -> None:
+    """#104: an early close between two page reads must not move the market out
+    of the group the first page put it in, or it is listed twice.
+
+    As of a minute before the admin stopped it, the market was still trading,
+    though its status now reads CLOSED. ANDing `status == OPEN` in would fail
+    this.
+    """
+    stopped_at = datetime.now(UTC)
+    market_id = (await _closed_early(session, actor(), at=stopped_at)).id
+    as_of = stopped_at - timedelta(minutes=1)
+
+    ids = set(
+        (
+            await session.execute(
+                select(Market.id).where(closing.was_open_for_trading_at(as_of))
+            )
+        ).scalars()
+    )
+
+    assert market_id in ids
+    assert market_id not in set(
+        (
+            await session.execute(
+                select(Market.id).where(closing.was_open_for_trading_at(stopped_at))
+            )
+        ).scalars()
+    )
 
 
 # --- the sweep, which materialises it --------------------------------------

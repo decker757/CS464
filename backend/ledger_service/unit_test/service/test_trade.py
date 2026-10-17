@@ -17,6 +17,15 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.conftest import (
+    active_auth_transport,
+    auth_client_over,
+    drop_outcome_row,
+    idle_in_transaction,
+    set_b,
+    strip_outcomes,
+    terms_client_over,
+)
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -92,7 +101,7 @@ async def test_a_buy_debits_exactly_the_total_the_preview_quoted(
         side=pricing().Side.BUY,
         quantity=QUANTITY,
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
     before = await balance_of_user(session, user_id)
@@ -668,7 +677,8 @@ async def test_an_unknown_outcome_is_refused_and_writes_nothing(
             idempotency_key="k",
             access_token=token(),
             redis_client=Recorder(),
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
+            auth_client=auth_client_over(active_auth_transport()),
         )
     await session.rollback()
 
@@ -831,35 +841,14 @@ async def test_the_staleness_check_reads_the_version_under_the_lock(
 # =========================================================================
 # The gate's connection, damaged books, and the edges of the quantization
 # =========================================================================
-async def _idle_in_transaction() -> int:
-    """Backends of this role in this database sitting `idle in transaction`,
-    from Postgres's own view."""
-    from sqlalchemy import text  # noqa: PLC0415
-
-    from core.database import get_engine  # noqa: PLC0415
-
-    async with get_engine().connect() as conn:
-        return (
-            await conn.execute(
-                text(
-                    "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() "
-                    "AND usename = current_user "
-                    "AND state = 'idle in transaction' "
-                    "AND pid <> pg_backend_pid()"
-                )
-            )
-        ).scalar_one()
-
-
 async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_service(
     session: AsyncSession,
 ) -> None:
     """The gate's HTTP call runs with no transaction open (D-043's fault on the
     trade path).
 
-    Checked from the session, the pool and Postgres. Remove the rollback after
-    the replay miss in `trading.execute` and this goes red.
+    Checked from the session, the pool and Postgres. Remove the rollback in
+    `market_status.ensure_trading` and this goes red.
     """
     import asyncio  # noqa: PLC0415
 
@@ -891,7 +880,7 @@ async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_servic
     try:
         async with asyncio.timeout(10):
             await entered.wait()
-        idle = await _idle_in_transaction()
+        idle = await idle_in_transaction()
     finally:
         release.set()
         trade = await task
@@ -932,28 +921,12 @@ async def test_a_cold_trade_reaches_ensure_open_with_nothing_pending(
 
 
 async def _damage(session: AsyncSession, upstream: Upstream, how: str) -> None:
-    from sqlalchemy import delete, update  # noqa: PLC0415
-
-    from unit_test.conftest import strip_outcomes  # noqa: PLC0415
-
-    ents = entities()
     if how == "no_outcomes":
         await strip_outcomes(session, upstream.market_id)
-        return
-    if how == "one_outcome":
-        await session.execute(
-            delete(ents.MarketOutcome).where(
-                ents.MarketOutcome.market_id == upstream.market_id,
-                ents.MarketOutcome.position == 1,
-            )
-        )
+    elif how == "one_outcome":
+        await drop_outcome_row(session, upstream.market_id, 1)
     else:
-        await session.execute(
-            update(ents.MarketBook)
-            .where(ents.MarketBook.market_id == upstream.market_id)
-            .values(liquidity_b=Decimal(how))
-        )
-    await session.commit()
+        await set_b(session, upstream.market_id, Decimal(how))
 
 
 # No `Infinity`: `numeric(18, 4)` refuses to store one, so it cannot be
@@ -1062,7 +1035,7 @@ async def test_the_trade_charges_the_previews_tick_where_ambient_abs_would_not(
         side=pricing().Side.BUY,
         quantity=Decimal("200.0000"),
         access_token=token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     assert quote.total == Decimal("-100.0001"), (
         "this book no longer lands on D-044's tick case, so the test below "

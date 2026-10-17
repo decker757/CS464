@@ -10,6 +10,7 @@ trade (replay, gate, book lock) is the trade path's to test.
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 import uuid
 from collections.abc import Iterator, Sequence
@@ -24,7 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine, get_session_factory
 from model.entities import Account, Entry, Transaction
-from unit_test.conftest import mint_token
+from unit_test.book_fixtures import Stalled
+from unit_test.conftest import idle_in_transaction, mint_token, terms_client_over
 
 
 def _status():
@@ -96,6 +98,8 @@ class _Upstream:
             "liquidity_b": None if liquidity_b is None else str(liquidity_b),
             "seed_subsidy": None if seed_subsidy is None else str(seed_subsidy),
             "published_at": published_at,
+            "proposed_outcome_id": None,
+            "settleable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)
@@ -143,7 +147,7 @@ async def _gate(
         session,
         upstream.market_id,
         access_token=access_token if access_token is not None else _token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
 
 
@@ -154,7 +158,7 @@ async def _warm(session: AsyncSession, upstream: _Upstream):
         session,
         upstream.market_id,
         access_token=_token(),
-        transport=upstream.transport,
+        terms_client=terms_client_over(upstream.transport),
     )
     upstream.calls = 0
     upstream.tokens.clear()
@@ -409,7 +413,7 @@ async def test_a_market_s_first_trade_asks_twice_and_every_later_one_once(
         await _gate(session, upstream, access_token=token)
         await _books().ensure_open(
             session, upstream.market_id, access_token=token,
-            transport=upstream.transport,
+            terms_client=terms_client_over(upstream.transport),
         )
 
     await trade_prelude()
@@ -470,15 +474,34 @@ async def test_a_status_that_is_not_a_string_is_unavailable_not_closed(
         await _gate(session, upstream)
 
 
+async def test_a_body_without_settleable_is_unavailable_at_the_gate(
+    session: AsyncSession,
+) -> None:
+    """DECISIONS.md, "parsed strictly on every pull": the trade path reads no
+    settlement field, and still refuses a body missing one. The status is
+    "open", so the missing key is the only thing that can refuse it.
+    """
+    upstream = _Upstream()
+    del upstream.body["settleable"]
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _gate(session, upstream)
+
+
 async def test_a_404_on_a_market_with_a_book_is_unavailable_not_not_found(
     session: AsyncSession,
 ) -> None:
     """The row in ADR 0017's table that looks wrong and is not: a market with
     a book existed, so its 404 is market_service answering incorrectly.
+
+    The `_book_row` read leaves a transaction open, so the gate releases it
+    before the call and its own `books.find` runs after the release (#115):
+    this is the test that the read still finds the book.
     """
     upstream = _Upstream(status="open")
     await _warm(session, upstream)
     assert await _book_row(session, upstream.market_id) is not None
+    assert session.in_transaction()
 
     upstream.status_code = 404
     upstream.body = {"code": "market_not_found"}
@@ -502,6 +525,29 @@ async def test_a_404_on_a_market_with_no_book_is_not_found(
         await _gate(session, upstream)
 
 
+async def test_a_404_the_gate_saw_spares_the_cold_path_its_call(
+    session: AsyncSession,
+) -> None:
+    """The memory sits in `market_terms.fetch`, so both callers share
+    it. A trade on an unpublished id, retried, asks market_service once."""
+    upstream = _Upstream(status="open", status_code=404)
+    upstream.body = {"code": "market_not_found"}
+
+    with pytest.raises(_errors().MarketNotFound):
+        await _gate(session, upstream)
+    with pytest.raises(_errors().MarketNotFound):
+        await _gate(session, upstream)
+    with pytest.raises(_errors().MarketNotFound):
+        await _books().ensure_open(
+            session,
+            upstream.market_id,
+            access_token=_token(),
+            terms_client=terms_client_over(upstream.transport),
+        )
+
+    assert upstream.calls == 1
+
+
 async def test_an_upstream_401_stays_not_authenticated(
     session: AsyncSession,
 ) -> None:
@@ -512,6 +558,71 @@ async def test_an_upstream_401_stays_not_authenticated(
 
     with pytest.raises(_errors().NotAuthenticated):
         await _gate(session, upstream)
+
+
+# =========================================================================
+# The connection: none held while market_service answers (#115, D-043)
+# =========================================================================
+async def test_the_gate_holds_no_connection_while_market_service_is_slow(
+    session: AsyncSession,
+) -> None:
+    """A read first, standing in for the trade path's replay lookup, autobegins
+    a transaction nothing ends. The gate releases it before it calls out, so a
+    slow market_service holds no pooled connection on any caller's behalf.
+
+    Checked from the session, the pool and Postgres, at the stalled call.
+    Remove the rollback in `market_status.ensure_trading` and this goes red.
+    """
+    upstream = _Upstream(status="open")
+    pool = get_engine().pool
+    stalled = Stalled(
+        upstream,
+        lambda: {
+            "session in a transaction": session.in_transaction(),
+            "pooled connections checked out": pool.checkedout(),
+        },
+    )
+    replay_key = f"trade:{uuid.uuid4()}"
+    await session.execute(
+        select(Transaction.id).where(Transaction.idempotency_key == replay_key)
+    )
+    assert session.in_transaction(), "the read opened no transaction to release"
+
+    task = asyncio.create_task(
+        _status().ensure_trading(
+            session,
+            upstream.market_id,
+            access_token=_token(),
+            terms_client=terms_client_over(stalled.transport),
+        )
+    )
+    try:
+        async with asyncio.timeout(10):
+            await stalled.entered.wait()
+        idle = await idle_in_transaction()
+    finally:
+        stalled.release.set()
+        await task
+
+    clean = {"session in a transaction": False, "pooled connections checked out": 0}
+    assert stalled.seen == [clean]
+    assert idle == 0, f"{idle} backend(s) idle in transaction across the gate's call"
+
+
+async def test_the_gate_refuses_to_run_over_a_pending_write(
+    session: AsyncSession,
+) -> None:
+    """Its rollback would discard the write silently, so the precondition is
+    enforced rather than documented, as `books.ensure_open`'s is."""
+    upstream = _Upstream(status="open")
+    pending = Account(kind=_entities().AccountKind.USER, owner_id=uuid.uuid4())
+    session.add(pending)
+
+    with pytest.raises(AssertionError, match="nothing pending"):
+        await _gate(session, upstream)
+
+    assert pending in session.new, "the pending write was discarded"
+    assert upstream.calls == 0
 
 
 # =========================================================================
@@ -551,4 +662,28 @@ def test_the_open_status_matches_the_one_market_service_puts_on_the_wire() -> No
     assert _status()._OPEN == theirs, (
         f"this service gates trading on {_status()._OPEN!r} and market_service "
         f"publishes {theirs!r}; every trade would be refused as market_closed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("ours", "member"), [("_APPROVED", "APPROVED"), ("_SETTLED", "SETTLED")]
+)
+def test_the_settlement_statuses_match_the_ones_market_service_puts_on_the_wire(
+    ours: str, member: str
+) -> None:
+    """Settlement's copies of `"approved"` and `"settled"`, pinned the same
+    way. The fake upstream in `settlement_fixtures.py` types the same literal,
+    so a rename upstream would refuse every settlement as market_not_approved
+    with every settlement test still green."""
+    from service import settlement  # noqa: PLC0415
+
+    theirs = _enum_member(
+        _BACKEND / "market_service" / "model" / "entities.py",
+        "MarketStatus",
+        member,
+    )
+
+    assert getattr(settlement, ours) == theirs, (
+        f"settlement reads {getattr(settlement, ours)!r} and market_service "
+        f"publishes {theirs!r}; every settlement would be refused"
     )

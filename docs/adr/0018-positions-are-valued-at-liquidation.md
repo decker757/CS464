@@ -136,6 +136,26 @@ up to anything real, because each assumes it is the only sale. Ranking on them
 is sound, since every user is asked the same question of the same book. A
 platform-wide total built from them is not sound.
 
+> **Amended 2026-10-10 by [3.4] #12. [L-1] #38 reuses the portfolio's
+> valuation, not `liquidation_values_of` alone.** The paragraph above says #38
+> "calls the same function, not a copy of it". Since settlement, that function
+> is not the whole valuation. A settled market's shares add nothing, because
+> the payout is already in the balance. The portfolio drops such a market
+> before it calls `liquidation_values_of`. That happens in
+> `service/valuation.py`, not in `core/pricing.py`, because the pure function
+> takes `q`, `b` and holdings and knows nothing of settlement.
+>
+> A leaderboard that called `liquidation_values_of` directly would value every
+> settled market's shares at its frozen book, on top of the payouts. It would
+> rank every winner of a settled market on their winnings twice. So #38 reuses
+> the portfolio's valuation, its settled branch included. "This computation"
+> now means the portfolio's, and `liquidation_values_of` is its unsettled
+> branch. This is what ADR 0019's "The leaderboard sees settlement for free"
+> relies on.
+>
+> DECISIONS.md: "A settled row's payout is its quantity, and its result comes
+> from `ledger.market_results`, joined in the portfolio's one statement".
+
 **Any trade moves every holder's value in that market.** A leaderboard that is
 recalculated "after committed trades" ([L-3] #40) must mean after any trade in
 any market a ranked user holds, not only that user's own trades. The cost is
@@ -195,3 +215,14 @@ that market. It is a second source of truth, rejected for the reason in
 > What does **not** reverse it is a UI that would prefer the bigger number, or
 > a leaderboard that looks flat. Both are arguments for the rule this record
 > rejects.
+
+> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
+> and not built yet. A note, not a supersession.** Limit orders as ADR 0024
+> designs them are not the second liquidity mechanism this reversal names.
+> Every sale, instant or a fill, is priced by `trade_cost_of` against the
+> book, and nothing is matched against a resting order. The cascade runs after
+> the triggering sale is priced, so it cannot change that sale's proceeds. The
+> concrete test above still passes: the trade route's proceeds for a sell are
+> `trade_cost_of`'s magnitude. Reserved shares are still positions and are
+> valued at liquidation like any other. A design that let a sale fill against
+> a resting order would trip this, and supersede it.

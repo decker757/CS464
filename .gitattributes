@@ -1,0 +1,17 @@
+# Every text file is stored and checked out with LF, whatever the machine's
+# core.autocrlf says. On Windows, CRLF used to break 00-init.sh's shebang
+# inside the Linux Postgres container, so the database never initialised (#103).
+* text=auto eol=lf
+
+# Pinned explicitly: these run inside Linux containers, so they stay LF even
+# if git's text detection ever guesses wrong.
+*.sh  text eol=lf
+*.sql text eol=lf
+
+# Never converted or diffed as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary

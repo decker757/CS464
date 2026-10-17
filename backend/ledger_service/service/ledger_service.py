@@ -13,14 +13,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Row, Select, func, select, tuple_
+from sqlalchemy import ColumnElement, Row, Select, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.paging import Position, decode_cursor, encode_cursor
+from core.paging import Position, decode_cursor, encode_cursor, page_cut_of
 from core.pricing import QUANTUM, Side, per_share
 from model.entities import Account, AccountKind, Entry, Transaction, TransactionKind
-from model.schemas import TradeFields
-from service import accounts, grants, trading
+from model.schemas import MarketTradeOut, TradeFields
+from service import accounts, books, grants, trading
 
 # Kind -> Side for the two trade kinds. Every other kind, the dict has nothing
 # to say about, which is exactly "any other kind renders with them null".
@@ -68,13 +68,27 @@ class EntryPage:
         return self.next_cursor is not None
 
 
+@dataclass(frozen=True)
+class TradePage:
+    """One page of a market's trades, newest first. [BE][2.4] #63."""
+
+    rows: list[MarketTradeOut]
+    next_cursor: str | None
+
+    @property
+    def has_more(self) -> bool:
+        return self.next_cursor is not None
+
+
 _PageRow = tuple[
     uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict[str, Any] | None, Decimal
 ]
+_TradeRow = tuple[uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict[str, Any] | None]
 
 
-def _trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
-    """market_id, outcome_id, side, quantity and average_price for one row.
+def trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
+    """market_id, outcome_id, side, quantity and average_price for one row,
+    for the two trade kinds and for `settlement`.
 
     `side` comes from `kind`, never from `context` — `kind` is the column the
     ledger indexes and validates. The rest is read from `context` by
@@ -85,12 +99,26 @@ def _trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
     preview uses, so the two agree for the same trade at the same
     `state_version`.
 
+    A `settlement` row is a payout, not a trade: `result_of` does not read it,
+    its `context` names the market, the winning outcome and the winning
+    quantity, and `side` and `average_price` stay null. DECISIONS.md, "A
+    payout's history row is kind `settlement`, with market, outcome and
+    quantity".
+
     Every other kind — the grant, and anything this row builder does not
     recognise, `context` included — renders with all five fields null. Not an
     error: a new kind reaches the history the day it is written.
     """
+    context = transaction.context
+    if transaction.kind == TransactionKind.SETTLEMENT and context is not None:
+        return TradeFields(
+            market_id=uuid.UUID(str(context["market_id"])),
+            outcome_id=uuid.UUID(str(context["outcome_id"])),
+            quantity=Decimal(str(context["quantity"])).quantize(QUANTUM),
+        )
+
     side = _TRADE_SIDE_OF_KIND.get(transaction.kind)
-    if side is None or transaction.context is None:
+    if side is None or context is None:
         return TradeFields()
 
     trade = trading.result_of(transaction)
@@ -102,6 +130,12 @@ def _trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
         quantity=quantity,
         average_price=per_share(amount.copy_abs(), quantity),
     )
+
+
+def _keyset_condition_of(position: Position) -> ColumnElement[bool]:
+    """The rows strictly older than `position` in the feed's ordering."""
+    created_at, row_id = position
+    return tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id)
 
 
 def _page_query(
@@ -127,8 +161,7 @@ def _page_query(
     """
     conditions = [Entry.account_id == account_id]
     if position is not None:
-        created_at, row_id = position
-        conditions.append(tuple_(Entry.created_at, Entry.id) < tuple_(created_at, row_id))
+        conditions.append(_keyset_condition_of(position))
 
     page = (
         select(
@@ -158,9 +191,8 @@ def _page_query(
     # pair, so it agrees with the page boundary even between the two legs of
     # one movement, which share a timestamp.
     anchor_sum = (
-        select(func.coalesce(func.sum(Entry.amount), accounts.ZERO))
+        accounts.balance_query_of(account_id=account_id)
         .where(
-            Entry.account_id == account_id,
             tuple_(Entry.created_at, Entry.id)
             <= tuple_(anchor_position.c.created_at, anchor_position.c.id),
         )
@@ -188,6 +220,11 @@ def _page_query(
     ).order_by(page.c.created_at.desc(), page.c.id.desc())
 
 
+def _cursor_of(row: Row[Any]) -> str:
+    """The cursor that resumes the feed just after `row`."""
+    return encode_cursor(row.created_at, row.id)
+
+
 def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
     """One fetched row into a `HistoryRow`.
 
@@ -208,7 +245,7 @@ def _history_row_of(account_id: uuid.UUID, row: Row[_PageRow]) -> HistoryRow:
     return HistoryRow(
         entry=entry,
         balance_after=row.balance_after,
-        trade=_trade_fields_of(transaction, row.amount),
+        trade=trade_fields_of(transaction, row.amount),
     )
 
 
@@ -235,16 +272,73 @@ async def _history_of_account(
         (await session.execute(_page_query(account.id, position, limit + 1))).all()
     )
 
-    page = fetched[:limit]
-    next_cursor = (
-        encode_cursor(page[-1].created_at, page[-1].id)
-        if len(fetched) > limit
-        else None
-    )
+    page, next_cursor = page_cut_of(fetched, limit, cursor_of=_cursor_of)
 
     return EntryPage(
         rows=[_history_row_of(account.id, row) for row in page],
         next_cursor=next_cursor,
+    )
+
+
+def pool_trade_query(pool_account_id: uuid.UUID) -> Select[_TradeRow]:
+    """The pool's trade entries and their transactions, unordered and uncut.
+
+    The kind filter is in the WHERE, so a caller's LIMIT still fills with
+    trades when the pool's newest entries are the residue and the payouts. The
+    caller adds the order, the keyset condition and the limit.
+    """
+    return (
+        select(
+            Entry.id,
+            Entry.transaction_id,
+            Entry.amount,
+            Entry.created_at,
+            Transaction.kind,
+            Transaction.context,
+        )
+        .join(Transaction, Transaction.id == Entry.transaction_id)
+        .where(
+            Entry.account_id == pool_account_id,
+            Transaction.kind.in_(list(_TRADE_SIDE_OF_KIND)),
+        )
+    )
+
+
+def _trade_page_query(
+    pool_account_id: uuid.UUID, position: Position | None, limit_plus_one: int
+) -> Select[_TradeRow]:
+    """The pool's trade entries newest first, cut to one page.
+
+    Ordered and keyed like `_page_query`, on `ix_ledger_entries_account_feed`.
+    """
+    query = pool_trade_query(pool_account_id)
+    if position is not None:
+        query = query.where(_keyset_condition_of(position))
+
+    return query.order_by(Entry.created_at.desc(), Entry.id.desc()).limit(limit_plus_one)
+
+
+def _market_trade_of(row: Row[_TradeRow]) -> MarketTradeOut:
+    """One pool entry into a feed row.
+
+    `trade_fields_of` and `trading.result_of` build it, so it cannot disagree
+    with the trader's own history row or the trade response. `amount` is the
+    pool's leg: the trader's with the sign flipped, the same absolute value.
+    """
+    transaction = Transaction(id=row.transaction_id, kind=row.kind, context=row.context)
+    # trade_fields_of also reads the context; reading it again keeps one row builder.
+    fields = trade_fields_of(transaction, row.amount)
+    result = trading.result_of(transaction)
+    return MarketTradeOut(
+        transaction_id=row.transaction_id,
+        created_at=row.created_at,
+        user_id=result.user_id,
+        outcome_id=result.outcome_id,
+        side=fields.side,
+        quantity=fields.quantity,
+        average_price=fields.average_price,
+        total=result.total.quantize(QUANTUM),
+        state_version=result.state_version,
     )
 
 
@@ -305,3 +399,39 @@ async def history_for_admin(
     """
     account = await accounts.find(session, AccountKind.USER, user_id)
     return await _history_of_account(session, account, limit=limit, cursor=cursor)
+
+
+async def list_market_trades(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    limit: int,
+    cursor: str | None = None,
+) -> TradePage:
+    """One page of this market's trades, newest first, for an administrator.
+    [BE][2.4] #63. Writes nothing.
+
+    Reads the market's pool account feed, so a market with no book, or an id
+    that names no market, is an empty page: this opens no book and never asks
+    market_service. DECISIONS.md, "The market's trade feed reads the pool
+    account's feed, filtered to the trade kinds, and its rows are built by
+    `trade_fields_of`". Raises `MalformedCursor`.
+    """
+    # Decoded first, as `_history_of_account` does, so a bad cursor is a 400
+    # on a market with no book too.
+    position = decode_cursor(cursor) if cursor is not None else None
+
+    book = await books.find(session, market_id)
+    if book is None:
+        return TradePage(rows=[], next_cursor=None)
+
+    fetched = list(
+        (
+            await session.execute(
+                _trade_page_query(book.pool_account_id, position, limit + 1)
+            )
+        ).all()
+    )
+
+    page, next_cursor = page_cut_of(fetched, limit, cursor_of=_cursor_of)
+    return TradePage(rows=[_market_trade_of(row) for row in page], next_cursor=next_cursor)
