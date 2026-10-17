@@ -1246,6 +1246,16 @@ unique to you.
 account (ADR 0022), then the market gate, then everything under the book
 lock.
 
+**What a placement locks.** Under the book lock, a buy that rests entirely
+also locks your account until it commits, so a trade of yours in another
+market cannot spend credits this order is reserving at the same moment. A
+resting sell locks only the book. A placement that fills on arrival takes no
+lock of its own: the fills' single commit locks your account along with every
+other account involved, in ascending order. Neither path is visible in the
+response. A fill refused inside a cascade is impossible by construction. If
+one ever happens it is a ledger bug, the whole commit rolls back and you get a
+500.
+
 Errors:
 
 | Status | `code` | When |
