@@ -142,6 +142,58 @@ describe('LeaderboardPage', () => {
 
     expect(await screen.findByText('michelle_l')).toBeInTheDocument()
     expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.queryByText(/your rank/i)).not.toBeInTheDocument()
+  })
+
+  describe('the caller\'s own rank', () => {
+    it('shows rank and net worth from me, matching the highlighted row, when it is on the loaded page', async () => {
+      mockLeaderboard(page())
+      renderPage()
+
+      expect(await screen.findByText('Your rank: #3')).toBeInTheDocument()
+      expect(screen.getAllByText('1,003.8689')).toHaveLength(2) // the summary and alice's row
+    })
+
+    it('shows rank and net worth from me even when the caller\'s row is not on the loaded page', async () => {
+      // ledger-service.md: me comes from the ranking a page was served from,
+      // whether or not that row is on this particular page — this is the
+      // reason me exists separately from is_me at all.
+      mockLeaderboard(page({
+        me: { rank: 50, username: 'alice', net_worth: '12.5000' },
+        rows: page().rows.map(r => ({ ...r, is_me: false })),
+      }))
+      renderPage()
+
+      expect(await screen.findByText('Your rank: #50')).toBeInTheDocument()
+      expect(screen.getByText('12.5000 credits')).toBeInTheDocument()
+      expect(screen.queryByText('(you)')).not.toBeInTheDocument()
+    })
+
+    it('says nothing about a rank when the caller is not ranked yet', async () => {
+      mockLeaderboard(page({ me: null, rows: page().rows.map(r => ({ ...r, is_me: false })) }))
+      renderPage()
+
+      await screen.findByText('michelle_l')
+      expect(screen.queryByText(/your rank/i)).not.toBeInTheDocument()
+    })
+
+    it('keeps showing the caller\'s rank from page one after Load more adds a page that does not contain it', async () => {
+      server.use(
+        http.get(LEADERBOARD, ({ request }) =>
+          new URL(request.url).searchParams.get('cursor') === 'page-2'
+            ? HttpResponse.json(page({ rows: [{ rank: 4, username: 'bob', net_worth: '500.0000', is_me: false }], next_cursor: null, has_more: false }))
+            : HttpResponse.json(page({ next_cursor: 'page-2', has_more: true })),
+        ),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Your rank: #3')
+
+      await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+      await screen.findByText('bob')
+      expect(screen.getByText('Your rank: #3')).toBeInTheDocument()
+    })
   })
 
   it('shows an error when the API fails', async () => {
