@@ -237,3 +237,13 @@ would also come from two different rankings.
 >
 > What does **not** reverse it: a wish for the board to move on every trade.
 > [L-3] #40 accepts an interval, and 60 seconds is that interval.
+
+> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
+> and not built yet.** [T-7] #27 is no longer "the likely first" caller to need
+> a credential of its own. As ADR 0024 designs it, the cascade runs inside the
+> request that moved the price and calls no service. The likely first is now
+> the sweep ADR 0024 names as its follow-up: a ledger loop that asks this
+> record's lookup route about the owners of open orders and cancels the
+> suspended ones'. That would be a second caller of this key, and under
+> section 2 it gets its own key, its own variable and its own record. If ADR
+> 0024 is not accepted, the sentence about #27 stands.

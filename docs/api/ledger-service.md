@@ -38,6 +38,9 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
+| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (proposed, ADR 0024) |
+| GET | `/ledger/orders/me` | My live limit orders (proposed, ADR 0024) |
+| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (proposed, ADR 0024) |
 | GET | `/health` | Liveness and readiness probe |
 
 **Two routes write, and neither takes money.** `POST .../trades` takes no
@@ -115,6 +118,35 @@ Retrying, refreshing, or opening two tabs cannot produce a second grant, and
 neither can an operator changing `STARTING_CREDITS`: a new value reaches
 accounts granted after it and no others, and an account that already has its
 credits keeps them and stays readable.
+
+**Proposed, ADR 0024: not built yet. `reserved` and `available`.**
+
+```jsonc
+{
+  "user_id": "5f3e...",
+  "account_id": "a71c...",
+  "balance": "1000.0000",
+  "reserved": "60.0000",
+  "available": "940.0000"
+}
+```
+
+`balance` keeps its meaning: the sum of every entry, including credits that
+resting buy orders reserve. `reserved` is what this user's live buy orders
+could still spend, summed over every market: each order's budget less what it
+has spent. `available` is `balance - reserved`, and it is what a new buy, a
+new buy order or the trade route can spend. A reservation is not an entry, so
+the history shows no line for placing or cancelling an order. Net worth on the
+portfolio and the leaderboard still counts `balance`, reserved credits
+included. The admin route `GET /ledger/users/{user_id}/balance` returns the
+same two fields. `GET /ledger/portfolio/me` gains no `reserved` figure: the
+balance carries it.
+
+When this is built, two descriptions change with it. The endpoints table's
+"My available balance" becomes "My balance, what my orders reserve, and what
+is available". `BalanceOut.balance`'s description in `/docs`, "Available
+credits", becomes "The account's credits, including those resting buy orders
+reserve".
 
 ## GET /ledger/entries/me
 
@@ -688,6 +720,15 @@ The per-user holdings check belongs to [T-3] #23 and only means anything
 taken under the trade's own lock; a preview that checked it here would be
 quoting a refusal that could already be stale by the time anyone acted on it.
 
+**Proposed, ADR 0024: not built yet. `post_trade_prices` ignores resting
+orders.** The preview runs no cascade. `total`, `average_price` and `prices`
+are what the trade will be charged against, because the trade is priced before
+any resting order fills. `post_trade_prices` is the price after this trade
+alone. When resting orders fill in the trade's cascade, the market ends closer
+to where it started than `post_trade_prices` says. Render the end price from
+the `price` frame at the trade response's `book_state_version`, not from the
+preview.
+
 Errors specific to this route, reusing [F-7] #96's codes rather than
 inventing new ones:
 
@@ -983,6 +1024,31 @@ prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
 or from `GET .../snapshot` instead.
 
+**Proposed, ADR 0024: not built yet. Three changes to this route.**
+
+- The response gains `book_state_version`, a JSON number: the book's counter
+  after this trade **and** every resting order it filled. `state_version` is
+  still the counter after this trade alone. With no resting orders filled, the
+  two are equal, and a trade recorded before this field existed returns its
+  `state_version` there. Wait for the `price` frame at `book_state_version`.
+  The response still carries no prices.
+- `insufficient_funds` is checked against `available`, not `balance`: credits
+  reserved by your own buy orders cannot pay for a trade. It is `available`
+  before the trade, even when the trade's cascade then fills one of your buy
+  orders and frees what it held. `error.details` gains `reserved` and
+  `available` beside `balance` and `required`.
+- `insufficient_shares_held` is checked against your position less the shares
+  your live sell orders in that outcome reserve. `error.details` gains
+  `reserved` beside `held` and `requested`.
+
+The errors table below describes the route as built today. The two rows for
+`insufficient_funds` and `insufficient_shares_held` change as above when
+limit orders are built.
+
+A trade can fill your own resting orders. That is allowed, at each order's
+own limit, and none of it pays for the trade that triggered it: the trade has
+to be affordable before any resting order fills.
+
 ### The idempotency key is derived, and a retry is answered before anything
 else runs
 
@@ -1063,6 +1129,233 @@ Errors:
 snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
+
+## Limit orders — Proposed, ADR 0024: not built yet
+
+[T-6] #26, [T-7] #27, [T-8] #28. **Nothing in this section exists yet.** It
+is the contract [FE][T-6] #61 builds against. Why the design looks like this:
+[ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
+Proposed.
+
+A limit order buys or sells at its limit price or better, against the market
+maker. It fills at once as far as the price allows, and the rest waits. When
+a later trade moves the price past the limit, the order fills inside that
+trade's transaction. Traders never trade with each other.
+
+**Binary markets only.** A market with more than two outcomes refuses an
+order with `409 market_not_binary`. Hide the form when the market read lists
+more than two outcomes.
+
+**Good till cancelled.** An order rests until it is filled, cancelled, or its
+market has a result. A closed market's orders do not fill, and they stay
+cancellable.
+
+### The order object
+
+Every route below returns orders in this shape.
+
+```jsonc
+{
+  "id": "0b6e...",
+  "market_id": "9d1c...",
+  "outcome_id": "4f2a...",
+  "outcome_position": 0,
+  "side": "buy",
+  "limit_price": "0.6000",
+  "quantity": "100.0000",
+  "filled_quantity": "20.5465",
+  "average_fill_price": "0.5750",
+  "reserved_credits": "48.1848",
+  "reserved_shares": null,
+  "status": "open",
+  "created_at": "2026-10-20T09:12:44.318000+00:00",
+  "cancelled_at": null
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `outcome_position` | 0 or 1. The ledger holds no labels: take them from market_service, as the portfolio does. |
+| `limit_price` | The price on this order's own outcome, `0.0001` to `0.9999`. A buy fills at or below it, a sell at or above. |
+| `filled_quantity` | Shares filled so far, across every fill. |
+| `average_fill_price` | What the fills cost or paid per share, half-up at scale 4. `null` until the first fill. |
+| `reserved_credits` | A buy only: what the order can still spend, its budget less what it has spent. The budget is `limit_price × quantity`, rounded up to the tick. `null` on a sell. `"0.0000"` once the order is not live. |
+| `reserved_shares` | A sell only: the shares the order still holds back, `quantity - filled_quantity`. `null` on a buy. `"0.0000"` once the order is not live. |
+| `status` | `open`, `filled`, `cancelled`, or `released`: the market has a result, and the remainder is released. `released` is derived on every read. |
+
+Amounts are decimal strings, as everywhere on this service.
+
+**A remainder can stay open with the price at its limit.** Shares come in
+steps of `0.0001`, and each fill must average no worse than the limit. So a
+partly filled order rests with the price at its limit to within one step, and
+a remainder too small to fill at the limit rests until you cancel it or the
+market ends.
+
+### POST /ledger/markets/{market_id}/orders
+
+```jsonc
+// request
+{
+  "outcome_id": "4f2a...",
+  "side": "buy",
+  "limit_price": "0.6000",
+  "quantity": "100.0000",
+  "idempotency_key": "a client-generated string, unique to this caller"
+}
+```
+
+`extra="forbid"` over exactly these five fields, like the trade route: the
+body names no account and no amount. The budget is computed, and the account
+is the token's. `side` is `"buy"` or `"sell"`. `quantity` follows the trade
+route's rules: `> 0`, at most four decimal places, at most 18 digits.
+`limit_price` is a decimal string, `> 0` and `< 1`, at most four decimal
+places. There is **no `state_version`**: the limit protects you, and a quote
+check would refuse an order because the price moved.
+
+```jsonc
+// response, 201: an order that filled in part on arrival
+{
+  "order": { /* the order object above */ },
+  "fills": [
+    { "transaction_id": "36fd...", "quantity": "20.5465", "total": "-11.8152", "state_version": 43 }
+  ],
+  "book_state_version": 43
+}
+```
+
+That example is a buy of outcome 0 at `0.6000` on a market with `b = 100` at
+`q = [20, 0]`, where outcome 0 is priced `0.5498`. It fills `20.5465` shares
+at once, for `11.8152`, taking the price to `0.6000`. The other `79.4535`
+rest, holding `48.1848` of a `60.0000` budget.
+
+- `fills` is what this request filled. Each item is a trade in your history,
+  with `total` signed as the trade route signs it. It is empty when nothing
+  filled on arrival.
+- `book_state_version` is the book's counter after this request. It equals
+  the last fill's `state_version`, or, when nothing filled, the counter the
+  order was placed against. The ledger stores it on the order.
+- An order that filled completely on arrival comes back `filled`, with no
+  reservation.
+- **A buy's whole budget has to fit in `available`**, even when it would fill
+  completely on arrival for less. Such a buy is refused
+  `409 insufficient_funds` with `shortfall`, how much more you need, and
+  nothing fills.
+
+**A retry with the same key** returns `201` with the order as it stands now,
+which may have filled further since, the `book_state_version` stored when it
+was placed, and as `fills` only this order's fills with a `state_version` at
+or below that, which are the fills the first request made. Fills a later
+trade's cascade made are not in `fills`, but they are in the order's
+`filled_quantity` and `reserved_credits` or `reserved_shares`. A key already
+used for a different order, by outcome, side, limit price or quantity, is
+`409 idempotency_key_reused`. Like the trade route, the stored key is
+`order:<user_id>:<market_id>:<idempotency_key>`, so your key only has to be
+unique to you.
+
+**The order of checks** is the trade route's: the retry lookup, then your
+account (ADR 0022), then the market gate, then opening the market's book on
+its first touch, then minting your starting credits if you have never been
+granted them, then everything under the book lock. So a limit order can be
+your first action on the platform: the grant is minted before the budget is
+checked.
+
+**What a placement locks.** Under the book lock, a buy that rests entirely
+also locks your account until it commits, so a trade of yours in another
+market cannot spend credits this order is reserving at the same moment. A
+resting sell locks only the book. A placement that fills on arrival takes no
+lock of its own: the fills' single commit locks your account along with every
+other account involved, in ascending order. Neither path is visible in the
+response. A fill refused inside a cascade is impossible by construction. If
+one ever happens it is a ledger bug, the whole commit rolls back and you get a
+500.
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 403 | `account_suspended` | An administrator has suspended this account. As on the trade route. |
+| 404 | `market_not_found` | No such market. |
+| 409 | `market_closed` | The market's derived status is not `"open"`, or it has a result. |
+| 409 | `market_not_binary` | The market has more than two outcomes. |
+| 409 | `order_crosses_book` | The order would fire, or be fired by, a resting order that pushes the price the other way. `error.details` carries `side` and the bound: `max_limit_price` for a buy, which the limit must be strictly below, or `min_limit_price` for a sell, which it must be strictly above. Show it as "an order is in the way at this price". Your own orders count. |
+| 409 | `insufficient_funds` | A buy whose budget does not fit in `available`, including one that would fill completely on arrival for less than its budget. `error.details` carries `balance`, `reserved`, `available` and `shortfall`, how much more credit you need for the budget to fit, and no `required`. A resting placement's `shortfall` is the budget less `available`. A placement that fills in the same batch is refused by the start-of-batch check, and its `shortfall` is the reservation at the start of the batch, including the new order's budget, less `balance`. The trade route's `insufficient_funds` keeps `required`, unchanged. |
+| 409 | `insufficient_shares_held` | A sell larger than your position less the shares your other sell orders in that outcome reserve. `error.details` carries `held`, `reserved` and `requested`. |
+| 409 | `idempotency_key_reused` | The key already names a different order. |
+| 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
+| 422 | `quantity_too_large` | The fill on arrival would exceed what the ledger can store, as on the trade route. |
+| 422 | `invalid_request` | A malformed body, an extra field, a `side` other than `"buy"` or `"sell"`, a `quantity` breaking the rules above, or a `limit_price` at or outside `0` and `1`, or with five decimal places. |
+| 500 | `market_book_incomplete` | As on the trade route. |
+| 503 | `market_terms_unavailable` | As on the trade route. |
+| 503 | `auth_unavailable` | As on the trade route. Nothing was written. |
+
+A placement never returns `quote_stale`, `cost_below_tick` or
+`proceeds_below_tick`. A fill that would round to nothing is not taken, and
+the order rests instead.
+
+### GET /ledger/orders/me
+
+Your live orders, newest first: every order that is `open` on a market that
+has no result, closed markets included. No query parameters and no paging.
+Filled, cancelled and released orders are not listed.
+
+```jsonc
+{
+  "orders": [ { /* the order object */ } ]
+}
+```
+
+Any valid access token. This is the snapshot for order frames: fetch it when
+the page opens and again after every socket reconnect
+(`docs/api/realtime-service.md`, "Order updates").
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+
+### POST /ledger/orders/{order_id}/cancel
+
+An empty body, `extra="forbid"`. Your own orders only, any role. No account
+check and no market gate: a suspended account can still cancel while its
+token is valid, and a closed market's orders can be cancelled.
+
+```jsonc
+// response, 200
+{
+  "order": { /* the order object, status "cancelled" */ },
+  "released_credits": "48.1848",
+  "released_shares": null
+}
+```
+
+`released_credits` or `released_shares` is what the cancel released, the
+other `null`. `filled_quantity` is what had filled before the cancel. Fills
+stay: a cancel releases only the remainder.
+
+**A cancel and a fill never both win.** Both take the market's book lock, and
+whichever takes it first commits first. If a fill got there first, the cancel
+releases the smaller remainder, or answers `409 order_already_filled`. If the
+cancel got there first, the order does not fill.
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 404 | `order_not_found` | No such order, or not yours. The two look the same on purpose. |
+| 409 | `order_already_filled` | It filled completely before the cancel. Refresh the order. |
+| 409 | `order_already_cancelled` | It was already cancelled. A retried cancel lands here: treat it as done. |
+| 409 | `order_released` | Its market has a result, and the remainder is already released. |
+| 422 | `invalid_request` | `order_id` is not a UUID, or the body is not empty. |
+
+### What a limit order does to the rest of this page
+
+- **Balance:** `reserved` and `available` (above).
+- **History:** each fill is a `trade_buy` or `trade_sell` row with its own
+  `average_price`. Placing and cancelling write none.
+- **Portfolio and leaderboard:** unchanged. Reserved credits are still in
+  `balance`, and reserved shares are still positions, valued as today.
+- **Price history and the trade feed:** one point and one row per fill.
+- **Trade route:** `book_state_version`, and the two refusals that now count
+  reservations (above).
 
 ## POST /ledger/markets/{market_id}/settlement
 
@@ -1524,3 +1817,8 @@ settlement route: a batch with no movements, or two movements sharing an
 idempotency key. The route builds every batch from this service's own
 positions, with one payout per winner keyed by user id and at most one
 residue, so no request can provoke it.
+
+`market_not_binary`, `order_crosses_book`, `order_not_found`,
+`order_already_filled`, `order_already_cancelled` and `order_released` are
+proposed by ADR 0024 for the limit-order routes and are not built yet. They
+are documented in "Limit orders" above.

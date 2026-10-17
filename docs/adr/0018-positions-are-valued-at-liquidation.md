@@ -215,3 +215,14 @@ that market. It is a second source of truth, rejected for the reason in
 > What does **not** reverse it is a UI that would prefer the bigger number, or
 > a leaderboard that looks flat. Both are arguments for the rule this record
 > rejects.
+
+> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
+> and not built yet. A note, not a supersession.** Limit orders as ADR 0024
+> designs them are not the second liquidity mechanism this reversal names.
+> Every sale, instant or a fill, is priced by `trade_cost_of` against the
+> book, and nothing is matched against a resting order. The cascade runs after
+> the triggering sale is priced, so it cannot change that sale's proceeds. The
+> concrete test above still passes: the trade route's proceeds for a sell are
+> `trade_cost_of`'s magnitude. Reserved shares are still positions and are
+> valued at liquidation like any other. A design that let a sale fill against
+> a resting order would trip this, and supersede it.
