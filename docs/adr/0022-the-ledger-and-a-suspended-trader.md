@@ -176,3 +176,22 @@ the ledger exists.
 > auto-execution is the one on the board — this decision is unimplementable as
 > written, exactly as ADR 0017's is, and the service credential that day needs
 > answers both questions.
+
+> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
+> and not built yet.** The cascade adds no trade without a token. A placement
+> makes this check with the placer's own token, in this record's place, after
+> the replay and before the market gate. A fill does not. It runs under the
+> book lock inside somebody else's request, where it can neither release the
+> session to call out nor send the owner's token. So the resting orders of an
+> owner suspended after placing them keep filling, and the owner can cancel
+> them only until their last access token expires. ADR 0024 accepts that as a
+> narrowing of [4.2] #14's "suspension blocks trading", and it needs #14's
+> owner's sign-off before it does. A cancel makes no account check.
+>
+> Separately, and true of the code today: the auth client's timeout is five
+> seconds on each of httpx's four phases, connect, write, read and pool. They
+> are bounded separately, so one call can wait about 20 seconds before it
+> fails, and longer only if a response trickles in. The market gate's call
+> comes after this one and has the same four limits, so a trade can wait on
+> both in turn. "The same explicit five-second timeouts" under Consequences
+> means that.
