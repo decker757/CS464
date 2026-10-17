@@ -352,11 +352,11 @@ route that took an outcome, an amount or an account from the request would be a
 route for minting yourself credits, and would first have to answer how a
 *service* proves it is a service. ADR 0009's two amendments, ADR 0019.
 
-`posting.post` commits, so on the trade path it is the last call, and
+`posting.post_all` commits, so on the trade path it is the last call, and
 everything the trade writes is still pending when it runs. Two rules follow.
 The trade re-checks its idempotency key **under the book lock, before it writes
-anything** — the unlocked lookup at the top only ever short-circuits. And `post`
-refuses to replay into a session holding pending writes (`500
+anything** — the unlocked lookup at the top only ever short-circuits. And
+`post_all` refuses to replay into a session holding pending writes (`500
 pending_writes_on_replay`), because its replay commits the whole session and
 would grant a duplicate's shares against one payment. Lock order is the book
 row, then the accounts.
@@ -651,6 +651,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0021** the leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
 - **0022** the ledger asks auth whether a trader is still active, once per trade
 - **0023** sending an approved outcome back inside its stored dispute window, by any admin
+- **0024** resting orders fill against the AMM inside the trade that moved the price
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

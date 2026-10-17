@@ -177,8 +177,8 @@ the ledger exists.
 > written, exactly as ADR 0017's is, and the service credential that day needs
 > answers both questions.
 
-> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
-> and not built yet.** The cascade adds no trade without a token. A placement
+> **Amended 2026-10-17. Decided by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md)
+> (Accepted 2026-10-17), not built yet.** The cascade adds no trade without a token. A placement
 > makes this check with the placer's own token, in this record's place, after
 > the replay and before the market gate. A fill does not. It runs under the
 > book lock inside somebody else's request, where it can neither release the
@@ -187,6 +187,10 @@ the ledger exists.
 > them only until their last access token expires. ADR 0024 accepts that as a
 > narrowing of [4.2] #14's "suspension blocks trading", and it needs #14's
 > owner's sign-off before it does. A cancel makes no account check.
+
+> **Amended 2026-10-17. ADR 0024 is Accepted.** ADR 0024 was Accepted on
+> 2026-10-17, so the narrowing of [4.2] #14's "suspension blocks trading"
+> described above is decided, not pending.
 
 > **Amended 2026-10-17. True of the code today.** The auth client's timeout
 > is five seconds on each of httpx's four phases, connect, write, read and

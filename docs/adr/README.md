@@ -29,7 +29,7 @@ see why the code looks the way it does without reconstructing the argument.
 | [0021](0021-the-leaderboard-and-the-first-service-credential.md) | The leaderboard is a snapshot on the ledger, and auth names its users through the first service credential | Accepted |
 | [0022](0022-the-ledger-and-a-suspended-trader.md) | The ledger asks auth whether a trader is still active, once per trade | Accepted |
 | [0023](0023-sending-an-approved-outcome-back.md) | Sending an approved outcome back, and the window's end stored at approval | Accepted |
-| [0024](0024-resting-orders-fill-inside-the-trade.md) | Resting orders fill against the AMM inside the trade that moved the price | Proposed |
+| [0024](0024-resting-orders-fill-inside-the-trade.md) | Resting orders fill against the AMM inside the trade that moved the price | Accepted |
 
 Supersede rather than edit. If a decision changes, add a new record and mark
 the old one superseded, so the reasoning trail survives.
