@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCredits, formatCreditsPrecise, isZeroCredits, unsignedCredits } from './formatCredits'
+import { formatAveragePrice, formatCredits, formatCreditsPrecise, isZeroCredits, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -69,6 +69,19 @@ describe('formatCreditsPrecise', () => {
 
   it('shows a dash for anything that is not a plain decimal', () => {
     expect(formatCreditsPrecise('1E-4')).toBe('—')
+  })
+})
+
+describe('formatAveragePrice', () => {
+  it('shows a value above 1.0000, unlike a percentage formatter which has no way to', () => {
+    // ledger-service.md: average_price can pass 1.0000 on a heavily skewed
+    // book. #247 picks credits-per-share as the one format for this field
+    // on every screen, for exactly this reason.
+    expect(formatAveragePrice('2.0000')).toBe('2.0000')
+  })
+
+  it('keeps four decimal places, same as every other credits figure', () => {
+    expect(formatAveragePrice('0.5063')).toBe('0.5063')
   })
 })
 
