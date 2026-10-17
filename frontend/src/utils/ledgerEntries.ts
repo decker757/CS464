@@ -6,6 +6,10 @@ export interface EntryRow extends LedgerEntry {
   // Only a trade row names a market and an outcome (ledger-service.md); the
   // grant, and any kind this app does not recognise, do not.
   isTrade: boolean
+  // A settlement row also names a market and its winning outcome, joined the
+  // same way as a trade row, but it is a payout, not a trade: its side and
+  // average_price stay null and are never shown as one ([3.4] #12).
+  isSettlement: boolean
   question: string
   outcomeLabel: string
 }
@@ -17,10 +21,11 @@ export interface EntryPage {
 
 function toRow(entry: LedgerEntry, markets: Map<string, PublicMarketDetail>): EntryRow {
   const isTrade = entry.kind === 'trade_buy' || entry.kind === 'trade_sell'
-  if (!isTrade || !entry.market_id || !entry.outcome_id) {
-    return { ...entry, isTrade: false, question: '', outcomeLabel: '' }
+  const isSettlement = entry.kind === 'settlement'
+  if ((!isTrade && !isSettlement) || !entry.market_id || !entry.outcome_id) {
+    return { ...entry, isTrade: false, isSettlement: false, question: '', outcomeLabel: '' }
   }
-  return { ...entry, isTrade: true, ...labelsFor(entry.market_id, entry.outcome_id, markets) }
+  return { ...entry, isTrade, isSettlement, ...labelsFor(entry.market_id, entry.outcome_id, markets) }
 }
 
 /**
@@ -51,5 +56,6 @@ export function kindLabel(kind: string): string {
   if (kind === 'signup_grant') return 'Starting grant'
   if (kind === 'trade_buy') return 'Buy'
   if (kind === 'trade_sell') return 'Sell'
+  if (kind === 'settlement') return 'Payout'
   return kind
 }
