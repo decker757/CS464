@@ -3,12 +3,14 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
+import type { AdminAction } from '../../api/auditApi'
 import type { MarketOverviewRow } from '../../api/marketApi'
 import { server } from '../../test/server'
 import AdminMarketRow from './AdminMarketRow'
 
 const CLOSE = (id: string) => `http://localhost:8001/markets/${id}/close`
 const SETTLE = (id: string) => `http://localhost:8003/ledger/markets/${id}/settlement`
+const SEND_BACK = (id: string) => `http://localhost:8001/markets/${id}/send-back-outcome`
 
 const OPEN_MARKET: MarketOverviewRow = {
   id: 'm1',
@@ -30,10 +32,10 @@ const SETTLEABLE_MARKET: MarketOverviewRow = {
   dispute_window_ends_at: '2025-01-01T00:05:00Z',
 }
 
-function renderRow(market: MarketOverviewRow, isMine = false) {
+function renderRow(market: MarketOverviewRow, isMine = false, approvalEntry?: AdminAction) {
   return render(
     <MemoryRouter>
-      <AdminMarketRow market={market} isMine={isMine} />
+      <AdminMarketRow market={market} isMine={isMine} approvalEntry={approvalEntry} />
     </MemoryRouter>,
   )
 }
@@ -333,6 +335,194 @@ describe('AdminMarketRow', () => {
       expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
       expect(calls).toBe(2)
+    })
+  })
+
+  describe('disputing the result', () => {
+    const DISPUTABLE_MARKET: MarketOverviewRow = {
+      id: 'm3',
+      creator_id: 'u1',
+      status: 'approved',
+      question: 'Did it rain yesterday?',
+      close_time: '2025-01-01T00:00:00Z',
+      settleable: false,
+      dispute_window_ends_at: '2099-01-01T00:05:00Z',
+    }
+
+    function approvedEntry(overrides: Partial<AdminAction> = {}): AdminAction {
+      return {
+        id: 'a1',
+        occurred_at: '2026-01-01T00:00:00Z',
+        actor_id: 'admin-2',
+        actor_username: 'ihsan_b',
+        actor_role: 'admin',
+        action_type: 'market.outcome_approved',
+        target_type: 'market',
+        target_id: DISPUTABLE_MARKET.id,
+        target_label: DISPUTABLE_MARKET.question ?? '',
+        reason: null,
+        context: {
+          proposal_id: 'prop-1',
+          winning_outcome: 'Yes',
+          evidence_url: 'https://example.com',
+          evidence_note: 'A note.',
+          proposed_by_username: 'ernest_t',
+        },
+        source_service: 'market_service',
+        ...overrides,
+      }
+    }
+
+    async function openDisputeModal(market: MarketOverviewRow = DISPUTABLE_MARKET, entry = approvedEntry()) {
+      renderRow(market, false, entry)
+      const actor = userEvent.setup()
+      await actor.click(screen.getByRole('button', { name: /dispute result/i }))
+      return actor
+    }
+
+    it('shows time left while the dispute window is open', () => {
+      renderRow(DISPUTABLE_MARKET, false, approvedEntry())
+      expect(screen.getByText(/disputes close in/i)).toBeInTheDocument()
+    })
+
+    it('shows the result is final once the dispute window has passed', () => {
+      renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: '2020-01-01T00:00:00Z' }, false, approvedEntry())
+      expect(screen.getByText('Result is final; payout pending.')).toBeInTheDocument()
+    })
+
+    it('shows no countdown on a market that is not approved', () => {
+      renderRow(OPEN_MARKET)
+      expect(screen.queryByText(/disputes close in/i)).not.toBeInTheDocument()
+      expect(screen.queryByText('Result is final; payout pending.')).not.toBeInTheDocument()
+    })
+
+    it('hides Dispute result on an approved market still within its window while the approval entry has not loaded yet', () => {
+      // AdminMarketsPage fetches the approval entry separately from the
+      // market list; before it answers, approvalEntry is undefined even on a
+      // genuinely disputable row. The button must not render clickable with
+      // nothing behind it to send.
+      renderRow(DISPUTABLE_MARKET, false, undefined)
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
+
+    it('hides Dispute result on an approved market with no dispute window left', () => {
+      renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: '2020-01-01T00:00:00Z' }, false, approvedEntry())
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
+
+    it('hides Dispute result on a market that is not approved', () => {
+      renderRow(OPEN_MARKET)
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
+
+    it('offers Dispute result to any administrator, including the proposer and approver', () => {
+      // market-service.md's dispute-screen notes, point 2: never disabled for them.
+      renderRow(DISPUTABLE_MARKET, true, approvedEntry())
+      expect(screen.getByRole('button', { name: /dispute result/i })).toBeEnabled()
+    })
+
+    it('disables Confirm Dispute until the reason reaches 10 trimmed characters', async () => {
+      const actor = await openDisputeModal()
+      const confirm = screen.getByRole('button', { name: /confirm dispute/i })
+      expect(confirm).toBeDisabled()
+
+      await actor.type(screen.getByLabelText(/reason/i), 'too short')
+      expect(confirm).toBeDisabled()
+
+      await actor.clear(screen.getByLabelText(/reason/i))
+      await actor.type(screen.getByLabelText(/reason/i), 'The source was revised after publication')
+      expect(confirm).toBeEnabled()
+    })
+
+    it('sends the proposal_id read from the approval entry, never refetched', async () => {
+      // market-service.md's dispute-screen notes, point 4.
+      let sentProposalId: unknown
+      server.use(
+        http.post(SEND_BACK(DISPUTABLE_MARKET.id), async ({ request }) => {
+          const body = await request.json() as { proposal_id: unknown }
+          sentProposalId = body.proposal_id
+          return HttpResponse.json({ status: 'closed', closed_at: DISPUTABLE_MARKET.close_time })
+        }),
+      )
+      const actor = await openDisputeModal(DISPUTABLE_MARKET, approvedEntry({ context: { proposal_id: 'prop-xyz' } }))
+      await actor.type(screen.getByLabelText(/reason/i), 'The source was revised after publication')
+
+      await actor.click(screen.getByRole('button', { name: /confirm dispute/i }))
+
+      await screen.findAllByText('Closed')
+      expect(sentProposalId).toBe('prop-xyz')
+    })
+
+    it('sends back the result and repaints the row as closed, without a refetch', async () => {
+      server.use(
+        http.post(SEND_BACK(DISPUTABLE_MARKET.id), () => HttpResponse.json({ status: 'closed', closed_at: DISPUTABLE_MARKET.close_time })),
+      )
+      const actor = await openDisputeModal()
+      await actor.type(screen.getByLabelText(/reason/i), 'The source was revised after publication')
+
+      await actor.click(screen.getByRole('button', { name: /confirm dispute/i }))
+
+      await screen.findAllByText('Closed')
+      expect(screen.getAllByText('Closed')).toHaveLength(2) // the close-time label and the status badge
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
+
+    it('cancels without sending the result back', async () => {
+      const actor = await openDisputeModal()
+      await actor.click(screen.getByRole('button', { name: /cancel/i }))
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /dispute result/i })).toBeInTheDocument()
+    })
+
+    it.each([
+      { code: 'dispute_window_closed', message: /dispute window has closed/i },
+      { code: 'proposal_superseded', message: /already replaced/i },
+      { code: 'market_already_settled', message: /acted on this market first/i },
+    ])('offers a Reload control and drops Dispute result on a 409 $code', async ({ code, message }) => {
+      server.use(
+        http.post(SEND_BACK(DISPUTABLE_MARKET.id), () => HttpResponse.json({ error: { code, message: 'stopped' } }, { status: 409 })),
+      )
+      const actor = await openDisputeModal()
+      await actor.type(screen.getByLabelText(/reason/i), 'The source was revised after publication')
+
+      await actor.click(screen.getByRole('button', { name: /confirm dispute/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(message)
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it('paints a too-short reason on the field and keeps the modal open', async () => {
+      server.use(
+        http.post(SEND_BACK(DISPUTABLE_MARKET.id), () => HttpResponse.json(
+          { error: { code: 'send_back_incomplete', message: 'bad reason', details: [{ field: 'reason', message: 'The reason must be at least 10 characters.' }] } },
+          { status: 422 },
+        )),
+      )
+      const actor = await openDisputeModal()
+      await actor.type(screen.getByLabelText(/reason/i), '1234567890')
+
+      await actor.click(screen.getByRole('button', { name: /confirm dispute/i }))
+
+      expect(await screen.findByText(/at least 10 characters/i)).toBeInTheDocument()
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+    })
+
+    it('shows the generic failure and keeps Dispute result available for a retry when the server errors', async () => {
+      server.use(
+        http.post(SEND_BACK(DISPUTABLE_MARKET.id), () => HttpResponse.json({ error: { code: 'internal_error', message: 'boom' } }, { status: 500 })),
+      )
+      const actor = await openDisputeModal()
+      await actor.type(screen.getByLabelText(/reason/i), 'The source was revised after publication')
+
+      await actor.click(screen.getByRole('button', { name: /confirm dispute/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Sending this result back failed. Please try again.')
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /dispute result/i })).toBeInTheDocument()
     })
   })
 })

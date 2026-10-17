@@ -10,6 +10,7 @@ import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
+import { disputeWindowOpen, formatCountdown } from '../utils/formatCountdown'
 import { formatPrice } from '../utils/formatPrice'
 
 // setTimeout overflows a 32-bit int at ~24.8 days; a close further out than
@@ -134,6 +135,14 @@ export default function MarketDetailPage() {
           {market.status === 'pending_resolution' && (
             <Banner className="border-warning/20 bg-warning/5 text-warning-strong">
               Awaiting outcome decision from a second administrator.
+            </Banner>
+          )}
+
+          {market.status === 'approved' && (
+            <Banner className="border-warning/20 bg-warning/5 text-warning-strong">
+              {market.dispute_window_ends_at && disputeWindowOpen(market.dispute_window_ends_at)
+                ? `Disputes close in ${formatCountdown(market.dispute_window_ends_at)}.`
+                : 'Result is final; payout pending.'}
             </Banner>
           )}
 

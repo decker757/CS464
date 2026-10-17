@@ -1,4 +1,5 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { listAllActions, type AdminAction } from '../../api/auditApi'
 import { getMarketOverview, type MarketOverview, type MarketOverviewRow } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
 import AdminMarketRow from '../../components/markets/AdminMarketRow'
@@ -8,6 +9,7 @@ import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
 import { useAuth } from '../../context/AuthContext'
 import { usePagedList } from '../../hooks/usePagedList'
+import { latestActionPerTarget } from '../../utils/proposals'
 
 type StatusFilter = AdminMarketStatus | 'all'
 type StatusCounts = MarketOverview['counts']
@@ -53,6 +55,23 @@ export default function AdminMarketsPage() {
   // The latest response's counts, Load more's included.
   const counts = latestPage?.counts
 
+  // The Dispute control ([FE][3.3] #59) needs the market.outcome_approved
+  // entry behind each approved row, for its proposal_id and what to show in
+  // the modal. Fetched once here rather than per row — an admin market list
+  // can hold many approved rows, and each would otherwise re-walk the whole
+  // action log for the same data — and only when a row on this page could
+  // use it, so every other filter tab costs nothing extra.
+  const hasApprovedRow = markets.some(m => m.status === 'approved')
+  const [approvals, setApprovals] = useState<Map<string, AdminAction> | null>(null)
+  useEffect(() => {
+    if (!hasApprovedRow) return
+    let cancelled = false
+    listAllActions('market.outcome_approved').then(entries => {
+      if (!cancelled) setApprovals(latestActionPerTarget(entries))
+    })
+    return () => { cancelled = true }
+  }, [hasApprovedRow])
+
   return (
     <AppLayout width="max-w-[1000px]">
       <PageTitle className="mb-8">All Markets</PageTitle>
@@ -80,7 +99,12 @@ export default function AdminMarketsPage() {
         <>
           <div className="flex flex-col gap-3">
             {markets.map(market => (
-              <AdminMarketRow key={market.id} market={market} isMine={market.creator_id === user?.id} />
+              <AdminMarketRow
+                key={market.id}
+                market={market}
+                isMine={market.creator_id === user?.id}
+                approvalEntry={approvals?.get(market.id)}
+              />
             ))}
           </div>
 

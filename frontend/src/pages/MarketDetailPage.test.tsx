@@ -317,6 +317,39 @@ describe('MarketDetailPage', () => {
     })
   })
 
+  // [FE][3.3] #59: the countdown is display only (market-service.md's
+  // dispute-screen notes, point 1) — shown on an approved market, nowhere else.
+  describe('the dispute window countdown', () => {
+    it('shows time left and the absolute instant for an approved market', async () => {
+      const endsAt = new Date(Date.now() + 5 * 60 * 60 * 1000 + 12 * 60 * 1000).toISOString()
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, status: 'approved', proposed_outcome_id: 'o1', settleable: false, dispute_window_ends_at: endsAt }),
+        ),
+      )
+      renderPage()
+      expect(await screen.findByText(/disputes close in 5h 1[12]m/i)).toBeInTheDocument()
+    })
+
+    it('shows the result is final once the window has passed', async () => {
+      const endsAt = new Date(Date.now() - 1000).toISOString()
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, status: 'approved', proposed_outcome_id: 'o1', settleable: true, dispute_window_ends_at: endsAt }),
+        ),
+      )
+      renderPage()
+      expect(await screen.findByText('Result is final; payout pending.')).toBeInTheDocument()
+    })
+
+    it('shows no countdown for a market that is not approved', async () => {
+      renderPage()
+      await screen.findByText(baseMarket.question)
+      expect(screen.queryByText(/disputes close in/i)).not.toBeInTheDocument()
+      expect(screen.queryByText('Result is final; payout pending.')).not.toBeInTheDocument()
+    })
+  })
+
   it('shows a reconnecting indicator when the connection drops', async () => {
     let wsClient: { close(code?: number): void } | null = null
     server.use(
