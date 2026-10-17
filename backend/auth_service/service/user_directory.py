@@ -1,7 +1,8 @@
-"""Naming accounts for another service. [L-1] #38, ADR 0021
+"""Naming accounts for another service, and for an administrator. [L-1] #38, ADR 0021, [2.4] #273
 
-A read with no lock and no audit entry: the log records decisions, and this
-decides nothing.
+Two callers: the internal lookup the ledger's leaderboard uses, and the admin
+lookup behind the trade table. A read with no lock and no audit entry: the log
+records decisions, and this decides nothing.
 """
 
 from __future__ import annotations
@@ -20,7 +21,8 @@ async def list_by_ids(session: AsyncSession, user_ids: Sequence[uuid.UUID]) -> l
     """The users among `user_ids`, ordered by `id`.
 
     A duplicate collapses in the `IN`, and an id that names no user is simply
-    absent: the caller decides what a missing user means.
+    absent: the caller decides what a missing user means. Called by the
+    internal lookup and by the admin lookup, which promises no order.
     """
     # `raiseload`, for `get_current_user`'s reason: `lazy="selectin"` would
     # load every refresh token of up to 500 users, and nothing here reads them.
