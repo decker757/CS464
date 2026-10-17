@@ -135,6 +135,8 @@ was dropped" both look like silence.
 }
 ```
 
+**`order`** — proposed, ADR 0024: not built yet. See "Order updates" below.
+
 **`error`** — the same envelope the four HTTP services return, so the frontend
 parses one error shape across the whole backend.
 
@@ -148,8 +150,6 @@ parses one error shape across the whole backend.
 | `unknown_action` | `action` is not `subscribe` or `unsubscribe`. |
 | `invalid_market_id` | `market_id` absent or not a UUID. |
 | `too_many_subscriptions` | This connection is at its ceiling. |
-
-**`order`** — proposed, ADR 0024: not built yet. See "Order updates" below.
 
 ## Prices are decimal strings, not JSON numbers
 
