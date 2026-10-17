@@ -10,7 +10,7 @@ import Button from '../../components/ui/Button'
 import PageTitle from '../../components/ui/PageTitle'
 import ReasonModal from '../../components/ui/ReasonModal'
 import SectionCard from '../../components/ui/SectionCard'
-import { latestProposalPerMarket, toPendingProposal, type PendingProposal } from '../../utils/proposals'
+import { latestActionPerTarget, toPendingProposal, type PendingProposal } from '../../utils/proposals'
 
 const MIN_REASON_LENGTH = 10
 
@@ -58,7 +58,7 @@ export default function DecideOutcomePage() {
         // approved ones. Only a pending_resolution market has one waiting
         // (market-service.md's approval-screen notes, point 1).
         if (marketDetail.status !== 'pending_resolution') return
-        const latest = latestProposalPerMarket(entries.filter(e => e.target_id === id))
+        const latest = latestActionPerTarget(entries.filter(e => e.target_id === id))
         const entry = latest.get(id)
         if (entry) setProposal(toPendingProposal(marketDetail, entry))
       })
