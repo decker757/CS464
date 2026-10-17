@@ -313,3 +313,22 @@ export async function getMarketTrades(marketId: string, params?: { cursor?: stri
   const res = await api.get<MarketTradePage>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, { params })
   return res.data
 }
+
+export interface SettlementResult {
+  market_id: string
+  outcome_id: string
+  recorded_at: string
+  holders_paid: number
+  total_paid: string
+  residue: string
+}
+
+/** Settles an approved market once it is `settleable` ([3.4] #12): the
+ * winner and the holders come from this service's own book, never the
+ * request, which is why it takes no body. Safe to repeat — a retry after
+ * `settlement_unconfirmed` replays the same answer rather than paying twice
+ * (ledger-service.md). */
+export async function settleMarket(marketId: string): Promise<SettlementResult> {
+  const res = await api.post<SettlementResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/settlement`)
+  return res.data
+}
