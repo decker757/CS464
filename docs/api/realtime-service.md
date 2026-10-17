@@ -135,7 +135,7 @@ was dropped" both look like silence.
 }
 ```
 
-**`order`** — proposed, ADR 0024: not built yet. See "Order updates" below.
+**`order`** — ADR 0024 (Accepted): not built yet. See "Order updates" below.
 
 **`error`** — the same envelope the four HTTP services return, so the frontend
 parses one error shape across the whole backend.
@@ -285,7 +285,7 @@ Rules that are not negotiable:
   so adding a field means changing the model and this page in the same pull
   request.
 
-## Order updates — Proposed, ADR 0024: not built yet
+## Order updates — ADR 0024 (Accepted): not built yet
 
 [T-7] #27's fifth criterion: "filled and partially-filled orders push
 notifications to the owner via websocket". **Nothing in this section exists
