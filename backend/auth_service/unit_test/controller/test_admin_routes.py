@@ -350,8 +350,6 @@ async def test_an_administrator_gets_each_known_id_once_as_id_and_username_only(
     assert response.json() == {
         "users": [{"id": target_user_id, "username": "michelle_l"}]
     }
-    for user in response.json()["users"]:
-        assert set(user) == {"id", "username"}
 
 
 async def test_a_suspended_user_is_named(
