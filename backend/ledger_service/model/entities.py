@@ -131,8 +131,9 @@ class OrderStatus(StrEnum):
     """Where a limit order is in its life. [T-6] #26, ADR 0024.
 
     `released` is not a member: it is derived on every read from the status and
-    the rollups, and never stored. Non-native like the rest, so the column is a
-    plain varchar with no CHECK on its values.
+    whether the market has a result (D-NEW "An open order is live only while its
+    market has no result"), and never stored. Non-native like the rest, so the
+    column is a plain varchar with no CHECK on its values.
     """
 
     OPEN = "open"
@@ -691,15 +692,15 @@ class LeaderboardEntry(Base):
 class Order(Base):
     """A limit order resting against the AMM. [T-6] #26, ADR 0024.
 
-    The credits an order holds back are never a column: a buy's reservation is
-    `budget - spent`, derived on every read, for the reason `Account` has no
-    balance. `budget`, `spent` and `filled_quantity` are rollups, updated under
-    the book row's lock as fills land. `spent` is what the fills moved on
-    either side, a buy's costs or a sell's proceeds (D-NEW "An order's `spent`
-    is what its fills moved, on either side"), so `average_fill_price` is one
-    division for both. `released` is derived and never stored, and so is the
-    reservation: D-NEW "A buy reserves `limit × quantity` rounded up to the
-    tick, its reservation is `budget - spent`, and it cannot go negative".
+    The credits an order holds back are never a column, for the reason
+    `Account` has no balance: D-NEW "A buy reserves `limit × quantity` rounded
+    up to the tick, its reservation is `budget - spent`, and it cannot go
+    negative". `budget` is fixed at placement; `spent` and `filled_quantity`
+    are rollups updated under the book row's lock as fills land. `spent` is
+    what the fills moved on either side, a buy's costs or a sell's proceeds
+    (D-NEW "An order's `spent` is what its fills moved, on either side"), so
+    `average_fill_price` is one division for both. `released` is derived and
+    never stored.
 
     `seq` is `GENERATED ALWAYS`, so a writer cannot supply one: D-NEW
     "Priority is price, then an identity `seq` assigned under the book lock".
