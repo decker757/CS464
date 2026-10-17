@@ -247,3 +247,14 @@ export async function rejectOutcome(id: string, proposalId: string | null, reaso
   const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/reject-outcome`, { proposal_id: proposalId, reason })
   return res.data
 }
+
+/**
+ * Sends an approved result back to closed during its dispute window, with a
+ * reason ([3.3] #11). `proposalId` must be the id of the approved proposal
+ * the reviewer read, null included — never refetched at click time
+ * (market-service.md's dispute-screen notes).
+ */
+export async function sendBackOutcome(id: string, proposalId: string | null, reason: string): Promise<MarketOut> {
+  const res = await api.post<MarketOut>(`${MARKET_BASE}/markets/${id}/send-back-outcome`, { proposal_id: proposalId, reason })
+  return res.data
+}
