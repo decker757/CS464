@@ -38,8 +38,8 @@ landed with [F-3] #43, the route with [F-9] #112.
 The producer is on the ledger too. The trade path — buying with [T-2] #22,
 selling with [T-3] #23, both through
 `ledger_service/service/trading.py::execute` — calls `bus.publish` once, after
-`posting.post` has committed the trade. Every committed trade therefore sends a
-`price` frame to everyone subscribed to that market.
+`posting.post_all` has committed the trade. Every committed trade therefore
+sends a `price` frame to everyone subscribed to that market.
 
 ## Connecting
 
@@ -267,8 +267,8 @@ copies to their originals by reading this service's source as text.
 **The trade path is the one caller.** [F-9] #112 shipped the primitive with
 no caller — the same "primitive before caller" shape [F-7] #96 and [F-8] #109
 already used — and [T-2] #22 and [T-3] #23 added it: `trading.py::execute`
-calls `bus.publish` once, right after `posting.post` commits, and never on a
-rejection or an idempotent replay.
+calls `bus.publish` once, right after `posting.post_all` commits, and never
+on a rejection or an idempotent replay.
 
 Rules that are not negotiable:
 

@@ -106,7 +106,8 @@ wording wins where the two differ.
    - If a design charges a cost that was priced outside the trade's lock, it's
      wrong. Stop and tell me.
 8. **Websocket publish fires after commit, never inside the transaction.**
-9. **`posting.post()` commits, so it is the last call on any path that writes.**
+9. **Posting commits (`posting.post()` or `posting.post_all()`), so it is the last
+   call on any path that writes.**
    Settled by "The book's writes share `posting.post`'s commit, and nothing may
    follow it" and, for the trade path, CLAUDE.md's "The ledger has one write
    route, and it takes no money".
