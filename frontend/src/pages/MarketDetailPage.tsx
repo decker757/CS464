@@ -10,6 +10,7 @@ import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
+import { formatCountdown } from '../utils/formatCountdown'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
@@ -128,6 +129,14 @@ export default function MarketDetailPage() {
           {market.status === 'pending_resolution' && (
             <Banner className="border-warning/20 bg-warning/5 text-warning-strong">
               Awaiting outcome decision from a second administrator.
+            </Banner>
+          )}
+
+          {market.status === 'approved' && (
+            <Banner className="border-warning/20 bg-warning/5 text-warning-strong">
+              {market.dispute_window_ends_at && new Date(market.dispute_window_ends_at) > new Date()
+                ? `Disputes close in ${formatCountdown(market.dispute_window_ends_at)}.`
+                : 'Result is final; payout pending.'}
             </Banner>
           )}
 
