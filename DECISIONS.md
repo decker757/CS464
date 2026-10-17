@@ -6167,18 +6167,29 @@ reversal trigger fires. A trader's own resting sell can fill in the cascade
 their own buy triggered, so one batch debits a USER account and credits it in
 a later movement. ADR 0024 replaces the netted check with a running one in
 `_refuse_overdrafts`. It walks the movements in order and keeps, for each
-USER account, a running balance and a running reservation. After each
-movement that debits the account, the balance must be at least the
-reservation at that point: the reservation before the batch, less what that
-account's own buy-order fills earlier in the batch have spent. Each
-`Movement` carries the reservation it releases, its cost for a buy-order fill
-and zero otherwise. The reservation is read after `accounts.lock` and after
-the caller has flushed its order rows, which gives the figure after the
-batch, and the batch's released amounts are added back to it. So a trade has
-to be affordable before any resting order fills: neither a self-fill's
-proceeds nor a reservation released later in the batch can pay for it. An
-account the batch only credits is still not read. The owner of `posting.py`
-signs this off before it is built.
+USER account, a running balance and a running reservation. Both start at
+their values before the batch, and the balance must be at least the
+reservation there. After each movement that debits the account, the balance
+must be at least the reservation at that point.
+
+Each `Movement` carries the drop in its account's reservation that it
+causes, not its cost. A buy-order fill that leaves the order open drops it by
+its cost. A fill that exhausts the order drops it by the order's whole
+remaining budget, `budget - spent` with `spent` read before the fill,
+because the order stops being live. A sell-order fill and a plain trade drop
+it by zero. The reservation is read after `accounts.lock` and after the
+caller has flushed its order rows, which gives the figure after the batch,
+and the batch's drops are added back to it.
+
+A placement's new buy order therefore counts at its full budget from the
+start of the batch, whether it fills in part or completely on arrival, and
+the check at the start refuses a placement whose budget does not fit in
+`available`, `409 insufficient_funds`, even one that would fill completely
+for less. So a trade has to be affordable before any resting order fills:
+neither a self-fill's proceeds nor a reservation dropped later in the batch
+can pay for it. ADR 0024 works both cases through. An account the batch only
+credits is still not read. The owner of `posting.py` signs this off before
+it is built.
 
 ---
 
@@ -9204,16 +9215,26 @@ placement's key on `transactions`*: there is no transaction to put it on.
 quantity, numerically for the two decimals, and a mismatch is
 `409 idempotency_key_reused`, as `_matches` does for a trade.
 
+A replay answers from a `book_state_version` column on `ledger.orders`,
+created with the table in ledger revision `0004`: the book's counter after
+the placement request, which is the last fill's `state_version`, or the
+counter the order was placed against when it rested entirely. It returns the
+order as it stands now, that stored `book_state_version`, and as `fills` only
+that order's fills with a `state_version` at or below it, which are the
+fills the placement request made. A placement that rests writes no
+transaction, so nothing else records that counter, and fills found by
+`order_id` alone would include every later cascade's.
+
 ---
 
 ### D-NEW — An order is executable when its floored fill passes the per-fill limit check; a resting order is one that is not
 
 **Date:** 2026-10-17 · **Ticket:** #26, #27 · **Status:** active
 
-**Decision.** An order is executable if `k = floor4(the fill that moves the
-price to its limit)`, capped at its remainder, is at least `0.0001`, and the
-fill's priced cost is at most `limit × k` for a buy, or its proceeds at least
-`limit × k` for a sell. A resting order is one that is not executable. This
+**Decision.** An order is executable if `k`, the fill that moves the price
+to its limit floored to `QUANTUM` (`core/pricing.py:54`) and capped at its
+remainder, is at least `0.0001`, and the fill's priced cost is at most
+`limit × k` for a buy, or its proceeds at least `limit × k` for a sell. A resting order is one that is not executable. This
 is what #26's "resting buys sit below current price, resting sells above"
 means here.
 
@@ -9234,13 +9255,15 @@ executable, and the order rests instead.
 
 ---
 
-### D-NEW — A buy reserves `ceil4(limit × quantity)`, its reservation is `budget - spent`, and it cannot go negative
+### D-NEW — A buy reserves `limit × quantity` rounded up to the tick, its reservation is `budget - spent`, and it cannot go negative
 
 **Date:** 2026-10-17 · **Ticket:** #26 · **Status:** active
 
-**Decision.** A buy order's `budget` is `ceil4(limit_price × quantity)`,
-fixed at placement. Its reservation is `budget - spent`, where `spent` is the
-sum of its fills' costs. A sell order has no budget. It reserves
+**Decision.** A buy order's `budget` is
+`quantize_cost(limit_price × quantity, side=Side.BUY)`
+(`core/pricing.py:99`), rounded up to `QUANTUM`, fixed at placement. Its
+reservation is `budget - spent`, where `spent` is the sum of its fills'
+costs. A sell order has no budget. It reserves
 `quantity - filled_quantity` shares of its outcome.
 
 **Why.** Every fill passes the per-fill check, `cost ≤ limit × k`. Summed,
