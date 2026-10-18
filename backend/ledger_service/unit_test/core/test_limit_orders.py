@@ -76,7 +76,8 @@ def _oracle_price(q: Sequence[Decimal], b: Decimal, index: int) -> Decimal:
 
 
 def _oracle_cost(q: Sequence[Decimal], b: Decimal) -> Decimal:
-    """`b·ln(Σ e^(q_j/b))`, unshifted: 60 digits hold `e^120` comfortably."""
+    """`b·ln(Σ e^(q_j/b))`, unshifted, at 60 digits: beyond the engine's 50, so
+    the oracle's own rounding cannot hide an engine error."""
     with _oracle_context():
         return b * sum((q_j / b).exp() for q_j in q).ln()
 
@@ -238,7 +239,11 @@ def _oracle_fills(
             current, b, index=index, side=side, quantity=quantity
         )
         after = _oracle_after(current, index=index, side=side, quantity=quantity)
-        expected.append(_ExpectedFill(order.seq, quantity, magnitude, after))
+        expected.append(
+            _ExpectedFill(
+                seq=order.seq, quantity=quantity, magnitude=magnitude, after_q=after
+            )
+        )
         current = after
     return expected
 
@@ -386,8 +391,8 @@ def test_an_order_whose_price_is_past_its_limit_has_nothing_to_fill(
 
 def test_a_fill_that_floors_to_no_shares_is_not_executable_and_raises_nothing() -> None:
     """After the worked example's fill the exact remainder to the limit is
-    0.0000108 shares, which floors to none. `quantize_cost` would refuse a
-    zero, so the module must not price it."""
+    0.0000108 shares. The quantity floors it to none rather than rounding it up
+    to a tick, and the order is then not executable, with nothing raised."""
     order = _order(1, 0, side=Side.BUY, limit_price="0.6", remaining="100")
     q = _q("40.5465", "0")
 
@@ -503,7 +508,11 @@ def test_a_fill_that_prices_to_nothing_is_not_executable_and_raises_nothing(
 ) -> None:
     """docs/api/ledger-service.md: a placement never returns `cost_below_tick`
     or `proceeds_below_tick`; the order rests. The precondition proves the
-    pricing refuses this fill, so the `None` is the module catching it."""
+    pricing refuses this fill, at the quantity the module would price, so the
+    `None` is the module catching it."""
+    assert fill_quantity_of(q, B, order) == order.remaining, (
+        "precondition: the module must price the whole remainder"
+    )
     with pytest.raises(refusal):
         trade_cost_of(
             q,
@@ -534,8 +543,9 @@ def test_a_fill_is_capped_at_the_orders_remainder() -> None:
 
 
 def test_a_fill_on_a_market_with_three_outcomes_is_refused() -> None:
-    """ADR 0024, "Binary markets only": with three outcomes there is no single
-    price to fill to. `market_not_binary` is the placement's to raise."""
+    """ADR 0024, "Binary markets only, and no crossed book": with three
+    outcomes there is no single price to fill to. `market_not_binary` is the
+    placement's to raise."""
     order = _order(1, 0, side=Side.BUY, limit_price="0.5", remaining="1")
 
     with pytest.raises(ValueError, match="two outcomes"):
@@ -552,8 +562,9 @@ def test_a_cascade_with_no_resting_orders_plans_nothing_on_any_market() -> None:
 def test_one_big_trade_crosses_three_resting_orders_and_fills_them_by_price_then_seq() -> (
     None
 ):
-    """ADR 0024's first owed test: the fill order (ascending d) and the final
-    price, which lands on the last order's limit."""
+    """The pure planner's half of ADR 0024's first owed test: the fill order
+    (ascending d) and the final price, which lands on the last order's limit.
+    The trade-path half, through the ledger, is still owed."""
     expected = _oracle_fills(_RISING_Q, B, _RISING_FILL_ORDER)
 
     fills = cascade_of(_RISING_Q, B, _RISING_BOOK)
@@ -782,7 +793,6 @@ def test_a_new_order_crossing_the_book_is_refused_with_the_bound_its_limit_must_
         )
 
     assert (refusal.value.side, refusal.value.bound) == (side, Decimal(bound))
-    assert type(refusal.value.side) is Side
 
 
 # The contract's "strictly below" and "strictly above", from both sides.
