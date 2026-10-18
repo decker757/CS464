@@ -16,6 +16,19 @@ interface AdminMarketRowProps {
   isMine: boolean
 }
 
+function RowError({ message, onReload }: { message: string; onReload?: () => void }) {
+  return (
+    <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
+      <span>{message}</span>
+      {onReload && (
+        <Button variant="outline" size="xs" onClick={onReload}>
+          Reload
+        </Button>
+      )}
+    </div>
+  )
+}
+
 // One market on the admin markets list ([2.1] #5). Only its creator can act on
 // it, e.g. propose its outcome. Closing it early ([2.3] #7) and settling
 // ([3.4] #12) are controls any administrator may use on anybody's market
@@ -33,7 +46,7 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
   } = useCloseMarket(market.id, () => setClosedJustNow(true))
   const {
     showSettleModal, openSettleModal, closeSettleModal,
-    settling, formError: settleError, superseded: settleSuperseded, handleSettle,
+    settling, formError: settleError, superseded: settleSuperseded, needsReload: settleNeedsReload, handleSettle,
   } = useSettleMarket(market.id, () => setSettledJustNow(true))
 
   const status = settledJustNow ? 'settled' : closedJustNow ? 'closed' : market.status
@@ -56,24 +69,13 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
           {isMine && ' · Created by you'}
         </p>
         {formError && (
-          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <span>{formError}</span>
-            {superseded && (
-              <Button variant="outline" size="xs" onClick={() => window.location.reload()}>
-                Reload
-              </Button>
-            )}
-          </div>
+          <RowError message={formError} onReload={superseded ? () => window.location.reload() : undefined} />
         )}
         {settleError && (
-          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <span>{settleError}</span>
-            {settleSuperseded && (
-              <Button variant="outline" size="xs" onClick={() => window.location.reload()}>
-                Reload
-              </Button>
-            )}
-          </div>
+          <RowError
+            message={settleError}
+            onReload={(settleSuperseded || settleNeedsReload) ? () => window.location.reload() : undefined}
+          />
         )}
       </div>
       <div className="flex shrink-0 items-center gap-3">
