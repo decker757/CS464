@@ -149,6 +149,10 @@ async def test_a_row_breaking_one_rule_is_refused_by_that_rule(
             {"status": OrderStatus.FILLED, "filled_quantity": Decimal("100.0000")},
             id="filled_equal_to_quantity",
         ),
+        pytest.param(
+            {"status": OrderStatus.CANCELLED, "cancelled_at": CANCELLED_AT},
+            id="cancelled_with_a_time",
+        ),
     ],
 )
 async def test_a_row_on_the_edge_of_a_rule_is_accepted(

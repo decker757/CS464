@@ -112,7 +112,7 @@ def _writes(source: str, entity: type[Base]) -> list[str]:
                 module_aliases=module_aliases,
                 entity_name=entity_name,
             ):
-                found.append(f"{node.lineno}: constructs a {entity_name}")
+                found.append(f"{node.lineno}: constructs {entity_name}")
             elif (
                 _called_name(node) in _STATEMENT_BUILDERS
                 and node.args

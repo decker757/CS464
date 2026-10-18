@@ -20,8 +20,8 @@ amendment first. Either the new writer takes the book lock before it reads or
 writes an order row, and says so beside its line below, or the amendment's
 reversal trigger has fired and the order read gets its own `FOR UPDATE`.
 
-The scan is `test_position_writers.py`'s, and as coarse: a false alarm costs
-one look; a missed writer costs a lost update.
+The scan is `writer_scan.py`'s, shared with `test_position_writers.py`, and it
+is coarse: a false alarm costs one look; a missed writer costs a lost update.
 """
 
 from __future__ import annotations

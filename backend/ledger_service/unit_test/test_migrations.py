@@ -63,8 +63,10 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
         "CREATE TRIGGER entries_append_only BEFORE DELETE OR UPDATE OR TRUNCATE "
         "ON ledger.entries FOR EACH STATEMENT EXECUTE FUNCTION ledger.reject_mutation()"
     ) in migrated["triggers"]
-    # The cascade reads a market's open orders in `seq` order and a reservation
-    # reads a trader's own (ADR 0024). Both indexes are partial, and
+    # The cascade reads a market's open orders in priority order, by price and
+    # then by `seq` within a price (DECISIONS.md, "Priority is price, then an
+    # identity `seq` assigned under the book lock"), and a reservation reads a
+    # trader's own (ADR 0024). Both indexes are partial, and
     # compare_metadata never compares a partial index's predicate (Alembic
     # 1.20). By name as well, so an index leaving or changing in the models
     # and revision 0004 together still goes red.
