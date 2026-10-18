@@ -41,6 +41,12 @@ selling with [T-3] #23, both through
 `posting.post_all` has committed the trade. Every committed trade therefore
 sends a `price` frame to everyone subscribed to that market.
 
+Order frames come from the ledger as well ([T-7] #27). When a trade's
+cascade fills resting orders, or a limit order fills on arrival
+(`ledger_service/service/orders.py`), the ledger calls `bus.publish_order`
+once per fill, after the same commit and after its one `price` frame. See
+"Order updates" below.
+
 ## Connecting
 
 ```js
@@ -135,7 +141,8 @@ was dropped" both look like silence.
 }
 ```
 
-**`order`** — ADR 0024 (Accepted): not built yet. See "Order updates" below.
+**`order`** — one fill of one of your resting orders. See "Order updates"
+below.
 
 **`error`** — the same envelope the four HTTP services return, so the frontend
 parses one error shape across the whole backend.
@@ -175,9 +182,10 @@ moved it. It is not a timestamp: two trades can commit inside one clock tick,
 and server clocks disagree by more than the gap between trades. `occurred_at`
 is for display and must never be used to order two events.
 
-**The server drops any event not newer than the last it forwarded for that
-market.** That covers a duplicate from a producer retry and a redelivery after
-a Redis reconnect.
+**The server drops any price event not newer than the last it forwarded for
+that market.** That covers a duplicate from a producer retry and a redelivery
+after a Redis reconnect. Order frames pass no such check; "Order updates" says
+why.
 
 **The client must do the same, and it is not redundant.** Two cases the server
 cannot cover:
@@ -285,13 +293,12 @@ Rules that are not negotiable:
   so adding a field means changing the model and this page in the same pull
   request.
 
-## Order updates — ADR 0024 (Accepted): not built yet
+## Order updates — [T-7] #27
 
 [T-7] #27's fifth criterion: "filled and partially-filled orders push
-notifications to the owner via websocket". **Nothing in this section exists
-yet.** Why: [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md),
-which is Accepted. The order routes are in `docs/api/ledger-service.md`,
-"Limit orders".
+notifications to the owner via websocket". Why it is shaped this way:
+[ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md). The order
+routes are in `docs/api/ledger-service.md`, "Limit orders".
 
 **No subscribe.** A connection receives the `order` frames of the user its
 token names, on every socket that user has open, whatever markets it is
@@ -335,12 +342,18 @@ frames are. After a reconnect, fetch `GET /ledger/orders/me` and the balance
 again. That is [X-4] #37's recovery path, applied to orders.
 
 **Publishing.** The ledger publishes one message per fill on the Redis channel
-**`order.update`**, after the commit that wrote the fill, beside the one
+**`order.update`**, after the commit that wrote the fill and after the one
 `price` frame for that commit. The rules in "Publishing an event" hold
 unchanged: after the commit, never before; the publish never fails the trade;
 extra fields are rejected. This service indexes connections by the token's
 user id and forwards each message to that user's sockets. It still owns no
 data and reads no database.
+
+**No version gate on the relay.** This service forwards order frames without
+the per-market check it runs on prices. The commit's `price` frame has
+already passed that check at the book's final version, and every fill in the
+commit is at or below it, so the check would drop them all. Ordering one
+order's frames is the client's rule above.
 
 A connection closed with `4408` for an expired token stops receiving order
 frames with everything else. A suspended owner's orders can keep filling
