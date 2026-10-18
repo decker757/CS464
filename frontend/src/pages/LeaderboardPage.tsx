@@ -4,20 +4,14 @@ import LoadMoreControl from '../components/ui/LoadMoreControl'
 import PageTitle from '../components/ui/PageTitle'
 import { useLeaderboard } from '../hooks/useLeaderboard'
 import { formatCreditsPrecise } from '../utils/formatCredits'
-
-function formatUpdatedAt(computedAt: string): string {
-  return new Date(computedAt).toLocaleString('en-SG', {
-    day: 'numeric', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
+import { formatDateTime } from '../utils/formatDateTime'
 
 export default function LeaderboardPage() {
   const { rows, computedAt, stale, rankedUsers, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = useLeaderboard()
 
-  // "No ranking yet" (ledger-service.md): nothing is ranked at all, as
-  // opposed to a ranking that exists but the caller is not on — that case is
-  // #39's not-enough-data state, not this page's.
+  // "No ranking yet" (ledger-service.md): nothing is ranked at all. A
+  // ranking that exists but the caller is not on it still shows the board —
+  // that case is #39's (the caller's own-row card), not this one.
   const noRankingYet = computedAt === null
 
   return (
@@ -35,7 +29,7 @@ export default function LeaderboardPage() {
       {!isLoading && !hasError && !noRankingYet && (
         <>
           <p className="mb-6 text-xs text-subtle">
-            Updated {formatUpdatedAt(computedAt)} · {rankedUsers} ranked
+            Updated {formatDateTime(computedAt)} · {rankedUsers} ranked
             {stale && ' · may be out of date'}
           </p>
 
