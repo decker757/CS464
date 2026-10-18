@@ -344,14 +344,14 @@ def _write_trade(
             now=now,
         )
     else:
-        assert position is not None  # the holding check above
+        assert position is not None  # the holding check in execute
         _release_from_position(position, quantity=quantity, now=now)
 
 
 def _trade_movement_of(
+    *,
     user_account: Account,
     pool_account: Account,
-    *,
     idempotency_key: str,
     user_id: uuid.UUID,
     market_id: uuid.UUID,
@@ -536,8 +536,8 @@ async def execute(
 
     # After the writes, so the context carries the bumped `state_version`.
     movement = _trade_movement_of(
-        user_account,
-        pool_account,
+        user_account=user_account,
+        pool_account=pool_account,
         idempotency_key=key,
         user_id=user_id,
         market_id=market_id,

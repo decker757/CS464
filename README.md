@@ -8,15 +8,21 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 
 ## Status
 
-| Area | Issue | State |
+| Area | Issues | State |
 | --- | --- | --- |
-| Authentication | #29, #30, #31 closed | backend shipped; UI is #46, #47, #48 |
-| Market creation | [1.1] #1 | draft and submit shipped; UI is #45 |
-| Credit balance | [B-1] #32, [B-2] #33 | backend shipped with the ledger; UI is unbuilt |
-| Ledger | [F-1] #41 | shipped; the write path has no endpoint until [T-2] #22 |
-| LMSR pricing | [F-3] #43 | engine shipped in `ledger_service/core/`; no caller until [T-1] #21 |
-| Trading | epic, 8 issues | not started |
-| Realtime | [F-2] #42 | socket, pub/sub and auth shipped; the snapshot lands with #43 and #22 |
+| Authentication | [A-1]–[A-3] #29–#31, UI #46–#48 | shipped, both sides |
+| Market creation | [1.1]–[1.3] #1–#3, UI #45 | shipped; restricting edits to drafts, [1.4] #4, is open |
+| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped; the trade feed's username lookup is #273 |
+| Resolution | [3.1]–[3.4] #9–#12, UI #52, #87 | shipped through settlement; the dispute countdown UI #59 and the settled-market UI #216 are open |
+| Admin and audit | [4.1]–[4.4] #13–#16, UI #57 | shipped; the suspend control UI is #60 |
+| Credits | [B-1] #32, [B-2] #33, [F-1] #41 | shipped; every balance is derived from append-only entries |
+| Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53 | shipped; limit orders [T-6]–[T-8] #26–#28 are designed in ADR 0024 and not built |
+| Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209 | shipped |
+| Leaderboard | [L-1] #38, [L-3] #40 | shipped; [L-2] #39 has its backend and waits on its UI #58 |
+| LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
+| Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
+| Migrations | [F-5] #75 | Alembic per service; no app creates a table |
+| Deployment | [5.1] #17, [5.2] #18 | containers and CI shipped; the deploy pipeline [5.3] #19 and the load test [5.4] #20 are open |
 
 ## Running it
 
@@ -96,12 +102,17 @@ superuser. That is what makes the cross-schema denial tests mean something.
 
 ```
 backend/auth_service/     registration, login, logout, sessions
-backend/market_service/   drafting and submitting markets
+backend/market_service/   markets from draft to publication, closing them,
+                          and the outcome a second administrator approves
 backend/audit_service/    reading the shared admin action log
-backend/ledger_service/   credits: append-only entries, derived balances
+backend/ledger_service/   credits, trades, positions, settlement and the
+                          leaderboard: append-only entries, derived balances
 backend/realtime_service/ live prices over a websocket; owns no data
+backend/shared/           the only code the services import from each other
 backend/*/migrations/     auth, market, ledger: each schema's Alembic history,
                           run by compose's <service>-migrate step before the app
+frontend/                 React, Vite and Tailwind; the Playwright end-to-end
+                          suite lives in frontend/e2e/
 sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/           0002 only: a login role, and 02-schemas.sql re-run
 docs/adr/                 decisions and why they were made
@@ -156,3 +167,34 @@ to make and would be expensive to reverse.
   balances, and a lazily minted starting grant
 - [0010](docs/adr/0010-realtime-price-broadcast.md) a relay that owns nothing,
   and a bus that is not the database
+- [0011](docs/adr/0011-market-auto-close.md) the clock closes a market, and
+  the sweep only writes it down
+- [0012](docs/adr/0012-the-shared-package.md) a shared package, and the build
+  contexts that had to move first
+- [0013](docs/adr/0013-proposing-an-outcome.md) proposing an outcome, from
+  CLOSED only, with evidence, one at a time
+- [0014](docs/adr/0014-closing-a-market-early.md) closing a market early, by
+  any admin, with the reason in the log
+- [0015](docs/adr/0015-locking-the-read-that-decides-a-write.md) every read
+  that decides a write is locked, and the wider lock goes first
+- [0016](docs/adr/0016-deciding-a-proposal.md) deciding a proposal, by any
+  admin but the proposer, with APPROVED as a status
+- [0017](docs/adr/0017-the-ledger-and-a-stopped-market.md) the ledger asks
+  market_service whether a market is still trading, once per trade
+- [0018](docs/adr/0018-positions-are-valued-at-liquidation.md) positions are
+  valued at liquidation, not at the marginal price
+- [0019](docs/adr/0019-settlement-across-services.md) settlement is the
+  ledger's request, paid in one transaction, and market_service is told
+  afterwards
+- [0020](docs/adr/0020-migrations-by-alembic.md) migrations by Alembic, per
+  service, run as a one-off step
+- [0021](docs/adr/0021-the-leaderboard-and-the-first-service-credential.md) the
+  leaderboard is a snapshot on the ledger, and auth names its users through
+  the first service credential
+- [0022](docs/adr/0022-the-ledger-and-a-suspended-trader.md) the ledger asks
+  auth whether a trader is still active, once per trade
+- [0023](docs/adr/0023-sending-an-approved-outcome-back.md) sending an approved
+  outcome back inside its stored dispute window, by any admin
+- [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
+  fill against the AMM inside the trade that moved the price — Accepted, and
+  not built

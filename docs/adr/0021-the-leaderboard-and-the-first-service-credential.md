@@ -115,6 +115,15 @@ any other caller with nobody behind it. A second caller gets its own key, its
 own variable and its own record. This ADR does not set the pattern for
 service calls in general.
 
+> **Amended 2026-10-18 by [2.4] #273.** Auth answers two lookup routes now.
+> The second, `POST /admin/users/lookup`, takes an administrator's token
+> rather than the key, returns no `is_suspended`, and names the traders in an
+> admin's trade feed. Everything in this section still describes
+> `/internal/users/lookup` alone, including the key, the single caller and the
+> single route — and "Rejected: the frontend joins usernames" still holds for
+> a route a trader could reach. Why an admin-only join was accepted instead is
+> in DECISIONS.md, "A market's trades carry `user_id`, not `username`…".
+
 ## Consequences
 
 - **A new secret, in two services.** `.env.example` gains `LEDGER_SERVICE_KEY=`
@@ -238,11 +247,12 @@ would also come from two different rankings.
 > What does **not** reverse it: a wish for the board to move on every trade.
 > [L-3] #40 accepts an interval, and 60 seconds is that interval.
 
-> **Amended 2026-10-17. Decided by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md)
-> (Accepted 2026-10-17), not built yet.** [T-7] #27 is no longer "the likely first" caller to need
-> a credential of its own. As ADR 0024 designs it, the cascade runs inside the
-> request that moved the price and calls no service. The likely first is now
-> the sweep ADR 0024 names as its follow-up: a ledger loop that asks this
+> **Amended 2026-10-17. Decided by
+> [ADR 0024](0024-resting-orders-fill-inside-the-trade.md) (Accepted
+> 2026-10-17), not built yet.** [T-7] #27 is no longer "the likely first" caller
+> to need a credential of its own. As ADR 0024 designs it, the cascade runs
+> inside the request that moved the price and calls no service. The likely first
+> is now the sweep ADR 0024 names as its follow-up: a ledger loop that asks this
 > record's lookup route about the owners of open orders and cancels the
 > suspended ones'. That would be a second caller of this key, and under
 > section 2 it gets its own key, its own variable and its own record.

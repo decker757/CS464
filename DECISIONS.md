@@ -2299,8 +2299,8 @@ supplied by the trader, so it needs no number chosen here, and it refuses
 exactly the trades that actually got worse rather than every trade that
 happened to follow another one.
 
-*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.* This rule
-covers trades, not limit-order placements. A placement takes no
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+This rule covers trades, not limit-order placements. A placement takes no
 `state_version`: its limit is what protects the trader, and a quoted version
 would refuse an order because the price moved, which is what a limit order
 exists to tolerate. The trade route keeps the rule unchanged. See "A
@@ -2384,11 +2384,11 @@ re-reads the balance anyway. A separate `trades` table to hold the response — 
 second source of truth for something `context` already holds inside the right
 commit.
 
-*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.* `context` gains
-an eighth key, `book_state_version`, the book's counter after the trade and
-its cascade, and the response returns it. A fill's `context` also carries
-`order_id`. The response still carries no prices. See "The trade response
-carries `book_state_version`, and still no prices".
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+`context` gains an eighth key, `book_state_version`, the book's counter after
+the trade and its cascade, and the response returns it. A fill's `context` also
+carries `order_id`. The response still carries no prices. See "The trade
+response carries `book_state_version`, and still no prices".
 
 ---
 
@@ -3535,14 +3535,15 @@ positions, and the ledger. It also needs a re-quote loop, because two sells
 quoting one `state_version` are separated by `quote_stale` before either
 reaches this check.
 
-*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.* Two changes.
-The holding check subtracts the shares the caller's live sell orders in that
-outcome reserve, so an instant sell is limited to `position - reserved`, and a
-sell placement is checked the same way. And `ledger.orders` rows share this
-entry's argument: every writer of an order row, placement, the cascade and
-cancel, takes the book lock first, so the book lock holds them still and the
-order read takes no lock of its own. The reversal trigger extends to them: a
-writer of order rows that does not take the book lock first.
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+Two changes. The holding check subtracts the shares the caller's live sell
+orders in that outcome reserve, so an instant sell is limited to
+`position - reserved`, and a sell placement is checked the same way. And
+`ledger.orders` rows share this entry's argument: every writer of an order row,
+placement, the cascade and cancel, takes the book lock first, so the book lock
+holds them still and the order read takes no lock of its own. The reversal
+trigger extends to them: a writer of order rows that does not take the book lock
+first.
 
 ---
 
@@ -4107,12 +4108,12 @@ record on. *No price at all*: #25's criterion asks for one. *Storing it in
 against a resting order. Then `|amount| ÷ quantity` is still the average, but
 it stops being the only price the trader saw, and the history may need fills.
 
-*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.* The reversal
-trigger is not tripped for a trade row. Every transaction is still one trade
-along one path of the market maker's book, so `|amount| ÷ quantity` is still
-the only price that transaction filled at. A limit order filled in parts has
-one transaction per fill, each with its own average price, and those rows are
-the "fills" this trigger says the history may need. The order's own average,
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+The reversal trigger is not tripped for a trade row. Every transaction is still
+one trade along one path of the market maker's book, so `|amount| ÷ quantity` is
+still the only price that transaction filled at. A limit order filled in parts
+has one transaction per fill, each with its own average price, and those rows
+are the "fills" this trigger says the history may need. The order's own average,
 `spent ÷ filled_quantity`, appears only on the order reads.
 
 ---
@@ -6162,10 +6163,10 @@ credits it in a later one. Netting would accept a batch whose feed shows a
 `balance_after` below zero between the two, which is the history bug #187
 fixed. The check then becomes a running balance in movement order.
 
-*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.* This entry's
-reversal trigger fires. A trader's own resting sell can fill in the cascade
-their own buy triggered, so one batch debits a USER account and credits it in
-a later movement. ADR 0024 replaces the netted check with a running one in
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+This entry's reversal trigger fires. A trader's own resting sell can fill in the
+cascade their own buy triggered, so one batch debits a USER account and credits
+it in a later movement. ADR 0024 replaces the netted check with a running one in
 `_refuse_overdrafts`. It walks the movements in order and keeps, for each
 USER account, a running balance and a running reservation. Both start at
 their values before the batch, and the balance must be at least the
@@ -8599,8 +8600,9 @@ resolves names through a new admin-only batch lookup on auth,
 `POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
 returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021,
 `POST /internal/users/lookup`, but it takes an
-administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
-User column shows a short id that links to #259's user page.
+administrator's token and never returns `is_suspended`. That route is #273.
+Until the User column reads it, that column shows a short id that links to
+#259's user page.
 
 **Why.**
 - *ADR 0021's lookup is the wrong credential for this.* It is scoped to one
@@ -8643,6 +8645,9 @@ and an id sent twice is answered once.
 **Reversal trigger.** ADR 0021, or a later record, gives the ledger a general
 way to name users that includes suspended ones. Then the feed can carry
 `username` itself, and the browser-side join goes.
+
+Amended 2026-10-17 by #273: built by ihsankoolz, with Ernest's agreement, as
+POST /admin/users/lookup. The contract above is unchanged.
 
 ---
 
@@ -8941,11 +8946,11 @@ Move these into the log above when they're settled.
   no service an identity on any other route, so #27's caller still needs a
   decision of its own.
 
-  *Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.* ADR 0024 runs
-  [T-7] #27's cascade inside the request that moved the price, so #27 has a
-  caller and needs no credential, and #27 leaves this entry. What stays open
-  is a settlement that becomes a background job, and ADR 0024's own
-  follow-up, a sweep that cancels a suspended owner's orders.
+  *Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built
+  yet.* ADR 0024 runs [T-7] #27's cascade inside the request that moved the
+  price, so #27 has a caller and needs no credential, and #27 leaves this entry.
+  What stays open is a settlement that becomes a background job, and ADR 0024's
+  own follow-up, a sweep that cancels a suspended owner's orders.
 - **A NULL `close_time` on an OPEN market means two different things.** SQL and
   Python disagree, and neither is documented as the intended answer.
   `core/closing.py` returns False for a null, so the Python derivation labels
