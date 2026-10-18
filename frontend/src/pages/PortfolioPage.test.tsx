@@ -123,13 +123,15 @@ describe('PortfolioPage', () => {
     // #247: average_entry_price is credits per share and can pass 1.0000 on
     // a skewed book (ledger-service.md), so it is shown through the same
     // formatter as every other credits figure, never through formatPrice.
-    mockPortfolio(portfolio())
+    // '0.5' is deliberately not already in the four-decimal finished format,
+    // so this fails if formatAveragePrice stops being called.
+    mockPortfolio(portfolio({ positions: [{ ...portfolio().positions[0], average_entry_price: '0.5' }] }))
     mockMarket('mkt-1', market())
     renderPage()
 
     await screen.findByText('Will it rain in Singapore tomorrow?')
-    expect(screen.getByText('0.5063')).toBeInTheDocument()
-    expect(screen.queryByText('50.6%')).not.toBeInTheDocument()
+    expect(screen.getByText('0.5000')).toBeInTheDocument()
+    expect(screen.queryByText('50.0%')).not.toBeInTheDocument()
   })
 
   it('shows cost basis distinctly from value and unrealized P&L', async () => {

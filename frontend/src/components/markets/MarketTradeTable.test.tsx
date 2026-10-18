@@ -38,9 +38,11 @@ describe('MarketTradeTable', () => {
   it('shows average price as credits per share, not a percentage', () => {
     // #247: the same format as the trading panel and the portfolio, not
     // formatPrice's percentage — average_price can pass 1.0000 on a skewed
-    // book (ledger-service.md).
+    // book (ledger-service.md). '2' is deliberately not already in the
+    // four-decimal finished format, so this fails if the formatter is
+    // skipped.
     const skewed: MarketTrade[] = [
-      { ...TRADES[0], transaction_id: 't3', average_price: '2.0000' },
+      { ...TRADES[0], transaction_id: 't3', average_price: '2' },
     ]
     render(<MarketTradeTable trades={skewed} outcomeLabels={OUTCOME_LABELS} />)
     expect(screen.getByText('2.0000')).toBeInTheDocument()

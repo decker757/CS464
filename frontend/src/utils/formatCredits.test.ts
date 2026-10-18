@@ -73,15 +73,16 @@ describe('formatCreditsPrecise', () => {
 })
 
 describe('formatAveragePrice', () => {
-  it('shows a value above 1.0000, unlike a percentage formatter which has no way to', () => {
-    // ledger-service.md: average_price can pass 1.0000 on a heavily skewed
-    // book. #247 picks credits-per-share as the one format for this field
-    // on every screen, for exactly this reason.
-    expect(formatAveragePrice('2.0000')).toBe('2.0000')
-  })
-
-  it('keeps four decimal places, same as every other credits figure', () => {
-    expect(formatAveragePrice('0.5063')).toBe('0.5063')
+  // ledger-service.md: average_price can pass 1.0000 on a heavily skewed
+  // book. #247 picks credits-per-share as the one format for this field on
+  // every screen, for exactly this reason. Each input below differs from its
+  // expected output, so the assertion actually exercises the formatter.
+  it.each([
+    ['0.5', '0.5000'],
+    ['2', '2.0000'],
+    ['1.23456', '1.2345'],
+  ])('formats %s as %s', (input, expected) => {
+    expect(formatAveragePrice(input)).toBe(expected)
   })
 })
 

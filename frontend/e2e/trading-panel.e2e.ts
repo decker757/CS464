@@ -26,6 +26,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByLabel('Quantity (shares)').fill('10')
   const preview = page.getByLabel('trade preview')
   await expect(preview).toContainText('8.8592 credits')
+  await expect(preview).toContainText('0.8859')
   await expect(preview).toContainText('88.1% → 89.1%')
   await page.getByRole('button', { name: /^buy yes$/i }).click()
 
