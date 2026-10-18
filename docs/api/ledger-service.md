@@ -1023,8 +1023,10 @@ or from `GET .../snapshot` instead.
   still the counter after this trade alone. With no resting orders filled, the
   two are equal, and a trade recorded before this field existed returns its
   `state_version` there. Wait for the `price` frame at `book_state_version`:
-  a trade that fills resting orders publishes one frame, at that version, and
-  none for the versions in between. The response still carries no prices.
+  a trade that fills resting orders publishes one price frame, at that
+  version, and none for the versions in between. Each fill also sends its
+  order's owner an `order` frame (`docs/api/realtime-service.md`, "Order
+  updates"). The response still carries no prices.
   Built.
 - `insufficient_funds` is checked against `available`, not `balance`: credits
   reserved by your own buy orders cannot pay for a trade. It is `available`
@@ -1125,11 +1127,11 @@ snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
 
-## Limit orders — ADR 0024 (Accepted): placing, listing, the cascade and cancelling are built
+## Limit orders — ADR 0024 (Accepted): built
 
 [T-6] #26, [T-7] #27, [T-8] #28. **Placing an order, listing your orders, the
-cascade and cancelling are built. The `order` frame on the realtime feed is
-not yet.** A trade that moves the price past a resting order's limit fills
+cascade, cancelling and the `order` frame on the realtime feed are built.** A
+trade that moves the price past a resting order's limit fills
 that order inside the trade's own transaction, and a placement that is
 marketable when it arrives fills at once, as below. This section is the
 contract [FE][T-6] #61 builds against. Why the design looks like this:
