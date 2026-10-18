@@ -2,22 +2,40 @@
 
 /* Every colour, shadow and radius the app uses. Components reference these
    through Tailwind classes (`text-muted`, `shadow-card`, `rounded-control`);
-   a hex value anywhere else is a missing token. */
+   a hex value anywhere else is a missing token.
+
+   Every colour used for text under 18px reaches WCAG AA, 4.5:1, against both
+   surfaces the app puts it on: a white card and the cream page background.
+   `index.css.test.ts` computes those ratios from this file and fails if one
+   is lightened past the line. [#360] */
 @theme {
   --color-smu-navy: #151E55;
   --color-smu-gold: #A8864A;
+  /* The brand gold is 3.20:1 on cream, so it is a surface colour, not a text
+     one. It stays exactly as it is on buttons, borders and glows; small gold
+     text uses the darker gold below, and the gold button puts navy on it. */
+  --color-smu-gold-text: #83693a;
   --color-smu-cream: #FAF8F3;
 
   --color-secondary: #4b5563;
   --color-muted: #6b7280;
-  --color-subtle: #9ca3af;
+  /* Nothing lighter than #6b7280 reaches 4.5:1 on cream, so `subtle` and
+     `muted` have had to converge. The name stays because 23 files read as
+     "this is the quietest text on the screen", and the two can part again if
+     the cream ever darkens. Do not fold them into one here: that rewrites
+     those 23 files and is its own PR. */
+  --color-subtle: #6b7280;
   --color-line: #e2e0da;
   --color-track: #f3f4f6;
   --color-surface-muted: #fafafa;
 
+  /* The status tones. A `-strong` tone is the same hue one step darker, and
+     exists because text on a 10% tint of its own tone reaches only about
+     4.4:1 — `Badge` sits exactly there, at 11px. */
   --color-danger: #dc2626;
-  --color-success: #16a34a;
-  --color-warning: #d97706;
+  --color-success: #15803d;
+  --color-success-strong: #166534;
+  --color-warning: #b45309;
   --color-warning-strong: #92400e;
   --color-info: #2563eb;
   --color-info-strong: #1d4ed8;
