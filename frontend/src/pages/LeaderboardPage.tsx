@@ -38,11 +38,17 @@ export default function LeaderboardPage() {
               loaded (ledger-service.md), so the caller's rank is shown here
               whether or not their row is among the ones fetched so far —
               the row highlight below only ever catches it when it is. */}
-          {me && (
+          {me ? (
             <Card borderColor="border-smu-gold/40" className="mb-6 flex items-center justify-between px-5 py-3">
               <p className="text-sm font-semibold text-smu-navy">Your rank: #{me.rank}</p>
-              <p className="text-sm text-smu-navy">{formatCreditsPrecise(me.net_worth)} credits</p>
+              <p className="text-sm text-smu-navy">Net worth: {formatCreditsPrecise(me.net_worth)} credits</p>
             </Card>
+          ) : (
+            // ledger-service.md sanctions showing the board with no rank for
+            // the caller here, but leaving nothing at all makes it
+            // indistinguishable from the feature being broken — this is a
+            // real window with a 60-second refresh for every new account.
+            <p className="mb-6 text-sm text-muted">You are not ranked yet — new accounts appear after the next refresh.</p>
           )}
 
           <TableFrame>
