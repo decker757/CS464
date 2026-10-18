@@ -21,8 +21,6 @@ connection_count
 upgrade
 downgrade
 
-# [T-6] #26 stack PR 4b: the placement writes it; delete this line there
-Order
 # [T-6] #26 stack PR 4b: the placement calls it; delete this line there
 refuse_if_crosses_book
 # [T-7] #27 stack PR 5: the trade path's cascade calls it; delete this line there
