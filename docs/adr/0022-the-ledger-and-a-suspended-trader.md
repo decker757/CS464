@@ -185,12 +185,8 @@ the ledger exists.
 > session to call out nor send the owner's token. So the resting orders of an
 > owner suspended after placing them keep filling, and the owner can cancel
 > them only until their last access token expires. ADR 0024 accepts that as a
-> narrowing of [4.2] #14's "suspension blocks trading", and it needs #14's
-> owner's sign-off before it does. A cancel makes no account check.
-
-> **Amended 2026-10-17. ADR 0024 is Accepted.** ADR 0024 was Accepted on
-> 2026-10-17, so the narrowing of [4.2] #14's "suspension blocks trading"
-> described above is decided, not pending.
+> narrowing of [4.2] #14's "suspension blocks trading". A cancel makes no
+> account check.
 
 > **Amended 2026-10-17. True of the code today.** The auth client's timeout
 > is five seconds on each of httpx's four phases, connect, write, read and
