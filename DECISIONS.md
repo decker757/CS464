@@ -8594,8 +8594,9 @@ resolves names through a new admin-only batch lookup on auth,
 `POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
 returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021,
 `POST /internal/users/lookup`, but it takes an
-administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
-User column shows a short id that links to #259's user page.
+administrator's token and never returns `is_suspended`. That route is #273.
+Until the User column reads it, that column shows a short id that links to
+#259's user page.
 
 **Why.**
 - *ADR 0021's lookup is the wrong credential for this.* It is scoped to one
@@ -8638,6 +8639,9 @@ and an id sent twice is answered once.
 **Reversal trigger.** ADR 0021, or a later record, gives the ledger a general
 way to name users that includes suspended ones. Then the feed can carry
 `username` itself, and the browser-side join goes.
+
+Amended 2026-10-17 by #273: built by ihsankoolz, with Ernest's agreement, as
+POST /admin/users/lookup. The contract above is unchanged.
 
 ---
 

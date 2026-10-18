@@ -115,6 +115,15 @@ any other caller with nobody behind it. A second caller gets its own key, its
 own variable and its own record. This ADR does not set the pattern for
 service calls in general.
 
+> **Amended 2026-10-18 by [2.4] #273.** Auth answers two lookup routes now.
+> The second, `POST /admin/users/lookup`, takes an administrator's token
+> rather than the key, returns no `is_suspended`, and names the traders in an
+> admin's trade feed. Everything in this section still describes
+> `/internal/users/lookup` alone, including the key, the single caller and the
+> single route — and "Rejected: the frontend joins usernames" still holds for
+> a route a trader could reach. Why an admin-only join was accepted instead is
+> in DECISIONS.md, "A market's trades carry `user_id`, not `username`…".
+
 ## Consequences
 
 - **A new secret, in two services.** `.env.example` gains `LEDGER_SERVICE_KEY=`
