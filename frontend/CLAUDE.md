@@ -154,6 +154,28 @@ Everything else belongs in a unit test.
   also run beside your dev stack: another compose project on other ports,
   with the same variables pointed at it, `E2E_BASE_URL` for the frontend,
   and `COMPOSE_PROJECT_NAME` so promotion reaches that project's database.
+- Import `test` and `expect` from `./support/fixtures`, never straight from
+  `@playwright/test`. That import is what records the pages your test opens.
+
+**Every route in `src/App.tsx` must be opened by some test.** The run fails
+otherwise, naming the pages nothing reached ([F-12] #341). A page that
+genuinely does not need a browser goes in `e2e/route-coverage-allowlist.ts`
+with the reason why, and an entry there whose route *does* get visited fails
+the run too, so the list cannot rot.
+
+The check runs only when `CI` is set, so running one file locally does not
+fail on every route it did not touch. Run the whole thing with the check
+before you push:
+
+```bash
+CI=1 npm run e2e
+```
+
+It guards that a page is reached, not that its feature is asserted — so it
+catches a screen nobody ever opened, and not a screen opened without its new
+control being checked. A page the router then redirected away from counts as
+reached too: a trader bounced off `/admin/users` marks it covered. Both are
+still on the reviewer.
 
 ## Before calling it done
 
