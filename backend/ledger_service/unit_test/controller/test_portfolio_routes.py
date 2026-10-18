@@ -42,7 +42,15 @@ from unit_test.settlement_fixtures import LOSER, PAID, UNPAID, WINNER, settled_m
 PATH = "/ledger/portfolio/me"
 _HEADING = "## GET /ledger/portfolio/me"
 _SCALE_FOUR = re.compile(r"^-?\d+\.\d{4}$")
-_AMOUNTS = ("balance", "positions_value", "net_worth")
+_AMOUNTS = (
+    "balance",
+    "positions_value",
+    "net_worth",
+    "starting_credits",
+    "realized_pnl",
+    "unrealized_pnl",
+    "total_pnl",
+)
 _POSITION_AMOUNTS = (
     "quantity",
     "cost_basis",
@@ -85,6 +93,12 @@ async def test_the_route_returns_the_figures_as_scale_four_strings(
     assert body["balance"] == str(balance)
     assert body["positions_value"] == str(ADR_VALUE)
     assert body["net_worth"] == str(balance + ADR_VALUE)
+    # The grant as the entry stores it, so at the column's scale rather than
+    # at whatever scale `STARTING_CREDITS` is written with.
+    assert Decimal(body["starting_credits"]) == credits
+    assert body["realized_pnl"] == "0.0000"
+    assert body["unrealized_pnl"] == str(ADR_PNL)
+    assert body["total_pnl"] == str(ADR_PNL)
     for key in _AMOUNTS:
         assert _SCALE_FOUR.match(body[key]), f"{key} = {body[key]!r}"
 
@@ -129,6 +143,10 @@ async def test_the_response_is_the_service_result(
         "balance": str(result.balance),
         "positions_value": str(result.positions_value),
         "net_worth": str(result.net_worth),
+        "starting_credits": str(result.starting_credits),
+        "realized_pnl": str(result.realized_pnl),
+        "unrealized_pnl": str(result.unrealized_pnl),
+        "total_pnl": str(result.total_pnl),
         "positions": [
             {
                 "market_id": str(p.market_id),
@@ -217,3 +235,14 @@ def test_the_docs_document_the_route_and_say_value_is_not_quantity_times_price()
     ]
     assert says_it, "the section never says that `value` is not `quantity × price`"
     assert "market_book_incomplete" in section
+
+
+def test_the_docs_name_the_pnl_figures_and_the_identity_they_reconcile_to() -> None:
+    """[B-1] #359's Definition of Done: this page is what the frontend codes
+    against, and it cannot add two decimal strings in the browser. So the
+    section has to name every figure and the identity between them."""
+    section = _section(_doc(), _HEADING)
+
+    for key in ("starting_credits", "realized_pnl", "unrealized_pnl", "total_pnl"):
+        assert f"`{key}`" in section, f"the section never mentions `{key}`"
+    assert "net_worth - starting_credits" in section

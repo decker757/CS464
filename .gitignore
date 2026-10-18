@@ -21,3 +21,9 @@ dist/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Coverage reports, written by `npm run test:coverage` and by pytest --cov.
+# [F-12] #342: CI reads them in the run that made them and keeps no copy.
+coverage/
+coverage-*.json
+.coverage

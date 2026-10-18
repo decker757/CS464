@@ -23,6 +23,25 @@ const processQueue = (error: unknown) => {
   queue = []
 }
 
+let sessionExpiredListener: (() => void) | null = null
+
+/**
+ * Register the listener told when a refresh is refused, and get back the
+ * function that stops it listening.
+ *
+ * An interceptor cannot clear the signed-in user itself — it is not a
+ * component, and `AuthContext` is what every guard reads — so it says the
+ * session is over and the provider decides what that means. Only the listener
+ * that is still current is stopped, so a remount that registers before the
+ * old one cleans up keeps the new one.
+ */
+export function onSessionExpired(listener: () => void): () => void {
+  sessionExpiredListener = listener
+  return () => {
+    if (sessionExpiredListener === listener) sessionExpiredListener = null
+  }
+}
+
 api.interceptors.response.use(
   (res) => res,
   async (error: unknown) => {
@@ -52,7 +71,11 @@ api.interceptors.response.use(
         return api(original)
       } catch (refreshError) {
         processQueue(refreshError)
-        // No redirect here — ProtectedRoute sends unauthenticated users to /login
+        // The access token was refused and the refresh token could not
+        // replace it, so the session is over. No redirect here: telling
+        // AuthContext is what lets ProtectedRoute send the user to /login,
+        // and that guard stays the only thing that decides where they land.
+        sessionExpiredListener?.()
         return Promise.reject(refreshError)
       } finally {
         isRefreshing = false

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
 import { loadUntilShown, logIn } from './support/browser'
 
@@ -18,6 +18,12 @@ test('an admin sees shares outstanding for a traded outcome, with no flag', asyn
   await card.getByRole('link', { name: 'Exposure' }).click()
 
   await expect(page.getByRole('heading', { name: market.question })).toBeVisible()
+  // The only place state_version is rendered ([FE] #361). Every other test of
+  // it fakes the response with MSW, which asserts this frontend's belief
+  // about the shape rather than the ledger's, so a rename there would leave
+  // "state version —" on the screen that gates a settlement and nothing else
+  // would go red.
+  await expect(page.getByText(/state version \d+/i)).toBeVisible()
   // Shares and payout are both 5 here, so check each column on its own: a
   // row-wide "contains 5.0000" passes with the payout column broken.
   await expect(page.getByRole('columnheader')).toHaveText(['Outcome', 'Shares outstanding', 'Payout if wins', 'Pool residue if wins'])

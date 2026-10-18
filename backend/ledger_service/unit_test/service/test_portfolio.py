@@ -1,10 +1,12 @@
-"""Valuing a portfolio. [T-4] #24, ADR 0018
+"""Valuing a portfolio, and what it comes to against the grant. [T-4] #24,
+ADR 0018, [B-1] #359
 
 Business rules, driven through `service/portfolio.py::portfolio_of_user` with
 no HTTP inbound. The route is `unit_test/controller/test_portfolio_routes.py`'s;
 the grant, the lock, the market_service hop, the statement count and the
 damaged book are `test_portfolio_reads.py`'s; the pure sequence is
-`unit_test/core/test_portfolio_figures.py`'s.
+`unit_test/core/test_portfolio_figures.py`'s; the P&L of a settled market, and
+the reconciliation across both kinds, are `test_settled_portfolio.py`'s.
 
 **Every book is opened at zero by its first touch, and every holding is made
 by a real trade** — never `warm()`, never a position inserted by hand.
@@ -58,6 +60,7 @@ from unit_test.portfolio_fixtures import (
 from unit_test.sell_fixtures import (
     BASIS,
     HELD,
+    PROCEEDS,
     REMAINING_BASIS,
     REMAINING_QUANTITY,
     SOLD,
@@ -68,6 +71,9 @@ from unit_test.sell_fixtures import (
     snapshot_module,
     version_of,
 )
+# The deployment-path way to change a setting, written down once in #32's
+# own file rather than copied here.
+from unit_test.service.test_grants import starting_credits_of
 from unit_test.trade_fixtures import (
     B,
     ZERO,
@@ -520,6 +526,97 @@ async def test_balance_is_the_users_entries_and_net_worth_is_balance_plus_values
         session, entities().AccountKind.USER, user_id
     )
     assert result.account_id == account.id
+
+
+# =========================================================================
+# Profit and loss against the grant. [B-1] #359
+# =========================================================================
+async def test_a_portfolio_that_has_never_traded_is_flat_against_its_grant(
+    session: AsyncSession,
+) -> None:
+    user_id, credits = await funded(session)
+
+    result = await read_portfolio(session, user_id)
+
+    assert result.starting_credits == credits
+    assert str(result.realized_pnl) == "0.0000"
+    assert str(result.unrealized_pnl) == "0.0000"
+    assert str(result.total_pnl) == "0.0000"
+
+
+async def test_a_position_nobody_has_closed_is_unrealized_and_banks_nothing(
+    session: AsyncSession,
+) -> None:
+    """ADR 0018's buy: 431.3569 left the balance for shares worth 431.3568 at
+    liquidation. None of that is banked, so `realized_pnl` is flat and the
+    whole tick is unrealised — a derivation that read the balance alone would
+    report the entire basis as a loss."""
+    upstream = await market_at(session, ADR_B)
+    user_id, credits = await funded(session)
+    await hold(session, upstream, user_id=user_id, quantity=ADR_QUANTITY)
+
+    result = await read_portfolio(session, user_id)
+
+    assert result.balance == credits - ADR_BASIS
+    assert str(result.realized_pnl) == "0.0000"
+    assert result.unrealized_pnl == ADR_PNL
+    assert result.unrealized_pnl == row(result, upstream.market_id, 0).unrealized_pnl
+    assert result.total_pnl == ADR_PNL
+
+
+async def test_a_round_trip_banks_the_proceeds_less_the_basis_it_released(
+    session: AsyncSession,
+) -> None:
+    """#23's round trip, sold out: 29.8428 paid and 29.8427 back, so one tick
+    is banked as a loss and nothing is left riding."""
+    upstream = await market_at(session)
+    user_id, credits = await funded(session)
+    await hold(session, upstream, user_id=user_id)
+    await sell(session, upstream, user_id=user_id, quantity=HELD)
+
+    result = await read_portfolio(session, user_id)
+
+    assert result.positions == []
+    assert result.balance == credits - TICK
+    assert result.realized_pnl == -TICK
+    assert str(result.unrealized_pnl) == "0.0000"
+    assert result.total_pnl == -TICK
+
+
+async def test_a_part_sold_position_banks_that_sale_and_still_rides_the_rest(
+    session: AsyncSession,
+) -> None:
+    """#23's partial sell: 10.0000 of 54.3333 sold for 5.8905, releasing
+    29.8428 − 24.3503 of basis with it. That sale is banked; the 44.3333 still
+    held is worth 23.9521 against a basis of 24.3503 and is not."""
+    upstream = await market_at(session)
+    user_id, _ = await funded(session)
+    await hold(session, upstream, user_id=user_id)
+    await sell(session, upstream, user_id=user_id, quantity=SOLD)
+
+    result = await read_portfolio(session, user_id)
+
+    assert result.realized_pnl == PROCEEDS - (BASIS - REMAINING_BASIS)
+    assert result.unrealized_pnl == REMAINING_VALUE - REMAINING_BASIS
+    assert result.total_pnl == result.realized_pnl + result.unrealized_pnl
+    assert result.net_worth - result.starting_credits == result.total_pnl
+
+
+async def test_starting_credits_is_what_the_grant_minted_not_the_current_setting(
+    session: AsyncSession,
+) -> None:
+    """ADR 0009: a changed `STARTING_CREDITS` never rewrites an entry, so a
+    user granted under the old value still reads the figure they were given,
+    and their P&L does not move with the deployment's configuration."""
+    user_id, credits = await funded(session)
+    upstream = await market_at(session)
+    await hold(session, upstream, user_id=user_id)
+
+    with starting_credits_of("500") as lowered:
+        result = await read_portfolio(session, user_id)
+
+    assert result.starting_credits == credits != lowered
+    assert result.total_pnl == result.net_worth - credits
 
 
 async def test_a_closed_market_is_valued_at_its_frozen_book(

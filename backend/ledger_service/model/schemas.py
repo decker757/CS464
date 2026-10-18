@@ -146,11 +146,13 @@ class PortfolioPositionOut(BaseModel):
 
 
 class PortfolioOut(BaseModel):
-    """The caller's balance and every position they still hold. [T-4] #24
+    """The caller's balance, every position they still hold, and their profit
+    and loss. [T-4] #24, [B-1] #359
 
     `positions_value` is the sum of the positions' `value`, and `net_worth`
     is `balance + positions_value`, exactly — nothing is rounded after the
-    valuation (ADR 0018).
+    valuation (ADR 0018). `total_pnl` is `net_worth - starting_credits`,
+    exactly, and is also `realized_pnl + unrealized_pnl`.
     """
 
     user_id: uuid.UUID
@@ -160,6 +162,30 @@ class PortfolioOut(BaseModel):
     positions_value: Decimal = Field(description="The sum of the positions' values.")
     net_worth: Decimal = Field(description="balance + positions_value, exactly.")
 
+    starting_credits: Decimal = Field(
+        description=(
+            "What this user's signup grant actually paid them, read from "
+            "that transaction's entry. Not the STARTING_CREDITS setting, "
+            "which can change without rewriting an entry."
+        )
+    )
+    realized_pnl: Decimal = Field(
+        description=(
+            "Profit and loss already banked in the balance: what the sells "
+            "paid less the cost basis they released, plus what settlement "
+            "paid less the basis of the holdings it settled."
+        )
+    )
+    unrealized_pnl: Decimal = Field(
+        description=(
+            "The sum of the positions' own `unrealized_pnl`. A settled row "
+            "contributes nothing: its payout is realised."
+        )
+    )
+    total_pnl: Decimal = Field(
+        description="realized_pnl + unrealized_pnl, and net_worth - starting_credits."
+    )
+
     positions: list[PortfolioPositionOut] = Field(
         description=(
             "Only outcomes with quantity > 0, ordered by market_id then "
@@ -167,7 +193,15 @@ class PortfolioOut(BaseModel):
         )
     )
 
-    @field_serializer("balance", "positions_value", "net_worth")
+    @field_serializer(
+        "balance",
+        "positions_value",
+        "net_worth",
+        "starting_credits",
+        "realized_pnl",
+        "unrealized_pnl",
+        "total_pnl",
+    )
     def _as_string(self, value: Decimal) -> str:
         return str(value)
 
