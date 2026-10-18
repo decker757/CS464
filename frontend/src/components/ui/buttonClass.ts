@@ -8,7 +8,9 @@ const VARIANTS: Record<Variant, string> = {
   primary: 'bg-smu-navy text-white not-disabled:hover:ring-3 not-disabled:hover:ring-smu-gold/35',
   // Navy on the brand gold is 4.58:1, white on it 3.40:1, so the label is navy
   // and the gold is untouched. The hover lightens the surface instead of the
-  // whole button, which would have faded the label with it. [#360]
+  // whole button, which would have faded the label with it. That hover is
+  // translucent, so this variant wants a light page: over navy it lets the
+  // navy through and falls to 3.96:1. Both callers today sit on cream. [#360]
   gold: 'bg-smu-gold text-smu-navy not-disabled:hover:bg-smu-gold/90',
   outline: 'border-[1.5px] border-smu-navy/20 text-smu-navy not-disabled:hover:border-smu-navy not-disabled:hover:bg-smu-navy/5',
   outlineOnNavy: 'border border-white/35 text-white not-disabled:hover:border-white/60 not-disabled:hover:bg-white/10',
