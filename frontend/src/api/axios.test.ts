@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '../test/server'
-import api from './axios'
+import api, { onSessionExpired } from './axios'
 
 // navigator.locks mock lives in src/test/setup.ts and applies to every file
+const passthroughLocks = navigator.locks
 
 const invalidToken = (status = 401) =>
   HttpResponse.json(
@@ -12,9 +13,27 @@ const invalidToken = (status = 401) =>
   )
 
 describe('axios refresh interceptor', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  let stopListening: (() => void) | null = null
 
-  it('retries the original request after a successful /auth/refresh', async () => {
+  afterEach(() => {
+    stopListening?.()
+    stopListening = null
+    Object.defineProperty(navigator, 'locks', {
+      value: passthroughLocks,
+      configurable: true,
+      writable: true,
+    })
+  })
+
+  /** Listens the way AuthProvider does, and stops after the test. */
+  const listenForSessionEnd = () => {
+    const sessionEnded = vi.fn()
+    stopListening = onSessionExpired(sessionEnded)
+    return sessionEnded
+  }
+
+  it('retries the original request after a successful /auth/refresh, and leaves the session alone', async () => {
+    const sessionEnded = listenForSessionEnd()
     let callCount = 0
     server.use(
       http.get('http://localhost:8000/api/probe', () => {
@@ -29,20 +48,41 @@ describe('axios refresh interceptor', () => {
     const res = await api.get('/api/probe')
     expect(res.data).toEqual({ ok: true })
     expect(callCount).toBe(2)
+    // One 401 the refresh resolved is not the end of a session (#353).
+    expect(sessionEnded).not.toHaveBeenCalled()
   })
 
-  it('rejects when /auth/refresh fails, without redirecting', async () => {
-    const location = { ...window.location, href: 'http://localhost:3000/' }
-    vi.stubGlobal('location', location)
-
+  it('reports the session as ended when /auth/refresh fails', async () => {
+    const sessionEnded = listenForSessionEnd()
     server.use(
       http.get('http://localhost:8000/api/probe', () => invalidToken()),
       // default /auth/refresh handler returns invalid_token — see handlers.ts
     )
 
     await expect(api.get('/api/probe')).rejects.toThrow()
-    // If window.location.href = '/login' were still in the code this would fail
-    expect(location.href).toBe('http://localhost:3000/')
+    // Nothing else can tell AuthContext the session is over, and without it
+    // ProtectedRoute's redirect to /login never fires (#353).
+    expect(sessionEnded).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends the refresh inside the cross-tab auth-refresh lock', async () => {
+    const lockNames: string[] = []
+    Object.defineProperty(navigator, 'locks', {
+      value: {
+        request: (name: string, callback: () => Promise<unknown>) => {
+          lockNames.push(name)
+          return callback()
+        },
+      },
+      configurable: true,
+      writable: true,
+    })
+    server.use(http.get('http://localhost:8000/api/probe', () => invalidToken()))
+
+    await expect(api.get('/api/probe')).rejects.toThrow()
+
+    // Two tabs holding the same one-time refresh token must not spend it twice.
+    expect(lockNames).toEqual(['auth-refresh'])
   })
 
   it('does not retry /auth/refresh itself when it returns invalid_token', async () => {

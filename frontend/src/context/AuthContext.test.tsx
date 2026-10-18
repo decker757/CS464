@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
+import * as authApi from '../api/authApi'
 import { server } from '../test/server'
 import { AuthProvider, useAuth, type User } from './AuthContext'
 
@@ -165,5 +166,106 @@ describe('AuthContext', () => {
       ).rejects.toThrow()
       expect(screen.getByText('logged in as bob')).toBeInTheDocument()
     })
+  })
+})
+
+describe('AuthContext — a session that ends while the app is open', () => {
+  // [FE] #353. The access token expires, the refresh token with it, and the
+  // interceptor's /auth/refresh comes back refused. Nothing used to clear the
+  // signed-in user, so every page failed while the navbar still had a name on
+  // it and no guard ever sent anybody to /login.
+  const alice: User = {
+    id: '1', username: 'alice', email: 'alice@smu.edu.sg',
+    role: 'trader', created_at: '2026-01-01',
+  }
+
+  const notAuthenticated = () =>
+    HttpResponse.json(
+      { error: { code: 'invalid_token', message: 'Not authenticated.' } },
+      { status: 401 },
+    )
+
+  /** A page doing what every page does: asking the server for something. */
+  function Screen() {
+    const { user, hasSessionExpired } = useAuth()
+    return (
+      <>
+        <button onClick={() => void authApi.getCurrentUser().catch(() => {})}>
+          Load the page
+        </button>
+        {user === undefined && <p>loading</p>}
+        {user === null && <p>logged out</p>}
+        {user && <p>logged in as {user.username}</p>}
+        {hasSessionExpired && <p>the session expired</p>}
+      </>
+    )
+  }
+
+  /** /auth/me answers with alice, except on the call numbered `refusedCall`. */
+  function refuseMeOnCall(refusedCall: number) {
+    let calls = 0
+    server.use(
+      http.get('http://localhost:8000/auth/me', () => {
+        calls++
+        return calls === refusedCall ? notAuthenticated() : HttpResponse.json(alice)
+      }),
+    )
+  }
+
+  /** Signs in through the bootstrap lookup, then has the page send a request. */
+  async function signInThenLoadThePage() {
+    const person = userEvent.setup()
+    render(
+      <AuthProvider>
+        <Screen />
+      </AuthProvider>,
+    )
+    await screen.findByText('logged in as alice')
+    await person.click(screen.getByRole('button', { name: /load the page/i }))
+  }
+
+  it('logs the user out when the refresh is refused', async () => {
+    // The bootstrap call succeeds; the page's own call is the one refused, and
+    // the default handler refuses the /auth/refresh that follows it.
+    refuseMeOnCall(2)
+
+    await signInThenLoadThePage()
+
+    expect(await screen.findByText('logged out')).toBeInTheDocument()
+    expect(screen.getByText('the session expired')).toBeInTheDocument()
+  })
+
+  it('keeps the user signed in when the refresh works', async () => {
+    refuseMeOnCall(2)
+    server.use(
+      http.post('http://localhost:8000/auth/refresh', () =>
+        new HttpResponse(null, { status: 204 }),
+      ),
+    )
+
+    await signInThenLoadThePage()
+
+    // Polled rather than read once: a single 401 the refresh resolved must not
+    // end a session, and a test that looks only at this instant can pass by
+    // being early rather than by being right.
+    await expect(
+      screen.findByText('logged out', {}, { timeout: 400 }),
+    ).rejects.toThrow()
+    expect(screen.getByText('logged in as alice')).toBeInTheDocument()
+    expect(screen.queryByText('the session expired')).not.toBeInTheDocument()
+  })
+
+  it('does not claim a session expired when nobody was signed in', async () => {
+    // The default handlers: /auth/me refused, and the refresh the interceptor
+    // sends after it refused too. That is every first visit by a guest, and
+    // telling them their session expired would be a lie.
+    render(
+      <AuthProvider>
+        <Screen />
+      </AuthProvider>,
+    )
+
+    expect(await screen.findByText('logged out')).toBeInTheDocument()
+    expect(screen.queryByText('the session expired')).not.toBeInTheDocument()
   })
 })
