@@ -1,8 +1,6 @@
-import { useState } from 'react'
-import { setSuspension, type AdminUser } from '../api/authApi'
-import { errorCode, errorDetails } from '../api/errors'
-
-const MIN_REASON_LENGTH = 10
+import { useEffect, useState } from 'react'
+import { setSuspension, type SuspensionResult } from '../api/authApi'
+import { useReasonAction } from './useReasonAction'
 
 // What to show for each documented code (auth-service.md, PATCH
 // /admin/users/{user_id}/suspension). Both directions share one set: the
@@ -16,48 +14,37 @@ const CODE_MESSAGES: Record<string, string> = {
  * state, the call, and what to show for each documented error. Takes no
  * prior read of the account's current state — `suspended` is the state the
  * caller is asking for, not a toggle, so the same function opens either
- * direction. `onChanged` fires with the server's own updated user, which
- * becomes the page's source of truth, since nothing here assumed what the
- * account's state was before the call. */
-export function useSuspension(userId: string, onChanged: (user: AdminUser) => void) {
+ * direction. `onChanged` fires with the server's whole result, including
+ * `takes_effect_within_seconds` — never zero (auth-service.md) — since
+ * nothing here assumed what the account's state was before the call. */
+export function useSuspension(userId: string, onChanged: (result: SuspensionResult) => void) {
   // Which direction the open modal is asking for: true to suspend, false to
   // unsuspend (the same orientation as `suspended` in the request body),
   // null when no modal is open.
   const [direction, setDirection] = useState<boolean | null>(null)
-  const [reason, setReason] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [formError, setFormError] = useState('')
-  const [reasonError, setReasonError] = useState('')
 
-  const canConfirm = reason.trim().length >= MIN_REASON_LENGTH
+  const { reason, setReason, submitting, formError, setFormError, reasonError, canConfirm, handleConfirm, resetReason } = useReasonAction({
+    submit: reason => {
+      if (direction === null) throw new Error('no direction chosen')
+      return setSuspension(userId, direction, reason)
+    },
+    incompleteCode: 'suspension_incomplete',
+    codeMessages: CODE_MESSAGES,
+    genericFailureMessage: 'That failed. Please try again.',
+    onDone: result => { setDirection(null); setReason(''); onChanged(result) },
+    onError: () => setDirection(null),
+  })
 
-  const handleConfirm = async () => {
-    if (submitting || direction === null) return
-    setSubmitting(true)
-    setFormError('')
-    setReasonError('')
-    try {
-      const result = await setSuspension(userId, direction, reason.trim())
-      setDirection(null)
-      setReason('')
-      onChanged(result.user)
-    } catch (err) {
-      const code = errorCode(err)
-      if (code === 'suspension_incomplete') {
-        setReasonError(errorDetails(err).find(d => d.field === 'reason')?.message ?? 'Fix the reason and try again.')
-        return
-      }
-      setFormError((code && CODE_MESSAGES[code]) || 'That failed. Please try again.')
-    } finally {
-      setSubmitting(false)
-    }
-  }
+  // AdminUserHistoryPage keeps this hook mounted while :userId changes
+  // (MarketDetailPage's `loaded` tags its own state the same way) — a
+  // message about the last account must not follow the admin to the next one.
+  useEffect(() => { setFormError('') }, [userId, setFormError])
 
   return {
     direction,
     openSuspend: () => setDirection(true),
     openUnsuspend: () => setDirection(false),
-    closeModal: () => { setDirection(null); setReason(''); setReasonError('') },
+    closeModal: () => { setDirection(null); resetReason(); setFormError('') },
     reason,
     setReason,
     submitting,
