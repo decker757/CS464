@@ -9,8 +9,8 @@ import LandingPage from './LandingPage'
 // plain <a href>, so a stub appears only if the router handled the click
 // rather than reloading the whole app.
 //
-// `user: null` because the navbar's logo link asks who is signed in, and a
-// guest is who is on this page.
+// `user: null` because the navbar's logo link asks who is signed in, and that
+// is what the app settles to for the guest who visits this page.
 function renderLandingPage() {
   return render(
     <WithProviders user={null}>
