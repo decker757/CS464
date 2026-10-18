@@ -596,7 +596,8 @@ _TRADE_DESCRIPTION = (
                 "credits, its balance less what its buy orders reserve, "
                 "cannot cover. "
                 "`insufficient_shares_held`: a sell larger than this "
-                "caller's position in this outcome. "
+                "caller's position in this outcome less what their sell "
+                "orders in it reserve. "
                 "`idempotency_key_reused`: this key already names a "
                 "different trade."
             )
