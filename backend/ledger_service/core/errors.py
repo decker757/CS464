@@ -316,26 +316,31 @@ class InsufficientSharesOutstanding(LedgerError):
 
 
 class InsufficientSharesHeld(LedgerError):
-    """A sell larger than the caller's own position in that outcome. [T-3] #23.
+    """A sell larger than the caller's own position in that outcome, less what
+    their live sell orders in it reserve. [T-3] #23, ADR 0024.
 
     409 for `InsufficientFunds`' reason: the request is well formed and the
     state refuses it. Distinct from `InsufficientSharesOutstanding`, whose
-    remedy is not the caller's: this one is fixed by selling at most `held`.
+    remedy is not the caller's: this one is fixed by selling at most
+    `held - reserved`.
 
-    Carries both figures, which the raiser has already put at scale 4
+    Carries the figures, which the raiser has already put at scale 4
     (`service/trading.py`), so a caller with no position reads
     `"0.0000"` and a request of `10` reads `"10.0000"`, and a sell form can
-    offer "sell all" without a second request.
+    offer "sell all" without a second request. `held` is the whole position;
+    `reserved` is the part the caller's sell orders hold back.
     """
 
     status_code = 409
     code = "insufficient_shares_held"
 
-    def __init__(self, *, held: Decimal, requested: Decimal) -> None:
+    def __init__(self, *, held: Decimal, reserved: Decimal, requested: Decimal) -> None:
         self.held = held
+        self.reserved = reserved
         self.requested = requested
         self.message = (
-            f"This account holds {self.held} shares of this outcome and the "
+            f"This account holds {self.held} shares of this outcome, "
+            f"{self.reserved} of them reserved by its sell orders, and the "
             f"sell asks for {self.requested}."
         )
         super().__init__(self.message)
@@ -470,6 +475,21 @@ class OrderCrossesBook(LedgerError):
             f"{direction} {bound}"
         )
         super().__init__(self.message)
+
+
+class MarketNotBinary(LedgerError):
+    """A limit order on a market with more than two outcomes. [T-6] #26.
+
+    ADR 0024, "Binary markets only, and no crossed book": with three or more
+    outcomes there is no single price to rank orders on, and the cascade has
+    no termination proof. 409 for `InsufficientFunds`'s reason: the request is
+    well formed, and it is the market that refuses it. Trading the market
+    instantly still works.
+    """
+
+    status_code = 409
+    code = "market_not_binary"
+    message = "Limit orders are only available on markets with two outcomes."
 
 
 class LeaderboardRefreshed(LedgerError):
