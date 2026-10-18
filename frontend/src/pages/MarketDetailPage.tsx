@@ -10,7 +10,8 @@ import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
-import { disputeWindowOpen, formatCountdown } from '../utils/formatCountdown'
+import { useWindowOpen } from '../hooks/useWindowOpen'
+import { formatAbsolute, formatCountdown } from '../utils/formatCountdown'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
@@ -55,6 +56,11 @@ export default function MarketDetailPage() {
   const pastClose = market !== null && closedMarketId === market.id
 
   const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null)
+  // Re-evaluates the instant the dispute window closes, rather than only at
+  // whatever render happens to run next — an approved market has no trades
+  // to force one, so without this "Disputes close in 3h" could sit on
+  // screen long after payout ([3.3] #11).
+  const disputeWindowStillOpen = useWindowOpen(market?.dispute_window_ends_at ?? null)
 
   useEffect(() => {
     if (!id) return
@@ -134,9 +140,14 @@ export default function MarketDetailPage() {
 
           {market.status === 'approved' && (
             <Banner className="border-warning/20 bg-warning/5 text-warning-strong">
-              {market.dispute_window_ends_at && disputeWindowOpen(market.dispute_window_ends_at)
+              {market.dispute_window_ends_at && disputeWindowStillOpen
                 ? `Disputes close in ${formatCountdown(market.dispute_window_ends_at)}.`
-                : 'Result is final; payout pending.'}
+                // The absolute instant still shows here: a fast clock would
+                // otherwise read "final" on a window genuinely still open,
+                // with nothing on screen to reveal the wrong clock.
+                : market.dispute_window_ends_at
+                  ? `Result is final; payout pending (closed ${formatAbsolute(market.dispute_window_ends_at)}).`
+                  : 'Result is final; payout pending.'}
             </Banner>
           )}
 

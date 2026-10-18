@@ -10,7 +10,8 @@ import { buttonClass } from '../ui/buttonClass'
 import { useCloseMarket } from '../../hooks/useCloseMarket'
 import { useDisputeMarket } from '../../hooks/useDisputeMarket'
 import { useSettleMarket } from '../../hooks/useSettleMarket'
-import { disputeWindowOpen, formatCountdown } from '../../utils/formatCountdown'
+import { useWindowOpen } from '../../hooks/useWindowOpen'
+import { formatAbsolute, formatCountdown } from '../../utils/formatCountdown'
 import { toApprovedResult } from '../../utils/proposals'
 import StatusBadge from './StatusBadge'
 import { formatCloseTime, tradingStopped } from './marketStatus'
@@ -96,7 +97,12 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
   // The countdown is display only; the server still decides on its own clock
   // (market-service.md's dispute-screen notes, point 8), so a window that
   // reads as still open here can still be refused as dispute_window_closed.
-  const windowOpen = status === 'approved' && disputeWindowOpen(market.dispute_window_ends_at)
+  // useWindowOpen re-evaluates the instant the window closes, so this and the
+  // "Result is final" text do not go stale until something else re-renders —
+  // which, on an approved market with no trades, could otherwise be hours.
+  // Called unconditionally, as every hook must be; status gates the result.
+  const disputeWindowStillOpen = useWindowOpen(market.dispute_window_ends_at)
+  const windowOpen = status === 'approved' && disputeWindowStillOpen
 
   return (
     <Card className="flex items-center justify-between gap-4 px-6 py-4">
@@ -110,7 +116,12 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
         </p>
         {status === 'approved' && market.dispute_window_ends_at && (
           <p className="mt-1 text-xs text-subtle">
-            {windowOpen ? `Disputes close in ${formatCountdown(market.dispute_window_ends_at)}` : 'Result is final; payout pending.'}
+            {windowOpen
+              ? `Disputes close in ${formatCountdown(market.dispute_window_ends_at)}`
+              // The absolute instant still shows here: a clock running fast
+              // would otherwise read "final" on a window genuinely still
+              // open, with nothing on screen to reveal the wrong clock.
+              : `Result is final; payout pending (closed ${formatAbsolute(market.dispute_window_ends_at)}).`}
           </p>
         )}
         {formError && (
@@ -204,6 +215,38 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
           ariaLabel="Dispute result"
           title="Dispute this result?"
           description="The market goes back to closed. The outcome must be proposed and approved again. The reason goes into the admin log and cannot be edited afterwards."
+          details={
+            // market-service.md's dispute-screen notes, point 3: show what
+            // was approved, so an admin disputing one of several approved
+            // rows is not asked to overturn a result they cannot see.
+            <dl className="mb-4 flex flex-col gap-2 text-[13px]">
+              <div>
+                <dt className="text-[11px] font-semibold text-subtle uppercase">Winner</dt>
+                <dd className="text-smu-navy">{approvedResult.winningOutcome}</dd>
+              </div>
+              {(approvedResult.evidenceUrl || approvedResult.evidenceNote) && (
+                <div>
+                  <dt className="text-[11px] font-semibold text-subtle uppercase">Evidence</dt>
+                  {approvedResult.evidenceUrl && (
+                    <dd>
+                      <a href={approvedResult.evidenceUrl} target="_blank" rel="noreferrer" className="text-info underline">
+                        {approvedResult.evidenceUrl}
+                      </a>
+                    </dd>
+                  )}
+                  {approvedResult.evidenceNote && <dd className="text-smu-navy">{approvedResult.evidenceNote}</dd>}
+                </div>
+              )}
+              <div>
+                <dt className="text-[11px] font-semibold text-subtle uppercase">Proposed by</dt>
+                <dd className="text-smu-navy">{approvedResult.proposedByUsername}</dd>
+              </div>
+              <div>
+                <dt className="text-[11px] font-semibold text-subtle uppercase">Approved by</dt>
+                <dd className="text-smu-navy">{approvedResult.approvedByUsername}</dd>
+              </div>
+            </dl>
+          }
           fieldId={`dispute-reason-${market.id}`}
           reason={disputeReason}
           onReasonChange={setDisputeReason}
