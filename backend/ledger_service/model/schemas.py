@@ -667,6 +667,30 @@ class OrderListOut(BaseModel):
     orders: list[OrderOut]
 
 
+class CancelIn(BaseModel):
+    """The body of a cancel: nothing. [T-8] #28, ADR 0024.
+
+    No fields and `extra="forbid"`, `SettlementIn`'s reason: a body naming an
+    amount or a quantity to release is `422 invalid_request` rather than
+    silently dropped, because a cancel always releases the whole remainder.
+    The route never reads it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CancellationOut(BaseModel):
+    """What a cancel released. [T-8] #28, ADR 0024."""
+
+    order: OrderOut = Field(description="The order as cancelled: nothing reserved.")
+    released_credits: Decimal | None = Field(
+        description="A buy only: its budget less what it had spent. Null on a sell."
+    )
+    released_shares: Decimal | None = Field(
+        description="A sell only: the shares it had not sold. Null on a buy."
+    )
+
+
 class SettlementIn(BaseModel):
     """The body of a settlement: nothing. [3.4] #12, ADR 0009's second amendment.
 
