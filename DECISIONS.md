@@ -9633,3 +9633,40 @@ a drop with no single account has nowhere to go. The placement in the
 limit-order stack's PR 4b may prefer to report its own `reserved` and
 `available`, excluding the new order, on the start-of-batch refusal; it would
 then catch and re-raise, or hand posting the figure.
+
+---
+
+### D-NEW — A placement's `insufficient_funds` reports the reservation without the new order, on both paths
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** A buy order whose budget does not fit is refused
+`409 insufficient_funds` with `balance`, `reserved`, `available` and
+`shortfall`, and the same three figures mean the same thing whether the order
+would have rested or filled on arrival. `reserved` is what the user's other
+live buy orders hold, without the new order, `available` is
+`balance - reserved`, and `shortfall` is the budget less `available`. On the
+resting path `service/orders.py` computes them itself under the account lock.
+On the path that fills, `posting`'s start-of-batch check refuses first with a
+`reserved` that includes the new budget, and the placement catches that
+refusal and raises it again with the new budget taken back out of `reserved`.
+`shortfall` is unchanged by that, because it is the same number either way.
+
+**Why.** The contract gives one row for both paths and tells the frontend to
+show how much more credit the budget needs. A trader who sees `available: 30`
+on the balance route should see `available: 30` on the refusal, not `-10`,
+and which path a refusal took depends on the price at that moment, which the
+trader cannot see. "A refusal from the running check reports the balance
+before the batch" left the choice to this placement in its Notes.
+
+**Rejected.** *Posting's figures as they are*: a negative `available` that no
+other route ever shows, and different figures for one situation depending on
+whether the order was marketable. *Handing posting the budget so that it
+reports the figure itself*: a placement-only argument on the shared write
+path, for a number the caller already has.
+
+**Notes.** Only a refusal that carries `shortfall` is rewritten. A refusal
+after a debit, with `required`, cannot happen on a placement's own fill,
+because a budget that fits at the start of the batch covers the fill (ADR
+0024, "A buy can never spend more than it reserved"); if one ever does, it
+passes through unchanged.

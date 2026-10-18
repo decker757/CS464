@@ -340,11 +340,13 @@ their own balance and history, permanently. The rule belongs in the caller: a
 reused key naming different money is a bug for a trade and an edit for a grant,
 and only the caller knows which.
 
-**The ledger has two write routes, and neither takes money.**
+**The ledger has three write routes, and none takes money.**
 `POST /ledger/markets/{id}/trades` ([T-2] #22) accepts a trader's own token,
 which is safe only because the body names no account, no amount and no leg:
 `TradeIn` is `extra="forbid"`, the debited account comes from the token's
 `sub`, and the price is computed under the book lock.
+`POST /ledger/markets/{id}/orders` ([T-6] #26) is the same shape: `OrderIn`
+names a limit price and a quantity, and the budget is computed from them.
 `POST /ledger/markets/{id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service, and the holders
 and amounts come from the ledger's own positions under the book lock. A write

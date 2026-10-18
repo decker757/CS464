@@ -38,15 +38,17 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
-| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024, not built yet) |
-| GET | `/ledger/orders/me` | My live limit orders (ADR 0024, not built yet) |
+| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024) |
+| GET | `/ledger/orders/me` | My live limit orders (ADR 0024) |
 | POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024, not built yet) |
 | GET | `/health` | Liveness and readiness probe |
 
-**Two routes write, and neither takes money.** `POST .../trades` takes no
+**Three routes write, and none takes money.** `POST .../trades` takes no
 account, no amount and no leg, so a trader's own token is a safe credential
 for it in a way it could never be for a route that accepted one. That is
-[T-2] #22's answer to ADR 0009's deferred question. `POST .../settlement`
+[T-2] #22's answer to ADR 0009's deferred question. `POST .../orders` is the
+same shape: the body names a price and a quantity, the budget is computed and
+the account is the token's (ADR 0024). `POST .../settlement`
 takes an administrator's token and an empty body: the winner comes from
 market_service, and the holders and amounts come from this service's own
 positions (ADR 0009's second amendment). Every other route reads, and no
@@ -1011,8 +1013,8 @@ prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
 or from `GET .../snapshot` instead.
 
-**ADR 0024 (Accepted). Three changes to this route. The second is built; the
-first and third are not yet.**
+**ADR 0024 (Accepted). Three changes to this route. The second and third are
+built; the first is not yet.**
 
 - The response gains `book_state_version`, a JSON number: the book's counter
   after this trade **and** every resting order it filled. `state_version` is
@@ -1027,11 +1029,11 @@ first and third are not yet.**
   `available` beside `balance` and `required`. Built.
 - `insufficient_shares_held` is checked against your position less the shares
   your live sell orders in that outcome reserve. `error.details` gains
-  `reserved` beside `held` and `requested`.
+  `reserved` beside `held` and `requested`. Built.
 
 The errors table below describes the route as built today. Its
-`insufficient_funds` row already counts reservations; the
-`insufficient_shares_held` row changes as above when sell orders are built.
+`insufficient_funds` and `insufficient_shares_held` rows both count
+reservations.
 
 A trade can fill your own resting orders. That is allowed, at each order's
 own limit, and none of it pays for the trade that triggered it: the trade has
@@ -1102,7 +1104,7 @@ Errors:
 | 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
 | 409 | `quote_stale` | The quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
 | 409 | `insufficient_funds` | A buy this account's `available` credits, its balance less what its buy orders reserve, cannot cover. `error.details` carries `balance`, `required`, `reserved` and `available`, decimal strings at scale 4: `available` is `balance - reserved`, and the trade needed `required`. |
-| 409 | `insufficient_shares_held` | A sell larger than this caller's position in this outcome. `error.details` carries `held` and `requested`, decimal strings at scale 4. |
+| 409 | `insufficient_shares_held` | A sell larger than this caller's position in this outcome less the shares their live sell orders in it reserve. `error.details` carries `held`, the whole position, `reserved` and `requested`, decimal strings at scale 4. |
 | 409 | `idempotency_key_reused` | This idempotency key already names a different trade — a different `outcome_id`, `side` or `quantity`. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |
 | 422 | `quantity_too_large` | A buy whose cost, or whose resulting shares outstanding, is above `99999999999999.9999` — the same two bounds the preview refuses at (D-040). |
@@ -1118,10 +1120,14 @@ snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
 
-## Limit orders — ADR 0024 (Accepted): not built yet
+## Limit orders — ADR 0024 (Accepted): placing and listing are built
 
-[T-6] #26, [T-7] #27, [T-8] #28. **Nothing in this section exists yet.** It
-is the contract [FE][T-6] #61 builds against. Why the design looks like this:
+[T-6] #26, [T-7] #27, [T-8] #28. **Placing an order and listing your orders
+are built. Cancelling is not yet, and neither is the cascade**: until [T-7]
+#27, a trade that moves the price past a resting order's limit leaves that
+order resting rather than filling it. A placement that is marketable when it
+arrives does fill at once, as below. This section is the contract [FE][T-6]
+#61 builds against. Why the design looks like this:
 [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
 Accepted.
 
@@ -1227,7 +1233,9 @@ rest, holding `48.1848` of a `60.0000` budget.
 - **A buy's whole budget has to fit in `available`**, even when it would fill
   completely on arrival for less. Such a buy is refused
   `409 insufficient_funds` with `shortfall`, how much more you need, and
-  nothing fills.
+  nothing fills. Its `reserved` and `available` are your balance route's
+  figures, without the new order, whether it would have rested or filled, so
+  `shortfall` is always the budget less `available`.
 
 **A retry with the same key** returns `201` with the order as it stands now,
 which may have filled further since, the `book_state_version` stored when it
@@ -1807,7 +1815,8 @@ idempotency key. The route builds every batch from this service's own
 positions, with one payout per winner keyed by user id and at most one
 residue, so no request can provoke it.
 
-`market_not_binary`, `order_crosses_book`, `order_not_found`,
-`order_already_filled`, `order_already_cancelled` and `order_released` are
-decided by ADR 0024 for the limit-order routes and are not built yet. They
-are documented in "Limit orders" above.
+`market_not_binary` and `order_crosses_book` (409, new in [T-6] #26) are the
+placement's own. `order_not_found`, `order_already_filled`,
+`order_already_cancelled` and `order_released` are decided by ADR 0024 for
+the cancel route and are not built yet. All six are documented in "Limit
+orders" above.
