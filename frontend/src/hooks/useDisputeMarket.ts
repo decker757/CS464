@@ -1,8 +1,6 @@
 import { useState } from 'react'
 import { sendBackOutcome } from '../api/marketApi'
-import { errorCode, errorDetails } from '../api/errors'
-
-const MIN_REASON_LENGTH = 10
+import { useReasonAction } from './useReasonAction'
 
 // What the admin should do for each documented 409
 // (market-service.md, send-back-outcome's "When it is refused").
@@ -28,40 +26,18 @@ const SUPERSEDING_CODES = new Set([
  * dispute-screen notes, point 6). */
 export function useDisputeMarket(marketId: string, proposalId: string | null, onSentBack: () => void) {
   const [showDisputeModal, setShowDisputeModal] = useState(false)
-  const [reason, setReason] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [formError, setFormError] = useState('')
-  const [reasonError, setReasonError] = useState('')
-  // Another administrator acted on this market, or the window closed, while
-  // this row was on screen — the control stays disabled rather than let a
-  // retry hit the same wall (market-service.md's dispute-screen notes, point 7).
-  const [superseded, setSuperseded] = useState(false)
 
-  const canConfirm = reason.trim().length >= MIN_REASON_LENGTH
-
-  const handleDispute = async () => {
-    if (submitting) return
-    setSubmitting(true)
-    setFormError('')
-    setReasonError('')
-    try {
-      await sendBackOutcome(marketId, proposalId, reason.trim())
-      setShowDisputeModal(false)
-      setReason('')
-      onSentBack()
-    } catch (err) {
-      const code = errorCode(err)
-      if (code === 'send_back_incomplete') {
-        setReasonError(errorDetails(err).find(d => d.field === 'reason')?.message ?? 'Fix the reason and try again.')
-        return
-      }
-      setFormError((code && CODE_MESSAGES[code]) || 'Sending this result back failed. Please try again.')
-      setSuperseded(!!code && SUPERSEDING_CODES.has(code))
-      setShowDisputeModal(false)
-    } finally {
-      setSubmitting(false)
-    }
-  }
+  const {
+    reason, setReason, submitting, formError, reasonError, superseded, canConfirm, handleConfirm: handleDispute,
+  } = useReasonAction({
+    submit: reason => sendBackOutcome(marketId, proposalId, reason),
+    incompleteCode: 'send_back_incomplete',
+    codeMessages: CODE_MESSAGES,
+    supersedingCodes: SUPERSEDING_CODES,
+    genericFailureMessage: 'Sending this result back failed. Please try again.',
+    onDone: () => { setShowDisputeModal(false); setReason(''); onSentBack() },
+    onError: () => setShowDisputeModal(false),
+  })
 
   return {
     showDisputeModal,
