@@ -1,13 +1,23 @@
-// A static, decorative market card for the landing page. None of it is live data.
+import { formatPrice } from '../../utils/formatPrice'
+
+// A static, decorative market card for the landing page. None of it is live
+// data, and the card says so on its face — a visitor who reads it should not
+// come away believing this market or these prices exist.
+//
+// The made-up prices are decimal strings, the way the API sends a real one, so
+// the card shows them through the app's own formatter instead of inventing a
+// second way to write a price.
+const EXAMPLE_YES_PRICE = '0.64'
+const EXAMPLE_YES_PRICE_A_WEEK_AGO = '0.52'
+
+const EXAMPLE_OUTCOMES = [
+  { label: 'YES', price: EXAMPLE_YES_PRICE, text: 'text-success', bar: 'bg-success' },
+  { label: 'NO', price: '0.36', text: 'text-danger', bar: 'bg-danger' },
+]
 
 const SPARKLINE_POINTS: [number, number][] = [
   [0, 52], [12, 50], [24, 48], [36, 51], [48, 55],
   [60, 58], [72, 56], [84, 60], [96, 62], [108, 64],
-]
-
-const ODDS = [
-  { label: 'YES', pct: 64, text: 'text-success', bar: 'bg-success' },
-  { label: 'NO', pct: 36, text: 'text-danger', bar: 'bg-danger' },
 ]
 
 function Sparkline() {
@@ -47,12 +57,9 @@ export default function MarketPreviewCard() {
     <div className="w-full rounded-2xl border border-t-[3px] border-smu-gold/30 border-t-smu-gold bg-white px-6 pt-6 pb-5 shadow-hero">
       <div className="mb-3.5 flex items-center justify-between">
         <span className="rounded-full bg-smu-gold/10 px-[9px] py-[3px] text-[10px] font-bold tracking-[0.6px] text-smu-gold uppercase">
-          Open · Closes 30 Oct
+          Example
         </span>
-        <span className="flex items-center gap-1 text-[11px] text-muted">
-          <span className="inline-block size-1.5 rounded-full bg-success" />
-          Live
-        </span>
+        <span className="text-[11px] text-muted">Closes 30 Oct</span>
       </div>
 
       <p className="mb-4 text-sm leading-[1.45] font-semibold text-smu-navy">
@@ -66,37 +73,39 @@ export default function MarketPreviewCard() {
         </div>
         <div className="text-right">
           <p className="mb-0.5 text-[10px] text-subtle">Current</p>
-          <p className="text-[22px] leading-none font-extrabold text-success">64¢</p>
-          <p className="text-[11px] text-success">▲ +4¢ today</p>
+          <p className="text-[22px] leading-none font-extrabold text-success">{formatPrice(EXAMPLE_YES_PRICE)}</p>
+          <p className="text-[11px] text-success">▲ up from {formatPrice(EXAMPLE_YES_PRICE_A_WEEK_AGO)}</p>
         </div>
       </div>
 
       <div className="mb-4 flex flex-col gap-2">
-        {ODDS.map(({ label, pct, text, bar }) => (
-          <div key={label} className="flex items-center gap-2.5 text-xs">
-            <span className={`w-7 font-bold ${text}`}>{label}</span>
-            <div className="h-[5px] flex-1 overflow-hidden rounded-full bg-track">
-              <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
+        {EXAMPLE_OUTCOMES.map(({ label, price, text, bar }) => {
+          // A formatted price is a percentage, so it is also the bar's width.
+          const percent = formatPrice(price)
+          return (
+            <div key={label} className="flex items-center gap-2.5 text-xs">
+              <span className={`w-7 font-bold ${text}`}>{label}</span>
+              <div className="h-[5px] flex-1 overflow-hidden rounded-full bg-track">
+                <div className={`h-full rounded-full ${bar}`} style={{ width: percent }} />
+              </div>
+              <span className={`w-11 text-right font-semibold ${text}`}>{percent}</span>
             </div>
-            <span className={`w-7 text-right font-semibold ${text}`}>{pct}%</span>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
-      <div className="mb-4 flex gap-2 text-[13px] font-bold">
-        <button type="button" className="flex-1 rounded-lg border border-success/25 bg-success/10 py-[9px] text-success">Buy YES · 64¢</button>
-        <button type="button" className="flex-1 rounded-lg border border-danger/20 bg-danger/8 py-[9px] text-danger">Buy NO · 36¢</button>
+      {/* The buy controls are a picture of the real trading panel: nothing to
+          click, so they are plain spans rather than buttons, and hidden from
+          assistive technology so nobody is offered an action this page cannot
+          perform. */}
+      <div aria-hidden className="mb-4 flex gap-2 text-[13px] font-bold">
+        <span className="flex-1 rounded-lg border border-success/25 bg-success/10 py-[9px] text-center text-success">Buy YES</span>
+        <span className="flex-1 rounded-lg border border-danger/20 bg-danger/8 py-[9px] text-center text-danger">Buy NO</span>
       </div>
 
-      <div className="flex items-center gap-2 rounded-lg bg-surface-muted px-3 py-[9px]">
-        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-smu-navy/10 text-[11px] font-bold text-smu-navy">
-          S
-        </div>
-        <p className="text-xs text-muted">
-          <strong className="text-smu-navy">sarah_lim</strong> bought 20 YES shares
-          <span className="text-subtle"> · just now</span>
-        </p>
-      </div>
+      <p className="rounded-lg bg-surface-muted px-3 py-[9px] text-xs text-muted">
+        An example market. The question and the prices are made up.
+      </p>
     </div>
   )
 }
