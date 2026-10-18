@@ -140,7 +140,7 @@ describe('LeaderboardPage', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
-  it('shows the board with no highlighted row when the caller is not ranked yet', async () => {
+  it('shows the board with no highlighted row and a muted not-ranked-yet line when the caller is not ranked yet', async () => {
     mockLeaderboard(page({ me: null, rows: page().rows.map(r => ({ ...r, is_me: false })) }))
     renderPage()
 
@@ -148,6 +148,7 @@ describe('LeaderboardPage', () => {
     expect(screen.getByRole('table')).toBeInTheDocument()
     expect(screen.queryByText('(you)')).not.toBeInTheDocument()
     expect(screen.queryByText(/your rank/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/you are not ranked yet/i)).toBeInTheDocument()
   })
 
   describe('the caller\'s own rank', () => {
@@ -156,7 +157,10 @@ describe('LeaderboardPage', () => {
       renderPage()
 
       expect(await screen.findByText('Your rank: #3')).toBeInTheDocument()
-      expect(screen.getAllByText('1,003.8689')).toHaveLength(2) // the summary and alice's row
+      // Exact text, not getAllByText: a card reading "1,003.8689 credits"
+      // would pass the count assertion too without this matching the card's
+      // own text.
+      expect(screen.getByText('Net worth: 1,003.8689 credits')).toBeInTheDocument()
     })
 
     it('shows rank and net worth from me even when the caller\'s row is not on the loaded page', async () => {
@@ -170,23 +174,18 @@ describe('LeaderboardPage', () => {
       renderPage()
 
       expect(await screen.findByText('Your rank: #50')).toBeInTheDocument()
-      expect(screen.getByText('12.5000 credits')).toBeInTheDocument()
+      expect(screen.getByText('Net worth: 12.5000 credits')).toBeInTheDocument()
       expect(screen.queryByText('(you)')).not.toBeInTheDocument()
     })
 
-    it('says nothing about a rank when the caller is not ranked yet', async () => {
-      mockLeaderboard(page({ me: null, rows: page().rows.map(r => ({ ...r, is_me: false })) }))
-      renderPage()
-
-      await screen.findByText('michelle_l')
-      expect(screen.queryByText(/your rank/i)).not.toBeInTheDocument()
-    })
-
-    it('keeps showing the caller\'s rank from page one after Load more adds a page that does not contain it', async () => {
+    it('follows the new ranking\'s own rank after a 409 leaderboard_refreshed restart', async () => {
+      // Pins setMe in useLeaderboard's recovery path: nothing else would
+      // notice if that line were dropped, and the card would keep showing a
+      // rank from a ranking that no longer exists.
       server.use(
         http.get(LEADERBOARD, ({ request }) =>
           new URL(request.url).searchParams.get('cursor') === 'page-2'
-            ? HttpResponse.json(page({ rows: [{ rank: 4, username: 'bob', net_worth: '500.0000', is_me: false }], next_cursor: null, has_more: false }))
+            ? HttpResponse.json({ error: { code: 'leaderboard_refreshed', message: 'refreshed' } }, { status: 409 })
             : HttpResponse.json(page({ next_cursor: 'page-2', has_more: true })),
         ),
       )
@@ -194,10 +193,16 @@ describe('LeaderboardPage', () => {
       renderPage()
       await screen.findByText('Your rank: #3')
 
+      server.use(
+        http.get(LEADERBOARD, () => HttpResponse.json(page({
+          me: { rank: 7, username: 'alice', net_worth: '1003.8689' },
+          rows: page().rows.map(r => ({ ...r, is_me: r.username === 'alice' ? false : r.is_me })),
+        }))),
+      )
       await actor.click(screen.getByRole('button', { name: /load more/i }))
 
-      await screen.findByText('bob')
-      expect(screen.getByText('Your rank: #3')).toBeInTheDocument()
+      expect(await screen.findByText('Your rank: #7')).toBeInTheDocument()
+      expect(screen.queryByText('Your rank: #3')).not.toBeInTheDocument()
     })
   })
 
