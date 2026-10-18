@@ -8,6 +8,10 @@ interface AuthLayoutProps {
   eyebrow: string
   title: string
   subtitle: string
+  /** Something the visitor should know that is nobody's mistake, like a
+   *  session that ended on its own. Sits above `error`, which answers what
+   *  they just did and so belongs nearer the form. */
+  notice?: string
   /** A form-level error from the server, shown above the form. */
   error?: string
   /** The "already have an account?" line under the form. */
@@ -15,8 +19,10 @@ interface AuthLayoutProps {
   children: React.ReactNode
 }
 
+const MESSAGE_CLASS = 'mb-4 rounded-control border px-3.5 py-[11px] text-[13px]'
+
 /** The shared frame of the login and register pages. */
-export default function AuthLayout({ eyebrow, title, subtitle, error, footer, children }: AuthLayoutProps) {
+export default function AuthLayout({ eyebrow, title, subtitle, notice, error, footer, children }: AuthLayoutProps) {
   return (
     <div className="flex min-h-screen">
       <BrandPanel />
@@ -36,8 +42,16 @@ export default function AuthLayout({ eyebrow, title, subtitle, error, footer, ch
           <h1 className="mb-1 text-2xl font-extrabold tracking-[-0.3px] text-smu-navy">{title}</h1>
           <p className="mb-5 text-sm leading-normal text-muted">{subtitle}</p>
 
+          {/* `status`, not `alert`: nobody did anything wrong, and the form's
+              own messages are the alerts on these pages. */}
+          {notice && (
+            <p role="status" className={`${MESSAGE_CLASS} border-info/20 bg-info/5 text-info-strong`}>
+              {notice}
+            </p>
+          )}
+
           {error && (
-            <div role="alert" className="mb-4 rounded-control border border-danger/25 bg-danger/5 px-3.5 py-[11px] text-[13px] text-danger">
+            <div role="alert" className={`${MESSAGE_CLASS} border-danger/25 bg-danger/5 text-danger`}>
               {error}
             </div>
           )}

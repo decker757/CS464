@@ -142,6 +142,37 @@ describe('MarketsPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
   })
 
+  // [X-1] #364 AC 3: the failed list had no way out but a browser reload.
+  it('loads the markets when Try again is clicked after a failure', async () => {
+    let failing = true
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () =>
+        failing ? HttpResponse.error() : HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null }),
+      ),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByRole('alert')
+
+    failing = false
+    await actor.click(screen.getByRole('button', { name: /try again/i }))
+
+    expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // [X-1] #364 AC 1: the prices refresh on their own, and the screen says when
+  // the last one landed so a refresh that is failing reads as a stale time.
+  it('says when the prices on screen were read', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    expect(await screen.findByText(/prices updated \d/i)).toBeInTheDocument()
+  })
+
   it('navigates to the market detail page when a card is clicked', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () =>

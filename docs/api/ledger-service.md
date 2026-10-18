@@ -285,11 +285,13 @@ constructing one.
 
 ## GET /ledger/portfolio/me
 
-[T-4] #24, and [3.4] #12 for settled markets. The caller's own positions and
+[T-4] #24, [3.4] #12 for settled markets, and [B-1] #359 for the profit and
+loss figures. The caller's own positions and
 their current value: what they
 hold in every market they have traded, each valued the way
 [ADR 0018](../adr/0018-positions-are-valued-at-liquidation.md) requires
-rather than at the marginal price.
+rather than at the marginal price, and what the lot comes to against the
+credits they started with.
 
 Any valid access token — a trader reads their own portfolio and nothing
 else's; there is no admin variant.
@@ -301,6 +303,10 @@ else's; there is no admin variant.
   "balance": "572.5121",
   "positions_value": "431.3568",
   "net_worth": "1003.8689",
+  "starting_credits": "1000.0000",
+  "realized_pnl": "3.8690",
+  "unrealized_pnl": "-0.0001",
+  "total_pnl": "3.8689",
   "positions": [
     {
       "market_id": "2b7e...",
@@ -375,6 +381,36 @@ and `unrealized_pnl` can be `null`.** Guard them before formatting.
 `unrealized_pnl` is `value - cost_basis`. `average_entry_price` is
 `cost_basis / quantity`, `ROUND_HALF_UP` at scale 4, and is display only, the
 same rule the preview's `average_price` follows.
+
+**The four portfolio-level figures answer "am I up or down".** Every amount
+here crosses the wire as a decimal string, and a browser must not do
+arithmetic on those, so the endpoint does the sums:
+
+| Field | What it is |
+| --- | --- |
+| `starting_credits` | What this user's signup grant actually paid them, read from that transaction's own entry. |
+| `realized_pnl` | Profit and loss already banked in `balance`: what the sells paid less the cost basis they released, plus what settlement paid less the basis of the holdings it settled. |
+| `unrealized_pnl` | The sum of the rows' own `unrealized_pnl` — what is still riding on positions nobody has closed. A settled row contributes nothing. |
+| `total_pnl` | `realized_pnl + unrealized_pnl`. |
+
+**`total_pnl` is `net_worth - starting_credits`, exactly.** That identity is
+how the four figures reconcile with the three above them, and it holds at
+scale 4 with no rounding: `realized_pnl` is
+`balance - starting_credits + the cost basis of every open position`, and
+`unrealized_pnl` is `positions_value` less that same basis, so the basis
+cancels. Rendering `total_pnl` beside `net_worth` and `starting_credits` can
+never show a figure that does not add up.
+
+**Nothing here is stored.** There is no P&L column and no balance column:
+every figure is derived from `ledger.entries` and the positions on each read,
+the same way `balance` is. A settled market's payout is in `balance` and its
+basis is closed, which is why its shares are banked rather than valued —
+counting them in `unrealized_pnl` as well would count the market twice.
+
+**`starting_credits` is the grant that was minted, not the `STARTING_CREDITS`
+setting.** Changing that setting never rewrites an entry (ADR 0009), so a user
+granted under the old value keeps reporting what they were actually given, and
+their P&L does not move when the deployment is reconfigured.
 
 **The balance, every position and every settlement record are read together,
 in one statement, with no lock.** So a trade committing mid-read cannot show

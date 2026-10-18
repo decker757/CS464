@@ -50,6 +50,17 @@ function trade(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function pricePoint(occurredAt: string, stateVersion: number) {
+  return {
+    state_version: stateVersion,
+    occurred_at: occurredAt,
+    prices: [
+      { outcome_id: 'o-yes', position: 0, price: '0.6000' },
+      { outcome_id: 'o-no', position: 1, price: '0.4000' },
+    ],
+  }
+}
+
 function mockMarket(id: string, body: Record<string, unknown>) {
   server.use(http.get(`${MARKET_BASE}/public/markets/${id}`, () => HttpResponse.json(body)))
 }
@@ -89,7 +100,7 @@ describe('MarketPriceHistoryPage', () => {
 
     expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
     expect(await screen.findByText('aaaaaaaa')).toBeInTheDocument()
-    expect(screen.getByText('Yes')).toBeInTheDocument()
+    expect(screen.getByText(/showing the only price point/i)).toBeInTheDocument()
     expect(screen.queryByText(/no price history yet/i)).not.toBeInTheDocument()
   })
 
@@ -138,15 +149,44 @@ describe('MarketPriceHistoryPage', () => {
     expect(screen.queryByText(/no price history yet/i)).not.toBeInTheDocument()
   })
 
-  it('shows the settlement note and no price history yet for a market with no trades, after it has settled', async () => {
+  it('names the winning outcome in the settlement note, with no price history for a market with no trades', async () => {
     mockMarket('mkt-1', market({ status: 'approved' }))
     mockPriceHistory('mkt-1', [], { result: 'settled', winning_outcome_id: 'o-yes', result_recorded_at: '2026-02-01T00:00:00Z' })
     mockTrades('mkt-1', [])
 
     renderPage()
 
-    expect(await screen.findByText(/this market settled/i)).toBeInTheDocument()
+    expect(await screen.findByText(/^this market settled on .*; Yes won\.$/i)).toBeInTheDocument()
     expect(screen.getByText(/no price history yet/i)).toBeInTheDocument()
+  })
+
+  it('says when the screen was read, and reads the chart and the trade log again on Refresh', async () => {
+    // Prices move with every trade, so an admin who left the tab open through
+    // a burst must be able to see that and ask again (#361).
+    mockMarket('mkt-1', market())
+    let historyReads = 0
+    server.use(http.get(`${LEDGER_BASE}/ledger/markets/mkt-1/price-history`, () => {
+      historyReads += 1
+      const points = [pricePoint('2026-01-01T00:00:00Z', 0)]
+      if (historyReads > 1) points.push(pricePoint('2026-01-01T01:00:00Z', 1))
+      return HttpResponse.json({ market_id: 'mkt-1', points, result: null, winning_outcome_id: null, result_recorded_at: null })
+    }))
+    let tradeReads = 0
+    server.use(http.get(`${LEDGER_BASE}/ledger/markets/mkt-1/trades`, () => {
+      tradeReads += 1
+      const trades = [trade()]
+      if (tradeReads > 1) trades.push(trade({ transaction_id: 't2', user_id: 'bbbbbbbb-1111-2222-3333-444444444444' }))
+      return HttpResponse.json({ trades, next_cursor: null, has_more: false })
+    }))
+    const actor = userEvent.setup()
+    renderPage()
+    expect(await screen.findByText(/showing the only price point/i)).toBeInTheDocument()
+    expect(screen.getByText(/^read at /i)).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    expect(await screen.findByText(/showing all 2 price points/i)).toBeInTheDocument()
+    expect(await screen.findByText('bbbbbbbb')).toBeInTheDocument()
   })
 
   it('appends the next page of trades when Load more is clicked', async () => {
