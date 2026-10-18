@@ -96,9 +96,9 @@ HELD = Decimal("54.3333")
 
 # A holding bought in two lots on a b = 100 book at zero: 20 shares for
 # C(20, 0) − C(0, 0) = 10.49916…, charged 10.4992 (0.5250 a share), then 30
-# for C(50, 0) − C(20, 0) = 17.59389…, charged 17.5939 (0.5865). The basis is
+# for C(50, 0) − C(20, 0) = 17.59381…, charged 17.5939 (0.5865). The basis is
 # 28.0931, 0.5619 a share. A sell of 13 at 0.5500 fills whole on arrival for
-# C(50, 0) − C(37, 0) = 7.89145…, floored to 7.8914, and keeps
+# C(50, 0) − C(37, 0) = 7.89140…, floored to 7.8914, and keeps
 # 28.0931 · 37/50 = 20.788894 of the basis, half-up 20.7889 (a floor gives
 # 20.7888). It releases 7.3042 and banks 7.8914 − 7.3042 = 0.5872. Released at
 # the first lot's price it would keep 21.2686, at the fill's 20.2017.
