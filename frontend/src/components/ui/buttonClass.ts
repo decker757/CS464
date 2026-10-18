@@ -6,7 +6,10 @@ const BASE = 'inline-flex cursor-pointer items-center justify-center gap-2 trans
 // Hover effects are guarded with `not-disabled:` so a disabled button does not light up.
 const VARIANTS: Record<Variant, string> = {
   primary: 'bg-smu-navy text-white not-disabled:hover:ring-3 not-disabled:hover:ring-smu-gold/35',
-  gold: 'bg-smu-gold text-white not-disabled:hover:opacity-90',
+  // Navy on the brand gold is 4.58:1, white on it 3.40:1, so the label is navy
+  // and the gold is untouched. The hover lightens the surface instead of the
+  // whole button, which would have faded the label with it. [#360]
+  gold: 'bg-smu-gold text-smu-navy not-disabled:hover:bg-smu-gold/90',
   outline: 'border-[1.5px] border-smu-navy/20 text-smu-navy not-disabled:hover:border-smu-navy not-disabled:hover:bg-smu-navy/5',
   outlineOnNavy: 'border border-white/35 text-white not-disabled:hover:border-white/60 not-disabled:hover:bg-white/10',
   outlineGoldOnNavy: 'border border-smu-gold text-white/85 not-disabled:hover:bg-smu-gold/20',
