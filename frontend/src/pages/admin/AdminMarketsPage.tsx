@@ -63,12 +63,13 @@ export default function AdminMarketsPage() {
   // use it, so every other filter tab costs nothing extra.
   const hasApprovedRow = markets.some(m => m.status === 'approved')
   const [approvals, setApprovals] = useState<Map<string, AdminAction> | null>(null)
+  const [approvalsError, setApprovalsError] = useState(false)
   useEffect(() => {
     if (!hasApprovedRow) return
     let cancelled = false
-    listAllActions('market.outcome_approved').then(entries => {
-      if (!cancelled) setApprovals(latestActionPerTarget(entries))
-    })
+    listAllActions('market.outcome_approved')
+      .then(entries => { if (!cancelled) { setApprovals(latestActionPerTarget(entries)); setApprovalsError(false) } })
+      .catch(() => { if (!cancelled) setApprovalsError(true) })
     return () => { cancelled = true }
   }, [hasApprovedRow])
 
@@ -90,6 +91,13 @@ export default function AdminMarketsPage() {
       {isLoading && <p className="text-sm text-muted">Loading markets…</p>}
 
       {hasError && <p role="alert" className="text-sm text-danger">Failed to load markets. Please try again.</p>}
+
+      {approvalsError && (
+        <div role="alert" className="mb-3 flex items-center gap-2 text-sm text-danger">
+          <span>Failed to load dispute controls for approved markets.</span>
+          <button type="button" className="underline" onClick={() => window.location.reload()}>Reload</button>
+        </div>
+      )}
 
       {!isLoading && !hasError && markets.length === 0 && (
         <p className="text-sm text-muted">No markets in this status.</p>
