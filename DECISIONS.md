@@ -9761,3 +9761,35 @@ nothing left for the result to release.
 `test_cancel_order_concurrency.py` races a cancel against a fill in both
 orderings and the partial case; each test fails with the cancel's
 `books.lock_book` removed.
+
+### D-NEW — Order frames pass no version gate on the relay
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** After a commit that filled resting orders, the ledger publishes
+the commit's one `price` frame first and then one `order.update` message per
+fill, in fill order, each swallowing its own failure
+(`service/trading.py::_publish_order_updates`). The realtime service forwards
+each order message to every socket of its `user_id` and runs it through no
+version gate, neither the per-market one prices use nor one of its own.
+
+**Why.** The price frame carries the book's final `state_version`, and every
+fill in that commit is at or below it, so the per-market gate would drop each
+order frame as stale the moment the price frame passed. A gate keyed by order
+id would hold one entry per order ever filled, for the life of the process,
+and still be no guarantee: replicas keep their own marks, so the client has to
+order one order's frames by `fill.state_version` anyway
+(docs/api/realtime-service.md, "Order updates"). The price frame keeps its
+place straight after the commit, where every subscriber of the market already
+expects it, and the order frames follow it.
+
+**Rejected.** *Order frames first*: no client depends on the order between the
+two, and the price frame is the one every subscriber of the market needs. *A per-order
+gate*: unbounded, and redundant with the client's rule. *Publishing on a
+cancel*: the contract says a cancel sends none, and its response carries the
+order.
+
+**Notes.** In the realtime suite,
+`test_order_frames_are_delivered_after_their_commits_price_frame` publishes
+the ledger's real sequence, a price frame at version 4 and order frames at 2
+and 3, and fails if the order frames go through the gate.
