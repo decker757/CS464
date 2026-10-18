@@ -651,7 +651,7 @@ async def test_a_cascade_fill_is_the_basis_its_owner_banks_a_sale_against(
 
     sold = await read_portfolio(session, owner)
 
-    assert row(sold, upstream.market_id, 1).cost_basis == CASCADE_REMAINING_BASIS
+    assert str(row(sold, upstream.market_id, 1).cost_basis) == str(CASCADE_REMAINING_BASIS)
     assert str(sold.realized_pnl) == str(CASCADE_REALIZED)
 
 
