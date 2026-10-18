@@ -11,7 +11,13 @@ interface FieldProps {
 /** A labelled control with one message under it: the error when there is one,
  * otherwise the hint. The message is tied to the control with
  * `aria-describedby`, so a screen reader reads it whenever the field takes
- * focus and not only once, as the alert goes past. */
+ * focus and not only once, as the alert goes past.
+ *
+ * `children` must be a single element that spreads its props onto a DOM node —
+ * `TextInput`, `TextArea` and `PasswordInput` all do. A fragment, or a
+ * component that drops the props it is not named, swallows the attribute
+ * silently: the clone still succeeds and TypeScript still passes, because
+ * `isValidElement<P>` asserts the prop shape rather than checking it. */
 export default function Field({ id, label, error, hint, children }: FieldProps) {
   const message = error ?? hint
   const messageId = `${id}-message`
