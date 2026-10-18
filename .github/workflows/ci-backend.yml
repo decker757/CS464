@@ -193,8 +193,20 @@ jobs:
 
       # No --if-present equivalent on purpose: a failing or missing test run
       # exits non-zero and fails the job.
+      #
+      # [F-12] #342. --cov writes the figure the `coverage` job adds up. What
+      # it counts is backend/.coveragerc, one file for all six suites.
       - name: Test
-        run: pytest
+        env:
+          COVERAGE_RCFILE: ${{ github.workspace }}/backend/.coveragerc
+        run: pytest --cov=. --cov-report=json:coverage-${{ matrix.service }}.json
+
+      - name: Keep the coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.service }}
+          path: backend/${{ matrix.service }}/coverage-${{ matrix.service }}.json
+          retention-days: 1
 
       # Catches an import error or a bad settings default before deploy.
       #
@@ -233,7 +245,16 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Test
-        run: pytest
+        env:
+          COVERAGE_RCFILE: ${{ github.workspace }}/backend/.coveragerc
+        run: pytest --cov=. --cov-report=json:coverage-shared.json
+
+      - name: Keep the coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-shared
+          path: backend/shared/coverage-shared.json
+          retention-days: 1
 
   # [F-11] #198. One scan over all of backend/, because a function in shared/
   # is used from the services, and a scan per service would call it dead.
@@ -260,6 +281,39 @@ jobs:
 
       - name: Check for dead code
         run: ./check_dead_code.sh
+
+  # [F-12] #342. One figure out of the six suites, on the run's summary page.
+  # Reports, never gates: nothing here fails on a low number, so do not make
+  # this a required check.
+  coverage:
+    name: coverage
+    needs: [test, shared]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Collect every suite's report
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: reports
+          merge-multiple: true
+
+      # The arithmetic has its own tests, because a wrong percentage in a
+      # report is not something CI would otherwise notice.
+      - name: Check the summary script
+        run: |
+          pip install pytest==9.1.1
+          python -m pytest scripts/test_coverage_summary.py -q
+
+      - name: Add the figure to the run summary
+        run: python scripts/coverage_summary.py reports/coverage-*.json >> "$GITHUB_STEP_SUMMARY"
 
   notify:
     needs: [test, shared, dead-code]
