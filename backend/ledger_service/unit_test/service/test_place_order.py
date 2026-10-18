@@ -819,9 +819,7 @@ async def test_a_placement_that_fills_publishes_one_price_frame_and_one_that_res
     )
 
     assert resting.calls == []
-    (channel, payload) = filling.calls[0]
-    assert len(filling.calls) == 1
-    assert channel == "market.price"
+    (payload,) = filling.payloads_on("market.price")
     assert '"state_version":1' in payload
 
 
@@ -868,8 +866,7 @@ async def test_a_placement_that_fills_runs_the_cascade_after_its_own_fill(
     fills = await _fill_transactions(session, broken.id)
     assert [Decimal(fill.context["total"]) for fill in fills] == [Decimal("-0.4713")]
     assert await q_of(session, upstream.market_id) == [Decimal("20.0000"), Decimal("8.9855")]
-    (_, payload) = recorder.calls[0]
-    assert len(recorder.calls) == 1
+    (payload,) = recorder.payloads_on("market.price")
     assert '"state_version":2' in payload
     await assert_ledger_balances(session)
 

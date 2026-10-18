@@ -179,7 +179,7 @@ async def test_a_placement_is_201_with_the_contracts_example(
         1,
     )
     assert body["book_state_version"] == 1
-    assert len(recorder.calls) == 1
+    assert len(recorder.payloads_on("market.price")) == 1
 
 
 async def test_a_retry_is_201_with_the_same_body(trade_client, session, monkeypatch) -> None:

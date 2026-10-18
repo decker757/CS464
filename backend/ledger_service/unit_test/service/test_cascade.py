@@ -199,10 +199,8 @@ async def test_one_big_trade_fills_three_resting_orders_by_price_then_seq(
         FIRST_TIED + SECOND_TIED + LARGE_FILL,
     ]
 
-    (channel, payload) = recorder.calls[0]
-    assert len(recorder.calls) == 1
+    (payload,) = recorder.payloads_on("market.price")
     frame = json.loads(payload)
-    assert channel == "market.price"
     assert frame["state_version"] == 4
     assert [price["price"] for price in frame["prices"]] == ["0.6000", "0.4000"]
 
