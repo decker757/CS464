@@ -22,7 +22,8 @@
   /* Nothing lighter than #6b7280 reaches 4.5:1 on cream, so `subtle` and
      `muted` have had to converge. The name stays because 23 files read as
      "this is the quietest text on the screen", and the two can part again if
-     the cream ever darkens. */
+     the cream ever darkens. Do not fold them into one here: that rewrites
+     those 23 files and is its own PR. */
   --color-subtle: #6b7280;
   --color-line: #e2e0da;
   --color-track: #f3f4f6;
