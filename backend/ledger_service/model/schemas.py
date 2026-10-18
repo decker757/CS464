@@ -542,6 +542,13 @@ class TradeOut(BaseModel):
     state_version: int = Field(
         description="The book's counter after this trade, not before it."
     )
+    book_state_version: int = Field(
+        description=(
+            "The book's counter after this trade and every resting order it "
+            "filled (ADR 0024): the version of the one `price` frame the trade "
+            "publishes. Equal to `state_version` when it filled none."
+        )
+    )
 
     @field_serializer("quantity", "total")
     def _as_string(self, value: Decimal) -> str:
