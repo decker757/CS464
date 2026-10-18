@@ -709,9 +709,10 @@ The per-user holdings check belongs to [T-3] #23 and only means anything
 taken under the trade's own lock; a preview that checked it here would be
 quoting a refusal that could already be stale by the time anyone acted on it.
 
-**ADR 0024 (Accepted). `post_trade_prices` ignores resting orders.** The preview runs no cascade. `total`, `average_price` and `prices`
-are what the trade will be charged against, because the trade is priced before
-any resting order fills. `post_trade_prices` is the price after this trade
+**ADR 0024 (Accepted). `post_trade_prices` ignores resting orders.** The
+preview runs no cascade. `total`, `average_price` and `prices` are what the
+trade will be charged against, because the trade is priced before any resting
+order fills. `post_trade_prices` is the price after this trade
 alone. When resting orders fill in the trade's cascade, the market ends closer
 to where it started than `post_trade_prices` says. Render the end price from
 the `price` frame at the trade response's `book_state_version`, not from the
@@ -1128,8 +1129,9 @@ narrows for trades alone).
 the cascade are built. Cancelling is not yet**, and neither is the `order`
 frame on the realtime feed. A trade that moves the price past a resting
 order's limit fills that order inside the trade's own transaction, and a
-placement that is marketable when it arrives fills at once, as below. This section is the contract [FE][T-6]
-#61 builds against. Why the design looks like this:
+placement that is marketable when it arrives fills at once, as below. This
+section is the contract [FE][T-6] #61 builds against. Why the design looks
+like this:
 [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
 Accepted.
 
