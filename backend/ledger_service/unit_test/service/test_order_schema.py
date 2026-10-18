@@ -60,8 +60,10 @@ def _order(market_id: uuid.UUID, outcome_id: uuid.UUID, **over) -> Order:
             "ck_orders_limit_price_between_0_and_1",
             id="limit_price_0",
         ),
+        # A budget of 100, because the helper's 60 would also break
+        # ck_orders_budget_covers_the_limit, which sorts first.
         pytest.param(
-            {"limit_price": Decimal("1.0000")},
+            {"limit_price": Decimal("1.0000"), "budget": Decimal("100.0000")},
             "ck_orders_limit_price_between_0_and_1",
             id="limit_price_1",
         ),
@@ -91,6 +93,13 @@ def _order(market_id: uuid.UUID, outcome_id: uuid.UUID, **over) -> Order:
             {"side": Side.SELL, "budget": Decimal("60.0000")},
             "ck_orders_budget_iff_buy",
             id="sell_with_budget",
+        ),
+        # 0.6000 × 33.3333 is 19.99998, so a budget one tick under the
+        # rounded-up 20.0000 is short of the limit by a fraction of a tick.
+        pytest.param(
+            {"quantity": Decimal("33.3333"), "budget": Decimal("19.9999")},
+            "ck_orders_budget_covers_the_limit",
+            id="budget_rounded_down",
         ),
         pytest.param(
             {"spent": Decimal("-0.0001")},
@@ -141,10 +150,26 @@ async def test_a_row_breaking_one_rule_is_refused_by_that_rule(
 @pytest.mark.parametrize(
     "overrides",
     [
-        pytest.param({"limit_price": Decimal("0.0001")}, id="limit_one_tick_above_0"),
-        pytest.param({"limit_price": Decimal("0.9999")}, id="limit_one_tick_below_1"),
-        pytest.param({"quantity": Decimal("0.0001")}, id="quantity_one_tick"),
+        # Each budget is limit × quantity rounded up to the tick, as a
+        # placement stores it.
+        pytest.param(
+            {"limit_price": Decimal("0.0001"), "budget": Decimal("0.0100")},
+            id="limit_one_tick_above_0",
+        ),
+        pytest.param(
+            {"limit_price": Decimal("0.9999"), "budget": Decimal("99.9900")},
+            id="limit_one_tick_below_1",
+        ),
+        pytest.param(
+            {"quantity": Decimal("0.0001"), "budget": Decimal("0.0001")},
+            id="quantity_one_tick",
+        ),
         pytest.param({"spent": Decimal("60.0000")}, id="spent_equal_to_budget"),
+        # 0.6000 × 33.3335 is 20.0001 exactly.
+        pytest.param(
+            {"quantity": Decimal("33.3335"), "budget": Decimal("20.0001")},
+            id="budget_covering_the_limit_exactly",
+        ),
         pytest.param(
             {"status": OrderStatus.FILLED, "filled_quantity": Decimal("100.0000")},
             id="filled_equal_to_quantity",
