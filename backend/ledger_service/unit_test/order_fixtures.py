@@ -26,6 +26,7 @@ async def add_order(
     budget: str | None,
     filled_value: str = "0.0000",
     status: str = "open",
+    limit_price: str = "0.5000",
 ) -> Order:
     """One order of a single share at 0.5000, flushed, and returned.
 
@@ -35,6 +36,9 @@ async def add_order(
     `budget - filled_value`, directly. A filled order has its one share
     filled, a cancelled one a cancel time, and an open one half a share
     filled when anything has filled, so every CHECK on the table holds.
+
+    `limit_price` is for a test that trades in the order's own market: an
+    order the price has passed would fill in that trade's cascade.
     """
     order_status = OrderStatus(status)
     if order_status is OrderStatus.FILLED:
@@ -49,7 +53,7 @@ async def add_order(
         market_id=market_id,
         outcome_id=outcome_id,
         side=Side.SELL if budget is None else Side.BUY,
-        limit_price=Decimal("0.5000"),
+        limit_price=Decimal(limit_price),
         quantity=Decimal("1.0000"),
         filled_quantity=filled_quantity,
         budget=None if budget is None else Decimal(budget),

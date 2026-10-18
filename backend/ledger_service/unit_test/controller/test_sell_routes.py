@@ -52,7 +52,7 @@ _ISSUE_CODES = {
         "cost_below_tick",
         "proceeds_below_tick",
     ],
-    "500": ["market_book_incomplete"],
+    "500": ["market_book_incomplete", "cascade_fill_refused"],
     "503": ["market_terms_unavailable", "auth_unavailable"],
 }
 
@@ -302,6 +302,7 @@ def test_the_docs_error_table_is_exactly_the_issues() -> None:
         ("422", "proceeds_below_tick"),
         ("422", "invalid_request"),
         ("500", "market_book_incomplete"),
+        ("500", "cascade_fill_refused"),
         ("503", "market_terms_unavailable"),
         ("503", "auth_unavailable"),
     }

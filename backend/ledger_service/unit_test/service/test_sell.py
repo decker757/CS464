@@ -437,7 +437,8 @@ async def test_an_instant_sell_cannot_spend_shares_a_sell_order_reserves(
     """ADR 0024: "An instant sell is limited to the position less the shares
     the owner's live sells reserve, checked under the book lock". A resting
     sell holds one of the 54.3333 shares; the other 53.3333 can be sold, and a
-    tick more is refused with `reserved` beside `held` and `requested`."""
+    tick more is refused with `reserved` beside `held` and `requested`. The
+    order's limit is above the price, so it rests through the sell's cascade."""
     upstream, user_id = await _holder(session)
     await add_order(
         session,
@@ -445,6 +446,7 @@ async def test_an_instant_sell_cannot_spend_shares_a_sell_order_reserves(
         market_id=upstream.market_id,
         outcome_id=upstream.outcomes[0],
         budget=None,
+        limit_price="0.9000",
     )
     await session.commit()
 

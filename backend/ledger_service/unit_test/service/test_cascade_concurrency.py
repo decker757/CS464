@@ -160,7 +160,10 @@ async def test_two_trades_crossing_the_same_orders_keep_every_invariant(
         session, seller, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
     )
     for order_id in [sell_order.order.id, buy_order.order.id]:
-        row = (
-            await session.execute(select(Order).where(Order.id == order_id))
-        ).scalar_one()
-        assert await _fill_totals(session, order_id) == (row.filled_quantity, row.filled_value)
+        totals = await _fill_totals(session, order_id)
+        rollups = (
+            await session.execute(
+                select(Order.filled_quantity, Order.filled_value).where(Order.id == order_id)
+            )
+        ).one()
+        assert totals == tuple(rollups)
