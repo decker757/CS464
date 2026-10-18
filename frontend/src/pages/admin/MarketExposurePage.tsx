@@ -9,7 +9,7 @@ import DetailItem from '../../components/ui/DetailItem'
 import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
 import { useMarketDetail } from '../../hooks/useMarketDetail'
-import { formatCreditsPrecise, isZeroCredits, unsignedCredits } from '../../utils/formatCredits'
+import { compareCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, unsignedCredits } from '../../utils/formatCredits'
 
 interface WorstCase {
   outcomeId: string
@@ -19,31 +19,6 @@ interface WorstCase {
   isShort: boolean
 }
 
-const SIGNED_DECIMAL = /^(-?)(\d+)(?:\.(\d+))?$/
-
-// A residue is a decimal string and the browser must never parse one into a
-// float (frontend/CLAUDE.md). Picking the worst outcome needs no arithmetic:
-// nothing here adds, subtracts or negates a figure, it only orders two of
-// them. Padding both fractions to the same length leaves two plain integers,
-// which BigInt compares exactly, and the figure that reaches the screen is
-// still the string the ledger sent. A value that is not a plain decimal
-// sorts as equal rather than letting BigInt throw mid-render, the same guard
-// formatCredits makes before its own BigInt call.
-function compareResidues(left: string, right: string): number {
-  const leftParts = SIGNED_DECIMAL.exec(left)
-  const rightParts = SIGNED_DECIMAL.exec(right)
-  if (!leftParts || !rightParts) return 0
-
-  const [, leftSign, leftWhole, leftFraction = ''] = leftParts
-  const [, rightSign, rightWhole, rightFraction = ''] = rightParts
-  const fractionDigits = Math.max(leftFraction.length, rightFraction.length)
-  const leftUnits = BigInt(leftSign + leftWhole + leftFraction.padEnd(fractionDigits, '0'))
-  const rightUnits = BigInt(rightSign + rightWhole + rightFraction.padEnd(fractionDigits, '0'))
-
-  if (leftUnits < rightUnits) return -1
-  return leftUnits > rightUnits ? 1 : 0
-}
-
 function isShortfall(residue: string): boolean {
   return residue.startsWith('-') && !isZeroCredits(residue)
 }
@@ -51,14 +26,20 @@ function isShortfall(residue: string): boolean {
 /** The outcome that costs the platform most if it wins: the smallest
  * `residue_if_wins`, since the pool is the same whichever outcome wins. There
  * is no field for it — docs/api/ledger-service.md derives it from `outcomes`
- * like every other figure in this service. Null once the market has settled,
- * where every residue is null, and on a market with no book yet. */
+ * like every other figure in this service. Choosing is a comparison and
+ * nothing is computed: `compareCredits` orders the ledger's own strings, and
+ * the one that wins is displayed as it arrived. Null once the market has
+ * settled, where every residue is null, and on a market with no book yet. */
 function worstCaseOutcome(outcomes: OutcomeExposure[]): WorstCase | null {
   let worst: WorstCase | null = null
   for (const outcome of outcomes) {
     const residue = outcome.residue_if_wins
-    if (residue === null) continue
-    if (worst === null || compareResidues(residue, worst.residue) < 0) {
+    // Null once the market has settled. A value that is not a plain decimal
+    // is dropped the same way: it would show as "—", and naming an outcome
+    // the worst case while being unable to say by how much is worse than
+    // naming the worst of the figures that can be read.
+    if (residue === null || !isPlainCredits(residue)) continue
+    if (worst === null || compareCredits(residue, worst.residue) < 0) {
       worst = { outcomeId: outcome.outcome_id, residue, isShort: isShortfall(residue) }
     }
   }
