@@ -4,7 +4,7 @@ import type { OutcomePrice } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import { formatPrice } from '../../utils/formatPrice'
 import Card from '../ui/Card'
-import { formatCloseCountdown } from './marketStatus'
+import { formatCloseCountdown, tradingStopped } from './marketStatus'
 import StatusBadge from './StatusBadge'
 
 interface MarketCardProps {
@@ -23,11 +23,16 @@ export default function MarketCard({ market, prices }: MarketCardProps) {
   // is still trading after it has closed. Trading stops on the clock, not when
   // the sweep writes CLOSED (ADR 0011), so the card keeps its own clock.
   const [now, setNow] = useState(() => new Date())
+  // A market that has already stopped reads "Closed" for as long as the tab is
+  // open, so there is nothing for a clock to change. The last tick before this
+  // turns true is the one that writes "Closed", and it stops the clock itself.
+  const hasStopped = tradingStopped(market.status, market.close_time, now)
 
   useEffect(() => {
+    if (hasStopped) return
     const ticker = setInterval(() => setNow(new Date()), COUNTDOWN_TICK_MS)
     return () => clearInterval(ticker)
-  }, [])
+  }, [hasStopped])
 
   return (
     <Link to={`/markets/${market.id}`} className="block">
