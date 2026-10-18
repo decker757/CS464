@@ -1,3 +1,5 @@
+import { cloneElement, isValidElement } from 'react'
+
 interface FieldProps {
   id: string
   label: string
@@ -6,16 +8,29 @@ interface FieldProps {
   children: React.ReactNode
 }
 
+/** A labelled control with one message under it: the error when there is one,
+ * otherwise the hint. The message is tied to the control with
+ * `aria-describedby`, so a screen reader reads it whenever the field takes
+ * focus and not only once, as the alert goes past. */
 export default function Field({ id, label, error, hint, children }: FieldProps) {
+  const message = error ?? hint
+  const messageId = `${id}-message`
+  // Described only while there is a message to read: pointing at the empty
+  // paragraph below would describe the field with nothing.
+  const control =
+    message && isValidElement<{ 'aria-describedby'?: string }>(children)
+      ? cloneElement(children, { 'aria-describedby': messageId })
+      : children
+
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-[13px] font-semibold text-smu-navy">
         {label}
       </label>
-      {children}
+      {control}
       {/* Always rendered, so the card does not jump when a message appears. */}
-      <p role={error ? 'alert' : undefined} className={`min-h-[18px] text-xs ${error ? 'text-danger' : 'text-subtle'}`}>
-        {error ?? hint ?? ''}
+      <p id={messageId} role={error ? 'alert' : undefined} className={`min-h-[18px] text-xs ${error ? 'text-danger' : 'text-subtle'}`}>
+        {message ?? ''}
       </p>
     </div>
   )
