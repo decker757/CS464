@@ -500,6 +500,56 @@ class MarketNotBinary(LedgerError):
     message = "Limit orders are only available on markets with two outcomes."
 
 
+class OrderNotFound(LedgerError):
+    """No order with this id belongs to the caller. [T-8] #28.
+
+    Another trader's order reads the same as one that does not exist, so ids
+    cannot be probed (D-NEW "Cancel calls neither auth nor the market gate").
+    """
+
+    status_code = 404
+    code = "order_not_found"
+    message = "No such order."
+
+
+class OrderAlreadyFilled(LedgerError):
+    """A cancel found the order filled completely. [T-8] #28, ADR 0024.
+
+    The fill took the book lock first and committed first, so there is no
+    remainder to release. 409: the request was fine, the order moved on.
+    """
+
+    status_code = 409
+    code = "order_already_filled"
+    message = "This order has already filled completely."
+
+
+class OrderAlreadyCancelled(LedgerError):
+    """A cancel found the order cancelled already. [T-8] #28, ADR 0024.
+
+    A retried cancel lands here, and the client treats it as done: the first
+    cancel released the remainder, and a reservation is derived, so nothing
+    is released twice.
+    """
+
+    status_code = 409
+    code = "order_already_cancelled"
+    message = "This order has already been cancelled."
+
+
+class OrderReleased(LedgerError):
+    """A cancel found the order's market with a result. [T-8] #28, ADR 0024.
+
+    The result released the remainder in its own commit (D-NEW "An open order
+    is live only while its market has no result"), so a cancel has nothing
+    left to release.
+    """
+
+    status_code = 409
+    code = "order_released"
+    message = "This order's market has a result, so its remainder is already released."
+
+
 class LeaderboardRefreshed(LedgerError):
     """A leaderboard cursor names a ranking that is no longer stored. [L-1] #38.
 
