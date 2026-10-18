@@ -25,6 +25,19 @@ logger = logging.getLogger(__name__)
 PRICE_CHANNEL = "market.price"
 
 
+async def _publish(
+    client: redis.Redis, channel: str, payload: str, *, transaction_id: uuid.UUID
+) -> None:
+    """Put one payload on `channel`, logging a failure rather than raising it."""
+    try:
+        await client.publish(channel, payload)
+    except Exception:
+        logger.warning(
+            "failed to publish on %s for transaction %s", channel, transaction_id,
+            exc_info=True,
+        )
+
+
 async def publish(
     client: redis.Redis, event: PriceEvent, *, transaction_id: uuid.UUID
 ) -> None:
@@ -32,10 +45,6 @@ async def publish(
 
     `client` is the process-wide one from `main.py`'s lifespan (D-047).
     """
-    try:
-        await client.publish(PRICE_CHANNEL, event.model_dump_json())
-    except Exception:
-        logger.warning(
-            "failed to publish price event for transaction %s", transaction_id,
-            exc_info=True,
-        )
+    await _publish(
+        client, PRICE_CHANNEL, event.model_dump_json(), transaction_id=transaction_id
+    )
