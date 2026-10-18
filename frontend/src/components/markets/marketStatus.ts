@@ -57,7 +57,7 @@ const COUNTDOWN_WINDOW_MS = 48 * HOUR_MS
 
 // "3h 12m", "9m", "under a minute". Always rounded down, so the card never
 // offers more trading time than there is.
-function timeLeft(msLeft: number): string {
+function formatTimeLeft(msLeft: number): string {
   if (msLeft < MINUTE_MS) return 'under a minute'
   const minutes = Math.floor(msLeft / MINUTE_MS)
   if (msLeft < HOUR_MS) return `${minutes}m`
@@ -78,7 +78,7 @@ function timeLeft(msLeft: number): string {
 export function formatCloseCountdown(status: MarketStatus | AdminMarketStatus, closeTime: string | null, now = new Date()): string {
   if (closeTime && !tradingStopped(status, closeTime, now)) {
     const msLeft = new Date(closeTime).getTime() - now.getTime()
-    if (msLeft < COUNTDOWN_WINDOW_MS) return `Closes in ${timeLeft(msLeft)}`
+    if (msLeft < COUNTDOWN_WINDOW_MS) return `Closes in ${formatTimeLeft(msLeft)}`
   }
   return formatCloseTime(status, closeTime, now)
 }
