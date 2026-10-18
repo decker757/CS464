@@ -49,7 +49,7 @@ def upgrade() -> None:
         ),
         sa.Column("budget", sa.Numeric(precision=18, scale=4), nullable=True),
         sa.Column(
-            "spent",
+            "filled_value",
             sa.Numeric(precision=18, scale=4),
             server_default=sa.text("0"),
             nullable=False,
@@ -87,9 +87,14 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(side = 'buy') = (budget IS NOT NULL)", name="ck_orders_budget_iff_buy"
         ),
-        sa.CheckConstraint("spent >= 0", name="ck_orders_spent_nonneg"),
         sa.CheckConstraint(
-            "budget IS NULL OR spent <= budget", name="ck_orders_spent_within_budget"
+            "budget IS NULL OR budget >= limit_price * quantity",
+            name="ck_orders_budget_covers_the_limit",
+        ),
+        sa.CheckConstraint("filled_value >= 0", name="ck_orders_filled_value_nonneg"),
+        sa.CheckConstraint(
+            "budget IS NULL OR filled_value <= budget",
+            name="ck_orders_filled_value_within_budget",
         ),
         sa.CheckConstraint(
             "(status = 'filled') = (filled_quantity = quantity)",
