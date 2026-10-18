@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { onSessionExpired } from '../api/axios'
 import * as authApi from '../api/authApi'
 import type { User } from '../api/authApi'
 
@@ -6,14 +7,31 @@ export type { User }
 
 interface AuthContextType {
   user: User | null | undefined
+  /** True once a session somebody was signed into ended on its own, so
+   *  /login can say why they are looking at it. Left out means no. */
+  hasSessionExpired?: boolean
   login: (user: User) => void
   logout: () => Promise<void>
+}
+
+/** Both facts in one state value, because the second is only ever decided
+ *  from the first — see the listener below. */
+interface Session {
+  user: User | null | undefined
+  hasSessionExpired: boolean
 }
 
 export const AuthContext = createContext<AuthContextType | null>(null)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null | undefined>(undefined)
+  const [session, setSession] = useState<Session>({ user: undefined, hasSessionExpired: false })
+
+  // The lookup below fails down the very path that reports an expired session
+  // — 401, then a refused /auth/refresh — and that failure means "nobody was
+  // signed in", never "your session just ended". It has to be ignored even
+  // after somebody signs in during the window, which is the same late answer
+  // the lookup itself is guarded against below.
+  const isLookingUpTheSessionRef = useRef(true)
 
   useEffect(() => {
     // This request answers one question — "is anyone already signed in?" — and
@@ -29,14 +47,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // not a stress test, and the late `setUser(null)` used to throw the login
     // away with nothing on screen to explain it.
     const resolveIfStillUnknown = (value: User | null) =>
-      setUser((current) => (current === undefined ? value : current))
+      setSession((current) =>
+        current.user === undefined ? { ...current, user: value } : current,
+      )
 
     authApi.getCurrentUser()
       .then(resolveIfStillUnknown)
       .catch(() => resolveIfStillUnknown(null))
+      .finally(() => { isLookingUpTheSessionRef.current = false })
   }, [])
 
-  const login = (userData: User) => setUser(userData)
+  useEffect(
+    () =>
+      // The interceptor's refresh was refused, so the session is over (#353).
+      // Clearing the user here is what makes ProtectedRoute redirect; without
+      // it every page fails while the navbar still shows a name and a balance.
+      onSessionExpired(() => {
+        if (isLookingUpTheSessionRef.current) return
+        setSession((current) =>
+          // Only a session somebody is in can expire. A visitor who is not
+          // signed in has nothing to lose, and telling them otherwise would
+          // be a lie.
+          current.user ? { user: null, hasSessionExpired: true } : current,
+        )
+      }),
+    [],
+  )
+
+  const login = (userData: User) => setSession({ user: userData, hasSessionExpired: false })
   const logout = async () => {
     // `finally`, because logging out is the one action a user has to be able
     // to trust. The server's own contract says this endpoint is
@@ -47,12 +85,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await authApi.logout()
     } finally {
-      setUser(null)
+      setSession({ user: null, hasSessionExpired: false })
     }
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ ...session, login, logout }}>
       {children}
     </AuthContext.Provider>
   )
