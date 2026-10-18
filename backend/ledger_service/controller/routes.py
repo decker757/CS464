@@ -56,6 +56,8 @@ from core.config import get_settings
 from core.pricing import Side
 from model.schemas import (
     BalanceOut,
+    CancellationOut,
+    CancelIn,
     ExposureOut,
     ExposureOutcomeOut,
     FillOut,
@@ -81,6 +83,7 @@ from model.schemas import (
     ValidationErrorOut,
 )
 from service import (
+    cancellation,
     exposure as exposure_service,
     leaderboard as leaderboard_service,
     ledger_service,
@@ -817,6 +820,68 @@ async def place_order(
 async def my_orders(user: CurrentUser, session: DbSession) -> OrderListOut:
     live = await orders.list_live(session, user.user_id)
     return OrderListOut(orders=[_order_out(order) for order in live])
+
+
+_CANCEL_ORDER_DESCRIPTION = (
+    "[T-8] #28, ADR 0024. Cancel one of the caller's limit orders and release "
+    "what it still holds: a buy's budget less what it has spent, or a sell's "
+    "unsold shares. Fills stay. An empty body, any role, the caller's own "
+    "orders only.\n\n"
+    "**No account check and no market gate**: a suspended account can still "
+    "cancel while its token is valid, and a closed market's orders can be "
+    "cancelled.\n\n"
+    "**A cancel and a fill never both win.** Both take the market's book lock; "
+    "whichever takes it first commits first. Writes no entry: a reservation "
+    "is derived from the order, so a retried cancel releases nothing twice."
+)
+
+
+@router.post(
+    "/orders/{order_id}/cancel",
+    response_model=CancellationOut,
+    status_code=200,
+    summary="Cancel one of my limit orders",
+    description=_CANCEL_ORDER_DESCRIPTION,
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access token."
+            )
+        },
+        404: {
+            "description": (
+                "`order_not_found`: no such order, or not the caller's. The two "
+                "look the same on purpose."
+            )
+        },
+        409: {
+            "description": (
+                "`order_already_filled`: it filled completely before the cancel. "
+                "`order_already_cancelled`: it was already cancelled; a retried "
+                "cancel lands here, so treat it as done. "
+                "`order_released`: its market has a result, and the remainder is "
+                "already released."
+            )
+        },
+        422: _invalid_request(
+            "`invalid_request`: an `order_id` that is not a UUID, or a body "
+            "with any field."
+        ),
+    },
+)
+async def cancel_order(
+    order_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    body: CancelIn | None = None,
+) -> CancellationOut:
+    # `body` is never read: it is declared so that a field in it is refused.
+    cancelled = await cancellation.cancel(session, order_id, user_id=user.user_id)
+    return CancellationOut(
+        order=_order_out(cancelled.order),
+        released_credits=cancelled.released_credits,
+        released_shares=cancelled.released_shares,
+    )
 
 
 _TRADE_FEED_DESCRIPTION = (
