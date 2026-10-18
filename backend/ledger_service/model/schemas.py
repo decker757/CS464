@@ -54,11 +54,27 @@ class BalanceOut(BaseModel):
 
     balance: Decimal = Field(
         description=(
-            "Available credits, as an exact decimal string. The sum of every "
-            "entry on this account and nothing else — there is no stored "
-            "balance for this to disagree with."
+            "The account's credits, including those resting buy orders "
+            "reserve, as an exact decimal string. The sum of every entry on "
+            "this account and nothing else — there is no stored balance for "
+            "this to disagree with."
         ),
         examples=["1000.0000"],
+    )
+    reserved: Decimal = Field(
+        description=(
+            "What this user's live buy orders could still spend, summed over "
+            "every market: each order's budget less what it has spent. Part "
+            "of `balance`, and not an entry (ADR 0024)."
+        ),
+        examples=["60.0000"],
+    )
+    available: Decimal = Field(
+        description=(
+            "`balance - reserved`: what a new buy, a new buy order or the "
+            "trade route can spend."
+        ),
+        examples=["940.0000"],
     )
 
     @field_serializer("balance")
