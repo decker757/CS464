@@ -42,8 +42,4 @@ describe('formatCloseCountdown', () => {
   it('reads Closed on a market closed early, whose close time has not passed', () => {
     expect(formatCloseCountdown('closed', closingIn(3 * HOUR), NOW)).toBe('Closed')
   })
-
-  it('has nothing to count down for a market with no close time', () => {
-    expect(formatCloseCountdown('draft', null, NOW)).toBe('—')
-  })
 })

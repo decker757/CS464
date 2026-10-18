@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
 import { PRICE_REFRESH_MS, usePricesForMarkets } from './usePricesForMarkets'
 
@@ -67,6 +68,61 @@ describe('usePricesForMarkets', () => {
     await waitFor(() => expect(priceNow()).toBe('0.7000'))
     // The screen reports when the prices were read, so the refresh has to move it.
     expect(result.current.readAt?.getTime()).toBeGreaterThan(firstReadAt)
+  })
+
+  // The screen says when the prices were last read, and that is only worth
+  // saying if a failing refresh leaves it where it was: a fresh time over
+  // prices nobody could re-read is the state this is meant to make visible.
+  it('leaves the reported read time alone when a refresh fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    serveChangingPrices(['0.6000'])
+
+    const { result } = renderHook(() => usePricesForMarkets(TRADING))
+    const priceNow = () => result.current.pricesByMarket.get('m1')?.[0].price
+    await waitFor(() => expect(priceNow()).toBe('0.6000'))
+    const lastGoodRead = result.current.readAt?.getTime()
+
+    let failedReads = 0
+    server.use(http.get(SNAPSHOT, () => {
+      failedReads += 1
+      return HttpResponse.error()
+    }))
+    await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
+    await waitFor(() => expect(failedReads).toBe(1))
+    // Long enough for that failure to have landed, if it is going to move anything.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(result.current.readAt?.getTime()).toBe(lastGoodRead)
+    // And the card keeps the price it had rather than blanking.
+    expect(priceNow()).toBe('0.6000')
+  })
+
+  // A tick that fired while the ledger was still answering the last one would
+  // queue a second read per card, and a slow ledger — several books opening
+  // for the first time — is exactly when that happens. Same reason
+  // LoadMoreControl disables its button while a page is on its way.
+  it('does not ask again about a market it is still waiting on', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { held, release } = holdUntilReleased()
+    let reads = 0
+    server.use(http.get(SNAPSHOT, async () => {
+      reads += 1
+      await held
+      return HttpResponse.json(snapshotPriced('0.6000'))
+    }))
+
+    const { result } = renderHook(() => usePricesForMarkets(TRADING))
+    await waitFor(() => expect(reads).toBe(1))
+
+    await act(async () => { vi.advanceTimersByTime(3 * PRICE_REFRESH_MS) })
+
+    expect(reads).toBe(1)
+
+    // And the market is readable again once the ledger has answered.
+    release()
+    await waitFor(() => expect(result.current.pricesByMarket.get('m1')).toHaveLength(1))
+    await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
+    await waitFor(() => expect(reads).toBe(2))
   })
 
   // A market that can no longer trade can no longer get a new price, and each
