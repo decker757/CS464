@@ -9578,6 +9578,7 @@ example, where 10 × 0.7315 is 7.3150 against a charge of 7.3152.
 
 **Notes.** `payout_if_wins` is the quantity rescaled to four places, so a
 quantity sent as `10` reports `10.0000` while `quantity` still echoes `10`,
-as "A quantity takes money's scale of 4 at the API boundary" has it. On the
-smallest buys, which are charged a whole tick, the profit can be zero or
-negative; it is reported as it is.
+as "A quantity takes money's scale of 4 at the API boundary" has it. On a buy
+charged its whole quantity, such as the smallest buys or a buy of an outcome
+priced near one, the profit can be zero or a tick below; it is reported as it
+is.

@@ -679,8 +679,9 @@ right"**, for this trade alone and never the position it adds to. On a buy,
 credit, and `profit_if_wins` is that payout minus the credits the buy costs:
 `payout_if_wins + total`, exact, with no rounding of its own. In the example,
 `10.0000 - 7.3152 = 2.6848`. Render both as they arrive; do not recompute
-either from `quantity` or `average_price`. On the smallest buys, which are
-charged a whole tick, the profit can be `0.0000` or a tick below it.
+either from `quantity` or `average_price`. On a buy charged its whole
+quantity, such as the smallest buys or a buy of an outcome priced near one,
+the profit can be `0.0000` or a tick below it.
 
 On a **sell** both are `null`: a sell is paid its `total` now and gives up the
 shares that would have paid out, so it has nothing to receive if the outcome
