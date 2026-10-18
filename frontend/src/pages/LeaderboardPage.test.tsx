@@ -57,6 +57,9 @@ describe('LeaderboardPage', () => {
     expect(screen.getByText('ernest_t')).toBeInTheDocument()
     expect(screen.getByText('1,431.3568')).toBeInTheDocument()
     expect(screen.getAllByText('1,003.8689')).toHaveLength(2)
+
+    const rows = screen.getAllByRole('row')
+    expect(rows[1]).toHaveTextContent('1')
   })
 
   it('ranks from highest to lowest net worth, in the server\'s own order', async () => {
@@ -142,6 +145,7 @@ describe('LeaderboardPage', () => {
 
     expect(await screen.findByText('michelle_l')).toBeInTheDocument()
     expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.queryByText('(you)')).not.toBeInTheDocument()
   })
 
   it('shows an error when the API fails', async () => {
