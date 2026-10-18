@@ -614,8 +614,11 @@ _TRADE_DESCRIPTION = (
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
                 "market that cannot be priced — no outcome rows, one of "
-                "them, or a `liquidity_b` the engine cannot use. A server "
-                "fault; not worth retrying."
+                "them, or a `liquidity_b` the engine cannot use. "
+                "`cascade_fill_refused`: the overdraft check refused a resting "
+                "order this trade filled, which ADR 0024 makes impossible; "
+                "nothing was written. Both are server faults; not worth "
+                "retrying."
             )
         },
         503: {
@@ -661,14 +664,15 @@ async def execute_trade(
         quantity=result.quantity,
         total=result.total,
         state_version=result.state_version,
+        book_state_version=result.book_state_version,
     )
 
 
 _PLACE_ORDER_DESCRIPTION = (
     "[T-6] #26, ADR 0024. Place a limit order: buy or sell at `limit_price` or "
     "better, against the market maker. As much as the price allows fills at "
-    "once, in `fills`, and the rest rests. Until the cascade ([T-7] #27), a "
-    "later trade that moves the price past the limit does not fill it.\n\n"
+    "once, in `fills`, and the rest rests. A later trade that moves the "
+    "price past the limit fills it inside that trade ([T-7] #27).\n\n"
     "**Takes no account and no amount**, and no `state_version`: the limit "
     "protects the trader. A buy's budget, `limit_price × quantity` rounded up "
     "to the tick, has to fit in `available` even when it would fill "
