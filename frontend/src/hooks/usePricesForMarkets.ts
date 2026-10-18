@@ -50,19 +50,36 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
   useEffect(() => {
     // Set by the cleanup, so a list the page has replaced cannot write into it.
     let cancelled = false
+    // The markets this list is waiting on. A tick that fired while the ledger
+    // was still answering the last one would queue a second read per card, and
+    // a slow ledger is exactly when that happens: twenty-four cards against a
+    // ledger taking forty-five seconds would have three rounds outstanding at
+    // once, each one an LMSR evaluation. The browser's six connections per
+    // host then keep the queue full for as long as the ledger is slow.
+    // LoadMoreControl disables its button for the same reason.
+    // Per effect run, not a ref: a list the cleanup cancelled is asked about
+    // again by the next one, which is what StrictMode's double mount needs.
+    const inFlightIds = new Set<string>()
 
     const read = (marketId: string) => {
+      if (inFlightIds.has(marketId)) return
+      inFlightIds.add(marketId)
+
       getMarketSnapshot(marketId).then(
         snapshot => {
+          inFlightIds.delete(marketId)
           if (cancelled) return
           answeredIds.current.add(marketId)
           setPricesByMarket(previous => new Map(previous).set(marketId, snapshot.prices))
+          // Only a read that answered moves this. A failing refresh has to show
+          // as a time going stale, which is the whole reason the screen says it.
           setReadAt(new Date())
         },
         // A failure is an answer too: the card keeps the last price it had, or
         // shows "—" if it never had one, rather than being asked about again
         // before the next refresh.
         () => {
+          inFlightIds.delete(marketId)
           if (cancelled) return
           answeredIds.current.add(marketId)
         },
