@@ -32,7 +32,7 @@ CANCELLED_AT = datetime(2026, 10, 18, 9, 30, tzinfo=UTC)
 
 def _order(market_id: uuid.UUID, outcome_id: uuid.UUID, **over) -> Order:
     """A buy of 100 shares at 0.6000, resting untouched: its budget is
-    `limit × quantity` and nothing of it is spent yet."""
+    `limit × quantity` exactly and nothing has filled yet."""
     fields = {
         "user_id": uuid.uuid4(),
         "market_id": market_id,
@@ -42,7 +42,7 @@ def _order(market_id: uuid.UUID, outcome_id: uuid.UUID, **over) -> Order:
         "quantity": Decimal("100.0000"),
         "filled_quantity": Decimal("0.0000"),
         "budget": Decimal("60.0000"),
-        "spent": Decimal("0.0000"),
+        "filled_value": Decimal("0.0000"),
         "status": OrderStatus.OPEN,
         "book_state_version": 0,
         "idempotency_key": f"order:{uuid.uuid4()}",
@@ -102,14 +102,14 @@ def _order(market_id: uuid.UUID, outcome_id: uuid.UUID, **over) -> Order:
             id="budget_rounded_down",
         ),
         pytest.param(
-            {"spent": Decimal("-0.0001")},
-            "ck_orders_spent_nonneg",
-            id="spent_negative",
+            {"filled_value": Decimal("-0.0001")},
+            "ck_orders_filled_value_nonneg",
+            id="filled_value_negative",
         ),
         pytest.param(
-            {"spent": Decimal("60.0001")},
-            "ck_orders_spent_within_budget",
-            id="spent_past_budget",
+            {"filled_value": Decimal("60.0001")},
+            "ck_orders_filled_value_within_budget",
+            id="filled_value_past_budget",
         ),
         pytest.param(
             {"filled_quantity": Decimal("100.0000")},
@@ -164,7 +164,7 @@ async def test_a_row_breaking_one_rule_is_refused_by_that_rule(
             {"quantity": Decimal("0.0001"), "budget": Decimal("0.0001")},
             id="quantity_one_tick",
         ),
-        pytest.param({"spent": Decimal("60.0000")}, id="spent_equal_to_budget"),
+        pytest.param({"filled_value": Decimal("60.0000")}, id="filled_value_equal_to_budget"),
         # 0.6000 × 33.3335 is 20.0001 exactly.
         pytest.param(
             {"quantity": Decimal("33.3335"), "budget": Decimal("20.0001")},
