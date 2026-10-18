@@ -38,6 +38,16 @@ describe('PriceHistoryChart', () => {
     expect(screen.getByText('No')).toBeInTheDocument()
   })
 
+  it('dashes the second line, so its legend entry is told from the first without colour', () => {
+    // The mark, not the hue, is what connects a name in the legend to a line
+    // in the chart for a red-green colour-blind admin (#361). It is drawn
+    // rather than written, so this is the one assertion here on an attribute.
+    render(<PriceHistoryChart outcomes={OUTCOMES} points={[point('2026-03-05T01:00:00Z', 0)]} />)
+
+    expect(screen.getByText('Yes').querySelector('line')).not.toHaveAttribute('stroke-dasharray')
+    expect(screen.getByText('No').querySelector('line')).toHaveAttribute('stroke-dasharray')
+  })
+
   it('narrows the chart to the chosen time range, measured back from the last trade', async () => {
     const points = [
       point('2026-03-05T01:00:00Z', 0),
@@ -69,5 +79,17 @@ describe('PriceHistoryChart', () => {
     render(<PriceHistoryChart outcomes={OUTCOMES} points={acrossDays} />)
 
     expect(screen.getByText(/showing all 2 price points/i)).toHaveTextContent(/\d{1,2} [A-Za-z]{3} – \d{1,2} [A-Za-z]{3}/)
+  })
+
+  it('keeps drawing when a point carries a timestamp that does not parse', async () => {
+    // One unparseable occurred_at makes every comparison against the newest
+    // time false, which once emptied the range and threw during render.
+    const points = [point('2026-03-05T01:00:00Z', 0), point('not a timestamp', 1)]
+    const actor = userEvent.setup()
+    render(<PriceHistoryChart outcomes={OUTCOMES} points={points} />)
+
+    await actor.click(screen.getByRole('button', { name: 'Last hour' }))
+
+    expect(screen.getByText(/showing all 2 price points/i)).toBeInTheDocument()
   })
 })

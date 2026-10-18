@@ -129,6 +129,26 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('passes over a residue it cannot read, rather than naming it the worst case', async () => {
+    // A figure that does not parse shows as "—", so calling it the worst
+    // case would hide a real shortfall behind a dash.
+    mockMarket('mkt-1', market())
+    mockExposure('mkt-1', {
+      pool: '100.0000',
+      payout_exceeds_pool: true,
+      result: null,
+      winning_outcome_id: null,
+      outcomes: [
+        { outcome_id: 'o-no', position: 1, shares_outstanding: '20.0000', payout_if_wins: '20.0000', residue_if_wins: '1E-4' },
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '500.0000', payout_if_wins: '500.0000', residue_if_wins: '-400.0000' },
+      ],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('If Yes wins, the platform tops up 400.0000.')).toBeInTheDocument()
+  })
+
   it('names the winning outcome on a settled market, instead of a pool to protect', async () => {
     mockMarket('mkt-1', market())
     mockExposure('mkt-1', {
