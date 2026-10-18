@@ -3,3 +3,6 @@
 pytest==9.1.1
 pytest-asyncio==1.4.0
 httpx==0.28.1
+
+# [F-12] #342. The coverage figure CI reports, one number per side.
+pytest-cov==7.1.0

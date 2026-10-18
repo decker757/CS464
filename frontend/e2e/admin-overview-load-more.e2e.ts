@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/fixtures'
 import { registerAdmin, saveDraft, submitMarket, uniqueName } from './support/backend'
 import { logIn, marketCard, setQueryParams } from './support/browser'
 

@@ -9541,6 +9541,46 @@ changes both of its guard tests.
 
 ---
 
+### D-NEW — Realised P&L is the balance against the grant, plus the basis still open
+
+**Date:** 2026-10-18 · **Ticket:** #359 · **Status:** active
+
+**Decision.** `GET /ledger/portfolio/me` carries `starting_credits`,
+`realized_pnl`, `unrealized_pnl` and `total_pnl`, all derived on every read.
+`starting_credits` is the entry the signup grant wrote.
+`realized_pnl` is `balance - starting_credits + the cost basis of every open
+position`. `unrealized_pnl` is the sum of the rows' own, and `total_pnl` is
+the two together, which is `net_worth - starting_credits` exactly.
+
+**Why.** A balance is never stored and neither is a P&L (ADR 0009), so both
+figures have to be derived, and the entries do not record what a sell's
+shares originally cost. They do not have to: every credit that has left the
+balance and not come back is a loss, except the part still tied up in
+positions nobody has closed. Adding that basis back gives exactly (sell
+proceeds − the basis those sells released) + (settlement payouts − the basis
+of the holdings settlement closed), with no cost lot history and no new
+column. A settled holding is closed by that definition — its payout is in
+`balance` and its basis is not open cost — which is the same reason
+ADR 0018's valuation skips it, so the two agree by construction rather than
+by vigilance. `total_pnl` ships because money crosses the wire as decimal
+strings and the frontend may not do arithmetic on them: without it, "am I up
+or down" is still unanswerable.
+
+**Rejected.** *Summing `TRADE_SELL` and `SETTLEMENT` legs against a stored
+cost of goods sold*: needs a realised-cost column on `positions` or a lot
+history, which is the stored figure ADR 0009 exists to avoid. *Computing
+`realized_pnl` as `total_pnl - unrealized_pnl`*: the reconciliation would
+then be true by construction and its test would assert nothing.
+
+**Notes.** `starting_credits` comes from the grant transaction
+`grants.grant_key` names, read in the portfolio's one statement as a second
+anchor column — never from `STARTING_CREDITS`, which can change without
+rewriting an entry. A seeded position (`settlement_fixtures.hold`) has a
+basis no entry paid for, so no derived P&L can reconcile against it; the
+#359 tests buy into their settled markets for real.
+
+---
+
 ### D-NEW — An order's `filled_value` is what its fills moved, signed positive on either side
 
 **Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active

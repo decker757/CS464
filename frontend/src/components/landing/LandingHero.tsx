@@ -1,12 +1,17 @@
 import { Link } from 'react-router-dom'
+import { formatCredits } from '../../utils/formatCredits'
 import { buttonClass } from '../ui/buttonClass'
 import Eyebrow from '../ui/Eyebrow'
 import MarketPreviewCard from './MarketPreviewCard'
 
-const LEADERS = [
-  { rank: '#1', name: 'ernest_t', credits: '$2,340' },
-  { rank: '#2', name: 'michelle_t', credits: '$1,580' },
+// Made-up figures for the two cards pinned to the preview. The handles are
+// placeholders rather than anybody's real one, and the amounts are decimal
+// strings so they are written in credits by the app's own formatter.
+const EXAMPLE_LEADERS = [
+  { rank: '#1', name: 'trader_one', credits: '2340' },
+  { rank: '#2', name: 'trader_two', credits: '1580' },
 ]
+const EXAMPLE_NET_WORTH = '1580'
 
 /** A small card pinned to a corner of the preview. Pass its position in `className`. */
 function FloatingCard({ className, children }: { className: string; children: React.ReactNode }) {
@@ -22,20 +27,20 @@ function PortfolioMiniCard() {
     <FloatingCard className="-bottom-6 -left-8 w-40">
       <p className="mb-1 text-[10px] text-subtle">My Portfolio</p>
       <p className="text-lg leading-none font-extrabold text-success">+12.4%</p>
-      <p className="mt-0.5 text-[11px] text-muted">$1,580 net worth</p>
+      <p className="mt-0.5 text-[11px] text-muted">{formatCredits(EXAMPLE_NET_WORTH)} credits</p>
     </FloatingCard>
   )
 }
 
 function LeaderboardMiniCard() {
   return (
-    <FloatingCard className="-top-5 -right-6 w-[168px]">
+    <FloatingCard className="-top-5 -right-6 w-[196px]">
       <p className="mb-1.5 text-[10px] text-subtle">🏆 Leaderboard</p>
-      {LEADERS.map(({ rank, name, credits }) => (
+      {EXAMPLE_LEADERS.map(({ rank, name, credits }) => (
         <div key={rank} className="mb-1 flex items-center justify-between text-[11px]">
           <span className="w-5 font-bold text-smu-gold">{rank}</span>
           <span className="flex-1 pl-1 font-semibold text-smu-navy">{name}</span>
-          <span className="text-muted">{credits}</span>
+          <span className="text-muted">{formatCredits(credits)} credits</span>
         </div>
       ))}
     </FloatingCard>

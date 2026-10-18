@@ -120,6 +120,10 @@ PORTFOLIO_FIELDS = {
     "balance",
     "positions_value",
     "net_worth",
+    "starting_credits",
+    "realized_pnl",
+    "unrealized_pnl",
+    "total_pnl",
     "positions",
 }
 

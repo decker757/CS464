@@ -5,3 +5,6 @@ pytest-asyncio==1.4.0
 # Starlette's TestClient drives the socket over ASGI rather than over a real
 # network, and it needs httpx to do it. Same pin as the other four suites.
 httpx==0.28.1
+
+# [F-12] #342. The coverage figure CI reports, one number per side.
+pytest-cov==7.1.0
