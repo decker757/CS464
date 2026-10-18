@@ -1,18 +1,24 @@
 # What the backend coverage figure counts. [F-12] #342.
 #
 # One file for all six suites rather than six copies: each job points at it
-# with COVERAGE_RCFILE, and the paths below are relative to whichever service
-# directory pytest ran in.
+# with COVERAGE_RCFILE. The patterns resolve against the directory pytest ran
+# in, not against this file, so every one is anchored with a leading `*/` —
+# an unanchored pattern that stops matching fails open, and quietly: the
+# bug journal's #76 entry is this exact mistake.
 
 [run]
 branch = false
 omit =
     # The tests are not the thing being measured.
-    unit_test/*
+    */unit_test/*
     # Third-party code, and the virtualenv a local run measures from.
-    .venv/*
+    */.venv/*
     */site-packages/*
     # Alembic revisions run in the migrate step, never in a unit test, so
     # counting them would lower the figure for code no test is meant to run.
     # `test_migrations.py` is what holds them to the models instead (ADR 0020).
-    migrations/*
+    */migrations/*
+    # Test-suite helpers, not production code: no service imports it at
+    # runtime, `backend/.dockerignore` keeps it out of the images, and
+    # `check_dead_code.sh` already excludes it by name for the same reason.
+    */shared/testing.py

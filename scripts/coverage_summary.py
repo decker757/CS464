@@ -5,8 +5,15 @@ writes a `coverage json`. This adds them up.
 
 Not `coverage combine`: every service has its own `core/` and `service/`, so
 combining six reports would merge files that only share a path. Summing the
-totals asks the one question we want — of every backend statement, how many did
-a test run — and cannot confuse one service's file for another's.
+totals cannot confuse one service's file for another's.
+
+What it therefore measures is each suite against its own directory. `--cov=.`
+is scoped to where pytest ran, so `shared/` is measured once, by its own
+suite, and not again by the five services that import it — which is why
+`shared/config.py` can read 0% while four services import it. Do not "fix"
+that by adding `--cov=../shared` to the services: that is what would double
+count it, and the headline would start counting the same statements six
+times.
 
     python3 scripts/coverage_summary.py coverage-*.json >> "$GITHUB_STEP_SUMMARY"
 """

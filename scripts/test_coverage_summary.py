@@ -7,22 +7,24 @@ otherwise notice.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from coverage_summary import Totals, to_markdown
-
-
-def test_the_overall_figure_is_lines_over_statements_across_every_suite() -> None:
-    table = to_markdown({"auth": Totals(8, 10), "market": Totals(1, 10)})
-
-    # 9 of 20, not the average of 80% and 10%.
-    assert "45.0%" in table
+from coverage_summary import Totals, read_totals, to_markdown
 
 
 def test_a_suite_weighs_as_much_as_it_has_code() -> None:
-    small_and_perfect = to_markdown({"audit": Totals(2, 2), "ledger": Totals(50, 100)})
+    """The overall figure is every line over every statement, not the mean.
 
-    assert "51.0%" in small_and_perfect
+    Two suites of the same size cannot tell the two apart — both answers are
+    45% — so the sizes here are deliberately lopsided: 52 of 102 is 51.0%,
+    where averaging 100% and 50% would say 75%.
+    """
+    table = to_markdown({"audit": Totals(2, 2), "ledger": Totals(50, 100)})
+
+    assert "51.0%" in table
 
 
 def test_every_suite_is_named_with_its_own_figure() -> None:
@@ -50,3 +52,19 @@ def test_the_overall_row_counts_the_suites_it_actually_read() -> None:
     two_of_them = to_markdown({"auth": Totals(8, 10), "market": Totals(1, 10)})
 
     assert "All 2 suites" in two_of_them
+
+
+def test_a_report_is_named_after_the_suite_that_wrote_it(tmp_path: Path) -> None:
+    """The workflow writes `coverage-<service>.json`; the row carries that name.
+
+    The two halves are set in different files — the `--cov-report` argument in
+    `ci-backend.yml`, and the prefix stripped here — so nothing but this says
+    they have to agree.
+    """
+    report = tmp_path / "coverage-ledger_service.json"
+    report.write_text(json.dumps({"totals": {"covered_lines": 3, "num_statements": 4}}))
+
+    suite, totals = read_totals(report)
+
+    assert suite == "ledger_service"
+    assert totals == Totals(3, 4)
