@@ -243,7 +243,48 @@ describe('AdminMarketRow', () => {
       expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
     })
 
-    it('shows that nothing was paid and keeps Settle available when the dispute window is still open at the edge', async () => {
+    it('sends the settlement request with an empty body and nothing else', async () => {
+      // The ledger answers 422 invalid_request to any field, so a stray body
+      // would break settlement completely.
+      let body = ''
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), async ({ request }) => {
+        body = await request.text()
+        return HttpResponse.json({
+          market_id: SETTLEABLE_MARKET.id, outcome_id: 'o1', recorded_at: '2026-01-01T00:00:00Z',
+          holders_paid: 3, total_paid: '140.0000', residue: '0.0000',
+        })
+      }))
+
+      await settle()
+
+      await screen.findByText('Settled')
+      expect(body).toBe('')
+    })
+
+    it('clears the stale error once a retry after dispute_window_open succeeds', async () => {
+      let calls = 0
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => {
+        calls += 1
+        if (calls === 1) {
+          return HttpResponse.json({ error: { code: 'dispute_window_open', message: 'not yet' } }, { status: 409 })
+        }
+        return HttpResponse.json({
+          market_id: SETTLEABLE_MARKET.id, outcome_id: 'o1', recorded_at: '2026-01-01T00:00:00Z',
+          holders_paid: 3, total_paid: '140.0000', residue: '0.0000',
+        })
+      }))
+
+      const actor = await settle()
+      await screen.findByRole('alert')
+
+      await actor.click(screen.getByRole('button', { name: /^settle$/i }))
+      await actor.click(screen.getByRole('button', { name: /^confirm settle$/i }))
+
+      await screen.findByText('Settled')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('shows that nothing was paid, offers Reload, and keeps Settle available when the dispute window is still open at the edge', async () => {
       // ledger-service.md: settleable can read true here and still race the
       // window's edge, since the row's settleable was read on an earlier request.
       server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
@@ -254,6 +295,7 @@ describe('AdminMarketRow', () => {
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/dispute window has not closed/i)
       expect(screen.queryByRole('alert')).not.toHaveTextContent(/failed/i)
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: /^settle$/i })).toBeEnabled()
     })
 
@@ -315,23 +357,29 @@ describe('AdminMarketRow', () => {
       expect(screen.queryByRole('alert')).not.toHaveTextContent(/^settling this market failed/i)
     })
 
-    it('drops Settle on the retry path too once the retry finds the market no longer approved', async () => {
-      // The review flagged this path as untested: settlement_unconfirmed's
-      // retry can itself answer market_not_approved, not just the first call.
+    it('says the settlement is recorded, never that nothing was paid, when the retry itself cannot reach market_service', async () => {
+      // settlement_unconfirmed means the payouts already committed. A retry
+      // that comes back market_terms_unavailable is the realistic case —
+      // ledger-service.md has the ledger check market_service first on a
+      // repeat, so a market that has been paid is never refused for its
+      // status — and CODE_MESSAGES's "nothing was paid" wording for that code
+      // would be false here. Settle must also stay available: a confirmed
+      // payout nobody can finish telling market_service about must not be
+      // stranded behind a hidden control.
       let calls = 0
       server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => {
         calls += 1
         if (calls === 1) {
           return HttpResponse.json({ error: { code: 'settlement_unconfirmed', message: 'unconfirmed' } }, { status: 503 })
         }
-        return HttpResponse.json({ error: { code: 'market_not_approved', message: 'not approved' } }, { status: 409 })
+        return HttpResponse.json({ error: { code: 'market_terms_unavailable', message: 'unreachable' } }, { status: 503 })
       }))
 
       await settle()
 
-      expect(await screen.findByRole('alert')).toHaveTextContent(/no longer approved/i)
-      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
+      expect(await screen.findByRole('alert')).toHaveTextContent(/settlement is recorded/i)
+      expect(screen.queryByRole('alert')).not.toHaveTextContent(/nothing was paid/i)
+      expect(screen.getByRole('button', { name: /^settle$/i })).toBeEnabled()
       expect(calls).toBe(2)
     })
   })
