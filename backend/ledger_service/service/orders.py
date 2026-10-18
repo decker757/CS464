@@ -74,6 +74,7 @@ from service import (
 # The trade path's own steps, shared with the placement's fill so a fill on
 # arrival writes exactly what an instant trade of its size writes.
 from service.trading import (
+    PricedTrade,
     _price_event_of,
     _read_outcomes,
     _read_position,
@@ -425,16 +426,19 @@ async def _commit_fill(
     # see this order (ADR 0024, "Where the figure before the batch comes from").
     await session.flush()
 
-    movement = _trade_movement_of(
-        user_account=account,
-        pool_account=await session.get(Account, book.pool_account_id),
-        idempotency_key=_fill_key(order.id, book.state_version),
+    trade = PricedTrade(
         user_id=order.user_id,
         market_id=order.market_id,
         outcome_id=order.outcome_id,
         side=order.side,
         quantity=fill.quantity,
         cost=fill.cost,
+    )
+    movement = _trade_movement_of(
+        trade,
+        user_account=account,
+        pool_account=await session.get(Account, book.pool_account_id),
+        idempotency_key=_fill_key(order.id, book.state_version),
         state_version=book.state_version,
         order_id=order.id,
         reservation_drop=_reservation_drop_of(order, fill),
@@ -567,18 +571,21 @@ async def place(
 
     now = datetime.now(UTC)
     if fill is not None:
-        _write_trade(
-            session,
-            book,
-            outcomes=outcomes,
-            index=index,
-            position=position,
+        trade = PricedTrade(
             user_id=user_id,
             market_id=market_id,
             outcome_id=outcome_id,
             side=side,
             quantity=fill.quantity,
             cost=fill.cost,
+        )
+        _write_trade(
+            session,
+            book,
+            outcomes=outcomes,
+            index=index,
+            position=position,
+            trade=trade,
             now=now,
         )
     # The book's counter after this request: the fill's, or the one the order

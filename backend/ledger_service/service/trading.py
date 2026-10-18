@@ -143,6 +143,20 @@ def trade_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
 
 
 @dataclass(frozen=True)
+class PricedTrade:
+    """One trade of `quantity` shares, priced: whose, where, which way, and
+    what it costs. A trade and every fill of a resting order are one of these,
+    so writing it and building its movement take the same six figures."""
+
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: Side
+    quantity: Decimal
+    cost: TradeCost
+
+
+@dataclass(frozen=True)
 class TradeResult:
     """What one trade did. Exactly the seven fields "The trade response is
     reconstructed from `Transaction.context`" lists, plus `transaction_id`.
@@ -347,12 +361,7 @@ def _write_trade(
     outcomes: Sequence[MarketOutcome],
     index: int,
     position: Position | None,
-    user_id: uuid.UUID,
-    market_id: uuid.UUID,
-    outcome_id: uuid.UUID,
-    side: Side,
-    quantity: Decimal,
-    cost: TradeCost,
+    trade: PricedTrade,
     now: datetime,
 ) -> None:
     """The trade's pending writes: `state_version` up by one,
@@ -360,35 +369,30 @@ def _write_trade(
     nothing; the caller's `posting.post_all` commits them."""
     book.state_version += 1
     book.state_changed_at = now
-    outcomes[index].q = cost.after_q[index]
+    outcomes[index].q = trade.cost.after_q[index]
 
-    if side is Side.BUY:
+    if trade.side is Side.BUY:
         _add_to_position(
             session,
             position,
-            user_id=user_id,
-            market_id=market_id,
-            outcome_id=outcome_id,
-            quantity=quantity,
-            cost=cost.magnitude,
+            user_id=trade.user_id,
+            market_id=trade.market_id,
+            outcome_id=trade.outcome_id,
+            quantity=trade.quantity,
+            cost=trade.cost.magnitude,
             now=now,
         )
     else:
         assert position is not None  # the holding check in execute
-        _release_from_position(position, quantity=quantity, now=now)
+        _release_from_position(position, quantity=trade.quantity, now=now)
 
 
 def _trade_movement_of(
+    trade: PricedTrade,
     *,
     user_account: Account,
     pool_account: Account,
     idempotency_key: str,
-    user_id: uuid.UUID,
-    market_id: uuid.UUID,
-    outcome_id: uuid.UUID,
-    side: Side,
-    quantity: Decimal,
-    cost: TradeCost,
     state_version: int,
     order_id: uuid.UUID | None = None,
     reservation_drop: Decimal = ZERO,
@@ -403,24 +407,24 @@ def _trade_movement_of(
     the drop it causes in the owner's reservation (ADR 0024).
     """
     context: dict[str, object] = {
-        "user_id": str(user_id),
-        "market_id": str(market_id),
-        "outcome_id": str(outcome_id),
-        "side": side.value,
-        "quantity": str(quantity),
-        "total": str(cost.total),
+        "user_id": str(trade.user_id),
+        "market_id": str(trade.market_id),
+        "outcome_id": str(trade.outcome_id),
+        "side": trade.side.value,
+        "quantity": str(trade.quantity),
+        "total": str(trade.cost.total),
         "state_version": state_version,
     }
     if order_id is not None:
         context["order_id"] = str(order_id)
 
-    kind = TransactionKind.TRADE_BUY if side is Side.BUY else TransactionKind.TRADE_SELL
+    kind = TransactionKind.TRADE_BUY if trade.side is Side.BUY else TransactionKind.TRADE_SELL
     return Movement(
         idempotency_key=idempotency_key,
         kind=kind,
         legs=[
-            Leg(account=user_account, amount=cost.total),
-            Leg(account=pool_account, amount=-cost.total),
+            Leg(account=user_account, amount=trade.cost.total),
+            Leg(account=pool_account, amount=-trade.cost.total),
         ],
         context=context,
         reservation_drop=reservation_drop,
@@ -586,18 +590,21 @@ async def execute(
     # 10. The writes. Pending, not yet committed — `posting.post_all` below is
     # the one statement that commits them.
     now = datetime.now(UTC)
-    _write_trade(
-        session,
-        book,
-        outcomes=outcomes,
-        index=index,
-        position=position,
+    trade = PricedTrade(
         user_id=user_id,
         market_id=market_id,
         outcome_id=outcome_id,
         side=side,
         quantity=quantity,
         cost=cost,
+    )
+    _write_trade(
+        session,
+        book,
+        outcomes=outcomes,
+        index=index,
+        position=position,
+        trade=trade,
         now=now,
     )
 
@@ -605,15 +612,10 @@ async def execute(
 
     # After the writes, so the context carries the bumped `state_version`.
     movement = _trade_movement_of(
+        trade,
         user_account=user_account,
         pool_account=pool_account,
         idempotency_key=key,
-        user_id=user_id,
-        market_id=market_id,
-        outcome_id=outcome_id,
-        side=side,
-        quantity=quantity,
-        cost=cost,
         state_version=book.state_version,
     )
 
