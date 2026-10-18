@@ -20,6 +20,3 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
-
-# [T-7] #27 stack PR 5: the trade path's cascade calls it; delete this line there
-cascade_of
