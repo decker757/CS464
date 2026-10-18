@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { errorCode, errorDetails } from '../../api/errors'
 import {
   type BlockingHint,
@@ -8,6 +8,7 @@ import {
   saveMarket,
 } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
+import type { AdminMarketStatus } from '../../components/markets/marketStatus'
 import BackLink from '../../components/ui/BackLink'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
@@ -39,8 +40,13 @@ const PRICE_LIMIT = 1e14
 
 const DEFAULT_OUTCOME_PLACEHOLDERS = ['Yes', 'No']
 
+// Every status a refused save can report: anything but the one it was asking
+// to write. Typed off the API's own union, so a sixth code cannot be added to
+// STATUS_AFTER_DRAFT without a sentence in LOCKED_BECAUSE to go with it.
+type LockedStatus = Exclude<AdminMarketStatus, 'draft'>
+
 // A save refused with one of these codes means the market already has this status.
-const STATUS_AFTER_DRAFT: Record<string, string> = {
+const STATUS_AFTER_DRAFT: Record<string, LockedStatus> = {
   market_not_editable: 'submitted',
   market_already_open: 'open',
   market_closed: 'closed',
@@ -48,12 +54,27 @@ const STATUS_AFTER_DRAFT: Record<string, string> = {
   market_already_approved: 'approved',
 }
 
-const SAVE_STATUS_TEXT: Record<SaveStatus, { text: string; className: string } | null> = {
-  idle: null,
-  saving: { text: 'Saving…', className: 'text-subtle' },
-  saved: { text: 'Saved', className: 'text-success' },
-  error: { text: 'Save failed', className: 'text-danger' },
+// What the market turned out to be when a save was refused, for the banner
+// that explains why the form just went read-only. None of them is recoverable
+// on this screen: publication is one way, and this form locks itself the
+// moment a market leaves draft (ADR 0008).
+const LOCKED_BECAUSE: Record<LockedStatus, string> = {
+  submitted: 'This market has already been submitted for review.',
+  open: 'This market has already been published and is live for traders.',
+  closed: 'This market has already been published, and it has closed.',
+  pending_resolution: 'This market already has an outcome waiting for a second administrator.',
+  approved: 'This market already has an approved outcome.',
 }
+
+// What publish said, by the code it failed with. `draft_incomplete` has no way
+// out from here: publishing re-runs every submission rule against the clock
+// (ADR 0008), and this form cannot reopen a market it has already submitted.
+// The service does allow a resubmission to change the terms; no screen offers
+// one yet (#354), so the advice is to start again.
+const PUBLISH_FAILED_GENERIC = 'Publish failed. Please try again.'
+const PUBLISH_FAILED_FOREVER =
+  'These terms no longer pass the checks for publishing, and this form cannot edit a market '
+  + 'once it has been submitted. Create a new market with the corrections instead.'
 
 function createDefaultForm(): FormState {
   return {
@@ -162,13 +183,21 @@ export default function CreateMarketPage() {
   const [sentIds, setSentIds] = useState<{ outcomes: string[]; sources: string[] }>({ outcomes: [], sources: [] })
   const [submitError, setSubmitError] = useState('')
   const [publishError, setPublishError] = useState('')
-  const [publishDetails, setPublishDetails] = useState<BlockingHint[]>([])
+  // The per-field reasons from the last refused submit or publish. Both
+  // refusals carry the same `details` shape (ADR 0008), so one list serves
+  // both and the hints land under the same fields either way.
+  const [refusalDetails, setRefusalDetails] = useState<BlockingHint[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  // When the server last accepted a save, so "Saved" does not read the same
+  // three seconds and ten minutes later.
+  const [savedAt, setSavedAt] = useState<Date | null>(null)
+  // Set once, when a save is refused because the market has moved past draft.
+  const [lockOut, setLockOut] = useState<{ status: LockedStatus; lostEdits: boolean } | null>(null)
   const isSavingRef = useRef(false)
 
   const getHint = (field: string) =>
-    [...publishDetails, ...(lastSave?.blocking_submission ?? [])].find(b => b.field === field)?.message
+    [...refusalDetails, ...(lastSave?.blocking_submission ?? [])].find(b => b.field === field)?.message
 
   const doSave = useCallback(async (status: 'draft' | 'submitted') => {
     const f = formRef.current
@@ -185,16 +214,26 @@ export default function CreateMarketPage() {
       setMarketId(res.market.id)
       setMarketStatus(res.market.status)
       setLastSave(res)
+      // This response's blocking_submission is the whole truth about what is
+      // still wrong, so the reasons from an earlier refusal go with it. Left
+      // behind, a fixed field keeps its red message until the next submit.
+      setRefusalDetails([])
       setSentIds({ outcomes: f.outcomes.map(o => o.id), sources: sentSources(f).map(s => s.id) })
+      setSavedAt(new Date())
       setSaveStatus('saved')
       return res
     } catch (err) {
       const code = errorCode(err)
       const movedOnTo = code ? STATUS_AFTER_DRAFT[code] : undefined
       if (movedOnTo) {
-        // Another session moved the market past draft: lock the form and let
-        // the autosave interval stop.
+        // Another session moved the market past draft: lock the form, say so,
+        // and let the autosave interval stop. Ask the form as it stands now,
+        // not the snapshot this save set out with — nothing disables the
+        // fields until this answer arrives, so a manual submit can be typed
+        // over while it is in flight, and that typing is what gets lost.
+        const lostEdits = JSON.stringify(saveFields(formRef.current)) !== lastSavedRef.current
         setMarketStatus(movedOnTo)
+        setLockOut({ status: movedOnTo, lostEdits })
         setSaveStatus('idle')
         return null
       }
@@ -213,13 +252,25 @@ export default function CreateMarketPage() {
     return () => clearInterval(id)
   }, [doSave])
 
+  const handleRetrySave = () => {
+    // Same guard as the interval: nothing may write a draft over a market
+    // that has moved on.
+    if (marketStatusRef.current !== 'draft') return
+    doSave('draft').catch(() => {})
+  }
+
   const handleSubmit = async () => {
     setSubmitting(true)
     setSubmitError('')
+    setRefusalDetails([])
     try {
       await doSave('submitted')
-    } catch {
-      setSubmitError('Submission failed. Check all fields are complete and try again.')
+    } catch (err) {
+      const details = errorDetails(err)
+      setRefusalDetails(details)
+      setSubmitError(details.length
+        ? 'This market is not ready to submit. Each field above says what to change.'
+        : 'Submission failed. Check all fields are complete and try again.')
     } finally {
       setSubmitting(false)
     }
@@ -229,14 +280,14 @@ export default function CreateMarketPage() {
     if (!marketId || publishing) return
     setPublishing(true)
     setPublishError('')
-    setPublishDetails([])
+    setRefusalDetails([])
     try {
       await publishMarket(marketId)
       navigate('/markets')
     } catch (err) {
       const details = errorDetails(err)
-      if (details.length) setPublishDetails(details)
-      setPublishError('Publish failed. Please try again.')
+      if (details.length) setRefusalDetails(details)
+      setPublishError(errorCode(err) === 'draft_incomplete' ? PUBLISH_FAILED_FOREVER : PUBLISH_FAILED_GENERIC)
       setPublishing(false)
     }
   }
@@ -257,6 +308,11 @@ export default function CreateMarketPage() {
 
   const isSubmitted = marketStatus === 'submitted'
   const isLocked = marketStatus !== 'draft'
+  // A published market has a page traders can see. A submitted one has none
+  // yet (#354), so the banner points at the admin list for that case.
+  const lockedMarketLink = lockOut && lockOut.status !== 'submitted' && marketId
+    ? { to: `/markets/${marketId}`, label: 'View the market' }
+    : { to: '/admin/markets', label: 'Go to All Markets' }
 
   const questionHint = getHint('question')
   const outcomesHint = getHint('outcomes')
@@ -276,15 +332,38 @@ export default function CreateMarketPage() {
     <AppLayout width="max-w-[800px]">
       <div className="mb-8 flex items-start justify-between">
         <div>
-          <BackLink to="/markets" label="Markets" className="mb-1.5 block" />
+          <BackLink to="/admin/markets" label="All Markets" className="mb-1.5 block" />
           <PageTitle>New Market</PageTitle>
         </div>
-        {SAVE_STATUS_TEXT[saveStatus] && (
-          <span className={`pt-7 text-[13px] ${SAVE_STATUS_TEXT[saveStatus].className}`}>
-            {SAVE_STATUS_TEXT[saveStatus].text}
-          </span>
-        )}
+        {/* Always rendered, so a screen reader is already watching the region
+            when the first message appears in it. */}
+        <div role="status" className="pt-7 text-[13px]">
+          {saveStatus === 'saving' && <span className="text-subtle">Saving…</span>}
+          {saveStatus === 'saved' && savedAt && (
+            <span className="text-success">Saved at {savedAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}</span>
+          )}
+          {saveStatus === 'error' && (
+            <span className="flex items-center gap-2 text-danger">
+              Save failed
+              <Button variant="outline" size="xs" onClick={handleRetrySave}>Retry</Button>
+            </span>
+          )}
+        </div>
       </div>
+
+      {lockOut && (
+        <div role="alert" className="mb-6 rounded-control border border-warning/40 bg-warning/10 px-4 py-3 text-[13px] text-warning-strong">
+          <p>
+            {LOCKED_BECAUSE[lockOut.status]} The form is now read-only.{' '}
+            {lockOut.lostEdits
+              ? 'The edits you had open when that happened were not saved.'
+              : 'Everything you typed had already been saved.'}
+          </p>
+          <Link to={lockedMarketLink.to} className="mt-1 inline-block font-semibold underline">
+            {lockedMarketLink.label}
+          </Link>
+        </div>
+      )}
 
       <SectionCard title="Question" className="mb-5">
         <div className="flex flex-col gap-4">
@@ -395,10 +474,15 @@ export default function CreateMarketPage() {
                 const urlHint = k >= 0 ? getHint(`resolution_sources[${k}].url`) : undefined
                 return (
                   <div key={src.id} className="flex items-start gap-2">
+                    {/* Only the first row shows a visible heading, so the rows
+                        stay compact. Every row still needs a name of its own
+                        in the accessibility tree, which is what aria-label
+                        gives it (WCAG 3.3.2). */}
                     <div className="flex-[2]">
                       <Field id={`src-url-${i}`} label={i === 0 ? 'URL' : ' '} hint={urlHint}>
                         <TextInput
                           id={`src-url-${i}`}
+                          aria-label={`Source ${i + 1} URL`}
                           invalid={!!urlHint}
                           value={src.url}
                           onChange={e => updateSource(src.id, 'url', e.target.value)}
@@ -411,6 +495,7 @@ export default function CreateMarketPage() {
                       <Field id={`src-label-${i}`} label={i === 0 ? 'Label (optional)' : ' '}>
                         <TextInput
                           id={`src-label-${i}`}
+                          aria-label={`Source ${i + 1} label (optional)`}
                           value={src.label}
                           onChange={e => updateSource(src.id, 'label', e.target.value)}
                           placeholder="e.g. MAS statistics"

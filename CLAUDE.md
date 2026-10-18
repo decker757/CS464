@@ -61,8 +61,11 @@ docker compose up --build     # auth :8000, market :8001, audit :8002,
 ```bash
 cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pip install -r requirements-dev.txt   # again after pulling #75 (Alembic)
+                                                # and #342 (pytest-cov)
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
+COVERAGE_RCFILE=../.coveragerc .venv/bin/pytest --cov=. --cov-report=term-missing
+                              # the figure CI reports, for one suite [F-12] #342
 
 cd backend/auth_service       # or market_service, ledger_service
 DATABASE_URL=<its role's URL> PYTHONPATH=.. .venv/bin/python migrate.py   # <svc>-migrate's job
