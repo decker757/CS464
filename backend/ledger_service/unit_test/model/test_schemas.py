@@ -35,7 +35,11 @@ def test_a_balance_serialises_as_a_string() -> None:
     """Exactness is kept on the wire, not just in the column. A JSON number is
     an IEEE double by the time a browser has parsed it."""
     out = BalanceOut(
-        user_id=uuid.uuid4(), account_id=uuid.uuid4(), balance=Decimal("1000.0000")
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        balance=Decimal("1000.0000"),
+        reserved=Decimal("0.0000"),
+        available=Decimal("1000.0000"),
     )
 
     assert out.model_dump()["balance"] == "1000.0000"
@@ -45,7 +49,11 @@ def test_a_balance_keeps_its_scale() -> None:
     """`1000` and `1000.0000` are the same number and different strings, and
     the frontend formats one of them. It should always get the same one."""
     out = BalanceOut(
-        user_id=uuid.uuid4(), account_id=uuid.uuid4(), balance=Decimal("0.5000")
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        balance=Decimal("0.5000"),
+        reserved=Decimal("0.0000"),
+        available=Decimal("0.5000"),
     )
 
     assert out.model_dump()["balance"] == "0.5000"
