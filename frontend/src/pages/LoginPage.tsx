@@ -68,17 +68,10 @@ export default function LoginPage() {
       eyebrow="Welcome back"
       title="Log in to your account"
       subtitle="Enter your username or email and password to continue."
+      notice={hasSessionExpired ? 'Your session expired, please sign in again.' : undefined}
       error={serverError}
       footer={<>Don't have an account? <AuthFooterLink to="/register">Register</AuthFooterLink></>}
     >
-      {/* `status`, not `alert`: nobody did anything wrong, and the form's own
-          errors are the alerts on this page. */}
-      {hasSessionExpired && (
-        <p role="status" className="mb-4 rounded-control border border-info/20 bg-info/5 px-3.5 py-[11px] text-[13px] text-info-strong">
-          Your session expired, please sign in again.
-        </p>
-      )}
-
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-1">
         <Field id="identifier" label="Username or Email" error={errors.identifier}>
           <TextInput id="identifier" name="identifier" type="text" autoComplete="username" value={form.identifier} onChange={handleChange} placeholder="e.g. michelletan or you@example.com" invalid={!!errors.identifier} />
