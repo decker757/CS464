@@ -278,6 +278,17 @@ _PASSING_OVER_BOOK = [
     _order(2, 0, side=Side.SELL, limit_price="0.70", remaining="1000"),
 ]
 
+# p0 is 0.4875 at q = [0, 5]. Seq 1 comes first (u = 0.4882) and its whole
+# 0.1569 left costs 0.0766 against a limit of 0.07659858, so it cannot fill.
+# Seq 2 (u = 0.4880) fills 0.1990 for 0.0971 and lifts p0 to 0.4880; from
+# there seq 1's fill is 0.0801 for 0.0391, inside its 0.03910482. It is passed
+# over at the start because it is capped by what is left, not at its limit.
+_REVISITED_Q = _q("0", "5")
+_REVISITED_BOOK = [
+    _order(1, 0, side=Side.BUY, limit_price="0.4882", remaining="0.1569"),
+    _order(2, 0, side=Side.BUY, limit_price="0.4880", remaining="1000"),
+]
+
 
 # --- one fill --------------------------------------------------------------
 def test_the_contracts_worked_example_fills_20_5465_shares_for_11_8152() -> None:
@@ -664,6 +675,35 @@ def test_the_cascade_passes_over_an_order_it_cannot_fill_and_fills_the_next() ->
     fills = cascade_of(_PASSING_OVER_Q, B, _PASSING_OVER_BOOK)
 
     assert _seqs_and_quantities(fills) == [(2, expected[0].quantity)]
+
+
+def test_a_fill_that_makes_a_passed_over_order_executable_sends_the_cascade_back_for_it() -> (
+    None
+):
+    """The cascade's decision, "until none is left": after each fill it looks
+    again from the most aggressive order. Seq 1 is not executable at the start
+    and is at the `q` seq 2's fill leaves, so a cascade that walked the book
+    once, in priority order, would end after seq 2 with seq 1 executable."""
+    seq_1, seq_2 = _REVISITED_BOOK
+    expected = _oracle_fills(_REVISITED_Q, B, [seq_2, seq_1])
+    for q, executable in [(_REVISITED_Q, False), (expected[0].after_q, True)]:
+        assert (
+            _oracle_is_executable(
+                q,
+                B,
+                index=seq_1.outcome_index,
+                side=str(seq_1.side),
+                limit=seq_1.limit_price,
+                remaining=seq_1.remaining,
+            )
+            is executable
+        ), f"precondition: seq 1 executable at {q} must be {executable}"
+
+    fills = cascade_of(_REVISITED_Q, B, _REVISITED_BOOK)
+
+    assert [(fill.order.seq, fill.quantity, fill.cost.magnitude) for fill in fills] == [
+        (each.seq, each.quantity, each.magnitude) for each in expected
+    ]
 
 
 def test_an_order_smaller_than_the_move_fills_once_for_all_of_it() -> None:
