@@ -772,6 +772,48 @@ class PriceEvent(BaseModel):
         return value.isoformat()
 
 
+class OrderFill(BaseModel):
+    """One fill of a resting order, as the `order.update` payload carries it.
+
+    The producer's copy of `realtime_service/model/schemas.py::OrderFill`,
+    pinned as `PriceEvent` is (D-048).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: uuid.UUID
+    quantity: Decimal
+    total: Decimal
+    state_version: int = Field(ge=0)
+
+
+class OrderEvent(BaseModel):
+    """One fill of a resting order, for its owner. The `order.update` payload.
+    [T-7] #27, ADR 0024.
+
+    The producer's copy of `realtime_service/model/schemas.py::OrderEvent`,
+    which validates with `extra="forbid"`. A cancel sends none, so `status`
+    is the order's after a fill: `open` or `filled`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: uuid.UUID
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: Side
+    status: Literal["open", "filled"]
+    quantity: Decimal
+    filled_quantity: Decimal
+    fill: OrderFill
+    occurred_at: UtcDatetime
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        return value.isoformat()
+
+
 class SnapshotOut(BaseModel):
     """The authoritative price read. [F-9] #112.
 
