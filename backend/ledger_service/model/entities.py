@@ -695,12 +695,13 @@ class Order(Base):
     The credits an order holds back are never a column, for the reason
     `Account` has no balance: D-NEW "A buy reserves `limit × quantity` rounded
     up to the tick, its reservation is `budget - spent`, and it cannot go
-    negative". `budget` is fixed at placement; `spent` and `filled_quantity`
-    are rollups updated under the book row's lock as fills land. `spent` is
-    what the fills moved on either side, a buy's costs or a sell's proceeds
-    (D-NEW "An order's `spent` is what its fills moved, on either side"), so
-    `average_fill_price` is one division for both. `released` is derived and
-    never stored.
+    negative", where `spent` is this table's `filled_value`. `budget` is fixed
+    at placement; `filled_value` and `filled_quantity` are rollups updated
+    under the book row's lock as fills land. `filled_value` is what the fills
+    moved, signed positive on either side, a buy's costs or a sell's proceeds
+    (D-NEW "An order's `filled_value` is what its fills moved, signed positive
+    on either side"), so `average_fill_price` is one division for both.
+    `released` is derived and never stored.
 
     `seq` is `GENERATED ALWAYS`, so a writer cannot supply one: D-NEW
     "Priority is price, then an identity `seq` assigned under the book lock".
@@ -730,16 +731,26 @@ class Order(Base):
     limit_price: Mapped[Decimal] = mapped_column(
         Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
     )
-    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
     filled_quantity: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal(0), server_default=text("0")
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE),
+        nullable=False,
+        default=Decimal(0),
+        server_default=text("0"),
     )
 
     # A buy's `limit × quantity` rounded up to the tick; null for a sell, which
     # reserves no credits.
-    budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
-    spent: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal(0), server_default=text("0")
+    budget: Mapped[Decimal | None] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=True
+    )
+    filled_value: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE),
+        nullable=False,
+        default=Decimal(0),
+        server_default=text("0"),
     )
 
     # No default: a placed order is OPEN or FILLED and the placement says which,
@@ -775,8 +786,17 @@ class Order(Base):
         ),
         # A buy has a budget and a sell has none, in both directions.
         CheckConstraint("(side = 'buy') = (budget IS NOT NULL)", name="ck_orders_budget_iff_buy"),
-        CheckConstraint("spent >= 0", name="ck_orders_spent_nonneg"),
-        CheckConstraint("budget IS NULL OR spent <= budget", name="ck_orders_spent_within_budget"),
+        # A budget short of limit × quantity would rest looking funded, and
+        # the fill that overran it would fail inside some later trader's trade.
+        CheckConstraint(
+            "budget IS NULL OR budget >= limit_price * quantity",
+            name="ck_orders_budget_covers_the_limit",
+        ),
+        CheckConstraint("filled_value >= 0", name="ck_orders_filled_value_nonneg"),
+        CheckConstraint(
+            "budget IS NULL OR filled_value <= budget",
+            name="ck_orders_filled_value_within_budget",
+        ),
         CheckConstraint(
             "(status = 'filled') = (filled_quantity = quantity)",
             name="ck_orders_filled_iff_nothing_remains",
@@ -785,9 +805,10 @@ class Order(Base):
             "(status = 'cancelled') = (cancelled_at IS NOT NULL)",
             name="ck_orders_cancelled_at_iff_cancelled",
         ),
-        # The cascade reads one market's open orders in priority order, and
-        # the order list reads one user's. Partial, so a filled or cancelled
-        # order costs neither index anything.
+        # The cascade reads one market's open orders through the first and
+        # ranks them by price, then `seq`, itself; the order list and a
+        # reservation read one user's through the second. Partial, so a filled
+        # or cancelled order costs neither index anything.
         Index(
             "ix_ledger_orders_open_by_market",
             "market_id",

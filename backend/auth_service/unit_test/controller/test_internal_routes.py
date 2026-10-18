@@ -104,6 +104,19 @@ async def test_the_key_does_not_open_another_route(client: AsyncClient) -> None:
     assert response.json()["error"]["code"] == "invalid_token"
 
 
+async def test_the_key_does_not_open_the_admin_lookup(
+    client: AsyncClient, registered_id: str
+) -> None:
+    """The route most likely to be widened to take the key too: it answers
+    the same question. [2.4] #273 is an administrator's, the key is the ledger's."""
+    response = await client.post(
+        "/admin/users/lookup", json={"user_ids": [registered_id]}, headers=_key()
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
 # --- the request ----------------------------------------------------------
 @pytest.mark.parametrize("count", [0, 501])
 async def test_a_count_outside_one_to_five_hundred_is_422(

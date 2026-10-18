@@ -1,8 +1,9 @@
-"""Administrative routes: one user acting on another. [4.4] #16, [4.1] #13, [4.2] #14
+"""Administrative routes: one user acting on another. [4.4] #16, [4.1] #13, [4.2] #14, [2.4] #273
 
 Apart from `routes.py` (a user's own session) so /docs lists them separately.
-The account search is here too, though it changes nothing, because the guard
-and the audience are the same. Rules live in `service/user_admin.py`.
+The account search and lookup are here too, though they change nothing,
+because the guard and the audience are the same. Rules live in
+`service/user_admin.py` and `service/user_directory.py`.
 """
 
 from __future__ import annotations
@@ -15,15 +16,18 @@ from fastapi import APIRouter, Query
 from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
 from core.config import get_settings
 from model.schemas import (
+    AdminUserLookupIn,
+    AdminUserLookupOut,
     AdminUserOut,
     RoleChangeRequest,
     RoleChangeResponse,
     SuspensionRequest,
     SuspensionResponse,
     UserListResponse,
+    UserNameOut,
     UserOut,
 )
-from service import user_admin
+from service import user_admin, user_directory
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -96,6 +100,37 @@ async def list_users(
         users=[AdminUserOut.model_validate(user) for user in page.users],
         next_cursor=page.next_cursor,
         has_more=page.has_more,
+    )
+
+
+@router.post(
+    "/users/lookup",
+    response_model=AdminUserLookupOut,
+    summary="Name accounts for a trade table",
+    description=(
+        "[2.4] #273. Turns the `user_id`s on a page of the ledger's "
+        "`GET /ledger/markets/{id}/trades` into usernames, in one request. "
+        "The ledger holds no user table (ADR 0003), so the admin's browser "
+        "joins the names in.\n\n"
+        "Send 1 to 200 ids, one trades page's worth. An id that names no user "
+        "is left out, and a duplicate is answered once. No order is promised: "
+        "key the answer by `id`.\n\n"
+        "Suspended users are included, since a suspended trader is the one an "
+        "administrator is most likely investigating. Each user is exactly `id` "
+        "and `username`; `is_suspended` stays on `GET /admin/users`.\n\n"
+        "Reading is not an audited action, like the search."
+    ),
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        403: {"description": "Authenticated, but not an administrator."},
+    },
+)
+async def lookup_users(
+    body: AdminUserLookupIn, admin: CurrentAdmin, session: DbSession
+) -> AdminUserLookupOut:
+    users = await user_directory.list_by_ids(session, body.user_ids)
+    return AdminUserLookupOut(
+        users=[UserNameOut.model_validate(user) for user in users]
     )
 
 
