@@ -63,8 +63,8 @@ def _is_entity(
     module_aliases: set[str],
     entity_name: str,
 ) -> bool:
-    """`Position`, `entities.Position` or either one's `.__table__`, for the
-    entity named `entity_name`."""
+    """A name in `entity_names`, `<module alias>.<entity_name>` or either
+    one's `.__table__`."""
     if isinstance(node, ast.Attribute) and node.attr == "__table__":
         node = node.value
     if isinstance(node, ast.Name):
