@@ -52,8 +52,9 @@ commits.
 8. Staleness: strict equality between the quoted `state_version` and the
    book's current one, either direction ("The trade's staleness check is
    strict `state_version` equality, and the field is required").
-9. The outcome, the holding check on a sell (the caller's own position, read
-   here and taking no lock of its own — the book lock holds it still), then
+9. The outcome, the holding check on a sell (the caller's own position less
+   what their live sell orders in that outcome reserve, ADR 0024, read here
+   and taking no lock of its own — the book lock holds both still), then
    `core/pricing.py::trade_cost_of`: the outstanding check as a backstop, the
    price, D-040's bound on both the cost and the resulting `q`, and
    `quantize_cost` — which refuses a zero result itself (D-041). The preview
@@ -122,6 +123,7 @@ from service import (
     grants,
     market_status,
     posting,
+    reservations,
 )
 from service.posting import Leg, Movement
 
@@ -266,6 +268,34 @@ async def _read_position(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def _refuse_if_short_of_shares(
+    session: AsyncSession,
+    position: Position | None,
+    *,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    quantity: Decimal,
+) -> None:
+    """Raise `InsufficientSharesHeld` if a sell of `quantity` is more than the
+    position less what the seller's live sell orders in that outcome reserve.
+
+    Call it holding the book lock, which holds both figures still. The trade
+    and the placement both sell through it: "Reserved shares cannot be sold
+    twice" (ADR 0024).
+    """
+    held = position.quantity if position is not None else ZERO
+    reserved = await reservations.reserved_shares_of(
+        session, user_id, market_id=market_id, outcome_id=outcome_id
+    )
+    if quantity > held - reserved:
+        raise InsufficientSharesHeld(
+            held=held.quantize(QUANTUM),
+            reserved=reserved.quantize(QUANTUM),
+            requested=quantity.quantize(QUANTUM),
+        )
+
+
 def _add_to_position(
     session: AsyncSession,
     position: Position | None,
@@ -360,12 +390,19 @@ def _trade_movement_of(
     quantity: Decimal,
     cost: TradeCost,
     state_version: int,
+    order_id: uuid.UUID | None = None,
+    reservation_drop: Decimal = ZERO,
 ) -> Movement:
     """The trade's one movement: the trader's leg and the pool's, under the
     derived key, with the `context` the response is rebuilt from ("The trade
     response is reconstructed from `Transaction.context`"). `state_version` is
-    the book's counter after the bump."""
-    context = {
+    the book's counter after the bump.
+
+    An order's fill passes its `order_id`, which `context` carries beside the
+    seven keys (D-NEW "A fill's `context` is a trade's, plus `order_id`"), and
+    the drop it causes in the owner's reservation (ADR 0024).
+    """
+    context: dict[str, object] = {
         "user_id": str(user_id),
         "market_id": str(market_id),
         "outcome_id": str(outcome_id),
@@ -374,6 +411,8 @@ def _trade_movement_of(
         "total": str(cost.total),
         "state_version": state_version,
     }
+    if order_id is not None:
+        context["order_id"] = str(order_id)
 
     kind = TransactionKind.TRADE_BUY if side is Side.BUY else TransactionKind.TRADE_SELL
     return Movement(
@@ -384,6 +423,7 @@ def _trade_movement_of(
             Leg(account=pool_account, amount=-cost.total),
         ],
         context=context,
+        reservation_drop=reservation_drop,
     )
 
 
@@ -520,18 +560,21 @@ async def execute(
     index = ids.index(outcome_id)
 
     # The holding check, after the book lock and before the outstanding check
-    # and any pricing. This user's position in this outcome, not the market's
-    # shares outstanding, and read without a lock of its own: the book lock
-    # holds it still.
+    # and any pricing. This user's position in this outcome less what their
+    # sell orders reserve, not the market's shares outstanding, and read
+    # without a lock of its own: the book lock holds it still.
     position = await _read_position(
         session, user_id=user_id, market_id=market_id, outcome_id=outcome_id
     )
     if side is Side.SELL:
-        held = position.quantity if position is not None else ZERO
-        if quantity > held:
-            raise InsufficientSharesHeld(
-                held=held.quantize(QUANTUM), requested=quantity.quantize(QUANTUM)
-            )
+        await _refuse_if_short_of_shares(
+            session,
+            position,
+            user_id=user_id,
+            market_id=market_id,
+            outcome_id=outcome_id,
+            quantity=quantity,
+        )
 
     # 9. The price, through `trade_cost_of` like the preview, so the two code
     # paths cannot disagree about what this trade costs. Its outstanding
