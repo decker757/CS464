@@ -53,7 +53,9 @@ const SURFACES: Record<string, Colour> = {
   'the cream page': tokens['smu-cream'],
 }
 
-// Every token the app uses as small text directly on one of those surfaces.
+// Every token the app puts text in. Each is held to AA on both surfaces, so a
+// token that moves to a new screen is already safe there. `success-strong` is
+// Badge-only today and is held to the same line anyway.
 const TEXT_TOKENS = [
   'smu-navy',
   'smu-gold-text',
@@ -62,11 +64,17 @@ const TEXT_TOKENS = [
   'subtle',
   'danger',
   'success',
+  'success-strong',
   'warning',
   'warning-strong',
   'info',
   'info-strong',
 ]
+
+// Tokens that are never text: the two page surfaces, hairline borders, a bar
+// track, and the brand gold, which is 3.20:1 on cream and is the whole reason
+// `--color-smu-gold-text` exists.
+const SURFACE_ONLY = ['smu-gold', 'smu-cream', 'line', 'track', 'surface-muted']
 
 // `Badge`: 11px bold text on a 10% tint of its own tone, on either surface.
 const BADGE_TONES = [
@@ -75,6 +83,12 @@ const BADGE_TONES = [
   { tone: 'warning', text: 'warning-strong', tint: 'warning' },
   { tone: 'info', text: 'info-strong', tint: 'info' },
 ]
+
+// Without this, a token added later is simply absent from the lists above and
+// nothing below ever measures it.
+it('sorts every colour token into text or surface', () => {
+  expect(Object.keys(tokens).sort()).toEqual([...TEXT_TOKENS, ...SURFACE_ONLY].sort())
+})
 
 describe('text on a page surface', () => {
   it.each(
