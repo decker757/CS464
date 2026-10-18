@@ -137,8 +137,8 @@ and a reconnect can land on a replica with its own high-water mark — and
 > added a second channel, `order.update`, whose frames go to their owner's
 > sockets through no version gate: the commit's price frame passes the gate at
 > the book's final version first, and every fill in that commit is at or below
-> it. The client orders one order's frames by `fill.state_version`. DECISIONS.md,
-> "Order frames pass no version gate on the relay".
+> it. The client orders one order's frames by `fill.state_version`.
+> DECISIONS.md, "Order frames pass no version gate on the relay".
 
 ### Auth is checked at the handshake and again when the token expires
 
