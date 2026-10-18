@@ -207,6 +207,18 @@ describe('AdminUserHistoryPage', () => {
   })
 
   describe('suspending and unsuspending', () => {
+    it('offers neither Suspend nor Unsuspend on the signed-in admin\'s own page', async () => {
+      // auth-service.md: "do not offer the control on the signed-in user's
+      // own row" for cannot_suspend_self, the same way as cannot_change_own_role.
+      mockBalance(admin.id, { user_id: admin.id, account_id: 'acc-1', balance: '997.4687' })
+      mockEntries(admin.id, [])
+      renderPage(admin.id)
+
+      await screen.findByRole('heading', { name: new RegExp(admin.id, 'i') })
+      expect(screen.queryByRole('button', { name: /^suspend$/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^unsuspend$/i })).not.toBeInTheDocument()
+    })
+
     it('offers both Suspend and Unsuspend regardless of the account\'s current state', async () => {
       // [4.2] #14: suspended is the state to end up in, not a toggle, and
       // there is no GET /admin/users/{id} to know current state after a
@@ -236,6 +248,24 @@ describe('AdminUserHistoryPage', () => {
       expect(confirm).toBeEnabled()
     })
 
+    it('enables Confirm Suspend at exactly 10 trimmed characters, not 9', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      const confirm = screen.getByRole('button', { name: /confirm suspend/i })
+      const field = screen.getByLabelText(/reason/i)
+
+      await actor.type(field, '  123456789  ')
+      expect(confirm).toBeDisabled()
+
+      await actor.type(field, '0')
+      expect(confirm).toBeEnabled()
+    })
+
     it('suspends the account and repaints the badge and balance page from the response, without a refetch', async () => {
       mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
       mockEntries('trader-1', [])
@@ -252,6 +282,10 @@ describe('AdminUserHistoryPage', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       // The response names alice, not the id — the page now shows the name.
       expect(screen.getByRole('heading', { name: /alice/i })).toBeInTheDocument()
+      // auth-service.md: "never zero, and the screen should say so" — the
+      // suspension takes effect at once, but a token already issued is
+      // honoured elsewhere for up to takes_effect_within_seconds.
+      expect(screen.getByText(/up to 15 minutes/i)).toBeInTheDocument()
     })
 
     it('unsuspends the account and drops the Suspended badge from the response', async () => {
@@ -307,6 +341,9 @@ describe('AdminUserHistoryPage', () => {
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/cannot suspend your own account/i)
       expect(screen.queryByText('Suspended')).not.toBeInTheDocument()
+      // The popup is a full-screen overlay; a message left behind it would
+      // be as good as not shown at all.
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
     it('shows the last_administrator message and lets the admin retry rather than disabling the control', async () => {
@@ -328,6 +365,7 @@ describe('AdminUserHistoryPage', () => {
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/no administrator who can log in/i)
       expect(screen.getByRole('button', { name: /^suspend$/i })).toBeEnabled()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
     it('cancels without changing the account', async () => {
@@ -342,6 +380,32 @@ describe('AdminUserHistoryPage', () => {
 
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByText('Suspended')).not.toBeInTheDocument()
+    })
+
+    it('drops a stale suspension error when navigating to a different user', async () => {
+      // Same family of bug as the balance test above: the page is not
+      // remounted when :userId changes, so state tied to "the last account
+      // acted on" has to be cleared by hand rather than by a fresh mount.
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(
+        { error: { code: 'cannot_suspend_self', message: 'no' } }, { status: 403 },
+      ))
+      mockBalance('trader-2', { user_id: 'trader-2', account_id: 'acc-2', balance: '500.0000' })
+      mockEntries('trader-2', [])
+      const actor = userEvent.setup()
+      const router = renderMovableRouter('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), 'Testing my own account')
+      await actor.click(screen.getByRole('button', { name: /confirm suspend/i }))
+      await screen.findByRole('alert')
+
+      await act(() => router.navigate('/admin/users/trader-2'))
+
+      await screen.findByRole('heading', { name: /trader-2/i })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
 
     it('drops the changed user\'s state when navigating to a different user', async () => {
