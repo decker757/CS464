@@ -78,6 +78,7 @@ from service.trading import (
     _fill_key,
     _list_open_orders,
     _price_event_of,
+    _publish_order_updates,
     _read_outcomes,
     _read_position,
     _refuse_if_short_of_shares,
@@ -391,7 +392,8 @@ async def _commit_fill(
     redis_client: redis.Redis,
 ) -> Placement:
     """Run the cascade after the fill's pending writes, insert the order beside
-    them, commit it all through `post_all`, then publish one price frame."""
+    them, commit it all through `post_all`, then publish one price frame and an
+    order frame per fill, this order's first."""
     fill_version = book.state_version
     # Read once for the whole batch; `get_one` for the trade path's reason.
     pool_account = await session.get_one(Account, book.pool_account_id)
@@ -421,7 +423,9 @@ async def _commit_fill(
         ),
     )
     try:
-        transactions = await posting.post_all(session, [movement, *cascade], now=now)
+        transactions = await posting.post_all(
+            session, [movement, *(fill.movement for fill in cascade)], now=now
+        )
     except InsufficientFunds as refusal:
         raise _placement_refusal_of(refusal, order.budget) from None
 
@@ -435,6 +439,9 @@ async def _commit_fill(
         now=now,
     )
     await bus.publish(redis_client, event, transaction_id=transactions[0].id)
+    await _publish_order_updates(
+        redis_client, [order, *(fill.order for fill in cascade)], transactions, now=now
+    )
 
     return Placement(
         order=_order_view_of(

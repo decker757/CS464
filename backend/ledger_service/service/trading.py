@@ -81,8 +81,9 @@ commits.
     returned — the same function every replay path uses too ("The trade
     response is reconstructed from `Transaction.context`, and carries no
     prices"). Its `book_state_version` is the counter after the cascade.
-13. The publish, one price frame at that counter, after the commit and never
-    before it (ADR 0010), and never on a rejection or a replay.
+13. The publish, one price frame at that counter, then one order frame per
+    fill for its order's owner ([T-7] #27), after the commit and never before
+    it (ADR 0010), and never on a rejection or a replay.
 
 **One path for both sides.** The side picks the sign of the delta, the
 rounding direction, the transaction kind and the shape of the position write,
@@ -128,7 +129,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
-from model.schemas import OutcomePrice, PriceEvent
+from model.schemas import OrderEvent, OrderFill, OutcomePrice, PriceEvent
 from service import (
     account_status,
     accounts,
@@ -180,6 +181,15 @@ class PricedTrade:
     side: Side
     quantity: Decimal
     cost: TradeCost
+
+
+@dataclass(frozen=True)
+class WrittenFill:
+    """One resting order's fill as the cascade wrote it: the order row, with
+    the fill already rolled in, and the fill's movement."""
+
+    order: Order
+    movement: Movement
 
 
 @dataclass(frozen=True)
@@ -495,6 +505,28 @@ def _price_event_of(
     )
 
 
+def _order_event_of(order: Order, fill: TradeResult, *, now: datetime) -> OrderEvent:
+    """The order frame for one committed fill: the order as the fill left it,
+    and the fill as `result_of` reads it back from its transaction."""
+    return OrderEvent(
+        order_id=order.id,
+        user_id=order.user_id,
+        market_id=order.market_id,
+        outcome_id=order.outcome_id,
+        side=order.side,
+        status=order.status.value,
+        quantity=order.quantity,
+        filled_quantity=order.filled_quantity,
+        fill=OrderFill(
+            transaction_id=fill.transaction_id,
+            quantity=fill.quantity,
+            total=fill.total,
+            state_version=fill.state_version,
+        ),
+        occurred_at=now,
+    )
+
+
 async def _list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list[Order]:
     """The market's open orders, in no order: the cascade and the crossing
     check rank them themselves. Call it holding the book lock, which every
@@ -598,9 +630,10 @@ async def _write_cascade(
     outcomes: Sequence[MarketOutcome],
     pool_account: Account,
     now: datetime,
-) -> list[Movement]:
+) -> list[WrittenFill]:
     """Fill every resting order the book's price now makes executable, as
-    pending writes, and return their movements in the order they fill.
+    pending writes, and return each order with its fill's movement, in the
+    order they fill.
 
     ADR 0024, "The cascade runs inside the trade that moved the price":
     `core/limit_orders.py::cascade_of` plans the fills against `q` as the
@@ -615,19 +648,20 @@ async def _write_cascade(
         book.liquidity_b,
         [_resting_order_of(order, outcome_ids) for order in open_orders],
     )
-    movements: list[Movement] = []
+    written: list[WrittenFill] = []
     for fill in plan:
+        order = by_seq[fill.order.seq]
         movement = await _write_fill(
             session,
             book,
-            by_seq[fill.order.seq],
+            order,
             fill=fill,
             outcomes=outcomes,
             pool_account=pool_account,
             now=now,
         )
-        movements.append(movement)
-    return movements
+        written.append(WrittenFill(order=order, movement=movement))
+    return written
 
 
 async def _post_with_fills(
@@ -657,6 +691,26 @@ async def _post_with_fills(
             refusal.shortfall,
         )
         raise CascadeFillRefused from refusal
+
+
+async def _publish_order_updates(
+    redis_client: redis.Redis,
+    orders: Sequence[Order],
+    transactions: Sequence[Transaction],
+    *,
+    now: datetime,
+) -> None:
+    """One order frame per fill, in fill order, for each order's owner. Call it
+    after the commit, and after that commit's price frame (D-NEW "Order frames
+    pass no version gate on the relay").
+
+    `transactions[i]` is the fill of `orders[i]`. An order fills at most once
+    per commit (ADR 0024), so its row as committed is its state after that
+    fill. Each publish swallows its own failure, so one stops none of the rest.
+    """
+    for order, transaction in zip(orders, transactions, strict=True):
+        event = _order_event_of(order, result_of(transaction), now=now)
+        await bus.publish_order(redis_client, event, transaction_id=transaction.id)
 
 
 async def execute(
@@ -841,7 +895,7 @@ async def execute(
     # resting order fills (ADR 0024). Commits everything pending above, with
     # every movement's legs, or none of it if this raises.
     transactions = await _post_with_fills(
-        session, [movement, *fills], trade_key=key, now=now
+        session, [movement, *(fill.movement for fill in fills)], trade_key=key, now=now
     )
 
     # 12. The response, from the trade's transaction `post_all` committed.
@@ -861,5 +915,8 @@ async def execute(
         now=now,
     )
     await bus.publish(redis_client, event, transaction_id=result.transaction_id)
+    await _publish_order_updates(
+        redis_client, [fill.order for fill in fills], transactions[1:], now=now
+    )
 
     return result
