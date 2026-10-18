@@ -210,7 +210,7 @@ async def _refuse_overdrafts(
     Walked in movement order, not netted, so nothing later in the batch, a
     credit or a reservation a fill drops, pays for a debit before it. A
     refusal after a debit carries `required`, what the batch had taken from
-    the account by then. An allowlist on USER, not a list of exempt kinds:
+    the account by then, and that movement's key. An allowlist on USER, not a list of exempt kinds:
     PLATFORM and MARKET_POOL are meant to go negative (ADR 0009, D-009).
     Adding a kind here means deciding it holds spendable money.
     """
@@ -228,6 +228,7 @@ async def _refuse_overdrafts(
                     reserved=floor.reserved,
                     available=floor.balance_before - floor.reserved,
                     required=floor.balance_before - floor.balance,
+                    movement_key=movement.idempotency_key,
                 )
 
 
