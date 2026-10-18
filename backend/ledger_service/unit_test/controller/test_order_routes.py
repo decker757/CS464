@@ -1,10 +1,11 @@
-"""Limit orders on the wire. [T-6] #26, ADR 0024.
+"""Limit orders on the wire. [T-6] #26, [T-8] #28, ADR 0024.
 
-What the controller owns for `POST /ledger/markets/{market_id}/orders` and
-`GET /ledger/orders/me`: who may call them, what the body may contain, the
-status code and `error.details` of each refusal, and the shape [FE][T-6] #61
-builds against, which is `docs/api/ledger-service.md`'s "Limit orders"
-section. Business rules are `unit_test/service/test_place_order*.py`'s.
+What the controller owns for `POST /ledger/markets/{market_id}/orders`,
+`GET /ledger/orders/me` and `POST /ledger/orders/{order_id}/cancel`: who may
+call them, what the body may contain, the status code and `error.details` of
+each refusal, and the shape [FE][T-6] #61 builds against, which is
+`docs/api/ledger-service.md`'s "Limit orders" section. Business rules are
+`unit_test/service/test_place_order*.py`'s and `test_cancel_order*.py`'s.
 
 Built on `test_trade_routes.py`'s client, market stub and terms stub. A book
 the contract's example needs, `b = 100` at `q = [20, 0]`, is opened by the
@@ -18,10 +19,11 @@ import uuid
 from collections.abc import Sequence
 from decimal import Decimal
 
+import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import bearer, set_b
+from unit_test.conftest import auth_client_over, bearer, set_b
 from unit_test.controller.test_sell_routes import _doc, _section, _table_rows
 from unit_test.controller.test_trade_routes import (  # noqa: F401 - fixture
     _Market,
@@ -29,8 +31,10 @@ from unit_test.controller.test_trade_routes import (  # noqa: F401 - fixture
     _warm,
     trade_client,
 )
+from unit_test.placement_fixtures import record_result
 
 _ORDER_HEADING = "### POST /ledger/markets/{market_id}/orders"
+_CANCEL_HEADING = "### POST /ledger/orders/{order_id}/cancel"
 _MY_ORDERS = "/ledger/orders/me"
 
 # The order object's fields, and nothing else: a gained field is a contract
@@ -68,6 +72,13 @@ _CONTRACT_CODES = {
     "422": ["unknown_outcome", "quantity_too_large"],
     "500": ["market_book_incomplete"],
     "503": ["market_terms_unavailable", "auth_unavailable"],
+}
+
+# The contract's error table for a cancel, by status.
+_CANCEL_CODES = {
+    "401": ["invalid_token"],
+    "404": ["order_not_found"],
+    "409": ["order_already_filled", "order_already_cancelled", "order_released"],
 }
 
 ZERO_Q = (Decimal("0.0000"), Decimal("0.0000"))
@@ -400,4 +411,164 @@ def test_the_docs_error_table_for_a_placement_is_what_the_route_answers() -> Non
     rows = _table_rows(_section(_doc(), _ORDER_HEADING).split("\n### ", 1)[0])
 
     expected = {(status, code) for status, codes in _CONTRACT_CODES.items() for code in codes}
+    assert rows == expected | {("422", "invalid_request")}
+
+
+# =========================================================================
+# Cancelling
+# =========================================================================
+def _cancel_path(order_id: object) -> str:
+    return f"/ledger/orders/{order_id}/cancel"
+
+
+async def _placed(client, market: _Market, headers: dict[str, str], **overrides) -> dict:
+    response = await client.post(
+        _path(market.market_id), json=_body(market, **overrides), headers=headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["order"]
+
+
+async def test_a_cancel_needs_a_token(trade_client) -> None:
+    client, _ = trade_client
+
+    response = await client.post(_cancel_path(uuid.uuid4()))
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_a_cancel_is_200_with_the_order_and_what_it_released(
+    trade_client, session, monkeypatch
+) -> None:
+    """The contract's response: the order object as cancelled, and what the
+    cancel released as a decimal string, the other figure null. The
+    contract's example order spent 11.8152 of 60.0000 on arrival."""
+    client, _ = trade_client
+    market = await _market(session, monkeypatch)
+    headers = bearer(uuid.uuid4())
+    order = await _placed(client, market, headers)
+
+    response = await client.post(_cancel_path(order["id"]), headers=headers)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == {"order", "released_credits", "released_shares"}
+    assert (body["released_credits"], body["released_shares"]) == ("48.1848", None)
+    cancelled = body["order"]
+    assert set(cancelled) == _ORDER_FIELDS
+    assert (cancelled["id"], cancelled["status"], cancelled["reserved_credits"]) == (
+        order["id"],
+        "cancelled",
+        "0.0000",
+    )
+    assert cancelled["filled_quantity"] == "20.5465"
+    assert cancelled["cancelled_at"] is not None
+
+
+async def test_a_cancel_of_another_traders_order_is_404_order_not_found(
+    trade_client, session, monkeypatch
+) -> None:
+    client, _ = trade_client
+    market = await _market(session, monkeypatch)
+    order = await _placed(client, market, bearer(uuid.uuid4()))
+
+    response = await client.post(_cancel_path(order["id"]), headers=bearer(uuid.uuid4()))
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "order_not_found"
+
+
+@pytest.mark.parametrize(
+    ("order_id", "body"),
+    [("not-a-uuid", None), (None, {"released_credits": "1.0000"})],
+    ids=["order_id_not_a_uuid", "body_with_a_field"],
+)
+async def test_a_cancel_with_a_bad_id_or_a_body_is_422_invalid_request(
+    trade_client, session, monkeypatch, order_id: str | None, body: dict | None
+) -> None:
+    """The contract: "`order_id` is not a UUID, or the body is not empty". A
+    body naming an amount is refused, not ignored: a cancel always releases
+    the whole remainder."""
+    client, _ = trade_client
+    market = await _market(session, monkeypatch, ZERO_Q)
+    headers = bearer(uuid.uuid4())
+    if order_id is None:
+        order_id = (await _placed(client, market, headers, quantity="10.0000"))["id"]
+
+    response = await client.post(_cancel_path(order_id), json=body, headers=headers)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    "code", ["order_already_filled", "order_already_cancelled", "order_released"]
+)
+async def test_a_cancel_of_an_order_that_has_ended_is_409_with_its_code(
+    trade_client, session, monkeypatch, code: str
+) -> None:
+    """The contract's three 409s. Five shares at 0.6000 fill completely on
+    arrival; a retried cancel is `order_already_cancelled`; a market with a
+    result has released the order already."""
+    client, _ = trade_client
+    market = await _market(session, monkeypatch)
+    headers = bearer(uuid.uuid4())
+    quantity = "5.0000" if code == "order_already_filled" else "100.0000"
+    order = await _placed(client, market, headers, quantity=quantity)
+    if code == "order_already_cancelled":
+        first = await client.post(_cancel_path(order["id"]), headers=headers)
+        assert first.status_code == 200, first.text
+    if code == "order_released":
+        await record_result(session, market)
+
+    response = await client.post(_cancel_path(order["id"]), headers=headers)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == code
+
+
+async def test_a_suspended_trader_can_cancel_on_a_closed_market(
+    trade_client, app_under_test, session, monkeypatch
+) -> None:
+    """The contract: "No account check and no market gate: a suspended account
+    can still cancel while its token is valid, and a closed market's orders
+    can be cancelled." Placed while both were open; cancelled after auth
+    says suspended and market_service says closed."""
+    from controller.dependencies import get_auth_client  # noqa: PLC0415
+
+    client, _ = trade_client
+    market = await _market(session, monkeypatch, ZERO_Q)
+    headers = bearer(uuid.uuid4())
+    order = await _placed(client, market, headers, quantity="10.0000")
+    _Terms(status="closed").install(monkeypatch, market)
+
+    def suspended(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"error": {"code": "account_suspended", "message": "Suspended."}}
+        )
+
+    async with auth_client_over(httpx.MockTransport(suspended)) as auth_client:
+        app_under_test.dependency_overrides[get_auth_client] = lambda: auth_client
+        response = await client.post(_cancel_path(order["id"]), headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["order"]["status"] == "cancelled"
+
+
+async def test_the_cancel_declares_the_contracts_responses(trade_client) -> None:
+    client, _ = trade_client
+    schema = (await client.get("/openapi.json")).json()
+    responses = schema["paths"]["/ledger/orders/{order_id}/cancel"]["post"]["responses"]
+
+    assert set(responses) == {"200", "401", "404", "409", "422"}
+    for status, codes in _CANCEL_CODES.items():
+        for code in codes:
+            assert f"`{code}`" in responses[status]["description"], (status, code)
+
+
+def test_the_docs_error_table_for_a_cancel_is_what_the_route_answers() -> None:
+    rows = _table_rows(_section(_doc(), _CANCEL_HEADING).split("\n### ", 1)[0])
+
+    expected = {(status, code) for status, codes in _CANCEL_CODES.items() for code in codes}
     assert rows == expected | {("422", "invalid_request")}
