@@ -344,7 +344,7 @@ def _write_trade(
             now=now,
         )
     else:
-        assert position is not None  # the holding check above
+        assert position is not None  # the holding check in execute
         _release_from_position(position, quantity=quantity, now=now)
 
 
