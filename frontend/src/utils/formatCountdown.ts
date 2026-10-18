@@ -3,7 +3,10 @@ const MINUTE_MS = 60 * SECOND_MS
 const HOUR_MS = 60 * MINUTE_MS
 const DAY_MS = 24 * HOUR_MS
 
-function formatAbsolute(iso: string): string {
+/** The absolute instant alone — "Tue 11:00" — the one part of the countdown
+ * that survives a wrong browser clock (market-service.md's dispute-screen
+ * notes, point 1), so it still has to show once the window reads as closed. */
+export function formatAbsolute(iso: string): string {
   return new Date(iso).toLocaleString('en-SG', {
     weekday: 'short', hour: '2-digit', minute: '2-digit',
   })
