@@ -19,7 +19,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
@@ -42,7 +42,6 @@ from model.entities import (
     TransactionKind,
 )
 from service import accounts, grants, orders, posting, reservations
-from service.posting import Leg
 from unit_test.conftest import mint_token
 from unit_test.order_fixtures import add_order
 from unit_test.placement_fixtures import (
@@ -62,6 +61,7 @@ from unit_test.trade_fixtures import (
     assert_ledger_balances,
     balance_of_user,
     book_row,
+    buy,
     capture_sql_with_parameters,
     fund,
     position_of,
@@ -614,13 +614,14 @@ async def test_a_retry_answers_first_with_the_same_placement_and_writes_nothing(
 async def test_a_retry_returns_only_the_fills_the_placement_made(
     session: AsyncSession,
 ) -> None:
-    """ADR 0024's Tests owed: a later trade's cascade fills the order further,
-    and the retry returns the order as it stands now but, as `fills`, only
-    the fills at or below its stored `book_state_version`.
+    """ADR 0024's Tests owed: "A retried placement returns only the fills the
+    original request made, after another trader's cascade has filled the
+    order further". The retry returns the order as it stands now but, as
+    `fills`, only the fills at or below its stored `book_state_version`.
 
-    The cascade is not built yet, so its fill is posted here as one would be:
-    a `trade_buy` naming the order, at the next `state_version`, with the
-    order's rollups moved to match."""
+    The example order rests at its limit after its fill on arrival, and
+    another trader's buy of one outcome-1 share moves the price back below
+    it, so that trade's cascade fills one more share at version 3."""
     upstream = await _example_market(session)
     user_id = await _funded(session)
     original = await place(
@@ -631,36 +632,10 @@ async def test_a_retry_returns_only_the_fills_the_placement_made(
         quantity=EXAMPLE_QUANTITY,
         client_key="filled-later",
     )
-    order_id = original.order.id
-    book = await book_row(session, upstream.market_id)
-    pool = await session.get(Account, book.pool_account_id)
-    user = await accounts.find(session, AccountKind.USER, user_id)
-    later = Decimal("0.6000")
-    await posting.post(
-        session,
-        idempotency_key=f"order-fill:{order_id}:2",
-        kind=TransactionKind.TRADE_BUY,
-        legs=[Leg(account=user, amount=-later), Leg(account=pool, amount=later)],
-        context={
-            "user_id": str(user_id),
-            "market_id": str(upstream.market_id),
-            "outcome_id": str(upstream.outcomes[0]),
-            "side": "buy",
-            "quantity": "1.0000",
-            "total": str(-later),
-            "state_version": 2,
-            "order_id": str(order_id),
-        },
+    other = await _funded(session)
+    await buy(
+        session, upstream, user_id=other, outcome=1, quantity=Decimal("1.0000"), state_version=1
     )
-    await session.execute(
-        update(Order)
-        .where(Order.id == order_id)
-        .values(
-            filled_quantity=Order.filled_quantity + 1,
-            filled_value=Order.filled_value + later,
-        )
-    )
-    await session.commit()
 
     retry = await place(
         session,
@@ -848,6 +823,55 @@ async def test_a_placement_that_fills_publishes_one_price_frame_and_one_that_res
     assert len(filling.calls) == 1
     assert channel == "market.price"
     assert '"state_version":1' in payload
+
+
+async def test_a_placement_that_fills_runs_the_cascade_after_its_own_fill(
+    session: AsyncSession,
+) -> None:
+    """ADR 0024: "A placement that fills on arrival runs the same step after
+    its own fill." While no order crosses the book that step finds nothing
+    ("Termination"), so the book is broken by hand here: a buy of one
+    outcome-1 share at 0.5000 left resting while the price makes it
+    executable.
+
+    A buy of 10 outcome-1 shares at 0.4700 fills 7.9855 for 3.6740 on arrival,
+    which leaves outcome 0 at 0.5300, still above the broken order's 0.5000,
+    and the cascade fills that order's share for 0.4713 at version 2. The
+    placement's own fills are its own; its `book_state_version` is the last
+    fill's, and the one price frame is at it."""
+    upstream = await _example_market(session)
+    owner, placer = await _funded(session), await _funded(session)
+    broken = await add_order(
+        session,
+        user_id=owner,
+        market_id=upstream.market_id,
+        outcome_id=upstream.outcomes[1],
+        budget="0.5000",
+    )
+    await session.commit()
+    recorder = Recorder()
+
+    placement = await place(
+        session,
+        upstream,
+        user_id=placer,
+        outcome=1,
+        limit_price=Decimal("0.4700"),
+        quantity=Decimal("10.0000"),
+        redis_client=recorder,
+    )
+
+    assert [(fill.quantity, fill.total, fill.state_version) for fill in placement.fills] == [
+        (Decimal("7.9855"), Decimal("-3.6740"), 1)
+    ]
+    assert placement.book_state_version == 2
+    fills = await _fill_transactions(session, broken.id)
+    assert [Decimal(fill.context["total"]) for fill in fills] == [Decimal("-0.4713")]
+    assert await q_of(session, upstream.market_id) == [Decimal("20.0000"), Decimal("8.9855")]
+    (_, payload) = recorder.calls[0]
+    assert len(recorder.calls) == 1
+    assert '"state_version":2' in payload
+    await assert_ledger_balances(session)
 
 
 async def test_a_placement_whose_commit_fails_writes_nothing(

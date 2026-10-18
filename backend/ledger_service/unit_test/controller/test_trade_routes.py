@@ -72,6 +72,7 @@ _FIELDS = {
     "quantity",
     "total",
     "state_version",
+    "book_state_version",
 }
 
 

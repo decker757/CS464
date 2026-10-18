@@ -632,8 +632,9 @@ async def test_a_position_sold_to_zero_keeps_its_row_and_a_rebuy_is_a_fresh_basi
 
 
 async def test_realized_pnl_is_stored_nowhere(session: AsyncSession) -> None:
-    """"Realized P&L is not stored": the sell's context is exactly the seven
-    fields a buy's is, and `positions` has no column beyond #22's."""
+    """"Realized P&L is not stored": the sell's context is exactly the eight
+    fields a buy's is, the seven the response is rebuilt from and
+    `book_state_version`, and `positions` has no column beyond #22's."""
     upstream, user_id = await _holder(session)
     ents = entities()
 
@@ -654,6 +655,7 @@ async def test_realized_pnl_is_stored_nowhere(session: AsyncSession) -> None:
         "quantity",
         "total",
         "state_version",
+        "book_state_version",
     }
     assert context["side"] == "sell"
     assert Decimal(context["total"]) == PROCEEDS

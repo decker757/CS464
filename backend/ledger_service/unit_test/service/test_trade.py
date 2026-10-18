@@ -467,6 +467,7 @@ async def test_the_context_carries_everything_the_response_is_rebuilt_from(
         "quantity",
         "total",
         "state_version",
+        "book_state_version",
     }
     assert context["user_id"] == str(user_id)
     assert context["market_id"] == str(upstream.market_id)
@@ -475,6 +476,8 @@ async def test_the_context_carries_everything_the_response_is_rebuilt_from(
     assert Decimal(str(context["quantity"])) == QUANTITY
     assert Decimal(str(context["total"])) == trade.total
     assert int(context["state_version"]) == trade.state_version
+    # No resting order filled, so the counter after the cascade is the same.
+    assert context["book_state_version"] == trade.state_version
 
 
 async def test_the_response_is_what_the_one_builder_makes_of_the_transaction(
