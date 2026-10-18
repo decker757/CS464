@@ -1,10 +1,10 @@
 """Cancelling a limit order. [T-8] #28, ADR 0024.
 
-A cancel sets the order's status and nothing else. It writes no entry and
-moves no money: what an order holds back is derived from its row (ADR 0024,
-"A reservation is derived from the order rows"), so once the row reads
-`cancelled` the credits or shares are free, and a second cancel has nothing
-left to release.
+A cancel sets the order's status and `cancelled_at`, and nothing else. It
+writes no entry and moves no money: what an order holds back is derived from
+its row (ADR 0024, "A reservation is derived from the order rows"), so once
+the row reads `cancelled` the credits or shares are free, and a second cancel
+has nothing left to release.
 
 **A cancel and a fill never both win.** Every writer of an order row takes the
 market's book row lock first, and a fill only happens inside a trade or a
@@ -71,8 +71,8 @@ async def _read_order(session: AsyncSession, order_id: uuid.UUID) -> Row[tuple[O
 
 def _refuse_if_ended(order: Order, *, live: bool) -> None:
     """Raise unless the order is open with no result on its market. The status
-    first: a filled order on a market with a result had nothing left for the
-    result to release."""
+    first: a filled or cancelled order is never live, so `live` first would
+    call every one of them released."""
     if order.status is OrderStatus.FILLED:
         raise OrderAlreadyFilled
     if order.status is OrderStatus.CANCELLED:

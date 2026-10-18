@@ -9742,9 +9742,9 @@ smaller remainder or none. No account lock, because a cancel only lowers a
 reservation: every path that reads one under an account lock is checking that
 a debit fits, and a check that read it before the cancel committed read a
 higher figure, so it was stricter than it needed to be, never looser. The
-unlocked read decides only which book
-to lock and whether the order is the caller's, and neither can change: an
-order's market and owner are fixed at placement.
+unlocked read decides only which book to lock and whether the order is the
+caller's, and neither can change: an order's market and owner are fixed at
+placement.
 
 **Rejected.** *An account lock after the book row*: it would serialise a
 cancel behind the owner's trades in other markets for no invariant. *A `FOR
@@ -9754,8 +9754,10 @@ lock*: the session's identity map would then answer the re-read with the
 stale row unless it were told to refresh, so the first read selects one
 column.
 
-**Notes.** The status is read before the result because a filled order on a
-market with a result had nothing left for the result to release.
+**Notes.** The status is read before the result because a filled or
+cancelled order is never live, so reading `live` first would answer every one
+of them `order_released`; and a filled order on a market with a result had
+nothing left for the result to release.
 `test_cancel_order_concurrency.py` races a cancel against a fill in both
 orderings and the partial case; each test fails with the cancel's
 `books.lock_book` removed.
