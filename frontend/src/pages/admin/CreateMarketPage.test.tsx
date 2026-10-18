@@ -386,6 +386,61 @@ describe('CreateMarketPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/had already been saved/i)
   })
 
+  // Nothing disables the fields until the answer arrives, so a submit can be
+  // typed over while it is in flight. Comparing what the request set out with
+  // would call that typing saved.
+  it('counts edits made while the submit was in flight as lost', async () => {
+    let calls = 0
+    let releaseSubmit = () => {}
+    const submitAnswered = new Promise<void>(resolve => { releaseSubmit = resolve })
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, async () => {
+        calls++
+        if (calls === 1) return HttpResponse.json(baseSaveResponse, { status: 201 })
+        await submitAnswered
+        return HttpResponse.json({ error: { code: 'market_already_open', message: 'refused' } }, { status: 409 })
+      }),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    touchForm()
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /submit for review/i })) })
+    fireEvent.change(screen.getByLabelText('Resolution criteria *'), { target: { value: 'One more sentence.' } })
+    releaseSubmit()
+    await act(() => vi.advanceTimersByTimeAsync(100))
+    expect(screen.getByRole('alert')).toHaveTextContent(/were not saved/i)
+  })
+
+  it('clears a refused submission reason once the field is fixed', async () => {
+    let calls = 0
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () => {
+        calls++
+        return calls === 1
+          ? HttpResponse.json(
+            {
+              error: {
+                code: 'draft_incomplete',
+                message: 'The market is not ready.',
+                details: [{ field: 'close_time', message: 'The close time has already passed.' }],
+              },
+            },
+            { status: 422 },
+          )
+          : HttpResponse.json(baseSaveResponse)
+      }),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /submit for review/i })) })
+    await act(() => vi.advanceTimersByTimeAsync(100))
+    expect(screen.getByText('The close time has already passed.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Closes at *'), { target: { value: '2027-01-01T12:00' } })
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    expect(screen.queryByText('The close time has already passed.')).not.toBeInTheDocument()
+  })
+
   it('offers Publish when autosave learns the market was already submitted', async () => {
     server.use(
       http.post(`${MARKET_BASE}/markets`, () =>
@@ -453,7 +508,7 @@ describe('CreateMarketPage', () => {
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
     await actor.click(await screen.findByRole('button', { name: /publish market/i }))
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent(/cannot be edited/i)
+    expect(alert).toHaveTextContent(/cannot edit a market once it has been submitted/i)
     expect(alert).not.toHaveTextContent(/try again/i)
   })
 
