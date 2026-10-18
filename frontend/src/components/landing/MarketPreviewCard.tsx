@@ -15,6 +15,9 @@ const EXAMPLE_OUTCOMES = [
   { label: 'NO', price: '0.36', text: 'text-danger', bar: 'bg-danger' },
 ]
 
+// The y values are the same percentages, so the first and the last must stay
+// in step with the two prices above: the line has to end where "Current" says
+// it does, and start where "up from ... a week ago" says it started.
 const SPARKLINE_POINTS: [number, number][] = [
   [0, 52], [12, 50], [24, 48], [36, 51], [48, 55],
   [60, 58], [72, 56], [84, 60], [96, 62], [108, 64],
@@ -74,13 +77,15 @@ export default function MarketPreviewCard() {
         <div className="text-right">
           <p className="mb-0.5 text-[10px] text-subtle">Current</p>
           <p className="text-[22px] leading-none font-extrabold text-success">{formatPrice(EXAMPLE_YES_PRICE)}</p>
-          <p className="text-[11px] text-success">▲ up from {formatPrice(EXAMPLE_YES_PRICE_A_WEEK_AGO)}</p>
+          <p className="text-[11px] text-success">▲ up from {formatPrice(EXAMPLE_YES_PRICE_A_WEEK_AGO)} a week ago</p>
         </div>
       </div>
 
       <div className="mb-4 flex flex-col gap-2">
         {EXAMPLE_OUTCOMES.map(({ label, price, text, bar }) => {
-          // A formatted price is a percentage, so it is also the bar's width.
+          // The formatted price is both the label and the bar's width. That
+          // holds because these prices are literal plain decimals, so
+          // formatPrice cannot return its "—" fallback, which is not a width.
           const percent = formatPrice(price)
           return (
             <div key={label} className="flex items-center gap-2.5 text-xs">
