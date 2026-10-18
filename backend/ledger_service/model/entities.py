@@ -742,8 +742,8 @@ class Order(Base):
         Numeric(18, 4), nullable=False, default=Decimal(0), server_default=text("0")
     )
 
-    # No default: the placement says which. An order that fills completely on
-    # arrival is born FILLED, and a default of OPEN would store it as resting.
+    # No default: a placed order is OPEN or FILLED and the placement says which,
+    # so a missing status fails on NOT NULL instead of being guessed.
     status: Mapped[OrderStatus] = mapped_column(_ORDER_STATUS_COLUMN, nullable=False)
 
     # The book's `state_version` after the placement, so a replay answers from
