@@ -494,7 +494,8 @@ async def test_a_cancel_with_a_bad_id_or_a_body_is_422_invalid_request(
     market = await _market(session, monkeypatch, ZERO_Q)
     headers = bearer(uuid.uuid4())
     if order_id is None:
-        order_id = (await _placed(client, market, headers, quantity="10.0000"))["id"]
+        resting = await _placed(client, market, headers, limit_price="0.4000", quantity="10.0000")
+        order_id = resting["id"]
 
     response = await client.post(_cancel_path(order_id), json=body, headers=headers)
 
@@ -540,7 +541,7 @@ async def test_a_suspended_trader_can_cancel_on_a_closed_market(
     client, _ = trade_client
     market = await _market(session, monkeypatch, ZERO_Q)
     headers = bearer(uuid.uuid4())
-    order = await _placed(client, market, headers, quantity="10.0000")
+    order = await _placed(client, market, headers, limit_price="0.4000", quantity="10.0000")
     _Terms(status="closed").install(monkeypatch, market)
 
     def suspended(request: httpx.Request) -> httpx.Response:
