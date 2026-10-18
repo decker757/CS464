@@ -1405,9 +1405,10 @@ pool account's feed…").
 user only by the id in a signed token (ADR 0003). Resolve names in the browser
 through auth's batch lookup on port 8000, `POST /admin/users/lookup` with
 `{"user_ids": [...]}`, 1 to 200 ids per request, which answers
-`{"users": [{"id", "username"}]}` (#273). Until that route lands, show a short
-id that links to the user page (#259). DECISIONS.md, "A market's trades carry
-`user_id`, not `username`…".
+`{"users": [{"id", "username"}]}` (#273). That route is built; swapping the
+short id that links to the user page for the username it returns is #259's
+remaining work. DECISIONS.md, "A market's trades carry `user_id`, not
+`username`…".
 
 **A market with no book is an empty `200`**: `trades: []`, `next_cursor:
 null`, `has_more: false`. An id that names no market reads the same way. Like

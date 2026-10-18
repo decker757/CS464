@@ -8533,8 +8533,9 @@ resolves names through a new admin-only batch lookup on auth,
 `POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
 returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021,
 `POST /internal/users/lookup`, but it takes an
-administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
-User column shows a short id that links to #259's user page.
+administrator's token and never returns `is_suspended`. That route is #273.
+Until the User column reads it, that column shows a short id that links to
+#259's user page.
 
 **Why.**
 - *ADR 0021's lookup is the wrong credential for this.* It is scoped to one
