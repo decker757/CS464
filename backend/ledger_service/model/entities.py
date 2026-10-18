@@ -731,16 +731,26 @@ class Order(Base):
     limit_price: Mapped[Decimal] = mapped_column(
         Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
     )
-    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=False
+    )
     filled_quantity: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal(0), server_default=text("0")
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE),
+        nullable=False,
+        default=Decimal(0),
+        server_default=text("0"),
     )
 
     # A buy's `limit × quantity` rounded up to the tick; null for a sell, which
     # reserves no credits.
-    budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    budget: Mapped[Decimal | None] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE), nullable=True
+    )
     filled_value: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal(0), server_default=text("0")
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE),
+        nullable=False,
+        default=Decimal(0),
+        server_default=text("0"),
     )
 
     # No default: a placed order is OPEN or FILLED and the placement says which,
@@ -795,9 +805,10 @@ class Order(Base):
             "(status = 'cancelled') = (cancelled_at IS NOT NULL)",
             name="ck_orders_cancelled_at_iff_cancelled",
         ),
-        # The cascade reads one market's open orders in priority order, and
-        # the order list reads one user's. Partial, so a filled or cancelled
-        # order costs neither index anything.
+        # The cascade reads one market's open orders through the first and
+        # ranks them by price, then `seq`, itself; the order list and a
+        # reservation read one user's through the second. Partial, so a filled
+        # or cancelled order costs neither index anything.
         Index(
             "ix_ledger_orders_open_by_market",
             "market_id",
