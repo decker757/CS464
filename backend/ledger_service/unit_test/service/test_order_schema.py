@@ -5,9 +5,9 @@ price". Asserted against Postgres, for `test_book_schema.py`'s reason. Each
 refusal is pinned to the constraint that made it, so a refusal from some other
 rule does not pass for this one. Every refused row below is built to break
 exactly one rule; Postgres names only the first failing CHECK in name order,
-which is why `no_shares` is FILLED. Column types, nullability and every
-constraint's definition are held by the catalog comparison in
-`test_migrations.py`.
+which is why `no_shares` is FILLED and `limit_price_1` has a budget of 100.
+Column types, nullability and every constraint's definition are held by the
+catalog comparison in `test_migrations.py`.
 """
 
 from __future__ import annotations
@@ -164,14 +164,27 @@ async def test_a_row_breaking_one_rule_is_refused_by_that_rule(
             {"quantity": Decimal("0.0001"), "budget": Decimal("0.0001")},
             id="quantity_one_tick",
         ),
-        pytest.param({"filled_value": Decimal("60.0000")}, id="filled_value_equal_to_budget"),
+        # Every share filled at the limit spends the whole budget.
+        pytest.param(
+            {
+                "status": OrderStatus.FILLED,
+                "filled_quantity": Decimal("100.0000"),
+                "filled_value": Decimal("60.0000"),
+            },
+            id="filled_value_equal_to_budget",
+        ),
         # 0.6000 × 33.3335 is 20.0001 exactly.
         pytest.param(
             {"quantity": Decimal("33.3335"), "budget": Decimal("20.0001")},
             id="budget_covering_the_limit_exactly",
         ),
+        # Filled below the limit, so it spent less than its budget.
         pytest.param(
-            {"status": OrderStatus.FILLED, "filled_quantity": Decimal("100.0000")},
+            {
+                "status": OrderStatus.FILLED,
+                "filled_quantity": Decimal("100.0000"),
+                "filled_value": Decimal("55.1234"),
+            },
             id="filled_equal_to_quantity",
         ),
         pytest.param(
