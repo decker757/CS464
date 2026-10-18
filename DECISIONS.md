@@ -6074,6 +6074,12 @@ complete. Accepted as an edge. The fix is either a minimum seed in
 market_service's validation (decker757's), or settlement committing its
 record and audit entry alone, which would need its own decision.
 
+**Amended 2026-10-18.** A third kind of batch is refused the same way, before
+any lock: one whose `Movement.reservation_drop` is below zero, or is nonzero
+on a movement without exactly one USER account. Both are built by the server,
+like the key, so both are a bug and take this entry's 500. See "A refusal from
+the running check reports the balance before the batch".
+
 ---
 
 ### D-NEW — `post_all` asks about pending writes before it classifies a match, and replays only a whole batch
