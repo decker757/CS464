@@ -9528,3 +9528,42 @@ sides, updated under the book lock beside `filled_quantity`.
 **Rejected.** *A `proceeds` column for sells*: two rollups where one
 serves, each bound to its side by a CHECK. *A sell's average from its
 fills*: the unindexed query above.
+
+---
+
+### D-NEW — The cascade takes the most aggressive executable order until none is left, and passes over an order it cannot fill
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** `core/limit_orders.py::cascade_of` repeats one step until it
+finds nothing: among the market's open orders that have not filled in this
+commit, in priority order ("Priority is price, then an identity `seq`
+assigned under the book lock"), take the first that is executable at the
+current `q` ("An order is executable when its floored fill passes the
+per-fill limit check; a resting order is one that is not"), and fill it. An
+order that is not executable is passed over, not a stop. An order that has
+filled is not taken again in the same commit.
+
+**Why.** An order can fail the check while one behind it passes: a
+remainder of `0.0001` is never executable, because its cost rounds up to a
+whole tick or its proceeds down to nothing, and a larger order with a
+slightly higher `d` can still fill. Stopping at the first order that cannot
+fill would leave the order behind it, the one that could fill, executable
+when the cascade ends, which breaks the invariant in "Resting orders fill
+against the AMM inside the trade that moved the price". Ending only when no
+waiting order is executable makes the invariant hold by construction. The
+loop runs at most `m + 1` times for `m` open orders, that decision's count,
+and each order fills at most once, which the realtime contract's one order
+frame per fill depends on.
+
+**Rejected.** *Stopping at the first order that cannot fill*: the case
+above. *One pass in priority order*: it finds the same fills only while no
+fill makes an order passed over earlier executable, and that rests on an
+argument about rounding at the tick rather than on the loop's exit
+condition.
+
+**Notes.** The planner is pure: it takes `q`, `b` and the open orders, and
+returns the fills in order, each priced by `trade_cost_of` against the `q`
+the fill before it left. A fill that `trade_cost_of` refuses as
+`cost_below_tick` or `proceeds_below_tick` is not executable. A market with
+more than two outcomes holds no orders, so a cascade there plans nothing.
