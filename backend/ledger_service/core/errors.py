@@ -420,6 +420,36 @@ class QuoteStale(LedgerError):
         super().__init__(self.message)
 
 
+class OrderCrossesBook(LedgerError):
+    """A new limit order would fire, or be fired by, an open one. [T-6] #26.
+
+    ADR 0024, "Resting orders fill against the AMM inside the trade that moved
+    the price", keeps every open order unable to fill at the current price, and
+    "A placement that would cross the book is refused, `order_crosses_book`"
+    refuses the placement that would break that against another open order
+    pushing the price the other way. Your own orders count.
+
+    409 for `InsufficientFunds`'s reason: nothing about the request is
+    malformed, and the same limit is accepted once no opposing order is in the
+    way. `bound` is the nearest limit on the other side, in the new order's
+    own outcome terms, and the limit must clear it strictly: below it for a
+    buy, above it for a sell.
+    """
+
+    status_code = 409
+    code = "order_crosses_book"
+
+    def __init__(self, *, side: str, bound: Decimal) -> None:
+        self.side = side
+        self.bound = bound
+        direction = "below" if side == "buy" else "above"
+        self.message = (
+            f"An order is in the way at this price: a {side}'s limit must be "
+            f"{direction} {bound}"
+        )
+        super().__init__(self.message)
+
+
 class LeaderboardRefreshed(LedgerError):
     """A leaderboard cursor names a ranking that is no longer stored. [L-1] #38.
 
