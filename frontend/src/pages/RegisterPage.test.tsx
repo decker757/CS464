@@ -65,6 +65,40 @@ describe('RegisterPage — client-side validation', () => {
     expect(mockLogin).not.toHaveBeenCalled()
   })
 
+  it('moves focus to the first invalid field when a submit is refused', async () => {
+    const user = userEvent.setup()
+    renderRegisterPage()
+
+    // Username is fine and Email is not, so landing on Email is the first
+    // *invalid* field rather than simply the first field on the form.
+    await fillForm(user, { email: 'a@b' })
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(screen.getByLabelText('Email')).toHaveFocus()
+  })
+
+  it('states the username rule on the field, before anything is submitted', () => {
+    renderRegisterPage()
+
+    expect(screen.getByLabelText('Username')).toHaveAccessibleDescription(
+      '3–32 characters: letters, numbers, hyphens and underscores.'
+    )
+  })
+
+  it('checks a field when it is left, not while it is being typed', async () => {
+    const user = userEvent.setup()
+    renderRegisterPage()
+
+    await user.type(screen.getByLabelText('Username'), 'alice tan')
+    expect(fieldError('Username')).not.toBeInTheDocument()
+
+    await user.tab()
+
+    expect(fieldError('Username')).toHaveTextContent(
+      'Username may only contain letters, numbers, hyphens and underscores.'
+    )
+  })
+
   it('blocks submission and shows error when email has no domain dot', async () => {
     const user = userEvent.setup()
     renderRegisterPage()
