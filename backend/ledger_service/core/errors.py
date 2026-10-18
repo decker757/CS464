@@ -73,6 +73,12 @@ class InsufficientFunds(LedgerError):
     taken by then; a refusal at the start of the batch carries `shortfall`
     instead, how far the reservation there exceeds the balance. D-NEW "A
     refusal from the running check reports the balance before the batch".
+
+    `movement_key` is the idempotency key of the movement the check refused
+    after, None at the start of the batch, and never in the response: it is
+    how a caller tells its own movement's refusal from a fill's (D-NEW "A
+    fill the running check refuses inside a cascade is `500
+    cascade_fill_refused`").
     """
 
     status_code = 409
@@ -86,12 +92,14 @@ class InsufficientFunds(LedgerError):
         available: Decimal,
         required: Decimal | None = None,
         shortfall: Decimal | None = None,
+        movement_key: str | None = None,
     ) -> None:
         self.balance = balance
         self.reserved = reserved
         self.available = available
         self.required = required
         self.shortfall = shortfall
+        self.movement_key = movement_key
         if shortfall is None:
             self.message = (
                 f"This account holds {balance} credits, {available} of them "
@@ -536,6 +544,25 @@ class PendingWritesOnReplay(LedgerError):
     message = (
         "A caller reached a replay with unwritten work already pending in "
         "the session. This is a bug in this service, not in the request."
+    )
+
+
+class CascadeFillRefused(LedgerError):
+    """The overdraft check refused a trade's batch anywhere but at the trade's
+    own movement. [T-7] #27, ADR 0024.
+
+    Impossible by construction, because every fill is bounded by its own
+    order's reservation, so this is a bug in the server, like
+    `MalformedBatch`, and takes its status. It names no figures: they would
+    be another account's. D-NEW "A fill the running check refuses inside a
+    cascade is `500 cascade_fill_refused`".
+    """
+
+    status_code = 500
+    code = "cascade_fill_refused"
+    message = (
+        "A resting order this trade would have filled was refused by the "
+        "overdraft check. This is a bug in this service, not in the request."
     )
 
 
