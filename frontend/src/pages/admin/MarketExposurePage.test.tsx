@@ -78,7 +78,27 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByText(/exceeds the pool/i)).not.toBeInTheDocument()
   })
 
-  it('flags when an outcome\'s payout exceeds the pool', async () => {
+  it('states the worst case: the outcome the pool covers least well, and what it leaves', async () => {
+    // Nothing is short here, and the admin still gets the figure: the
+    // smallest residue of the two, named with the outcome that produces it.
+    mockMarket('mkt-1', market())
+    mockExposure('mkt-1', {
+      pool: '1250.0000',
+      payout_exceeds_pool: false,
+      result: null,
+      winning_outcome_id: null,
+      outcomes: [
+        { outcome_id: 'o-no', position: 1, shares_outstanding: '45.0000', payout_if_wins: '45.0000', residue_if_wins: '1205.0000' },
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '120.0000', payout_if_wins: '120.0000', residue_if_wins: '1130.0000' },
+      ],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('If Yes wins, the pool keeps 1,130.0000.')).toBeInTheDocument()
+  })
+
+  it('states the worst case as a top-up, and names the offending outcome in the alert', async () => {
     mockMarket('mkt-1', market())
     mockExposure('mkt-1', {
       pool: '100.0000',
@@ -87,12 +107,14 @@ describe('MarketExposurePage', () => {
       winning_outcome_id: null,
       outcomes: [
         { outcome_id: 'o-yes', position: 0, shares_outstanding: '500.0000', payout_if_wins: '500.0000', residue_if_wins: '-400.0000' },
+        { outcome_id: 'o-no', position: 1, shares_outstanding: '20.0000', payout_if_wins: '20.0000', residue_if_wins: '80.0000' },
       ],
     })
 
     renderPage()
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/exceeds the pool/i)
+    expect(await screen.findByText('If Yes wins, the platform tops up 400.0000.')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('The payout for Yes exceeds the pool.')
   })
 
   it('shows a 200-with-nothing market as no trades yet, not an error', async () => {
@@ -107,7 +129,7 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('shows a settled market\'s result instead of a pool to protect', async () => {
+  it('names the winning outcome on a settled market, instead of a pool to protect', async () => {
     mockMarket('mkt-1', market())
     mockExposure('mkt-1', {
       pool: null,
@@ -121,8 +143,36 @@ describe('MarketExposurePage', () => {
 
     renderPage()
 
-    expect(await screen.findByText(/has settled/i)).toBeInTheDocument()
+    expect(await screen.findByText('This market has settled; Yes won and the pool has been paid out.')).toBeInTheDocument()
     expect(screen.queryByText('Pool')).not.toBeInTheDocument()
+  })
+
+  it('says when the figures were read, which trade they reflect, and reads them again on Refresh', async () => {
+    // Exposure moves with every trade, so an admin who left the tab open
+    // through a burst must be able to see that and ask again (#361).
+    mockMarket('mkt-1', market())
+    let reads = 0
+    server.use(http.get(`${LEDGER_BASE}/ledger/markets/mkt-1/exposure`, () => {
+      reads += 1
+      return HttpResponse.json({
+        market_id: 'mkt-1',
+        state_version: reads,
+        pool: reads === 1 ? '100.0000' : '250.0000',
+        payout_exceeds_pool: false,
+        result: null,
+        winning_outcome_id: null,
+        outcomes: [{ outcome_id: 'o-yes', position: 0, shares_outstanding: '10.0000', payout_if_wins: '10.0000', residue_if_wins: reads === 1 ? '90.0000' : '240.0000' }],
+      })
+    }))
+    const actor = userEvent.setup()
+    renderPage()
+    expect(await screen.findByText('100.0000')).toBeInTheDocument()
+    expect(screen.getByText(/read at .* · state version 1$/i)).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    expect(await screen.findByText('250.0000')).toBeInTheDocument()
+    expect(screen.getByText(/read at .* · state version 2$/i)).toBeInTheDocument()
   })
 
   it('shows an error when the market fails to load', async () => {
