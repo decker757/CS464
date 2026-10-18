@@ -387,6 +387,32 @@ def _trade_movement_of(
     )
 
 
+def _price_event_of(
+    market_id: uuid.UUID,
+    *,
+    state_version: int,
+    outcomes: Sequence[MarketOutcome],
+    after_q: Sequence[Decimal],
+    b: Decimal,
+    now: datetime,
+) -> PriceEvent:
+    """The price frame for the book a commit left behind.
+
+    `book_prices.priced`, the snapshot's own function, so the frame and
+    `GET .../snapshot` give the same strings for the same state because there
+    is one quantizer, not because two copies agree.
+    """
+    return PriceEvent(
+        market_id=market_id,
+        state_version=state_version,
+        prices=[
+            OutcomePrice(outcome_id=p.outcome_id, position=p.position, price=p.price)
+            for p in book_prices.priced(outcomes, lmsr_prices(after_q, b))
+        ],
+        occurred_at=now,
+    )
+
+
 async def execute(
     session: AsyncSession,
     market_id: uuid.UUID,
@@ -559,17 +585,13 @@ async def execute(
     # rejection or a replay — both of which have already returned by this
     # point. A publish failure is swallowed inside `bus.publish` and never
     # reaches here.
-    # `book_prices.priced`, the snapshot's own function, so the frame and
-    # `GET .../snapshot` give the same strings for the same state because
-    # there is one quantizer, not because two copies agree.
-    event = PriceEvent(
-        market_id=market_id,
+    event = _price_event_of(
+        market_id,
         state_version=book.state_version,
-        prices=[
-            OutcomePrice(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in book_prices.priced(outcomes, lmsr_prices(cost.after_q, b))
-        ],
-        occurred_at=now,
+        outcomes=outcomes,
+        after_q=cost.after_q,
+        b=b,
+        now=now,
     )
     await bus.publish(redis_client, event, transaction_id=transaction.id)
 
