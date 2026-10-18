@@ -315,7 +315,8 @@ def test_an_order_frame_reaches_its_owners_socket_and_nobody_elses(
     token's user, so another user's order goes nowhere near it and its own
     arrives with no subscription. The subscription is to an unrelated market,
     only so that a price frame published last is something to receive if
-    neither order frame arrives, rather than a wait that never ends."""
+    neither order frame arrives, rather than a wait that never ends; the first
+    frame is checked before anything else is read, for the same reason."""
     client, publisher = connected_client
     owner = uuid.uuid4()
     theirs = make_order_message(uuid.uuid4())
@@ -327,11 +328,8 @@ def test_an_order_frame_reaches_its_owners_socket_and_nobody_elses(
         publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(ours))
         _publish(publisher, market_id)
 
-        first = websocket.receive_json()
-        second = websocket.receive_json()
-
-    assert first == {"type": "order", **ours}
-    assert second["type"] == "price"
+        assert websocket.receive_json() == {"type": "order", **ours}
+        assert websocket.receive_json()["type"] == "price"
 
 
 # ---------------------------------------------------------------------------

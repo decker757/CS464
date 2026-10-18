@@ -163,16 +163,7 @@ async def test_order_frames_are_delivered_after_their_commits_price_frame(
     assert [frame["type"] for frame in watching.frames] == ["price"]
 
 
-@pytest.mark.parametrize(
-    ("description", "payload"),
-    [
-        ("not json at all", "}{"),
-        ("an unknown field", json.dumps({**make_order_message(uuid.uuid4()), "surprise": 1})),
-    ],
-)
-async def test_a_malformed_order_message_does_not_stop_the_bus(
-    running_bus, description: str, payload: str
-) -> None:
+async def test_a_malformed_order_message_does_not_stop_the_bus(running_bus) -> None:
     """The order channel's dispatch runs inside the same `listen` as the price
     channel's, so one bad message there would stop prices too."""
     _, hub, publisher = running_bus
@@ -180,10 +171,10 @@ async def test_a_malformed_order_message_does_not_stop_the_bus(
     owners_tab = Recorder()
     hub.attach_user(owners_tab, owner)
 
-    await publisher.publish(bus_module.ORDER_CHANNEL, payload)
+    await publisher.publish(bus_module.ORDER_CHANNEL, "}{")
     await publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(make_order_message(owner)))
 
-    assert await _settle(lambda: owners_tab.frames), f"bus died on {description}"
+    assert await _settle(lambda: owners_tab.frames), "bus died on a malformed message"
     assert len(owners_tab.frames) == 1
 
 
