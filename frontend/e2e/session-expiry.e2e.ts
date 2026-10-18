@@ -16,7 +16,10 @@ test('an expired session goes to the login page and comes back to where it was',
   // one reconnects, so a session cleared while sitting there expires on
   // whichever request happens to be in the air. This page asks once and then
   // waits, which leaves the click below as the only thing that can trigger it.
-  await page.getByRole('link', { name: 'History' }).click()
+  // `exact`, as the other specs reaching these two links are: an accessible
+  // name matches by substring, and a market card whose question happens to
+  // contain the word is a link too.
+  await page.getByRole('link', { name: 'History', exact: true }).click()
   // The signup grant, the one entry a trader who has never traded has
   // (ADR 0009). Waiting for it is waiting for this page's only request.
   await expect(page.getByText('Starting grant')).toBeVisible()
@@ -25,7 +28,7 @@ test('an expired session goes to the login page and comes back to where it was',
   // believes it is signed in — which is the whole bug.
   await page.context().clearCookies()
 
-  await page.getByRole('link', { name: 'Portfolio' }).click()
+  await page.getByRole('link', { name: 'Portfolio', exact: true }).click()
 
   await expect(page).toHaveURL(/\/login$/)
   await expect(page.getByText('Your session expired, please sign in again.')).toBeVisible()
