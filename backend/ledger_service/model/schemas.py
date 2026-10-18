@@ -463,8 +463,9 @@ class PreviewOut(BaseModel):
         description=(
             "`payout_if_wins` less the credits this buy costs, which is "
             "`payout_if_wins + total`, exact at scale 4 with no rounding of "
-            "its own. Can be zero or a tick below on the smallest buys, which "
-            "are charged a whole tick. Null on a sell."
+            "its own. Can be zero or a tick below on a buy charged its whole "
+            "quantity, such as the smallest buys or a buy of an outcome "
+            "priced near one. Null on a sell."
         ),
         examples=["2.6848"],
     )
