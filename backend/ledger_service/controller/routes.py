@@ -429,6 +429,8 @@ async def preview_trade(
         quantity=result.quantity,
         total=result.total,
         average_price=result.average_price,
+        payout_if_wins=result.payout_if_wins,
+        profit_if_wins=result.profit_if_wins,
         prices=_prices_out(result.prices),
         post_trade_prices=_prices_out(result.post_trade_prices),
     )
