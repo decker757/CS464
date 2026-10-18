@@ -10,6 +10,11 @@ test('a visitor fills in the form and arrives logged in', async ({ page }) => {
   const username = uniqueName('reg')
 
   await page.goto('/register')
+
+  // The shell `index.html` serves. Nothing in Vitest renders it, so this is
+  // the only test that would notice the tab going back to saying "frontend".
+  await expect(page).toHaveTitle(/PredictSMU/)
+
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Email').fill(`${username}@example.com`)
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD)
@@ -38,6 +43,9 @@ test('a username someone already has is refused, with the reason on the field', 
   // the text alone would still pass if the `details` stopped arriving and the
   // message moved to the banner — the exact regression this is here for.
   await expect(page.getByLabel('Username')).toHaveAttribute('aria-invalid', 'true')
+  // And the cursor is put on it: a refused submit moves focus to the first
+  // field to fix, for a server's per-field error as much as for a local one.
+  await expect(page.getByLabel('Username')).toBeFocused()
   await expect(page.getByText('That username is already registered.')).toBeVisible()
   await expect(page).toHaveURL(/\/register$/)
 })

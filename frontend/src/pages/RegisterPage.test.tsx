@@ -77,11 +77,17 @@ describe('RegisterPage — client-side validation', () => {
     expect(screen.getByLabelText('Email')).toHaveFocus()
   })
 
-  it('states the username rule on the field, before anything is submitted', () => {
+  it('states the username and password rules on their fields, before anything is submitted', () => {
     renderRegisterPage()
 
     expect(screen.getByLabelText('Username')).toHaveAccessibleDescription(
       '3–32 characters: letters, numbers, hyphens and underscores.'
+    )
+    // Password is the two-hop one — Field clones PasswordInput, which spreads
+    // onto TextInput, which spreads onto the input — so it is worth its own
+    // assertion rather than being the same path with other words in it.
+    expect(screen.getByLabelText('Password')).toHaveAccessibleDescription(
+      'Must be at least 12 characters.'
     )
   })
 
