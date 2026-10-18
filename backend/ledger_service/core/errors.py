@@ -99,8 +99,8 @@ class InsufficientFunds(LedgerError):
             )
         else:
             self.message = (
-                f"This account holds {balance} credits and its buy orders "
-                f"would reserve {reserved}: {shortfall} short."
+                f"This account holds {balance} credits, {available} of them "
+                f"available, and this order's budget needs {shortfall} more."
             )
         super().__init__(self.message)
 
