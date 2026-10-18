@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 import redis.asyncio as redis
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from model.schemas import PriceEvent
 from service.ordering import VersionGate
@@ -49,20 +49,21 @@ class PriceBus:
         return self._connected
 
     @staticmethod
-    def _decode(raw: Any) -> PriceEvent | None:
-        """Validate a message onto `PriceEvent`, or log a warning and drop it.
+    def _decode[Event: BaseModel](raw: Any, model: type[Event], *, channel: str) -> Event | None:
+        """Validate a message from `channel` onto `model`, or log a warning and
+        drop it.
 
         A warning, because a producer bug shows up only as prices that stop
         updating, and this line is what names the service at fault.
         """
         if not isinstance(raw, str):
-            logger.warning("ignoring non-text message on %s", PRICE_CHANNEL)
+            logger.warning("ignoring non-text message on %s", channel)
             return None
 
         try:
-            return PriceEvent.model_validate_json(raw)
+            return model.model_validate_json(raw)
         except ValidationError as exc:
-            logger.warning("ignoring malformed price event: %s", exc)
+            logger.warning("ignoring malformed message on %s: %s", channel, exc)
             return None
 
     def _dispatch(self, raw: Any) -> None:
@@ -71,7 +72,7 @@ class PriceBus:
         Must not raise: it runs inside `listen`, and an exception escaping
         would tear down the subscription for every client.
         """
-        event = self._decode(raw)
+        event = self._decode(raw, PriceEvent, channel=PRICE_CHANNEL)
         if event is None:
             return
 
