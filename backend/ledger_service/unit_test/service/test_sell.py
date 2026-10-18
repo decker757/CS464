@@ -36,6 +36,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import terms_client_over
+from unit_test.order_fixtures import add_order
 from unit_test.sell_fixtures import (
     AT_ZERO,
     BASIS,
@@ -423,6 +424,43 @@ async def test_a_position_in_one_outcome_cannot_fund_a_sell_of_another(
 
     assert refused.value.held == Decimal("0.0000")
     await assert_wrote_nothing(session, upstream.market_id, before)
+
+
+@pytest.mark.parametrize(
+    ("quantity", "allowed"),
+    [(HELD - Decimal("1.0000"), True), (HELD - Decimal("1.0000") + TICK, False)],
+    ids=["the_unreserved_shares", "a_tick_into_the_reserved_ones"],
+)
+async def test_an_instant_sell_cannot_spend_shares_a_sell_order_reserves(
+    session: AsyncSession, quantity: Decimal, allowed: bool
+) -> None:
+    """ADR 0024: "An instant sell is limited to the position less the shares
+    the owner's live sells reserve, checked under the book lock". A resting
+    sell holds one of the 54.3333 shares; the other 53.3333 can be sold, and a
+    tick more is refused with `reserved` beside `held` and `requested`."""
+    upstream, user_id = await _holder(session)
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=upstream.market_id,
+        outcome_id=upstream.outcomes[0],
+        budget=None,
+    )
+    await session.commit()
+
+    if allowed:
+        await sell(session, upstream, user_id=user_id, quantity=quantity)
+        held, _ = await holding(session, user_id, upstream.market_id, upstream.outcomes[0])
+        assert held == Decimal("1.0000")
+        return
+
+    with pytest.raises(insufficient_shares_held()) as refused:
+        await sell(session, upstream, user_id=user_id, quantity=quantity)
+    assert (refused.value.held, refused.value.reserved, refused.value.requested) == (
+        HELD,
+        Decimal("1.0000"),
+        quantity,
+    )
 
 
 async def test_the_holding_check_is_read_after_the_book_lock_and_takes_no_lock(

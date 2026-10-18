@@ -181,7 +181,9 @@ async def test_insufficient_shares_held_is_409_with_decimal_string_details(
 ) -> None:
     """Both halves of the criterion: a caller with no position is told
     `held: "0.0000"`, and a holder asking for more is told what they hold.
-    `requested` is normalised to scale 4 — `"10"` comes back `"10.0000"`."""
+    `requested` is normalised to scale 4 — `"10"` comes back `"10.0000"`.
+    `reserved` is what the caller's sell orders hold back (ADR 0024), none
+    here."""
     client, recorder = trade_client
     market = _Market()
     _Terms().install(monkeypatch, market)
@@ -205,10 +207,12 @@ async def test_insufficient_shares_held_is_409_with_decimal_string_details(
         assert response.json()["error"]["code"] == "insufficient_shares_held"
     assert stranger.json()["error"]["details"] == {
         "held": "0.0000",
+        "reserved": "0.0000",
         "requested": "10.0000",
     }
     assert over.json()["error"]["details"] == {
         "held": "54.3333",
+        "reserved": "0.0000",
         "requested": "54.3334",
     }
     assert len(recorder.calls) == published

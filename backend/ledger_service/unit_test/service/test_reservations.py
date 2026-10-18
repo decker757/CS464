@@ -127,3 +127,53 @@ async def test_every_live_buy_order_adds_its_own_remainder(
     assert await reservations.reserved_of(session, user_id) == COUNTED + Decimal(
         "30.0001"
     )
+
+
+@pytest.mark.parametrize(
+    ("other", "expected"),
+    [
+        ("open_sell", Decimal("1.5000")),
+        ("cancelled_sell", Decimal("0.5000")),
+        ("filled_sell", Decimal("0.5000")),
+        ("buy", Decimal("0.5000")),
+        ("another_users_sell", Decimal("0.5000")),
+        ("sell_of_the_other_outcome", Decimal("0.5000")),
+        ("sell_in_another_market", Decimal("0.5000")),
+        # Every order on the market is released by its result row.
+        ("settled_market", Decimal("0.0000")),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+async def test_reserved_shares_are_the_users_live_sells_of_that_outcome(
+    session: AsyncSession, other: str, expected: Decimal
+) -> None:
+    """ADR 0024: a sell reserves `quantity - filled_quantity` of its outcome
+    while it is live. One counted sell, half filled, holds 0.5000; a second
+    order beside it in the same market and outcome counts only if it is
+    another live sell of this user's, so a missing filter shows as a wrong
+    sum."""
+    user_id = uuid.uuid4()
+    market_id, outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
+    other_market_id, other_outcome_ids = await market_with_outcomes(
+        session, liquidity_b=LIQUIDITY_B
+    )
+    here = {"market_id": market_id, "outcome_id": outcome_ids[0]}
+    await add_order(session, user_id=user_id, budget=None, filled_value="0.4000", **here)
+
+    owner = uuid.uuid4() if other == "another_users_sell" else user_id
+    where = here
+    if other == "sell_of_the_other_outcome":
+        where = {"market_id": market_id, "outcome_id": outcome_ids[1]}
+    elif other == "sell_in_another_market":
+        where = {"market_id": other_market_id, "outcome_id": other_outcome_ids[0]}
+    status = {"cancelled_sell": "cancelled", "filled_sell": "filled"}.get(other, "open")
+    budget = "1.0000" if other == "buy" else None
+    await add_order(session, user_id=owner, budget=budget, status=status, **where)
+    if other == "settled_market":
+        await _settle(session, market_id, outcome_ids[0])
+
+    reserved = await reservations.reserved_shares_of(
+        session, user_id, market_id=market_id, outcome_id=outcome_ids[0]
+    )
+
+    assert reserved == expected
