@@ -9718,3 +9718,44 @@ which breaks the invariant the next trade's cascade relies on.
 paths": its cascade finds nothing while the book is uncrossed (ADR 0024,
 "Termination"), so the only refusal it can meet is its own budget's, at the
 start of the batch.
+
+---
+
+### D-NEW — A cancel takes the book lock and no account lock
+
+**Date:** 2026-10-18 · **Ticket:** #28 · **Status:** active
+
+**Decision.** `POST /ledger/orders/{order_id}/cancel` reads the caller's order's
+`market_id` without a lock, takes that market's book row with `FOR UPDATE`,
+reads the order again under it, and either refuses or writes `status =
+'cancelled'` and `cancelled_at`, then commits. It takes no account lock and
+writes no entry. A filled order is `order_already_filled`, a cancelled one
+`order_already_cancelled`, and an open one on a market with a result
+`order_released`, in that order.
+
+**Why.** Every writer of an order row takes the book lock first (the
+2026-10-17 amendment to "The holdings check is read under the book lock, and
+the position takes no lock of its own"), so the cancel and a fill queue on one
+row, and whichever takes it first commits first. The re-read under the lock is
+what turns that into an answer: a fill that committed first has left either a
+smaller remainder or none. No account lock, because a cancel only lowers a
+reservation: every path that reads one under an account lock is checking that
+a debit fits, and a check that read it before the cancel committed read a
+higher figure, so it was stricter than it needed to be, never looser. The
+unlocked read decides only which book
+to lock and whether the order is the caller's, and neither can change: an
+order's market and owner are fixed at placement.
+
+**Rejected.** *An account lock after the book row*: it would serialise a
+cancel behind the owner's trades in other markets for no invariant. *A `FOR
+UPDATE` on the order row*: the book lock already holds it still, and the
+amendment's reversal trigger has not fired. *Loading the order before the
+lock*: the session's identity map would then answer the re-read with the
+stale row unless it were told to refresh, so the first read selects one
+column.
+
+**Notes.** The status is read before the result because a filled order on a
+market with a result had nothing left for the result to release.
+`test_cancel_order_concurrency.py` races a cancel against a fill in both
+orderings and the partial case; each test fails with the cancel's
+`books.lock_book` removed.

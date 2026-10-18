@@ -40,20 +40,22 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
 | POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024) |
 | GET | `/ledger/orders/me` | My live limit orders (ADR 0024) |
-| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024, not built yet) |
+| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024) |
 | GET | `/health` | Liveness and readiness probe |
 
-**Three routes write, and none takes money.** `POST .../trades` takes no
+**Four routes write, and none takes money.** `POST .../trades` takes no
 account, no amount and no leg, so a trader's own token is a safe credential
 for it in a way it could never be for a route that accepted one. That is
 [T-2] #22's answer to ADR 0009's deferred question. `POST .../orders` is the
 same shape: the body names a price and a quantity, the budget is computed and
-the account is the token's (ADR 0024). `POST .../settlement`
-takes an administrator's token and an empty body: the winner comes from
-market_service, and the holders and amounts come from this service's own
-positions (ADR 0009's second amendment). Every other route reads, and no
-route ever edits or removes an entry. The ledger is append-only, enforced by
-a database trigger rather than by the absence of a route.
+the account is the token's (ADR 0024). `POST .../cancel` takes an empty
+body: the order is the caller's, and what it releases is derived from the
+order row. `POST .../settlement` takes an administrator's token and an empty
+body: the winner comes from market_service, and the holders and amounts come
+from this service's own positions (ADR 0009's second amendment). Every other
+route reads, and no route ever edits or removes an entry. The ledger is
+append-only, enforced by a database trigger rather than by the absence of a
+route.
 
 The balance route, the history route, the portfolio route, the preview route
 and the snapshot route are each an exception to "reads don't write," and for
@@ -1123,15 +1125,14 @@ snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
 
-## Limit orders — ADR 0024 (Accepted): placing, listing and the cascade are built
+## Limit orders — ADR 0024 (Accepted): placing, listing, the cascade and cancelling are built
 
-[T-6] #26, [T-7] #27, [T-8] #28. **Placing an order, listing your orders and
-the cascade are built. Cancelling is not yet**, and neither is the `order`
-frame on the realtime feed. A trade that moves the price past a resting
-order's limit fills that order inside the trade's own transaction, and a
-placement that is marketable when it arrives fills at once, as below. This
-section is the contract [FE][T-6] #61 builds against. Why the design looks
-like this:
+[T-6] #26, [T-7] #27, [T-8] #28. **Placing an order, listing your orders, the
+cascade and cancelling are built. The `order` frame on the realtime feed is
+not yet.** A trade that moves the price past a resting order's limit fills
+that order inside the trade's own transaction, and a placement that is
+marketable when it arrives fills at once, as below. This section is the
+contract [FE][T-6] #61 builds against. Why the design looks like this:
 [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
 Accepted.
 
@@ -1826,6 +1827,6 @@ the refusal, and the response names no other account's figures.
 
 `market_not_binary` and `order_crosses_book` (409, new in [T-6] #26) are the
 placement's own. `order_not_found`, `order_already_filled`,
-`order_already_cancelled` and `order_released` are decided by ADR 0024 for
-the cancel route and are not built yet. All six are documented in "Limit
-orders" above.
+`order_already_cancelled` and `order_released` (404 and 409, new in [T-8]
+#28) are the cancel route's own. All six are documented in "Limit orders"
+above.
