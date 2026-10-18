@@ -129,6 +129,7 @@ async def test_an_admin_read_of_an_id_with_no_account_is_zero_with_no_account(
     assert balance.status_code == entries.status_code == 200
     assert balance.json()["account_id"] is None
     assert balance.json()["balance"] == "0.0000"
+    assert balance.json()["reserved"] == balance.json()["available"] == "0.0000"
     assert entries.json()["entries"] == []
 
 
@@ -160,6 +161,59 @@ async def test_the_balance_is_a_string_not_a_number(
     body = (await client.get(ME, headers=trader_headers)).json()
 
     assert isinstance(body["balance"], str)
+
+
+async def test_a_user_with_no_orders_reserves_nothing_and_has_it_all_available(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """ADR 0024's balance contract: `reserved` and `available` are decimal
+    strings at scale 4 like `balance`, so a user with no orders reads
+    "0.0000", not "0"."""
+    body = (await client.get(ME, headers=trader_headers)).json()
+
+    assert body["reserved"] == "0.0000"
+    assert body["available"] == body["balance"]
+
+
+async def test_the_balance_route_reports_what_open_buy_orders_reserve(
+    client: AsyncClient,
+    session,
+    trader_headers: dict[str, str],
+    admin_headers: dict[str, str],
+    user_id: uuid.UUID,
+    starting_credits: Decimal,
+) -> None:
+    """ADR 0024: `balance` keeps its meaning and still counts reserved
+    credits; `reserved` is what the user's live buy orders could still spend,
+    and `available` is the difference. The admin route returns the same
+    figures."""
+    from unit_test.market_fixtures import market_with_outcomes  # noqa: PLC0415
+    from unit_test.order_fixtures import add_order  # noqa: PLC0415
+
+    await client.get(ME, headers=trader_headers)
+    market_id, outcome_ids = await market_with_outcomes(
+        session, liquidity_b=Decimal("100.0000")
+    )
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=market_id,
+        outcome_id=outcome_ids[0],
+        budget="48.1848",
+    )
+    await session.commit()
+
+    own = (await client.get(ME, headers=trader_headers)).json()
+    admin = (await client.get(_user(user_id), headers=admin_headers)).json()
+
+    assert Decimal(own["balance"]) == starting_credits
+    assert own["reserved"] == "48.1848"
+    assert Decimal(own["available"]) == starting_credits - Decimal("48.1848")
+    assert (admin["balance"], admin["reserved"], admin["available"]) == (
+        own["balance"],
+        own["reserved"],
+        own["available"],
+    )
 
 
 

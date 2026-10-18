@@ -654,6 +654,45 @@ async def test_an_insufficient_balance_is_refused_and_writes_nothing(
     assert await _committed_state(lambda s: balance_of_user(s, user_id)) == credits
 
 
+async def test_credits_a_buy_order_reserves_cannot_pay_for_a_trade(
+    session: AsyncSession,
+) -> None:
+    """ADR 0024: `insufficient_funds` is checked against `available`, not
+    `balance`. The trader's buy order in another market leaves one tick less
+    available than the trade costs, though the balance covers it; the refusal
+    says what is reserved and what was available."""
+    from unit_test.market_fixtures import market_with_outcomes  # noqa: PLC0415
+    from unit_test.order_fixtures import add_order  # noqa: PLC0415
+
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    credits = await fund(session, user_id)
+    cost = -expected_total(Q, 0, "buy", QUANTITY)
+    assert cost <= credits
+    budget = credits - cost + Decimal("0.0001")
+    elsewhere, outcome_ids = await market_with_outcomes(session, liquidity_b=B)
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=elsewhere,
+        outcome_id=outcome_ids[0],
+        budget=str(budget),
+    )
+    await session.commit()
+    before = await entry_count(session)
+
+    with pytest.raises(errors().InsufficientFunds) as refusal:
+        await buy(session, upstream, user_id=user_id, quantity=QUANTITY)
+    await session.rollback()
+
+    assert refusal.value.balance == credits
+    assert refusal.value.required == cost
+    assert refusal.value.reserved == budget
+    assert refusal.value.available == cost - Decimal("0.0001")
+    assert await _committed_state(entry_count) == before
+
+
 async def test_an_unknown_outcome_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:

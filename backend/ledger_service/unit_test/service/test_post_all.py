@@ -493,10 +493,14 @@ async def test_a_fingerprint_mismatch_on_a_later_movement_is_a_reused_key(
 # =========================================================================
 # Overdrafts
 # =========================================================================
-async def test_a_user_is_netted_across_the_batch(session: AsyncSession) -> None:
+async def test_two_debits_affordable_alone_are_refused_together(
+    session: AsyncSession,
+) -> None:
     """Two debits each affordable alone, one tick over together. Refused by
-    the overdraft check: the keys are fresh, so the lookup classifies nothing.
-    The batch commits once, so only the end state is ever visible."""
+    the overdraft check at the second, in movement order (ADR 0024): the keys
+    are fresh, so the lookup classifies nothing. `balance` is the account's
+    before the batch and `required` what the batch had taken by the refused
+    movement."""
     platform = await _platform(session)
     (user,) = await _new_accounts(session, AccountKind.USER, 1)
     await _fund(session, platform, user, "60.0009")
