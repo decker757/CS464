@@ -709,8 +709,7 @@ The per-user holdings check belongs to [T-3] #23 and only means anything
 taken under the trade's own lock; a preview that checked it here would be
 quoting a refusal that could already be stale by the time anyone acted on it.
 
-**ADR 0024 (Accepted): not built yet. `post_trade_prices` ignores resting
-orders.** The preview runs no cascade. `total`, `average_price` and `prices`
+**ADR 0024 (Accepted). `post_trade_prices` ignores resting orders.** The preview runs no cascade. `total`, `average_price` and `prices`
 are what the trade will be charged against, because the trade is priced before
 any resting order fills. `post_trade_prices` is the price after this trade
 alone. When resting orders fill in the trade's cascade, the market ends closer
@@ -1000,7 +999,8 @@ can re-preview and retry without guessing which way it was wrong.
   "side": "buy",
   "quantity": "10.0000",
   "total": "-13.3742",
-  "state_version": 43
+  "state_version": 43,
+  "book_state_version": 43
 }
 ```
 
@@ -1013,15 +1013,16 @@ prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
 or from `GET .../snapshot` instead.
 
-**ADR 0024 (Accepted). Three changes to this route. The second and third are
-built; the first is not yet.**
+**ADR 0024 (Accepted). Three changes to this route, all built.**
 
 - The response gains `book_state_version`, a JSON number: the book's counter
   after this trade **and** every resting order it filled. `state_version` is
   still the counter after this trade alone. With no resting orders filled, the
   two are equal, and a trade recorded before this field existed returns its
-  `state_version` there. Wait for the `price` frame at `book_state_version`.
-  The response still carries no prices.
+  `state_version` there. Wait for the `price` frame at `book_state_version`:
+  a trade that fills resting orders publishes one frame, at that version, and
+  none for the versions in between. The response still carries no prices.
+  Built.
 - `insufficient_funds` is checked against `available`, not `balance`: credits
   reserved by your own buy orders cannot pay for a trade. It is `available`
   before the trade, even when the trade's cascade then fills one of your buy
@@ -1112,6 +1113,7 @@ Errors:
 | 422 | `proceeds_below_tick` | A sell whose proceeds round to `0.0000`. Ask for more. |
 | 422 | `invalid_request` | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. `error.details` names each field; see [Errors](#errors). |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
+| 500 | `cascade_fill_refused` | The overdraft check refused one of the resting orders this trade filled, which ADR 0024 makes impossible. Nothing was written and the ledger logged it. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
 | 503 | `auth_unavailable` | The auth service could not be reached, or did not answer whether this account may trade. Nothing was written. Worth retrying. |
 
@@ -1120,13 +1122,13 @@ snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
 
-## Limit orders — ADR 0024 (Accepted): placing and listing are built
+## Limit orders — ADR 0024 (Accepted): placing, listing and the cascade are built
 
-[T-6] #26, [T-7] #27, [T-8] #28. **Placing an order and listing your orders
-are built. Cancelling is not yet, and neither is the cascade**: until [T-7]
-#27, a trade that moves the price past a resting order's limit leaves that
-order resting rather than filling it. A placement that is marketable when it
-arrives does fill at once, as below. This section is the contract [FE][T-6]
+[T-6] #26, [T-7] #27, [T-8] #28. **Placing an order, listing your orders and
+the cascade are built. Cancelling is not yet**, and neither is the `order`
+frame on the realtime feed. A trade that moves the price past a resting
+order's limit fills that order inside the trade's own transaction, and a
+placement that is marketable when it arrives fills at once, as below. This section is the contract [FE][T-6]
 #61 builds against. Why the design looks like this:
 [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
 Accepted.
@@ -1814,6 +1816,11 @@ settlement route: a batch with no movements, or two movements sharing an
 idempotency key. The route builds every batch from this service's own
 positions, with one payout per winner keyed by user id and at most one
 residue, so no request can provoke it.
+`cascade_fill_refused` (500, new in [T-7] #27) is the trade route's guard on
+its own cascade: the overdraft check refused a batch anywhere but at the
+trade's own movement, which ADR 0024 makes impossible while every fill is
+bounded by its own order's reservation. Nothing is written, the ledger logs
+the refusal, and the response names no other account's figures.
 
 `market_not_binary` and `order_crosses_book` (409, new in [T-6] #26) are the
 placement's own. `order_not_found`, `order_already_filled`,

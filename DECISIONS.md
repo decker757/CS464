@@ -9453,6 +9453,19 @@ replay alarm is unaffected. A test pins the first flush: a trade and a
 self-fill on the same `(user, market, outcome)` leave one position row
 carrying both changes.
 
+*Amended 2026-10-18.* Built in [T-7] #27 with the first flush repeated before
+every fill's position read, not only the cascade's first. Two fills of one
+owner in one outcome where the owner held nothing would otherwise each add a
+position row, and the second flush would fail on the duplicate. The test
+named above cannot be written: a self-fill on the trade's own
+`(user, market, outcome)` is a sell order, a sell order needs shares, so the
+row already exists and the identity map hands the cascade the trade's own
+changes without a flush. The test that pins the flush is two buy orders of
+one owner filling in one cascade, leaving one position row with both fills.
+The cascade's read of the open orders comes before the first flush and needs
+none: the trade writes no order row, and a placement inserts its own after
+its cascade has run.
+
 ---
 
 ### D-NEW — A placement that would cross the book is refused, `order_crosses_book`
@@ -9670,3 +9683,38 @@ after a debit, with `required`, cannot happen on a placement's own fill,
 because a budget that fits at the start of the batch covers the fill (ADR
 0024, "A buy can never spend more than it reserved"); if one ever does, it
 passes through unchanged.
+
+---
+
+### D-NEW — A fill the running check refuses inside a cascade is `500 cascade_fill_refused`, told apart by the refused movement's key
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** `InsufficientFunds` carries `movement_key`, the idempotency key
+of the movement after which `posting`'s running check refused, and none for a
+refusal at the start of the batch. The trade path answers
+`409 insufficient_funds` only when that key is the trade's own. Any other
+refusal of a trade's batch, at the start of it or after a fill, is
+`500 cascade_fill_refused`: the commit rolls back, the trader is told nothing
+about the account that was refused, and the ledger logs the refusal's figures
+at ERROR on `service.trading`.
+
+**Why.** ADR 0024 makes a refused fill impossible by construction, because
+every fill is bounded by its own reservation, and says that if one happens it
+is a bug, a 500, logged. Only `posting` knows which movement it refused at, so
+it has to say. Without the key, a refusal of another owner's account would
+reach the trader as their own `insufficient_funds`, with that owner's balance
+and reservation in `details`. A refusal at the start of a trade's batch is a
+bug too: a trade drops no reservation, so its account's figure before the
+batch is the one every earlier commit already kept within the balance.
+
+**Rejected.** *Telling the two apart by the figures*, such as `required` equal
+to the trade's cost: two different movements can carry the same amount.
+*Passing the refused order over*: the order would rest while executable,
+which breaks the invariant the next trade's cascade relies on.
+
+**Notes.** A placement keeps its own handling, in "A placement's
+`insufficient_funds` reports the reservation without the new order, on both
+paths": its cascade finds nothing while the book is uncrossed (ADR 0024,
+"Termination"), so the only refusal it can meet is its own budget's, at the
+start of the batch.
