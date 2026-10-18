@@ -3,9 +3,10 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-Two request models, for the two routes that write: `TradeIn` for [T-2] #22's
-`POST /ledger/markets/{market_id}/trades`, and `SettlementIn` for [3.4] #12's
-`POST /ledger/markets/{market_id}/settlement`. Neither carries an account, an
+Three request models, for the three routes that write: `TradeIn` for [T-2]
+#22's `POST /ledger/markets/{market_id}/trades`, `OrderIn` for [T-6] #26's
+`POST /ledger/markets/{market_id}/orders`, and `SettlementIn` for [3.4] #12's
+`POST /ledger/markets/{market_id}/settlement`. None carries an account, an
 amount or a leg — `extra="forbid"` refuses a body naming one — which is the
 answer ADR 0009's amendments give to how a caller authenticates to a write
 path.
@@ -28,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer
 
@@ -545,6 +546,118 @@ class TradeOut(BaseModel):
     @field_serializer("quantity", "total")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+
+class OrderIn(BaseModel):
+    """A limit order, a buy or a sell. [T-6] #26, ADR 0024.
+
+    `extra="forbid"` over five fields, `TradeIn`'s reason: the body names a
+    price and a quantity, never an account or an amount. The budget is
+    computed from them and the account is the token's. There is no
+    `state_version`: the limit is what protects the trader (ADR 0024, "A
+    placement takes no `state_version`"), so a body sending one is refused.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome_id: uuid.UUID
+    side: Side = Field(description="`buy` or `sell`; anything else is 422.")
+    limit_price: Decimal = Field(
+        gt=0,
+        lt=1,
+        decimal_places=4,
+        description=(
+            "The price on this order's own outcome: a buy fills at or below "
+            "it, a sell at or above. Strictly between 0 and 1, at most four "
+            "decimal places; a fifth is 422 rather than rounded."
+        ),
+    )
+    quantity: Decimal = Field(
+        gt=0,
+        max_digits=18,
+        decimal_places=4,
+        description="Shares, by the trade route's rules: `> 0`, four places, 18 digits.",
+    )
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=175,
+        description=(
+            "One order, once. The stored key is "
+            "`order:<user_id>:<market_id>:<this value>`, so this string only "
+            "has to be unique to the caller, and is bounded as the trade's is."
+        ),
+    )
+
+
+class OrderOut(BaseModel):
+    """One limit order as it stands now. [T-6] #26, ADR 0024.
+
+    The order object of `docs/api/ledger-service.md`. Amounts are decimal
+    strings at scale 4, as everywhere here; JSON mode writes a `Decimal` that
+    way without a serializer.
+    """
+
+    id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    outcome_position: int = Field(
+        description="0 or 1. Labels are market_service's, as in the portfolio."
+    )
+    side: Side
+    limit_price: Decimal
+    quantity: Decimal
+    filled_quantity: Decimal = Field(description="Shares filled so far, across every fill.")
+    average_fill_price: Decimal | None = Field(
+        description="What the fills cost or paid per share, half-up. Null until the first fill."
+    )
+    reserved_credits: Decimal | None = Field(
+        description=(
+            "A buy only: its budget less what it has spent. Null on a sell; "
+            "`0.0000` once the order is not live."
+        )
+    )
+    reserved_shares: Decimal | None = Field(
+        description=(
+            "A sell only: the shares it still holds back. Null on a buy; "
+            "`0.0000` once the order is not live."
+        )
+    )
+    status: Literal["open", "filled", "cancelled", "released"] = Field(
+        description="`released`: the market has a result. Derived on every read."
+    )
+    created_at: UtcDatetime
+    cancelled_at: UtcDatetime | None
+
+
+class FillOut(BaseModel):
+    """One fill a placement made: a trade in the owner's history."""
+
+    transaction_id: uuid.UUID
+    quantity: Decimal
+    total: Decimal = Field(description="Signed as the trade route signs it.")
+    state_version: int = Field(description="The book's counter after this fill.")
+
+
+class PlacementOut(BaseModel):
+    """What a placement did, or, on a retry, the order as it stands now and the
+    fills the first request made. [T-6] #26."""
+
+    order: OrderOut
+    fills: list[FillOut] = Field(
+        description="What this request filled on arrival. Empty when nothing did."
+    )
+    book_state_version: int = Field(
+        description=(
+            "The book's counter after the placement request: the last fill's "
+            "`state_version`, or the counter the order was placed against."
+        )
+    )
+
+
+class OrderListOut(BaseModel):
+    """The caller's live orders, newest first. [T-6] #26."""
+
+    orders: list[OrderOut]
 
 
 class SettlementIn(BaseModel):

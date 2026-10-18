@@ -761,6 +761,10 @@ class Order(Base):
     # the row.
     book_state_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+    # Namespaced per caller and market, `order:<user_id>:<market_id>:<client
+    # key>` (`service/orders.py::order_key`), so the global unique constraint
+    # below confines a collision to one caller in one market, as `trade_key`
+    # does for trades.
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
