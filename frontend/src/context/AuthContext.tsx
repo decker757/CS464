@@ -30,7 +30,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // — 401, then a refused /auth/refresh — and that failure means "nobody was
   // signed in", never "your session just ended". It has to be ignored even
   // after somebody signs in during the window, which is the same late answer
-  // the lookup itself is guarded against below.
+  // the lookup itself is guarded against below. Removing this re-breaks
+  // "keeps the user when the lookup fails after they signed in".
   const isLookingUpTheSessionRef = useRef(true)
 
   useEffect(() => {
