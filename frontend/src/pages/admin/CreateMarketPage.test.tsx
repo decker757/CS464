@@ -88,12 +88,32 @@ describe('CreateMarketPage', () => {
     expect(screen.getByDisplayValue('No')).toBeInTheDocument()
   })
 
-  it('autosave fires after 3 seconds and shows Saved', async () => {
+  // The indicator is a live region and carries the time, so "Saved" does not
+  // read the same three seconds and ten minutes later (#363).
+  it('autosave fires after 3 seconds and announces the time it saved', async () => {
     vi.useFakeTimers()
     renderPage()
     touchForm()
     await act(() => vi.advanceTimersByTimeAsync(3100))
-    expect(screen.getByText('Saved')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/^Saved at \d{1,2}:\d{2}/)
+  })
+
+  it('offers a retry after a failed save, and saves when it is pressed', async () => {
+    let calls = 0
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () => {
+        calls++
+        return calls === 1 ? HttpResponse.error() : HttpResponse.json(baseSaveResponse)
+      }),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    touchForm()
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    expect(screen.getByRole('status')).toHaveTextContent('Save failed')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /retry/i })) })
+    await act(() => vi.advanceTimersByTimeAsync(100))
+    expect(screen.getByRole('status')).toHaveTextContent(/^Saved at \d{1,2}:\d{2}/)
   })
 
   it('shows initial_price beside outcomes after first autosave', async () => {
@@ -317,9 +337,54 @@ describe('CreateMarketPage', () => {
       await act(() => vi.advanceTimersByTimeAsync(3100))
       expect(screen.getByLabelText('Question *')).toBeDisabled()
       expect(screen.queryByRole('button', { name: /submit for review/i })).not.toBeInTheDocument()
+      // The lock used to be silent, which is the bug #363 fixes: the form
+      // greyed out and said nothing at all.
+      expect(screen.getByRole('alert')).toHaveTextContent(/read-only/i)
       expect(screen.queryByText('Save failed')).not.toBeInTheDocument()
     },
   )
+
+  it('says the market was published, that the open edits were lost, and links to it', async () => {
+    let calls = 0
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () => {
+        calls++
+        return calls === 1
+          ? HttpResponse.json(baseSaveResponse, { status: 201 })
+          : HttpResponse.json({ error: { code: 'market_already_open', message: 'refused' } }, { status: 409 })
+      }),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    touchForm()
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    fireEvent.change(screen.getByLabelText('Question *'), { target: { value: 'Will it rain on Friday?' } })
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    const banner = screen.getByRole('alert')
+    expect(banner).toHaveTextContent(/already been published/i)
+    expect(banner).toHaveTextContent(/were not saved/i)
+    expect(within(banner).getByRole('link', { name: /view the market/i })).toHaveAttribute('href', '/markets/mkt-123')
+  })
+
+  it('says so when the lock-out cost no edits', async () => {
+    let calls = 0
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () => {
+        calls++
+        return calls === 1
+          ? HttpResponse.json(baseSaveResponse, { status: 201 })
+          : HttpResponse.json({ error: { code: 'market_already_open', message: 'refused' } }, { status: 409 })
+      }),
+    )
+    vi.useFakeTimers()
+    renderPage()
+    touchForm()
+    await act(() => vi.advanceTimersByTimeAsync(3100))
+    // Submitting an unchanged form: the refusal costs nothing that was typed.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /submit for review/i })) })
+    await act(() => vi.advanceTimersByTimeAsync(100))
+    expect(screen.getByRole('alert')).toHaveTextContent(/had already been saved/i)
+  })
 
   it('offers Publish when autosave learns the market was already submitted', async () => {
     server.use(
@@ -362,5 +427,69 @@ describe('CreateMarketPage', () => {
     await actor.click(await screen.findByRole('button', { name: /publish market/i }))
     const closeTimeField = (await screen.findByLabelText('Closes at *')).parentElement!
     expect(within(closeTimeField).getByText('The close time has already passed.')).toBeInTheDocument()
+  })
+
+  // Publishing re-runs every submission rule against the clock (ADR 0008), so
+  // a market that sat submitted past its close time fails forever. Telling the
+  // admin to try again is wrong.
+  it('says a publish refused for draft_incomplete cannot be retried', async () => {
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, async ({ request }) => {
+        const body = await request.json() as { status: string }
+        return HttpResponse.json({
+          ...baseSaveResponse,
+          market: { ...baseSaveResponse.market, status: body.status },
+        })
+      }),
+      http.post(`${MARKET_BASE}/markets/:id/publish`, () =>
+        HttpResponse.json(
+          { error: { code: 'draft_incomplete', message: 'The market is not ready.' } },
+          { status: 422 },
+        ),
+      ),
+    )
+    const actor = userEvent.setup({ delay: null })
+    renderPage()
+    await actor.click(screen.getByRole('button', { name: /submit for review/i }))
+    await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/cannot be edited/i)
+    expect(alert).not.toHaveTextContent(/try again/i)
+  })
+
+  it('shows the server reasons when a submission is refused', async () => {
+    server.use(
+      http.post(`${MARKET_BASE}/markets`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'draft_incomplete',
+              message: 'The market is not ready.',
+              details: [{ field: 'close_time', message: 'A close time is required.' }],
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+    const actor = userEvent.setup({ delay: null })
+    renderPage()
+    await actor.click(screen.getByRole('button', { name: /submit for review/i }))
+    const closeTimeField = (await screen.findByLabelText('Closes at *')).parentElement!
+    expect(within(closeTimeField).getByText('A close time is required.')).toBeInTheDocument()
+  })
+
+  it('names every resolution-source row in the accessibility tree', async () => {
+    const actor = userEvent.setup({ delay: null })
+    renderPage()
+    await actor.click(screen.getByRole('button', { name: /add source/i }))
+    expect(screen.getByLabelText('Source 2 URL')).toBeInTheDocument()
+    expect(screen.getByLabelText('Source 2 label (optional)')).toBeInTheDocument()
+  })
+
+  it('goes back to the admin market list, not the trader one', () => {
+    renderPage()
+    // The navbar's own "All Markets" link matches too, so name the back link exactly.
+    expect(screen.getByRole('link', { name: '← All Markets' })).toHaveAttribute('href', '/admin/markets')
   })
 })
