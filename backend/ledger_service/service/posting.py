@@ -63,7 +63,8 @@ class Leg:
 
 @dataclass(frozen=True)
 class Movement:
-    """One transaction of a batch: `post`'s keyword arguments as a record.
+    """One transaction of a batch: `post`'s keyword arguments as a record,
+    plus the reservation drop only `post_all` takes.
 
     `reservation_drop` is how far the movement lowers its one USER account's
     reservation: a buy-order fill's cost, or the order's whole remaining
