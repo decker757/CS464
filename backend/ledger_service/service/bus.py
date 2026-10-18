@@ -1,8 +1,8 @@
-"""Publishing a price event. [F-9] #112, ADR 0010.
+"""Publishing a price event, and an order event per fill. [F-9] #112, [T-7] #27, ADR 0010.
 
 The producer's half of `realtime_service/service/bus.py`: copied, not shared
 (below ADR 0012's bar), and pinned by `test_price_publish.py`. The trade path
-calls it after its commit, on a fresh trade only.
+and a placement that fills call it after their commit, on a fresh request only.
 
 A failure is logged with the transaction id and never raised: the trade has
 committed and is correct (D-049). `CancelledError` is not caught; it means
@@ -16,13 +16,14 @@ import uuid
 
 import redis.asyncio as redis
 
-from model.schemas import PriceEvent
+from model.schemas import OrderEvent, PriceEvent
 
 logger = logging.getLogger(__name__)
 
-# Must match `realtime_service`'s: a different string publishes happily into
-# a channel nobody reads.
+# Both must match `realtime_service`'s: a different string publishes happily
+# into a channel nobody reads.
 PRICE_CHANNEL = "market.price"
+ORDER_CHANNEL = "order.update"
 
 
 async def _publish(
@@ -47,4 +48,16 @@ async def publish(
     """
     await _publish(
         client, PRICE_CHANNEL, event.model_dump_json(), transaction_id=transaction_id
+    )
+
+
+async def publish_order(
+    client: redis.Redis, event: OrderEvent, *, transaction_id: uuid.UUID
+) -> None:
+    """Put one order event on its channel. Never raises.
+
+    `transaction_id` is the fill's, the one id a log line can lead back to.
+    """
+    await _publish(
+        client, ORDER_CHANNEL, event.model_dump_json(), transaction_id=transaction_id
     )
