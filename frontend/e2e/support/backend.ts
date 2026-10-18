@@ -155,6 +155,47 @@ export async function closeEarly(admin: Session, marketId: string): Promise<void
   })
 }
 
+interface MarketWithProposal extends MarketOut {
+  status: string
+  proposal_id: string | null
+}
+
+/** Proposes a winner on a closed market ([3.1] #9). */
+export async function proposeOutcome(admin: Session, market: Market, winningOutcomeLabel: string): Promise<MarketWithProposal> {
+  const outcome = market.outcomes.find(candidate => candidate.label === winningOutcomeLabel)
+  if (!outcome) throw new Error(`no outcome ${winningOutcomeLabel} on ${market.question}`)
+  return call<MarketWithProposal>('POST', `${MARKET_URL}/markets/${market.id}/propose-outcome`, admin.accessToken, {
+    winning_outcome_id: outcome.id,
+    evidence_note: 'Decided by the end-to-end test to drive the market to approved.',
+  })
+}
+
+/** Approves another administrator's proposal ([3.2] #10), moving the market to approved. */
+export async function approveOutcome(admin: Session, marketId: string, proposalId: string | null): Promise<MarketWithProposal> {
+  return call<MarketWithProposal>('POST', `${MARKET_URL}/markets/${marketId}/approve-outcome`, admin.accessToken, {
+    proposal_id: proposalId,
+  })
+}
+
+/**
+ * Moves an approved market's stored dispute window into the past, by hand in
+ * the database, the way `promoteToAdmin` makes the first admin. Settling also
+ * needs SETTLEMENT_GAP (five hard-coded minutes, ADR 0019) to have passed
+ * since the window's end, so this backdates past both — a test cannot wait
+ * out either, so it reaches the stored column directly rather than the
+ * setting or `approved_at`.
+ */
+export function backdateDisputeWindow(marketId: string): void {
+  if (!/^[\w-]+$/.test(marketId)) throw new Error(`refusing to backdate ${marketId}`)
+  const sql = `UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`
+  const output = execFileSync(
+    'docker',
+    ['compose', 'exec', '-T', 'db', 'psql', '-U', process.env.POSTGRES_USER ?? 'cs464', '-d', process.env.POSTGRES_DB ?? 'cs464', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  )
+  if (!output.includes('UPDATE 1')) throw new Error(`backdating ${marketId} changed no row: ${output}`)
+}
+
 interface Snapshot {
   state_version: number
   prices: { outcome_id: string; price: string }[]
