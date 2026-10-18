@@ -9573,7 +9573,8 @@ needs the caller's holdings, a database read the preview does not make (it
 stays AMM-only and read-only), and the portfolio already reports a
 position's value. *`profit_if_wins` from `quantity * average_price`*:
 `average_price` is a rounded display figure, so the profit would disagree
-with the charge by up to a tick.
+with the charge by up to half a tick per share: two ticks in the docs'
+example, where 10 × 0.7315 is 7.3150 against a charge of 7.3152.
 
 **Notes.** `payout_if_wins` is the quantity rescaled to four places, so a
 quantity sent as `10` reports `10.0000` while `quantity` still echoes `10`,
