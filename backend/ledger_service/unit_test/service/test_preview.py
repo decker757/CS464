@@ -219,6 +219,39 @@ async def test_average_price_rounds_half_up_because_it_is_derived_not_charged(
     assert quote.average_price.as_tuple().exponent == -4
 
 
+# --- what the trade pays if its outcome wins (#384) -------------------------
+async def test_a_buy_reports_its_payout_and_profit_if_it_wins(
+    session: AsyncSession,
+) -> None:
+    """A winning share pays one credit, so the payout is the quantity, and the
+    profit is the payout less the charged total, exact at scale 4.
+
+    Literals worked outside the engine: 13.3333 of the first outcome at `Q`,
+    `B` costs 9.796541..., charged 9.7966, so the profit is 3.5367. A cost
+    rounded to cents would make it 3.5333.
+    """
+    upstream = Upstream()
+    await warm(session, upstream)
+
+    quote = await _quote(session, upstream, quantity=Decimal("13.3333"))
+
+    assert quote.total == Decimal("-9.7966")
+    assert quote.payout_if_wins == Decimal("13.3333")
+    assert quote.profit_if_wins == Decimal("3.5367")
+
+
+async def test_a_sell_reports_no_payout_and_no_profit(session: AsyncSession) -> None:
+    """A sell is paid its `total` now and gives up the shares that would have
+    paid, so it has nothing to receive if the outcome wins."""
+    upstream = Upstream()
+    await warm(session, upstream)
+
+    quote = await _quote(session, upstream, side="sell")
+
+    assert quote.payout_if_wins is None
+    assert quote.profit_if_wins is None
+
+
 # --- prices ---------------------------------------------------------------
 async def test_prices_carry_every_outcome_in_position_order(
     session: AsyncSession,
