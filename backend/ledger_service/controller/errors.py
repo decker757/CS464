@@ -14,6 +14,7 @@ from core.errors import (
     InsufficientFunds,
     InsufficientSharesHeld,
     LedgerError,
+    OrderCrossesBook,
     QuoteStale,
 )
 from model.schemas import ErrorOut, InvalidFieldOut, ValidationErrorOut
@@ -77,8 +78,14 @@ def register_error_handlers(app: FastAPI) -> None:
         elif isinstance(exc, InsufficientSharesHeld):
             error["details"] = {
                 "held": str(exc.held),
+                "reserved": str(exc.reserved),
                 "requested": str(exc.requested),
             }
+        elif isinstance(exc, OrderCrossesBook):
+            # The bound a buy's limit must be strictly below, or a sell's
+            # strictly above: the contract names it by which way it binds.
+            bound = "max_limit_price" if exc.side == "buy" else "min_limit_price"
+            error["details"] = {"side": str(exc.side), bound: str(exc.bound)}
         elif isinstance(exc, QuoteStale):
             # Ints, not decimal strings: `state_version` is a count, the same
             # reason `PreviewOut.state_version` is a JSON number rather than

@@ -10,13 +10,15 @@ DELETE anywhere on this service. That is the whole design, it is enforced by
 a trigger rather than by this file being short, and a route added here in a
 hurry would fail against the database.
 
-**Two routes write, and neither takes money.** `POST /markets/{market_id}/trades`
+**Three routes write, and none takes money.** `POST /markets/{market_id}/trades`
 ([T-2] #22) answers ADR 0009's deferred service-auth question for exactly this
 shape of caller: the request model is `extra="forbid"` over five fields, none
 of them money, so the trader's account is `accounts.ensure(USER, claims.sub)`
 rather than anything in the body, and a trader's own token is safe to accept
 because there is nothing in the request for it to mint. See ADR 0009's
-amendment.
+amendment. `POST /markets/{market_id}/orders` ([T-6] #26) is the same shape:
+`OrderIn` names a price and a quantity, and the budget is computed from them
+(ADR 0024).
 
 `POST /markets/{market_id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service and the holders
@@ -56,13 +58,18 @@ from model.schemas import (
     BalanceOut,
     ExposureOut,
     ExposureOutcomeOut,
+    FillOut,
     LeaderboardPageOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
     MarketTradeListResponse,
+    OrderIn,
+    OrderListOut,
+    OrderOut,
     OutcomePriceOut,
     PortfolioOut,
     PortfolioPositionOut,
+    PlacementOut,
     PreviewOut,
     PriceHistoryOut,
     PricePointOut,
@@ -77,6 +84,7 @@ from service import (
     exposure as exposure_service,
     leaderboard as leaderboard_service,
     ledger_service,
+    orders,
     portfolio as portfolio_service,
     preview as preview_service,
     price_history as price_history_service,
@@ -653,6 +661,157 @@ async def execute_trade(
         total=result.total,
         state_version=result.state_version,
     )
+
+
+_PLACE_ORDER_DESCRIPTION = (
+    "[T-6] #26, ADR 0024. Place a limit order: buy or sell at `limit_price` or "
+    "better, against the market maker. As much as the price allows fills at "
+    "once, in `fills`, and the rest rests. Until the cascade ([T-7] #27), a "
+    "later trade that moves the price past the limit does not fill it.\n\n"
+    "**Takes no account and no amount**, and no `state_version`: the limit "
+    "protects the trader. A buy's budget, `limit_price × quantity` rounded up "
+    "to the tick, has to fit in `available` even when it would fill "
+    "completely for less.\n\n"
+    "A retry with the same `idempotency_key` is `201` with the order as it "
+    "stands now and the fills the first request made. The stored key is "
+    "`order:<user_id>:<market_id>:<idempotency_key>`."
+)
+
+
+def _order_out(order: orders.OrderView) -> OrderOut:
+    return OrderOut(
+        id=order.id,
+        market_id=order.market_id,
+        outcome_id=order.outcome_id,
+        outcome_position=order.outcome_position,
+        side=order.side,
+        limit_price=order.limit_price,
+        quantity=order.quantity,
+        filled_quantity=order.filled_quantity,
+        average_fill_price=order.average_fill_price,
+        reserved_credits=order.reserved_credits,
+        reserved_shares=order.reserved_shares,
+        status=order.status,
+        created_at=order.created_at,
+        cancelled_at=order.cancelled_at,
+    )
+
+
+@router.post(
+    "/markets/{market_id}/orders",
+    response_model=PlacementOut,
+    status_code=201,
+    summary="Place a limit order in an open binary market",
+    description=_PLACE_ORDER_DESCRIPTION,
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access token."
+            )
+        },
+        403: {
+            "description": (
+                "`account_suspended`: an administrator has suspended this "
+                "account. Nothing was written (ADR 0022)."
+            )
+        },
+        404: {"description": "`market_not_found`: no such market."},
+        409: {
+            "description": (
+                "`market_closed`: the market is not open, or has a result. "
+                "`market_not_binary`: it has more than two outcomes. "
+                "`order_crosses_book`: a resting order pushing the price the "
+                "other way is in the way; `error.details` carries `side` and "
+                "`max_limit_price` or `min_limit_price`. "
+                "`insufficient_funds`: the budget does not fit in "
+                "`available`; `error.details` carries `balance`, `reserved`, "
+                "`available` and `shortfall`. "
+                "`insufficient_shares_held`: a sell larger than the position "
+                "less what the caller's other sell orders reserve. "
+                "`idempotency_key_reused`: the key names a different order."
+            )
+        },
+        422: _invalid_request(
+            "`invalid_request`: a malformed body, an extra field, a `side` "
+            "other than \"buy\" or \"sell\", a `quantity` <= 0, at five "
+            "decimal places or wider than 18 digits, or a `limit_price` at or "
+            "outside 0 and 1 or at five decimal places. `unknown_outcome`; "
+            "`quantity_too_large` on a fill the ledger could not store."
+        ),
+        500: {
+            "description": (
+                "`market_book_incomplete`: this service holds a book for the "
+                "market that cannot be priced. A server fault."
+            )
+        },
+        503: {
+            "description": (
+                "`market_terms_unavailable`: market_service could not be "
+                "reached. `auth_unavailable`: the auth service could not say "
+                "whether this account may trade. Nothing was written."
+            )
+        },
+    },
+)
+async def place_order(
+    market_id: uuid.UUID,
+    body: OrderIn,
+    user: CurrentUser,
+    access_token: AccessToken,
+    terms_client: TermsClient,
+    auth_client: AuthClient,
+    session: DbSession,
+    redis: RedisClient,
+) -> PlacementOut:
+    placement = await orders.place(
+        session,
+        market_id,
+        user_id=user.user_id,
+        outcome_id=body.outcome_id,
+        side=body.side,
+        limit_price=body.limit_price,
+        quantity=body.quantity,
+        idempotency_key=body.idempotency_key,
+        access_token=access_token,
+        terms_client=terms_client,
+        auth_client=auth_client,
+        redis_client=redis,
+    )
+    return PlacementOut(
+        order=_order_out(placement.order),
+        fills=[
+            FillOut(
+                transaction_id=fill.transaction_id,
+                quantity=fill.quantity,
+                total=fill.total,
+                state_version=fill.state_version,
+            )
+            for fill in placement.fills
+        ],
+        book_state_version=placement.book_state_version,
+    )
+
+
+@router.get(
+    "/orders/me",
+    response_model=OrderListOut,
+    summary="My live limit orders",
+    description=(
+        "[T-6] #26. The caller's live orders, newest first: open, on a market "
+        "with no result, closed markets included. Filled, cancelled and "
+        "released orders are not listed. No paging. Any valid access token."
+    ),
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access token."
+            )
+        },
+    },
+)
+async def my_orders(user: CurrentUser, session: DbSession) -> OrderListOut:
+    live = await orders.list_live(session, user.user_id)
+    return OrderListOut(orders=[_order_out(order) for order in live])
 
 
 _TRADE_FEED_DESCRIPTION = (
