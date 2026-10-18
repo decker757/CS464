@@ -59,27 +59,49 @@ class MalformedCursor(LedgerError):
 
 
 class InsufficientFunds(LedgerError):
-    """The transaction would take an account below zero. [T-2] #22.
+    """The batch would take an account below what its buy orders reserve.
+    [T-2] #22, ADR 0024.
 
     409 rather than 422: nothing about the request is malformed, and the same
     request may well succeed later or have succeeded a moment ago. It is the
     state of the account that refuses it.
 
-    Carries the balance and the shortfall, because the caller is a trading
-    service that has to tell somebody why their trade did not go through, and
-    "insufficient funds" on its own is the least useful true sentence available.
+    Carries the figures, because the caller has to tell somebody why their
+    trade did not go through, and "insufficient funds" on its own is the least
+    useful true sentence available. `balance` is the account's before the
+    batch. A refusal after a debit carries `required`, what the batch had
+    taken by then; a refusal at the start of the batch carries `shortfall`
+    instead, how far the reservation there exceeds the balance. D-NEW "A
+    refusal from the running check reports the balance before the batch".
     """
 
     status_code = 409
     code = "insufficient_funds"
 
-    def __init__(self, *, balance: object, required: object) -> None:
+    def __init__(
+        self,
+        *,
+        balance: Decimal,
+        reserved: Decimal,
+        available: Decimal,
+        required: Decimal | None = None,
+        shortfall: Decimal | None = None,
+    ) -> None:
         self.balance = balance
+        self.reserved = reserved
+        self.available = available
         self.required = required
-        self.message = (
-            f"This account holds {balance} credits and the transaction needs "
-            f"{required}."
-        )
+        self.shortfall = shortfall
+        if shortfall is None:
+            self.message = (
+                f"This account holds {balance} credits, {available} of them "
+                f"available, and the transaction needs {required}."
+            )
+        else:
+            self.message = (
+                f"This account holds {balance} credits and its buy orders "
+                f"would reserve {reserved}: {shortfall} short."
+            )
         super().__init__(self.message)
 
 
@@ -498,8 +520,8 @@ class PendingWritesOnReplay(LedgerError):
 
 
 class MalformedBatch(LedgerError):
-    """`posting.post_all` was handed no movements, or one key twice.
-    [3.4] #12.
+    """`posting.post_all` was handed no movements, one key twice, or a
+    reservation drop it cannot apply. [3.4] #12, ADR 0024.
 
     "An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500":
     the server builds every movement and every key, and the settlement
@@ -511,7 +533,8 @@ class MalformedBatch(LedgerError):
     status_code = 500
     code = "malformed_batch"
     message = (
-        "A batch of movements was empty or named one idempotency key twice. "
+        "A batch of movements was empty, named one idempotency key twice, or "
+        "carried a reservation drop below zero or with no single user account. "
         "This is a bug in this service, not in the request."
     )
 
