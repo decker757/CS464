@@ -109,7 +109,7 @@ wording wins where the two differ.
 9. **Posting commits (`posting.post()` or `posting.post_all()`), so it is the
    last call on any path that writes.**
    Settled by "The book's writes share `posting.post`'s commit, and nothing may
-   follow it" and, for the trade path, CLAUDE.md's "The ledger has three write
+   follow it" and, for the trade path, CLAUDE.md's "The ledger has four write
    routes, and none takes money".
 10. **The trade route accepts a trader's own token, and that is not a hole.** Its
     body names no account, no amount and no leg (ADR 0009's amendment). A new

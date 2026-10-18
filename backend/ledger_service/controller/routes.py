@@ -10,7 +10,7 @@ DELETE anywhere on this service. That is the whole design, it is enforced by
 a trigger rather than by this file being short, and a route added here in a
 hurry would fail against the database.
 
-**Three routes write, and none takes money.** `POST /markets/{market_id}/trades`
+**Four routes write, and none takes money.** `POST /markets/{market_id}/trades`
 ([T-2] #22) answers ADR 0009's deferred service-auth question for exactly this
 shape of caller: the request model is `extra="forbid"` over five fields, none
 of them money, so the trader's account is `accounts.ensure(USER, claims.sub)`
@@ -18,7 +18,8 @@ rather than anything in the body, and a trader's own token is safe to accept
 because there is nothing in the request for it to mint. See ADR 0009's
 amendment. `POST /markets/{market_id}/orders` ([T-6] #26) is the same shape:
 `OrderIn` names a price and a quantity, and the budget is computed from them
-(ADR 0024).
+(ADR 0024). `POST /orders/{order_id}/cancel` ([T-8] #28) takes an empty body,
+and what it releases is derived from the caller's own order row.
 
 `POST /markets/{market_id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service and the holders
