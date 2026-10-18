@@ -25,7 +25,7 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/ledger/balances/me` | My available balance |
+| GET | `/ledger/balances/me` | My balance, what my orders reserve, and what is available |
 | GET | `/ledger/entries/me` | My ledger history |
 | GET | `/ledger/portfolio/me` | My positions and their current value |
 | GET | `/ledger/leaderboard` | Every ranked user's net worth, from the latest ranking |
@@ -100,13 +100,29 @@ read the integer part for display. Do not `parseFloat` and then add.
 {
   "user_id": "5f3e...",
   "account_id": "a71c...",
-  "balance": "1000.0000"
+  "balance": "1000.0000",
+  "reserved": "60.0000",
+  "available": "940.0000"
 }
 ```
 
 `balance` is the sum of every entry on this account. There is no stored balance
 for it to disagree with, which is what [B-2] #33's "derived from or reconciled
 against the ledger" means here: there is nothing to reconcile.
+
+`reserved` and `available` are ADR 0024's. `balance` keeps its meaning: the sum
+of every entry, including credits that resting buy orders reserve. `reserved`
+is what this user's live buy orders could still spend, summed over every
+market: each order's budget less what it has spent. An order stops reserving
+once it is filled or cancelled, or once its market has a result. `available` is
+`balance - reserved`, and it is what a new buy, a new buy order or the trade
+route can spend. All three are decimal strings at scale 4, read in one
+statement. A reservation is not an entry, so the history shows no line for
+placing or cancelling an order. Net worth on the portfolio and the leaderboard
+still counts `balance`, reserved credits included. The admin route
+`GET /ledger/users/{user_id}/balance` returns the same two fields, both
+`"0.0000"` for an id with no account. `GET /ledger/portfolio/me` gains no
+`reserved` figure: the balance carries it.
 
 **The first call for a user also mints their starting credits.** [B-1] #32. A
 user with no entries has not been granted yet, so the first read writes the
@@ -118,35 +134,6 @@ Retrying, refreshing, or opening two tabs cannot produce a second grant, and
 neither can an operator changing `STARTING_CREDITS`: a new value reaches
 accounts granted after it and no others, and an account that already has its
 credits keeps them and stays readable.
-
-**ADR 0024 (Accepted): not built yet. `reserved` and `available`.**
-
-```jsonc
-{
-  "user_id": "5f3e...",
-  "account_id": "a71c...",
-  "balance": "1000.0000",
-  "reserved": "60.0000",
-  "available": "940.0000"
-}
-```
-
-`balance` keeps its meaning: the sum of every entry, including credits that
-resting buy orders reserve. `reserved` is what this user's live buy orders
-could still spend, summed over every market: each order's budget less what it
-has spent. `available` is `balance - reserved`, and it is what a new buy, a
-new buy order or the trade route can spend. A reservation is not an entry, so
-the history shows no line for placing or cancelling an order. Net worth on the
-portfolio and the leaderboard still counts `balance`, reserved credits
-included. The admin route `GET /ledger/users/{user_id}/balance` returns the
-same two fields. `GET /ledger/portfolio/me` gains no `reserved` figure: the
-balance carries it.
-
-When this is built, two descriptions change with it. The endpoints table's
-"My available balance" becomes "My balance, what my orders reserve, and what
-is available". `BalanceOut.balance`'s description in `/docs`, "Available
-credits", becomes "The account's credits, including those resting buy orders
-reserve".
 
 ## GET /ledger/entries/me
 
@@ -1024,7 +1011,8 @@ prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
 or from `GET .../snapshot` instead.
 
-**ADR 0024 (Accepted): not built yet. Three changes to this route.**
+**ADR 0024 (Accepted). Three changes to this route. The second is built; the
+first and third are not yet.**
 
 - The response gains `book_state_version`, a JSON number: the book's counter
   after this trade **and** every resting order it filled. `state_version` is
@@ -1036,14 +1024,14 @@ or from `GET .../snapshot` instead.
   reserved by your own buy orders cannot pay for a trade. It is `available`
   before the trade, even when the trade's cascade then fills one of your buy
   orders and frees what it held. `error.details` gains `reserved` and
-  `available` beside `balance` and `required`.
+  `available` beside `balance` and `required`. Built.
 - `insufficient_shares_held` is checked against your position less the shares
   your live sell orders in that outcome reserve. `error.details` gains
   `reserved` beside `held` and `requested`.
 
-The errors table below describes the route as built today. The two rows for
-`insufficient_funds` and `insufficient_shares_held` change as above when
-limit orders are built.
+The errors table below describes the route as built today. Its
+`insufficient_funds` row already counts reservations; the
+`insufficient_shares_held` row changes as above when sell orders are built.
 
 A trade can fill your own resting orders. That is allowed, at each order's
 own limit, and none of it pays for the trade that triggered it: the trade has
@@ -1113,7 +1101,7 @@ Errors:
 | 404 | `market_not_found` | No such market. |
 | 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
 | 409 | `quote_stale` | The quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
-| 409 | `insufficient_funds` | A buy this account cannot afford. `error.details` carries `balance` and `required`. |
+| 409 | `insufficient_funds` | A buy this account's `available` credits, its balance less what its buy orders reserve, cannot cover. `error.details` carries `balance`, `required`, `reserved` and `available`, decimal strings at scale 4: `available` is `balance - reserved`, and the trade needed `required`. |
 | 409 | `insufficient_shares_held` | A sell larger than this caller's position in this outcome. `error.details` carries `held` and `requested`, decimal strings at scale 4. |
 | 409 | `idempotency_key_reused` | This idempotency key already names a different trade — a different `outcome_id`, `side` or `quantity`. |
 | 422 | `unknown_outcome` | `outcome_id` does not name one of this market's outcomes. |

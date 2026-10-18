@@ -9590,3 +9590,40 @@ returns the fills in order, each priced by `trade_cost_of` against the `q`
 the fill before it left. A fill that `trade_cost_of` refuses as
 `cost_below_tick` or `proceeds_below_tick` is not executable. A market with
 more than two outcomes holds no orders, so a cascade there plans nothing.
+
+---
+
+### D-NEW — A refusal from the running check reports the balance before the batch
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** `InsufficientFunds` from `_refuse_overdrafts` carries
+`balance`, the account's balance before the batch, and `reserved`, the
+running reservation at the refused step. A refusal after a debit carries
+`required`, what the batch had taken from the account by that movement,
+`balance` less the running balance there; `available` is `balance - reserved`,
+and the refusal is `required > available`. A refusal at the start of the batch
+carries `shortfall`, `reserved - balance`, and no `required`; its `reserved`
+includes a placement's whole new budget, so its `available` is negative.
+
+**Why.** For the trade route, the trade is the batch's first movement, so
+`required` is its cost and `balance` and `available` are the figures before
+it, unchanged from what [FE] #49 reads today plus the two ADR 0024 adds. For
+two debits in one batch, `required` is both of them, which is what the netted
+check reported. The start-of-batch check has the balance and the reservation
+and nothing else (ADR 0024, "A refused placement carries `shortfall`, not
+`required`").
+
+**Rejected.** *The running balance at the refused step as `balance`*: a later
+debit's refusal would show a balance the account never had once the batch
+rolled back. *Leaving `reserved` and `available` out of the start-of-batch
+refusal*: the contract lists them for the placement's refusal, and the check
+has no other figures to give.
+
+**Notes.** `posting.Movement.reservation_drop` is refused as `MalformedBatch`
+when it is below zero, or nonzero on a movement without exactly one USER
+account: a negative drop would lower the floor at the start of the batch, and
+a drop with no single account has nowhere to go. The placement in the
+limit-order stack's PR 4b may prefer to report its own `reserved` and
+`available`, excluding the new order, on the start-of-batch refusal; it would
+then catch and re-raise, or hand posting the figure.
