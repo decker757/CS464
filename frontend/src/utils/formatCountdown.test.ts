@@ -34,6 +34,7 @@ describe('formatCountdown', () => {
     const endsAt = '2026-09-17T11:12:00Z'
     expect(formatCountdown(endsAt, now)).toBe(`0m (${absolute(endsAt)})`)
   })
+
 })
 
 describe('disputeWindowOpen', () => {
@@ -50,5 +51,12 @@ describe('disputeWindowOpen', () => {
   it('is false for a market with no stored window end', () => {
     // Never approved, or sent back and not yet re-approved (market-service.md).
     expect(disputeWindowOpen(null, now)).toBe(false)
+  })
+
+  it('is false at the exact edge, the same exclusive instant the server refuses at', () => {
+    // ADR 0023: the edge is exclusive — at the end instant the server has
+    // already stopped accepting a send-back. A later ">=" slipping in here
+    // would leave the button live at the one moment the backend disagrees.
+    expect(disputeWindowOpen('2026-09-17T06:00:00Z', now)).toBe(false)
   })
 })

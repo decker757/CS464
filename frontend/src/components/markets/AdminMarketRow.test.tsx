@@ -1,8 +1,8 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AdminAction } from '../../api/auditApi'
 import type { MarketOverviewRow } from '../../api/marketApi'
 import { server } from '../../test/server'
@@ -433,15 +433,35 @@ describe('AdminMarketRow', () => {
       expect(screen.getByText(/disputes close in/i)).toBeInTheDocument()
     })
 
-    it('shows the result is final once the dispute window has passed', () => {
+    it('shows the result is final once the dispute window has passed, with the closed instant so a wrong clock is visible', () => {
       renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: '2020-01-01T00:00:00Z' }, false, approvedEntry())
-      expect(screen.getByText('Result is final; payout pending.')).toBeInTheDocument()
+      expect(screen.getByText(/result is final; payout pending \(closed .+\)\./i)).toBeInTheDocument()
     })
 
     it('shows no countdown on a market that is not approved', () => {
       renderRow(OPEN_MARKET)
       expect(screen.queryByText(/disputes close in/i)).not.toBeInTheDocument()
-      expect(screen.queryByText('Result is final; payout pending.')).not.toBeInTheDocument()
+      expect(screen.queryByText(/result is final/i)).not.toBeInTheDocument()
+    })
+
+    it('turns into "Result is final" and drops Dispute result on its own, with the page left open', () => {
+      // Without a timer, nothing re-renders an approved market with no
+      // trades, so a stale "Disputes close in 10m" could sit on screen for
+      // hours after the window actually closed.
+      vi.useFakeTimers()
+      try {
+        const endsAt = new Date(Date.now() + 1000).toISOString()
+        renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: endsAt }, false, approvedEntry())
+        expect(screen.getByText(/disputes close in/i)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /dispute result/i })).toBeInTheDocument()
+
+        act(() => { vi.advanceTimersByTime(1001) })
+
+        expect(screen.getByText(/result is final; payout pending \(closed .+\)\./i)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('hides Dispute result on an approved market still within its window while the approval entry has not loaded yet', () => {
@@ -463,10 +483,27 @@ describe('AdminMarketRow', () => {
       expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
     })
 
-    it('offers Dispute result to any administrator, including the proposer and approver', () => {
-      // market-service.md's dispute-screen notes, point 2: never disabled for them.
+    it('offers Dispute result to any administrator, including the creator (always the proposer)', () => {
+      // market-service.md's dispute-screen notes, point 2: never disabled for
+      // them. The proposer is always the creator, so isMine covers that half;
+      // the row has no way to know who approved, so the approver half is
+      // covered by the end-to-end dispute journey instead.
       renderRow(DISPUTABLE_MARKET, true, approvedEntry())
       expect(screen.getByRole('button', { name: /dispute result/i })).toBeEnabled()
+    })
+
+    it('shows what was approved: the winner, the evidence, the proposer and the approver', async () => {
+      // market-service.md's dispute-screen notes, point 3: an admin
+      // disputing one of several approved rows must see what they are
+      // overturning, not just the question and a countdown.
+      await openDisputeModal(DISPUTABLE_MARKET, approvedEntry())
+
+      const dialog = screen.getByRole('dialog', { name: /dispute result/i })
+      expect(dialog).toHaveTextContent('Yes')
+      expect(dialog).toHaveTextContent('A note.')
+      expect(screen.getByRole('link', { name: 'https://example.com' })).toBeInTheDocument()
+      expect(dialog).toHaveTextContent('ernest_t')
+      expect(dialog).toHaveTextContent('ihsan_b')
     })
 
     it('disables Confirm Dispute until the reason reaches 10 trimmed characters', async () => {

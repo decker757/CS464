@@ -546,5 +546,15 @@ describe('AdminMarketsPage', () => {
       expect(await screen.findByRole('button', { name: /dispute result/i })).toBeInTheDocument()
       expect(calls).toBe(1)
     })
+
+    it('shows an error rather than a silently missing Dispute control when the audit fetch fails', async () => {
+      server.use(http.get(ACTIONS, () => HttpResponse.error()))
+      mockList(mockMarkets.map(m => m.id === 'f6' ? { ...m, dispute_window_ends_at: '2099-01-01T00:00:00Z' } : m))
+      renderPage()
+      await screen.findByText('Did it rain yesterday?')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/dispute controls/i)
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
   })
 })
