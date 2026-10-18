@@ -1135,7 +1135,7 @@ narrows for trades alone).
 [T-6] #26, [T-7] #27, [T-8] #28. **Nothing in this section exists yet.** It
 is the contract [FE][T-6] #61 builds against. Why the design looks like this:
 [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
-Proposed.
+Accepted.
 
 A limit order buys or sells at its limit price or better, against the market
 maker. It fills at once as far as the price allows, and the rest waits. When
