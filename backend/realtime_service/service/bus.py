@@ -1,8 +1,10 @@
 """The Redis side: subscribe once, decode, drop what is stale, hand the rest to the hub. [F-2] #42
 
 One channel for every market rather than one per market; ADR 0010 says why and
-when to change that. `publish` is the producer's half of the contract, for the
-suite and `publish_test_price.py`; the ledger keeps its own copy (D-048).
+when to change that. A second channel carries order frames to their owners
+([T-7] #27, ADR 0024), on the same subscription. `publish` is the producer's
+half of the price contract, for the suite and `publish_test_price.py`; the
+ledger keeps its own copy (D-048).
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from typing import Any
 import redis.asyncio as redis
 from pydantic import BaseModel, ValidationError
 
-from model.schemas import PriceEvent
+from model.schemas import OrderEvent, PriceEvent
 from service.ordering import VersionGate
 from service.subscriptions import Hub
 
@@ -24,6 +26,9 @@ logger = logging.getLogger(__name__)
 # channel nobody reads. The ledger's copy is pinned to this literal (D-048).
 PRICE_CHANNEL = "market.price"
 
+# The same, for the ledger's order frames: its copy is pinned to this literal.
+ORDER_CHANNEL = "order.update"
+
 # Reconnect backoff. A Redis outage is retried, never fatal: the sockets are
 # still open, and dropping them would turn a blip into a reconnect storm.
 _BACKOFF_INITIAL_SECONDS = 0.5
@@ -31,7 +36,7 @@ _BACKOFF_MAX_SECONDS = 10.0
 
 
 class PriceBus:
-    """Subscribes to the channel and drives the hub until it is cancelled."""
+    """Subscribes to both channels and drives the hub until it is cancelled."""
 
     def __init__(self, *, redis_url: str, hub: Hub, gate: VersionGate) -> None:
         self._redis_url = redis_url
@@ -93,6 +98,26 @@ class PriceBus:
             delivered,
         )
 
+    def _dispatch_order(self, raw: Any) -> None:
+        """Decode one order message and hand it to its owner's sockets.
+
+        No version gate: the commit's price frame has already passed the gate
+        at the book's final version, and the client orders one order's frames
+        by `fill.state_version` (D-NEW "Order frames pass no version gate on
+        the relay"). Must not raise, for `_dispatch`'s reason.
+        """
+        event = self._decode(raw, OrderEvent, channel=ORDER_CHANNEL)
+        if event is None:
+            return
+
+        delivered = self._hub.send_to_user(event.user_id, event.frame())
+        logger.debug(
+            "order %s fill at version %s delivered to %d socket(s)",
+            event.order_id,
+            event.fill.state_version,
+            delivered,
+        )
+
     async def _consume(self) -> bool:
         """One connection, from subscribe until it ends.
 
@@ -104,16 +129,19 @@ class PriceBus:
 
         try:
             async with client.pubsub() as pubsub:
-                await pubsub.subscribe(PRICE_CHANNEL)
+                await pubsub.subscribe(PRICE_CHANNEL, ORDER_CHANNEL)
                 self._connected = True
                 subscribed = True
-                logger.info("subscribed to %s", PRICE_CHANNEL)
+                logger.info("subscribed to %s and %s", PRICE_CHANNEL, ORDER_CHANNEL)
 
                 async for message in pubsub.listen():
                     # `listen` also yields subscribe confirmations.
                     if message.get("type") != "message":
                         continue
-                    self._dispatch(message.get("data"))
+                    if message.get("channel") == ORDER_CHANNEL:
+                        self._dispatch_order(message.get("data"))
+                    else:
+                        self._dispatch(message.get("data"))
         finally:
             self._connected = False
             # aclose, not close: the sync name exists on the async client too
