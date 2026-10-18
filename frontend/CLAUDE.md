@@ -173,7 +173,9 @@ CI=1 npm run e2e
 
 It guards that a page is reached, not that its feature is asserted — so it
 catches a screen nobody ever opened, and not a screen opened without its new
-control being checked. That part is still on the reviewer.
+control being checked. A page the router then redirected away from counts as
+reached too: a trader bounced off `/admin/users` marks it covered. Both are
+still on the reviewer.
 
 ## Before calling it done
 

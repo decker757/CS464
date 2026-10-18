@@ -77,4 +77,38 @@ describe('findUncoveredRoutes', () => {
     })
     expect(staleAllowlist).toEqual(['/'])
   })
+
+  it('reports an allowlisted route that no longer exists, the other way the list rots', () => {
+    const { unknownAllowlist } = findUncoveredRoutes({
+      declared: ['/markets'],
+      visited: ['/markets'],
+      allowlist: [{ path: '/old-page', reason: 'deleted two sprints ago' }],
+    })
+    expect(unknownAllowlist).toEqual(['/old-page'])
+  })
+
+  it('reports a visited page that matches no declared route', () => {
+    // The guard reads App.tsx with a regex. Move a block of routes into a
+    // child component and it would see fewer routes and call the rest
+    // covered; the pages the tests opened then match nothing, which is what
+    // says so.
+    const { unmatchedVisits } = findUncoveredRoutes({
+      declared: ['/markets'],
+      visited: ['/markets', '/admin/users'],
+      allowlist: allowNothing,
+    })
+    expect(unmatchedVisits).toEqual(['/admin/users'])
+  })
+
+  it('credits a visit to the route that fits it best, not merely one that fits', () => {
+    // `/admin/markets/new` is not an `:id`. Asking each route on its own
+    // would let the create page cover the market page it has nothing to do
+    // with, so the ranking is React Router's.
+    const { unvisited } = findUncoveredRoutes({
+      declared: ['/admin/markets/new', '/admin/markets/:id'],
+      visited: ['/admin/markets/new'],
+      allowlist: allowNothing,
+    })
+    expect(unvisited).toEqual(['/admin/markets/:id'])
+  })
 })

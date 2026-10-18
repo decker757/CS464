@@ -14,14 +14,19 @@ import { recordVisit } from './visitedRoutes'
 
 export { expect } from '@playwright/test'
 
+// Where the app is served. A page pointed at a backend instead — market_service
+// answers `GET /markets/{id}` on :8001 — would otherwise credit the route of
+// the same name, so only the frontend's own origin counts as visiting a page.
+const APP_ORIGIN = new URL(process.env.E2E_BASE_URL ?? 'http://localhost:5173').origin
+
 function recordEveryPageOf(context: BrowserContext): BrowserContext {
   context.on('page', page => {
     page.on('framenavigated', frame => {
       // Only the page itself: an iframe's address is not a route, and
       // `about:blank` is where a page starts rather than somewhere it went.
       if (frame !== page.mainFrame()) return
-      const { protocol, pathname } = new URL(frame.url())
-      if (protocol !== 'http:' && protocol !== 'https:') return
+      const { origin, pathname } = new URL(frame.url())
+      if (origin !== APP_ORIGIN) return
       recordVisit(pathname)
     })
   })

@@ -30,8 +30,14 @@ test('a username someone already has is refused, with the reason on the field', 
   await page.getByRole('button', { name: /create account/i }).click()
 
   // `duplicate_user` from the real auth service, shown against the field it is
-  // about rather than as a banner. A unit test asserts this against an MSW
-  // handler that it writes itself; this one asserts auth really sends it.
-  await expect(page.getByRole('alert')).toBeVisible()
+  // about. A unit test asserts this against an MSW handler it writes itself;
+  // this one asserts auth really sends those per-field `details`.
+  //
+  // `aria-invalid` is the part that pins it to the field: auth's one-field
+  // message and its whole-form fallback are the same sentence, so asserting
+  // the text alone would still pass if the `details` stopped arriving and the
+  // message moved to the banner — the exact regression this is here for.
+  await expect(page.getByLabel('Username')).toHaveAttribute('aria-invalid', 'true')
+  await expect(page.getByText('That username is already registered.')).toBeVisible()
   await expect(page).toHaveURL(/\/register$/)
 })

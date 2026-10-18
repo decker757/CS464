@@ -1,4 +1,4 @@
-import { matchPath } from 'react-router-dom'
+import { matchRoutes } from 'react-router-dom'
 
 // [F-12] #341. The comparison behind the route-coverage guard. Pure, and free
 // of node and playwright, so `routeCoverage.test.ts` can run it under vitest;
@@ -45,22 +45,50 @@ export function parseDeclaredRoutes(appSource: string): string[] {
   return paths
 }
 
-/**
- * The routes no test opened, and the allowlist entries that are no longer true.
- *
- * A visited `/markets/7f3e…` counts for a declared `/markets/:id`: the match is
- * React Router's own, so the guard agrees with the router about what a path is.
- */
-export function findUncoveredRoutes({ declared, visited, allowlist }: Coverage): {
+interface Uncovered {
+  /** Declared, opened by nobody, and not excused. */
   unvisited: string[]
+  /** Excused, but a test opened it after all. */
   staleAllowlist: string[]
-} {
-  const allowed = new Set(allowlist.map(entry => entry.path))
-  const wasVisited = (route: string): boolean =>
-    visited.some(pathname => matchPath(route, pathname) !== null)
+  /** Excused, but `App.tsx` no longer declares it. */
+  unknownAllowlist: string[]
+  /** Opened, but matching no declared route — so the parse missed something. */
+  unmatchedVisits: string[]
+}
 
+/**
+ * The routes no test opened, plus the three ways this answer can go stale.
+ *
+ * A visited `/markets/7f3e…` counts for a declared `/markets/:id`, and the
+ * ranking is React Router's own `matchRoutes`, so each visit credits the route
+ * that fits it best rather than every route it merely fits: `/admin/markets/new`
+ * is the create page, not an `:id`.
+ *
+ * `unmatchedVisits` is what stops the regex in `parseDeclaredRoutes` failing
+ * quietly. Move a block of routes into a child component and this reads fewer
+ * routes and calls the rest covered — but the pages the tests opened then match
+ * nothing, and that says so.
+ */
+export function findUncoveredRoutes({ declared, visited, allowlist }: Coverage): Uncovered {
+  const routes = declared.map(path => ({ path }))
+  const reached = new Set<string>()
+  const unmatchedVisits: string[] = []
+  for (const pathname of visited) {
+    const matched = matchRoutes(routes, pathname)
+    const route = matched?.at(-1)?.route.path
+    if (route === undefined) {
+      if (!unmatchedVisits.includes(pathname)) unmatchedVisits.push(pathname)
+      continue
+    }
+    reached.add(route)
+  }
+
+  const allowed = new Set(allowlist.map(entry => entry.path))
+  const isDeclared = new Set(declared)
   return {
-    unvisited: declared.filter(route => !allowed.has(route) && !wasVisited(route)),
-    staleAllowlist: declared.filter(route => allowed.has(route) && wasVisited(route)),
+    unvisited: declared.filter(route => !allowed.has(route) && !reached.has(route)),
+    staleAllowlist: declared.filter(route => allowed.has(route) && reached.has(route)),
+    unknownAllowlist: allowlist.map(entry => entry.path).filter(path => !isDeclared.has(path)),
+    unmatchedVisits,
   }
 }
