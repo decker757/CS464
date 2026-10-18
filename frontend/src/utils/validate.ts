@@ -5,6 +5,11 @@ const USERNAME_MIN = 3
 const USERNAME_MAX = 32
 const PASSWORD_MIN = 12
 
+/** The rules, worded for the form, so a field can state what it accepts
+ * before the user submits and the numbers are written down once. */
+export const USERNAME_HINT = `${USERNAME_MIN}–${USERNAME_MAX} characters: letters, numbers, hyphens and underscores.`
+export const PASSWORD_HINT = `Must be at least ${PASSWORD_MIN} characters.`
+
 export type RegisterForm = Registration
 
 export interface RegisterErrors {
