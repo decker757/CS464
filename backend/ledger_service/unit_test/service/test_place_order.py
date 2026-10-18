@@ -55,6 +55,7 @@ from unit_test.placement_fixtures import (
     record_result,
     reserved_credits_of,
 )
+from unit_test.portfolio_fixtures import read_portfolio
 from unit_test.sell_fixtures import hold
 from unit_test.service.test_account_status import _Auth
 from unit_test.trade_fixtures import (
@@ -92,6 +93,22 @@ SMALL_COST = Decimal("2.7801")
 # Holdings for the sells: 54.3333 bought on a book at zero takes outcome 0 to
 # 0.6326.
 HELD = Decimal("54.3333")
+
+# A holding bought in two lots on a b = 100 book at zero: 20 shares for
+# C(20, 0) − C(0, 0) = 10.49916…, charged 10.4992 (0.5250 a share), then 30
+# for C(50, 0) − C(20, 0) = 17.59389…, charged 17.5939 (0.5865). The basis is
+# 28.0931, 0.5619 a share. A sell of 13 at 0.5500 fills whole on arrival for
+# C(50, 0) − C(37, 0) = 7.89145…, floored to 7.8914, and keeps
+# 28.0931 · 37/50 = 20.788894 of the basis, half-up 20.7889 (a floor gives
+# 20.7888). It releases 7.3042 and banks 7.8914 − 7.3042 = 0.5872. Released at
+# the first lot's price it would keep 21.2686, at the fill's 20.2017.
+LOTS = (Decimal("20.0000"), Decimal("30.0000"))
+LOTS_BASIS = Decimal("28.0931")
+LOTS_SOLD = Decimal("13.0000")
+LOTS_SELL_LIMIT = Decimal("0.5500")
+LOTS_PROCEEDS = Decimal("7.8914")
+LOTS_REMAINING_BASIS = Decimal("20.7889")
+LOTS_REALIZED = Decimal("0.5872")
 
 
 async def _example_market(session: AsyncSession):
@@ -268,6 +285,39 @@ async def test_a_marketable_sell_fills_down_to_its_limit_and_reserves_the_rest(
     assert await reservations.reserved_shares_of(
         session, user_id, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
     ) == Decimal("16.2133")
+
+
+async def test_a_sell_filled_on_arrival_releases_basis_at_average_cost(
+    session: AsyncSession,
+) -> None:
+    """[T-6] #26 and "A sell releases cost basis at average cost": a sell
+    order's fill on arrival is a sale like any other, so it releases the
+    average cost of the shares it sold, neither the first lot's price nor what
+    the fill paid, and the portfolio banks the proceeds less that release."""
+    upstream = limit_upstream()
+    await open_at(session, upstream, ZERO_Q)
+    user_id = await _funded(session)
+    for lot in LOTS:
+        await hold(session, upstream, user_id=user_id, quantity=lot)
+    outcome_id = upstream.outcomes[0]
+    bought = await position_of(session, user_id, upstream.market_id, outcome_id)
+    assert str(bought.cost_basis) == str(LOTS_BASIS)
+
+    placement = await place(
+        session,
+        upstream,
+        user_id=user_id,
+        side="sell",
+        limit_price=LOTS_SELL_LIMIT,
+        quantity=LOTS_SOLD,
+    )
+
+    assert placement.order.status == "filled"
+    assert [(f.quantity, f.total) for f in placement.fills] == [(LOTS_SOLD, LOTS_PROCEEDS)]
+    position = await position_of(session, user_id, upstream.market_id, outcome_id)
+    assert position.quantity == sum(LOTS) - LOTS_SOLD
+    assert str(position.cost_basis) == str(LOTS_REMAINING_BASIS)
+    assert str((await read_portfolio(session, user_id)).realized_pnl) == str(LOTS_REALIZED)
 
 
 # =========================================================================
