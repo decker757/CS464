@@ -66,6 +66,19 @@ class Valuation:
     net_worth: Decimal
 
 
+@dataclass(frozen=True)
+class ProfitAndLoss:
+    """What one user is up or down since their grant, in two parts: the part
+    the entries have already banked, and the part still riding on positions
+    nobody has closed. [B-1] #359
+    """
+
+    starting_credits: Decimal
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    total_pnl: Decimal
+
+
 def _position_of(
     outcome: Row,
     held: Decimal,
@@ -238,4 +251,44 @@ def valuation_of(balance: Decimal, rows: list[Row]) -> Valuation:
         positions=positions,
         positions_value=positions_value,
         net_worth=balance + positions_value,
+    )
+
+
+def profit_and_loss_of(
+    positions: list[PortfolioPosition],
+    *,
+    balance: Decimal,
+    starting_credits: Decimal,
+) -> ProfitAndLoss:
+    """What this user has made, from their balance, the grant they started
+    with and the positions `valuation_of` returned. [B-1] #359
+
+    Realised P&L is `balance - starting_credits + open_cost_basis`. Every
+    credit that has left the balance and not come back is a loss, except the
+    part still tied up in positions nobody has closed — which is exactly
+    (what the sells paid less the basis they released) plus (what settlement
+    paid less the basis of the holdings it settled). Neither term is stored:
+    a settled market's holding is closed, so its basis is not open cost and
+    its payout is already in `balance`.
+
+    Unrealised P&L is the sum of the rows' own `unrealized_pnl`, so the total
+    agrees with the rows the caller renders above it (ADR 0018). The two come
+    to `net_worth - starting_credits` exactly, which is the reconciliation
+    `docs/api/ledger-service.md` promises.
+    """
+    open_cost_basis = _ZERO_AMOUNT
+    unrealized_pnl = _ZERO_AMOUNT
+    for position in positions:
+        # A settled row: both its basis and its payout are already realised.
+        if position.unrealized_pnl is None:
+            continue
+        open_cost_basis += position.cost_basis
+        unrealized_pnl += position.unrealized_pnl
+
+    realized_pnl = balance - starting_credits + open_cost_basis
+    return ProfitAndLoss(
+        starting_credits=starting_credits,
+        realized_pnl=realized_pnl,
+        unrealized_pnl=unrealized_pnl,
+        total_pnl=realized_pnl + unrealized_pnl,
     )

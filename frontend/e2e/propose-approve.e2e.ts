@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/fixtures'
 import { closeEarly, publishMarket, registerAdmin, uniqueName } from './support/backend'
 import { loadUntilShown, logIn, marketCard } from './support/browser'
 

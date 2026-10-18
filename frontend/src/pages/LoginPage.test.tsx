@@ -18,9 +18,9 @@ const mockLogin = vi.fn()
 
 beforeEach(() => mockLogin.mockClear())
 
-function renderLoginPage() {
+function renderLoginPage(hasSessionExpired = false) {
   return render(
-    <AuthContext.Provider value={{ user: null, login: mockLogin, logout: vi.fn() }}>
+    <AuthContext.Provider value={{ user: null, hasSessionExpired, login: mockLogin, logout: vi.fn() }}>
       <MemoryRouter initialEntries={['/login']}>
         <LoginPage />
       </MemoryRouter>
@@ -68,6 +68,23 @@ describe('LoginPage — links', () => {
     await user.click(screen.getByRole('link', { name: /back to home/i }))
 
     expect(screen.getByText('landing page')).toBeInTheDocument()
+  })
+})
+
+describe('LoginPage — an expired session', () => {
+  // [FE] #353. A visitor who lands here because their session ended is owed
+  // the reason; the alternative is a bare form appearing over the page they
+  // were using, with nothing to say what happened.
+  it('says why the visitor is looking at the login form', () => {
+    renderLoginPage(true)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Your session expired, please sign in again.')
+  })
+
+  it('says nothing of the sort to a visitor who came here to log in', () => {
+    renderLoginPage()
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 })
 

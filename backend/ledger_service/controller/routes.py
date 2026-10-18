@@ -252,6 +252,13 @@ _PORTFOLIO_DESCRIPTION = (
     "`result` and `payout`, and `price`, `value` and `unrealized_pnl` are "
     "null. The payout is already in `balance`, so such a row adds nothing "
     "to `positions_value`. Every key is on every row; branch on `result`.\n\n"
+    "[B-1] #359. `starting_credits` is what this user's grant actually "
+    "paid, read from that transaction's entry rather than from the "
+    "`STARTING_CREDITS` setting, which can change without rewriting an "
+    "entry (ADR 0009). `realized_pnl` is what the sells and the settlements "
+    "banked, `unrealized_pnl` is the sum of the rows' own, and `total_pnl` "
+    "is both — which is `net_worth - starting_credits`, exactly. Nothing is "
+    "stored: every figure is derived from the entries on each read.\n\n"
     "Only positions with quantity > 0 are shown, ordered by `market_id` "
     "then `outcome_position`; there is no admin variant."
 )
@@ -282,6 +289,10 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
         balance=result.balance,
         positions_value=result.positions_value,
         net_worth=result.net_worth,
+        starting_credits=result.starting_credits,
+        realized_pnl=result.realized_pnl,
+        unrealized_pnl=result.unrealized_pnl,
+        total_pnl=result.total_pnl,
         positions=[
             PortfolioPositionOut(
                 market_id=p.market_id,
