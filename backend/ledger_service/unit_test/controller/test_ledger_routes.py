@@ -15,6 +15,8 @@ from httpx import AsyncClient
 
 from core.roles import UserRole
 from unit_test.conftest import bearer
+from unit_test.market_fixtures import market_with_outcomes
+from unit_test.order_fixtures import add_order
 
 ME = "/ledger/balances/me"
 MY_ENTRIES = "/ledger/entries/me"
@@ -187,9 +189,6 @@ async def test_the_balance_route_reports_what_open_buy_orders_reserve(
     credits; `reserved` is what the user's live buy orders could still spend,
     and `available` is the difference. The admin route returns the same
     figures."""
-    from unit_test.market_fixtures import market_with_outcomes  # noqa: PLC0415
-    from unit_test.order_fixtures import add_order  # noqa: PLC0415
-
     await client.get(ME, headers=trader_headers)
     market_id, outcome_ids = await market_with_outcomes(
         session, liquidity_b=Decimal("100.0000")

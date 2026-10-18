@@ -2,17 +2,19 @@
 
 `test_reservations.py`, `test_overdraft_floor.py`, `test_trade.py` and
 `test_ledger_routes.py` each need an order whose reservation is a known
-figure, and none of them is testing how an order is placed. Project modules
-are reached inside the function, so a missing name fails one test rather than
-collection (D-007).
+figure, and none of them is testing how an order is placed.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.pricing import Side
+from model.entities import Order, OrderStatus
 
 
 async def add_order(
@@ -24,7 +26,7 @@ async def add_order(
     budget: str | None,
     filled_value: str = "0.0000",
     status: str = "open",
-):
+) -> Order:
     """One order of a single share at 0.5000, flushed, and returned.
 
     A buy when `budget` is given, a sell when it is None. A single share at
@@ -34,11 +36,6 @@ async def add_order(
     filled, a cancelled one a cancel time, and an open one half a share
     filled when anything has filled, so every CHECK on the table holds.
     """
-    from datetime import UTC, datetime  # noqa: PLC0415
-
-    from core.pricing import Side  # noqa: PLC0415
-    from model.entities import Order, OrderStatus  # noqa: PLC0415
-
     order_status = OrderStatus(status)
     if order_status is OrderStatus.FILLED:
         filled_quantity = Decimal("1.0000")

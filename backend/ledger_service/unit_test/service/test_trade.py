@@ -26,6 +26,8 @@ from unit_test.conftest import (
     strip_outcomes,
     terms_client_over,
 )
+from unit_test.market_fixtures import market_with_outcomes
+from unit_test.order_fixtures import add_order
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -661,9 +663,6 @@ async def test_credits_a_buy_order_reserves_cannot_pay_for_a_trade(
     `balance`. The trader's buy order in another market leaves one tick less
     available than the trade costs, though the balance covers it; the refusal
     says what is reserved and what was available."""
-    from unit_test.market_fixtures import market_with_outcomes  # noqa: PLC0415
-    from unit_test.order_fixtures import add_order  # noqa: PLC0415
-
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
