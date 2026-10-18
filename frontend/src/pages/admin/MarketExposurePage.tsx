@@ -1,14 +1,80 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMarketExposure, type MarketExposure } from '../../api/ledgerApi'
+import { getMarketExposure, type MarketExposure, type OutcomeExposure } from '../../api/ledgerApi'
 import AppLayout from '../../components/layout/AppLayout'
 import MarketExposureTable from '../../components/markets/MarketExposureTable'
 import BackLink from '../../components/ui/BackLink'
+import Button from '../../components/ui/Button'
 import DetailItem from '../../components/ui/DetailItem'
 import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
 import { useMarketDetail } from '../../hooks/useMarketDetail'
-import { formatCreditsPrecise } from '../../utils/formatCredits'
+import { formatCreditsPrecise, isZeroCredits, unsignedCredits } from '../../utils/formatCredits'
+
+interface WorstCase {
+  outcomeId: string
+  /** The server's own `residue_if_wins` for that outcome, untouched. */
+  residue: string
+  /** True when the pool cannot cover that outcome's payout. */
+  isShort: boolean
+}
+
+const SIGNED_DECIMAL = /^(-?)(\d+)(?:\.(\d+))?$/
+
+// A residue is a decimal string and the browser must never parse one into a
+// float (frontend/CLAUDE.md). Picking the worst outcome needs no arithmetic:
+// nothing here adds, subtracts or negates a figure, it only orders two of
+// them. Padding both fractions to the same length leaves two plain integers,
+// which BigInt compares exactly, and the figure that reaches the screen is
+// still the string the ledger sent. A value that is not a plain decimal
+// sorts as equal rather than letting BigInt throw mid-render, the same guard
+// formatCredits makes before its own BigInt call.
+function compareResidues(left: string, right: string): number {
+  const leftParts = SIGNED_DECIMAL.exec(left)
+  const rightParts = SIGNED_DECIMAL.exec(right)
+  if (!leftParts || !rightParts) return 0
+
+  const [, leftSign, leftWhole, leftFraction = ''] = leftParts
+  const [, rightSign, rightWhole, rightFraction = ''] = rightParts
+  const fractionDigits = Math.max(leftFraction.length, rightFraction.length)
+  const leftUnits = BigInt(leftSign + leftWhole + leftFraction.padEnd(fractionDigits, '0'))
+  const rightUnits = BigInt(rightSign + rightWhole + rightFraction.padEnd(fractionDigits, '0'))
+
+  if (leftUnits < rightUnits) return -1
+  return leftUnits > rightUnits ? 1 : 0
+}
+
+function isShortfall(residue: string): boolean {
+  return residue.startsWith('-') && !isZeroCredits(residue)
+}
+
+/** The outcome that costs the platform most if it wins: the smallest
+ * `residue_if_wins`, since the pool is the same whichever outcome wins. There
+ * is no field for it — docs/api/ledger-service.md derives it from `outcomes`
+ * like every other figure in this service. Null once the market has settled,
+ * where every residue is null, and on a market with no book yet. */
+function worstCaseOutcome(outcomes: OutcomeExposure[]): WorstCase | null {
+  let worst: WorstCase | null = null
+  for (const outcome of outcomes) {
+    const residue = outcome.residue_if_wins
+    if (residue === null) continue
+    if (worst === null || compareResidues(residue, worst.residue) < 0) {
+      worst = { outcomeId: outcome.outcome_id, residue, isShort: isShortfall(residue) }
+    }
+  }
+  return worst
+}
+
+/** The worst case in words: what the platform is on the hook for if that
+ * outcome wins, or what the pool keeps when it covers every payout. The
+ * figure is the ledger's own string, with the minus sign dropped on a
+ * shortfall because "tops up" already says which way it points. */
+function worstCaseSentence(worstCase: WorstCase, label: string): string {
+  if (worstCase.isShort) {
+    return `If ${label} wins, the platform tops up ${formatCreditsPrecise(unsignedCredits(worstCase.residue))}.`
+  }
+  return `If ${label} wins, the pool keeps ${formatCreditsPrecise(worstCase.residue)}.`
+}
 
 // [2.2] #55. Not scoped to the market's creator: knowing payout size before
 // resolving is #6's whole story, which is oversight, not authorship — same
@@ -21,16 +87,38 @@ export default function MarketExposurePage() {
   const [exposure, setExposure] = useState<MarketExposure | null>(null)
   const [exposureLoading, setExposureLoading] = useState(true)
   const [exposureError, setExposureError] = useState(false)
+  // Exposure moves with every trade, so the figures on screen are only ever
+  // as good as the moment they were read (#361): say when that was, and let
+  // the admin read it again before resolving.
+  const [readAt, setReadAt] = useState<Date | null>(null)
+  const [readCount, setReadCount] = useState(0)
 
   useEffect(() => {
     if (!id) return
     let ignored = false
     getMarketExposure(id)
-      .then(found => { if (!ignored) setExposure(found) })
+      .then(found => {
+        if (ignored) return
+        setExposure(found)
+        setReadAt(new Date())
+      })
       .catch(() => { if (!ignored) setExposureError(true) })
       .finally(() => { if (!ignored) setExposureLoading(false) })
     return () => { ignored = true }
-  }, [id])
+  }, [id, readCount])
+
+  // The read is asked for here rather than in the effect, so the button is
+  // disabled and any earlier failure cleared from the click that caused it.
+  function handleRefresh() {
+    setExposureLoading(true)
+    setExposureError(false)
+    setReadCount(count => count + 1)
+  }
+
+  const worstCase = exposure === null ? null : worstCaseOutcome(exposure.outcomes)
+  const worstCaseLabel = worstCase === null ? '' : outcomeLabels.get(worstCase.outcomeId) ?? worstCase.outcomeId
+  const winningOutcomeId = exposure?.winning_outcome_id ?? null
+  const winnerLabel = winningOutcomeId === null ? null : outcomeLabels.get(winningOutcomeId) ?? winningOutcomeId
 
   return (
     <AppLayout width="max-w-[900px]">
@@ -40,23 +128,46 @@ export default function MarketExposurePage() {
 
       {market && (
         <>
-          <PageTitle className="mb-8">{market.question}</PageTitle>
+          <PageTitle className="mb-4">{market.question}</PageTitle>
 
-          {exposureLoading && <p className="text-sm text-muted">Loading exposure…</p>}
+          <div className="mb-8 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-muted">
+              {readAt === null
+                ? 'Not read yet.'
+                : `Read at ${readAt.toLocaleTimeString('en-SG')} · state version ${exposure?.state_version ?? '—'}`}
+            </p>
+            {/* Disabled while a read is on its way, so a double click asks once. */}
+            <Button variant="outline" size="xs" onClick={handleRefresh} disabled={exposureLoading}>
+              {exposureLoading ? 'Refreshing…' : 'Refresh'}
+            </Button>
+          </div>
+
+          {exposureLoading && exposure === null && <p className="text-sm text-muted">Loading exposure…</p>}
           {exposureError && <p role="alert" className="text-sm text-danger">Failed to load exposure.</p>}
 
-          {!exposureLoading && !exposureError && exposure && (
+          {exposure && (
             <>
               {exposure.result === 'settled' ? (
-                <p className="mb-6 text-sm text-muted">This market has settled; the pool has been paid out.</p>
+                <p className="mb-6 text-sm text-muted">
+                  This market has settled{winnerLabel === null ? '' : `; ${winnerLabel} won`} and the pool has been paid out.
+                </p>
               ) : (
                 <SectionCard title="Pool" className="mb-6">
-                  <DetailItem label="Seed plus every buy, minus every sell">
-                    <p className="text-smu-navy">{exposure.pool === null ? '—' : formatCreditsPrecise(exposure.pool)}</p>
-                  </DetailItem>
-                  {exposure.payout_exceeds_pool && (
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <DetailItem label="Seed plus every buy, minus every sell">
+                      <p className="text-smu-navy">{exposure.pool === null ? '—' : formatCreditsPrecise(exposure.pool)}</p>
+                    </DetailItem>
+                    {worstCase && (
+                      <DetailItem label="Worst case">
+                        <p className={worstCase.isShort ? 'font-semibold text-danger' : 'text-smu-navy'}>
+                          {worstCaseSentence(worstCase, worstCaseLabel)}
+                        </p>
+                      </DetailItem>
+                    )}
+                  </div>
+                  {exposure.payout_exceeds_pool && worstCase && (
                     <p role="alert" className="mt-4 text-sm font-semibold text-danger">
-                      At least one outcome's payout exceeds the pool.
+                      The payout for {worstCaseLabel} exceeds the pool.
                     </p>
                   )}
                 </SectionCard>
