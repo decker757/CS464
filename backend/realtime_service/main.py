@@ -49,7 +49,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description=(
             "Live market prices over a WebSocket. Subscribes to one Redis "
-            "channel, fans each price event out to the sockets watching that "
+            "channel for prices, fans each price event out to the sockets watching that "
             "market, and drops anything older than what it has already sent. "
             "A second channel carries each fill of a resting order to every "
             "socket its owner has open. "
