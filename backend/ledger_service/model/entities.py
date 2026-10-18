@@ -776,6 +776,12 @@ class Order(Base):
         ),
         # A buy has a budget and a sell has none, in both directions.
         CheckConstraint("(side = 'buy') = (budget IS NOT NULL)", name="ck_orders_budget_iff_buy"),
+        # A budget short of limit × quantity would rest looking funded, and
+        # the fill that overran it would fail inside some later trader's trade.
+        CheckConstraint(
+            "budget IS NULL OR budget >= limit_price * quantity",
+            name="ck_orders_budget_covers_the_limit",
+        ),
         CheckConstraint("filled_value >= 0", name="ck_orders_filled_value_nonneg"),
         CheckConstraint(
             "budget IS NULL OR filled_value <= budget",
