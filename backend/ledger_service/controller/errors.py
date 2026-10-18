@@ -62,10 +62,18 @@ def register_error_handlers(app: FastAPI) -> None:
         # re-deriving that from the prose of `message` is not an API. Additive,
         # so a client that ignores it still reads the envelope.
         if isinstance(exc, InsufficientFunds):
-            error["details"] = {
+            details = {
                 "balance": str(exc.balance),
-                "required": str(exc.required),
+                "reserved": str(exc.reserved),
+                "available": str(exc.available),
             }
+            # A trade's refusal says what it needed; a refusal at the start of
+            # the batch says how short the account is instead (ADR 0024).
+            if exc.required is not None:
+                details["required"] = str(exc.required)
+            if exc.shortfall is not None:
+                details["shortfall"] = str(exc.shortfall)
+            error["details"] = details
         elif isinstance(exc, InsufficientSharesHeld):
             error["details"] = {
                 "held": str(exc.held),

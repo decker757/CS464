@@ -89,8 +89,11 @@ from service.book_prices import PricedOutcome
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
 _BALANCE_DESCRIPTION = (
-    "[B-2] #33. Available credits, derived by summing every entry on the "
+    "[B-2] #33. The account's credits, derived by summing every entry on the "
     "account. There is no stored balance for this number to disagree with.\n\n"
+    "`reserved` is what the user's live buy orders could still spend, and "
+    "`available` is `balance - reserved`, what a trade can spend (ADR 0024). "
+    "Both are read in the same statement as the balance.\n\n"
     "Exact decimal strings, not JSON numbers. A balance that has been through "
     "an IEEE double is a balance that can be wrong by an epsilon, and this is "
     "money."
@@ -203,7 +206,7 @@ _PREVIEW_DESCRIPTION = (
 @router.get(
     "/balances/me",
     response_model=BalanceOut,
-    summary="My available credit balance",
+    summary="My balance, what my orders reserve, and what is available",
     description=_BALANCE_DESCRIPTION + _FIRST_READ_MINTS,
     responses={401: {"description": "Missing, malformed or expired access token."}},
 )
@@ -581,7 +584,9 @@ _TRADE_DESCRIPTION = (
             "description": (
                 "`market_closed`: the market is not open for trading. "
                 "`quote_stale`: the quoted `state_version` is stale. "
-                "`insufficient_funds`: a buy this account cannot afford. "
+                "`insufficient_funds`: a buy this account's available "
+                "credits, its balance less what its buy orders reserve, "
+                "cannot cover. "
                 "`insufficient_shares_held`: a sell larger than this "
                 "caller's position in this outcome. "
                 "`idempotency_key_reused`: this key already names a "
@@ -956,7 +961,11 @@ def _balance_out(user_id: uuid.UUID, balance: ledger_service.UserBalance) -> Bal
     """One body, two routes: `/me` mints the caller's grant, the admin route
     mints nothing (#188), and the wire shape is the same."""
     return BalanceOut(
-        user_id=user_id, account_id=balance.account_id, balance=balance.amount
+        user_id=user_id,
+        account_id=balance.account_id,
+        balance=balance.amount,
+        reserved=balance.reserved,
+        available=balance.available,
     )
 
 
