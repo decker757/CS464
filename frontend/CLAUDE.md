@@ -5,7 +5,8 @@ Tests: Vitest, Testing Library, MSW. Lint: oxlint.
 
 ```bash
 npm run dev
-npm run test:run      # CI runs this,
+npm run test:run      # CI runs `test:coverage`, which is this plus a figure
+                      # for the run summary ([F-12] #342). Either will do here.
 npm run lint          # this,
 npx tsc --noEmit      # this (and `npx tsc --noEmit -p e2e` for the e2e tests),
 npm run knip          # this (dead code: unused files, exports, dependencies),
