@@ -46,6 +46,12 @@ const SERIES_STYLES: SeriesStyle[] = [
   { stroke: 'var(--color-smu-gold)', strokeDasharray: '7 4' },
 ]
 
+// One width for the lines and for the legend marks that stand for them, so a
+// swatch is not drawn heavier than the line it names. Recharts' own default
+// is 1, which leaves the gold line — the fainter of the two — thinner than it
+// needs to be against the grid.
+const LINE_WIDTH = 2
+
 function seriesStyle(index: number): SeriesStyle {
   return SERIES_STYLES[index % SERIES_STYLES.length]
 }
@@ -65,18 +71,26 @@ function timeBounds(rows: ChartRow[]): TimeBounds {
 
 /** The rows inside the selected span, measured back from the newest point
  * rather than from now — a market that stopped trading days ago still has a
- * last hour of trading to look at. The newest row is always inside the span,
- * so a non-empty set of rows never narrows to nothing. */
+ * last hour of trading to look at.
+ *
+ * One point whose `occurred_at` did not parse makes the newest time NaN, and
+ * every comparison against NaN is false, so the filter can empty a chart
+ * that has points in it. Fall back to the whole history rather than render
+ * nothing: a bad timestamp degrades the window, as a bad amount degrades to
+ * "—" in formatCredits, and never takes the page down. */
 function rowsInRange(rows: ChartRow[], spanMs: number | null): ChartRow[] {
   if (spanMs === null) return rows
   const earliestShown = timeBounds(rows).newest - spanMs
-  return rows.filter(row => row.time >= earliestShown)
+  const inRange = rows.filter(row => row.time >= earliestShown)
+  return inRange.length === 0 ? rows : inRange
 }
 
 /** Day and month over a long span, time of day within a single day: a market
  * that traded in one afternoon otherwise prints the same date on every tick
- * (#361). */
+ * (#361). A time that did not parse reads "—" rather than "Invalid Date". */
 function formatAxisTime(time: number, spanMs: number): string {
+  if (!Number.isFinite(time)) return '—'
+
   const moment = new Date(time)
   if (spanMs <= DAY_MS) {
     return moment.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit', hour12: false })
@@ -118,9 +132,13 @@ export default function PriceHistoryChart({ outcomes, points }: PriceHistoryChar
   return (
     <>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        {/* The legend is written here rather than with recharts' <Legend/>, so
-            that it is text in the document for a screen reader to read and a
-            test to find, and so each entry can draw its line's own dash. */}
+        {/* Written by hand rather than with recharts' <Legend/>, which would
+            do the job on its own — iconType="plainline" draws each line's
+            strokeDasharray. The legend and the range control are one strip,
+            and the control cannot live inside the chart, so splitting one row
+            across two rendering systems costs more than fifteen lines of
+            markup. It also puts the outcome names outside a chart that jsdom
+            renders at zero width, which is what lets the tests find them. */}
         <ul aria-label="Outcomes" className="flex flex-wrap items-center gap-4">
           {outcomes.map((outcome, index) => (
             <li key={outcome.id} className="flex items-center gap-2 text-sm text-smu-navy">
@@ -130,7 +148,7 @@ export default function PriceHistoryChart({ outcomes, points }: PriceHistoryChar
                   y1="4"
                   x2="26"
                   y2="4"
-                  strokeWidth="2.5"
+                  strokeWidth={LINE_WIDTH}
                   stroke={seriesStyle(index).stroke}
                   strokeDasharray={seriesStyle(index).strokeDasharray}
                 />
@@ -193,6 +211,7 @@ export default function PriceHistoryChart({ outcomes, points }: PriceHistoryChar
                 name={outcome.label}
                 stroke={seriesStyle(index).stroke}
                 strokeDasharray={seriesStyle(index).strokeDasharray}
+                strokeWidth={LINE_WIDTH}
                 // A single point draws no line, so mark it rather than
                 // leaving a range that holds one trade looking empty.
                 dot={shownRows.length === 1}
