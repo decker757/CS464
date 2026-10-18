@@ -13,10 +13,11 @@ import uuid
 import pytest
 import redis.asyncio as redis
 
+from service import bus as bus_module
 from service.bus import PRICE_CHANNEL, PriceBus, publish
 from service.ordering import VersionGate
 from service.subscriptions import Hub
-from unit_test.conftest import REDIS_UNREACHABLE, Recorder, make_event
+from unit_test.conftest import REDIS_UNREACHABLE, Recorder, make_event, make_order_message
 
 
 async def _settle(predicate, *, timeout: float = 5.0) -> bool:
@@ -136,6 +137,54 @@ async def test_a_malformed_message_does_not_stop_the_bus(
 
     assert await _settle(lambda: watcher.frames), f"bus died on {description}"
     assert len(watcher.frames) == 1
+
+
+async def test_order_frames_are_delivered_after_their_commits_price_frame(
+    running_bus, market_id: uuid.UUID
+) -> None:
+    """What the ledger sends for one trade that filled two resting orders: the
+    price frame at the book's final version 4, then one order frame per fill,
+    at versions 2 and 3. Both reach the owner, who subscribed to nothing. A
+    per-market version gate would drop them both as older than the price."""
+    _, hub, publisher = running_bus
+    owner = uuid.uuid4()
+    watching, owners_tab = Recorder(), Recorder()
+    hub.subscribe(watching, market_id)
+    hub.attach_user(owners_tab, owner)
+
+    await publish(publisher, make_event(market_id, 4))
+    for version in (2, 3):
+        message = make_order_message(owner, market_id=market_id, state_version=version)
+        await publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(message))
+
+    assert await _settle(lambda: len(owners_tab.frames) == 2)
+    assert [frame["type"] for frame in owners_tab.frames] == ["order", "order"]
+    assert [frame["fill"]["state_version"] for frame in owners_tab.frames] == [2, 3]
+    assert [frame["type"] for frame in watching.frames] == ["price"]
+
+
+@pytest.mark.parametrize(
+    ("description", "payload"),
+    [
+        ("not json at all", "}{"),
+        ("an unknown field", json.dumps({**make_order_message(uuid.uuid4()), "surprise": 1})),
+    ],
+)
+async def test_a_malformed_order_message_does_not_stop_the_bus(
+    running_bus, description: str, payload: str
+) -> None:
+    """The order channel's dispatch runs inside the same `listen` as the price
+    channel's, so one bad message there would stop prices too."""
+    _, hub, publisher = running_bus
+    owner = uuid.uuid4()
+    owners_tab = Recorder()
+    hub.attach_user(owners_tab, owner)
+
+    await publisher.publish(bus_module.ORDER_CHANNEL, payload)
+    await publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(make_order_message(owner)))
+
+    assert await _settle(lambda: owners_tab.frames), f"bus died on {description}"
+    assert len(owners_tab.frames) == 1
 
 
 async def test_an_unreachable_redis_is_retried_rather_than_fatal() -> None:
