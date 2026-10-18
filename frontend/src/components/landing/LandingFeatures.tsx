@@ -16,7 +16,8 @@ interface FeatureCardProps {
 function FeatureCard({ num, title, desc }: FeatureCardProps) {
   return (
     <Card className="px-6 pt-[22px] pb-[26px] transition hover:-translate-y-1 hover:shadow-card-hover">
-      <span className="mb-4 inline-block rounded-md bg-smu-gold/10 px-2.5 py-1 text-xs font-bold tracking-[0.5px] text-smu-gold">
+      {/* 12px on a 10% gold tint over a white Card: the brand gold is 3.07:1 there. [#360] */}
+      <span className="mb-4 inline-block rounded-md bg-smu-gold/10 px-2.5 py-1 text-xs font-bold tracking-[0.5px] text-smu-gold-text">
         {num}
       </span>
       <h3 className="mb-2 text-[17px] font-bold text-smu-navy">{title}</h3>

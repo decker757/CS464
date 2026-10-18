@@ -10,7 +10,8 @@ name: Backend CI
 # so they read "test (auth_service, auth_svc)", "test (market_service,
 # market_svc)", "test (audit_service, audit_svc)", "test (ledger_service,
 # ledger_svc)", "test (realtime_service, none)", "test (shared)" and "dead
-# code". Never mark `notify` required; it only runs on failure.
+# code". Never mark `notify` required; it only runs on failure, and never
+# `coverage` — it reports a number and gates nothing ([F-12] #342).
 on:
   push:
     branches: [ "dev", "staging", "main" ]
@@ -18,6 +19,10 @@ on:
       - "backend/**"
       - "sql/**"
       - "docker-compose.yml"
+      # [F-12] #342. The coverage job is the only thing that runs
+      # scripts/test_coverage_summary.py, so a change to the script alone has
+      # to bring this workflow with it.
+      - "scripts/**"
       - ".github/workflows/ci-backend.yml"
       - ".github/workflows/notify-failure.yml"
   # Every pull request, whatever it targets: a stacked PR targets the branch
@@ -27,6 +32,10 @@ on:
       - "backend/**"
       - "sql/**"
       - "docker-compose.yml"
+      # [F-12] #342. The coverage job is the only thing that runs
+      # scripts/test_coverage_summary.py, so a change to the script alone has
+      # to bring this workflow with it.
+      - "scripts/**"
       - ".github/workflows/ci-backend.yml"
       - ".github/workflows/notify-failure.yml"
 
@@ -193,8 +202,20 @@ jobs:
 
       # No --if-present equivalent on purpose: a failing or missing test run
       # exits non-zero and fails the job.
+      #
+      # [F-12] #342. --cov writes the figure the `coverage` job adds up. What
+      # it counts is backend/.coveragerc, one file for all six suites.
       - name: Test
-        run: pytest
+        env:
+          COVERAGE_RCFILE: ${{ github.workspace }}/backend/.coveragerc
+        run: pytest --cov=. --cov-report=json:coverage-${{ matrix.service }}.json
+
+      - name: Keep the coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.service }}
+          path: backend/${{ matrix.service }}/coverage-${{ matrix.service }}.json
+          retention-days: 1
 
       # Catches an import error or a bad settings default before deploy.
       #
@@ -233,7 +254,16 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Test
-        run: pytest
+        env:
+          COVERAGE_RCFILE: ${{ github.workspace }}/backend/.coveragerc
+        run: pytest --cov=. --cov-report=json:coverage-shared.json
+
+      - name: Keep the coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-shared
+          path: backend/shared/coverage-shared.json
+          retention-days: 1
 
   # [F-11] #198. One scan over all of backend/, because a function in shared/
   # is used from the services, and a scan per service would call it dead.
@@ -261,8 +291,43 @@ jobs:
       - name: Check for dead code
         run: ./check_dead_code.sh
 
+  # [F-12] #342. One figure out of the six suites, on the run's summary page.
+  # Reports, never gates: nothing here fails on a low number, so do not make
+  # this a required check.
+  coverage:
+    name: coverage
+    needs: [test, shared]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Collect every suite's report
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: reports
+          merge-multiple: true
+
+      # The arithmetic has its own tests, because a wrong percentage in a
+      # report is not something CI would otherwise notice.
+      - name: Check the summary script
+        run: |
+          # The suites' own pin, read rather than repeated: a second copy
+          # here would drift silently at the next bump.
+          pip install "$(grep '^pytest==' backend/shared/requirements-dev.txt)"
+          python -m pytest scripts/test_coverage_summary.py -q
+
+      - name: Add the figure to the run summary
+        run: python scripts/coverage_summary.py reports/coverage-*.json >> "$GITHUB_STEP_SUMMARY"
+
   notify:
-    needs: [test, shared, dead-code]
+    needs: [test, shared, dead-code, coverage]
     if: failure()
     uses: ./.github/workflows/notify-failure.yml
     with:
