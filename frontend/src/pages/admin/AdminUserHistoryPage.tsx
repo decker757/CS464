@@ -5,10 +5,12 @@ import { getUserBalance, getUserEntries, type AdminBalance } from '../../api/led
 import AppLayout from '../../components/layout/AppLayout'
 import LedgerEntryTable from '../../components/ledger/LedgerEntryTable'
 import BackLink from '../../components/ui/BackLink'
+import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
 import ReasonModal from '../../components/ui/ReasonModal'
+import { useAuth } from '../../context/AuthContext'
 import { useSuspension } from '../../hooks/useSuspension'
 import { usePagedList } from '../../hooks/usePagedList'
 import { formatCreditsPrecise } from '../../utils/formatCredits'
@@ -31,14 +33,21 @@ export default function AdminUserHistoryPage() {
   // linkedUser once a suspend/unsuspend call answers, so the badge and the
   // control repaint from what the server actually did, not from router
   // state that may already be stale by then (useSuspension.ts).
-  const [changed, setChanged] = useState<{ userId: string; user: AdminUser } | null>(null)
+  const [changed, setChanged] = useState<{ userId: string; user: AdminUser; takesEffectWithinSeconds: number } | null>(null)
   const changedUser = changed !== null && changed.userId === userId ? changed.user : null
   const currentUser = changedUser ?? linkedUser ?? null
+  const takesEffectNote = changed !== null && changed.userId === userId
+    ? `Anything already signed in may keep working for up to ${Math.ceil(changed.takesEffectWithinSeconds / 60)} minutes.`
+    : null
+
+  const { user: signedInUser } = useAuth()
+  const canActOnThisAccount = userId !== undefined && userId !== signedInUser?.id
 
   const {
     direction, openSuspend, openUnsuspend, closeModal,
     reason, setReason, submitting, formError, reasonError, canConfirm, handleConfirm,
-  } = useSuspension(userId ?? '', user => setChanged({ userId: userId ?? '', user }))
+  } = useSuspension(userId ?? '', result =>
+    setChanged({ userId: userId ?? '', user: result.user, takesEffectWithinSeconds: result.takes_effect_within_seconds }))
 
   const [balance, setBalance] = useState<AdminBalance | null>(null)
   const [balanceError, setBalanceError] = useState(false)
@@ -71,26 +80,29 @@ export default function AdminUserHistoryPage() {
       <BackLink to="/admin/users" label="Users" className="mb-4 block" />
       <div className="mb-2 flex items-center gap-3">
         <PageTitle>{currentUser ? `${currentUser.username}'s History` : `History for ${userId}`}</PageTitle>
-        {currentUser?.is_suspended && (
-          <span className="rounded-full border border-danger/25 bg-danger/10 px-2.5 py-[3px] text-[11px] font-bold tracking-[0.5px] text-danger uppercase">
-            Suspended
-          </span>
-        )}
+        {currentUser?.is_suspended && <Badge tone="danger">Suspended</Badge>}
       </div>
       {currentUser && <p className="mb-2 text-sm text-subtle">{currentUser.email}</p>}
 
       {/* Both always shown, not one state-aware toggle: there is no
           GET /admin/users/{id} to confirm current state after a reload, so a
           toggle here could show the wrong label. The Suspended badge above
-          is the only state indicator; these two just pick a direction. */}
-      <div className="mb-6 flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={openSuspend}>
-          Suspend
-        </Button>
-        <Button variant="outline" size="sm" onClick={openUnsuspend}>
-          Unsuspend
-        </Button>
-      </div>
+          is the only state indicator; these two just pick a direction.
+          Neither is offered on the signed-in admin's own page
+          (auth-service.md: "do not offer the control on the signed-in
+          user's own row"); the backend's own refusal is the backstop. */}
+      {canActOnThisAccount && (
+        <div className="mb-6 flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={openSuspend}>
+            Suspend
+          </Button>
+          <Button variant="outline" size="sm" onClick={openUnsuspend}>
+            Unsuspend
+          </Button>
+        </div>
+      )}
+
+      {takesEffectNote && <p className="mb-6 text-sm text-success">Done. {takesEffectNote}</p>}
 
       {formError && <p role="alert" className="mb-6 text-sm text-danger">{formError}</p>}
 
