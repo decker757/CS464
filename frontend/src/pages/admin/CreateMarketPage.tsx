@@ -8,6 +8,7 @@ import {
   saveMarket,
 } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
+import type { AdminMarketStatus } from '../../components/markets/marketStatus'
 import BackLink from '../../components/ui/BackLink'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
@@ -39,8 +40,13 @@ const PRICE_LIMIT = 1e14
 
 const DEFAULT_OUTCOME_PLACEHOLDERS = ['Yes', 'No']
 
+// Every status a refused save can report: anything but the one it was asking
+// to write. Typed off the API's own union, so a sixth code cannot be added to
+// STATUS_AFTER_DRAFT without a sentence in LOCKED_BECAUSE to go with it.
+type LockedStatus = Exclude<AdminMarketStatus, 'draft'>
+
 // A save refused with one of these codes means the market already has this status.
-const STATUS_AFTER_DRAFT: Record<string, string> = {
+const STATUS_AFTER_DRAFT: Record<string, LockedStatus> = {
   market_not_editable: 'submitted',
   market_already_open: 'open',
   market_closed: 'closed',
@@ -49,10 +55,10 @@ const STATUS_AFTER_DRAFT: Record<string, string> = {
 }
 
 // What the market turned out to be when a save was refused, for the banner
-// that explains why the form just went read-only. Publication is one way and
-// a submitted market has no edit path, so none of these is recoverable here
-// (ADR 0008).
-const LOCKED_BECAUSE: Record<string, string> = {
+// that explains why the form just went read-only. None of them is recoverable
+// on this screen: publication is one way, and this form locks itself the
+// moment a market leaves draft (ADR 0008).
+const LOCKED_BECAUSE: Record<LockedStatus, string> = {
   submitted: 'This market has already been submitted for review.',
   open: 'This market has already been published and is live for traders.',
   closed: 'This market has already been published, and it has closed.',
@@ -60,13 +66,15 @@ const LOCKED_BECAUSE: Record<string, string> = {
   approved: 'This market already has an approved outcome.',
 }
 
-// What publish said, by the code it failed with. `draft_incomplete` is
-// permanent: publishing re-runs every submission rule against the clock
-// (ADR 0008), and a submitted market cannot be edited to pass them.
+// What publish said, by the code it failed with. `draft_incomplete` has no way
+// out from here: publishing re-runs every submission rule against the clock
+// (ADR 0008), and this form cannot reopen a market it has already submitted.
+// The service does allow a resubmission to change the terms; no screen offers
+// one yet (#354), so the advice is to start again.
 const PUBLISH_FAILED_GENERIC = 'Publish failed. Please try again.'
 const PUBLISH_FAILED_FOREVER =
-  'These terms no longer pass the checks for publishing, and a submitted market cannot be edited. '
-  + 'Create a new market with the corrections instead.'
+  'These terms no longer pass the checks for publishing, and this form cannot edit a market '
+  + 'once it has been submitted. Create a new market with the corrections instead.'
 
 function createDefaultForm(): FormState {
   return {
@@ -185,7 +193,7 @@ export default function CreateMarketPage() {
   // three seconds and ten minutes later.
   const [savedAt, setSavedAt] = useState<Date | null>(null)
   // Set once, when a save is refused because the market has moved past draft.
-  const [lockOut, setLockOut] = useState<{ status: string; lostEdits: boolean } | null>(null)
+  const [lockOut, setLockOut] = useState<{ status: LockedStatus; lostEdits: boolean } | null>(null)
   const isSavingRef = useRef(false)
 
   const getHint = (field: string) =>
@@ -206,6 +214,10 @@ export default function CreateMarketPage() {
       setMarketId(res.market.id)
       setMarketStatus(res.market.status)
       setLastSave(res)
+      // This response's blocking_submission is the whole truth about what is
+      // still wrong, so the reasons from an earlier refusal go with it. Left
+      // behind, a fixed field keeps its red message until the next submit.
+      setRefusalDetails([])
       setSentIds({ outcomes: f.outcomes.map(o => o.id), sources: sentSources(f).map(s => s.id) })
       setSavedAt(new Date())
       setSaveStatus('saved')
@@ -215,10 +227,13 @@ export default function CreateMarketPage() {
       const movedOnTo = code ? STATUS_AFTER_DRAFT[code] : undefined
       if (movedOnTo) {
         // Another session moved the market past draft: lock the form, say so,
-        // and let the autosave interval stop. The form is read-only from here,
-        // so what this save was carrying is the last thing that could be lost.
+        // and let the autosave interval stop. Ask the form as it stands now,
+        // not the snapshot this save set out with — nothing disables the
+        // fields until this answer arrives, so a manual submit can be typed
+        // over while it is in flight, and that typing is what gets lost.
+        const lostEdits = JSON.stringify(saveFields(formRef.current)) !== lastSavedRef.current
         setMarketStatus(movedOnTo)
-        setLockOut({ status: movedOnTo, lostEdits: snapshot !== lastSavedRef.current })
+        setLockOut({ status: movedOnTo, lostEdits })
         setSaveStatus('idle')
         return null
       }
@@ -238,6 +253,9 @@ export default function CreateMarketPage() {
   }, [doSave])
 
   const handleRetrySave = () => {
+    // Same guard as the interval: nothing may write a draft over a market
+    // that has moved on.
+    if (marketStatusRef.current !== 'draft') return
     doSave('draft').catch(() => {})
   }
 
