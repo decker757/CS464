@@ -598,7 +598,6 @@ async def test_a_part_sold_position_banks_that_sale_and_still_rides_the_rest(
 
     assert result.realized_pnl == PROCEEDS - (BASIS - REMAINING_BASIS)
     assert result.unrealized_pnl == REMAINING_VALUE - REMAINING_BASIS
-    assert result.total_pnl == result.realized_pnl + result.unrealized_pnl
     assert result.net_worth - result.starting_credits == result.total_pnl
 
 
@@ -636,3 +635,22 @@ async def test_a_closed_market_is_valued_at_its_frozen_book(
     assert position.value == HOLDING_VALUE
     assert str(position.value) == str(quote.total)
     assert position.state_version == quote.state_version
+
+
+async def test_a_closed_market_nobody_has_settled_is_still_unrealized(
+    session: AsyncSession,
+) -> None:
+    """ADR 0018: a closed market is valued at its last book until settlement
+    replaces that with a realized outcome. Until then no payout has reached
+    the balance, so the holding's basis is still open: realised P&L is flat
+    and the tick #23's buy lost at liquidation is unrealised."""
+    upstream = await market_at(session)
+    user_id, _ = await funded(session)
+    await hold(session, upstream, user_id=user_id)
+    upstream.closes()
+
+    result = await read_portfolio(session, user_id)
+
+    assert str(result.realized_pnl) == "0.0000"
+    assert result.unrealized_pnl == HOLDING_VALUE - BASIS
+    assert result.total_pnl == -TICK
