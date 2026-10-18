@@ -255,6 +255,9 @@ describe('AuthContext — a session that ends while the app is open', () => {
     expect(screen.queryByText('the session expired')).not.toBeInTheDocument()
   })
 
+  // The two guards below are separate, and one test each, because together
+  // they pass with either one deleted. This one is the lookup's: the report
+  // arrives while the lookup is still in flight, so the user is never read.
   it('does not claim a session expired when nobody was signed in', async () => {
     // The default handlers: /auth/me refused, and the refresh the interceptor
     // sends after it refused too. That is every first visit by a guest, and
@@ -267,5 +270,27 @@ describe('AuthContext — a session that ends while the app is open', () => {
 
     expect(await screen.findByText('logged out')).toBeInTheDocument()
     expect(screen.queryByText('the session expired')).not.toBeInTheDocument()
+  })
+
+  // And this one is the user's, with the lookup long settled. The same state
+  // a Log Out leaves behind: a request from the page they have just left can
+  // still be in the air, and /login must not tell somebody who pressed the
+  // button that their session expired out from under them.
+  it('does not claim a session expired once the visitor is known to be signed out', async () => {
+    const person = userEvent.setup()
+    render(
+      <AuthProvider>
+        <Screen />
+      </AuthProvider>,
+    )
+    // Waiting for the answer is waiting for the lookup to settle, which is
+    // what puts this test on the other side of the first guard.
+    await screen.findByText('logged out')
+
+    await person.click(screen.getByRole('button', { name: /load the page/i }))
+
+    await expect(
+      screen.findByText('the session expired', {}, { timeout: 400 }),
+    ).rejects.toThrow()
   })
 })

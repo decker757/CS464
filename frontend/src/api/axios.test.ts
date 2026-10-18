@@ -16,6 +16,7 @@ describe('axios refresh interceptor', () => {
   let stopListening: (() => void) | null = null
 
   afterEach(() => {
+    vi.unstubAllGlobals()
     stopListening?.()
     stopListening = null
     Object.defineProperty(navigator, 'locks', {
@@ -52,8 +53,11 @@ describe('axios refresh interceptor', () => {
     expect(sessionEnded).not.toHaveBeenCalled()
   })
 
-  it('reports the session as ended when /auth/refresh fails', async () => {
+  it('reports the session as ended when /auth/refresh fails, and redirects nobody', async () => {
     const sessionEnded = listenForSessionEnd()
+    const location = { ...window.location, href: 'http://localhost:3000/' }
+    vi.stubGlobal('location', location)
+
     server.use(
       http.get('http://localhost:8000/api/probe', () => invalidToken()),
       // default /auth/refresh handler returns invalid_token — see handlers.ts
@@ -63,6 +67,10 @@ describe('axios refresh interceptor', () => {
     // Nothing else can tell AuthContext the session is over, and without it
     // ProtectedRoute's redirect to /login never fires (#353).
     expect(sessionEnded).toHaveBeenCalledTimes(1)
+    // Reporting it is the whole job: where that lands is ProtectedRoute's to
+    // decide. A `window.location.href = '/login'` here would be a second
+    // authority racing the guard, and would fail this line.
+    expect(location.href).toBe('http://localhost:3000/')
   })
 
   it('sends the refresh inside the cross-tab auth-refresh lock', async () => {
