@@ -23,7 +23,7 @@ function validateLogin(form: authApi.Credentials): LoginErrors {
 }
 
 export default function LoginPage() {
-  const { login } = useAuth()
+  const { login, hasSessionExpired } = useAuth()
 
   const [form, setForm] = useState<authApi.Credentials>({ identifier: '', password: '' })
   const [errors, setErrors] = useState<LoginErrors>({})
@@ -68,6 +68,7 @@ export default function LoginPage() {
       eyebrow="Welcome back"
       title="Log in to your account"
       subtitle="Enter your username or email and password to continue."
+      notice={hasSessionExpired ? 'Your session expired, please sign in again.' : undefined}
       error={serverError}
       footer={<>Don't have an account? <AuthFooterLink to="/register">Register</AuthFooterLink></>}
     >
