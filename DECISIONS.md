@@ -9293,6 +9293,15 @@ transactions, which carry `order_id`. How `posting` checks a balance against
 the reservation, in movement order, is in the amendment to "`post_all` nets
 each USER account across the whole batch, through `_refuse_overdrafts`".
 
+*Amended 2026-10-18.* The `spent` this entry names is the column
+`ledger.orders.filled_value`, one rollup for both sides, signed positive: see
+"An order's `filled_value` is what its fills moved, signed positive on either
+side". Revision 0004 also holds the half of the budget rule that protects
+money, `budget >= limit_price * quantity`, as
+`ck_orders_budget_covers_the_limit`. A budget rounded up to the tick always
+passes it, so it refuses only a placement that computed its budget wrong,
+before the order can rest looking funded.
+
 ---
 
 ### D-NEW — Priority is price, then an identity `seq` assigned under the book lock
@@ -9513,23 +9522,32 @@ changes both of its guard tests.
 
 ---
 
-### D-NEW — An order's `spent` is what its fills moved, on either side
+### D-NEW — An order's `filled_value` is what its fills moved, signed positive on either side
 
 **Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
 
-**Decision.** `ledger.orders.spent` is the sum of the credits an order's
-fills have moved: a buy's costs, a sell's proceeds. A buy's reservation is
-`budget - spent`, as "A buy reserves `limit × quantity` rounded up to the
-tick, its reservation is `budget - spent`, and it cannot go negative" says.
-A sell reserves no credits, so its `spent` is read only for
-`average_fill_price`, which is `spent / filled_quantity` on either side.
+**Decision.** `ledger.orders.filled_value` is the sum of the credits an
+order's fills have moved, signed positive on both sides: a buy's costs, a
+sell's proceeds. ADR 0024 and the entries before this one call it `spent`,
+which is true of a buy only. A buy's reservation is `budget - filled_value`,
+the `budget - spent` of "A buy reserves `limit × quantity` rounded up to the
+tick, its reservation is `budget - spent`, and it cannot go negative". A sell
+reserves no credits, so its `filled_value` is read only for
+`average_fill_price`, which is `filled_value / filled_quantity` on either
+side.
 
 **Why.** The order object carries `average_fill_price` for buys and sells
 alike. Reading a sell's from its fills is a query on `context->>'order_id'`,
 whose index is a stretch item ("A fill's `context` is a trade's, plus
 `order_id`"), on every `GET /ledger/orders/me`. One rollup serves both
-sides, updated under the book lock beside `filled_quantity`.
+sides, updated under the book lock beside `filled_quantity`. The name has to
+be true of both: a sum of `spent` reads as money going out, and a sell's
+proceeds summed into it would make a figure about committed credits wrong in
+the trader's favour.
 
 **Rejected.** *A `proceeds` column for sells*: two rollups where one
 serves, each bound to its side by a CHECK. *A sell's average from its
-fills*: the unindexed query above.
+fills*: the unindexed query above. *Keeping the name `spent`*: false of a
+sell, for the reason above. *A sell's value signed negative*: the average
+would need the side to read its sign, and `ck_orders_filled_value_nonneg`
+would split by side.
