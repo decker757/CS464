@@ -63,6 +63,20 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
         "CREATE TRIGGER entries_append_only BEFORE DELETE OR UPDATE OR TRUNCATE "
         "ON ledger.entries FOR EACH STATEMENT EXECUTE FUNCTION ledger.reject_mutation()"
     ) in migrated["triggers"]
+    # The cascade reads one market's open orders through the first index and
+    # ranks them by price, then `seq`, itself; the order list and a
+    # reservation read one trader's through the second (ADR 0024). By name,
+    # so an index leaving or changing in the models and revision 0004
+    # together still goes red: the catalog comparison above sees only a
+    # disagreement between the two.
+    assert (
+        "CREATE INDEX ix_ledger_orders_open_by_market ON ledger.orders USING btree "
+        "(market_id, seq) WHERE ((status)::text = 'open'::text)"
+    ) in migrated["indexes"]
+    assert (
+        "CREATE INDEX ix_ledger_orders_open_by_user ON ledger.orders USING btree "
+        "(user_id) WHERE ((status)::text = 'open'::text)"
+    ) in migrated["indexes"]
 
 
 @pytest.mark.parametrize(

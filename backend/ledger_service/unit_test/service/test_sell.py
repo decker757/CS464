@@ -274,11 +274,11 @@ async def test_proceeds_below_a_tick_are_refused_and_write_nothing(
 async def test_a_sell_that_fails_inside_post_writes_nothing_and_publishes_nothing(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The rollback test. `post` raises with the sell's own writes pending —
+    """The rollback test. `post_all` raises with the sell's own writes pending —
     the position released, `q` and `state_version` moved — and none of them
     reaches the database, and nothing is announced.
 
-    Those writes are still pending on the session when `post` raises; the
+    Those writes are still pending on the session when `post_all` raises; the
     request's own rollback, `core/database.py::get_session`'s, discards them.
     So the count before that rollback is the footprint's column selects —
     nothing was flushed into the transaction early — and `assert_wrote_nothing`
@@ -288,13 +288,15 @@ async def test_a_sell_that_fails_inside_post_writes_nothing_and_publishes_nothin
     recorder = Recorder()
     pending_positions: list[tuple[Decimal, Decimal]] = []
 
-    async def failing_post(request_session: AsyncSession, **_: object) -> None:
+    async def failing_post(
+        request_session: AsyncSession, *_: object, **__: object
+    ) -> None:
         for row in request_session.dirty:
             if isinstance(row, entities().Position):
                 pending_positions.append((row.quantity, row.cost_basis))
         raise RuntimeError("post failed")
 
-    monkeypatch.setattr(posting(), "post", failing_post)
+    monkeypatch.setattr(posting(), "post_all", failing_post)
 
     with pytest.raises(RuntimeError, match="post failed"):
         await sell(session, upstream, user_id=user_id, redis_client=recorder)

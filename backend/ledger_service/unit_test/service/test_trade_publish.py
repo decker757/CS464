@@ -228,7 +228,7 @@ async def test_a_refused_trade_publishes_nothing(
     session: AsyncSession, break_it: str
 ) -> None:
     """A refused trade moved nothing, so it publishes nothing. Three refusals
-    at three depths: before the lock, under it, and inside `post`.
+    at three depths: before the lock, under it, and inside `post_all`.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()

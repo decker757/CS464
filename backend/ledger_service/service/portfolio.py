@@ -108,9 +108,9 @@ async def _read(
         MarketOutcome.market_id, MarketOutcome.position
     )
 
+    # Never empty: the anchor selects from nothing, so it is always one row,
+    # and every join below it is a left join.
     rows = (await session.execute(stmt)).all()
-    if not rows:
-        return ZERO, ZERO, rows
     return rows[0].balance, rows[0].starting_credits, rows
 
 

@@ -249,10 +249,11 @@ only by the suite.
 > outcome, an account or an amount. That route then needs a service
 > credential first, and this table stops holding.
 
-> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
-> and not built yet.** The [T-7] #27 bullet in the [T-2] #22 amendment above
-> assumes a fill that runs "with no request and no caller". ADR 0024 does not
-> build one. A fill runs inside the request that moved the price, and the
+> **Amended 2026-10-17. Decided by
+> [ADR 0024](0024-resting-orders-fill-inside-the-trade.md) (Accepted
+> 2026-10-17), not built yet.** The [T-7] #27 bullet in the [T-2] #22 amendment
+> above assumes a fill that runs "with no request and no caller". ADR 0024 does
+> not build one. A fill runs inside the request that moved the price, and the
 > account it debits is the order's `user_id`, written from the owner's own
 > `sub` by the owner's own request. The triggering request names no account,
 > no amount and no order. So the rule this record set for both write routes
@@ -260,7 +261,7 @@ only by the suite.
 > an outcome, a side, a limit price, a quantity and an idempotency key, and
 > each is bounded the way the trade route's inputs are. The caller with no
 > token stays open for a background settlement and for any later background
-> path. If ADR 0024 is not accepted, the #27 bullet stands as written.
+> path.
 
 ## Consequences
 
