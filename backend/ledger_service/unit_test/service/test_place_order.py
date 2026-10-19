@@ -315,6 +315,7 @@ async def test_a_sell_filled_on_arrival_releases_basis_at_average_cost(
     )
 
     assert placement.order.status == "filled"
+    assert placement.order.reserved_shares == Decimal("0.0000")
     assert [(f.quantity, f.total) for f in placement.fills] == [(LOTS_SOLD, LOTS_PROCEEDS)]
     position = await position_of(session, user_id, upstream.market_id, outcome_id)
     assert position.quantity == sum(LOTS) - LOTS_SOLD
