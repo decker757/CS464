@@ -7,7 +7,7 @@ identically (ADR 0012). What stays here is what only this service has.
 from decimal import Decimal
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from shared.config import ServiceSettings
 
@@ -17,7 +17,8 @@ class Settings(ServiceSettings):
     # Required, with no default: a default is a credential in the repository,
     # and would let a misconfigured deploy start against the wrong database.
     # Form: postgresql+asyncpg://ledger_svc:PASSWORD@HOST:PORT/NAME
-    database_url: str = Field(min_length=1)
+    # A SecretStr for the password in it (#307).
+    database_url: SecretStr = Field(min_length=1)
 
     # --- The starting grant ------------------------------------------------
     # [B-1] #32's starting amount, minted lazily on a user's first read
@@ -39,14 +40,16 @@ class Settings(ServiceSettings):
     # Sent as `X-Service-Key` to auth's `/internal/users/lookup`. Required,
     # with no default, for `jwt_secret`'s reason: a default key is a published
     # key. ADR 0021 sets the 32-character floor.
-    ledger_service_key: str = Field(min_length=32)
+    # A SecretStr, as `jwt_secret` is (#307).
+    ledger_service_key: SecretStr = Field(min_length=32)
 
     # --- The price broadcast's bus [F-9] #112, ADR 0010 --------------------
     # A default, unlike the realtime service's required one: a wrong Redis
     # here costs a broadcast, not the service (D-046). It must still parse, or
     # the ledger refuses to boot (D-051). Not validated here as well:
-    # `from_url` is the parser that has to accept it.
-    redis_url: str = Field(default="redis://redis:6379/0")
+    # `from_url` is the parser that has to accept it. A SecretStr for the
+    # password a deploy may put in it (#307); the default has none.
+    redis_url: SecretStr = Field(default=SecretStr("redis://redis:6379/0"))
 
     # --- Paging -----------------------------------------------------------
     # Bounded because a ledger only grows. Same ceilings as the audit service.

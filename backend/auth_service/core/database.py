@@ -33,7 +33,7 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         _engine = create_async_engine(
-            get_settings().database_url,
+            get_settings().database_url.get_secret_value(),
             pool_size=10,
             # Replace a connection Postgres closed rather than hand it out.
             pool_pre_ping=True,

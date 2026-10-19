@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 
 def _main():
@@ -149,7 +150,7 @@ async def test_the_client_is_built_from_the_configured_url(
     async with app.router.lifespan_context(app):
         pass
 
-    assert factory.clients[0].url == get_settings().redis_url
+    assert factory.clients[0].url == get_settings().redis_url.get_secret_value()
 
 
 async def test_the_app_still_starts_when_redis_is_unreachable(
@@ -206,7 +207,9 @@ async def test_a_redis_that_never_answers_costs_a_bounded_wait_and_no_exception(
 
     server = await asyncio.start_server(accept_and_say_nothing, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    monkeypatch.setattr(get_settings(), "redis_url", f"redis://127.0.0.1:{port}/0")
+    monkeypatch.setattr(
+        get_settings(), "redis_url", SecretStr(f"redis://127.0.0.1:{port}/0")
+    )
 
     event = PriceEvent(
         market_id=uuid.uuid4(),
@@ -250,7 +253,7 @@ async def test_a_redis_url_that_does_not_parse_stops_the_ledger_booting(
     around `from_url` cannot make a config error silent."""
     from core.config import get_settings  # noqa: PLC0415
 
-    monkeypatch.setattr(get_settings(), "redis_url", "http://redis:6379")
+    monkeypatch.setattr(get_settings(), "redis_url", SecretStr("http://redis:6379"))
     app = _app()
 
     with pytest.raises(ValueError, match="redis://"):
