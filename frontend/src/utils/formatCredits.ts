@@ -115,7 +115,7 @@ export function subtractCredits(left: string, right: string): string | null {
 // an actual loss or an actual gain; zero stays neutral.
 export function signedAmountColor(value: string): string {
   if (isZeroCredits(value)) return 'text-muted'
-  if (value.startsWith('-')) return 'text-danger'
+  if (isNegativeCredits(value)) return 'text-danger'
   return 'text-success'
 }
 
