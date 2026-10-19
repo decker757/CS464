@@ -22,8 +22,7 @@ from core.errors import (
     SessionExpired,
     UnknownAction,
 )
-from service import bus as bus_module
-from service.bus import PRICE_CHANNEL
+from service.bus import ORDER_CHANNEL, PRICE_CHANNEL
 from service.subscriptions import get_hub
 from unit_test.conftest import (
     REDIS_UNREACHABLE,
@@ -324,8 +323,8 @@ def test_an_order_frame_reaches_its_owners_socket_and_nobody_elses(
 
     with client.websocket_connect("/ws/prices", headers=bearer(user_id=owner)) as websocket:
         _subscribe(websocket, market_id)
-        publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(theirs))
-        publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(ours))
+        publisher.publish(ORDER_CHANNEL, json.dumps(theirs))
+        publisher.publish(ORDER_CHANNEL, json.dumps(ours))
         _publish(publisher, market_id)
 
         assert websocket.receive_json() == {"type": "order", **ours}
