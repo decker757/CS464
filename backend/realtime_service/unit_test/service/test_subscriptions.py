@@ -318,6 +318,8 @@ def test_a_forgotten_socket_receives_no_order_frame_and_leaves_no_user_behind() 
 
     hub.forget(staying)
     assert hub.send_to_user(owner, {"type": "order"}) == 0
+    # Private on purpose: no caller needs the user index's keys, so a public
+    # accessor would exist only for this line. Nothing else can see the prune.
     assert hub._by_user == {}
 
 
