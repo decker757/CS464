@@ -664,6 +664,21 @@ async def _write_cascade(
     return written
 
 
+def _log_refused_fill(refusal: InsufficientFunds) -> None:
+    """Log at ERROR, with its figures, a refusal `CascadeFillRefused` keeps
+    from the caller: they are another account's (D-NEW "A fill the running
+    check refuses inside a cascade is `500 cascade_fill_refused`")."""
+    logger.error(
+        "the overdraft check refused a cascade fill (after %s): balance %s, "
+        "reserved %s, required %s, shortfall %s",
+        refusal.movement_key or "nothing, at the start of the batch",
+        refusal.balance,
+        refusal.reserved,
+        refusal.required,
+        refusal.shortfall,
+    )
+
+
 async def _post_with_fills(
     session: AsyncSession, movements: list[Movement], *, trade_key: str, now: datetime
 ) -> list[Transaction]:
@@ -681,15 +696,7 @@ async def _post_with_fills(
     except InsufficientFunds as refusal:
         if refusal.movement_key == trade_key:
             raise
-        logger.error(
-            "the overdraft check refused a cascade fill (after %s): balance %s, "
-            "reserved %s, required %s, shortfall %s",
-            refusal.movement_key or "nothing, at the start of the batch",
-            refusal.balance,
-            refusal.reserved,
-            refusal.required,
-            refusal.shortfall,
-        )
+        _log_refused_fill(refusal)
         raise CascadeFillRefused from refusal
 
 

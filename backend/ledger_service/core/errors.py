@@ -13,6 +13,7 @@ is a route and a docstring rather than a second opinion about what these mean.
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 
@@ -75,10 +76,10 @@ class InsufficientFunds(LedgerError):
     refusal from the running check reports the balance before the batch".
 
     `movement_key` is the idempotency key of the movement the check refused
-    after, None at the start of the batch, and never in the response: it is
-    how a caller tells its own movement's refusal from a fill's (D-NEW "A
-    fill the running check refuses inside a cascade is `500
-    cascade_fill_refused`").
+    after, None at the start of the batch, and `account_id` the account it
+    refused. Neither is in the response: they are how a caller tells its own
+    refusal from a fill's (D-NEW "A fill the running check refuses inside a
+    cascade is `500 cascade_fill_refused`").
     """
 
     status_code = 409
@@ -87,6 +88,7 @@ class InsufficientFunds(LedgerError):
     def __init__(
         self,
         *,
+        account_id: uuid.UUID,
         balance: Decimal,
         reserved: Decimal,
         available: Decimal,
@@ -94,6 +96,7 @@ class InsufficientFunds(LedgerError):
         shortfall: Decimal | None = None,
         movement_key: str | None = None,
     ) -> None:
+        self.account_id = account_id
         self.balance = balance
         self.reserved = reserved
         self.available = available

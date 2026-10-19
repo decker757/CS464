@@ -190,6 +190,7 @@ async def _floors_before_batch(
         reserved += drops.get(account_id, ZERO)
         if balance < reserved:
             raise InsufficientFunds(
+                account_id=account_id,
                 balance=balance,
                 reserved=reserved,
                 available=balance - reserved,
@@ -211,9 +212,9 @@ async def _refuse_overdrafts(
     Walked in movement order, not netted, so nothing later in the batch, a
     credit or a reservation a fill drops, pays for a debit before it. A
     refusal after a debit carries `required`, what the batch had taken from
-    the account by then, and that movement's key. An allowlist on USER, not
-    a list of exempt kinds: PLATFORM and MARKET_POOL are meant to go negative
-    (ADR 0009, D-009).
+    the account by then, and that movement's key. Every refusal names the
+    account it refused. An allowlist on USER, not a list of exempt kinds:
+    PLATFORM and MARKET_POOL are meant to go negative (ADR 0009, D-009).
     Adding a kind here means deciding it holds spendable money.
     """
     floors = await _floors_before_batch(session, movements, batch_legs)
@@ -226,6 +227,7 @@ async def _refuse_overdrafts(
             floor.reserved -= _quantize(movement.reservation_drop)
             if net < ZERO and floor.balance < floor.reserved:
                 raise InsufficientFunds(
+                    account_id=account_id,
                     balance=floor.balance_before,
                     reserved=floor.reserved,
                     available=floor.balance_before - floor.reserved,
