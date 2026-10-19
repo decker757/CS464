@@ -16,9 +16,13 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from unit_test.market_fixtures import market_with_outcomes
+from unit_test.order_fixtures import add_order
 from unit_test.trade_fixtures import (
+    B,
     Q,
     QUANTITY,
+    QUANTUM,
     SMALL_QUANTITY,
     TIMEOUT,
     Recorder,
@@ -33,6 +37,7 @@ from unit_test.trade_fixtures import (
     errors,
     expected_total,
     fund,
+    largest_buy_within,
     pool_balance,
     position_of,
     q_of,
@@ -281,6 +286,76 @@ async def test_concurrent_buys_from_one_user_across_markets_cannot_overdraw(
 
     assert await balance_of_user(session, user_id) == credits - cost * affordable
     await assert_no_negative_user_balances(session)
+    await assert_ledger_balances(session)
+
+
+async def test_concurrent_buys_across_markets_cannot_spend_what_a_buy_order_reserves(
+    session: AsyncSession,
+) -> None:
+    """ADR 0024's floor under a race. A buy order resting in a third market
+    leaves room for one of two trades: each fits alone, the pair does not.
+    Both clear a floor of zero, so only the reservation can refuse one, and
+    distinct markets leave only the trader's account row between them.
+
+    Remove `.with_for_update()` from `accounts.lock` and this fails: both
+    trades read the balance before either commits, both pass, and the account
+    ends below what the order reserves.
+    """
+    user_id = uuid.uuid4()
+    credits = await fund(session, user_id)
+
+    quantity = largest_buy_within(credits / 4)
+    assert quantity > 0, (
+        f"no buy costs at most a quarter of a grant of {credits}, so nothing "
+        "can fill and this test asserts nothing"
+    )
+    cost = -expected_total(Q, 0, "buy", quantity)
+    available = (cost * Decimal("1.5")).quantize(QUANTUM)
+    budget = credits - available
+    elsewhere, outcome_ids = await market_with_outcomes(session, liquidity_b=B)
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=elsewhere,
+        outcome_id=outcome_ids[0],
+        budget=str(budget),
+    )
+    await session.commit()
+
+    upstreams = [Upstream(), Upstream()]
+    for upstream in upstreams:
+        await warm(session, upstream)
+
+    start = asyncio.Barrier(len(upstreams))
+    factory = session_factory()
+
+    async def attempt(upstream: Upstream):
+        async with factory() as own:
+            await own.connection()
+            await start.wait()
+            try:
+                await buy(
+                    own,
+                    upstream,
+                    user_id=user_id,
+                    quantity=quantity,
+                    client_key=f"key-{upstream.market_id}",
+                )
+            except errors().InsufficientFunds as refusal:
+                await own.rollback()
+                return refusal
+            return None
+
+    async with asyncio.timeout(TIMEOUT):
+        results = await asyncio.gather(*(attempt(u) for u in upstreams))
+
+    refusals = [result for result in results if result is not None]
+    assert len(refusals) == 1, (
+        f"{2 - len(refusals)} of two trades filled against {available} "
+        f"available, each costing {cost}"
+    )
+    assert refusals[0].reserved == budget
+    assert await balance_of_user(session, user_id) == credits - cost
     await assert_ledger_balances(session)
 
 

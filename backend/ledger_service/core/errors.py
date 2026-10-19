@@ -644,7 +644,8 @@ class MalformedBatch(LedgerError):
     code = "malformed_batch"
     message = (
         "A batch of movements was empty, named one idempotency key twice, or "
-        "carried a reservation drop below zero or with no single user account. "
+        "carried a reservation drop below zero, with no single user account, "
+        "or on a movement that does not debit that account. "
         "This is a bug in this service, not in the request."
     )
 
