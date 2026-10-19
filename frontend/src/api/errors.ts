@@ -83,6 +83,21 @@ const TRADE_FIXED_MESSAGES: Record<string, string> = {
   invalid_request: "That quantity isn't valid.",
 }
 
+/**
+ * The two refusals a screen can see coming, worded once. The trading panel
+ * checks the balance and the holding it already has before it sends anything
+ * (#357), and the ledger answers `insufficient_funds` or
+ * `insufficient_shares_held` when its own figures disagree — the trader
+ * reads the same sentence whichever side caught it.
+ */
+export function describeInsufficientFunds(balance: string, required: string): string {
+  return `You have ${formatCreditsPrecise(balance)} credits, but this trade needs ${formatCreditsPrecise(required)}.`
+}
+
+export function describeInsufficientShares(held: string, requested: string): string {
+  return `You hold ${formatCreditsPrecise(held)} shares, but this sell asks for ${formatCreditsPrecise(requested)}.`
+}
+
 /** What the trader should do about a failed preview or trade (ledger-service.md). */
 export function describeTradeError(err: unknown): string {
   const code = errorCode(err)
@@ -90,10 +105,10 @@ export function describeTradeError(err: unknown): string {
   const details = tradeErrorDetails(err)
   if (code === 'quote_stale') return 'Prices moved while you were looking. Getting a fresh quote…'
   if (code === 'insufficient_funds' && typeof details.balance === 'string' && typeof details.required === 'string') {
-    return `You have ${formatCreditsPrecise(details.balance)} credits, but this trade needs ${formatCreditsPrecise(details.required)}.`
+    return describeInsufficientFunds(details.balance, details.required)
   }
   if (code === 'insufficient_shares_held' && typeof details.held === 'string' && typeof details.requested === 'string') {
-    return `You hold ${details.held} shares, but this sell asks for ${details.requested}.`
+    return describeInsufficientShares(details.held, details.requested)
   }
   return TRADE_FIXED_MESSAGES[code] ?? GENERIC_ERROR
 }
