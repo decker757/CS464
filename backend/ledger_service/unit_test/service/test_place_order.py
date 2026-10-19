@@ -184,6 +184,36 @@ async def test_a_buy_below_the_price_rests_and_reserves_its_budget_rounded_up(
     assert await q_of(session, upstream.market_id) == list(EXAMPLE_Q)
 
 
+@pytest.mark.parametrize(
+    ("limit_price", "fills"),
+    [(RESTING_LIMIT, False), (EXAMPLE_LIMIT, True)],
+    ids=["rests", "fills_on_arrival"],
+)
+async def test_an_order_on_the_second_outcome_reports_position_one_placed_and_retried(
+    session: AsyncSession, limit_price: Decimal, fills: bool
+) -> None:
+    """The order object's `outcome_position` is the outcome's own, on both
+    placement paths and on the retry, which reads the stored column (#391,
+    from the #347 review). Outcome 1 is at 0.4502, so 0.4321 rests and 0.6000
+    fills all five shares."""
+    upstream = await _example_market(session)
+    user_id = await _funded(session)
+    request = {
+        "user_id": user_id,
+        "outcome": 1,
+        "limit_price": limit_price,
+        "quantity": SMALL_QUANTITY,
+        "client_key": "second-outcome",
+    }
+
+    placement = await place(session, upstream, **request)
+    retry = await place(session, upstream, **request)
+
+    assert bool(placement.fills) is fills
+    assert placement.order.outcome_position == 1
+    assert retry.order.outcome_position == 1
+
+
 # =========================================================================
 # An order that fills on arrival
 # =========================================================================
