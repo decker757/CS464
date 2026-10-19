@@ -11,7 +11,7 @@ import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
 import { useWindowOpen } from '../hooks/useWindowOpen'
-import { formatAbsolute, formatCountdown } from '../utils/formatCountdown'
+import { NO_WINDOW_RECORDED, formatAbsolute, formatCountdown } from '../utils/formatCountdown'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
@@ -128,7 +128,7 @@ export default function MarketDetailPage() {
                 // with nothing on screen to reveal the wrong clock.
                 : market.dispute_window_ends_at
                   ? `Result is final; payout pending (closed ${formatAbsolute(market.dispute_window_ends_at)}).`
-                  : 'Result is final; payout pending.'}
+                  : NO_WINDOW_RECORDED}
             </Banner>
           )}
 

@@ -11,7 +11,7 @@ import { useCloseMarket } from '../../hooks/useCloseMarket'
 import { useDisputeMarket } from '../../hooks/useDisputeMarket'
 import { useSettleMarket } from '../../hooks/useSettleMarket'
 import { useWindowOpen } from '../../hooks/useWindowOpen'
-import { formatAbsolute, formatCountdown } from '../../utils/formatCountdown'
+import { NO_WINDOW_RECORDED, formatAbsolute, formatCountdown } from '../../utils/formatCountdown'
 import { toApprovedResult } from '../../utils/proposals'
 import StatusBadge from './StatusBadge'
 import { formatCloseTime, tradingStopped } from './marketStatus'
@@ -114,14 +114,16 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
           {formatCloseTime(status, market.close_time)}
           {isMine && ' · Created by you'}
         </p>
-        {status === 'approved' && market.dispute_window_ends_at && (
+        {status === 'approved' && (
           <p className="mt-1 text-xs text-subtle">
-            {windowOpen
-              ? `Disputes close in ${formatCountdown(market.dispute_window_ends_at)}`
-              // The absolute instant still shows here: a clock running fast
-              // would otherwise read "final" on a window genuinely still
-              // open, with nothing on screen to reveal the wrong clock.
-              : `Result is final; payout pending (closed ${formatAbsolute(market.dispute_window_ends_at)}).`}
+            {market.dispute_window_ends_at === null
+              ? NO_WINDOW_RECORDED
+              : windowOpen
+                ? `Disputes close in ${formatCountdown(market.dispute_window_ends_at)}`
+                // The absolute instant still shows here: a clock running fast
+                // would otherwise read "final" on a window genuinely still
+                // open, with nothing on screen to reveal the wrong clock.
+                : `Result is final; payout pending (closed ${formatAbsolute(market.dispute_window_ends_at)}).`}
           </p>
         )}
         {formError && (

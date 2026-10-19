@@ -3,12 +3,19 @@ const MINUTE_MS = 60 * SECOND_MS
 const HOUR_MS = 60 * MINUTE_MS
 const DAY_MS = 24 * HOUR_MS
 
+/**
+ * What both screens say about an approved market that has no stored window
+ * end. ADR 0023 (section 5) refuses a send-back and a settlement on it — "a
+ * null is damage" — so no payout is coming and none is promised.
+ */
+export const NO_WINDOW_RECORDED = 'No dispute window is recorded for this approved result.'
+
 /** The absolute instant alone — "Tue 11:00" — the one part of the countdown
  * that survives a wrong browser clock (market-service.md's dispute-screen
  * notes, point 1), so it still has to show once the window reads as closed. */
-export function formatAbsolute(iso: string): string {
+export function formatAbsolute(iso: string, timeZone?: string): string {
   return new Date(iso).toLocaleString('en-SG', {
-    weekday: 'short', hour: '2-digit', minute: '2-digit',
+    weekday: 'short', hour: '2-digit', minute: '2-digit', timeZone,
   })
 }
 
