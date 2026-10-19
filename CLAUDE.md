@@ -402,9 +402,9 @@ never creates it.
 
 **A writing service cannot read the log it writes to, including in its own
 tests.** It holds INSERT and no SELECT, so that no service can read another's
-actions. `market_service`'s audit tests open a second engine as `audit_svc`
-from `AUDIT_TEST_DATABASE_URL`, which is why that variable is set for its CI
-job too. Nothing anywhere holds UPDATE, DELETE or TRUNCATE, so no suite can
+actions. The audit tests of auth, market and ledger open a second engine as
+`audit_svc` from `AUDIT_TEST_DATABASE_URL`, through `shared/testing.py`'s
+`open_audit_reader`, which is why that variable is set for their CI jobs too. Nothing anywhere holds UPDATE, DELETE or TRUNCATE, so no suite can
 clean the table: tests scope themselves to a fresh actor id instead.
 
 **`backend/shared/` is importable, and almost nothing belongs in it.** [F-6]
@@ -416,8 +416,10 @@ checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 It holds token verification, the settings base, the role enum, the cursor
 format, the audit writer and `actor_of`, the migration runner (`shared/migrating.py`, ADR
 0020) and the test helpers in `shared/testing.py` (the env loader, the
-import-boundary scan, and the migration guard tests' `schema_catalog`,
-`drop_own_tables`, the two `assert_...` round trips and `compose_service`).
+import-boundary scan, the migration guard tests' `schema_catalog`,
+`drop_own_tables`, the two `assert_...` round trips and `compose_service`, plus
+`open_audit_reader`, which opens the session the writing services' suites read
+the log back through).
 That is the whole list, and ADR 0012 spends most of its length on what was
 left copied and why — `core/database.py` above all, because one shared `Base`
 would enrol every service's tables in every other service's metadata and the

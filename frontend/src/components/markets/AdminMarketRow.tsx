@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom'
 import type { MarketOverviewRow } from '../../api/marketApi'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
+import ConfirmModal from '../ui/ConfirmModal'
 import ReasonModal from '../ui/ReasonModal'
 import { buttonClass } from '../ui/buttonClass'
 import { useCloseMarket } from '../../hooks/useCloseMarket'
+import { useSettleMarket } from '../../hooks/useSettleMarket'
 import StatusBadge from './StatusBadge'
 import { formatCloseTime, tradingStopped } from './marketStatus'
 
@@ -14,21 +16,47 @@ interface AdminMarketRowProps {
   isMine: boolean
 }
 
+function RowError({ message, onReload }: { message: string; onReload?: () => void }) {
+  return (
+    <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
+      <span>{message}</span>
+      {onReload && (
+        <Button variant="outline" size="xs" onClick={onReload}>
+          Reload
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// Settled wins over closed because a market is closed before it is settled.
+function statusAfter(market: MarketOverviewRow, settledJustNow: boolean, closedJustNow: boolean) {
+  if (settledJustNow) return 'settled'
+  if (closedJustNow) return 'closed'
+  return market.status
+}
+
 // One market on the admin markets list ([2.1] #5). Only its creator can act on
-// it, e.g. propose its outcome. Closing it early ([2.3] #7) is the one control
-// any administrator may use on anybody's market (market-service.md's notes
-// for #56, point 7), so it is driven from this row rather than the creator check.
+// it, e.g. propose its outcome. Closing it early ([2.3] #7) and settling
+// ([3.4] #12) are controls any administrator may use on anybody's market
+// (market-service.md's notes for #56, point 7), so both are driven from this
+// row rather than the creator check.
 export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) {
   // Set once the close succeeds, so the row repaints without waiting for the
   // list's next fetch (market-service.md's notes for #56, point 5).
   const [closedJustNow, setClosedJustNow] = useState(false)
+  const [settledJustNow, setSettledJustNow] = useState(false)
   const {
     showCloseModal, openCloseModal, closeCloseModal,
     reason, setReason, closing, formError, reasonError, superseded,
     canConfirmClose, handleClose,
   } = useCloseMarket(market.id, () => setClosedJustNow(true))
+  const {
+    showSettleModal, openSettleModal, closeSettleModal,
+    settling, formError: settleError, superseded: settleSuperseded, needsReload: settleNeedsReload, handleSettle,
+  } = useSettleMarket(market.id, () => setSettledJustNow(true))
 
-  const status = closedJustNow ? 'closed' : market.status
+  const status = statusAfter(market, settledJustNow, closedJustNow)
   // Same derivation as everywhere else on this page: a market whose countdown
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
@@ -48,14 +76,13 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
           {isMine && ' · Created by you'}
         </p>
         {formError && (
-          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <span>{formError}</span>
-            {superseded && (
-              <Button variant="outline" size="xs" onClick={() => window.location.reload()}>
-                Reload
-              </Button>
-            )}
-          </div>
+          <RowError message={formError} onReload={superseded ? () => window.location.reload() : undefined} />
+        )}
+        {settleError && (
+          <RowError
+            message={settleError}
+            onReload={(settleSuperseded || settleNeedsReload) ? () => window.location.reload() : undefined}
+          />
         )}
       </div>
       <div className="flex shrink-0 items-center gap-3">
@@ -79,6 +106,11 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
             Close
           </Button>
         )}
+        {market.settleable && status !== 'settled' && !settleSuperseded && (
+          <Button variant="outline" size="xs" onClick={openSettleModal}>
+            Settle
+          </Button>
+        )}
         <StatusBadge status={status} />
       </div>
 
@@ -98,6 +130,19 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
           confirmingLabel="Closing…"
           onCancel={closeCloseModal}
           onConfirm={handleClose}
+        />
+      )}
+
+      {showSettleModal && (
+        <ConfirmModal
+          ariaLabel="Settle market"
+          title="Settle this market?"
+          description="Every winning holder is paid out immediately. This cannot be undone."
+          isSubmitting={settling}
+          confirmLabel="Confirm Settle"
+          confirmingLabel="Settling…"
+          onCancel={closeSettleModal}
+          onConfirm={handleSettle}
         />
       )}
     </Card>

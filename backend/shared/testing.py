@@ -1,4 +1,4 @@
-"""Test-suite helpers every service's suite needs. [F-6] #76
+"""Test-suite helpers the services' suites share. [F-6] #76
 
 Deliberately importing nothing from a service. A conftest imports this before
 anything else, because `load_repo_env` has to run before the first `core.config`
@@ -14,12 +14,16 @@ from __future__ import annotations
 import os
 import pathlib
 import re
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
+
+import pytest
 
 if TYPE_CHECKING:
     from sqlalchemy import MetaData
     from sqlalchemy.engine import Connection
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # Marker files that identify the repository root. Searched for upward rather
 # than reached by a fixed number of `parents[...]` hops: a hop count is correct
@@ -42,6 +46,16 @@ _SERVICES = [
 
 _SERVICE_IMPORT = re.compile(
     r"^\s*(?:from|import)\s+(" + "|".join(_SERVICES) + r")\b", re.MULTILINE
+)
+
+_NO_AUDIT_READER = (
+    "No audit reader configured.\n"
+    "The audit-log tests read back what this service appended, and they must "
+    "do it as audit_svc, because {writer_role} holds INSERT on audit.admin_actions "
+    "and no SELECT.\n"
+    "Add AUDIT_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
+    "  export AUDIT_TEST_DATABASE_URL="
+    "postgresql+asyncpg://audit_svc:PASSWORD@localhost:PORT/cs464_test"
 )
 
 
@@ -258,3 +272,28 @@ def assert_migrating_an_empty_schema_builds_the_models(
     assert drift == []
     assert migrated == catalog()
     return migrated
+
+
+@asynccontextmanager
+async def open_audit_reader(*, writer_role: str) -> AsyncIterator[AsyncSession]:
+    """A session on `audit.admin_actions`, connected as `audit_svc`, which may read it.
+
+    Never as `writer_role`, the calling suite's own role, which holds INSERT on
+    the log and no SELECT: it only names that role in the failure message. The
+    session cannot clean up, because nobody may delete from the log, so tests
+    filter on a fresh actor id instead. ADR 0006. Fails the test if
+    AUDIT_TEST_DATABASE_URL is unset.
+    """
+    from sqlalchemy import NullPool  # noqa: PLC0415 - see drop_own_tables
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: PLC0415
+
+    url = os.environ.get("AUDIT_TEST_DATABASE_URL")
+    if not url:
+        pytest.fail(_NO_AUDIT_READER.format(writer_role=writer_role))
+
+    engine = create_async_engine(url, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            yield session
+    finally:
+        await engine.dispose()

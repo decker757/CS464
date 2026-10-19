@@ -78,3 +78,26 @@ def test_settings_carry_nothing_from_another_domain() -> None:
     fields = set(Settings.model_fields)
 
     assert not {f for f in fields if "credit" in f or "balance" in f or "market" in f}
+
+
+# --- #307: a printed Settings carries no credential ---------------------------
+def test_no_secret_appears_when_the_settings_are_printed() -> None:
+    """#307. pytest prints a Settings in a failure message, and so does any log
+    line or exception that formats one. The signing key, the database password
+    and the ledger's key must appear in neither form, nor in a `model_dump()`,
+    which `Field(repr=False)` would have left in clear."""
+    signing_key = "signing-key-307-must-not-print"
+    database_password = "db-password-307-must-not-print"
+    ledger_key = "ledger-key-307-must-not-print-0123456789"
+    settings = Settings(
+        jwt_secret=signing_key,
+        database_url=(
+            f"postgresql+asyncpg://auth_svc:{database_password}@localhost:5432/cs464"
+        ),
+        ledger_service_key=ledger_key,
+        _env_file=None,
+    )
+
+    for rendered in (repr(settings), str(settings), str(settings.model_dump())):
+        for secret in (signing_key, database_password, ledger_key):
+            assert secret not in rendered

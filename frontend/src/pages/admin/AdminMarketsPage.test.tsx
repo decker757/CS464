@@ -17,20 +17,27 @@ const admin: User = { id: 'u1', username: 'admin1', email: 'admin@smu.edu.sg', r
 
 const OTHER_ADMIN_ID = 'u2'
 
+// Every row carries settleable/dispute_window_ends_at regardless of status
+// (market-service.md); false/null fits every status in this fixture set
+// unless a test overrides it for a market past its dispute window.
+function row(overrides: Partial<Pick<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>> & Omit<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>): MarketOverviewRow {
+  return { settleable: false, dispute_window_ends_at: null, ...overrides }
+}
+
 // The admin's own markets, one in each status, in the order the server sends
 // them: soonest close first, no close time last.
 const mockMarkets: MarketOverviewRow[] = [
-  { id: 'd4', creator_id: admin.id, status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z' },
-  { id: 'f6', creator_id: admin.id, status: 'approved', question: 'Did it rain yesterday?', close_time: '2025-05-01T00:00:00Z' },
-  { id: 'e5', creator_id: admin.id, status: 'pending_resolution', question: 'Will it rain?', close_time: '2025-06-01T00:00:00Z' },
-  { id: 'c3', creator_id: admin.id, status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z' },
-  { id: 'b2', creator_id: admin.id, status: 'submitted', question: 'Will X happen?', close_time: '2099-03-01T00:00:00Z' },
-  { id: 'a1', creator_id: admin.id, status: 'draft', question: 'Untitled draft', close_time: null },
+  row({ id: 'd4', creator_id: admin.id, status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z' }),
+  row({ id: 'f6', creator_id: admin.id, status: 'approved', question: 'Did it rain yesterday?', close_time: '2025-05-01T00:00:00Z' }),
+  row({ id: 'e5', creator_id: admin.id, status: 'pending_resolution', question: 'Will it rain?', close_time: '2025-06-01T00:00:00Z' }),
+  row({ id: 'c3', creator_id: admin.id, status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z' }),
+  row({ id: 'b2', creator_id: admin.id, status: 'submitted', question: 'Will X happen?', close_time: '2099-03-01T00:00:00Z' }),
+  row({ id: 'a1', creator_id: admin.id, status: 'draft', question: 'Untitled draft', close_time: null }),
 ]
 
 type Counts = Record<MarketOverviewRow['status'], number>
 
-const ONE_OF_EACH: Counts = { draft: 1, submitted: 1, open: 1, closed: 1, pending_resolution: 1, approved: 1 }
+const ONE_OF_EACH: Counts = { draft: 1, submitted: 1, open: 1, closed: 1, pending_resolution: 1, approved: 1, settled: 0 }
 
 // Under StrictMode, as main.tsx renders the app: its double mount asks for page
 // one twice, which is what a page that keeps a late answer gets wrong.
@@ -51,7 +58,7 @@ function renderPage() {
 
 // The counts the server would send for these rows: every status, zero when none.
 function countsOf(markets: MarketOverviewRow[]): Counts {
-  const counts: Counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0 }
+  const counts: Counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0, settled: 0 }
   for (const market of markets) counts[market.status] += 1
   return counts
 }
@@ -99,7 +106,7 @@ describe('AdminMarketsPage', () => {
   it('marks only the markets the signed-in admin created as theirs', async () => {
     mockList([
       ...mockMarkets,
-      { id: 'x9', creator_id: OTHER_ADMIN_ID, status: 'pending_resolution', question: 'Another admin\'s market?', close_time: '2025-07-01T00:00:00Z' },
+      row({ id: 'x9', creator_id: OTHER_ADMIN_ID, status: 'pending_resolution', question: 'Another admin\'s market?', close_time: '2025-07-01T00:00:00Z' }),
     ])
     renderPage()
     const theirs = await screen.findByText('Another admin\'s market?')
@@ -204,11 +211,24 @@ describe('AdminMarketsPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('offers a Settled filter tab with its own count, distinct from Approved', async () => {
+    // [FE][3.4] #216: settled is a status everywhere statuses are shown or
+    // filtered, and must read apart from approved, which still awaits payout.
+    mockList([
+      row({ id: 'h8', creator_id: admin.id, status: 'settled', question: 'Did the match go to overtime?', close_time: '2025-04-01T00:00:00Z', settleable: true }),
+    ])
+    renderPage()
+
+    await screen.findByText('Did the match go to overtime?')
+    expect(tab(/^settled/i)).toHaveTextContent(/^Settled 1$/)
+    expect(tab(/^approved/i)).toHaveTextContent(/^Approved 0$/)
+  })
+
   it('does not show a future closing date on a market closed early', async () => {
     // An admin can close a market before its close_time, and close_time stays
     // in the future — so the row must go by the status, not only the clock.
     mockList([
-      { id: 'g7', creator_id: admin.id, status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z' },
+      row({ id: 'g7', creator_id: admin.id, status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z' }),
     ])
     renderPage()
     await screen.findByText('Closed early by an admin?')
@@ -221,7 +241,7 @@ describe('AdminMarketsPage', () => {
     // Only the creator may propose; for anyone else the request is a 404.
     mockList([
       ...mockMarkets,
-      { id: 'y8', creator_id: OTHER_ADMIN_ID, status: 'closed', question: 'Another admin\'s closed market?', close_time: '2025-02-01T00:00:00Z' },
+      row({ id: 'y8', creator_id: OTHER_ADMIN_ID, status: 'closed', question: 'Another admin\'s closed market?', close_time: '2025-02-01T00:00:00Z' }),
     ])
     renderPage()
     await screen.findByText('Another admin\'s closed market?')

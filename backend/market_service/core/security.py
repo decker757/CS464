@@ -19,7 +19,7 @@ def decode_access_token(token: str) -> TokenClaims | None:
     settings = get_settings()
     return _shared.decode_access_token(
         token,
-        secret=settings.jwt_secret,
+        secret=settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
         issuer=settings.jwt_issuer,
     )

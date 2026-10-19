@@ -32,6 +32,27 @@ function entry(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function settlementEntry(overrides: Record<string, unknown> = {}) {
+  // ledger-service.md: outcome_id is the winner, quantity is the winning
+  // shares paid out at one credit each so amount equals quantity; side and
+  // average_price are null because a payout is not a trade.
+  return {
+    id: 'e3',
+    created_at: '2026-09-16T08:12:44.501200Z',
+    amount: '5.0000',
+    balance_after: '1002.4687',
+    transaction_id: 't3',
+    kind: 'settlement',
+    context: {},
+    market_id: 'mkt-1',
+    outcome_id: 'o-yes',
+    side: null,
+    quantity: '5.0000',
+    average_price: null,
+    ...overrides,
+  }
+}
+
 function grantEntry(overrides: Record<string, unknown> = {}) {
   return {
     id: 'e0',
@@ -150,9 +171,38 @@ describe('TradeHistoryPage', () => {
     expect(within(screen.getByRole('table')).queryByRole('link')).not.toBeInTheDocument()
   })
 
+  it('shows a settlement row as a payout, with its market, winning outcome, quantity and amount', async () => {
+    // [FE][3.4] #216: side and average_price are null on a settlement row
+    // and must not render as if it were a trade.
+    mockEntries([settlementEntry()])
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
+    expect(screen.getByText('Payout Yes')).toBeInTheDocument()
+    expect(screen.getByText('5.0000')).toBeInTheDocument()
+    expect(screen.getByText('+5.0000')).toBeInTheDocument()
+    expect(screen.getByText('1,002.4687')).toBeInTheDocument()
+    // average_price is null on a settlement row — not shown, not a dash
+    // confused for a trade's.
+    const row = screen.getAllByRole('row')[1]
+    expect(within(row).getByRole('cell', { name: '—' })).toBeInTheDocument()
+  })
+
+  it('links a settlement row to its market, the same as a trade row', async () => {
+    mockEntries([settlementEntry()])
+    mockMarket('mkt-1', market())
+    const actor = userEvent.setup()
+    renderPage()
+
+    await actor.click(await screen.findByText('Will it rain in Singapore tomorrow?'))
+
+    expect(screen.getByText('market detail')).toBeInTheDocument()
+  })
+
   it('renders an unrecognised kind verbatim with its amount and balance, above the grant, in the server order', async () => {
-    // A kind this app has no label for yet, not one already in use elsewhere
-    // (settlement is #216's), so this stays "unrecognised" after that lands.
+    // A kind this app has no label for yet, not settlement, which #216 gave
+    // its own "Payout" treatment above.
     mockEntries([
       entry({ id: 'e2', kind: 'some_future_kind', amount: '10.0000', balance_after: '1010.0000', market_id: null, outcome_id: null, side: null, quantity: null, average_price: null }),
       grantEntry(),
