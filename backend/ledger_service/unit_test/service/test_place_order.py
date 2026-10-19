@@ -32,12 +32,14 @@ from core.errors import (
     OrderCrossesBook,
     UnknownOutcome,
 )
+from core.limit_orders import RestingOrder, executable_fill_of
 from core.pricing import Side
 from model.entities import (
     Account,
     AccountKind,
     MarketBook,
     Order,
+    OrderStatus,
     Transaction,
     TransactionKind,
 )
@@ -313,6 +315,7 @@ async def test_a_sell_filled_on_arrival_releases_basis_at_average_cost(
     )
 
     assert placement.order.status == "filled"
+    assert placement.order.reserved_shares == Decimal("0.0000")
     assert [(f.quantity, f.total) for f in placement.fills] == [(LOTS_SOLD, LOTS_PROCEEDS)]
     position = await position_of(session, user_id, upstream.market_id, outcome_id)
     assert position.quantity == sum(LOTS) - LOTS_SOLD
@@ -411,6 +414,22 @@ async def test_a_placement_that_would_fill_completely_is_refused_when_its_budget
     assert refused.value.required is None
     await session.rollback()
     assert await _committed_counts(upstream) == before
+
+
+def test_a_start_of_batch_refusal_of_a_sell_placement_is_passed_on_unchanged() -> None:
+    """A sell has no budget to take back out of `reserved`, so the rewrite
+    hands posting's refusal on as it is rather than subtracting `None`. Not
+    reachable through `place` today, because posting checks only the accounts
+    a batch debits and a sell's fill credits the placer; this keeps the
+    rewrite safe if that changes."""
+    refusal = InsufficientFunds(
+        balance=Decimal("10.0000"),
+        reserved=Decimal("12.0000"),
+        available=Decimal("-2.0000"),
+        shortfall=Decimal("2.0000"),
+    )
+
+    assert orders._placement_refusal_of(refusal, None) is refusal
 
 
 async def test_a_first_ever_placement_mints_the_grant_and_is_accepted(
@@ -526,6 +545,77 @@ async def test_only_an_open_opposing_order_in_this_market_crosses(
     assert (crossed.value.side, crossed.value.bound) == (Side.BUY, Decimal("0.5000"))
     await session.rollback()
     assert (await _committed_counts(upstream))[0] == 1
+
+
+async def _executable_open_orders(session: AsyncSession, upstream) -> list[RestingOrder]:
+    """Every open order in the market that `executable_fill_of` would fill at
+    the committed `q`."""
+    session.expire_all()
+    q = await q_of(session, upstream.market_id)
+    b = (await book_row(session, upstream.market_id)).liquidity_b
+    stmt = select(Order).where(
+        Order.market_id == upstream.market_id, Order.status == OrderStatus.OPEN
+    )
+    executable = []
+    for order in (await session.execute(stmt)).scalars():
+        resting = RestingOrder(
+            seq=order.seq,
+            outcome_index=upstream.outcomes.index(order.outcome_id),
+            side=order.side,
+            limit_price=order.limit_price,
+            remaining=order.quantity - order.filled_quantity,
+        )
+        if executable_fill_of(q, b, resting) is not None:
+            executable.append(resting)
+    return executable
+
+
+@pytest.mark.parametrize(
+    ("limit", "fills"),
+    [(Decimal("0.4999"), True), (Decimal("0.5500"), False)],
+    ids=["fills_up_to_a_tick_below_the_sell", "would_fill_past_the_sell"],
+)
+async def test_after_a_placement_no_open_order_in_the_market_is_executable(
+    session: AsyncSession, limit: Decimal, fills: bool
+) -> None:
+    """#26: "Invariant holds: no resting order is executable, to within one
+    tick", asserted as worded, over every open order in the market.
+
+    Outcome 0 is at 0.4502, and another trader's sell of it rests at 0.5000.
+    A buy at 0.4999 fills on arrival up to its limit and rests the rest. A buy
+    at 0.5500 would fill past the sell; that it is refused is
+    `test_only_an_open_opposing_order_in_this_market_crosses`'s to pin, so
+    here only the book it leaves is checked.
+
+    Skip the fill on arrival and the first case's own order rests executable;
+    drop the crossing check and the second case's fill leaves the sell
+    executable.
+    """
+    upstream = limit_upstream()
+    await open_at(session, upstream, (Decimal("0.0000"), Decimal("20.0000")))
+    await add_order(
+        session,
+        user_id=uuid.uuid4(),
+        market_id=upstream.market_id,
+        outcome_id=upstream.outcomes[0],
+        budget=None,
+    )
+    await session.commit()
+    user_id = await _funded(session)
+
+    placement = None
+    try:
+        placement = await place(
+            session, upstream, user_id=user_id, limit_price=limit, quantity=EXAMPLE_QUANTITY
+        )
+    except OrderCrossesBook:
+        await session.rollback()
+
+    assert await _executable_open_orders(session, upstream) == []
+    if fills:
+        assert placement is not None
+        assert placement.fills != []
+        assert placement.order.status == "open"
 
 
 async def test_a_market_with_three_outcomes_is_refused_market_not_binary(
