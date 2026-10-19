@@ -93,7 +93,7 @@ async def require_service_key(request: Request) -> None:
     here, and this key does not pass `get_current_user`.
     """
     presented = request.headers.get("X-Service-Key") or ""
-    expected = get_settings().ledger_service_key
+    expected = get_settings().ledger_service_key.get_secret_value()
     if not hmac.compare_digest(presented.encode(), expected.encode()):
         raise InvalidServiceKey
 
