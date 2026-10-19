@@ -9014,6 +9014,10 @@ Move these into the log above when they're settled.
   `AUDIT_TEST_DATABASE_URL`, as market_service's and auth_service's already
   do. Whether it moves into `shared/testing.py` is #253.
 
+**Amended 2026-10-19.** #253 moved it: the three conftests' `audit_reader`
+fixtures now open their session through `shared/testing.py`'s
+`open_audit_reader`, and no copy of the engine is left. ADR 0012's amendment.
+
 ---
 
 ### D-NEW — The first refresh runs inside the refresher's task, and the lifespan yields without waiting for it

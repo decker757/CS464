@@ -412,8 +412,10 @@ checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 It holds token verification, the settings base, the role enum, the cursor
 format, the audit writer and `actor_of`, the migration runner (`shared/migrating.py`, ADR
 0020) and the test helpers in `shared/testing.py` (the env loader, the
-import-boundary scan, and the migration guard tests' `schema_catalog`,
-`drop_own_tables`, the two `assert_...` round trips and `compose_service`).
+import-boundary scan, the migration guard tests' `schema_catalog`,
+`drop_own_tables`, the two `assert_...` round trips and `compose_service`, and
+`open_audit_reader`, the `audit_svc` session the writing services' suites read
+the log back through).
 That is the whole list, and ADR 0012 spends most of its length on what was
 left copied and why — `core/database.py` above all, because one shared `Base`
 would enrol every service's tables in every other service's metadata and the
