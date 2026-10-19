@@ -3,11 +3,11 @@ import { useParams } from 'react-router-dom'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
+import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
-import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
 import { useWindowOpen } from '../hooks/useWindowOpen'
@@ -160,32 +160,7 @@ export default function MarketDetailPage() {
           </Card>
 
           <SectionCard title="About this market">
-            <div className="flex flex-col gap-4 text-sm text-smu-navy">
-              <DetailItem label="Resolution criteria">
-                <p className="leading-[1.6]">{market.resolution_criteria}</p>
-              </DetailItem>
-              <div className="grid grid-cols-2 gap-4">
-                <DetailItem label="Closes">
-                  <p>{formatDate(market.close_time)}</p>
-                </DetailItem>
-                <DetailItem label="Resolves by">
-                  <p>{formatDate(market.resolution_time)}</p>
-                </DetailItem>
-              </div>
-              {market.resolution_sources.length > 0 && (
-                <DetailItem label="Resolution sources">
-                  <ul className="mt-1 flex flex-col gap-1">
-                    {market.resolution_sources.map(src => (
-                      <li key={src.id}>
-                        <a href={src.url} target="_blank" rel="noopener noreferrer" className="text-info">
-                          {src.label ?? src.url}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </DetailItem>
-              )}
-            </div>
+            <ResolutionDetails market={market} />
           </SectionCard>
         </>
       )}
