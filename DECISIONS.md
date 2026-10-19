@@ -9631,7 +9631,7 @@ is.
 
 ---
 
-### D-NEW — The cascade takes the most aggressive executable order until none is left, and passes over an order it cannot fill
+### D-NEW — The cascade loops until no waiting order is executable, and passes over an order it cannot fill
 
 **Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
 

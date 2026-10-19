@@ -6,8 +6,8 @@ price", decides the shape; the decisions under it are in DECISIONS.md: "An
 order is executable when its floored fill passes the per-fill limit check; a
 resting order is one that is not", "Priority is price, then an identity `seq`
 assigned under the book lock", "A placement that would cross the book is
-refused, `order_crosses_book`", and "The cascade takes the most aggressive
-executable order until none is left, and passes over an order it cannot fill".
+refused, `order_crosses_book`", and "The cascade loops until no waiting order
+is executable, and passes over an order it cannot fill".
 
 Only binary markets hold orders. The orders arrive as `RestingOrder`s, built
 by the service from its `Order` rows, because `core` cannot import `model`.

@@ -6,8 +6,8 @@ moved the price", and the decisions under it: "An order is executable when
 its floored fill passes the per-fill limit check; a resting order is one that
 is not", "Priority is price, then an identity `seq` assigned under the book
 lock", "A placement that would cross the book is refused,
-`order_crosses_book`", and "The cascade takes the most aggressive executable
-order until none is left, and passes over an order it cannot fill".
+`order_crosses_book`", and "The cascade loops until no waiting order is
+executable, and passes over an order it cannot fill".
 
 Every expected figure comes from the oracle below or from the contract's
 worked example. The oracle is a second implementation in stdlib Decimal at
@@ -725,10 +725,11 @@ def test_the_cascade_passes_over_an_order_it_cannot_fill_and_fills_the_next() ->
 def test_a_fill_that_makes_a_passed_over_order_executable_sends_the_cascade_back_for_it() -> (
     None
 ):
-    """The cascade's decision, "until none is left": after each fill it looks
-    again from the most aggressive order. Seq 1 is not executable at the start
-    and is at the `q` seq 2's fill leaves, so a cascade that walked the book
-    once, in priority order, would end after seq 2 with seq 1 executable."""
+    """The cascade's decision, "until no waiting order is executable": after
+    each fill it looks again from the most aggressive order. Seq 1 is not
+    executable at the start and is at the `q` seq 2's fill leaves, so a
+    cascade that walked the book once, in priority order, would end after
+    seq 2 with seq 1 executable."""
     seq_1, seq_2 = _REVISITED_BOOK
     expected = _oracle_fills(_REVISITED_Q, B, [seq_2, seq_1])
     for q, executable in [(_REVISITED_Q, False), (expected[0].after_q, True)]:
