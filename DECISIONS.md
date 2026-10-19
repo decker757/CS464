@@ -9591,3 +9591,40 @@ fills*: the unindexed query above. *Keeping the name `spent`*: false of a
 sell, for the reason above. *A sell's value signed negative*: the average
 would need the side to read its sign, and `ck_orders_filled_value_nonneg`
 would split by side.
+
+---
+
+### D-NEW — A preview reports what a buy pays if its outcome wins
+
+**Date:** 2026-10-19 · **Ticket:** #384 · **Status:** active
+
+**Decision.** `GET /ledger/markets/{id}/preview` carries `payout_if_wins` and
+`profit_if_wins`, decimal strings at the money scale of 4. On a buy,
+`payout_if_wins` is the quantity, because a winning share pays one credit, and
+`profit_if_wins` is that payout minus the credits the buy costs — the
+magnitude of `total`, the charged figure, subtracted exactly. On a sell both
+are null. Both describe this trade alone, never the trader's position.
+
+**Why.** The trading surface (#357) shows what a buy pays and what it makes,
+and the frontend may not do arithmetic on decimal strings, so the server has
+to return both. Both operands are already at scale 4 — `quantity` is refused
+past four decimal places and `total` is quantized to the tick — so the
+subtraction is exact and adds no rounding of its own; the profit is the
+payout less exactly what would be charged.
+
+**Rejected.** *A sell's payout as its proceeds*: a sell receives its credits
+now, which `total` already says, and gives up the shares that would have paid;
+it has nothing to pay out if the outcome wins. *Valuing the whole position*:
+needs the caller's holdings, a database read the preview does not make (it
+stays AMM-only and read-only), and the portfolio already reports a
+position's value. *`profit_if_wins` from `quantity * average_price`*:
+`average_price` is a rounded display figure, so the profit would disagree
+with the charge by up to half a tick per share: two ticks in the docs'
+example, where 10 × 0.7315 is 7.3150 against a charge of 7.3152.
+
+**Notes.** `payout_if_wins` is the quantity rescaled to four places, so a
+quantity sent as `10` reports `10.0000` while `quantity` still echoes `10`,
+as "A quantity takes money's scale of 4 at the API boundary" has it. On a buy
+charged its whole quantity, such as the smallest buys or a buy of an outcome
+priced near one, the profit can be zero or a tick below; it is reported as it
+is.

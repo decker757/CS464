@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import UnknownOutcome
 from core.lmsr import prices as lmsr_prices
-from core.pricing import Side, per_share, trade_cost_of
+from core.pricing import QUANTUM, Side, per_share, trade_cost_of
 from service import book_prices
 from service.book_prices import PricedOutcome
 
@@ -35,6 +35,8 @@ class Quote:
     quantity: Decimal
     total: Decimal
     average_price: Decimal
+    payout_if_wins: Decimal | None
+    profit_if_wins: Decimal | None
     prices: list[PricedOutcome]
     post_trade_prices: list[PricedOutcome]
 
@@ -79,6 +81,15 @@ async def quote(
     # An average price is a price, so `quantize_price` rounds it (D-052).
     average_price = per_share(cost.magnitude, quantity)
 
+    # A winning share pays one credit; a sell is paid now and has nothing left
+    # to win. Both operands are at scale 4, so neither line rounds. D-NEW, "A
+    # preview reports what a buy pays if its outcome wins".
+    payout_if_wins: Decimal | None = None
+    profit_if_wins: Decimal | None = None
+    if side is Side.BUY:
+        payout_if_wins = quantity.quantize(QUANTUM)
+        profit_if_wins = payout_if_wins - cost.magnitude
+
     return Quote(
         market_id=market_id,
         state_version=state_version,
@@ -87,6 +98,8 @@ async def quote(
         quantity=quantity,
         total=cost.total,
         average_price=average_price,
+        payout_if_wins=payout_if_wins,
+        profit_if_wins=profit_if_wins,
         prices=book_prices.priced(rows, lmsr_prices(q, b)),
         post_trade_prices=book_prices.priced(rows, lmsr_prices(cost.after_q, b)),
     )
