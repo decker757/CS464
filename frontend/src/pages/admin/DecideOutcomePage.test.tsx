@@ -23,8 +23,11 @@ function publicMarket(overrides: Record<string, unknown> = {}) {
       { id: 'o-yes', position: 0, label: 'Yes' },
       { id: 'o-no', position: 1, label: 'No' },
     ],
-    close_time: '2025-01-01T00:00:00Z',
-    resolution_time: '2025-01-10T00:00:00Z',
+    // Midday, so a timestamp assertion reads the same date whatever timezone
+    // the machine running the test is in — formatDateTime goes through
+    // toLocaleString, which uses it.
+    close_time: '2025-01-01T12:00:00Z',
+    resolution_time: '2025-01-10T12:00:00Z',
     resolution_criteria: 'Resolves YES if it rains.',
     resolution_sources: [],
     liquidity_b: '100',
@@ -140,8 +143,14 @@ describe('DecideOutcomePage', () => {
     expect(screen.getByRole('link', { name: 'MSS climate record' })).toHaveAttribute('href', 'https://weather.gov.sg/climate')
     expect(screen.getByText('Closes').nextElementSibling).toHaveTextContent(/1 Jan 2025/)
 
+    // Both indices are checked, because a missing heading reads as -1, which
+    // is below every real index — an ordering assertion on its own would pass
+    // most convincingly when the section is not there at all.
     const headings = screen.getAllByRole('heading').map(h => h.textContent)
-    expect(headings.indexOf('How this market resolves')).toBeLessThan(headings.indexOf('Evidence'))
+    const rulesIndex = headings.indexOf('How this market resolves')
+    const evidenceIndex = headings.indexOf('Evidence')
+    expect(rulesIndex).toBeGreaterThan(-1)
+    expect(evidenceIndex).toBeGreaterThan(rulesIndex)
   })
 
   it('disables Approve and Reject, with a reason, for the signed-in admin\'s own proposal', async () => {

@@ -75,6 +75,23 @@ describe('ModalShell', () => {
     expect(confirm).toHaveFocus()
   })
 
+  it('brings Tab back into the dialog after focus has been blurred out of it', async () => {
+    // Confirming blurs the button it was clicked on: a focused element that
+    // becomes disabled is blurred by the browser, and an ignored backdrop
+    // click blurs too, both leaving focus on <body>. jsdom does not do that
+    // for us, hence the explicit blur. Without a document-level trap the next
+    // Tab lands in the page behind the overlay — the navbar is not disabled
+    // and not inert — where Enter navigates away mid-request.
+    const actor = await openDialog(true)
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    cancel.blur()
+    expect(document.body).toHaveFocus()
+
+    await actor.tab()
+
+    expect(cancel).toHaveFocus()
+  })
+
   it('closes on a click on the backdrop but not on one inside the panel', async () => {
     const actor = await openDialog()
     const panel = screen.getByRole('dialog')
