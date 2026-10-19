@@ -193,11 +193,18 @@ describe('LeaderboardPage', () => {
       renderPage()
       await screen.findByText('Your rank: #3')
 
+      // The restart must still meet a 409 on page-2, or load-more simply
+      // succeeds and the recovery path never runs: MSW prefers the newest
+      // handler, so a catch-all here would answer the cursor request too.
       server.use(
-        http.get(LEADERBOARD, () => HttpResponse.json(page({
-          me: { rank: 7, username: 'alice', net_worth: '1003.8689' },
-          rows: page().rows.map(r => ({ ...r, is_me: r.username === 'alice' ? false : r.is_me })),
-        }))),
+        http.get(LEADERBOARD, ({ request }) =>
+          new URL(request.url).searchParams.get('cursor') === 'page-2'
+            ? HttpResponse.json({ error: { code: 'leaderboard_refreshed', message: 'refreshed' } }, { status: 409 })
+            : HttpResponse.json(page({
+                me: { rank: 7, username: 'alice', net_worth: '1003.8689' },
+                rows: page().rows.map(r => ({ ...r, is_me: r.username === 'alice' ? false : r.is_me })),
+              })),
+        ),
       )
       await actor.click(screen.getByRole('button', { name: /load more/i }))
 
