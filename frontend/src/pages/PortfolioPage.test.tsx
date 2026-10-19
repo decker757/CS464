@@ -22,6 +22,13 @@ function portfolio(overrides: Record<string, unknown> = {}) {
     balance: '997.4687',
     positions_value: '2.5312',
     net_worth: '999.9999',
+    // The same trade's P&L, reconciling with the three figures above it:
+    // nothing has been sold or settled, so all of it is unrealized, and
+    // total_pnl is net_worth - starting_credits exactly (ledger-service.md).
+    starting_credits: '1000.0000',
+    realized_pnl: '0.0000',
+    unrealized_pnl: '-0.0001',
+    total_pnl: '-0.0001',
     positions: [
       {
         market_id: 'mkt-1',
@@ -99,6 +106,110 @@ describe('PortfolioPage', () => {
     expect(await screen.findByText('997.4687 credits')).toBeInTheDocument()
     expect(screen.getByText('2.5312 credits')).toBeInTheDocument()
     expect(screen.getByText('999.9999 credits')).toBeInTheDocument()
+  })
+
+  it('shows total P&L as a signed headline figure when the trader is up', async () => {
+    // [B-1] #376: whether the user is up or down is the question a
+    // prediction market exists to answer, and the sign says which way, so
+    // colour is never the only signal.
+    mockPortfolio(portfolio({
+      balance: '1003.8690',
+      positions_value: '0.0000',
+      net_worth: '1003.8690',
+      starting_credits: '1000.0000',
+      realized_pnl: '3.8690',
+      unrealized_pnl: '0.0000',
+      total_pnl: '3.8690',
+      positions: [],
+    }))
+    renderPage()
+
+    expect(await screen.findByText('Total P&L')).toBeInTheDocument()
+    expect(screen.getByText('+3.8690 credits')).toBeInTheDocument()
+  })
+
+  it('shows total P&L with a minus sign when the trader is down', async () => {
+    mockPortfolio(portfolio({
+      balance: '987.5000',
+      positions_value: '0.0000',
+      net_worth: '987.5000',
+      starting_credits: '1000.0000',
+      realized_pnl: '-11.3889',
+      unrealized_pnl: '-1.1111',
+      total_pnl: '-12.5000',
+      positions: [],
+    }))
+    renderPage()
+
+    expect(await screen.findByText('-12.5000 credits')).toBeInTheDocument()
+  })
+
+  it('reads as flat, not as a loss, for a trader who has never traded', async () => {
+    // [B-1] #376: an untouched grant is zero P&L, and an exact zero carries
+    // no sign — the same rule a fresh position's unrealized P&L follows
+    // (ADR 0018). The two zeroes are the positions value and the total.
+    mockPortfolio(portfolio({
+      balance: '1000.0000',
+      positions_value: '0.0000',
+      net_worth: '1000.0000',
+      starting_credits: '1000.0000',
+      realized_pnl: '0.0000',
+      unrealized_pnl: '0.0000',
+      total_pnl: '0.0000',
+      positions: [],
+    }))
+    renderPage()
+
+    expect(await screen.findByText('Total P&L')).toBeInTheDocument()
+    expect(screen.getAllByText('0.0000 credits')).toHaveLength(2)
+    expect(screen.queryByText('+0.0000 credits')).not.toBeInTheDocument()
+  })
+
+  it('shows realized and unrealized apart, each labelled, not merged into the total', async () => {
+    // [B-1] #376: the two answer different questions — what is already
+    // banked in the balance, and what is still riding on open positions
+    // (ledger-service.md) — so one unexplained number will not do. Opposite
+    // signs here, so neither can be mistaken for the total.
+    mockPortfolio(portfolio({
+      balance: '994.8889',
+      positions_value: '10.0000',
+      net_worth: '1004.8889',
+      starting_credits: '1000.0000',
+      realized_pnl: '6.0000',
+      unrealized_pnl: '-1.1111',
+      total_pnl: '4.8889',
+      positions: [{ ...portfolio().positions[0], cost_basis: '11.1111', value: '10.0000', unrealized_pnl: '-1.1111' }],
+    }))
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    expect(await screen.findByText('Realized +6.0000')).toBeInTheDocument()
+    expect(screen.getByText('Unrealized -1.1111')).toBeInTheDocument()
+    expect(screen.getByText('+4.8889 credits')).toBeInTheDocument()
+  })
+
+  it('shows the total the ledger sent, never one worked out in the browser', async () => {
+    // [B-1] #376: no arithmetic on the decimal strings — total_pnl is its
+    // own field for exactly that reason (ledger-service.md). These figures
+    // are deliberately inconsistent: realized + unrealized is 1.0000 and
+    // net_worth - starting_credits is 2.0000, so a page that worked either
+    // out shows a number the ledger never sent. Same shape as the "server's
+    // own value, not quantity times price" test below.
+    mockPortfolio(portfolio({
+      balance: '1002.0000',
+      positions_value: '0.0000',
+      net_worth: '1002.0000',
+      starting_credits: '1000.0000',
+      realized_pnl: '0.5000',
+      unrealized_pnl: '0.5000',
+      total_pnl: '7.7777',
+      positions: [],
+    }))
+    renderPage()
+
+    expect(await screen.findByText('+7.7777 credits')).toBeInTheDocument()
+    expect(screen.queryByText('+1.0000 credits')).not.toBeInTheDocument()
+    expect(screen.queryByText('+2.0000 credits')).not.toBeInTheDocument()
   })
 
   it('shows each position with its market question and outcome label', async () => {

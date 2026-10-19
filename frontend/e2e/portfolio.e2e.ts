@@ -24,7 +24,14 @@ test('a trader sees their position, with the market question and outcome label j
   await expect(page.getByText('2.5312 credits')).toBeVisible()
   await expect(page.getByText('999.9999 credits')).toBeVisible()
   await expect(page.getByText('2.5313')).toBeVisible()
-  await expect(page.getByText('-0.0001')).toBeVisible()
+  await expect(page.getByText('-0.0001', { exact: true })).toBeVisible()
+  // [B-1] #376, against the real ledger's own sums: the grant was 1,000 and
+  // net worth is 999.9999, so the trader is down 0.0001 — all of it still
+  // riding on the position, none of it banked. Exact names, exact figures,
+  // which is what a unit test against an MSW fake cannot check.
+  await expect(page.getByText('-0.0001 credits', { exact: true })).toBeVisible()
+  await expect(page.getByText('Realized 0.0000', { exact: true })).toBeVisible()
+  await expect(page.getByText('Unrealized -0.0001', { exact: true })).toBeVisible()
 })
 
 test('a trader with no positions sees the empty state', async ({ page }) => {
@@ -36,4 +43,10 @@ test('a trader with no positions sees the empty state', async ({ page }) => {
   await expect(page.getByText(/no open positions/i)).toBeVisible()
   // A brand-new trader's balance is granted on first read (ADR 0009).
   await expect(page.getByText('1,000.0000 credits')).toHaveCount(2)
+  // And reads as flat against that grant, not as a loss: the ledger sends
+  // total_pnl exactly 0.0000, so the figure carries no sign. The two zeroes
+  // are the positions value and the total — exact, because "0.0000 credits"
+  // is also the tail of "1,000.0000 credits". [B-1] #376
+  await expect(page.getByText('0.0000 credits', { exact: true })).toHaveCount(2)
+  await expect(page.getByText('+0.0000 credits', { exact: true })).toHaveCount(0)
 })
