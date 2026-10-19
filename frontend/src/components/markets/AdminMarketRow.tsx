@@ -29,6 +29,13 @@ function RowError({ message, onReload }: { message: string; onReload?: () => voi
   )
 }
 
+// Settled wins over closed because a market is closed before it is settled.
+function statusAfter(market: MarketOverviewRow, settledJustNow: boolean, closedJustNow: boolean) {
+  if (settledJustNow) return 'settled'
+  if (closedJustNow) return 'closed'
+  return market.status
+}
+
 // One market on the admin markets list ([2.1] #5). Only its creator can act on
 // it, e.g. propose its outcome. Closing it early ([2.3] #7) and settling
 // ([3.4] #12) are controls any administrator may use on anybody's market
@@ -49,7 +56,7 @@ export default function AdminMarketRow({ market, isMine }: AdminMarketRowProps) 
     settling, formError: settleError, superseded: settleSuperseded, needsReload: settleNeedsReload, handleSettle,
   } = useSettleMarket(market.id, () => setSettledJustNow(true))
 
-  const status = settledJustNow ? 'settled' : closedJustNow ? 'closed' : market.status
+  const status = statusAfter(market, settledJustNow, closedJustNow)
   // Same derivation as everywhere else on this page: a market whose countdown
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
