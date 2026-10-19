@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../../context/AuthContext'
+import { holdUntilReleased } from '../../test/holdUntilReleased'
 import { WithProviders } from '../../test/renderWithProviders'
 import { server } from '../../test/server'
 import CreateMarketPage from './CreateMarketPage'
@@ -51,6 +52,56 @@ function renderPage() {
       <MemoryRouter initialEntries={['/admin/markets/new']}>
         <Routes>
           <Route path="/admin/markets/new" element={<CreateMarketPage />} />
+          <Route path="/markets" element={<p>markets list</p>} />
+        </Routes>
+      </MemoryRouter>
+    </WithProviders>,
+  )
+}
+
+// --- the same page on /admin/markets/:id/edit (#348) ------------------------
+
+const STORED_ID = 'mkt-stored'
+const STORED_DRAFT_KEY = '11111111-2222-3333-4444-555555555555'
+const STORED_QUESTION = 'Will the resumed draft keep everything it was given?'
+// Built from local parts, so the value a datetime-local input is expected to
+// hold does not depend on the machine's timezone.
+const CLOSE_AT = new Date(2027, 0, 15, 14, 30)
+const RESOLVE_AT = new Date(2027, 0, 20, 9, 5)
+
+const storedMarket = {
+  id: STORED_ID,
+  draft_key: STORED_DRAFT_KEY,
+  status: 'draft',
+  question: STORED_QUESTION,
+  description: 'Context a trader reads before buying.',
+  outcomes: [
+    { id: 'so1', position: 0, label: 'Rain', initial_price: 0.5 },
+    { id: 'so2', position: 1, label: 'No rain', initial_price: 0.5 },
+  ],
+  close_time: CLOSE_AT.toISOString(),
+  resolution_time: RESOLVE_AT.toISOString(),
+  resolution_criteria: 'Resolves YES if the MAS print for December 2026 is below 2.0%.',
+  resolution_sources: [{ id: 'ss1', position: 0, url: 'https://example.com/mas', label: 'MAS statistics' }],
+  liquidity_b: 150,
+  seed_subsidy: 250,
+  max_platform_loss: 103.9721,
+}
+
+function serveStoredMarket(overrides: Record<string, unknown> = {}) {
+  server.use(
+    http.get(`${MARKET_BASE}/markets/${STORED_ID}`, () =>
+      HttpResponse.json({ ...storedMarket, ...overrides }),
+    ),
+  )
+}
+
+function renderEditPage() {
+  return render(
+    <WithProviders user={admin}>
+      <MemoryRouter initialEntries={[`/admin/markets/${STORED_ID}/edit`]}>
+        <Routes>
+          <Route path="/admin/markets/:id/edit" element={<CreateMarketPage />} />
           <Route path="/markets" element={<p>markets list</p>} />
         </Routes>
       </MemoryRouter>
@@ -546,5 +597,125 @@ describe('CreateMarketPage', () => {
     renderPage()
     // The navbar's own "All Markets" link matches too, so name the back link exactly.
     expect(screen.getByRole('link', { name: '← All Markets' })).toHaveAttribute('href', '/admin/markets')
+  })
+
+  // #348. Nothing used to load an existing market back into this form, so a
+  // market submitted in one sitting became unreachable after a reload and an
+  // abandoned draft was duplicated by the next visit's fresh draft_key.
+  describe('on an existing market', () => {
+    it('loads the market into the form', async () => {
+      serveStoredMarket()
+      renderEditPage()
+
+      expect(await screen.findByDisplayValue(STORED_QUESTION)).toBeInTheDocument()
+      expect(screen.getByLabelText('Description (optional)')).toHaveValue('Context a trader reads before buying.')
+      expect(screen.getByLabelText('Outcome 1')).toHaveValue('Rain')
+      expect(screen.getByLabelText('Outcome 2')).toHaveValue('No rain')
+      expect(screen.getByLabelText('Closes at *')).toHaveValue('2027-01-15T14:30')
+      expect(screen.getByLabelText('Resolves by *')).toHaveValue('2027-01-20T09:05')
+      expect(screen.getByLabelText('Resolution criteria *')).toHaveValue(storedMarket.resolution_criteria)
+      expect(screen.getByLabelText('Source 1 URL')).toHaveValue('https://example.com/mas')
+      expect(screen.getByLabelText('Source 1 label (optional)')).toHaveValue('MAS statistics')
+      expect(screen.getByLabelText('Seed subsidy (credits) *')).toHaveValue(250)
+      expect(screen.getByLabelText('Liquidity parameter b')).toHaveValue(150)
+    })
+
+    // The duplicate half of the bug: the next autosave has to continue the
+    // market it just read, which means sending that market's own draft_key
+    // rather than a uuid minted on this mount.
+    it('resumes the market under its stored draft_key, and does not re-save what it just read', async () => {
+      const keysSent: string[] = []
+      serveStoredMarket()
+      server.use(
+        http.post(`${MARKET_BASE}/markets`, async ({ request }) => {
+          const body = await request.json() as { draft_key: string }
+          keysSent.push(body.draft_key)
+          return HttpResponse.json(baseSaveResponse)
+        }),
+      )
+      vi.useFakeTimers()
+      renderEditPage()
+
+      await act(() => vi.advanceTimersByTimeAsync(3100))
+      expect(screen.getByDisplayValue(STORED_QUESTION)).toBeInTheDocument()
+
+      // A whole autosave interval after the market landed, with nothing typed:
+      // what the server just handed over has nothing new to say back to it.
+      await act(() => vi.advanceTimersByTimeAsync(3100))
+      expect(keysSent).toEqual([])
+
+      fireEvent.change(screen.getByLabelText('Question *'), { target: { value: 'Will the resumed draft be renamed?' } })
+      await act(() => vi.advanceTimersByTimeAsync(3100))
+
+      expect(keysSent).toEqual([STORED_DRAFT_KEY])
+    })
+
+    // The ticket's second criterion. The button used to render only from the
+    // save response this session happened to hold.
+    it('offers Publish on a submitted market, with the form read-only and no edits to account for', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      renderEditPage()
+
+      expect(await screen.findByRole('button', { name: /publish market/i })).toBeInTheDocument()
+      expect(screen.getByLabelText('Question *')).toBeDisabled()
+      expect(screen.queryByRole('button', { name: /submit for review/i })).not.toBeInTheDocument()
+      const banner = screen.getByRole('alert')
+      expect(banner).toHaveTextContent(/already been submitted for review/i)
+      expect(banner).toHaveTextContent(/read-only/i)
+      // Nothing was being typed here, so neither sentence about open edits belongs.
+      expect(banner).not.toHaveTextContent(/were not saved|had already been saved/i)
+    })
+
+    it('publishes the market it loaded', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      server.use(http.post(`${MARKET_BASE}/markets/${STORED_ID}/publish`, () => HttpResponse.json({ status: 'open' })))
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+
+      expect(await screen.findByText('markets list')).toBeInTheDocument()
+    })
+
+    it('locks the form and says why for a market that is already published', async () => {
+      serveStoredMarket({ status: 'open' })
+      renderEditPage()
+
+      const banner = await screen.findByRole('alert')
+      expect(banner).toHaveTextContent(/already been published/i)
+      expect(screen.queryByRole('button', { name: /submit for review/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /publish market/i })).not.toBeInTheDocument()
+      expect(within(banner).getByRole('link', { name: /view the market/i })).toHaveAttribute('href', `/markets/${STORED_ID}`)
+    })
+
+    // A form shown before the answer arrives is a form whose typing hydration
+    // then throws away, and whose autosave would create the second market.
+    it('offers no form while the market is still on its way', async () => {
+      const { held, release } = holdUntilReleased()
+      server.use(
+        http.get(`${MARKET_BASE}/markets/${STORED_ID}`, async () => {
+          await held
+          return HttpResponse.json(storedMarket)
+        }),
+      )
+      renderEditPage()
+
+      expect(screen.queryByLabelText('Question *')).not.toBeInTheDocument()
+
+      release()
+      expect(await screen.findByDisplayValue(STORED_QUESTION)).toBeInTheDocument()
+    })
+
+    it('says so when the market cannot be loaded', async () => {
+      server.use(
+        http.get(`${MARKET_BASE}/markets/${STORED_ID}`, () =>
+          HttpResponse.json({ error: { code: 'market_not_found', message: 'not yours' } }, { status: 404 }),
+        ),
+      )
+      renderEditPage()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load this market/i)
+      expect(screen.queryByLabelText('Question *')).not.toBeInTheDocument()
+    })
   })
 })
