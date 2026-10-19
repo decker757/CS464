@@ -5,23 +5,13 @@ Revises: 0004
 Create Date: 2026-10-19
 
 Hand-written, because autogenerate cannot see a CHECK constraint (ADR 0020) and
-so will never offer this one; unit_test/test_migrations.py compares the Postgres
-catalog and holds the revision to the model.
+so will never offer this one. The upgrade counts the rows that would violate it
+and says what it found, rather than leaving Postgres to reject the ALTER on a
+database nobody has looked at.
 
-A backstop rather than a fix. The invariant already holds by construction:
-`core/pricing.py::quantize_cost` refuses a quantized zero on both sides —
-`CostBelowTick` on a buy, `ProceedsBelowTick` on a sell — so no fill moves
-quantity without moving value by at least one tick, and this constraint rejects
-no row the code can currently produce. What it buys is loudness. The reservation
-is `SUM(budget - filled_value)` over live orders
-(`service/reservations.py::reserved_query_of`), so a cascade that ever advanced
-one of the two columns alone would hold a trader's own credits twice and surface
-as `insufficient_funds` in balance code that is correct — the expensive kind of
-hunt.
-
-The upgrade counts the rows that would violate it and says so before the ALTER,
-rather than assuming there are none: "there should be none" is exactly the
-reason the constraint is wanted.
+A backstop rather than a fix: `core/pricing.py::quantize_cost` already refuses a
+quantized zero on both sides, so this rejects no row the code can produce. #397
+has the reasoning and the damage it guards against.
 """
 
 from __future__ import annotations
@@ -58,9 +48,11 @@ def upgrade() -> None:
         raise RuntimeError(
             f"{violating} row(s) of ledger.orders have one of filled_quantity and "
             "filled_value advanced without the other, so Postgres will refuse the "
-            "CHECK. A buy like that reserves credits its fills have already spent: "
-            "reconcile the rollups against ledger.entries, which carry order_id, "
-            "then run the step again. This migration has changed nothing."
+            "CHECK. A buy like that reserves credits its fills have already spent. "
+            "The fills are in ledger.transactions, whose context names the "
+            "order_id, with their legs in ledger.entries by transaction_id: "
+            "reconcile the rollups against those, then run the step again. This "
+            "migration has changed nothing."
         )
     logger.info("ledger.orders: no row violates %s (%s); adding it.", CONSTRAINT, CONDITION)
 
