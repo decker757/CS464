@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/fixtures'
 import { approveOutcome, closeEarly, proposeOutcome, publishMarket, registerAdmin, uniqueName } from './support/backend'
 import { loadUntilShown, logIn } from './support/browser'
 
@@ -21,6 +21,9 @@ test('the proposer disputes an approved result, and the market goes back to clos
   await page.goto('/admin/markets')
   const card = await loadUntilShown(page, market.question)
 
+  // The headline of the ticket: a countdown that silently stopped rendering
+  // against the real API would otherwise go unnoticed.
+  await expect(card).toContainText(/disputes close in/i)
   await expect(card.getByRole('button', { name: /dispute result/i })).toBeVisible()
   await card.getByRole('button', { name: /dispute result/i }).click()
 
