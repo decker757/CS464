@@ -10,7 +10,7 @@ DELETE anywhere on this service. That is the whole design, it is enforced by
 a trigger rather than by this file being short, and a route added here in a
 hurry would fail against the database.
 
-**Four routes write, and none takes money.** `POST /markets/{market_id}/trades`
+**Five routes write, and none takes money.** `POST /markets/{market_id}/trades`
 ([T-2] #22) answers ADR 0009's deferred service-auth question for exactly this
 shape of caller: the request model is `extra="forbid"` over five fields, none
 of them money, so the trader's account is `accounts.ensure(USER, claims.sub)`
@@ -20,6 +20,8 @@ amendment. `POST /markets/{market_id}/orders` ([T-6] #26) is the same shape:
 `OrderIn` names a price and a quantity, and the budget is computed from them
 (ADR 0024). `POST /orders/{order_id}/cancel` ([T-8] #28) takes an empty body,
 and what it releases is derived from the caller's own order row.
+`POST /admin/orders/{order_id}/cancel` ([T-8] #326) is the same cancel for an
+administrator, of any trader's order, and its body is only the reason.
 
 `POST /markets/{market_id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service and the holders
@@ -56,6 +58,7 @@ from controller.dependencies import (
 from core.config import get_settings
 from core.pricing import Side
 from model.schemas import (
+    AdminCancelIn,
     BalanceOut,
     CancellationOut,
     CancelIn,
@@ -897,6 +900,58 @@ async def cancel_order(
 ) -> CancellationOut:
     # `body` is never read: it is declared so that a field in it is refused.
     cancelled = await cancellation.cancel(session, order_id, user_id=user.user_id)
+    return _cancellation_out(cancelled)
+
+
+_ADMIN_CANCEL_DESCRIPTION = (
+    "[T-8] #326, ADR 0024. Cancel any trader's live limit order, as its owner's "
+    "cancel would, and release its remainder. For an order whose owner cannot "
+    "cancel it, such as a suspended account's once its token has expired.\n\n"
+    "**A reason is required**, at least 10 characters once trimmed and at most "
+    "500. It is recorded in the audit log as `order.cancelled_by_admin`, in the "
+    "cancel's own transaction, and kept nowhere else.\n\n"
+    "Exactly the orders the owner could cancel, with the owner's refusals. The "
+    "same book lock, so it never races a fill or the owner's own cancel. Writes "
+    "no entry, and publishes no frame."
+)
+
+
+@router.post(
+    "/admin/orders/{order_id}/cancel",
+    response_model=CancellationOut,
+    status_code=200,
+    summary="Cancel any trader's limit order",
+    description=_ADMIN_CANCEL_DESCRIPTION,
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access token."
+            )
+        },
+        403: {"description": "`not_an_administrator`: authenticated, but a trader."},
+        404: {"description": "`order_not_found`: no such order."},
+        409: {
+            "description": (
+                "`order_already_filled`, `order_already_cancelled` or "
+                "`order_released`: as on the owner's cancel."
+            )
+        },
+        422: _invalid_request(
+            "`invalid_request`: an `order_id` that is not a UUID, no `reason`, "
+            "a `reason` over 500 characters, or any other field. "
+            "`cancellation_incomplete`: a `reason` under 10 characters once "
+            "trimmed."
+        ),
+    },
+)
+async def cancel_any_order(
+    order_id: uuid.UUID,
+    actor: CurrentActor,
+    session: DbSession,
+    body: AdminCancelIn,
+) -> CancellationOut:
+    by_admin = cancellation.AdminCancel(actor=actor, reason=body.reason)
+    cancelled = await cancellation.cancel(session, order_id, user_id=None, admin=by_admin)
     return _cancellation_out(cancelled)
 
 
