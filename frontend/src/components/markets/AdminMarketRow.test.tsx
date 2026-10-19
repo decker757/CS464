@@ -438,10 +438,35 @@ describe('AdminMarketRow', () => {
       expect(screen.getByText(/result is final; payout pending \(closed .+\)\./i)).toBeInTheDocument()
     })
 
-    it('shows no countdown on a market that is not approved', () => {
-      renderRow(OPEN_MARKET)
+    it('shows no countdown and offers no Dispute result when the market is not approved, even with a live window and an approval entry', () => {
+      // Everything else is what an approved row has, so the status is the
+      // only thing that can be hiding the countdown and the button.
+      renderRow({ ...DISPUTABLE_MARKET, status: 'closed' }, false, approvedEntry())
       expect(screen.queryByText(/disputes close in/i)).not.toBeInTheDocument()
       expect(screen.queryByText(/result is final/i)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
+
+    it('says no window is recorded, and promises no payout, on an approved market with no stored window', () => {
+      // ADR 0023, section 5: a null is damage and nothing will be paid.
+      renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: null }, false, approvedEntry())
+      expect(screen.getByText(/no dispute window is recorded/i)).toBeInTheDocument()
+      expect(screen.queryByText(/payout pending/i)).not.toBeInTheDocument()
+    })
+
+    it('moves the minutes on while the page is left open, not only the flip to "final"', () => {
+      vi.useFakeTimers()
+      try {
+        const endsAt = new Date(Date.now() + 2 * 60 * 60 * 1000 + 30 * 1000).toISOString()
+        renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: endsAt }, false, approvedEntry())
+        expect(screen.getByText(/disputes close in 2h 0m/i)).toBeInTheDocument()
+
+        act(() => { vi.advanceTimersByTime(60 * 60 * 1000) })
+
+        expect(screen.getByText(/disputes close in 1h 0m/i)).toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('turns into "Result is final" and drops Dispute result on its own, with the page left open', () => {
@@ -475,11 +500,6 @@ describe('AdminMarketRow', () => {
 
     it('hides Dispute result on an approved market with no dispute window left', () => {
       renderRow({ ...DISPUTABLE_MARKET, dispute_window_ends_at: '2020-01-01T00:00:00Z' }, false, approvedEntry())
-      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
-    })
-
-    it('hides Dispute result on a market that is not approved', () => {
-      renderRow(OPEN_MARKET)
       expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
     })
 

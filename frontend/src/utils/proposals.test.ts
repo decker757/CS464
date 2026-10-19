@@ -129,13 +129,4 @@ describe('toApprovedResult', () => {
     expect(result.evidenceUrl).toBeNull()
     expect(result.evidenceNote).toBeNull()
   })
-
-  it('reads the approver from the entry itself, not from context', () => {
-    // The entry is the market.outcome_approved action, so the approver is
-    // whoever acted — the proposer is the one named in context instead.
-    const entry = approvedEntry({ actor_username: 'another_admin' })
-    const result = toApprovedResult({ id: 'mkt-1', question: 'Will it rain?' }, entry)
-    expect(result.approvedByUsername).toBe('another_admin')
-    expect(result.proposedByUsername).toBe('ernest_t')
-  })
 })

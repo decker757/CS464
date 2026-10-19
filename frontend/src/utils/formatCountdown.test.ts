@@ -1,14 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { disputeWindowOpen, formatCountdown } from './formatCountdown'
+import { disputeWindowOpen, formatAbsolute, formatCountdown } from './formatCountdown'
 
 // The absolute half is locale- and timezone-formatted (market-service.md's
 // dispute-screen notes, point 1, wants it beside the relative time because
-// the browser's clock can be wrong), so the expectation is built the same
-// way the function builds it rather than hardcoded for one timezone —
-// this file must pass in any timezone the test runner happens to be in.
+// the browser's clock can be wrong), so the cases below build their
+// expectation the way the function does and pass in any timezone the runner
+// is in. The format itself is pinned to a literal in the formatAbsolute block.
 function absolute(iso: string): string {
   return new Date(iso).toLocaleString('en-SG', { weekday: 'short', hour: '2-digit', minute: '2-digit' })
 }
+
+describe('formatAbsolute', () => {
+  it('writes the weekday and the 12-hour time, in the zone it is given', () => {
+    // A literal, so changing the weekday style, the locale or the hour cycle goes red.
+    expect(formatAbsolute('2026-09-17T11:12:00Z', 'Asia/Singapore')).toMatch(/^Thu 07:12\s+pm$/)
+  })
+})
 
 describe('formatCountdown', () => {
   it('shows hours and minutes when under a day remains', () => {
