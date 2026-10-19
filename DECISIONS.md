@@ -9872,7 +9872,7 @@ orderings and the partial case; each test fails with the cancel's
 
 **Decision.** After a commit that filled resting orders, the ledger publishes
 the commit's one `price` frame first and then one `order.update` message per
-fill, in fill order, each swallowing its own failure
+fill, in fill order, each publish swallowing its own Redis failure
 (`service/trading.py::_publish_order_updates`). The realtime service forwards
 each order message to every socket of its `user_id` and runs it through no
 version gate, neither the per-market one prices use nor one of its own.

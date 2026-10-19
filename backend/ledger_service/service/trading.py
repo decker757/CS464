@@ -713,7 +713,10 @@ async def _publish_order_updates(
 
     `transactions[i]` is the fill of `orders[i]`. An order fills at most once
     per commit (ADR 0024), so its row as committed is its state after that
-    fill. Each publish swallows its own failure, so one stops none of the rest.
+    fill. Only the Redis call is guarded: `bus.publish_order` swallows a failed
+    publish, so one stops none of the rest. Building a frame is not: if it
+    raised, the request would fail after its commit and skip the frames after
+    it.
     """
     for order, transaction in zip(orders, transactions, strict=True):
         event = _order_event_of(order, result_of(transaction), now=now)
