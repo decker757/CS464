@@ -6,8 +6,8 @@ price", decides the shape; the decisions under it are in DECISIONS.md: "An
 order is executable when its floored fill passes the per-fill limit check; a
 resting order is one that is not", "Priority is price, then an identity `seq`
 assigned under the book lock", "A placement that would cross the book is
-refused, `order_crosses_book`", and "The cascade takes the most aggressive
-executable order until none is left, and passes over an order it cannot fill".
+refused, `order_crosses_book`", and "The cascade loops until no waiting order
+is executable, and passes over an order it cannot fill".
 
 Only binary markets hold orders. The orders arrive as `RestingOrder`s, built
 by the service from its `Order` rows, because `core` cannot import `model`.
@@ -26,6 +26,8 @@ from core.errors import CostBelowTick, OrderCrossesBook, ProceedsBelowTick
 from core.lmsr import _engine_context
 from core.pricing import QUANTUM, Side, TradeCost, trade_cost_of
 
+# Exactly two, a different fact from the "at least two" of `lmsr._MIN_OUTCOMES`
+# and `books.MIN_OUTCOMES`: only a binary market puts every order on one price.
 _BINARY_OUTCOMES = 2
 
 
@@ -81,9 +83,10 @@ def _priority_of(order: RestingOrder) -> tuple[Decimal, int]:
     higher. The threshold is negated rather than the sort reversed, so that
     `seq` still breaks a tie upwards.
     """
-    # One key puts every up-pusher ahead of every down-pusher. Harmless: after
-    # a trade only one direction can be executable (ADR 0024, "Binary markets
-    # only, and no crossed book", Termination).
+    # One key puts every up-pusher ahead of every down-pusher, and nothing rests
+    # on that: ADR 0024 ranks orders only within a direction ("Price priority,
+    # then time"), and `cascade_of` ends because every pass takes an order out
+    # of `waiting`, not because of how the two directions sort.
     threshold = _threshold_of(
         outcome_index=order.outcome_index, limit_price=order.limit_price
     )
@@ -156,6 +159,8 @@ def fill_quantity_of(q: Sequence[Decimal], b: Decimal, order: RestingOrder) -> D
     at `order.remaining`; `0.0000` when the price is already past the limit or
     the floor leaves nothing. Raises `ValueError` unless the market has two
     outcomes.
+
+    Expects `0 < order.limit_price < 1`, which the orders table's CHECK holds.
     """
     if len(q) != _BINARY_OUTCOMES:
         raise ValueError(f"a limit order needs two outcomes, got {len(q)}")
@@ -224,7 +229,6 @@ def cascade_of(
                 break
         if next_fill is None:
             return fills
-        fill = next_fill
-        fills.append(fill)
-        waiting.remove(fill.order)
-        current = fill.cost.after_q
+        fills.append(next_fill)
+        waiting.remove(next_fill.order)
+        current = next_fill.cost.after_q
