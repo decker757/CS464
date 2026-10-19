@@ -76,7 +76,9 @@ async def _list_one_chunk(
     try:
         response = await auth_client.post(
             _LOOKUP_PATH,
-            headers={"X-Service-Key": get_settings().ledger_service_key},
+            headers={
+                "X-Service-Key": get_settings().ledger_service_key.get_secret_value()
+            },
             json={"user_ids": [str(user_id) for user_id in user_ids]},
         )
     # `RequestError`, as the account check: every failure under it means auth
