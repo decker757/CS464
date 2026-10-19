@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/fixtures'
 import { registerTrader } from './support/backend'
 import { logIn } from './support/browser'
 
@@ -15,11 +15,15 @@ test('the leaderboard renders a real ranking from the ledger', async ({ page }) 
   // (ADR 0009) — that is what makes this trader rankable, not a trade.
   await logIn(page, trader)
 
+  const myRow = page.locator('tr', { hasText: trader.username })
+  // A fresh trader only joins the board on its next refresh.
   await expect.poll(async () => {
     await page.goto('/leaderboard')
-    return page.getByText(/Updated .* ranked/).isVisible()
+    return myRow.isVisible()
   }, { timeout: 90_000, intervals: [5_000] }).toBe(true)
 
-  await expect(page.getByRole('table')).toBeVisible()
-  await expect(page.getByRole('row').first()).toBeVisible()
+  // A trader with no positions is ranked at their balance, STARTING_CREDITS
+  // (1000 in .env.example), so these come from the ledger's own figures.
+  await expect(myRow).toContainText('1,000.0000')
+  await expect(myRow).toContainText('(you)')
 })
