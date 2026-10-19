@@ -759,7 +759,10 @@ def _order_out(order: orders.OrderView) -> OrderOut:
         500: {
             "description": (
                 "`market_book_incomplete`: this service holds a book for the "
-                "market that cannot be priced. A server fault."
+                "market that cannot be priced. "
+                "`cascade_fill_refused`: the overdraft check refused a resting "
+                "order this placement's fill set off, which ADR 0024 makes "
+                "impossible; nothing was written. Both are server faults."
             )
         },
         503: {
