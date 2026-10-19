@@ -166,6 +166,7 @@ _FILL_KEY_PREFIX = "order-fill"
 
 
 def fill_key(order_id: uuid.UUID, state_version: int) -> str:
+    """The server-derived idempotency key of an order's fill at `state_version`."""
     return f"{_FILL_KEY_PREFIX}:{order_id}:{state_version}"
 
 
