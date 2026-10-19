@@ -5,8 +5,10 @@ import { errorCode } from '../../api/errors'
 import { approveOutcome, getMarket, rejectOutcome, type PublicMarketDetail } from '../../api/marketApi'
 import { useAuth } from '../../context/AuthContext'
 import AppLayout from '../../components/layout/AppLayout'
+import ResolutionDetails from '../../components/markets/ResolutionDetails'
 import BackLink from '../../components/ui/BackLink'
 import Button from '../../components/ui/Button'
+import ConfirmModal from '../../components/ui/ConfirmModal'
 import PageTitle from '../../components/ui/PageTitle'
 import ReasonModal from '../../components/ui/ReasonModal'
 import SectionCard from '../../components/ui/SectionCard'
@@ -25,6 +27,16 @@ const CODE_MESSAGES: Record<string, string> = {
 // These three codes mean somebody else settled it — reload rather than retry.
 const SUPERSEDING_CODES = new Set(['market_not_pending_resolution', 'market_already_approved', 'proposal_superseded'])
 
+// What the confirmation says before the approval is posted. It restates both
+// the winner and the question, because approving is the step that pays:
+// afterwards the only way back is Dispute result on the admin markets list,
+// inside the window the approval itself opens (ADR 0023).
+function approvalConfirmation(question: string, winningOutcome: string): string {
+  return `“${winningOutcome}” will be recorded as the outcome of “${question}”. `
+    + 'Payouts to holders of that outcome follow. The only way back afterwards is to '
+    + 'dispute the result, inside the dispute window that starts on approval.'
+}
+
 export default function DecideOutcomePage() {
   const { id } = useParams<{ id: string }>()
   const { user } = useAuth()
@@ -41,6 +53,7 @@ export default function DecideOutcomePage() {
 
   const [approving, setApproving] = useState(false)
   const [rejecting, setRejecting] = useState(false)
+  const [showApproveModal, setShowApproveModal] = useState(false)
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [reason, setReason] = useState('')
   const [formError, setFormError] = useState('')
@@ -82,6 +95,9 @@ export default function DecideOutcomePage() {
       setFormError((code && CODE_MESSAGES[code]) || 'Approval failed. Please try again.')
       setSuperseded(!!code && SUPERSEDING_CODES.has(code))
       setApproving(false)
+      // The error, and the Reload beside it, are on the page behind the
+      // dialog — the same reason rejection closes its own modal on failure.
+      setShowApproveModal(false)
     }
   }
 
@@ -176,6 +192,13 @@ export default function DecideOutcomePage() {
         </dl>
       </SectionCard>
 
+      {/* The rules the market was published under, above the evidence that
+          claims to meet them: the second administrator is approving a payout
+          against these, and they are what the traders were shown (#358). */}
+      <SectionCard title="How this market resolves" className="mb-5">
+        <ResolutionDetails market={market} />
+      </SectionCard>
+
       <SectionCard title="Evidence" className="mb-5">
         {proposal.evidenceUrl && (
           <p className="mb-2 text-[14px]">
@@ -208,13 +231,26 @@ export default function DecideOutcomePage() {
       )}
 
       <div className="flex items-center gap-3 pb-12">
-        <Button variant="primary" size="lg" onClick={handleApprove} disabled={isOwnProposal || approving || rejecting || superseded}>
+        <Button variant="primary" size="lg" onClick={() => setShowApproveModal(true)} disabled={isOwnProposal || approving || rejecting || superseded}>
           {approving ? 'Approving…' : 'Approve'}
         </Button>
         <Button variant="outline" size="lg" onClick={() => setShowRejectModal(true)} disabled={isOwnProposal || approving || rejecting || superseded}>
           Reject
         </Button>
       </div>
+
+      {showApproveModal && (
+        <ConfirmModal
+          ariaLabel="Approve outcome"
+          title="Approve this outcome?"
+          description={approvalConfirmation(market.question, proposal.winningOutcome)}
+          isSubmitting={approving}
+          confirmLabel="Confirm Approval"
+          confirmingLabel="Approving…"
+          onCancel={() => setShowApproveModal(false)}
+          onConfirm={handleApprove}
+        />
+      )}
 
       {showRejectModal && (
         <ReasonModal
