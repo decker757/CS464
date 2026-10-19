@@ -79,8 +79,10 @@ def _order(market_id: uuid.UUID, outcome_id: uuid.UUID, **over) -> Order:
             "ck_orders_filled_quantity_nonneg",
             id="filled_negative",
         ),
+        # Every row with a fill on it carries both rollups, or it would also
+        # break ck_orders_filled_quantity_iff_filled_value.
         pytest.param(
-            {"filled_quantity": Decimal("100.0001")},
+            {"filled_quantity": Decimal("100.0001"), "filled_value": Decimal("55.0000")},
             "ck_orders_filled_quantity_within_quantity",
             id="filled_past_quantity",
         ),
@@ -107,17 +109,34 @@ def _order(market_id: uuid.UUID, outcome_id: uuid.UUID, **over) -> Order:
             id="filled_value_negative",
         ),
         pytest.param(
-            {"filled_value": Decimal("60.0001")},
+            {"filled_quantity": Decimal("50.0000"), "filled_value": Decimal("60.0001")},
             "ck_orders_filled_value_within_budget",
             id="filled_value_past_budget",
         ),
+        # Shares filled for nothing, and credits spent on no shares: #397.
+        # The first is what would leave the reservation holding credits the
+        # fill has already spent.
         pytest.param(
-            {"filled_quantity": Decimal("100.0000")},
+            {"filled_quantity": Decimal("50.0000")},
+            "ck_orders_filled_quantity_iff_filled_value",
+            id="shares_filled_for_nothing",
+        ),
+        pytest.param(
+            {"filled_value": Decimal("30.0000")},
+            "ck_orders_filled_quantity_iff_filled_value",
+            id="value_filled_for_no_shares",
+        ),
+        pytest.param(
+            {"filled_quantity": Decimal("100.0000"), "filled_value": Decimal("55.0000")},
             "ck_orders_filled_iff_nothing_remains",
             id="open_with_nothing_remaining",
         ),
         pytest.param(
-            {"status": OrderStatus.FILLED, "filled_quantity": Decimal("20.5465")},
+            {
+                "status": OrderStatus.FILLED,
+                "filled_quantity": Decimal("20.5465"),
+                "filled_value": Decimal("12.0000"),
+            },
             "ck_orders_filled_iff_nothing_remains",
             id="filled_with_some_remaining",
         ),

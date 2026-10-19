@@ -17,6 +17,24 @@ from core.pricing import Side
 from model.entities import Order, OrderStatus
 
 
+def _rollups_of(
+    status: OrderStatus, *, filled_value: str, limit_price: str
+) -> tuple[Decimal, Decimal]:
+    """This order's `(filled_quantity, filled_value)`, which move together.
+
+    A filled order has its one share filled, and spent at the limit when the
+    caller named no value: `ck_orders_filled_quantity_iff_filled_value`
+    refuses a share filled for nothing. An open order has half a share filled
+    when anything has filled, and nothing filled otherwise.
+    """
+    value = Decimal(filled_value)
+    if status is OrderStatus.FILLED:
+        return Decimal("1.0000"), value if value > 0 else Decimal(limit_price)
+    if value > 0:
+        return Decimal("0.5000"), value
+    return Decimal("0.0000"), value
+
+
 async def add_order(
     session: AsyncSession,
     *,
@@ -33,20 +51,16 @@ async def add_order(
     A buy when `budget` is given, a sell when it is None. A single share at
     0.5000 lets any budget from 0.5000 up pass
     `ck_orders_budget_covers_the_limit`, so a test chooses the reservation,
-    `budget - filled_value`, directly. A filled order has its one share
-    filled, a cancelled one a cancel time, and an open one half a share
-    filled when anything has filled, so every CHECK on the table holds.
+    `budget - filled_value`, directly. The fills are `_rollups_of`'s and a
+    cancelled order gets a cancel time, so every CHECK on the table holds.
 
     `limit_price` is for a test that trades in the order's own market: an
     order the price has passed would fill in that trade's cascade.
     """
     order_status = OrderStatus(status)
-    if order_status is OrderStatus.FILLED:
-        filled_quantity = Decimal("1.0000")
-    elif Decimal(filled_value) > 0:
-        filled_quantity = Decimal("0.5000")
-    else:
-        filled_quantity = Decimal("0.0000")
+    filled_quantity, value_filled = _rollups_of(
+        order_status, filled_value=filled_value, limit_price=limit_price
+    )
 
     order = Order(
         user_id=user_id,
@@ -57,7 +71,7 @@ async def add_order(
         quantity=Decimal("1.0000"),
         filled_quantity=filled_quantity,
         budget=None if budget is None else Decimal(budget),
-        filled_value=Decimal(filled_value),
+        filled_value=value_filled,
         status=order_status,
         book_state_version=0,
         idempotency_key=f"order:{uuid.uuid4()}",
