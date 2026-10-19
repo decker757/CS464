@@ -33,7 +33,14 @@ from decimal import (
 
 import pytest
 
-from core.errors import CostBelowTick, OrderCrossesBook, ProceedsBelowTick
+from core.errors import (
+    CostBelowTick,
+    InsufficientSharesOutstanding,
+    LedgerError,
+    OrderCrossesBook,
+    ProceedsBelowTick,
+    QuantityTooLarge,
+)
 from core.limit_orders import (
     PlannedFill,
     RestingOrder,
@@ -563,11 +570,49 @@ def test_a_fill_on_a_market_with_three_outcomes_is_refused() -> None:
         fill_quantity_of(_q("1", "2", "3"), B, order)
 
 
+# A book the ledger should never hold: a sell of 89.7297 shares to its limit
+# with 5 outstanding, and a buy that would take `q` past `Numeric(18, 4)`.
+_BROKEN_BOOK_CASES = [
+    pytest.param(
+        _q("5", "0"),
+        _order(1, 0, side=Side.SELL, limit_price="0.30", remaining="1000"),
+        InsufficientSharesOutstanding,
+        id="insufficient_shares_outstanding",
+    ),
+    pytest.param(
+        _q("99999999999999", "99999999999999"),
+        _order(1, 0, side=Side.BUY, limit_price="0.60", remaining="1000"),
+        QuantityTooLarge,
+        id="quantity_too_large",
+    ),
+]
+
+
+@pytest.mark.parametrize(("q", "order", "refusal"), _BROKEN_BOOK_CASES)
+def test_a_fill_the_book_cannot_hold_raises_rather_than_waiting(
+    q: tuple[Decimal, ...], order: RestingOrder, refusal: type[LedgerError]
+) -> None:
+    """`executable_fill_of`'s docstring: these two mean the book or the order
+    is wrong, not that the order waits, so they are not passed over as `None`
+    the way a fill that prices to nothing is."""
+    with pytest.raises(refusal):
+        executable_fill_of(q, B, order)
+
+
 # --- the cascade -----------------------------------------------------------
 def test_a_cascade_with_no_resting_orders_plans_nothing_on_any_market() -> None:
     """Every trade runs the cascade, including a trade on a market with three
     outcomes, which holds no orders and must not be refused for it."""
     assert cascade_of(_q("1", "2", "3"), B, []) == []
+
+
+def test_a_cascade_with_an_order_on_a_market_with_three_outcomes_is_refused() -> None:
+    """`cascade_of`'s docstring: the refusal reaches its caller rather than
+    the order being passed over as not executable."""
+    order = _order(1, 0, side=Side.BUY, limit_price="0.5", remaining="1")
+
+    with pytest.raises(ValueError, match="two outcomes"):
+        cascade_of(_q("1", "2", "3"), B, [order])
 
 
 def test_one_big_trade_crosses_three_resting_orders_and_fills_them_by_price_then_seq() -> (
@@ -928,3 +973,24 @@ def test_orders_pushing_the_same_way_never_cross(
     )
 
     assert refused is False
+
+
+@pytest.mark.parametrize(
+    ("side", "direction"),
+    [
+        pytest.param(Side.BUY, "below", id="buy"),
+        pytest.param(Side.SELL, "above", id="sell"),
+    ],
+)
+def test_the_refusal_is_a_409_order_crosses_book_saying_which_way_the_limit_must_clear(
+    side: Side, direction: str
+) -> None:
+    """docs/api/ledger-service.md promises `409 order_crosses_book`, and the
+    status and the code live on the error class, so they are pinned here. The
+    message tells a buy to go below the bound and a sell above it; built from
+    a `Side`, as `refuse_if_crosses_book` builds it."""
+    refusal = OrderCrossesBook(side=side, bound=Decimal("0.62"))
+
+    assert isinstance(refusal, LedgerError)
+    assert (refusal.status_code, refusal.code) == (409, "order_crosses_book")
+    assert refusal.message.endswith(f"must be {direction} 0.62")
