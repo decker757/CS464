@@ -9545,3 +9545,37 @@ anchor column — never from `STARTING_CREDITS`, which can change without
 rewriting an entry. A seeded position (`settlement_fixtures.hold`) has a
 basis no entry paid for, so no derived P&L can reconcile against it; the
 #359 tests buy into their settled markets for real.
+
+---
+
+### D-NEW — A setting that can hold a credential is a `SecretStr`, URLs included
+
+**Date:** 2026-10-19 · **Ticket:** #307 · **Status:** active
+
+**Decision.** `jwt_secret`, `ledger_service_key`, every `database_url` and
+both `redis_url`s are typed `pydantic.SecretStr`, so a printed `Settings`
+shows `SecretStr('**********')` in their place. Each reader takes the value
+with `.get_secret_value()` at the point of use and hands on a plain `str`:
+the token signer and verifiers, the engine, the Redis clients and both sides
+of the `X-Service-Key` check. Nothing below that point sees the wrapper.
+
+**Why.** A `Settings` object is printed more often than anyone means it to
+be: pytest puts the target's repr in an `AttributeError` from
+`monkeypatch.setattr`, which is how #307 showed a developer's signing key in a
+test log, and any log line or exception that formats one does the same in a
+deploy. A URL counts because the form is `USER:PASSWORD@HOST`; the Redis URL
+counts because a deploy may give it a password, even though the default has
+none.
+
+**Rejected.** *`Field(repr=False)`*, the smaller change #307 offered for the
+URLs: it hides the field from `repr` and `str` and nothing else, so
+`model_dump()` and anything that serialises the model still print it. One rule
+for every credential is also easier to follow than two. *Masking only the
+password inside the URL*: it needs a parser per scheme and keeps half of a
+value nobody needs to read.
+
+**Notes.** A new setting that can hold a credential follows the same rule,
+and its service's `test_no_secret_appears_when_the_settings_are_printed`
+should name it. A test that replaces such a setting with `monkeypatch.setattr`
+passes a `SecretStr`, since assignment is not validated. The migrate step reads
+`DATABASE_URL` from the environment, not from `Settings`, and is unaffected.
