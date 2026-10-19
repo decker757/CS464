@@ -288,6 +288,21 @@ describe('AdminUserHistoryPage', () => {
       expect(screen.getByText(/up to 15 minutes/i)).toBeInTheDocument()
     })
 
+    it('says "1 minute", not "1 minutes", when the server allows a single minute', async () => {
+      mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+      mockEntries('trader-1', [])
+      mockSuspension('trader-1', () => HttpResponse.json(suspensionResponse({ takes_effect_within_seconds: 60 })))
+      const actor = userEvent.setup()
+      renderPage('trader-1')
+      await screen.findByRole('heading', { name: /trader-1/i })
+
+      await actor.click(screen.getByRole('button', { name: /^suspend$/i }))
+      await actor.type(screen.getByLabelText(/reason/i), 'Second account of the same person')
+      await actor.click(screen.getByRole('button', { name: /confirm suspend/i }))
+
+      expect(await screen.findByText(/up to 1 minute\./i)).toBeInTheDocument()
+    })
+
     it('unsuspends the account and drops the Suspended badge from the response', async () => {
       mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
       mockEntries('trader-1', [])
