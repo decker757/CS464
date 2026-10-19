@@ -31,7 +31,7 @@ export function useSuspension(userId: string, onChanged: (result: SuspensionResu
     incompleteCode: 'suspension_incomplete',
     codeMessages: CODE_MESSAGES,
     genericFailureMessage: 'That failed. Please try again.',
-    onDone: result => { setDirection(null); setReason(''); onChanged(result) },
+    onDone: result => { setDirection(null); resetReason(); onChanged(result) },
     onError: () => setDirection(null),
   })
 

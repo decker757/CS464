@@ -16,6 +16,21 @@ import { usePagedList } from '../../hooks/usePagedList'
 import { formatCreditsPrecise } from '../../utils/formatCredits'
 import { joinEntryPage, pagedEntryOptions } from '../../utils/ledgerEntries'
 
+interface ChangedUser {
+  userId: string
+  user: AdminUser
+  takesEffectWithinSeconds: number
+}
+
+// What the admin is told once a suspend or unsuspend has answered. Suspending
+// ends no session at once, so signed-in tokens live on; unsuspending brings
+// none back, so the user simply logs in again (auth-service.md).
+function describeChange(changed: ChangedUser | null, userId: string | undefined): string | null {
+  if (changed === null || changed.userId !== userId) return null
+  if (!changed.user.is_suspended) return 'They can log in again now.'
+  return `Anything already signed in may keep working for up to ${Math.ceil(changed.takesEffectWithinSeconds / 60)} minutes.`
+}
+
 // [FE][4.1] #57. Reading another user's balance and history never mints a
 // grant, unlike the /me routes a trader's own pages use (ledger-service.md):
 // a user who has not read their own yet shows a zero balance and an empty
@@ -33,12 +48,10 @@ export default function AdminUserHistoryPage() {
   // linkedUser once a suspend/unsuspend call answers, so the badge and the
   // control repaint from what the server actually did, not from router
   // state that may already be stale by then (useSuspension.ts).
-  const [changed, setChanged] = useState<{ userId: string; user: AdminUser; takesEffectWithinSeconds: number } | null>(null)
+  const [changed, setChanged] = useState<ChangedUser | null>(null)
   const changedUser = changed !== null && changed.userId === userId ? changed.user : null
   const currentUser = changedUser ?? linkedUser ?? null
-  const takesEffectNote = changed !== null && changed.userId === userId
-    ? `Anything already signed in may keep working for up to ${Math.ceil(changed.takesEffectWithinSeconds / 60)} minutes.`
-    : null
+  const takesEffectNote = describeChange(changed, userId)
 
   const { user: signedInUser } = useAuth()
   const canActOnThisAccount = userId !== undefined && userId !== signedInUser?.id
