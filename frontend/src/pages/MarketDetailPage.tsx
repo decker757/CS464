@@ -15,10 +15,6 @@ import { formatAbsolute, formatCountdown } from '../utils/formatCountdown'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
-// setTimeout overflows a 32-bit int at ~24.8 days; a close further out than
-// that gets no timer, since the page will be refetched long before then.
-const MAX_TIMEOUT_MS = 2 ** 31 - 1
-
 // Why trading is closed, for a market that cannot be traded right now.
 function closedMessage(status: MarketStatus): string {
   if (status === 'pending_resolution') return 'Trading is closed while the outcome is decided.'
@@ -45,17 +41,17 @@ export default function MarketDetailPage() {
   // Tagged with the market id it was loaded for, so moving to another market
   // shows that one loading rather than the last one's market or error.
   const [loaded, setLoaded] = useState<{ id: string; market: PublicMarketDetail | null; failed: boolean } | null>(null)
-  // The market whose close_time has passed while this page was open. An id
-  // rather than a flag, so it cannot carry over to the next market.
-  const [closedMarketId, setClosedMarketId] = useState<string | null>(null)
 
   const current = loaded?.id === id ? loaded : null
   const market = current?.market ?? null
   const loading = current === null
   const error = current?.failed ?? false
-  const pastClose = market !== null && closedMarketId === market.id
 
   const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null)
+  // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
+  // so the controls lock the moment close_time passes, without a refetch.
+  const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
+  const pastClose = market !== null && !closeTimeStillAhead
   // Re-evaluates the instant the dispute window closes, rather than only at
   // whatever render happens to run next — an approved market has no trades
   // to force one, so without this "Disputes close in 3h" could sit on
@@ -71,21 +67,6 @@ export default function MarketDetailPage() {
     )
     return () => { cancelled = true }
   }, [id])
-
-  // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
-  // so the controls lock the moment close_time passes, without a refetch.
-  const marketId = market?.id
-  const closeTime = market?.close_time
-  useEffect(() => {
-    if (!marketId || !closeTime) return
-    const ms = new Date(closeTime).getTime() - Date.now()
-    if (ms > MAX_TIMEOUT_MS) return
-    // A close_time already past still goes through a 0 ms timer: calling
-    // setState directly in the effect is what the set-state-in-effect lint
-    // rule forbids, so do not "simplify" this back to an early setState.
-    const timer = setTimeout(() => setClosedMarketId(marketId), Math.max(ms, 0))
-    return () => clearTimeout(timer)
-  }, [marketId, closeTime])
 
   const tradeable = market?.status === 'open' && !pastClose
 

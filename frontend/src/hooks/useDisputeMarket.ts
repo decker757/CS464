@@ -28,14 +28,14 @@ export function useDisputeMarket(marketId: string, proposalId: string | null, on
   const [showDisputeModal, setShowDisputeModal] = useState(false)
 
   const {
-    reason, setReason, submitting, formError, reasonError, superseded, canConfirm, handleConfirm: handleDispute,
+    reason, setReason, submitting, formError, reasonError, superseded, canConfirm, handleConfirm: handleDispute, resetReason,
   } = useReasonAction({
     submit: reason => sendBackOutcome(marketId, proposalId, reason),
     incompleteCode: 'send_back_incomplete',
     codeMessages: CODE_MESSAGES,
     supersedingCodes: SUPERSEDING_CODES,
     genericFailureMessage: 'Sending this result back failed. Please try again.',
-    onDone: () => { setShowDisputeModal(false); setReason(''); onSentBack() },
+    onDone: () => { setShowDisputeModal(false); resetReason(); onSentBack() },
     onError: () => setShowDisputeModal(false),
   })
 

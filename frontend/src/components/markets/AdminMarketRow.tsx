@@ -134,14 +134,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
           />
         )}
         {disputeError && (
-          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <span>{disputeError}</span>
-            {disputeSuperseded && (
-              <Button variant="outline" size="xs" onClick={() => window.location.reload()}>
-                Reload
-              </Button>
-            )}
-          </div>
+          <RowError message={disputeError} onReload={disputeSuperseded ? () => window.location.reload() : undefined} />
         )}
       </div>
       <div className="flex shrink-0 items-center gap-3">

@@ -4,6 +4,7 @@ import { getMarketOverview, type MarketOverview, type MarketOverviewRow } from '
 import AppLayout from '../../components/layout/AppLayout'
 import AdminMarketRow from '../../components/markets/AdminMarketRow'
 import { STATUS_CONFIG, type AdminMarketStatus } from '../../components/markets/marketStatus'
+import Button from '../../components/ui/Button'
 import FilterPill from '../../components/ui/FilterPill'
 import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
@@ -95,7 +96,7 @@ export default function AdminMarketsPage() {
       {approvalsError && (
         <div role="alert" className="mb-3 flex items-center gap-2 text-sm text-danger">
           <span>Failed to load dispute controls for approved markets.</span>
-          <button type="button" className="underline" onClick={() => window.location.reload()}>Reload</button>
+          <Button variant="outline" size="xs" onClick={() => window.location.reload()}>Reload</Button>
         </div>
       )}
 
