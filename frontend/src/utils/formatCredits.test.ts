@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, unsignedCredits } from './formatCredits'
+import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, signedAmountColor, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -158,5 +158,18 @@ describe('isZeroCredits', () => {
     expect(isZeroCredits('0.0001')).toBe(false)
     expect(isZeroCredits('-0.0001')).toBe(false)
     expect(isZeroCredits('5.0000')).toBe(false)
+  })
+})
+
+describe('signedAmountColor', () => {
+  it('keeps an exact zero neutral, so a portfolio nobody has traded reads flat', () => {
+    // [B-1] #376 and ADR 0018: zero is neither a gain nor a loss, so an
+    // untouched signup grant must not come out red, and a fresh position's
+    // unrealized P&L must not come out green. The gain and the loss are
+    // here as the contrast that makes "neutral" mean something.
+    expect(signedAmountColor('0.0000')).toBe('text-muted')
+    expect(signedAmountColor('-0.0000')).toBe('text-muted')
+    expect(signedAmountColor('0.0001')).toBe('text-success')
+    expect(signedAmountColor('-0.0001')).toBe('text-danger')
   })
 })
