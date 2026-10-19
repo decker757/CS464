@@ -54,8 +54,8 @@ const SURFACES: Record<string, Colour> = {
 }
 
 // Every token the app puts text in. Each is held to AA on both surfaces, so a
-// token that moves to a new screen is already safe there. `success-strong` is
-// Badge-only today and is held to the same line anyway.
+// token that moves to a new screen is already safe there. `success-strong` and
+// `danger-strong` are Badge-only today and are held to the same line anyway.
 const TEXT_TOKENS = [
   'smu-navy',
   'smu-gold-text',
@@ -63,6 +63,7 @@ const TEXT_TOKENS = [
   'muted',
   'subtle',
   'danger',
+  'danger-strong',
   'success',
   'success-strong',
   'warning',
@@ -78,6 +79,7 @@ const SURFACE_ONLY = ['smu-gold', 'smu-cream', 'line', 'track', 'surface-muted']
 
 // `Badge`: 11px bold text on a 10% tint of its own tone, on either surface.
 const BADGE_TONES = [
+  { tone: 'danger', text: 'danger-strong', tint: 'danger' },
   { tone: 'success', text: 'success-strong', tint: 'success' },
   { tone: 'neutral', text: 'secondary', tint: 'muted' },
   { tone: 'warning', text: 'warning-strong', tint: 'warning' },

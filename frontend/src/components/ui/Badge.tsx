@@ -7,7 +7,7 @@ const TONES: Record<Tone, string> = {
   neutral: 'border-muted/25 bg-muted/10 text-secondary',
   warning: 'border-warning/25 bg-warning/10 text-warning-strong',
   info: 'border-info/25 bg-info/10 text-info-strong',
-  danger: 'border-danger/25 bg-danger/10 text-danger',
+  danger: 'border-danger/25 bg-danger/10 text-danger-strong',
 }
 
 /** A small uppercase pill for a status. */
