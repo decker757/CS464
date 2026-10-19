@@ -1080,7 +1080,8 @@ or from `GET .../snapshot` instead.
   reserved by your own buy orders cannot pay for a trade. It is `available`
   before the trade, even when the trade's cascade then fills one of your buy
   orders and frees what it held. `error.details` gains `reserved` and
-  `available` beside `balance` and `required`. Built.
+  `available` beside `balance` and `required`. The check and the details are
+  built; the cascade is not yet ([T-7] #27), so no trade fills a buy order.
 - `insufficient_shares_held` is checked against your position less the shares
   your live sell orders in that outcome reserve. `error.details` gains
   `reserved` beside `held` and `requested`. Built.
