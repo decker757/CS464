@@ -7,7 +7,7 @@ import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import PageTitle from '../components/ui/PageTitle'
 import { HeaderCell, NumberCell } from '../components/ui/Table'
-import { formatCreditsPrecise, signedAmountColor } from '../utils/formatCredits'
+import { formatAveragePrice, formatCreditsPrecise, signedAmountColor } from '../utils/formatCredits'
 import { formatPrice } from '../utils/formatPrice'
 import { labelsFor, loadMarketsById } from '../utils/marketLabels'
 
@@ -107,7 +107,7 @@ export default function PortfolioPage() {
                       </td>
                       <td className="px-5 py-3 text-muted">{row.outcomeLabel}</td>
                       <NumberCell>{row.quantity}</NumberCell>
-                      <NumberCell>{row.average_entry_price}</NumberCell>
+                      <NumberCell>{formatAveragePrice(row.average_entry_price)}</NumberCell>
                       <NumberCell>{formatCreditsPrecise(row.cost_basis)}</NumberCell>
                       <NumberCell>{row.price === null ? NOT_VALUED : formatPrice(row.price)}</NumberCell>
                       <NumberCell>{row.value === null ? NOT_VALUED : formatCreditsPrecise(row.value)}</NumberCell>

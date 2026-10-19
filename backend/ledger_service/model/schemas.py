@@ -467,6 +467,25 @@ class PreviewOut(BaseModel):
         ),
         examples=["0.7315"],
     )
+    payout_if_wins: Decimal | None = Field(
+        description=(
+            "What this buy pays if its outcome wins: the quantity at scale 4, "
+            "because a winning share pays one credit. This trade alone, not "
+            "the position it adds to. Null on a sell, which is paid `total` "
+            "now and has nothing left to win."
+        ),
+        examples=["10.0000"],
+    )
+    profit_if_wins: Decimal | None = Field(
+        description=(
+            "`payout_if_wins` less the credits this buy costs, which is "
+            "`payout_if_wins + total`, exact at scale 4 with no rounding of "
+            "its own. Can be zero or a tick below on a buy charged its whole "
+            "quantity, such as the smallest buys or a buy of an outcome "
+            "priced near one. Null on a sell."
+        ),
+        examples=["2.6848"],
+    )
 
     prices: list[OutcomePriceOut] = Field(
         description="The market's current price, every outcome, ordered by position."
@@ -481,6 +500,10 @@ class PreviewOut(BaseModel):
     @field_serializer("quantity", "total", "average_price")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+    @field_serializer("payout_if_wins", "profit_if_wins")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
 
 
 class TradeIn(BaseModel):
