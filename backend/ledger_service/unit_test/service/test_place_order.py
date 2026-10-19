@@ -15,6 +15,7 @@ contract's example, `b = 100` at `q = [20, 0]`, where a buy of outcome 0 at
 
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
 
@@ -24,9 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
     AccountSuspended,
+    CascadeFillRefused,
     IdempotencyKeyReused,
     InsufficientFunds,
     InsufficientSharesHeld,
+    LedgerError,
     MarketClosed,
     MarketNotBinary,
     OrderCrossesBook,
@@ -423,6 +426,7 @@ def test_a_start_of_batch_refusal_of_a_sell_placement_is_passed_on_unchanged() -
     a batch debits and a sell's fill credits the placer; this keeps the
     rewrite safe if that changes."""
     refusal = InsufficientFunds(
+        account_id=uuid.uuid4(),
         balance=Decimal("10.0000"),
         reserved=Decimal("12.0000"),
         available=Decimal("-2.0000"),
@@ -1012,6 +1016,54 @@ async def test_a_placement_that_fills_runs_the_cascade_after_its_own_fill(
     assert len(recorder.calls) == 1
     assert '"state_version":2' in payload
     await assert_ledger_balances(session)
+
+
+async def test_a_refused_fill_of_another_owners_order_in_a_placements_cascade_is_a_500(
+    session: AsyncSession, starting_credits: Decimal, caplog: pytest.LogCaptureFixture
+) -> None:
+    """D-NEW "A fill the running check refuses inside a cascade is `500
+    cascade_fill_refused`", on a placement's cascade as on a trade's: the
+    placer is not shown another trader's balance.
+
+    The book is broken as in the test above, and the broken order's budget is
+    one credit more than its owner holds, so `posting` refuses the owner's
+    account at the start of the batch, as it refuses a placer whose budget
+    does not fit. Told apart by the account refused, the placer gets a 500
+    with no figures in it, and the ledger logs the refusal; taken for the
+    placer's own, it would be a 409 carrying the owner's balance and
+    reservation, `available` 3.7000. Nothing is written."""
+    upstream = await _example_market(session)
+    owner, placer = await _funded(session), await _funded(session)
+    await add_order(
+        session,
+        user_id=owner,
+        market_id=upstream.market_id,
+        outcome_id=upstream.outcomes[1],
+        budget=str(starting_credits + 1),
+    )
+    await session.commit()
+    before = await _committed_counts(upstream)
+    recorder = Recorder()
+
+    with caplog.at_level(logging.ERROR, logger="service.trading"):
+        with pytest.raises(LedgerError) as refusal:
+            await place(
+                session,
+                upstream,
+                user_id=placer,
+                outcome=1,
+                limit_price=Decimal("0.4700"),
+                quantity=Decimal("10.0000"),
+                redis_client=recorder,
+            )
+    await session.rollback()
+
+    assert type(refusal.value) is CascadeFillRefused
+    assert [record.levelno for record in caplog.records if record.name == "service.trading"] == [
+        logging.ERROR
+    ]
+    assert await _committed_counts(upstream) == before
+    assert recorder.calls == []
 
 
 async def test_a_placement_whose_commit_fails_writes_nothing(
