@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,6 +10,7 @@ import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
 const SNAPSHOT = 'http://localhost:8003/ledger/markets/:id/snapshot'
+const PORTFOLIO = 'http://localhost:8003/ledger/portfolio/me'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
@@ -31,6 +33,19 @@ const baseMarket = {
   seed_subsidy: '250.0000',
   published_at: '2026-09-13T14:12:03Z',
   proposed_outcome_id: null,
+}
+
+// The trader's own positions, which the page reads for the sell clamp
+// (#357). `position` carries only the three fields the page joins on.
+function portfolio(positions: { market_id: string; outcome_id: string; quantity: string }[] = []) {
+  return {
+    user_id: '1',
+    account_id: 'acct-1',
+    balance: '1000.0000',
+    positions_value: '0.0000',
+    net_worth: '1000.0000',
+    positions: positions.map(p => ({ ...p, outcome_position: 0, cost_basis: '0.0000', average_entry_price: '0.5000', price: '0.5000', value: '0.0000', unrealized_pnl: '0.0000', result: null, payout: null, state_version: 1 })),
+  }
 }
 
 // MSW WebSocket link for the realtime price socket. Silently accepts
@@ -98,6 +113,8 @@ describe('MarketDetailPage', () => {
       http.get(SNAPSHOT, () =>
         HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 }),
       ),
+      // No positions unless a test serves some.
+      http.get(PORTFOLIO, () => HttpResponse.json(portfolio())),
     )
   })
 
@@ -164,6 +181,29 @@ describe('MarketDetailPage', () => {
     renderPage()
     expect(await screen.findByRole('button', { name: /^buy$/i })).toBeInTheDocument()
     expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
+  })
+
+  // The panel's sell clamp needs the trader's position on *this* market and
+  // outcome, and the portfolio route carries every market's (#357). The join
+  // is this page's job, so only this test can catch it reading the wrong row.
+  it('gives the trading panel the holding on this market and outcome', async () => {
+    server.use(
+      http.get(PORTFOLIO, () => HttpResponse.json(portfolio([
+        { market_id: 'mkt-abc', outcome_id: 'o2', quantity: '6.0000' },
+        // Another market, and an outcome id this market also has: a lookup
+        // that forgets the market would read 99 shares of Yes here.
+        { market_id: 'mkt-other', outcome_id: 'o1', quantity: '99.0000' },
+      ]))),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
+
+    expect(await screen.findByText(/you hold 0\.0000 shares/i)).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: 'No' }))
+
+    expect(screen.getByText(/you hold 6\.0000 shares/i)).toBeInTheDocument()
   })
 
   it('shows trading closed message for closed markets', async () => {
@@ -286,6 +326,23 @@ describe('MarketDetailPage', () => {
   describe('at the close time', () => {
     afterEach(() => {
       vi.useRealTimers()
+    })
+
+    // #357's fourth finding: the status column still reads `open` until the
+    // sweep writes CLOSED a few seconds later (ADR 0011), so a badge read
+    // straight off it sits above the words "Trading is closed" saying Open.
+    it('shows a closed badge during the sweep window, while the column still says open', async () => {
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, status: 'open', close_time: '2025-08-09T12:00:00Z' }),
+        ),
+      )
+      renderPage()
+      await screen.findByText(baseMarket.question)
+
+      expect(screen.getByText('Closed')).toBeInTheDocument()
+      expect(screen.queryByText('Open')).not.toBeInTheDocument()
+      expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
     })
 
     it('shows trading closed for an open market whose close time has passed', async () => {
