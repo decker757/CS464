@@ -229,7 +229,6 @@ def cascade_of(
                 break
         if next_fill is None:
             return fills
-        fill = next_fill
-        fills.append(fill)
-        waiting.remove(fill.order)
-        current = fill.cost.after_q
+        fills.append(next_fill)
+        waiting.remove(next_fill.order)
+        current = next_fill.cost.after_q
