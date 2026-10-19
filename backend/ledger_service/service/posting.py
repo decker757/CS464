@@ -295,14 +295,18 @@ def _transaction_of(
 
 
 def _has_malformed_drop(movement: Movement) -> bool:
-    """A reservation drop below zero, or one on a movement without exactly one
-    USER account to lower: either would move the overdraft floor wrongly."""
+    """A reservation drop below zero, one on a movement without exactly one
+    USER account to lower, or one on a movement that does not debit that
+    account. Only a buy-order fill drops a reservation, and it debits its
+    buyer (ADR 0024), so each of these is a bug in the caller."""
     if movement.reservation_drop == ZERO:
         return False
-    return (
-        movement.reservation_drop < ZERO
-        or len(_user_account_ids_of(movement.legs)) != 1
-    )
+    user_account_ids = _user_account_ids_of(movement.legs)
+    if movement.reservation_drop < ZERO or len(user_account_ids) != 1:
+        return True
+    (account_id,) = user_account_ids
+    _, net = _net_by_account(movement.legs)[account_id]
+    return net >= ZERO
 
 
 def _refuse_if_malformed_batch(movements: list[Movement]) -> None:
