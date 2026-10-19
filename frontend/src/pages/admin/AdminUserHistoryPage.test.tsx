@@ -304,6 +304,11 @@ describe('AdminUserHistoryPage', () => {
 
       await screen.findByRole('heading', { name: /alice/i })
       expect(screen.queryByText('Suspended')).not.toBeInTheDocument()
+      // Suspending ended every session and unsuspending brings none back
+      // (auth-service.md), so there is nothing left that keeps working for
+      // fifteen minutes; the user just logs in again.
+      expect(screen.getByText(/they can log in again now/i)).toBeInTheDocument()
+      expect(screen.queryByText(/15 minutes/i)).not.toBeInTheDocument()
     })
 
     it('shows a field-level error on a reason the server rejects, the same shape as close\'s, and keeps the modal open', async () => {
