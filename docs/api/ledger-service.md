@@ -646,6 +646,8 @@ nothing beyond the public market read, so there is no admin gate.
   "quantity": "10.0000",
   "total": "-7.3152",
   "average_price": "0.7315",
+  "payout_if_wins": "10.0000",
+  "profit_if_wins": "2.6848",
   "prices": [
     { "outcome_id": "4f2a...", "position": 0, "price": "0.7216" },
     { "outcome_id": "b7e1...", "position": 1, "price": "0.2784" }
@@ -664,6 +666,20 @@ arrive). `average_price` is never negative — the direction already lives on
 `total` — and is `abs(total) / quantity`, `ROUND_HALF_UP` at scale 4. It is a
 display figure derived from the authoritative total, never the other way
 round: [T-2] #22 charges `total`, never `quantity * average_price`.
+
+**`payout_if_wins` and `profit_if_wins` answer "what do I get if I am
+right"**, for this trade alone and never the position it adds to. On a buy,
+`payout_if_wins` is the quantity at scale 4, because a winning share pays one
+credit, and `profit_if_wins` is that payout minus the credits the buy costs:
+`payout_if_wins + total`, exact, with no rounding of its own. In the example,
+`10.0000 - 7.3152 = 2.6848`. Render both as they arrive; do not recompute
+either from `quantity` or `average_price`. On a buy charged its whole
+quantity, such as the smallest buys or a buy of an outcome priced near one,
+the profit can be `0.0000` or a tick below it.
+
+On a **sell** both are `null`: a sell is paid its `total` now and gives up the
+shares that would have paid out, so it has nothing to receive if the outcome
+wins.
 
 **`average_price` can be exactly `1.0000`, and on a skewed book a little
 more — do not render it as a fraction of a credit.** A share is worth less

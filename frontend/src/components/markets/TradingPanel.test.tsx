@@ -83,7 +83,10 @@ describe('TradingPanel', () => {
 
     const preview = await screen.findByLabelText('trade preview')
     expect(preview).toHaveTextContent('5.1250 credits')
-    expect(preview).toHaveTextContent('51.3%')
+    // Average price is credits per share, not a probability (#247): shown at
+    // the same precision as every other credits figure, never as a percentage.
+    expect(preview).toHaveTextContent('0.5125')
+    expect(preview).not.toHaveTextContent('51.3%')
   })
 
   it('shows how the trade moves the selected outcome\'s price', async () => {
@@ -98,6 +101,20 @@ describe('TradingPanel', () => {
 
     const preview = await screen.findByLabelText('trade preview')
     expect(preview).toHaveTextContent('50.0% → 47.5%')
+  })
+
+  it('shows an average price above 1.0000 on a skewed book, not clamped to a percentage', async () => {
+    // ledger-service.md: average_price can pass 1.0000 on a heavily skewed
+    // book. A percentage has no way to render that, which is why this field
+    // is never formatted as one.
+    mockPreview(previewResponse({ total: '-20.0000', average_price: '2.0000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+
+    await typeQuantity(actor, '10')
+
+    const preview = await screen.findByLabelText('trade preview')
+    expect(preview).toHaveTextContent('2.0000')
   })
 
   it('does not fetch a preview before the debounce settles', async () => {
