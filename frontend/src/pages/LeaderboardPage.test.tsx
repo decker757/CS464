@@ -58,8 +58,9 @@ describe('LeaderboardPage', () => {
     expect(screen.getByText('1,431.3568')).toBeInTheDocument()
     expect(screen.getAllByText('1,003.8689')).toHaveLength(2)
 
-    const rows = screen.getAllByRole('row')
-    expect(rows[1]).toHaveTextContent('1')
+    // The rank cell itself, so a digit in the net worth cannot satisfy it.
+    const bodyRows = screen.getAllByRole('row').slice(1)
+    expect(bodyRows.map(row => (row as HTMLTableRowElement).cells[0].textContent)).toEqual(['1', '2', '3'])
   })
 
   it('ranks from highest to lowest net worth, in the server\'s own order', async () => {
