@@ -42,7 +42,7 @@ from unit_test.service.test_place_order import (
     _funded,
 )
 from unit_test.settlement_fixtures import admin, entries_naming
-from unit_test.trade_fixtures import transaction_count
+from unit_test.trade_fixtures import count_commits, transaction_count
 
 NOTHING = Decimal("0.0000")
 REASON = "The owner is suspended; releasing what the order holds."
@@ -186,6 +186,20 @@ async def test_the_cancel_appends_order_cancelled_by_admin_naming_the_actor_the_
     assert entry["context"] == {"user_id": str(owner), "market_id": str(upstream.market_id)}
     assert entry["source_service"] == "ledger_service"
     assert entry["occurred_at"] == row.cancelled_at
+
+
+async def test_an_administrators_cancel_and_its_audit_entry_commit_exactly_once(
+    session: AsyncSession,
+) -> None:
+    """#326: the entry is written "in the cancel's transaction (ADR 0006)".
+    Counted on the engine's connections, as the settlement's one commit is: a
+    cancel committed before its entry is appended makes two."""
+    _, _, order_id = await _resting(session)
+
+    with count_commits() as commits:
+        await cancellation.cancel(session, order_id, user_id=None, admin=_by_admin())
+
+    assert commits[0] == 1
 
 
 async def test_the_owners_own_cancel_appends_no_audit_entry(
