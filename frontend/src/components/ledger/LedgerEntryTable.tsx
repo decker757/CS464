@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { HeaderCell, NumberCell } from '../ui/Table'
-import { formatCreditsPrecise, signedAmountColor } from '../../utils/formatCredits'
+import { formatAveragePrice, formatCreditsPrecise, signedAmountColor } from '../../utils/formatCredits'
 import { kindLabel, type EntryRow } from '../../utils/ledgerEntries'
 
 function EntryDescription({ row }: { row: EntryRow }) {
@@ -40,8 +40,7 @@ export default function LedgerEntryTable({ rows }: { rows: EntryRow[] }) {
               <td className="px-5 py-3 text-muted">{new Date(row.created_at).toLocaleString('en-SG')}</td>
               <td className="px-5 py-3"><EntryDescription row={row} /></td>
               <NumberCell>{row.quantity ?? '—'}</NumberCell>
-              {/* Credits per share, not a probability: it can reach 1 or pass it on a skewed book (ledger-service.md). */}
-              <NumberCell>{row.average_price ? formatCreditsPrecise(row.average_price) : '—'}</NumberCell>
+              <NumberCell>{row.average_price ? formatAveragePrice(row.average_price) : '—'}</NumberCell>
               <NumberCell>
                 <span className={signedAmountColor(row.amount)}>{formatCreditsPrecise(row.amount, { showSign: true })}</span>
               </NumberCell>
