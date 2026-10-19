@@ -54,31 +54,40 @@ export default function ModalShell({ ariaLabel, title, description, onClose, isS
   }, [])
 
   useEffect(() => {
-    // Escape listens on the document rather than the panel: a click on the
-    // backdrop leaves focus on no element at all, and the key still has to
-    // work afterwards.
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !isSubmitting) onClose()
+    // Both keys listen on the document rather than the panel, because focus
+    // does not stay in the panel by itself: a Confirm button that disables
+    // itself on submit is blurred by the browser, and an ignored backdrop
+    // click blurs too, both leaving focus on <body>. A panel-scoped handler
+    // never runs again from there, and one Tab would reach the navbar behind
+    // the overlay, which is neither disabled nor inert.
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (!isSubmitting) onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const panel = panelRef.current
+      if (!panel) return
+      const focusable = focusableIn(panel)
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const focused = document.activeElement
+      const isInPanel = focused instanceof Node && panel.contains(focused)
+      if (!isInPanel) {
+        event.preventDefault()
+        first.focus()
+      } else if (event.shiftKey && focused === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && focused === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
-    document.addEventListener('keydown', handleEscape)
-    return () => document.removeEventListener('keydown', handleEscape)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
   }, [isSubmitting, onClose])
-
-  const handlePanelKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key !== 'Tab') return
-    const focusable = focusableIn(panelRef.current)
-    if (focusable.length === 0) return
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    const focused = document.activeElement
-    if (event.shiftKey && (focused === first || focused === panelRef.current)) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && focused === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
 
   // Only the backdrop itself dismisses: a click that started on the panel
   // bubbles up to here as well, and must not close the dialog.
@@ -94,7 +103,6 @@ export default function ModalShell({ ariaLabel, title, description, onClose, isS
         aria-modal="true"
         aria-label={ariaLabel}
         tabIndex={-1}
-        onKeyDown={handlePanelKeyDown}
         className="w-full max-w-[480px] rounded-2xl border border-smu-gold/15 bg-white p-6 shadow-card"
       >
         <h2 className="mb-1 text-[17px] font-bold text-smu-navy">{title}</h2>
