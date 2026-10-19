@@ -79,7 +79,7 @@ class BalanceOut(BaseModel):
         examples=["940.0000"],
     )
 
-    @field_serializer("balance")
+    @field_serializer("balance", "reserved", "available")
     def _as_string(self, value: Decimal) -> str:
         """Exact on the wire. See the note at the top of this module."""
         return str(value)
