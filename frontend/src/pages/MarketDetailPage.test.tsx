@@ -317,6 +317,75 @@ describe('MarketDetailPage', () => {
     })
   })
 
+  // [FE][3.3] #59: the countdown is display only (market-service.md's
+  // dispute-screen notes, point 1) — shown on an approved market, nowhere else.
+  describe('the dispute window countdown', () => {
+    it('shows time left and the absolute instant for an approved market', async () => {
+      const endsAt = new Date(Date.now() + 5 * 60 * 60 * 1000 + 12 * 60 * 1000).toISOString()
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, status: 'approved', proposed_outcome_id: 'o1', settleable: false, dispute_window_ends_at: endsAt }),
+        ),
+      )
+      renderPage()
+      expect(await screen.findByText(/disputes close in 5h 1[12]m/i)).toBeInTheDocument()
+    })
+
+    it('shows the result is final once the window has passed, with the closed instant so a wrong clock is visible', async () => {
+      const endsAt = new Date(Date.now() - 1000).toISOString()
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, status: 'approved', proposed_outcome_id: 'o1', settleable: true, dispute_window_ends_at: endsAt }),
+        ),
+      )
+      renderPage()
+      expect(await screen.findByText(/result is final; payout pending \(closed .+\)\./i)).toBeInTheDocument()
+    })
+
+    it('shows no countdown for a market that is not approved, even with a live window', async () => {
+      // Everything else is what an approved market has, so the status is the
+      // only thing that can be hiding the countdown. With the default fixture
+      // there is no window at all and the gate is never what does the work.
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({
+            ...baseMarket,
+            status: 'closed',
+            proposed_outcome_id: 'o1',
+            dispute_window_ends_at: new Date(Date.now() + 300_000).toISOString(),
+          }),
+        ),
+      )
+      renderPage()
+      await screen.findByText(baseMarket.question)
+      expect(screen.queryByText(/disputes close in/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/result is final/i)).not.toBeInTheDocument()
+    })
+
+    it('turns into "Result is final" on its own, with the page left open', async () => {
+      // An approved market with no trades gets no price frame to force a
+      // re-render, so without a timer this could sit on screen for hours
+      // after the window actually closed.
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        const endsAt = new Date(Date.now() + 1000).toISOString()
+        server.use(
+          http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+            HttpResponse.json({ ...baseMarket, status: 'approved', proposed_outcome_id: 'o1', settleable: false, dispute_window_ends_at: endsAt }),
+          ),
+        )
+        renderPage()
+        expect(await screen.findByText(/disputes close in/i)).toBeInTheDocument()
+
+        await act(() => vi.advanceTimersByTimeAsync(1001))
+
+        expect(screen.getByText(/result is final; payout pending \(closed .+\)\./i)).toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   it('shows a reconnecting indicator when the connection drops', async () => {
     let wsClient: { close(code?: number): void } | null = null
     server.use(

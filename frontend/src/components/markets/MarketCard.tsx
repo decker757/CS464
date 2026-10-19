@@ -1,9 +1,10 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { OutcomePrice } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import { formatPrice } from '../../utils/formatPrice'
 import Card from '../ui/Card'
-import { formatCloseTime } from './marketStatus'
+import { formatCloseCountdown, tradingStopped } from './marketStatus'
 import StatusBadge from './StatusBadge'
 
 interface MarketCardProps {
@@ -12,13 +13,33 @@ interface MarketCardProps {
   prices?: OutcomePrice[]
 }
 
+// How often the card re-reads the clock. The countdown's smallest unit is a
+// minute, so ten seconds keeps it honest to within a tick without re-rendering
+// the grid every second.
+const COUNTDOWN_TICK_MS = 10_000
+
 export default function MarketCard({ market, prices }: MarketCardProps) {
+  // A countdown computed once at render freezes, and a frozen one says a market
+  // is still trading after it has closed. Trading stops on the clock, not when
+  // the sweep writes CLOSED (ADR 0011), so the card keeps its own clock.
+  const [now, setNow] = useState(() => new Date())
+  // A market that has already stopped reads "Closed" for as long as the tab is
+  // open, so there is nothing for a clock to change. The last tick before this
+  // turns true is the one that writes "Closed", and it stops the clock itself.
+  const hasStopped = tradingStopped(market.status, market.close_time, now)
+
+  useEffect(() => {
+    if (hasStopped) return
+    const ticker = setInterval(() => setNow(new Date()), COUNTDOWN_TICK_MS)
+    return () => clearInterval(ticker)
+  }, [hasStopped])
+
   return (
     <Link to={`/markets/${market.id}`} className="block">
       <Card interactive className="h-full cursor-pointer px-6 py-5">
         <div className="mb-3 flex items-center justify-between gap-2">
           <StatusBadge status={market.status} />
-          <span className="text-right text-xs text-subtle">{formatCloseTime(market.status, market.close_time)}</span>
+          <span className="text-right text-xs text-subtle">{formatCloseCountdown(market.status, market.close_time, now)}</span>
         </div>
         <p className="text-[15px] leading-normal font-semibold text-smu-navy">{market.question}</p>
         {/* Wraps onto more rows for a market with many outcomes (up to ten). */}

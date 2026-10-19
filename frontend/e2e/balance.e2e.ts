@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/fixtures'
 import { registerTrader } from './support/backend'
 import { logIn } from './support/browser'
 

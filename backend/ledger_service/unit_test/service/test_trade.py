@@ -26,6 +26,8 @@ from unit_test.conftest import (
     strip_outcomes,
     terms_client_over,
 )
+from unit_test.market_fixtures import market_with_outcomes
+from unit_test.order_fixtures import add_order
 from unit_test.trade_fixtures import (
     B,
     Q,
@@ -465,6 +467,7 @@ async def test_the_context_carries_everything_the_response_is_rebuilt_from(
         "quantity",
         "total",
         "state_version",
+        "book_state_version",
     }
     assert context["user_id"] == str(user_id)
     assert context["market_id"] == str(upstream.market_id)
@@ -473,6 +476,8 @@ async def test_the_context_carries_everything_the_response_is_rebuilt_from(
     assert Decimal(str(context["quantity"])) == QUANTITY
     assert Decimal(str(context["total"])) == trade.total
     assert int(context["state_version"]) == trade.state_version
+    # No resting order filled, so the counter after the cascade is the same.
+    assert context["book_state_version"] == trade.state_version
 
 
 async def test_the_response_is_what_the_one_builder_makes_of_the_transaction(
@@ -512,8 +517,8 @@ async def test_the_response_carries_no_prices(session: AsyncSession) -> None:
 async def test_the_book_row_is_locked_before_any_account_row(
     session: AsyncSession,
 ) -> None:
-    """D-015: book row before account rows, since `post` runs inside the book
-    lock. The first `FOR UPDATE` names `market_books`.
+    """D-015: book row before account rows, since `post_all` runs inside the
+    book lock. The first `FOR UPDATE` names `market_books`.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()
@@ -652,6 +657,42 @@ async def test_an_insufficient_balance_is_refused_and_writes_nothing(
         is None
     )
     assert await _committed_state(lambda s: balance_of_user(s, user_id)) == credits
+
+
+async def test_credits_a_buy_order_reserves_cannot_pay_for_a_trade(
+    session: AsyncSession,
+) -> None:
+    """ADR 0024: `insufficient_funds` is checked against `available`, not
+    `balance`. The trader's buy order in another market leaves one tick less
+    available than the trade costs, though the balance covers it; the refusal
+    says what is reserved and what was available."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    credits = await fund(session, user_id)
+    cost = -expected_total(Q, 0, "buy", QUANTITY)
+    assert cost <= credits
+    budget = credits - cost + Decimal("0.0001")
+    elsewhere, outcome_ids = await market_with_outcomes(session, liquidity_b=B)
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=elsewhere,
+        outcome_id=outcome_ids[0],
+        budget=str(budget),
+    )
+    await session.commit()
+    before = await entry_count(session)
+
+    with pytest.raises(errors().InsufficientFunds) as refusal:
+        await buy(session, upstream, user_id=user_id, quantity=QUANTITY)
+    await session.rollback()
+
+    assert refusal.value.balance == credits
+    assert refusal.value.required == cost
+    assert refusal.value.reserved == budget
+    assert refusal.value.available == cost - Decimal("0.0001")
+    assert await _committed_state(entry_count) == before
 
 
 async def test_an_unknown_outcome_is_refused_and_writes_nothing(

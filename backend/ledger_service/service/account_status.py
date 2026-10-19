@@ -12,12 +12,16 @@ transport so the suite drives the real request through `httpx.MockTransport`.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from core.database import release_before_calling_out
 from core.errors import AccountSuspended, AuthUnavailable, NotAuthenticated
+
+logger = logging.getLogger(__name__)
 
 # Stated rather than inherited, as the terms client's is (D-030). Its own
 # constant: the two dependencies' budgets may reasonably diverge.
@@ -71,7 +75,7 @@ async def refuse_if_suspended(
     | --- | --- |
     | `200` | nothing |
     | `403` with code `account_suspended` | `AccountSuspended` |
-    | `401` | `NotAuthenticated` |
+    | `401` | `NotAuthenticated`, and a WARNING |
     | anything else, or no answer | `AuthUnavailable` |
 
     **Call this with nothing pending and no row lock held**: it rolls back
@@ -93,6 +97,10 @@ async def refuse_if_suspended(
     if response.status_code == 200:
         return
     if response.status_code == 401:
+        # This service accepted the token before asking, so auth refusing it
+        # means the two disagree about it: a signing key, an issuer or a
+        # clock. Every request would then fail 401 with nothing else logged.
+        logger.warning("auth answered 401 to a token this service accepted")
         raise NotAuthenticated
     if response.status_code == 403 and _is_suspension(response):
         raise AccountSuspended

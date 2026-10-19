@@ -8,13 +8,17 @@ what the wire looks like.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
 
 from core.roles import UserRole
+from model.entities import MarketResult, ResultKind
 from unit_test.conftest import bearer
+from unit_test.market_fixtures import market_with_outcomes
+from unit_test.order_fixtures import add_order
 
 ME = "/ledger/balances/me"
 MY_ENTRIES = "/ledger/entries/me"
@@ -129,6 +133,7 @@ async def test_an_admin_read_of_an_id_with_no_account_is_zero_with_no_account(
     assert balance.status_code == entries.status_code == 200
     assert balance.json()["account_id"] is None
     assert balance.json()["balance"] == "0.0000"
+    assert balance.json()["reserved"] == balance.json()["available"] == "0.0000"
     assert entries.json()["entries"] == []
 
 
@@ -160,6 +165,102 @@ async def test_the_balance_is_a_string_not_a_number(
     body = (await client.get(ME, headers=trader_headers)).json()
 
     assert isinstance(body["balance"], str)
+
+
+async def test_a_user_with_no_orders_reserves_nothing_and_has_it_all_available(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """ADR 0024's balance contract: `reserved` and `available` are decimal
+    strings at scale 4 like `balance`, so a user with no orders reads
+    "0.0000", not "0"."""
+    body = (await client.get(ME, headers=trader_headers)).json()
+
+    assert body["reserved"] == "0.0000"
+    assert body["available"] == body["balance"]
+
+
+async def test_the_balance_route_reports_what_open_buy_orders_reserve(
+    client: AsyncClient,
+    session,
+    trader_headers: dict[str, str],
+    admin_headers: dict[str, str],
+    user_id: uuid.UUID,
+    starting_credits: Decimal,
+) -> None:
+    """ADR 0024: `balance` keeps its meaning and still counts reserved
+    credits; `reserved` is what the user's live buy orders could still spend,
+    and `available` is the difference. The admin route returns the same
+    figures."""
+    await client.get(ME, headers=trader_headers)
+    market_id, outcome_ids = await market_with_outcomes(
+        session, liquidity_b=Decimal("100.0000")
+    )
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=market_id,
+        outcome_id=outcome_ids[0],
+        budget="48.1848",
+    )
+    await session.commit()
+
+    own = (await client.get(ME, headers=trader_headers)).json()
+    admin = (await client.get(_user(user_id), headers=admin_headers)).json()
+
+    assert Decimal(own["balance"]) == starting_credits
+    assert own["reserved"] == "48.1848"
+    assert Decimal(own["available"]) == starting_credits - Decimal("48.1848")
+    assert (admin["balance"], admin["reserved"], admin["available"]) == (
+        own["balance"],
+        own["reserved"],
+        own["available"],
+    )
+
+
+async def test_the_balance_route_does_not_count_an_order_on_a_settled_market(
+    client: AsyncClient,
+    session,
+    trader_headers: dict[str, str],
+    user_id: uuid.UUID,
+) -> None:
+    """The live-order rule through the route's own statement, where the
+    reservation is a subquery inside the balance read: an order still `open`
+    on a market with a result reserves nothing. A live order beside it, in
+    another market, keeps the figure from being zero either way."""
+    await client.get(ME, headers=trader_headers)
+    live_market_id, live_outcome_ids = await market_with_outcomes(
+        session, liquidity_b=Decimal("100.0000")
+    )
+    settled_market_id, settled_outcome_ids = await market_with_outcomes(
+        session, liquidity_b=Decimal("100.0000")
+    )
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=live_market_id,
+        outcome_id=live_outcome_ids[0],
+        budget="48.1848",
+    )
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=settled_market_id,
+        outcome_id=settled_outcome_ids[0],
+        budget="20.0000",
+    )
+    session.add(
+        MarketResult(
+            market_id=settled_market_id,
+            kind=ResultKind.SETTLED,
+            outcome_id=settled_outcome_ids[0],
+            recorded_at=datetime.now(UTC),
+        )
+    )
+    await session.commit()
+
+    body = (await client.get(ME, headers=trader_headers)).json()
+
+    assert body["reserved"] == "48.1848"
 
 
 
@@ -287,8 +388,9 @@ async def test_there_is_no_write_route(
     client: AsyncClient, admin_headers: dict[str, str], method: str, path: str
 ) -> None:
     """No route writes entries or transactions directly, and none edits or
-    removes one. The two write routes are the trade and the settlement, and
-    neither takes money (ADR 0009's amendments).
+    removes one. The four write routes are the trade, the placement, the
+    cancel and the settlement, and none takes money (ADR 0009's amendments,
+    ADR 0024).
     """
     response = await getattr(client, method)(path, headers=admin_headers)
 

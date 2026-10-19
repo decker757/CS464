@@ -1,8 +1,10 @@
 # Realtime service
 
-Live market prices over a WebSocket. Subscribes to one Redis channel, fans each
-price event out to the sockets watching that market, and drops anything older
-than what it has already sent.
+Live market prices over a WebSocket. Subscribes to one Redis channel for prices,
+fans each price event out to the sockets watching that market, and drops
+anything older than what it has already sent. A second channel, `order.update`,
+carries each fill of a resting order to every socket its owner has open, with
+no subscription ([T-7] #27, ADR 0024).
 
 [F-2] #42. Foundational infrastructure for [T-2] #22 and [T-3] #23 (which
 publish) and [X-4] #37 (which subscribes).
@@ -136,17 +138,19 @@ also what keeps delivery ordered per socket — firing a task per send would not
 block either, and would reintroduce the reordering `service/ordering.py` exists
 to prevent, one layer lower.
 
-**Nothing in `PriceBus._dispatch` may raise.** It runs inside the `listen` loop,
-and an exception escaping would tear down the subscription for every connected
-client on this replica because one producer sent one bad frame. A malformed
+**Nothing in `PriceBus._dispatch` or `_dispatch_order` may raise.** Both run
+inside the `listen` loop, and an exception escaping would tear down the
+subscription for every connected client on this replica because one producer
+sent one bad frame. A malformed
 payload is logged at warning and dropped; `test_bus.py` publishes five kinds of
 rubbish and then a good event to prove the loop survived.
 
 ## The staleness guard, and why the client still needs its own
 
-`service/ordering.py` drops any event not strictly newer than the last this
-process forwarded for that market. That covers a duplicate from a producer retry
-and a redelivery after a Redis reconnect.
+`service/ordering.py` drops any price event not strictly newer than the last
+this process forwarded for that market. That covers a duplicate from a producer
+retry and a redelivery after a Redis reconnect. Order frames skip it:
+`docs/api/realtime-service.md`, "Order updates", says why.
 
 It is **not** the client's guarantee, and [X-4] #37 has to do the same check.
 Two cases this cannot cover: a client's snapshot can be newer than an event

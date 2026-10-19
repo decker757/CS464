@@ -1,0 +1,126 @@
+// Vitest stubs a CSS import to an empty string, so the stylesheet is read off
+// disk. `tsconfig.json` does not list `node` in `types`; this file needs it.
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+
+// The colour tokens in `index.css`, measured. WCAG 2.1 asks for 4.5:1 between
+// text under 18px and whatever is behind it, and every size in this app is
+// under 18px. The ratios are read out of the stylesheet rather than written
+// down here, so lightening a token fails this file. [#360]
+// https://www.w3.org/TR/WCAG21/#contrast-minimum
+const AA_SMALL_TEXT = 4.5
+
+/** An sRGB colour, each channel 0–1. */
+type Colour = [number, number, number]
+
+function parseHex(hex: string): Colour {
+  const digits = hex.replace('#', '')
+  return [0, 2, 4].map((at) => parseInt(digits.slice(at, at + 2), 16) / 255) as Colour
+}
+
+/** Every `--color-*` token declared in the `@theme` block, by name. */
+function readColourTokens(): Record<string, Colour> {
+  // Vitest runs from the frontend root, beside `vite.config.ts`.
+  const stylesheet = readFileSync('src/index.css', 'utf8')
+  const tokens: Record<string, Colour> = {}
+  for (const [, name, hex] of stylesheet.matchAll(/--color-([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) {
+    tokens[name] = parseHex(hex)
+  }
+  return tokens
+}
+
+function relativeLuminance([red, green, blue]: Colour): number {
+  const linearise = (channel: number) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  return 0.2126 * linearise(red) + 0.7152 * linearise(green) + 0.0722 * linearise(blue)
+}
+
+function contrastRatio(foreground: Colour, background: Colour): number {
+  const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)]
+    .sort((a, b) => b - a)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+/** What `bg-<colour>/<alpha>` actually looks like once it is over a surface. */
+function tintOver(colour: Colour, surface: Colour, alpha: number): Colour {
+  return colour.map((channel, at) => channel * alpha + surface[at] * (1 - alpha)) as Colour
+}
+
+const tokens = readColourTokens()
+const SURFACES: Record<string, Colour> = {
+  'a white card': [1, 1, 1],
+  'the cream page': tokens['smu-cream'],
+}
+
+// Every token the app puts text in. Each is held to AA on both surfaces, so a
+// token that moves to a new screen is already safe there. `success-strong` and
+// `danger-strong` are Badge-only today and are held to the same line anyway.
+const TEXT_TOKENS = [
+  'smu-navy',
+  'smu-gold-text',
+  'secondary',
+  'muted',
+  'subtle',
+  'danger',
+  'danger-strong',
+  'success',
+  'success-strong',
+  'warning',
+  'warning-strong',
+  'info',
+  'info-strong',
+]
+
+// Tokens that are never text: the two page surfaces, hairline borders, a bar
+// track, and the brand gold, which is 3.20:1 on cream and is the whole reason
+// `--color-smu-gold-text` exists.
+const SURFACE_ONLY = ['smu-gold', 'smu-cream', 'line', 'track', 'surface-muted']
+
+// `Badge`: 11px bold text on a 10% tint of its own tone, on either surface.
+const BADGE_TONES = [
+  { tone: 'danger', text: 'danger-strong', tint: 'danger' },
+  { tone: 'success', text: 'success-strong', tint: 'success' },
+  { tone: 'neutral', text: 'secondary', tint: 'muted' },
+  { tone: 'warning', text: 'warning-strong', tint: 'warning' },
+  { tone: 'info', text: 'info-strong', tint: 'info' },
+]
+
+// Without this, a token added later is simply absent from the lists above and
+// nothing below ever measures it.
+it('sorts every colour token into text or surface', () => {
+  expect(Object.keys(tokens).sort()).toEqual([...TEXT_TOKENS, ...SURFACE_ONLY].sort())
+})
+
+describe('text on a page surface', () => {
+  it.each(
+    TEXT_TOKENS.flatMap((token) =>
+      Object.keys(SURFACES).map((surface) => ({ token, surface })),
+    ),
+  )('$token on $surface', ({ token, surface }) => {
+    expect(contrastRatio(tokens[token], SURFACES[surface])).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})
+
+describe('badge text on its own tint', () => {
+  it.each(
+    BADGE_TONES.flatMap((badge) =>
+      Object.keys(SURFACES).map((surface) => ({ ...badge, surface })),
+    ),
+  )('$tone over its tint on $surface', ({ text, tint, surface }) => {
+    const background = tintOver(tokens[tint], SURFACES[surface], 0.1)
+    expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})
+
+describe('the gold button', () => {
+  it('reads navy on the brand gold', () => {
+    expect(contrastRatio(tokens['smu-navy'], tokens['smu-gold'])).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+
+  // Hovering lightens the gold to 90%, so the surface behind it shows through.
+  it.each(Object.keys(SURFACES))('still reads on hover, over %s', (surface) => {
+    const hovered = tintOver(tokens['smu-gold'], SURFACES[surface], 0.9)
+    expect(contrastRatio(tokens['smu-navy'], hovered)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})

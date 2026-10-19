@@ -20,7 +20,7 @@ from core.paging import Position, decode_cursor, encode_cursor, page_cut_of
 from core.pricing import QUANTUM, Side, per_share
 from model.entities import Account, AccountKind, Entry, Transaction, TransactionKind
 from model.schemas import MarketTradeOut, TradeFields
-from service import accounts, books, grants, trading
+from service import accounts, books, grants, reservations, trading
 
 # Kind -> Side for the two trade kinds. Every other kind, the dict has nothing
 # to say about, which is exactly "any other kind renders with them null".
@@ -32,7 +32,8 @@ _TRADE_SIDE_OF_KIND = {
 
 @dataclass(frozen=True)
 class UserBalance:
-    """What a user holds, and the account it was derived from.
+    """What a user holds, what their buy orders reserve of it, and the account
+    it was derived from.
 
     `account_id` is None only on an administrator's read of an id this ledger
     has never opened an account for.
@@ -40,6 +41,13 @@ class UserBalance:
 
     account_id: uuid.UUID | None
     amount: Decimal
+    reserved: Decimal
+
+    @property
+    def available(self) -> Decimal:
+        """What a new buy, buy order or trade can spend: the balance less the
+        reservation (ADR 0024)."""
+        return self.amount - self.reserved
 
 
 @dataclass(frozen=True)
@@ -342,14 +350,28 @@ def _market_trade_of(row: Row[_TradeRow]) -> MarketTradeOut:
     )
 
 
+async def _balance_of_account(session: AsyncSession, account: Account) -> UserBalance:
+    """The account's balance and its owner's reservation, in one statement so
+    both come from one snapshot: two would let a fill that commits between
+    them report credits as available that are not."""
+    stmt = select(
+        accounts.balance_query_of(account_id=account.id).scalar_subquery(),
+        reservations.reserved_query_of(account.owner_id).scalar_subquery(),
+    )
+    amount, reserved = (await session.execute(stmt)).one()
+    return UserBalance(
+        account_id=account.id, amount=amount, reserved=reserved.quantize(QUANTUM)
+    )
+
+
 async def balance_of_user(session: AsyncSession, user_id: uuid.UUID) -> UserBalance:
-    """What this user holds right now, derived from their entries. [B-2] #33.
+    """What this user holds right now, derived from their entries, and what
+    their buy orders reserve. [B-2] #33, ADR 0024.
 
     Mints the starting grant if this is the user's first read. [B-1] #32.
     """
     account = await grants.ensure_granted(session, user_id)
-    amount = await accounts.balance_of(session, account.id)
-    return UserBalance(account_id=account.id, amount=amount)
+    return await _balance_of_account(session, account)
 
 
 async def history_for_user(
@@ -379,10 +401,11 @@ async def balance_for_admin(session: AsyncSession, user_id: uuid.UUID) -> UserBa
     """
     account = await accounts.find(session, AccountKind.USER, user_id)
     if account is None:
-        return UserBalance(account_id=None, amount=Decimal(0).quantize(QUANTUM))
+        # No account, so no order either: a placement mints the grant first.
+        zero = Decimal(0).quantize(QUANTUM)
+        return UserBalance(account_id=None, amount=zero, reserved=zero)
 
-    amount = await accounts.balance_of(session, account.id)
-    return UserBalance(account_id=account.id, amount=amount)
+    return await _balance_of_account(session, account)
 
 
 async def history_for_admin(

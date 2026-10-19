@@ -3,7 +3,8 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import type { AdminAction } from '../../api/auditApi'
 import type { MarketOverviewRow } from '../../api/marketApi'
 import type { User } from '../../context/AuthContext'
 import { holdUntilReleased } from '../../test/holdUntilReleased'
@@ -12,25 +13,42 @@ import { server } from '../../test/server'
 import AdminMarketsPage from './AdminMarketsPage'
 
 const OVERVIEW = 'http://localhost:8001/markets/overview'
+const ACTIONS = 'http://localhost:8002/audit/actions'
+
+// Most tests in this file don't care about the Dispute control's data — an
+// empty page is a harmless default for every row that is not approved, and
+// the dispute-result describe block below overrides it for the ones that are.
+beforeEach(() => {
+  server.use(
+    http.get(ACTIONS, () => HttpResponse.json({ actions: [], next_cursor: null, has_more: false })),
+  )
+})
 
 const admin: User = { id: 'u1', username: 'admin1', email: 'admin@smu.edu.sg', role: 'admin', created_at: '2026-01-01' }
 
 const OTHER_ADMIN_ID = 'u2'
 
+// Every row carries settleable/dispute_window_ends_at regardless of status
+// (market-service.md); false/null fits every status in this fixture set
+// unless a test overrides it for a market past its dispute window.
+function row(overrides: Partial<Pick<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>> & Omit<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>): MarketOverviewRow {
+  return { settleable: false, dispute_window_ends_at: null, ...overrides }
+}
+
 // The admin's own markets, one in each status, in the order the server sends
 // them: soonest close first, no close time last.
 const mockMarkets: MarketOverviewRow[] = [
-  { id: 'd4', creator_id: admin.id, status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z' },
-  { id: 'f6', creator_id: admin.id, status: 'approved', question: 'Did it rain yesterday?', close_time: '2025-05-01T00:00:00Z' },
-  { id: 'e5', creator_id: admin.id, status: 'pending_resolution', question: 'Will it rain?', close_time: '2025-06-01T00:00:00Z' },
-  { id: 'c3', creator_id: admin.id, status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z' },
-  { id: 'b2', creator_id: admin.id, status: 'submitted', question: 'Will X happen?', close_time: '2099-03-01T00:00:00Z' },
-  { id: 'a1', creator_id: admin.id, status: 'draft', question: 'Untitled draft', close_time: null },
+  row({ id: 'd4', creator_id: admin.id, status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z' }),
+  row({ id: 'f6', creator_id: admin.id, status: 'approved', question: 'Did it rain yesterday?', close_time: '2025-05-01T00:00:00Z' }),
+  row({ id: 'e5', creator_id: admin.id, status: 'pending_resolution', question: 'Will it rain?', close_time: '2025-06-01T00:00:00Z' }),
+  row({ id: 'c3', creator_id: admin.id, status: 'open', question: 'Will SMU win SUNIG?', close_time: '2099-01-05T12:00:00Z' }),
+  row({ id: 'b2', creator_id: admin.id, status: 'submitted', question: 'Will X happen?', close_time: '2099-03-01T00:00:00Z' }),
+  row({ id: 'a1', creator_id: admin.id, status: 'draft', question: 'Untitled draft', close_time: null }),
 ]
 
 type Counts = Record<MarketOverviewRow['status'], number>
 
-const ONE_OF_EACH: Counts = { draft: 1, submitted: 1, open: 1, closed: 1, pending_resolution: 1, approved: 1 }
+const ONE_OF_EACH: Counts = { draft: 1, submitted: 1, open: 1, closed: 1, pending_resolution: 1, approved: 1, settled: 0 }
 
 // Under StrictMode, as main.tsx renders the app: its double mount asks for page
 // one twice, which is what a page that keeps a late answer gets wrong.
@@ -51,7 +69,7 @@ function renderPage() {
 
 // The counts the server would send for these rows: every status, zero when none.
 function countsOf(markets: MarketOverviewRow[]): Counts {
-  const counts: Counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0 }
+  const counts: Counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0, settled: 0 }
   for (const market of markets) counts[market.status] += 1
   return counts
 }
@@ -99,7 +117,7 @@ describe('AdminMarketsPage', () => {
   it('marks only the markets the signed-in admin created as theirs', async () => {
     mockList([
       ...mockMarkets,
-      { id: 'x9', creator_id: OTHER_ADMIN_ID, status: 'pending_resolution', question: 'Another admin\'s market?', close_time: '2025-07-01T00:00:00Z' },
+      row({ id: 'x9', creator_id: OTHER_ADMIN_ID, status: 'pending_resolution', question: 'Another admin\'s market?', close_time: '2025-07-01T00:00:00Z' }),
     ])
     renderPage()
     const theirs = await screen.findByText('Another admin\'s market?')
@@ -204,11 +222,24 @@ describe('AdminMarketsPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('offers a Settled filter tab with its own count, distinct from Approved', async () => {
+    // [FE][3.4] #216: settled is a status everywhere statuses are shown or
+    // filtered, and must read apart from approved, which still awaits payout.
+    mockList([
+      row({ id: 'h8', creator_id: admin.id, status: 'settled', question: 'Did the match go to overtime?', close_time: '2025-04-01T00:00:00Z', settleable: true }),
+    ])
+    renderPage()
+
+    await screen.findByText('Did the match go to overtime?')
+    expect(tab(/^settled/i)).toHaveTextContent(/^Settled 1$/)
+    expect(tab(/^approved/i)).toHaveTextContent(/^Approved 0$/)
+  })
+
   it('does not show a future closing date on a market closed early', async () => {
     // An admin can close a market before its close_time, and close_time stays
     // in the future — so the row must go by the status, not only the clock.
     mockList([
-      { id: 'g7', creator_id: admin.id, status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z' },
+      row({ id: 'g7', creator_id: admin.id, status: 'closed', question: 'Closed early by an admin?', close_time: '2099-01-05T12:00:00Z' }),
     ])
     renderPage()
     await screen.findByText('Closed early by an admin?')
@@ -221,7 +252,7 @@ describe('AdminMarketsPage', () => {
     // Only the creator may propose; for anyone else the request is a 404.
     mockList([
       ...mockMarkets,
-      { id: 'y8', creator_id: OTHER_ADMIN_ID, status: 'closed', question: 'Another admin\'s closed market?', close_time: '2025-02-01T00:00:00Z' },
+      row({ id: 'y8', creator_id: OTHER_ADMIN_ID, status: 'closed', question: 'Another admin\'s closed market?', close_time: '2025-02-01T00:00:00Z' }),
     ])
     renderPage()
     await screen.findByText('Another admin\'s closed market?')
@@ -465,5 +496,65 @@ describe('AdminMarketsPage', () => {
 
     expect(await screen.findByText('Will it rain?')).toBeInTheDocument()
     expect(screen.getAllByText('Did it rain yesterday?')).toHaveLength(1)
+  })
+
+  // [FE][3.3] #59: the Dispute control needs the latest market.outcome_approved
+  // entry for its proposal_id and content, fetched once for the page rather
+  // than once per approved row.
+  describe('the dispute control\'s audit lookup', () => {
+    function approvedAction(overrides: Partial<AdminAction> = {}): AdminAction {
+      return {
+        id: 'a1',
+        occurred_at: '2026-01-01T00:00:00Z',
+        actor_id: 'admin-2',
+        actor_username: 'ihsan_b',
+        actor_role: 'admin',
+        action_type: 'market.outcome_approved',
+        target_type: 'market',
+        target_id: 'f6',
+        target_label: 'Did it rain yesterday?',
+        reason: null,
+        context: { proposal_id: 'prop-1', winning_outcome: 'Yes' },
+        source_service: 'market_service',
+        ...overrides,
+      }
+    }
+
+    it('does not call audit/actions when no row on the page is approved', async () => {
+      let calls = 0
+      server.use(http.get(ACTIONS, () => { calls += 1; return HttpResponse.json({ actions: [], next_cursor: null, has_more: false }) }))
+      mockList(mockMarkets.filter(m => m.status !== 'approved'))
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+      expect(calls).toBe(0)
+    })
+
+    it('calls audit/actions once when an approved row is on the page, and wires its entry into the row', async () => {
+      let calls = 0
+      server.use(
+        http.get(ACTIONS, ({ request }) => {
+          calls += 1
+          expect(new URL(request.url).searchParams.get('action_type')).toBe('market.outcome_approved')
+          return HttpResponse.json({ actions: [approvedAction()], next_cursor: null, has_more: false })
+        }),
+      )
+      mockList(mockMarkets.map(m => m.id === 'f6' ? { ...m, dispute_window_ends_at: '2099-01-01T00:00:00Z' } : m))
+      renderPage()
+
+      await screen.findByText('Did it rain yesterday?')
+
+      expect(await screen.findByRole('button', { name: /dispute result/i })).toBeInTheDocument()
+      expect(calls).toBe(1)
+    })
+
+    it('shows an error rather than a silently missing Dispute control when the audit fetch fails', async () => {
+      server.use(http.get(ACTIONS, () => HttpResponse.error()))
+      mockList(mockMarkets.map(m => m.id === 'f6' ? { ...m, dispute_window_ends_at: '2099-01-01T00:00:00Z' } : m))
+      renderPage()
+      await screen.findByText('Did it rain yesterday?')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/dispute controls/i)
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
   })
 })

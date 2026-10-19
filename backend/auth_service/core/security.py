@@ -79,7 +79,9 @@ def create_access_token(user_id: uuid.UUID, username: str, role: UserRole) -> st
         "exp": now + timedelta(seconds=settings.access_token_ttl_seconds),
         "jti": secrets.token_urlsafe(16),
     }
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return jwt.encode(
+        payload, settings.jwt_secret.get_secret_value(), algorithm=settings.jwt_algorithm
+    )
 
 
 def decode_access_token(token: str) -> TokenClaims | None:
@@ -91,7 +93,7 @@ def decode_access_token(token: str) -> TokenClaims | None:
     settings = get_settings()
     return _shared.decode_access_token(
         token,
-        secret=settings.jwt_secret,
+        secret=settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
         issuer=settings.jwt_issuer,
     )

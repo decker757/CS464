@@ -18,7 +18,7 @@ LOOKUP = "/internal/users/lookup"
 
 
 def _key() -> dict[str, str]:
-    return {"X-Service-Key": get_settings().ledger_service_key}
+    return {"X-Service-Key": get_settings().ledger_service_key.get_secret_value()}
 
 
 @pytest.fixture
@@ -99,6 +99,19 @@ async def test_an_administrators_access_token_does_not_open_it(
 
 async def test_the_key_does_not_open_another_route(client: AsyncClient) -> None:
     response = await client.get("/admin/users", headers=_key())
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_the_key_does_not_open_the_admin_lookup(
+    client: AsyncClient, registered_id: str
+) -> None:
+    """The route most likely to be widened to take the key too: it answers
+    the same question. [2.4] #273 is an administrator's, the key is the ledger's."""
+    response = await client.post(
+        "/admin/users/lookup", json={"user_ids": [registered_id]}, headers=_key()
+    )
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "invalid_token"

@@ -2299,8 +2299,8 @@ supplied by the trader, so it needs no number chosen here, and it refuses
 exactly the trades that actually got worse rather than every trade that
 happened to follow another one.
 
-*Amended 2026-10-17. Proposed by ADR 0024, and not built yet.* This rule
-covers trades, not limit-order placements. A placement takes no
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+This rule covers trades, not limit-order placements. A placement takes no
 `state_version`: its limit is what protects the trader, and a quoted version
 would refuse an order because the price moved, which is what a limit order
 exists to tolerate. The trade route keeps the rule unchanged. See "A
@@ -2384,11 +2384,11 @@ re-reads the balance anyway. A separate `trades` table to hold the response — 
 second source of truth for something `context` already holds inside the right
 commit.
 
-*Amended 2026-10-17. Proposed by ADR 0024, and not built yet.* `context` gains
-an eighth key, `book_state_version`, the book's counter after the trade and
-its cascade, and the response returns it. A fill's `context` also carries
-`order_id`. The response still carries no prices. See "The trade response
-carries `book_state_version`, and still no prices".
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+`context` gains an eighth key, `book_state_version`, the book's counter after
+the trade and its cascade, and the response returns it. A fill's `context` also
+carries `order_id`. The response still carries no prices. See "The trade
+response carries `book_state_version`, and still no prices".
 
 ---
 
@@ -3535,14 +3535,15 @@ positions, and the ledger. It also needs a re-quote loop, because two sells
 quoting one `state_version` are separated by `quote_stale` before either
 reaches this check.
 
-*Amended 2026-10-17. Proposed by ADR 0024, and not built yet.* Two changes.
-The holding check subtracts the shares the caller's live sell orders in that
-outcome reserve, so an instant sell is limited to `position - reserved`, and a
-sell placement is checked the same way. And `ledger.orders` rows share this
-entry's argument: every writer of an order row, placement, the cascade and
-cancel, takes the book lock first, so the book lock holds them still and the
-order read takes no lock of its own. The reversal trigger extends to them: a
-writer of order rows that does not take the book lock first.
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+Two changes. The holding check subtracts the shares the caller's live sell
+orders in that outcome reserve, so an instant sell is limited to
+`position - reserved`, and a sell placement is checked the same way. And
+`ledger.orders` rows share this entry's argument: every writer of an order row,
+placement, the cascade and cancel, takes the book lock first, so the book lock
+holds them still and the order read takes no lock of its own. The reversal
+trigger extends to them: a writer of order rows that does not take the book lock
+first.
 
 ---
 
@@ -4107,12 +4108,12 @@ record on. *No price at all*: #25's criterion asks for one. *Storing it in
 against a resting order. Then `|amount| ÷ quantity` is still the average, but
 it stops being the only price the trader saw, and the history may need fills.
 
-*Amended 2026-10-17. Proposed by ADR 0024, and not built yet.* The reversal
-trigger is not tripped for a trade row. Every transaction is still one trade
-along one path of the market maker's book, so `|amount| ÷ quantity` is still
-the only price that transaction filled at. A limit order filled in parts has
-one transaction per fill, each with its own average price, and those rows are
-the "fills" this trigger says the history may need. The order's own average,
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+The reversal trigger is not tripped for a trade row. Every transaction is still
+one trade along one path of the market maker's book, so `|amount| ÷ quantity` is
+still the only price that transaction filled at. A limit order filled in parts
+has one transaction per fill, each with its own average price, and those rows
+are the "fills" this trigger says the history may need. The order's own average,
 `spent ÷ filled_quantity`, appears only on the order reads.
 
 ---
@@ -6073,6 +6074,13 @@ complete. Accepted as an edge. The fix is either a minimum seed in
 market_service's validation (decker757's), or settlement committing its
 record and audit entry alone, which would need its own decision.
 
+**Amended 2026-10-18.** A third kind of batch is refused the same way, before
+any lock: one whose `Movement.reservation_drop` is below zero, or is nonzero
+on a movement without exactly one USER account, or on one that does not debit
+that account. All are built by the server, like the key, so all are a bug and
+take this entry's 500. See "A refusal from the running check reports the
+balance before the batch".
+
 ---
 
 ### D-NEW — `post_all` asks about pending writes before it classifies a match, and replays only a whole batch
@@ -6162,10 +6170,10 @@ credits it in a later one. Netting would accept a batch whose feed shows a
 `balance_after` below zero between the two, which is the history bug #187
 fixed. The check then becomes a running balance in movement order.
 
-*Amended 2026-10-17. Proposed by ADR 0024, and not built yet.* This entry's
-reversal trigger fires. A trader's own resting sell can fill in the cascade
-their own buy triggered, so one batch debits a USER account and credits it in
-a later movement. ADR 0024 replaces the netted check with a running one in
+*Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built yet.*
+This entry's reversal trigger fires. A trader's own resting sell can fill in the
+cascade their own buy triggered, so one batch debits a USER account and credits
+it in a later movement. ADR 0024 replaces the netted check with a running one in
 `_refuse_overdrafts`. It walks the movements in order and keeps, for each
 USER account, a running balance and a running reservation. Both start at
 their values before the batch, and the balance must be at least the
@@ -6192,6 +6200,11 @@ affordable before any resting order fills: neither a self-fill's proceeds nor
 a reservation dropped later in the batch can pay for it. ADR 0024 works both
 cases through. An account the batch only credits is still not read. The owner
 of `posting.py` signs this off before it is built.
+
+*Amended 2026-10-17.* ADR 0024 was Accepted on 2026-10-17. The owner of
+`posting.py` signed this off in his approving review of #324: "sign-off 3 is
+a yes", and sign-off 3 is this running check in `_refuse_overdrafts`. The
+running check is built in the limit-order stack's PR 4a.
 
 ---
 
@@ -8594,8 +8607,9 @@ resolves names through a new admin-only batch lookup on auth,
 `POST /admin/users/lookup` with `{"user_ids": [...]}` (1 to 200 UUIDs),
 returning `{"users": [{"id", "username"}]}`. It mirrors the lookup in ADR 0021,
 `POST /internal/users/lookup`, but it takes an
-administrator's token and never returns `is_suspended`. That route is Ernest's, under #273. Until it lands, the
-User column shows a short id that links to #259's user page.
+administrator's token and never returns `is_suspended`. That route is #273.
+Until the User column reads it, that column shows a short id that links to
+#259's user page.
 
 **Why.**
 - *ADR 0021's lookup is the wrong credential for this.* It is scoped to one
@@ -8638,6 +8652,9 @@ and an id sent twice is answered once.
 **Reversal trigger.** ADR 0021, or a later record, gives the ledger a general
 way to name users that includes suspended ones. Then the feed can carry
 `username` itself, and the browser-side join goes.
+
+Amended 2026-10-17 by #273: built by ihsankoolz, with Ernest's agreement, as
+POST /admin/users/lookup. The contract above is unchanged.
 
 ---
 
@@ -8936,12 +8953,11 @@ Move these into the log above when they're settled.
   no service an identity on any other route, so #27's caller still needs a
   decision of its own.
 
-  *Amended 2026-10-17. Proposed by ADR 0024, and not built yet.* ADR 0024 runs
-  [T-7] #27's cascade inside the request that moved the price, so #27 has a
-  caller and needs no credential. If ADR 0024 is accepted, #27 leaves this
-  entry, and what stays open is a settlement that becomes a background job,
-  and ADR 0024's own follow-up, a sweep that cancels a suspended owner's
-  orders. Until then the entry stands as written.
+  *Amended 2026-10-17. Decided by ADR 0024 (Accepted 2026-10-17), not built
+  yet.* ADR 0024 runs [T-7] #27's cascade inside the request that moved the
+  price, so #27 has a caller and needs no credential, and #27 leaves this entry.
+  What stays open is a settlement that becomes a background job, and ADR 0024's
+  own follow-up, a sweep that cancels a suspended owner's orders.
 - **A NULL `close_time` on an OPEN market means two different things.** SQL and
   Python disagree, and neither is documented as the intended answer.
   `core/closing.py` returns False for a null, so the Python derivation labels
@@ -9004,6 +9020,11 @@ Move these into the log above when they're settled.
   `unit_test/conftest.py` gains an `audit_svc` engine from
   `AUDIT_TEST_DATABASE_URL`, as market_service's and auth_service's already
   do. Whether it moves into `shared/testing.py` is #253.
+
+  *Amended 2026-10-19. Settled by #253.* The three conftests' `audit_reader`
+  fixtures open their session through `shared/testing.py`'s
+  `open_audit_reader`, and no copy of the engine is left. ADR 0012's
+  amendment.
 
 ---
 
@@ -9227,6 +9248,15 @@ fills the placement request made. A placement that rests writes no
 transaction, so nothing else records that counter, and fills found by
 `order_id` alone would include every later cascade's.
 
+*Amended 2026-10-19.* Since [T-7] #27 a placement that fills on arrival runs
+the cascade before it commits, so the stored `book_state_version`, and the
+response field it answers, are the book's counter after the whole request,
+cascade included: the request's last fill, which can be another trader's
+order's, so the counter can be higher than the highest `state_version` in
+`fills`. "The last fill's `state_version`" above means that. The replay rule
+holds as written: the cascade never fills the order being placed, which is
+added after it runs. ADR 0024 carries the same amendment.
+
 ---
 
 ### D-NEW — An order is executable when its floored fill passes the per-fill limit check; a resting order is one that is not
@@ -9283,6 +9313,15 @@ lock, like `Position.cost_basis`, and can be rebuilt from the fill
 transactions, which carry `order_id`. How `posting` checks a balance against
 the reservation, in movement order, is in the amendment to "`post_all` nets
 each USER account across the whole batch, through `_refuse_overdrafts`".
+
+*Amended 2026-10-18.* The `spent` this entry names is the column
+`ledger.orders.filled_value`, one rollup for both sides, signed positive: see
+"An order's `filled_value` is what its fills moved, signed positive on either
+side". Revision 0004 also holds the half of the budget rule that protects
+money, `budget >= limit_price * quantity`, as
+`ck_orders_budget_covers_the_limit`. A budget rounded up to the tick always
+passes it, so it refuses only a placement that computed its budget wrong,
+before the order can rest looking funded.
 
 ---
 
@@ -9429,6 +9468,19 @@ replay alarm is unaffected. A test pins the first flush: a trade and a
 self-fill on the same `(user, market, outcome)` leave one position row
 carrying both changes.
 
+*Amended 2026-10-18.* Built in [T-7] #27 with the first flush repeated before
+every fill's position read, not only the cascade's first. Two fills of one
+owner in one outcome where the owner held nothing would otherwise each add a
+position row, and the second flush would fail on the duplicate. The test
+named above cannot be written: a self-fill on the trade's own
+`(user, market, outcome)` is a sell order, a sell order needs shares, so the
+row already exists and the identity map hands the cascade the trade's own
+changes without a flush. The test that pins the flush is two buy orders of
+one owner filling in one cascade, leaving one position row with both fills.
+The cascade's read of the open orders comes before the first flush and needs
+none: the trade writes no order row, and a placement inserts its own after
+its cascade has run.
+
 ---
 
 ### D-NEW — A placement that would cross the book is refused, `order_crosses_book`
@@ -9501,3 +9553,446 @@ changes both of its guard tests.
 **Notes.** A trade recorded before this field existed has no
 `book_state_version` in its `context`. `result_of` returns its
 `state_version`, which is the same number, because no cascade ran then.
+
+---
+
+### D-NEW — Realised P&L is the balance against the grant, plus the basis still open
+
+**Date:** 2026-10-18 · **Ticket:** #359 · **Status:** active
+
+**Decision.** `GET /ledger/portfolio/me` carries `starting_credits`,
+`realized_pnl`, `unrealized_pnl` and `total_pnl`, all derived on every read.
+`starting_credits` is the entry the signup grant wrote.
+`realized_pnl` is `balance - starting_credits + the cost basis of every open
+position`. `unrealized_pnl` is the sum of the rows' own, and `total_pnl` is
+the two together, which is `net_worth - starting_credits` exactly.
+
+**Why.** A balance is never stored and neither is a P&L (ADR 0009), so both
+figures have to be derived, and the entries do not record what a sell's
+shares originally cost. They do not have to: every credit that has left the
+balance and not come back is a loss, except the part still tied up in
+positions nobody has closed. Adding that basis back gives exactly (sell
+proceeds − the basis those sells released) + (settlement payouts − the basis
+of the holdings settlement closed), with no cost lot history and no new
+column. A settled holding is closed by that definition — its payout is in
+`balance` and its basis is not open cost — which is the same reason
+ADR 0018's valuation skips it, so the two agree by construction rather than
+by vigilance. `total_pnl` ships because money crosses the wire as decimal
+strings and the frontend may not do arithmetic on them: without it, "am I up
+or down" is still unanswerable.
+
+**Rejected.** *Summing `TRADE_SELL` and `SETTLEMENT` legs against a stored
+cost of goods sold*: needs a realised-cost column on `positions` or a lot
+history, which is the stored figure ADR 0009 exists to avoid. *Computing
+`realized_pnl` as `total_pnl - unrealized_pnl`*: the reconciliation would
+then be true by construction and its test would assert nothing.
+
+**Notes.** `starting_credits` comes from the grant transaction
+`grants.grant_key` names, read in the portfolio's one statement as a second
+anchor column — never from `STARTING_CREDITS`, which can change without
+rewriting an entry. A seeded position (`settlement_fixtures.hold`) has a
+basis no entry paid for, so no derived P&L can reconcile against it; the
+#359 tests buy into their settled markets for real.
+
+---
+
+### D-NEW — An order's `filled_value` is what its fills moved, signed positive on either side
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** `ledger.orders.filled_value` is the sum of the credits an
+order's fills have moved, signed positive on both sides: a buy's costs, a
+sell's proceeds. ADR 0024 and the entries before this one call it `spent`,
+which is true of a buy only. A buy's reservation is `budget - filled_value`,
+the `budget - spent` of "A buy reserves `limit × quantity` rounded up to the
+tick, its reservation is `budget - spent`, and it cannot go negative". A sell
+reserves no credits, so its `filled_value` is read only for
+`average_fill_price`, which is `filled_value / filled_quantity` on either
+side.
+
+**Why.** The order object carries `average_fill_price` for buys and sells
+alike. Reading a sell's from its fills is a query on `context->>'order_id'`,
+whose index is a stretch item ("A fill's `context` is a trade's, plus
+`order_id`"), on every `GET /ledger/orders/me`. One rollup serves both
+sides, updated under the book lock beside `filled_quantity`. The name has to
+be true of both: a sum of `spent` reads as money going out, and a sell's
+proceeds summed into it would make a figure about committed credits wrong in
+the trader's favour.
+
+**Rejected.** *A `proceeds` column for sells*: two rollups where one
+serves, each bound to its side by a CHECK. *A sell's average from its
+fills*: the unindexed query above. *Keeping the name `spent`*: false of a
+sell, for the reason above. *A sell's value signed negative*: the average
+would need the side to read its sign, and `ck_orders_filled_value_nonneg`
+would split by side.
+
+---
+
+### D-NEW — A preview reports what a buy pays if its outcome wins
+
+**Date:** 2026-10-19 · **Ticket:** #384 · **Status:** active
+
+**Decision.** `GET /ledger/markets/{id}/preview` carries `payout_if_wins` and
+`profit_if_wins`, decimal strings at the money scale of 4. On a buy,
+`payout_if_wins` is the quantity, because a winning share pays one credit, and
+`profit_if_wins` is that payout minus the credits the buy costs — the
+magnitude of `total`, the charged figure, subtracted exactly. On a sell both
+are null. Both describe this trade alone, never the trader's position.
+
+**Why.** The trading surface (#357) shows what a buy pays and what it makes,
+and the frontend may not do arithmetic on decimal strings, so the server has
+to return both. Both operands are already at scale 4 — `quantity` is refused
+past four decimal places and `total` is quantized to the tick — so the
+subtraction is exact and adds no rounding of its own; the profit is the
+payout less exactly what would be charged.
+
+**Rejected.** *A sell's payout as its proceeds*: a sell receives its credits
+now, which `total` already says, and gives up the shares that would have paid;
+it has nothing to pay out if the outcome wins. *Valuing the whole position*:
+needs the caller's holdings, a database read the preview does not make (it
+stays AMM-only and read-only), and the portfolio already reports a
+position's value. *`profit_if_wins` from `quantity * average_price`*:
+`average_price` is a rounded display figure, so the profit would disagree
+with the charge by up to half a tick per share: two ticks in the docs'
+example, where 10 × 0.7315 is 7.3150 against a charge of 7.3152.
+
+**Notes.** `payout_if_wins` is the quantity rescaled to four places, so a
+quantity sent as `10` reports `10.0000` while `quantity` still echoes `10`,
+as "A quantity takes money's scale of 4 at the API boundary" has it. On a buy
+charged its whole quantity, such as the smallest buys or a buy of an outcome
+priced near one, the profit can be zero or a tick below; it is reported as it
+is.
+
+---
+
+### D-NEW — The cascade loops until no waiting order is executable, and passes over an order it cannot fill
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** `core/limit_orders.py::cascade_of` repeats one step until it
+finds nothing: among the market's open orders that have not filled in this
+commit, in priority order ("Priority is price, then an identity `seq`
+assigned under the book lock"), take the first that is executable at the
+current `q` ("An order is executable when its floored fill passes the
+per-fill limit check; a resting order is one that is not"), and fill it. An
+order that is not executable is passed over, not a stop. An order that has
+filled is not taken again in the same commit.
+
+**Why.** An order can fail the check while one behind it passes: a
+remainder of `0.0001` is never executable, because its cost rounds up to a
+whole tick or its proceeds down to nothing, and a larger order with a
+slightly higher `d` can still fill. Stopping at the first order that cannot
+fill would leave the order behind it, the one that could fill, executable
+when the cascade ends, which breaks the invariant in "Resting orders fill
+against the AMM inside the trade that moved the price". Ending only when no
+waiting order is executable makes the invariant hold by construction. The
+loop runs at most `m + 1` times for `m` open orders, that decision's count,
+and each order fills at most once, which the realtime contract's one order
+frame per fill depends on.
+
+**Rejected.** *Stopping at the first order that cannot fill*: the case
+above. *One pass in priority order*: it finds the same fills only while no
+fill makes an order passed over earlier executable, and that rests on an
+argument about rounding at the tick rather than on the loop's exit
+condition.
+
+**Notes.** The planner is pure: it takes `q`, `b` and the open orders, and
+returns the fills in order, each priced by `trade_cost_of` against the `q`
+the fill before it left. A fill that `trade_cost_of` refuses as
+`cost_below_tick` or `proceeds_below_tick` is not executable. A market with
+more than two outcomes holds no orders, so a cascade there plans nothing.
+
+---
+
+### D-NEW — A refusal from the running check reports the balance before the batch
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** `InsufficientFunds` from `_refuse_overdrafts` carries
+`balance`, the account's balance before the batch, and `reserved`, the
+running reservation at the refused step. A refusal after a debit carries
+`required`, what the batch had taken from the account by that movement,
+`balance` less the running balance there; `available` is `balance - reserved`,
+and the refusal is `required > available`. A refusal at the start of the batch
+carries `shortfall`, `reserved - balance`, and no `required`; its `reserved`
+includes a placement's whole new budget, so its `available` is negative.
+
+**Why.** For the trade route, the trade is the batch's first movement, so
+`required` is its cost and `balance` and `available` are the figures before
+it, unchanged from what [FE] #49 reads today plus the two ADR 0024 adds. For
+two debits in one batch, `required` is both of them, which is what the netted
+check reported. The start-of-batch check has the balance and the reservation
+and nothing else (ADR 0024, "A refused placement carries `shortfall`, not
+`required`").
+
+**Rejected.** *The running balance at the refused step as `balance`*: a later
+debit's refusal would show a balance the account never had once the batch
+rolled back. *Leaving `reserved` and `available` out of the start-of-batch
+refusal*: the contract lists them for the placement's refusal, and the check
+has no other figures to give.
+
+**Notes.** Posting cannot check a drop against the order rows, only its sign
+and its account, so a drop that disagrees with them is for the limit-order
+stack's PR 5 to pin, where the cascade computes it. The floor at the start of
+the batch is the reservation after it plus the batch's drops, so an undersized
+drop is the one that loosens the check. With 100 held and a buy order of
+budget 60 that a fill exhausts, a drop of 50 instead of 60 starts the batch at
+50 reserved, and a trade of 45 ahead of the fill passes against the 40
+available. An over-large drop only refuses more.
+
+`posting.Movement.reservation_drop` is refused as `MalformedBatch` when it is
+below zero, nonzero on a movement without exactly one USER account, or
+nonzero on one that does not debit that account: a negative drop would lower
+the floor at the start of the batch, a drop on a movement that only credits
+its account is not the buy-order fill ADR 0024 gives a drop to, and
+a drop with no single account has nowhere to go. The placement in the
+limit-order stack's PR 4b may prefer to report its own `reserved` and
+`available`, excluding the new order, on the start-of-batch refusal; it would
+then catch and re-raise, or hand posting the figure.
+
+---
+
+### D-NEW — A placement's `insufficient_funds` reports the reservation without the new order, on both paths
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** A buy order whose budget does not fit is refused
+`409 insufficient_funds` with `balance`, `reserved`, `available` and
+`shortfall`, and the same three figures mean the same thing whether the order
+would have rested or filled on arrival. `reserved` is what the user's other
+live buy orders hold, without the new order, `available` is
+`balance - reserved`, and `shortfall` is the budget less `available`. On the
+resting path `service/orders.py` computes them itself under the account lock.
+On the path that fills, `posting`'s start-of-batch check refuses first with a
+`reserved` that includes the new budget, and the placement catches that
+refusal and raises it again with the new budget taken back out of `reserved`.
+`shortfall` is unchanged by that, because it is the same number either way.
+
+**Why.** The contract gives one row for both paths and tells the frontend to
+show how much more credit the budget needs. A trader who sees `available: 30`
+on the balance route should see `available: 30` on the refusal, not `-10`,
+and which path a refusal took depends on the price at that moment, which the
+trader cannot see. "A refusal from the running check reports the balance
+before the batch" left the choice to this placement in its Notes.
+
+**Rejected.** *Posting's figures as they are*: a negative `available` that no
+other route ever shows, and different figures for one situation depending on
+whether the order was marketable. *Handing posting the budget so that it
+reports the figure itself*: a placement-only argument on the shared write
+path, for a number the caller already has.
+
+**Notes.** Only a refusal that carries `shortfall` is rewritten. A refusal
+after a debit, with `required`, cannot happen on a placement's own fill,
+because a budget that fits at the start of the batch covers the fill (ADR
+0024, "A buy can never spend more than it reserved"); if one ever does, it
+passes through unchanged.
+
+---
+
+### D-NEW — A fill the running check refuses inside a cascade is `500 cascade_fill_refused`, told apart by the refused movement's key
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** `InsufficientFunds` carries `movement_key`, the idempotency key
+of the movement after which `posting`'s running check refused, and none for a
+refusal at the start of the batch. The trade path answers
+`409 insufficient_funds` only when that key is the trade's own. Any other
+refusal of a trade's batch, at the start of it or after a fill, is
+`500 cascade_fill_refused`: the commit rolls back, the trader is told nothing
+about the account that was refused, and the ledger logs the refusal's figures
+at ERROR on `service.trading`.
+
+**Why.** ADR 0024 makes a refused fill impossible by construction, because
+every fill is bounded by its own reservation, and says that if one happens it
+is a bug, a 500, logged. Only `posting` knows which movement it refused at, so
+it has to say. Without the key, a refusal of another owner's account would
+reach the trader as their own `insufficient_funds`, with that owner's balance
+and reservation in `details`. A refusal at the start of a trade's batch is a
+bug too: a trade drops no reservation, so its account's figure before the
+batch is the one every earlier commit already kept within the balance.
+
+**Rejected.** *Telling the two apart by the figures*, such as `required` equal
+to the trade's cost: two different movements can carry the same amount.
+*Passing the refused order over*: the order would rest while executable,
+which breaks the invariant the next trade's cascade relies on.
+
+**Notes.** A placement tells the two apart by the account instead, because
+its own refusal comes at the start of the batch, with no key:
+`InsufficientFunds` also carries `account_id`, the account the check refused.
+A refusal of the placer's account keeps its own handling, in "A placement's
+`insufficient_funds` reports the reservation without the new order, on both
+paths", as `409 insufficient_funds` with the placer's figures. A refusal of
+any other account is `500 cascade_fill_refused`, logged the same way. Its
+cascade finds nothing while the book is uncrossed (ADR 0024, "Termination"),
+so only a broken book reaches that 500. Keying the placement on its own
+fill's movement key, as the trade path is keyed, would turn the placer's own
+start-of-batch refusal into a 500.
+
+---
+
+### D-NEW — A cancel takes the book lock and no account lock
+
+**Date:** 2026-10-18 · **Ticket:** #28 · **Status:** active
+
+**Decision.** `POST /ledger/orders/{order_id}/cancel` reads the caller's order's
+`market_id` without a lock, takes that market's book row with `FOR UPDATE`,
+reads the order again under it, and either refuses or writes `status =
+'cancelled'` and `cancelled_at`, then commits. It takes no account lock and
+writes no entry. A filled order is `order_already_filled`, a cancelled one
+`order_already_cancelled`, and an open one on a market with a result
+`order_released`, in that order.
+
+**Why.** Every writer of an order row takes the book lock first (the
+2026-10-17 amendment to "The holdings check is read under the book lock, and
+the position takes no lock of its own"), so the cancel and a fill queue on one
+row, and whichever takes it first commits first. The re-read under the lock is
+what turns that into an answer: a fill that committed first has left either a
+smaller remainder or none. No account lock, because a cancel only lowers a
+reservation: every path that reads one under an account lock is checking that
+a debit fits, and a check that read it before the cancel committed read a
+higher figure, so it was stricter than it needed to be, never looser. The
+unlocked read decides only which book to lock and whether the order is the
+caller's, and neither can change: an order's market and owner are fixed at
+placement.
+
+**Rejected.** *An account lock after the book row*: it would serialise a
+cancel behind the owner's trades in other markets for no invariant. *A `FOR
+UPDATE` on the order row*: the book lock already holds it still, and the
+amendment's reversal trigger has not fired. *Loading the order before the
+lock*: the session's identity map would then answer the re-read with the
+stale row unless it were told to refresh, so the first read selects one
+column.
+
+**Notes.** The status is read before the result because a filled or
+cancelled order is never live, so reading `live` first would answer every one
+of them `order_released`; and a filled order on a market with a result had
+nothing left for the result to release.
+`test_cancel_order_concurrency.py` races a cancel against a fill in both
+orderings and the partial case; each test fails with the cancel's
+`books.lock_book` removed.
+
+### D-NEW — Order frames pass no version gate on the relay
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** After a commit that filled resting orders, the ledger publishes
+the commit's one `price` frame first and then one `order.update` message per
+fill, in fill order, each publish swallowing its own Redis failure
+(`service/trading.py::_publish_order_updates`). The realtime service forwards
+each order message to every socket of its `user_id` and runs it through no
+version gate, neither the per-market one prices use nor one of its own.
+
+**Why.** The price frame carries the book's final `state_version`, and every
+fill in that commit is at or below it, so the per-market gate would drop each
+order frame as stale the moment the price frame passed. A gate keyed by order
+id would hold one entry per order ever filled, for the life of the process,
+and still be no guarantee: replicas keep their own marks, so the client has to
+order one order's frames by `fill.state_version` anyway
+(docs/api/realtime-service.md, "Order updates"). The price frame keeps its
+place straight after the commit, where every subscriber of the market already
+expects it, and the order frames follow it.
+
+**Rejected.** *Order frames first*: no client depends on the order between the
+two, and the price frame is the one every subscriber of the market needs. *A per-order
+gate*: unbounded, and redundant with the client's rule. *Publishing on a
+cancel*: the contract says a cancel sends none, and its response carries the
+order.
+
+**Notes.** In the realtime suite,
+`test_order_frames_are_delivered_after_their_commits_price_frame` publishes
+the ledger's real sequence, a price frame at version 4 and order frames at 2
+and 3, and fails if the order frames go through the gate.
+
+---
+
+### D-NEW — A setting that can hold a credential is a `SecretStr`, URLs included
+
+**Date:** 2026-10-19 · **Ticket:** #307 · **Status:** active
+
+**Decision.** `jwt_secret`, `ledger_service_key`, every `database_url` and
+both `redis_url`s are typed `pydantic.SecretStr`, so a printed `Settings`
+shows `SecretStr('**********')` in their place. Each reader takes the value
+with `.get_secret_value()` at the point of use and hands on a plain `str`:
+the token signer and verifiers, the engine, the Redis clients and both sides
+of the `X-Service-Key` check. Nothing below that point sees the wrapper.
+
+**Why.** A `Settings` object is printed more often than anyone means it to
+be: pytest puts the target's repr in an `AttributeError` from
+`monkeypatch.setattr`, which is how #307 showed a developer's signing key in a
+test log, and any log line or exception that formats one does the same in a
+deploy. A URL counts because the form is `USER:PASSWORD@HOST`; the Redis URL
+counts because a deploy may give it a password, even though the default has
+none. This agrees with "`REDIS_URL` has a default in the ledger and none in
+the realtime service", which allows the ledger its default because that value
+is not a credential. It still is not; the type covers the value a deploy sets
+in its place.
+
+**Rejected.** *`Field(repr=False)`*, the smaller change #307 offered for the
+URLs: it hides the field from `repr` and `str` and nothing else, so
+`model_dump()` and anything that serialises the model still print it. One rule
+for every credential is also easier to follow than two. *Masking only the
+password inside the URL*: it needs a parser per scheme and keeps half of a
+value nobody needs to read.
+
+**Notes.** A new setting that can hold a credential follows the same rule,
+and its service's `test_no_secret_appears_when_the_settings_are_printed`
+should name it. A test that replaces such a setting with `monkeypatch.setattr`
+passes a `SecretStr`, since assignment is not validated. The migrate step reads
+`DATABASE_URL` from the environment, not from `Settings`, and is unaffected.
+
+---
+
+### D-NEW — An administrator can cancel any live order, with a reason
+
+**Date:** 2026-10-19 · **Ticket:** #326 · **Status:** active
+
+**Decision.** `POST /ledger/admin/orders/{order_id}/cancel` cancels any
+trader's live order, an open one on a market with no result, exactly as its
+owner's cancel would: the same `service/cancellation.py::cancel`, called with
+an `AdminCancel` instead of the owner's id, so the same book lock, the same
+re-read under it and the same refusals. It skips only the owner check. It
+needs an administrator's token, through `CurrentActor`, the settlement
+route's guard. Its body is one required field, `reason`, with auth's
+suspension rule: at most 500 characters in the schema (`invalid_request`),
+and at least 10 once trimmed in the service (`cancellation_incomplete`),
+checked before any read. In the cancel's own transaction it appends
+`order.cancelled_by_admin`, carrying the trimmed reason and the order's
+`user_id` and `market_id` in `context`. The owner's own cancel stays
+unaudited. Nothing is posted and no frame is published.
+
+**Why.** ADR 0024, "A suspended owner's orders are checked at placement
+only", leaves a suspended owner able to cancel only while their last access
+token lives, and after that the reservation is held until the market has a
+result, which a market that never gets one never gives. This is the release
+path #326 promised as the condition of that narrowing. It takes the owner's
+path rather than a copy, so the lock that keeps a cancel from racing a fill
+also keeps the two cancels from both winning. The audit entry is ADR 0006's
+shape for an administrator's decision; a trader withdrawing their own order
+is not one, which is also why every entry of this type is an
+administrator's.
+
+**Rejected.** *Accepting an administrator's token on the owner's route*: the
+owner's route takes an empty body, and an administrator cancelling their own
+order there would have to be either audited without a reason or not audited
+at all. *A path with no admin prefix*, as the admin trade feed has: it can
+share `/ledger/markets/{market_id}/trades` with the trade because the two
+differ by method, and both cancels are a `POST` on one order, so the second
+needs a path of its own. `/ledger/admin/` is new to the ledger and follows
+auth's `/admin/` routes. *`/ledger/users/{user_id}/orders/{order_id}/cancel`*,
+the shape of the ledger's admin reads of another user's money
+(`/ledger/users/{user_id}/balance` and `/entries`): an order fixes its owner,
+so the user id is a second key that has to be checked against the order, and
+a disagreement is one more way for an order that exists to answer
+`order_not_found`. It is the closer fit if an admin list of a user's orders
+lands as `GET /ledger/users/{user_id}/orders`, and the cost of moving is the
+route's decorator, its docs, its two contract tests and that check; the
+ledger then has two admin shapes until it does. *`order.cancelled` as the
+action*: it reads as if every cancel were logged. *Market_service's
+5000-character ceiling*: the suspension is the closer action, an
+administrator acting on one trader's account.
+
+**Notes.** `test_cancel_order_concurrency.py` races the administrator's
+cancel against the owner's in both orderings; each fails with the cancel's
+`books.lock_book` removed. The ledger keeps its own copy of the reason rule
+(`_refuse_if_reason_unusable`), a twin of auth's `user_admin._reason_problems`
+(ADR 0012).

@@ -7,7 +7,7 @@ import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
 import PageTitle from '../../components/ui/PageTitle'
 import { buttonClass } from '../../components/ui/buttonClass'
-import { latestProposalPerMarket, toPendingProposal, type PendingProposal } from '../../utils/proposals'
+import { latestActionPerTarget, toPendingProposal, type PendingProposal } from '../../utils/proposals'
 
 export default function ProposalsPage() {
   const { user } = useAuth()
@@ -21,7 +21,7 @@ export default function ProposalsPage() {
       listAllActions('market.outcome_proposed'),
     ])
       .then(([markets, entries]) => {
-        const latest = latestProposalPerMarket(entries)
+        const latest = latestActionPerTarget(entries)
         const found = markets
           .map(market => {
             const entry = latest.get(market.id)

@@ -1,25 +1,24 @@
 # ADR 0024: Resting orders fill against the AMM inside the trade that moved the price
 
-- **Status:** Proposed. It becomes Accepted once all four sign-offs below
-  are ticked. Answers from Ernest's review of #324.
+- **Status:** Accepted, 2026-10-17, with all four sign-offs below ticked.
+  Answers from Ernest's review of #324.
   - [x] 1. [4.2] #14's owner accepts the narrowing in "A suspended owner's
     orders are checked at placement only". Accepted, on condition that the
     administrator's cancel stays on the board as the follow-up: #326.
   - [x] 2. The team accepts that a cascade inside a tokened trade is not "a
     caller with nobody behind it" ("The cascade runs inside the trade that
     moved the price"). Accepted.
-  - [ ] 3. Ernest, who owns `service/posting.py` and `service/accounts.py`,
+  - [x] 3. Ernest, who owns `service/posting.py` and `service/accounts.py`,
     accepts the order-aware running check in `_refuse_overdrafts`: a floor at
     the account's reservation, checked at the start of the batch and after
     each debit in movement order, with each movement carrying the drop in
     its account's reservation that it causes ("A reservation is derived from
-    the order rows, and it is `posting`'s floor"). Pending: held until the
-    arithmetic fix from his review is in, which it now is.
+    the order rows, and it is `posting`'s floor"). Accepted in his approving
+    review of #324 on 2026-10-17: "sign-off 3 is a yes".
   - [x] 4. The team accepts three scope changes to #26 and #27: binary
     markets only, refusing a placement that crosses the book, and "resting"
     meaning not executable to within one tick ("Binary markets only, and no
-    crossed book"). Accepted. #26 and #27 are edited once this record is
-    Accepted.
+    crossed book"). Accepted. #26 and #27 were edited to match on 2026-10-17.
 - **Date:** 2026-10-17
 - **Affects:** [T-6] #26, [T-7] #27, [T-8] #28, [FE][T-6] #61, [4.2] #14, [T-5] #25, [4.1] #13, [X-4] #37, [BE] #221, ADR 0005, ADR 0009, ADR 0010, ADR 0015, ADR 0017, ADR 0018, ADR 0021, ADR 0022
 - **Implemented in:** nothing yet. This record precedes the limit-order stack
@@ -376,6 +375,14 @@ with no path to release": for a suspended owner the path is the market's
 result, and it is not in the owner's hands. If the review reads "stuck" more
 strictly, the administrator's cancel moves into this iteration.
 
+> **Amended 2026-10-19 by [T-8] #326.** The administrator's cancel is built:
+> `POST /ledger/admin/orders/{order_id}/cancel`, with a required reason and an
+> `order.cancelled_by_admin` audit entry. A suspended owner's reservation now
+> has a release path that does not wait for the market's result, so "Nothing
+> in this iteration releases it sooner" above no longer holds. The orders
+> still fill until an administrator cancels them. DECISIONS.md, "An
+> administrator can cancel any live order, with a reason".
+
 ### The preview stays AMM-only
 
 `GET /ledger/markets/{market_id}/preview` is a read and runs no cascade.
@@ -425,6 +432,16 @@ A retry with the same key returns the order as it stands now, the stored
 request made: the order did not exist before it, and every later fill,
 from anyone's cascade, has a higher `state_version`. Finding fills by
 `context->>'order_id'` alone would return every fill the order has ever had.
+
+> **Amended 2026-10-19 by [T-7] #27.** A placement that fills on arrival now
+> runs the cascade before it commits, so the stored column and the response's
+> `book_state_version` are both the book's counter after that whole request:
+> the request's last fill, which can be a fill of another trader's order
+> rather than the placed order's own. It can therefore be higher than the
+> highest `state_version` in the placement's `fills`. The replay rule is
+> unchanged: the cascade runs before the order row is added, so it never
+> fills the order being placed, and that order's fills at or below the stored
+> counter are still exactly the fills the placement request made.
 
 ## Consequences
 

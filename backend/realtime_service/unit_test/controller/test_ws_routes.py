@@ -22,9 +22,15 @@ from core.errors import (
     SessionExpired,
     UnknownAction,
 )
-from service.bus import PRICE_CHANNEL
+from service.bus import ORDER_CHANNEL, PRICE_CHANNEL
 from service.subscriptions import get_hub
-from unit_test.conftest import REDIS_UNREACHABLE, bearer, make_event, mint_token
+from unit_test.conftest import (
+    REDIS_UNREACHABLE,
+    bearer,
+    make_event,
+    make_order_message,
+    mint_token,
+)
 
 _ALLOWED_ORIGIN = "http://localhost:5173"
 
@@ -299,6 +305,30 @@ def test_a_stale_price_never_reaches_the_socket(
         _publish(publisher, market_id, 10)
 
         assert websocket.receive_json()["state_version"] == 10
+
+
+def test_an_order_frame_reaches_its_owners_socket_and_nobody_elses(
+    connected_client, market_id: uuid.UUID
+) -> None:
+    """[T-7] #27's fifth criterion, end to end: the socket is indexed by its
+    token's user, so another user's order goes nowhere near it and its own
+    arrives with no subscription. The subscription is to an unrelated market,
+    only so that a price frame published last is something to receive if
+    neither order frame arrives, rather than a wait that never ends; the first
+    frame is checked before anything else is read, for the same reason."""
+    client, publisher = connected_client
+    owner = uuid.uuid4()
+    theirs = make_order_message(uuid.uuid4())
+    ours = make_order_message(owner)
+
+    with client.websocket_connect("/ws/prices", headers=bearer(user_id=owner)) as websocket:
+        _subscribe(websocket, market_id)
+        publisher.publish(ORDER_CHANNEL, json.dumps(theirs))
+        publisher.publish(ORDER_CHANNEL, json.dumps(ours))
+        _publish(publisher, market_id)
+
+        assert websocket.receive_json() == {"type": "order", **ours}
+        assert websocket.receive_json()["type"] == "price"
 
 
 # ---------------------------------------------------------------------------

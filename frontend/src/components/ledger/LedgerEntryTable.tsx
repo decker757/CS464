@@ -1,10 +1,10 @@
 import { Link } from 'react-router-dom'
-import { HeaderCell, NumberCell } from '../ui/Table'
-import { formatCreditsPrecise, signedAmountColor } from '../../utils/formatCredits'
+import { HeaderCell, NumberCell, TableHeaderRow } from '../ui/Table'
+import { formatAveragePrice, formatCreditsPrecise, signedAmountColor } from '../../utils/formatCredits'
 import { kindLabel, type EntryRow } from '../../utils/ledgerEntries'
 
 function EntryDescription({ row }: { row: EntryRow }) {
-  if (!row.isTrade) {
+  if (!row.isTrade && !row.isSettlement) {
     return <span className="text-smu-navy">{kindLabel(row.kind)}</span>
   }
   return (
@@ -25,14 +25,14 @@ export default function LedgerEntryTable({ rows }: { rows: EntryRow[] }) {
     <div className="overflow-x-auto rounded-2xl border border-smu-gold/15 bg-white shadow-card">
       <table className="w-full text-left text-sm">
         <thead>
-          <tr className="border-b border-line text-xs font-semibold tracking-[0.5px] text-subtle uppercase">
+          <TableHeaderRow>
             <HeaderCell>Date</HeaderCell>
             <HeaderCell>Activity</HeaderCell>
             <HeaderCell align="right">Quantity</HeaderCell>
             <HeaderCell align="right">Avg. price</HeaderCell>
             <HeaderCell align="right">Amount</HeaderCell>
             <HeaderCell align="right">Balance after</HeaderCell>
-          </tr>
+          </TableHeaderRow>
         </thead>
         <tbody>
           {rows.map(row => (
@@ -40,8 +40,7 @@ export default function LedgerEntryTable({ rows }: { rows: EntryRow[] }) {
               <td className="px-5 py-3 text-muted">{new Date(row.created_at).toLocaleString('en-SG')}</td>
               <td className="px-5 py-3"><EntryDescription row={row} /></td>
               <NumberCell>{row.quantity ?? '—'}</NumberCell>
-              {/* Credits per share, not a probability: it can reach 1 or pass it on a skewed book (ledger-service.md). */}
-              <NumberCell>{row.average_price ? formatCreditsPrecise(row.average_price) : '—'}</NumberCell>
+              <NumberCell>{row.average_price ? formatAveragePrice(row.average_price) : '—'}</NumberCell>
               <NumberCell>
                 <span className={signedAmountColor(row.amount)}>{formatCreditsPrecise(row.amount, { showSign: true })}</span>
               </NumberCell>

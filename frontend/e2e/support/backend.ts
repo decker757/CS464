@@ -75,16 +75,20 @@ export async function registerAdmin(label: string): Promise<Session> {
   return logInThroughApi(trader.username)
 }
 
-function promoteToAdmin(username: string): void {
-  // Interpolated into SQL below, and only ever a name uniqueName() made.
-  if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
-  const sql = `UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`
+/** Runs one UPDATE as the superuser, the way a first admin is made by hand, and checks it changed exactly one row. */
+function runSql(sql: string, failure: string): void {
   const output = execFileSync(
     'docker',
     ['compose', 'exec', '-T', 'db', 'psql', '-U', process.env.POSTGRES_USER ?? 'cs464', '-d', process.env.POSTGRES_DB ?? 'cs464', '-v', 'ON_ERROR_STOP=1', '-c', sql],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   )
-  if (!output.includes('UPDATE 1')) throw new Error(`promoting ${username} changed no row: ${output}`)
+  if (!output.includes('UPDATE 1')) throw new Error(`${failure}: ${output}`)
+}
+
+function promoteToAdmin(username: string): void {
+  // Interpolated into SQL below, and only ever a name uniqueName() made.
+  if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
+  runSql(`UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
 }
 
 interface MarketOut {
@@ -153,6 +157,41 @@ export async function closeEarly(admin: Session, marketId: string): Promise<void
   await call('POST', `${MARKET_URL}/markets/${marketId}/close`, admin.accessToken, {
     reason: 'Closed by the end-to-end test to propose an outcome.',
   })
+}
+
+interface MarketWithProposal extends MarketOut {
+  status: string
+  proposal_id: string | null
+}
+
+/** Proposes a winner on a closed market ([3.1] #9). */
+export async function proposeOutcome(admin: Session, market: Market, winningOutcomeLabel: string): Promise<MarketWithProposal> {
+  const outcome = market.outcomes.find(candidate => candidate.label === winningOutcomeLabel)
+  if (!outcome) throw new Error(`no outcome ${winningOutcomeLabel} on ${market.question}`)
+  return call<MarketWithProposal>('POST', `${MARKET_URL}/markets/${market.id}/propose-outcome`, admin.accessToken, {
+    winning_outcome_id: outcome.id,
+    evidence_note: 'Decided by the end-to-end test to drive the market to approved.',
+  })
+}
+
+/** Approves another administrator's proposal ([3.2] #10), moving the market to approved. */
+export async function approveOutcome(admin: Session, marketId: string, proposalId: string | null): Promise<MarketWithProposal> {
+  return call<MarketWithProposal>('POST', `${MARKET_URL}/markets/${marketId}/approve-outcome`, admin.accessToken, {
+    proposal_id: proposalId,
+  })
+}
+
+/**
+ * Moves an approved market's stored dispute window into the past, by hand in
+ * the database, the way `promoteToAdmin` makes the first admin. Settling also
+ * needs SETTLEMENT_GAP (five hard-coded minutes, ADR 0019) to have passed
+ * since the window's end, so this backdates past both — a test cannot wait
+ * out either, so it reaches the stored column directly rather than the
+ * setting or `approved_at`.
+ */
+export function backdateDisputeWindow(marketId: string): void {
+  if (!/^[\w-]+$/.test(marketId)) throw new Error(`refusing to backdate ${marketId}`)
+  runSql(`UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`, `backdating ${marketId} changed no row`)
 }
 
 interface Snapshot {

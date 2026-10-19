@@ -1,4 +1,5 @@
-"""`service/bus.py::publish`, and the rule around it. [F-9] #112, D-049.
+"""`service/bus.py::publish` and `publish_order`, and the rule around them.
+[F-9] #112, [T-7] #27, D-049.
 
 No database. The Redis client is a recorder, which captures the exact channel
 and payload. A recorder cannot prove the channel matches the subscriber's, so
@@ -221,5 +222,62 @@ async def test_the_failure_that_is_swallowed_is_the_bus_one_only() -> None:
         await _bus().publish(client, _event(), transaction_id=_TRANSACTION_ID)
 
 
+# =========================================================================
+# The order channel (ADR 0024)
+# =========================================================================
+def _order_event():
+    schemas = _schemas()
+    return schemas.OrderEvent(
+        order_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        market_id=_MARKET_ID,
+        outcome_id=uuid.uuid4(),
+        side="buy",
+        status="filled",
+        quantity=Decimal("1.0000"),
+        filled_quantity=Decimal("1.0000"),
+        fill=schemas.OrderFill(
+            transaction_id=_TRANSACTION_ID,
+            quantity=Decimal("1.0000"),
+            total=Decimal("-0.4713"),
+            state_version=2,
+        ),
+        occurred_at=datetime(2026, 10, 20, 9, 12, 44, 318000, tzinfo=UTC),
+    )
+
+
+def test_the_order_channel_is_the_one_realtime_service_subscribes_to() -> None:
+    """D-048's pin, for `order.update`: a publish to the wrong channel
+    succeeds and is never delivered."""
+    theirs = _module_constant(_REALTIME_BUS, "ORDER_CHANNEL")
+
+    assert _bus().ORDER_CHANNEL == theirs
+
+
+async def test_an_order_event_goes_to_the_order_channel_as_its_json() -> None:
+    """One message, on that channel and no other, carrying the text the relay
+    validates."""
+    client = _Recorder()
+    event = _order_event()
+
+    await _bus().publish_order(client, event, transaction_id=_TRANSACTION_ID)
+
+    assert client.calls == [(_bus().ORDER_CHANNEL, event.model_dump_json())]
+
+
+async def test_a_failed_order_publish_is_swallowed_and_logged_with_its_transaction(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """D-049's rule for the second channel: the fill has committed, so the
+    failure returns normally, and the log line names the fill's transaction."""
+    client = _Recorder(raises=ConnectionError("redis is unreachable"))
+
+    with caplog.at_level(logging.WARNING):
+        await _bus().publish_order(client, _order_event(), transaction_id=_TRANSACTION_ID)
+
+    assert str(_TRANSACTION_ID) in caplog.text
+
+
 # The caller's side (once per trade, after the commit, never failing the
-# trade) is `unit_test/service/test_trade_publish.py`.
+# trade) is `unit_test/service/test_trade_publish.py`, and for order frames
+# `unit_test/service/test_order_publish.py`.

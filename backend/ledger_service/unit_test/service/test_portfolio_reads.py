@@ -80,7 +80,9 @@ async def test_the_first_read_mints_the_grant_once_and_the_second_does_not(
     session: AsyncSession, starting_credits: Decimal
 ) -> None:
     """A user nobody has read before gets their starting credits on their
-    first portfolio read, as the balance route would, and never again."""
+    first portfolio read, as the balance route would, and never again. The
+    read that follows the mint sees that grant as `starting_credits` too, so
+    a user who has just arrived is flat rather than up by their grant."""
     user_id = uuid.uuid4()
     key = grants().grant_key(user_id)
     assert await transaction_count(session, key=key) == 0
@@ -89,6 +91,8 @@ async def test_the_first_read_mints_the_grant_once_and_the_second_does_not(
 
     assert first.balance == starting_credits
     assert first.net_worth == starting_credits
+    assert first.starting_credits == starting_credits
+    assert str(first.total_pnl) == "0.0000"
     assert first.positions == []
     assert await transaction_count(session, key=key) == 1
     entries = await entry_count(session)

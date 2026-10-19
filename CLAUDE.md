@@ -61,8 +61,11 @@ docker compose up --build     # auth :8000, market :8001, audit :8002,
 ```bash
 cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pip install -r requirements-dev.txt   # again after pulling #75 (Alembic)
+                                                # and #342 (pytest-cov)
 .venv/bin/pytest              # needs `docker compose up -d db`
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
+COVERAGE_RCFILE=../.coveragerc .venv/bin/pytest --cov=. --cov-report=term-missing
+                              # the figure CI reports, for one suite [F-12] #342
 
 cd backend/auth_service       # or market_service, ledger_service
 DATABASE_URL=<its role's URL> PYTHONPATH=.. .venv/bin/python migrate.py   # <svc>-migrate's job
@@ -340,11 +343,15 @@ their own balance and history, permanently. The rule belongs in the caller: a
 reused key naming different money is a bug for a trade and an edit for a grant,
 and only the caller knows which.
 
-**The ledger has two write routes, and neither takes money.**
+**The ledger has four write routes, and none takes money.**
 `POST /ledger/markets/{id}/trades` ([T-2] #22) accepts a trader's own token,
 which is safe only because the body names no account, no amount and no leg:
 `TradeIn` is `extra="forbid"`, the debited account comes from the token's
 `sub`, and the price is computed under the book lock.
+`POST /ledger/markets/{id}/orders` ([T-6] #26) is the same shape: `OrderIn`
+names a limit price and a quantity, and the budget is computed from them.
+`POST /ledger/orders/{id}/cancel` ([T-8] #28) takes an empty body: the order
+must be the token's own, and what it releases is derived from the order row.
 `POST /ledger/markets/{id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service, and the holders
 and amounts come from the ledger's own positions under the book lock. A write
@@ -352,11 +359,11 @@ route that took an outcome, an amount or an account from the request would be a
 route for minting yourself credits, and would first have to answer how a
 *service* proves it is a service. ADR 0009's two amendments, ADR 0019.
 
-`posting.post` commits, so on the trade path it is the last call, and
+`posting.post_all` commits, so on the trade path it is the last call, and
 everything the trade writes is still pending when it runs. Two rules follow.
 The trade re-checks its idempotency key **under the book lock, before it writes
-anything** — the unlocked lookup at the top only ever short-circuits. And `post`
-refuses to replay into a session holding pending writes (`500
+anything** — the unlocked lookup at the top only ever short-circuits. And
+`post_all` refuses to replay into a session holding pending writes (`500
 pending_writes_on_replay`), because its replay commits the whole session and
 would grant a duplicate's shares against one payment. Lock order is the book
 row, then the accounts.
@@ -395,9 +402,9 @@ never creates it.
 
 **A writing service cannot read the log it writes to, including in its own
 tests.** It holds INSERT and no SELECT, so that no service can read another's
-actions. `market_service`'s audit tests open a second engine as `audit_svc`
-from `AUDIT_TEST_DATABASE_URL`, which is why that variable is set for its CI
-job too. Nothing anywhere holds UPDATE, DELETE or TRUNCATE, so no suite can
+actions. The audit tests of auth, market and ledger open a second engine as
+`audit_svc` from `AUDIT_TEST_DATABASE_URL`, through `shared/testing.py`'s
+`open_audit_reader`, which is why that variable is set for their CI jobs too. Nothing anywhere holds UPDATE, DELETE or TRUNCATE, so no suite can
 clean the table: tests scope themselves to a fresh actor id instead.
 
 **`backend/shared/` is importable, and almost nothing belongs in it.** [F-6]
@@ -409,8 +416,10 @@ checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 It holds token verification, the settings base, the role enum, the cursor
 format, the audit writer and `actor_of`, the migration runner (`shared/migrating.py`, ADR
 0020) and the test helpers in `shared/testing.py` (the env loader, the
-import-boundary scan, and the migration guard tests' `schema_catalog`,
-`drop_own_tables`, the two `assert_...` round trips and `compose_service`).
+import-boundary scan, the migration guard tests' `schema_catalog`,
+`drop_own_tables`, the two `assert_...` round trips and `compose_service`, plus
+`open_audit_reader`, which opens the session the writing services' suites read
+the log back through).
 That is the whole list, and ADR 0012 spends most of its length on what was
 left copied and why — `core/database.py` above all, because one shared `Base`
 would enrol every service's tables in every other service's metadata and the
@@ -651,6 +660,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0021** the leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
 - **0022** the ledger asks auth whether a trader is still active, once per trade
 - **0023** sending an approved outcome back inside its stored dispute window, by any admin
+- **0024** resting orders fill against the AMM inside the trade that moved the price
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

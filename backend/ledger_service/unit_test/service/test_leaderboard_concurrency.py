@@ -25,13 +25,13 @@ from unit_test.leaderboard_fixtures import (
     generations,
     granted,
     newest,
-    pausing_factory,
     queued_on_the_advisory_lock,
     refresh_with,
 )
 from unit_test.portfolio_fixtures import market_at
 from unit_test.sell_fixtures import hold, holding
-from unit_test.settlement_fixtures import PROBE_TIMEOUT, finish, raise_any, reached
+from unit_test.settlement_fixtures import raise_any
+from unit_test.trade_fixtures import PROBE_TIMEOUT, finish, pausing_factory, reached
 
 # Granted holders of the refresh's advisory lock in this database. A bigint
 # key below 2^32 sits in `objid`, with `classid` 0 and `objsubid` 1.

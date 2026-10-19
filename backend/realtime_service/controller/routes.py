@@ -217,9 +217,10 @@ async def _close(websocket: WebSocket, code: int, reason: str) -> None:
 
 @router.websocket("/ws/prices")
 async def prices(websocket: WebSocket) -> None:
-    """Live market prices, for any signed-in user.
+    """Live market prices, for any signed-in user, and that user's order frames.
 
-    No role check: a price is the same number for everybody.
+    No role check: a price is the same number for everybody. Order frames go
+    to the token's user only, with no subscription (ADR 0024).
     """
     # Refused before the upgrade, unlike the token: accepting a cross-origin
     # socket even briefly is what this check prevents. Logged, because a
@@ -247,6 +248,8 @@ async def prices(websocket: WebSocket) -> None:
     connection = Connection(websocket, queue_size=settings.send_queue_size)
 
     try:
+        # Inside the try, so the `forget` below detaches it on every ending.
+        hub.attach_user(connection, claims.user_id)
         ending = await _serve(websocket, connection, claims, hub)
     finally:
         # In a finally and before the close: a connection left in the hub is

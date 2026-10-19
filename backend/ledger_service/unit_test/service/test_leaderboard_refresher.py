@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from unit_test.settlement_fixtures import reached
+from unit_test.trade_fixtures import reached
 
 _TICK = 0.001
 

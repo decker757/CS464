@@ -7,7 +7,7 @@ Settings every service shares are in `shared.config.ServiceSettings` (ADR
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from shared.config import ServiceSettings
 
@@ -16,7 +16,8 @@ class Settings(ServiceSettings):
     # --- Database -------------------------------------------------------
     # Required, no default: a default is a credential in the repository.
     # Form: postgresql+asyncpg://USER:PASSWORD@HOST:PORT/NAME
-    database_url: str = Field(min_length=1)
+    # A SecretStr for the password in it (#307).
+    database_url: SecretStr = Field(min_length=1)
 
     # --- Tokens and cookies ---------------------------------------------
     # The signing key itself is in ServiceSettings, required with no default.
@@ -36,7 +37,8 @@ class Settings(ServiceSettings):
     # What the ledger presents as `X-Service-Key` to `/internal/users/lookup`.
     # Required, with no default, for `jwt_secret`'s reason: a default key is a
     # published key. ADR 0021 sets the 32-character floor.
-    ledger_service_key: str = Field(min_length=32)
+    # A SecretStr, as `jwt_secret` is (#307).
+    ledger_service_key: SecretStr = Field(min_length=32)
 
     # --- Registration policy --------------------------------------------
     password_min_length: int = 12

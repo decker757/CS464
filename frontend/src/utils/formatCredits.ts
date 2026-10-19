@@ -6,7 +6,17 @@
 //
 // Anything that is not a plain signed decimal shows "—" rather than letting
 // BigInt throw during render and take the whole page down (formatPrice.ts).
-const PLAIN_SIGNED_DECIMAL = /^-?\d+(\.\d+)?$/
+// The sign, the whole part and the fraction are captured, so compareCredits
+// below can read the digits it orders without a second regex saying the same
+// thing. Everything else here only asks whether a value matches at all.
+const PLAIN_SIGNED_DECIMAL = /^(-?)(\d+)(?:\.(\d+))?$/
+
+/** Whether a value is a plain signed decimal, and so safe to format or
+ * compare. A caller that would rather drop such a value than show "—" for
+ * it — picking the worst of several figures, say — asks with this first. */
+export function isPlainCredits(value: string): boolean {
+  return PLAIN_SIGNED_DECIMAL.test(value)
+}
 
 function splitSign(value: string): { digits: string; isNegative: boolean } {
   return value.startsWith('-') ? { digits: value.slice(1), isNegative: true } : { digits: value, isNegative: false }
@@ -26,6 +36,31 @@ export function isZeroCredits(value: string): boolean {
   return /^0*$/.test(wholeRaw) && /^0*$/.test(fractionRaw)
 }
 
+/**
+ * -1, 0 or 1: whether `left` is less than, the same as, or more than `right`.
+ *
+ * A comparison, not arithmetic — nothing here adds, subtracts or negates a
+ * figure, and the caller still displays the strings it was given. Padding
+ * both fractions to the same length leaves two plain integers, which BigInt
+ * orders exactly where two parsed floats would not. A value that is not a
+ * plain decimal orders as equal rather than letting BigInt throw during
+ * render; `isPlainCredits` is how a caller drops one instead.
+ */
+export function compareCredits(left: string, right: string): number {
+  const leftParts = PLAIN_SIGNED_DECIMAL.exec(left)
+  const rightParts = PLAIN_SIGNED_DECIMAL.exec(right)
+  if (!leftParts || !rightParts) return 0
+
+  const [, leftSign, leftWhole, leftFraction = ''] = leftParts
+  const [, rightSign, rightWhole, rightFraction = ''] = rightParts
+  const fractionDigits = Math.max(leftFraction.length, rightFraction.length)
+  const leftUnits = BigInt(leftSign + leftWhole + leftFraction.padEnd(fractionDigits, '0'))
+  const rightUnits = BigInt(rightSign + rightWhole + rightFraction.padEnd(fractionDigits, '0'))
+
+  if (leftUnits < rightUnits) return -1
+  return leftUnits > rightUnits ? 1 : 0
+}
+
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
 // say it is never a gain on a book nobody else has traded, and the same is
 // true of a signed amount that happens to land on exactly zero. Only colour
@@ -41,7 +76,7 @@ export function signedAmountColor(value: string): string {
 // BigInt is exact over that integer part — no float involved — and
 // toLocaleString adds the thousands separators and the minus sign.
 export function formatCredits(balance: string): string {
-  if (!PLAIN_SIGNED_DECIMAL.test(balance)) return '—'
+  if (!isPlainCredits(balance)) return '—'
 
   const integerPart = balance.split('.')[0] || '0'
   return BigInt(integerPart).toLocaleString('en-US')
@@ -54,7 +89,7 @@ export function formatCredits(balance: string): string {
 // whole-number part, same as formatCredits; the four decimal digits are
 // joined on afterwards since BigInt has no fractional part to keep.
 export function formatCreditsPrecise(value: string, { showSign = false } = {}): string {
-  if (!PLAIN_SIGNED_DECIMAL.test(value)) return '—'
+  if (!isPlainCredits(value)) return '—'
 
   const { digits, isNegative } = splitSign(value)
   const [wholeRaw, fractionRaw = ''] = digits.split('.')
@@ -64,4 +99,13 @@ export function formatCreditsPrecise(value: string, { showSign = false } = {}): 
   if (isNegative) sign = '-'
   else if (showSign && !isZeroCredits(value)) sign = '+'
   return `${sign}${integerPart}.${fractionPart}`
+}
+
+// `average_price` / `average_entry_price`: credits per share, not a
+// probability — it can reach 1.0000 and pass it on a skewed book
+// (ledger-service.md), so it is never shown as a percentage. #247 picks this
+// format as the one shown on every screen (frontend/CLAUDE.md); every caller
+// goes through this function so the three screens cannot drift again.
+export function formatAveragePrice(value: string): string {
+  return formatCreditsPrecise(value)
 }

@@ -5,7 +5,8 @@ Tests: Vitest, Testing Library, MSW. Lint: oxlint.
 
 ```bash
 npm run dev
-npm run test:run      # CI runs this,
+npm run test:run      # CI runs `test:coverage`, which is this plus a figure
+                      # for the run summary ([F-12] #342). Either will do here.
 npm run lint          # this,
 npx tsc --noEmit      # this (and `npx tsc --noEmit -p e2e` for the e2e tests),
 npm run knip          # this (dead code: unused files, exports, dependencies),
@@ -102,6 +103,12 @@ If a helper is used by two files, it moves to `src/utils/` (pure) or
   message text. Pages call that function; they do not parse axios errors.
 - Money arrives as decimal **strings**. Never `parseFloat` a balance or cost
   to do arithmetic with it; display it through one formatting helper.
+- An average price (`average_price`, `average_entry_price`) is credits per
+  share, not a probability — it can reach `1.0000` and pass it on a skewed
+  book (ledger-service.md) — so it is always shown through
+  `formatAveragePrice`, never through `formatPrice`'s percentage. The
+  marginal `price` a market quotes is a different number and stays a
+  percentage. #247.
 - The server is the authority. Show the cost the preview endpoint returns and
   the balance the ledger returns; do not recompute either in the browser.
 - Auth rides in cookies (ADR 0002). Never put a token in `localStorage`, a
@@ -154,6 +161,28 @@ Everything else belongs in a unit test.
   also run beside your dev stack: another compose project on other ports,
   with the same variables pointed at it, `E2E_BASE_URL` for the frontend,
   and `COMPOSE_PROJECT_NAME` so promotion reaches that project's database.
+- Import `test` and `expect` from `./support/fixtures`, never straight from
+  `@playwright/test`. That import is what records the pages your test opens.
+
+**Every route in `src/App.tsx` must be opened by some test.** The run fails
+otherwise, naming the pages nothing reached ([F-12] #341). A page that
+genuinely does not need a browser goes in `e2e/route-coverage-allowlist.ts`
+with the reason why, and an entry there whose route *does* get visited fails
+the run too, so the list cannot rot.
+
+The check runs only when `CI` is set, so running one file locally does not
+fail on every route it did not touch. Run the whole thing with the check
+before you push:
+
+```bash
+CI=1 npm run e2e
+```
+
+It guards that a page is reached, not that its feature is asserted — so it
+catches a screen nobody ever opened, and not a screen opened without its new
+control being checked. A page the router then redirected away from counts as
+reached too: a trader bounced off `/admin/users` marks it covered. Both are
+still on the reviewer.
 
 ## Before calling it done
 

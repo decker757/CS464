@@ -30,7 +30,6 @@ from unit_test.conftest import idle_in_transaction, set_q
 from unit_test.history_fixtures import read_history
 from unit_test.settlement_fixtures import (
     LOSER,
-    PROBE_TIMEOUT,
     SUBSIDY,
     WINNER,
     ZERO,
@@ -55,6 +54,7 @@ from unit_test.settlement_fixtures import (
     warm,
 )
 from unit_test.trade_fixtures import (
+    PROBE_TIMEOUT,
     assert_ledger_balances,
     books,
     capture_sql_with_parameters,

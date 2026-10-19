@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from shared.config import ServiceSettings
 
@@ -16,8 +16,9 @@ from shared.config import ServiceSettings
 class Settings(ServiceSettings):
     # Required, no default: pointed at the wrong Redis this service starts,
     # reports `ok` and relays nothing. D-046.
-    # Form: redis://[:PASSWORD@]HOST:PORT/DB
-    redis_url: str = Field(min_length=1)
+    # Form: redis://[:PASSWORD@]HOST:PORT/DB. A SecretStr for that password
+    # (#307).
+    redis_url: SecretStr = Field(min_length=1)
 
     # Markets one socket may watch. Capped because each subscription costs a
     # fan-out iteration per event, and subscribing in a loop is the cheapest

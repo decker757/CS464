@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AdminAction } from '../api/auditApi'
-import { latestProposalPerMarket, toPendingProposal } from './proposals'
+import { latestActionPerTarget, toApprovedResult, toPendingProposal } from './proposals'
 
 function proposedEntry(overrides: Partial<AdminAction> = {}): AdminAction {
   return {
@@ -26,18 +26,18 @@ function proposedEntry(overrides: Partial<AdminAction> = {}): AdminAction {
   }
 }
 
-describe('latestProposalPerMarket', () => {
-  it('picks the most recent entry per market', () => {
+describe('latestActionPerTarget', () => {
+  it('picks the most recent entry per target', () => {
     const older = proposedEntry({ id: 'a1', occurred_at: '2026-01-01T00:00:00Z', context: { proposal_id: 'prop-1' } })
     const newer = proposedEntry({ id: 'a2', occurred_at: '2026-01-02T00:00:00Z', context: { proposal_id: 'prop-2' } })
-    const result = latestProposalPerMarket([older, newer])
+    const result = latestActionPerTarget([older, newer])
     expect(result.get('mkt-1')?.id).toBe('a2')
   })
 
-  it('keeps entries for different markets separate', () => {
+  it('keeps entries for different targets separate', () => {
     const first = proposedEntry({ id: 'a1', target_id: 'mkt-1' })
     const second = proposedEntry({ id: 'a2', target_id: 'mkt-2' })
-    const result = latestProposalPerMarket([first, second])
+    const result = latestActionPerTarget([first, second])
     expect(result.size).toBe(2)
     expect(result.get('mkt-1')?.id).toBe('a1')
     expect(result.get('mkt-2')?.id).toBe('a2')
@@ -46,8 +46,8 @@ describe('latestProposalPerMarket', () => {
   it('is order-independent: the same result regardless of input order', () => {
     const older = proposedEntry({ id: 'a1', occurred_at: '2026-01-01T00:00:00Z' })
     const newer = proposedEntry({ id: 'a2', occurred_at: '2026-01-02T00:00:00Z' })
-    expect(latestProposalPerMarket([newer, older]).get('mkt-1')?.id).toBe('a2')
-    expect(latestProposalPerMarket([older, newer]).get('mkt-1')?.id).toBe('a2')
+    expect(latestActionPerTarget([newer, older]).get('mkt-1')?.id).toBe('a2')
+    expect(latestActionPerTarget([older, newer]).get('mkt-1')?.id).toBe('a2')
   })
 })
 
@@ -76,5 +76,57 @@ describe('toPendingProposal', () => {
     expect(result.proposalId).toBeNull()
     expect(result.evidenceUrl).toBeNull()
     expect(result.evidenceNote).toBe('A note.')
+  })
+})
+
+function approvedEntry(overrides: Partial<AdminAction> = {}): AdminAction {
+  return {
+    id: 'a3',
+    occurred_at: '2026-01-02T00:00:00Z',
+    actor_id: 'admin-2',
+    actor_username: 'ihsan_b',
+    actor_role: 'admin',
+    action_type: 'market.outcome_approved',
+    target_type: 'market',
+    target_id: 'mkt-1',
+    target_label: 'Will it rain?',
+    reason: null,
+    context: {
+      proposal_id: 'prop-1',
+      winning_outcome: 'Yes',
+      evidence_url: 'https://example.com',
+      evidence_note: 'A note.',
+      proposed_by_username: 'ernest_t',
+    },
+    source_service: 'market_service',
+    ...overrides,
+  }
+}
+
+describe('toApprovedResult', () => {
+  it('maps an audit entry and market into an ApprovedResult', () => {
+    const entry = approvedEntry()
+    const result = toApprovedResult({ id: 'mkt-1', question: 'Will it rain?' }, entry)
+    expect(result).toEqual({
+      marketId: 'mkt-1',
+      question: 'Will it rain?',
+      proposalId: 'prop-1',
+      winningOutcome: 'Yes',
+      evidenceUrl: 'https://example.com',
+      evidenceNote: 'A note.',
+      proposedByUsername: 'ernest_t',
+      approvedByUsername: 'ihsan_b',
+      approvedAt: '2026-01-02T00:00:00Z',
+    })
+  })
+
+  it('defaults proposalId, evidenceUrl and evidenceNote to null when the context omits them', () => {
+    // An approval of a proposal made before proposal ids existed has no
+    // proposal_id key (market-service.md's send-back request table).
+    const entry = approvedEntry({ context: { winning_outcome: 'Yes', proposed_by_username: 'ernest_t' } })
+    const result = toApprovedResult({ id: 'mkt-1', question: 'Will it rain?' }, entry)
+    expect(result.proposalId).toBeNull()
+    expect(result.evidenceUrl).toBeNull()
+    expect(result.evidenceNote).toBeNull()
   })
 })

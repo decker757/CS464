@@ -5,6 +5,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import { AuthProvider } from './context/AuthContext'
 import { BalanceProvider } from './context/BalanceContext'
 import LandingPage from './pages/LandingPage'
+import LeaderboardPage from './pages/LeaderboardPage'
 import LoginPage from './pages/LoginPage'
 import MarketDetailPage from './pages/MarketDetailPage'
 import MarketsPage from './pages/MarketsPage'
@@ -38,6 +39,7 @@ export default function App() {
             <Route path="/markets/:id" element={<ProtectedRoute><MarketDetailPage /></ProtectedRoute>} />
             <Route path="/portfolio" element={<ProtectedRoute><PortfolioPage /></ProtectedRoute>} />
             <Route path="/history" element={<ProtectedRoute><TradeHistoryPage /></ProtectedRoute>} />
+            <Route path="/leaderboard" element={<ProtectedRoute><LeaderboardPage /></ProtectedRoute>} />
             <Route path="/admin/markets" element={<ProtectedRoute requireAdmin><AdminMarketsPage /></ProtectedRoute>} />
             <Route path="/admin/users" element={<ProtectedRoute requireAdmin><AdminUsersPage /></ProtectedRoute>} />
             <Route path="/admin/users/:userId" element={<ProtectedRoute requireAdmin><AdminUserHistoryPage /></ProtectedRoute>} />

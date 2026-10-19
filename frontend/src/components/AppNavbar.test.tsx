@@ -77,6 +77,13 @@ describe('AppNavbar', () => {
     expect(screen.getByText('alice')).toBeInTheDocument()
   })
 
+  it('shows the Leaderboard link to any signed-in user', () => {
+    // Any valid access token sees the same board (ledger-service.md) — no
+    // role gate, unlike New Market below.
+    renderNavbar(trader)
+    expect(screen.getByRole('link', { name: /leaderboard/i })).toHaveAttribute('href', '/leaderboard')
+  })
+
   it('shows the New Market link for admins', () => {
     renderNavbar(admin)
     expect(screen.getByRole('link', { name: /new market/i })).toBeInTheDocument()

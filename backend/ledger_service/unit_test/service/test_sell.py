@@ -36,6 +36,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import terms_client_over
+from unit_test.order_fixtures import add_order
 from unit_test.sell_fixtures import (
     AT_ZERO,
     BASIS,
@@ -274,11 +275,11 @@ async def test_proceeds_below_a_tick_are_refused_and_write_nothing(
 async def test_a_sell_that_fails_inside_post_writes_nothing_and_publishes_nothing(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The rollback test. `post` raises with the sell's own writes pending —
+    """The rollback test. `post_all` raises with the sell's own writes pending —
     the position released, `q` and `state_version` moved — and none of them
     reaches the database, and nothing is announced.
 
-    Those writes are still pending on the session when `post` raises; the
+    Those writes are still pending on the session when `post_all` raises; the
     request's own rollback, `core/database.py::get_session`'s, discards them.
     So the count before that rollback is the footprint's column selects —
     nothing was flushed into the transaction early — and `assert_wrote_nothing`
@@ -288,13 +289,15 @@ async def test_a_sell_that_fails_inside_post_writes_nothing_and_publishes_nothin
     recorder = Recorder()
     pending_positions: list[tuple[Decimal, Decimal]] = []
 
-    async def failing_post(request_session: AsyncSession, **_: object) -> None:
+    async def failing_post(
+        request_session: AsyncSession, *_: object, **__: object
+    ) -> None:
         for row in request_session.dirty:
             if isinstance(row, entities().Position):
                 pending_positions.append((row.quantity, row.cost_basis))
         raise RuntimeError("post failed")
 
-    monkeypatch.setattr(posting(), "post", failing_post)
+    monkeypatch.setattr(posting(), "post_all", failing_post)
 
     with pytest.raises(RuntimeError, match="post failed"):
         await sell(session, upstream, user_id=user_id, redis_client=recorder)
@@ -421,6 +424,45 @@ async def test_a_position_in_one_outcome_cannot_fund_a_sell_of_another(
 
     assert refused.value.held == Decimal("0.0000")
     await assert_wrote_nothing(session, upstream.market_id, before)
+
+
+@pytest.mark.parametrize(
+    ("quantity", "allowed"),
+    [(HELD - Decimal("1.0000"), True), (HELD - Decimal("1.0000") + TICK, False)],
+    ids=["the_unreserved_shares", "a_tick_into_the_reserved_ones"],
+)
+async def test_an_instant_sell_cannot_spend_shares_a_sell_order_reserves(
+    session: AsyncSession, quantity: Decimal, allowed: bool
+) -> None:
+    """ADR 0024: "An instant sell is limited to the position less the shares
+    the owner's live sells reserve, checked under the book lock". A resting
+    sell holds one of the 54.3333 shares; the other 53.3333 can be sold, and a
+    tick more is refused with `reserved` beside `held` and `requested`. The
+    order's limit is above the price, so it rests through the sell's cascade."""
+    upstream, user_id = await _holder(session)
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=upstream.market_id,
+        outcome_id=upstream.outcomes[0],
+        budget=None,
+        limit_price="0.9000",
+    )
+    await session.commit()
+
+    if allowed:
+        await sell(session, upstream, user_id=user_id, quantity=quantity)
+        held, _ = await holding(session, user_id, upstream.market_id, upstream.outcomes[0])
+        assert held == Decimal("1.0000")
+        return
+
+    with pytest.raises(insufficient_shares_held()) as refused:
+        await sell(session, upstream, user_id=user_id, quantity=quantity)
+    assert (refused.value.held, refused.value.reserved, refused.value.requested) == (
+        HELD,
+        Decimal("1.0000"),
+        quantity,
+    )
 
 
 async def test_the_holding_check_is_read_after_the_book_lock_and_takes_no_lock(
@@ -592,8 +634,9 @@ async def test_a_position_sold_to_zero_keeps_its_row_and_a_rebuy_is_a_fresh_basi
 
 
 async def test_realized_pnl_is_stored_nowhere(session: AsyncSession) -> None:
-    """"Realized P&L is not stored": the sell's context is exactly the seven
-    fields a buy's is, and `positions` has no column beyond #22's."""
+    """"Realized P&L is not stored": the sell's context is exactly the eight
+    fields a buy's is, the seven the response is rebuilt from and
+    `book_state_version`, and `positions` has no column beyond #22's."""
     upstream, user_id = await _holder(session)
     ents = entities()
 
@@ -614,6 +657,7 @@ async def test_realized_pnl_is_stored_nowhere(session: AsyncSession) -> None:
         "quantity",
         "total",
         "state_version",
+        "book_state_version",
     }
     assert context["side"] == "sell"
     assert Decimal(context["total"]) == PROCEEDS
