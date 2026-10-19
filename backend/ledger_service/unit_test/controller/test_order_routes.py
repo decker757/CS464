@@ -443,13 +443,16 @@ async def test_a_cancel_is_200_with_the_order_and_what_it_released(
 ) -> None:
     """The contract's response: the order object as cancelled, and what the
     cancel released as a decimal string, the other figure null. The
-    contract's example order spent 11.8152 of 60.0000 on arrival."""
+    contract's example order spent 11.8152 of 60.0000 on arrival. It leaves
+    `GET /ledger/orders/me`, which listed it until the cancel."""
     client, _ = trade_client
     market = await _market(session, monkeypatch)
     headers = bearer(uuid.uuid4())
     order = await _placed(client, market, headers)
+    listed = await client.get(_MY_ORDERS, headers=headers)
 
     response = await client.post(_cancel_path(order["id"]), headers=headers)
+    after = await client.get(_MY_ORDERS, headers=headers)
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -464,6 +467,8 @@ async def test_a_cancel_is_200_with_the_order_and_what_it_released(
     )
     assert cancelled["filled_quantity"] == "20.5465"
     assert cancelled["cancelled_at"] is not None
+    assert [mine["id"] for mine in listed.json()["orders"]] == [order["id"]]
+    assert after.json() == {"orders": []}
 
 
 async def test_a_cancel_of_another_traders_order_is_404_order_not_found(
