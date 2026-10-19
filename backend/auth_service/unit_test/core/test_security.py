@@ -70,7 +70,7 @@ def test_a_token_from_another_issuer_is_rejected() -> None:
             "iat": now,
             "exp": now + timedelta(minutes=15),
         },
-        settings.jwt_secret,
+        settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
 
@@ -83,7 +83,7 @@ def test_the_role_travels_as_a_plain_string_claim() -> None:
 
     payload = jwt.decode(
         token,
-        get_settings().jwt_secret,
+        get_settings().jwt_secret.get_secret_value(),
         algorithms=[get_settings().jwt_algorithm],
         issuer=get_settings().jwt_issuer,
     )

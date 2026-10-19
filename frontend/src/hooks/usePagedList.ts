@@ -34,6 +34,15 @@ interface PagedListOptions<Item, Page> {
   nextCursorOf: (page: Page) => string | null
   /** What makes two items the same one, for appendUnseen. */
   idOf: (item: Item) => string
+  /**
+   * When a "Load more" error means the whole list is stale rather than one
+   * failed page — the leaderboard's `409 leaderboard_refreshed`
+   * (ledger-service.md) — restart from page one of the new list and replace
+   * everything shown with it, instead of leaving the old rows up and setting
+   * `loadMoreFailed`. The old rows are not a partial answer to retry; they
+   * are the wrong ranking.
+   */
+  restartOnLoadMoreError?: (err: unknown) => boolean
 }
 
 // A keyset-paged list behind a "Load more" button ([X-1] #104, [T-5] #53).
@@ -48,7 +57,7 @@ interface PagedListOptions<Item, Page> {
 // say where in that shape the rows and the cursor are.
 export function usePagedList<Item, Page>(
   fetchPage: (cursor: string | undefined) => Promise<Page>,
-  { itemsOf, nextCursorOf, idOf }: PagedListOptions<Item, Page>,
+  { itemsOf, nextCursorOf, idOf, restartOnLoadMoreError }: PagedListOptions<Item, Page>,
 ): PagedList<Item, Page> {
   const [items, setItems] = useState<Item[]>([])
   const [latestPage, setLatestPage] = useState<Page | null>(null)
@@ -103,8 +112,23 @@ export function usePagedList<Item, Page>(
         setLatestPage(page)
         setNextCursor(nextCursorOf(page))
       })
-      // The rows already shown stay; so does the button, so the user can retry.
-      .catch(() => { if (isCurrent()) setLoadMoreFailed(true) })
+      .catch(async err => {
+        if (!isCurrent()) return
+        if (!restartOnLoadMoreError?.(err)) {
+          // The rows already shown stay; so does the button, so the user can retry.
+          setLoadMoreFailed(true)
+          return
+        }
+        try {
+          const page = await fetchPage(undefined)
+          if (!isCurrent()) return
+          setItems(itemsOf(page))
+          setLatestPage(page)
+          setNextCursor(nextCursorOf(page))
+        } catch {
+          if (isCurrent()) setLoadMoreFailed(true)
+        }
+      })
       .finally(() => { if (isCurrent()) setIsLoadingMore(false) })
   }
 

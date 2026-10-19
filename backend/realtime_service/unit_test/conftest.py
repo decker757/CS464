@@ -92,7 +92,7 @@ def mint_token(
             "exp": now + timedelta(seconds=expires_in),
             "jti": secrets.token_urlsafe(16),
         },
-        secret if secret is not None else settings.jwt_secret,
+        secret if secret is not None else settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
 
@@ -121,6 +121,34 @@ def make_event(
     )
 
 
+def make_order_message(
+    user_id: uuid.UUID,
+    *,
+    market_id: uuid.UUID | None = None,
+    state_version: int = 1,
+) -> dict[str, Any]:
+    """An `order.update` message as the ledger puts it on the wire: the
+    documented example's figures, for `user_id`'s order. A dict, so a test
+    can publish it, break it, or validate it."""
+    return {
+        "order_id": str(uuid.uuid4()),
+        "user_id": str(user_id),
+        "market_id": str(market_id or uuid.uuid4()),
+        "outcome_id": str(uuid.uuid4()),
+        "side": "buy",
+        "status": "open",
+        "quantity": "100.0000",
+        "filled_quantity": "20.5465",
+        "fill": {
+            "transaction_id": str(uuid.uuid4()),
+            "quantity": "20.5465",
+            "total": "-11.8152",
+            "state_version": state_version,
+        },
+        "occurred_at": "2026-10-20T09:12:44.318000+00:00",
+    }
+
+
 @pytest.fixture(autouse=True)
 def fresh_singletons():
     """Give every test its own hub and version gate.
@@ -147,7 +175,7 @@ def gate():
 
 @pytest.fixture
 def redis_url() -> str:
-    return get_settings().redis_url
+    return get_settings().redis_url.get_secret_value()
 
 
 @pytest.fixture

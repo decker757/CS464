@@ -10,18 +10,12 @@ import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
 import { useMarketPrices } from '../hooks/useMarketPrices'
+import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
 // setTimeout overflows a 32-bit int at ~24.8 days; a close further out than
 // that gets no timer, since the page will be refetched long before then.
 const MAX_TIMEOUT_MS = 2 ** 31 - 1
-
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-SG', {
-    day: 'numeric', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
 
 // Why trading is closed, for a market that cannot be traded right now.
 function closedMessage(status: MarketStatus): string {

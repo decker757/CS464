@@ -3,9 +3,11 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-Two request models, for the two routes that write: `TradeIn` for [T-2] #22's
-`POST /ledger/markets/{market_id}/trades`, and `SettlementIn` for [3.4] #12's
-`POST /ledger/markets/{market_id}/settlement`. Neither carries an account, an
+Four request models, for the four routes that write: `TradeIn` for [T-2]
+#22's `POST /ledger/markets/{market_id}/trades`, `OrderIn` for [T-6] #26's
+`POST /ledger/markets/{market_id}/orders`, `CancelIn` for [T-8] #28's
+`POST /ledger/orders/{order_id}/cancel`, and `SettlementIn` for [3.4] #12's
+`POST /ledger/markets/{market_id}/settlement`. None carries an account, an
 amount or a leg — `extra="forbid"` refuses a body naming one — which is the
 answer ADR 0009's amendments give to how a caller authenticates to a write
 path.
@@ -28,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer
 
@@ -54,14 +56,30 @@ class BalanceOut(BaseModel):
 
     balance: Decimal = Field(
         description=(
-            "Available credits, as an exact decimal string. The sum of every "
-            "entry on this account and nothing else — there is no stored "
-            "balance for this to disagree with."
+            "The account's credits, including those resting buy orders "
+            "reserve, as an exact decimal string. The sum of every entry on "
+            "this account and nothing else — there is no stored balance for "
+            "this to disagree with."
         ),
         examples=["1000.0000"],
     )
+    reserved: Decimal = Field(
+        description=(
+            "What this user's live buy orders could still spend, summed over "
+            "every market: each order's budget less what it has spent. Part "
+            "of `balance`, and not an entry (ADR 0024)."
+        ),
+        examples=["60.0000"],
+    )
+    available: Decimal = Field(
+        description=(
+            "`balance - reserved`: what a new buy, a new buy order or the "
+            "trade route can spend."
+        ),
+        examples=["940.0000"],
+    )
 
-    @field_serializer("balance")
+    @field_serializer("balance", "reserved", "available")
     def _as_string(self, value: Decimal) -> str:
         """Exact on the wire. See the note at the top of this module."""
         return str(value)
@@ -450,6 +468,25 @@ class PreviewOut(BaseModel):
         ),
         examples=["0.7315"],
     )
+    payout_if_wins: Decimal | None = Field(
+        description=(
+            "What this buy pays if its outcome wins: the quantity at scale 4, "
+            "because a winning share pays one credit. This trade alone, not "
+            "the position it adds to. Null on a sell, which is paid `total` "
+            "now and has nothing left to win."
+        ),
+        examples=["10.0000"],
+    )
+    profit_if_wins: Decimal | None = Field(
+        description=(
+            "`payout_if_wins` less the credits this buy costs, which is "
+            "`payout_if_wins + total`, exact at scale 4 with no rounding of "
+            "its own. Can be zero or a tick below on a buy charged its whole "
+            "quantity, such as the smallest buys or a buy of an outcome "
+            "priced near one. Null on a sell."
+        ),
+        examples=["2.6848"],
+    )
 
     prices: list[OutcomePriceOut] = Field(
         description="The market's current price, every outcome, ordered by position."
@@ -464,6 +501,10 @@ class PreviewOut(BaseModel):
     @field_serializer("quantity", "total", "average_price")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+    @field_serializer("payout_if_wins", "profit_if_wins")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
 
 
 class TradeIn(BaseModel):
@@ -559,10 +600,167 @@ class TradeOut(BaseModel):
     state_version: int = Field(
         description="The book's counter after this trade, not before it."
     )
+    book_state_version: int = Field(
+        description=(
+            "The book's counter after this trade and every resting order it "
+            "filled (ADR 0024): the version of the one `price` frame the trade "
+            "publishes. Equal to `state_version` when it filled none."
+        )
+    )
 
     @field_serializer("quantity", "total")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
+
+
+class OrderIn(BaseModel):
+    """A limit order, a buy or a sell. [T-6] #26, ADR 0024.
+
+    `extra="forbid"` over five fields, `TradeIn`'s reason: the body names a
+    price and a quantity, never an account or an amount. The budget is
+    computed from them and the account is the token's. There is no
+    `state_version`: the limit is what protects the trader (ADR 0024, "A
+    placement takes no `state_version`"), so a body sending one is refused.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome_id: uuid.UUID
+    side: Side = Field(description="`buy` or `sell`; anything else is 422.")
+    limit_price: Decimal = Field(
+        gt=0,
+        lt=1,
+        decimal_places=4,
+        description=(
+            "The price on this order's own outcome: a buy fills at or below "
+            "it, a sell at or above. Strictly between 0 and 1, at most four "
+            "decimal places; a fifth is 422 rather than rounded."
+        ),
+    )
+    quantity: Decimal = Field(
+        gt=0,
+        max_digits=18,
+        decimal_places=4,
+        description="Shares, by the trade route's rules: `> 0`, four places, 18 digits.",
+    )
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=175,
+        description=(
+            "One order, once. The stored key is "
+            "`order:<user_id>:<market_id>:<this value>`, so this string only "
+            "has to be unique to the caller, and is bounded as the trade's is."
+        ),
+    )
+
+
+class OrderOut(BaseModel):
+    """One limit order as it stands now. [T-6] #26, ADR 0024.
+
+    The order object of `docs/api/ledger-service.md`. Amounts are decimal
+    strings at scale 4, as everywhere here, in a python-mode dump as well as
+    on the wire.
+    """
+
+    id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    outcome_position: int = Field(
+        description="0 or 1. Labels are market_service's, as in the portfolio."
+    )
+    side: Side
+    limit_price: Decimal
+    quantity: Decimal
+    filled_quantity: Decimal = Field(description="Shares filled so far, across every fill.")
+    average_fill_price: Decimal | None = Field(
+        description="What the fills cost or paid per share, half-up. Null until the first fill."
+    )
+    reserved_credits: Decimal | None = Field(
+        description=(
+            "A buy only: its budget less what it has spent. Null on a sell; "
+            "`0.0000` once the order is not live."
+        )
+    )
+    reserved_shares: Decimal | None = Field(
+        description=(
+            "A sell only: the shares it still holds back. Null on a buy; "
+            "`0.0000` once the order is not live."
+        )
+    )
+    status: Literal["open", "filled", "cancelled", "released"] = Field(
+        description="`released`: the market has a result. Derived on every read."
+    )
+    created_at: UtcDatetime
+    cancelled_at: UtcDatetime | None
+
+    @field_serializer("limit_price", "quantity", "filled_quantity")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("average_fill_price", "reserved_credits", "reserved_shares")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
+
+
+class FillOut(BaseModel):
+    """One fill a placement made: a trade in the owner's history."""
+
+    transaction_id: uuid.UUID
+    quantity: Decimal
+    total: Decimal = Field(description="Signed as the trade route signs it.")
+    state_version: int = Field(description="The book's counter after this fill.")
+
+    @field_serializer("quantity", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class PlacementOut(BaseModel):
+    """What a placement did, or, on a retry, the order as it stands now and the
+    fills the first request made. [T-6] #26."""
+
+    order: OrderOut
+    fills: list[FillOut] = Field(
+        description="What this request filled on arrival. Empty when nothing did."
+    )
+    book_state_version: int = Field(
+        description=(
+            "The book's counter after this whole request, including any "
+            "resting orders the placement's cascade filled, so it can be "
+            "higher than the highest `state_version` in `fills`. The counter "
+            "the order was placed against when nothing filled."
+        )
+    )
+
+
+class OrderListOut(BaseModel):
+    """The caller's live orders, newest first. [T-6] #26."""
+
+    orders: list[OrderOut]
+
+
+class CancelIn(BaseModel):
+    """The body of a cancel: nothing. [T-8] #28, ADR 0024.
+
+    No fields and `extra="forbid"`, `SettlementIn`'s reason: a body naming an
+    amount or a quantity to release is `422 invalid_request` rather than
+    silently dropped, because a cancel always releases the whole remainder.
+    The route never reads it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CancellationOut(BaseModel):
+    """What a cancel released. [T-8] #28, ADR 0024."""
+
+    order: OrderOut = Field(description="The order as cancelled: nothing reserved.")
+    released_credits: Decimal | None = Field(
+        description="A buy only: its budget less what it had spent. Null on a sell."
+    )
+    released_shares: Decimal | None = Field(
+        description="A sell only: the shares it had not sold. Null on a buy."
+    )
 
 
 class SettlementIn(BaseModel):
@@ -638,6 +836,48 @@ class PriceEvent(BaseModel):
     market_id: uuid.UUID
     state_version: int = Field(ge=0)
     prices: list[OutcomePrice] = Field(min_length=2)
+    occurred_at: UtcDatetime
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class OrderFill(BaseModel):
+    """One fill of a resting order, as the `order.update` payload carries it.
+
+    The producer's copy of `realtime_service/model/schemas.py::OrderFill`,
+    pinned as `PriceEvent` is (D-048).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: uuid.UUID
+    quantity: Decimal
+    total: Decimal
+    state_version: int = Field(ge=0)
+
+
+class OrderEvent(BaseModel):
+    """One fill of a resting order, for its owner. The `order.update` payload.
+    [T-7] #27, ADR 0024.
+
+    The producer's copy of `realtime_service/model/schemas.py::OrderEvent`,
+    which validates with `extra="forbid"`. A cancel sends none, so `status`
+    is the order's after a fill: `open` or `filled`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: uuid.UUID
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: Side
+    status: Literal["open", "filled"]
+    quantity: Decimal
+    filled_quantity: Decimal
+    fill: OrderFill
     occurred_at: UtcDatetime
 
     @field_serializer("occurred_at")

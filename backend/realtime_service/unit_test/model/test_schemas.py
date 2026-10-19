@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -10,6 +11,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+import model.schemas as schemas
 from model.schemas import (
     ClientCommand,
     OutcomePrice,
@@ -18,7 +20,7 @@ from model.schemas import (
     subscribed_frame,
     unsubscribed_frame,
 )
-from unit_test.conftest import make_event
+from unit_test.conftest import make_event, make_order_message
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +110,42 @@ def test_occurred_at_keeps_its_timezone(market_id: uuid.UUID) -> None:
     frame = make_event(market_id).frame()
 
     assert datetime.fromisoformat(frame["occurred_at"]).tzinfo is not None
+
+
+# ---------------------------------------------------------------------------
+# OrderEvent — what the ledger publishes for each fill (ADR 0024)
+# ---------------------------------------------------------------------------
+
+
+def test_an_order_message_becomes_the_documented_frame() -> None:
+    """docs/api/realtime-service.md, "Order updates": flat, the message plus a
+    `type`, amounts as decimal strings at the scale they arrived with, the
+    fill nested, and `occurred_at` in the `+00:00` form the price frame uses."""
+    message = make_order_message(uuid.uuid4())
+
+    frame = schemas.OrderEvent.model_validate_json(json.dumps(message)).frame()
+
+    assert frame == {"type": "order", **message}
+
+
+@pytest.mark.parametrize(
+    ("description", "change"),
+    [
+        ("an unknown field", lambda message: message.update(surprise=True)),
+        ("an unknown field on the fill", lambda message: message["fill"].update(price="0.6")),
+        ("a cancelled order", lambda message: message.update(status="cancelled")),
+    ],
+    ids=["unknown_field", "unknown_fill_field", "cancelled"],
+)
+def test_an_order_message_outside_the_contract_is_refused(description: str, change) -> None:
+    """A producer's extra field is a contract change, as on `PriceEvent`. And
+    a cancel sends no frame (the contract: "A cancel and a placement that does
+    not fill send none"), so a `cancelled` status is a producer bug."""
+    message = make_order_message(uuid.uuid4())
+    change(message)
+
+    with pytest.raises(ValidationError):
+        schemas.OrderEvent.model_validate_json(json.dumps(message))
 
 
 # ---------------------------------------------------------------------------

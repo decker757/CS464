@@ -1,4 +1,5 @@
-"""`PriceEvent`: the copy, and what holds it to its original. [F-9] #112, D-048.
+"""`PriceEvent` and `OrderEvent`: the copies, and what holds them to their
+originals. [F-9] #112, [T-7] #27, D-048.
 
 The consumer forbids extra fields, so a drift drops every event silently. The
 copy is pinned against `realtime_service/model/schemas.py`, read as source
@@ -35,6 +36,19 @@ _REALTIME_SCHEMAS = _BACKEND / "realtime_service" / "model" / "schemas.py"
 # derived, so it survives both models drifting together.
 _DOCUMENTED_EVENT_FIELDS = {"market_id", "state_version", "prices", "occurred_at"}
 _DOCUMENTED_PRICE_FIELDS = {"outcome_id", "position", "price"}
+_DOCUMENTED_ORDER_FIELDS = {
+    "order_id",
+    "user_id",
+    "market_id",
+    "outcome_id",
+    "side",
+    "status",
+    "quantity",
+    "filled_quantity",
+    "fill",
+    "occurred_at",
+}
+_DOCUMENTED_FILL_FIELDS = {"transaction_id", "quantity", "total", "state_version"}
 
 
 def _annotated_fields(source: str, class_name: str) -> set[str]:
@@ -198,3 +212,72 @@ def test_the_json_carries_exactly_the_documented_keys() -> None:
     """What actually goes on the channel, which an alias or serialiser could
     make differ from the model's fields."""
     assert set(json.loads(_event().model_dump_json())) == _DOCUMENTED_EVENT_FIELDS
+
+
+# =========================================================================
+# OrderEvent: the `order.update` payload (ADR 0024)
+# =========================================================================
+def _realtime_fields(class_name: str) -> set[str]:
+    return _annotated_fields(_REALTIME_SCHEMAS.read_text(encoding="utf-8"), class_name)
+
+
+def test_the_order_event_and_its_fill_match_realtime_services_models() -> None:
+    """D-048's pin for the second channel: the consumer forbids extra fields
+    on both, so a drift in either drops every order frame silently."""
+    schemas = _schemas()
+
+    assert set(schemas.OrderEvent.model_fields) == _realtime_fields("OrderEvent")
+    assert set(schemas.OrderFill.model_fields) == _realtime_fields("OrderFill")
+
+
+def test_the_order_event_and_its_fill_match_the_documented_shape() -> None:
+    """Against docs/api/realtime-service.md, "Order updates", which catches
+    both copies moving together. The fill is the `fill` field's own model."""
+    order_event = _schemas().OrderEvent
+
+    assert set(order_event.model_fields) == _DOCUMENTED_ORDER_FIELDS
+    assert order_event.model_fields["fill"].annotation is _schemas().OrderFill
+    assert set(_schemas().OrderFill.model_fields) == _DOCUMENTED_FILL_FIELDS
+
+
+def test_an_order_event_reaches_the_wire_as_the_documented_example() -> None:
+    """The JSON the relay validates: amounts as decimal strings at scale 4,
+    the total signed as the trade route signs it, the version a number, and
+    `occurred_at` with its `+00:00` offset, as the price frame writes it."""
+    schemas = _schemas()
+    ids = [uuid.uuid4() for _ in range(5)]
+    event = schemas.OrderEvent(
+        order_id=ids[0],
+        user_id=ids[1],
+        market_id=ids[2],
+        outcome_id=ids[3],
+        side="buy",
+        status="open",
+        quantity=Decimal("100.0000"),
+        filled_quantity=Decimal("20.5465"),
+        fill=schemas.OrderFill(
+            transaction_id=ids[4],
+            quantity=Decimal("20.5465"),
+            total=Decimal("-11.8152"),
+            state_version=43,
+        ),
+        occurred_at=datetime(2026, 10, 20, 9, 12, 44, 318000, tzinfo=UTC),
+    )
+
+    assert json.loads(event.model_dump_json()) == {
+        "order_id": str(ids[0]),
+        "user_id": str(ids[1]),
+        "market_id": str(ids[2]),
+        "outcome_id": str(ids[3]),
+        "side": "buy",
+        "status": "open",
+        "quantity": "100.0000",
+        "filled_quantity": "20.5465",
+        "fill": {
+            "transaction_id": str(ids[4]),
+            "quantity": "20.5465",
+            "total": "-11.8152",
+            "state_version": 43,
+        },
+        "occurred_at": "2026-10-20T09:12:44.318000+00:00",
+    }

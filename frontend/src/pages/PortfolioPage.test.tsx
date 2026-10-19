@@ -33,6 +33,8 @@ function portfolio(overrides: Record<string, unknown> = {}) {
         price: '0.5125',
         value: '2.5312',
         unrealized_pnl: '-0.0001',
+        result: null,
+        payout: null,
         state_version: 1,
       },
     ],
@@ -119,6 +121,21 @@ describe('PortfolioPage', () => {
     expect(screen.queryByText('0.5125')).not.toBeInTheDocument()
   })
 
+  it('shows average entry as credits per share, not a percentage', async () => {
+    // #247: average_entry_price is credits per share and can pass 1.0000 on
+    // a skewed book (ledger-service.md), so it is shown through the same
+    // formatter as every other credits figure, never through formatPrice.
+    // '0.5' is deliberately not already in the four-decimal finished format,
+    // so this fails if formatAveragePrice stops being called.
+    mockPortfolio(portfolio({ positions: [{ ...portfolio().positions[0], average_entry_price: '0.5' }] }))
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    await screen.findByText('Will it rain in Singapore tomorrow?')
+    expect(screen.getByText('0.5000')).toBeInTheDocument()
+    expect(screen.queryByText('50.0%')).not.toBeInTheDocument()
+  })
+
   it('shows cost basis distinctly from value and unrealized P&L', async () => {
     // [T-4] #24's AC lists cost basis as one of the fields shown per
     // position, alongside quantity, average entry, price, value and P&L.
@@ -180,6 +197,44 @@ describe('PortfolioPage', () => {
     expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
     expect(screen.getAllByText('—')).toHaveLength(3)
     expect(screen.queryByText('0.0000')).not.toBeInTheDocument()
+  })
+
+  it('shows what a winning settled position paid, not its old P&L', async () => {
+    // [FE][3.4] #216: result/payout replace the P&L cell on a settled row,
+    // never recomputed and never shown as zero.
+    const settled = { ...portfolio().positions[0], price: null, value: null, unrealized_pnl: null, result: 'paid_out', payout: '5.0000' }
+    mockPortfolio(portfolio({ positions: [settled] }))
+    mockMarket('mkt-1', market({ status: 'settled' }))
+    renderPage()
+
+    expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
+    expect(screen.getByText('Paid out 5.0000')).toBeInTheDocument()
+  })
+
+  it('shows a losing settled position as worthless, not a zero P&L', async () => {
+    const settled = { ...portfolio().positions[0], price: null, value: null, unrealized_pnl: null, result: 'worthless', payout: '0.0000' }
+    mockPortfolio(portfolio({ positions: [settled] }))
+    mockMarket('mkt-1', market({ status: 'settled' }))
+    renderPage()
+
+    expect(await screen.findByText('Will it rain in Singapore tomorrow?')).toBeInTheDocument()
+    expect(screen.getByText('Worthless')).toBeInTheDocument()
+    expect(screen.queryByText('0.0000')).not.toBeInTheDocument()
+  })
+
+  it('does not add a settled position\'s payout into positions value or net worth', async () => {
+    // ledger-service.md: the payout is already in balance, so positions_value
+    // and net_worth are shown as the server sends them, never recomputed here.
+    // balance already includes the 5.0000 payout; positions_value is zero
+    // because the one position left is settled and no longer valued; net
+    // worth is balance plus positions_value, same as the server would send.
+    const settled = { ...portfolio().positions[0], price: null, value: null, unrealized_pnl: null, result: 'paid_out', payout: '5.0000' }
+    mockPortfolio(portfolio({ balance: '1000.0000', positions_value: '0.0000', net_worth: '1000.0000', positions: [settled] }))
+    mockMarket('mkt-1', market({ status: 'settled' }))
+    renderPage()
+
+    expect(await screen.findByText('0.0000 credits')).toBeInTheDocument()
+    expect(screen.getAllByText('1,000.0000 credits')).toHaveLength(2)
   })
 
   it('fetches each distinct market only once across multiple positions in it', async () => {

@@ -149,7 +149,7 @@ async def test_an_expired_access_token_is_refused(
             "exp": past + timedelta(minutes=15),
             "jti": uuid.uuid4().hex,
         },
-        settings.jwt_secret,
+        settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
     client.cookies.clear()

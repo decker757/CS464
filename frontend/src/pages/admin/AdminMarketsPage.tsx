@@ -12,7 +12,7 @@ import { usePagedList } from '../../hooks/usePagedList'
 type StatusFilter = AdminMarketStatus | 'all'
 type StatusCounts = MarketOverview['counts']
 
-const FILTERS: StatusFilter[] = ['all', 'draft', 'submitted', 'open', 'closed', 'pending_resolution', 'approved']
+const FILTERS: StatusFilter[] = ['all', 'draft', 'submitted', 'open', 'closed', 'pending_resolution', 'approved', 'settled']
 
 function filterLabel(filter: StatusFilter): string {
   return filter === 'all' ? 'All' : STATUS_CONFIG[filter].label

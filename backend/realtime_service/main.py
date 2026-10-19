@@ -27,7 +27,9 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
 
-    bus = PriceBus(redis_url=settings.redis_url, hub=get_hub(), gate=get_gate())
+    bus = PriceBus(
+        redis_url=settings.redis_url.get_secret_value(), hub=get_hub(), gate=get_gate()
+    )
     app.state.bus = bus
     task = asyncio.create_task(bus.run(), name="price-bus")
 
@@ -49,8 +51,10 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description=(
             "Live market prices over a WebSocket. Subscribes to one Redis "
-            "channel, fans each price event out to the sockets watching that "
+            "channel for prices, fans each price event out to the sockets watching that "
             "market, and drops anything older than what it has already sent. "
+            "A second channel carries each fill of a resting order to every "
+            "socket its owner has open. "
             "Owns no data: it holds no database, prices nothing itself, and "
             "every number it relays belongs to the service that published it.\n\n"
             "The socket is not described here — OpenAPI has no vocabulary for "

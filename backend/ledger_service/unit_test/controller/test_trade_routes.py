@@ -72,6 +72,7 @@ _FIELDS = {
     "quantity",
     "total",
     "state_version",
+    "book_state_version",
 }
 
 
@@ -575,8 +576,10 @@ async def test_an_unaffordable_trade_is_409_insufficient_funds(
     starting_credits: Decimal,
 ) -> None:
     """409 rather than 422: nothing about the request is malformed and the
-    same request may well succeed later. The existing `details` with `balance`
-    and `required` are what let [FE] #49 say how short somebody was."""
+    same request may well succeed later. The `details` with `balance` and
+    `required` are what let [FE] #49 say how short somebody was; ADR 0024 adds
+    `reserved` and `available`, and a trade's refusal carries no
+    `shortfall`."""
     client, recorder = trade_client
     market = _Market()
     await _warm(session, market)
@@ -593,7 +596,7 @@ async def test_an_unaffordable_trade_is_409_insufficient_funds(
     assert response.status_code == 409
     error = response.json()["error"]
     assert error["code"] == "insufficient_funds"
-    assert set(error["details"]) == {"balance", "required"}
+    assert set(error["details"]) == {"balance", "required", "reserved", "available"}
     assert recorder.calls == []
 
 

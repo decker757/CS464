@@ -261,6 +261,11 @@ class Recorder:
             raise self._raises
         return 0
 
+    def payloads_on(self, channel: str) -> list[object]:
+        """What was published on one channel, in order: a trade that fills
+        resting orders publishes on two (ADR 0024)."""
+        return [payload for published_on, payload in self.calls if published_on == channel]
+
 
 def token() -> str:
     return mint_token(uuid.uuid4())

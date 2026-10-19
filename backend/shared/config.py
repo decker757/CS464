@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -37,7 +37,9 @@ class ServiceSettings(BaseSettings):
 
     # No default, on purpose. A default signing key is a published signing key,
     # and it would sign real sessions in any deployment that forgot to set one.
-    jwt_secret: str = Field(min_length=16)
+    # A SecretStr, so a printed Settings shows `**********` (#307); a reader
+    # takes the key itself with `.get_secret_value()`.
+    jwt_secret: SecretStr = Field(min_length=16)
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "cs464-auth"
 

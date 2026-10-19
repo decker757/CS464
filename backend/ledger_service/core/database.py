@@ -42,7 +42,7 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         _engine = create_async_engine(
-            get_settings().database_url,
+            get_settings().database_url.get_secret_value(),
             pool_size=10,
             # Recycles a connection Postgres closed under us rather than
             # handing a dead one to a request.

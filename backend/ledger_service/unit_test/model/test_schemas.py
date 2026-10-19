@@ -14,8 +14,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from core.pricing import Side
 from model.entities import TransactionKind
-from model.schemas import BalanceOut, LedgerEntryOut
+from model.schemas import BalanceOut, FillOut, LedgerEntryOut, OrderOut
 
 
 def _entry(**overrides: object) -> LedgerEntryOut:
@@ -35,7 +36,11 @@ def test_a_balance_serialises_as_a_string() -> None:
     """Exactness is kept on the wire, not just in the column. A JSON number is
     an IEEE double by the time a browser has parsed it."""
     out = BalanceOut(
-        user_id=uuid.uuid4(), account_id=uuid.uuid4(), balance=Decimal("1000.0000")
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        balance=Decimal("1000.0000"),
+        reserved=Decimal("0.0000"),
+        available=Decimal("1000.0000"),
     )
 
     assert out.model_dump()["balance"] == "1000.0000"
@@ -45,10 +50,29 @@ def test_a_balance_keeps_its_scale() -> None:
     """`1000` and `1000.0000` are the same number and different strings, and
     the frontend formats one of them. It should always get the same one."""
     out = BalanceOut(
-        user_id=uuid.uuid4(), account_id=uuid.uuid4(), balance=Decimal("0.5000")
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        balance=Decimal("0.5000"),
+        reserved=Decimal("0.0000"),
+        available=Decimal("0.5000"),
     )
 
     assert out.model_dump()["balance"] == "0.5000"
+
+
+def test_reserved_and_available_serialise_as_strings_too() -> None:
+    """The module's rule holds for every amount on the balance, not only the
+    first: a python-mode dump gives strings, as the wire does (ADR 0024)."""
+    out = BalanceOut(
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        balance=Decimal("100.0000"),
+        reserved=Decimal("60.0000"),
+        available=Decimal("40.0000"),
+    )
+
+    dumped = out.model_dump()
+    assert (dumped["reserved"], dumped["available"]) == ("60.0000", "40.0000")
 
 
 def test_an_entry_amount_serialises_as_a_string() -> None:
@@ -81,6 +105,79 @@ def test_a_running_balance_serialises_as_a_string() -> None:
     out = _entry(balance_after=Decimal("750.0000"))
 
     assert out.model_dump()["balance_after"] == "750.0000"
+
+
+# --- OrderOut and FillOut: the limit-order responses --------------------------
+_ORDER_AMOUNTS = (
+    "limit_price",
+    "quantity",
+    "filled_quantity",
+    "average_fill_price",
+    "reserved_credits",
+    "reserved_shares",
+)
+
+
+def _order(side: Side, **amounts: Decimal | None) -> OrderOut:
+    return OrderOut(
+        id=uuid.uuid4(),
+        market_id=uuid.uuid4(),
+        outcome_id=uuid.uuid4(),
+        outcome_position=0,
+        side=side,
+        status="open",
+        created_at=datetime.now(UTC),
+        cancelled_at=None,
+        **amounts,
+    )
+
+
+def test_an_orders_amounts_serialise_as_strings_in_python_mode_too() -> None:
+    """The module's rule for every amount on the order object, as
+    `BalanceOut` keeps it: a python-mode dump gives the wire's strings, and a
+    null stays null (ADR 0024). The contract's buy, part filled, and its
+    sell."""
+    buy = _order(
+        Side.BUY,
+        limit_price=Decimal("0.6000"),
+        quantity=Decimal("100.0000"),
+        filled_quantity=Decimal("20.5465"),
+        average_fill_price=Decimal("0.5750"),
+        reserved_credits=Decimal("48.1848"),
+        reserved_shares=None,
+    )
+    sell = _order(
+        Side.SELL,
+        limit_price=Decimal("0.6000"),
+        quantity=Decimal("30.0000"),
+        filled_quantity=Decimal("13.7867"),
+        average_fill_price=Decimal("0.6164"),
+        reserved_credits=None,
+        reserved_shares=Decimal("16.2133"),
+    )
+
+    dumped = buy.model_dump()
+    assert [dumped[field] for field in _ORDER_AMOUNTS] == [
+        "0.6000",
+        "100.0000",
+        "20.5465",
+        "0.5750",
+        "48.1848",
+        None,
+    ]
+    assert sell.model_dump()["reserved_shares"] == "16.2133"
+
+
+def test_a_fills_amounts_serialise_as_strings_in_python_mode_too() -> None:
+    fill = FillOut(
+        transaction_id=uuid.uuid4(),
+        quantity=Decimal("20.5465"),
+        total=Decimal("-11.8152"),
+        state_version=1,
+    )
+
+    dumped = fill.model_dump()
+    assert (dumped["quantity"], dumped["total"]) == ("20.5465", "-11.8152")
 
 
 # --- PreviewOut and OutcomePriceOut: the contract /docs shows ----------------

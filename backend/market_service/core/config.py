@@ -10,7 +10,7 @@ from __future__ import annotations
 from decimal import Decimal
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from shared.config import ServiceSettings
 
@@ -20,7 +20,8 @@ class Settings(ServiceSettings):
     # Required, with no default: a default is a credential in the repository,
     # and would let a misconfigured deploy start against the wrong database.
     # Form: postgresql+asyncpg://market_svc:PASSWORD@HOST:PORT/NAME
-    database_url: str = Field(min_length=1)
+    # A SecretStr for the password in it (#307).
+    database_url: SecretStr = Field(min_length=1)
 
     # --- Market pricing ---------------------------------------------------
     # [1.2] #2. The `b` a market gets when the administrator gives none. It
