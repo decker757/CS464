@@ -53,8 +53,9 @@ the account is the token's (ADR 0024). `POST .../cancel` takes an empty
 body: the order is the caller's, and what it releases is derived from the
 order row. `POST /ledger/admin/orders/.../cancel` is the same cancel for an
 administrator, and its body is only a reason. `POST .../settlement` takes an
-administrator's token and an empty body: the winner comes from market_service, and the holders and amounts come
-from this service's own positions (ADR 0009's second amendment). Every other
+administrator's token and an empty body: the winner comes from market_service,
+and the holders and amounts come from this service's own positions (ADR 0009's
+second amendment). Every other
 route reads, and no route ever edits or removes an entry. The ledger is
 append-only, enforced by a database trigger rather than by the absence of a
 route.
@@ -1411,8 +1412,8 @@ The response is the owner's cancel's, above. Everything else is the owner's
 cancel too: the same orders (open, on a market with no result), the same book
 lock, so it never races a fill or the owner's own cancel, and the same 409s.
 It is not limited to the caller's orders, so a missing order is the only
-`404`. It writes no entry, and no frame is published: the owner sees the order
-leave `GET /ledger/orders/me`.
+`404`. It posts no ledger entry, and no frame is published: the owner sees the
+order leave `GET /ledger/orders/me`.
 
 | Status | `code` | When |
 | --- | --- | --- |
