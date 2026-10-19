@@ -140,7 +140,7 @@ class PriceBus:
                         continue
                     if message.get("channel") == ORDER_CHANNEL:
                         self._dispatch_order(message.get("data"))
-                    else:
+                    elif message.get("channel") == PRICE_CHANNEL:
                         self._dispatch(message.get("data"))
         finally:
             self._connected = False
