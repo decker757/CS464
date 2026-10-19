@@ -1281,9 +1281,12 @@ rest, holding `48.1848` of a `60.0000` budget.
 - `fills` is what this request filled. Each item is a trade in your history,
   with `total` signed as the trade route signs it. It is empty when nothing
   filled on arrival.
-- `book_state_version` is the book's counter after this request. It equals
-  the last fill's `state_version`, or, when nothing filled, the counter the
-  order was placed against. The ledger stores it on the order.
+- `book_state_version` is the book's counter after this whole request,
+  including any resting orders the placement's cascade filled, so it can be
+  higher than the highest `state_version` in `fills`. When nothing filled, it
+  is the counter the order was placed against. A placement that filled
+  publishes one `price` frame, at `book_state_version`; one that only rested
+  publishes none. The ledger stores it on the order.
 - An order that filled completely on arrival comes back `filled`, with no
   reservation.
 - **A buy's whole budget has to fit in `available`**, even when it would fill
@@ -1338,6 +1341,7 @@ Errors:
 | 422 | `quantity_too_large` | The fill on arrival would exceed what the ledger can store, as on the trade route. |
 | 422 | `invalid_request` | A malformed body, an extra field, a `side` other than `"buy"` or `"sell"`, a `quantity` breaking the rules above, or a `limit_price` at or outside `0` and `1`, or with five decimal places. |
 | 500 | `market_book_incomplete` | As on the trade route. |
+| 500 | `cascade_fill_refused` | The overdraft check refused another trader's resting order that this placement's fill set off, which ADR 0024 makes impossible. Nothing was written and the ledger logged it. The response carries no figures: they would be the other trader's. A refusal of your own account is `409 insufficient_funds`. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | As on the trade route. |
 | 503 | `auth_unavailable` | As on the trade route. Nothing was written. |
 
@@ -1870,11 +1874,12 @@ settlement route: a batch with no movements, or two movements sharing an
 idempotency key. The route builds every batch from this service's own
 positions, with one payout per winner keyed by user id and at most one
 residue, so no request can provoke it.
-`cascade_fill_refused` (500, new in [T-7] #27) is the trade route's guard on
-its own cascade: the overdraft check refused a batch anywhere but at the
-trade's own movement, which ADR 0024 makes impossible while every fill is
-bounded by its own order's reservation. Nothing is written, the ledger logs
-the refusal, and the response names no other account's figures.
+`cascade_fill_refused` (500, new in [T-7] #27) is the trade route's and the
+placement route's guard on their cascades: the overdraft check refused a
+batch anywhere but at the trade's own movement, or, on a placement, refused
+an account other than the placer's, which ADR 0024 makes impossible while
+every fill is bounded by its own order's reservation. Nothing is written, the
+ledger logs the refusal, and the response names no other account's figures.
 
 `market_not_binary` and `order_crosses_book` (409, new in [T-6] #26) are the
 placement's own. `order_not_found`, `order_already_filled`,
