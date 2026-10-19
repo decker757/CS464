@@ -209,3 +209,30 @@ def test_the_leaderboard_refresh_is_switched_off_from_the_environment(
     settings = Settings(**_REQUIRED, _env_file=None)
 
     assert settings.leaderboard_refresh_enabled is False
+
+
+# =========================================================================
+# #307 — a printed Settings carries no credential
+# =========================================================================
+def test_no_secret_appears_when_the_settings_are_printed() -> None:
+    """pytest prints a Settings in a failure message, which is how #307 was
+    found, and so does any log line or exception that formats one. The signing
+    key, the service key and the two URLs' passwords must appear in neither
+    form."""
+    signing_key = "signing-key-307-must-not-print"
+    service_key = "service-key-307-must-not-print-0123456789"
+    database_password = "db-password-307-must-not-print"
+    redis_password = "redis-password-307-must-not-print"
+    settings = Settings(
+        jwt_secret=signing_key,
+        ledger_service_key=service_key,
+        database_url=(
+            f"postgresql+asyncpg://ledger_svc:{database_password}@localhost:5432/cs464"
+        ),
+        redis_url=f"redis://:{redis_password}@localhost:6379/0",
+        _env_file=None,
+    )
+
+    for rendered in (repr(settings), str(settings)):
+        for secret in (signing_key, service_key, database_password, redis_password):
+            assert secret not in rendered

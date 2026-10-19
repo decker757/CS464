@@ -66,3 +66,20 @@ def test_cors_origins_parse_from_the_environment(
     settings = Settings(**_REQUIRED, _env_file=None)
 
     assert settings.cors_origins == ["http://a.test", "http://b.test"]
+
+
+def test_no_secret_appears_when_the_settings_are_printed() -> None:
+    """#307. pytest prints a Settings in a failure message, and so does any log
+    line or exception that formats one. The signing key and the Redis password
+    must appear in neither form."""
+    signing_key = "signing-key-307-must-not-print"
+    redis_password = "redis-password-307-must-not-print"
+    settings = Settings(
+        jwt_secret=signing_key,
+        redis_url=f"redis://:{redis_password}@localhost:6379/0",
+        _env_file=None,
+    )
+
+    for rendered in (repr(settings), str(settings)):
+        for secret in (signing_key, redis_password):
+            assert secret not in rendered

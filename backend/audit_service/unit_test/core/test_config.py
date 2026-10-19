@@ -75,3 +75,23 @@ def test_settings_carry_nothing_that_would_let_this_service_write() -> None:
     assert not {
         f for f in fields if "credit" in f or "balance" in f or "liquidity" in f
     }
+
+
+# --- #307: a printed Settings carries no credential ---------------------------
+def test_no_secret_appears_when_the_settings_are_printed() -> None:
+    """#307. pytest prints a Settings in a failure message, and so does any log
+    line or exception that formats one. The signing key and the database
+    password must appear in neither form."""
+    signing_key = "signing-key-307-must-not-print"
+    database_password = "db-password-307-must-not-print"
+    settings = _settings(
+        jwt_secret=signing_key,
+        database_url=(
+            f"postgresql+asyncpg://audit_svc:{database_password}@localhost:5432/cs464"
+        ),
+        _env_file=None,
+    )
+
+    for rendered in (repr(settings), str(settings)):
+        for secret in (signing_key, database_password):
+            assert secret not in rendered
