@@ -911,8 +911,8 @@ _ADMIN_CANCEL_DESCRIPTION = (
     "500. It is recorded in the audit log as `order.cancelled_by_admin`, in the "
     "cancel's own transaction, and kept nowhere else.\n\n"
     "Exactly the orders the owner could cancel, with the owner's refusals. The "
-    "same book lock, so it never races a fill or the owner's own cancel. Writes "
-    "no entry, and publishes no frame."
+    "same book lock, so it never races a fill or the owner's own cancel. Posts "
+    "no ledger entry, and publishes no frame."
 )
 
 
