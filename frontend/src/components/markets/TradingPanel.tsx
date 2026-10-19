@@ -4,7 +4,7 @@ import { postTrade, type TradeSide } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
 import { useTradeQuote } from '../../hooks/useTradeQuote'
-import { formatCreditsPrecise, unsignedCredits } from '../../utils/formatCredits'
+import { formatAveragePrice, formatCreditsPrecise, unsignedCredits } from '../../utils/formatCredits'
 import { formatPrice } from '../../utils/formatPrice'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
@@ -164,7 +164,7 @@ export default function TradingPanel({ marketId, outcomes }: {
           </div>
           <div className="mt-1 flex justify-between">
             <span className="text-muted">Average price</span>
-            <span className="text-smu-navy">{formatPrice(preview.average_price)}</span>
+            <span className="text-smu-navy">{formatAveragePrice(preview.average_price)}</span>
           </div>
           {priceNow && priceAfter && (
             <div className="mt-1 flex justify-between">

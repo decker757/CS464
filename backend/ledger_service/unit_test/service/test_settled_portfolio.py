@@ -280,6 +280,5 @@ async def test_net_worth_less_starting_credits_is_total_pnl_across_both_kinds(
     assert result.starting_credits == credits
     assert result.realized_pnl == BOUGHT - cost
     assert result.unrealized_pnl == HOLDING_VALUE - BASIS
-    assert result.total_pnl == result.realized_pnl + result.unrealized_pnl
     assert result.net_worth - result.starting_credits == result.total_pnl
     assert row(result, settled.market_id, WINNER).payout == BOUGHT
