@@ -6,8 +6,8 @@ from the code and authoritative if this page ever disagrees, at
 
 Covers [A-1] #29, [A-2] #30, [A-3] #31, [4.4] #16, [4.2] #14 and the
 user-search half of [4.1] #13, the user lookup [L-1] #38's leaderboard reads,
-and the frontend halves [FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48,
-[FE][4.1] #57 and [FE][4.2] #60.
+the admin user lookup behind [2.4] #273's trade table, and the frontend halves
+[FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48, [FE][4.1] #57 and [FE][4.2] #60.
 
 Why we host this ourselves rather than buying it:
 [ADR 0001](../adr/0001-self-host-authentication.md). Why browsers get cookies and
@@ -27,6 +27,7 @@ a balance field anywhere below.
 | POST | `/auth/logout` | Revoke the refresh token and clear both cookies |
 | GET | `/auth/me` | The current user |
 | GET | `/admin/users` | Search user accounts |
+| POST | `/admin/users/lookup` | Usernames for up to 200 user ids, for the trade table |
 | PATCH | `/admin/users/{user_id}/role` | Move a user between `trader` and `admin` |
 | PATCH | `/admin/users/{user_id}/suspension` | Suspend or unsuspend an account, with a reason |
 | POST | `/internal/users/lookup` | Usernames and suspension, for the ledger only (service key) |
@@ -42,8 +43,9 @@ Two ways in, one verification.
   refresh call. **The header wins over the cookie**, so a service call carrying
   its own token is never reinterpreted as whoever happens to be logged in.
 - **Service key:** `X-Service-Key`, accepted by `/internal/users/lookup` and
-  by nothing else. It belongs to the ledger, not to a person; see that
-  route below.
+  by nothing else — not by `/admin/users/lookup`, which answers the same
+  question for an administrator. It belongs to the ledger, not to a person;
+  see that route below.
 
 | Cookie | Path | Lifetime |
 | --- | --- | --- |
@@ -252,6 +254,54 @@ back rather than constructing one.
 **Searching is not audited**, and neither is opening this page. The log records
 decisions — promotions, suspensions — and an entry per keystroke would bury
 them.
+
+## POST /admin/users/lookup
+
+`200`. Administrator only. [2.4] #273, for the admin trade table.
+
+The ledger's `GET /ledger/markets/{id}/trades` puts a `user_id` on each trade
+and no username, because the ledger holds no user table (ADR 0003). Send this
+route the ids on one page and join the names in.
+
+```jsonc
+// request
+{ "user_ids": ["5f3e...", "77c0..."] }
+
+// response
+{
+  "users": [
+    { "id": "5f3e...", "username": "michelle_l" },
+    { "id": "77c0...", "username": "ernest_t" }
+  ]
+}
+```
+
+**The request.**
+- `user_ids` is required and holds between 1 and 200 UUIDs, one trades page's
+  worth: the ledger clamps that page at 200.
+- An empty list, more than 200, an entry that is not a UUID, or any other
+  field in the body is FastAPI's own `422`, the `{"detail": [...]}` shape.
+
+**The answer.**
+- An id that names no user is left out, not refused.
+- A duplicate id is answered once.
+- **No order is promised; key the answer by `id`.**
+- Suspended users are included. A suspended trader is the one an
+  administrator reading a trade log is most likely investigating, so leaving
+  them out would blank exactly the row that matters.
+
+**Exactly two fields per user**, `id` and `username`. No email, no role, no
+`created_at`, and no `is_suspended`: that stays on `GET /admin/users` above.
+
+**Not audited**, like the search: it is a read.
+
+**Why a separate path rather than an `id` filter on `GET /admin/users`.** One
+path answers one shape, and the search's rows carry six fields where this
+answers two. And 200 UUIDs in a query string is about 7.4 KB, close to common
+URL limits; in a body it is not a concern.
+
+The service key does not open this route: an `X-Service-Key` without an
+administrator's access token is `401 invalid_token`.
 
 ## PATCH /admin/users/{user_id}/role
 

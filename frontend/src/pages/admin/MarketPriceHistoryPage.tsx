@@ -5,6 +5,7 @@ import AppLayout from '../../components/layout/AppLayout'
 import MarketTradeTable from '../../components/markets/MarketTradeTable'
 import PriceHistoryChart from '../../components/markets/PriceHistoryChart'
 import BackLink from '../../components/ui/BackLink'
+import Button from '../../components/ui/Button'
 import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
@@ -31,19 +32,46 @@ export default function MarketPriceHistoryPage() {
   const [history, setHistory] = useState<PriceHistory | null>(null)
   const [pointsLoading, setPointsLoading] = useState(true)
   const [pointsError, setPointsError] = useState(false)
+  // Prices move with every trade, so the chart is only ever as good as the
+  // moment it was read (#361): say when that was, and let the admin read it
+  // again rather than resolve against a screen left open through a burst.
+  const [readAt, setReadAt] = useState<Date | null>(null)
+  const [readCount, setReadCount] = useState(0)
 
   useEffect(() => {
     if (!id) return
     let ignored = false
     getMarketPriceHistory(id)
-      .then(found => { if (!ignored) setHistory(found) })
+      .then(found => {
+        if (ignored) return
+        setHistory(found)
+        setReadAt(new Date())
+      })
       .catch(() => { if (!ignored) setPointsError(true) })
       .finally(() => { if (!ignored) setPointsLoading(false) })
     return () => { ignored = true }
-  }, [id])
+  }, [id, readCount])
 
-  const fetchTrades = useCallback((cursor: string | undefined) => getMarketTrades(id ?? '', { cursor }), [id])
+  // The read is asked for here rather than in the effect, so the button is
+  // disabled and any earlier failure cleared from the click that caused it.
+  function handleRefresh() {
+    setPointsLoading(true)
+    setPointsError(false)
+    setReadCount(count => count + 1)
+  }
+
+  const fetchTrades = useCallback(
+    (cursor: string | undefined) => getMarketTrades(id ?? '', { cursor }),
+    // readCount is deliberately unused inside: a new identity is what makes
+    // usePagedList read the list again from page one, so Refresh reaches the
+    // trade log as well as the chart.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [id, readCount],
+  )
   const { items: trades, hasMore, isLoading: tradesLoading, hasError: tradesError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchTrades, pagedTradeOptions)
+
+  const winningOutcomeId = history?.winning_outcome_id ?? null
+  const winnerLabel = winningOutcomeId === null ? null : outcomeLabels.get(winningOutcomeId) ?? winningOutcomeId
 
   return (
     <AppLayout width="max-w-[1100px]">
@@ -53,16 +81,27 @@ export default function MarketPriceHistoryPage() {
 
       {market && (
         <>
-          <PageTitle className="mb-8">{market.question}</PageTitle>
+          <PageTitle className="mb-4">{market.question}</PageTitle>
+
+          <div className="mb-8 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-muted">
+              {readAt === null ? 'Not read yet.' : `Read at ${readAt.toLocaleTimeString('en-SG')}`}
+            </p>
+            {/* Disabled while a read is on its way, so a double click asks once. */}
+            <Button variant="outline" size="xs" onClick={handleRefresh} disabled={pointsLoading}>
+              {pointsLoading ? 'Refreshing…' : 'Refresh'}
+            </Button>
+          </div>
 
           <SectionCard title="Price History" className="mb-6">
-            {pointsLoading && <p className="text-sm text-muted">Loading price history…</p>}
+            {pointsLoading && history === null && <p className="text-sm text-muted">Loading price history…</p>}
             {pointsError && <p role="alert" className="text-sm text-danger">Failed to load price history.</p>}
-            {!pointsLoading && !pointsError && history && (
+            {history && (
               <>
                 {history.result === 'settled' && (
                   <p className="mb-4 text-sm text-muted">
-                    This market settled on {new Date(history.result_recorded_at ?? '').toLocaleString('en-SG')}.
+                    This market settled on {new Date(history.result_recorded_at ?? '').toLocaleString('en-SG')}
+                    {winnerLabel === null ? '' : `; ${winnerLabel} won`}.
                   </p>
                 )}
                 <PriceHistoryChart outcomes={market.outcomes} points={history.points} />

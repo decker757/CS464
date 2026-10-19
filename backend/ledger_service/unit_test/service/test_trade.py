@@ -512,8 +512,8 @@ async def test_the_response_carries_no_prices(session: AsyncSession) -> None:
 async def test_the_book_row_is_locked_before_any_account_row(
     session: AsyncSession,
 ) -> None:
-    """D-015: book row before account rows, since `post` runs inside the book
-    lock. The first `FOR UPDATE` names `market_books`.
+    """D-015: book row before account rows, since `post_all` runs inside the
+    book lock. The first `FOR UPDATE` names `market_books`.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatAveragePrice, formatCredits, formatCreditsPrecise, isZeroCredits, unsignedCredits } from './formatCredits'
+import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -93,6 +93,54 @@ describe('unsignedCredits', () => {
 
   it('leaves a positive value unchanged', () => {
     expect(unsignedCredits('5.1250')).toBe('5.1250')
+  })
+})
+
+describe('compareCredits', () => {
+  // The exposure page picks the worst outcome with this ([2.2] #55, #361),
+  // and a sign error there understates what the platform owes. Each pair is
+  // written smaller-first and checked both ways round, so an inverted
+  // comparison cannot pass by being wrong twice.
+  it.each([
+    ['1130.0000', '1205.0000', 'two positives'],
+    ['-400.0000', '80.0000', 'a negative below a positive'],
+    ['-400.0000', '-18.6431', 'two negatives, the larger debt first'],
+    ['-0.0001', '0.0000', 'just below zero and zero'],
+    ['-0.0000', '0.0001', 'negative zero below a positive'],
+    ['9.9999', '10.0000', 'a carry across the decimal point'],
+    ['1.0001', '1.00019', 'fractions of different lengths'],
+    ['999999999999999999.0000', '1000000000000000000.0000', 'past what a float keeps exactly'],
+  ])('orders %s before %s (%s)', (smaller, larger) => {
+    expect(compareCredits(smaller, larger)).toBe(-1)
+    expect(compareCredits(larger, smaller)).toBe(1)
+  })
+
+  it.each([
+    ['5.0000', '5.0000'],
+    ['5', '5.0000'],
+    ['-0.0000', '0.0000'],
+    ['0005.0000', '5.00000'],
+  ])('reads %s and %s as the same amount', (left, right) => {
+    expect(compareCredits(left, right)).toBe(0)
+  })
+
+  it('orders anything unreadable as equal rather than throwing during render', () => {
+    // BigInt throws on "1E-4"; a chart or a table that lost a page over one
+    // bad figure would be worse than one that shows "—" (formatPrice.ts).
+    expect(compareCredits('1E-4', '5.0000')).toBe(0)
+    expect(compareCredits('5.0000', '')).toBe(0)
+  })
+})
+
+describe('isPlainCredits', () => {
+  it('accepts a signed decimal, with or without a fraction', () => {
+    expect(isPlainCredits('-400.0000')).toBe(true)
+    expect(isPlainCredits('500')).toBe(true)
+  })
+
+  it('rejects what the formatters show a dash for', () => {
+    expect(isPlainCredits('1E-4')).toBe(false)
+    expect(isPlainCredits('')).toBe(false)
   })
 })
 

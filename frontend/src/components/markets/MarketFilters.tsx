@@ -24,13 +24,15 @@ interface MarketFiltersProps {
   onStatusChange: (status: StatusFilter | null) => void
 }
 
+// `pointer-coarse:` on the size, like FilterPill: the chip a finger clears has
+// to be 44px, and the one a mouse clears does not have to be ([X-1] #364).
 function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clearLabel: string; onClear: () => void }) {
   return (
     <button
       type="button"
       onClick={onClear}
       aria-label={clearLabel}
-      className="cursor-pointer rounded-full border border-smu-navy/20 px-3 py-1 text-xs font-semibold text-smu-navy hover:border-smu-navy/40"
+      className="cursor-pointer rounded-full border border-smu-navy/20 px-3 py-1 text-xs font-semibold text-smu-navy hover:border-smu-navy/40 pointer-coarse:min-h-11 pointer-coarse:px-4"
     >
       {label} ×
     </button>
@@ -86,7 +88,7 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
           {status !== null && (
             <ActiveFilterChip label={`Status: ${STATUS_CONFIG[status].label}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
           )}
-          <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy">
+          <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
             Clear all
           </button>
         </div>

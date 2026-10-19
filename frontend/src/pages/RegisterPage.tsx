@@ -9,9 +9,17 @@ import { Spinner } from '../components/ui/icons'
 import PasswordInput from '../components/ui/PasswordInput'
 import TextInput from '../components/ui/TextInput'
 import { useAuth } from '../context/AuthContext'
-import { RegisterErrors, validateRegister } from '../utils/validate'
+import { PASSWORD_HINT, RegisterErrors, USERNAME_HINT, validateRegister } from '../utils/validate'
 
 const REGISTER_FIELDS = ['username', 'email', 'password'] as const
+
+/** After a refused submit, put the cursor on the first field to fix, so the
+ * reason is read out and nobody has to hunt back up the form for it. Each
+ * input's id is its field name, which is also what the label points at. */
+function focusFirstInvalid(errors: RegisterErrors) {
+  const firstInvalid = REGISTER_FIELDS.find((field) => errors[field])
+  if (firstInvalid) document.getElementById(firstInvalid)?.focus()
+}
 
 export default function RegisterPage() {
   const { login } = useAuth()
@@ -27,12 +35,22 @@ export default function RegisterPage() {
     setServerError('')
   }
 
+  // On leaving a field, not on every keystroke: a rule shown while the value
+  // is still half typed is wrong more often than it is right. A field left
+  // empty says nothing until submit, when the whole form is checked.
+  const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    const field = e.target.name as keyof RegisterErrors
+    const message = e.target.value === '' ? undefined : validateRegister(form)[field]
+    setErrors((prev) => ({ ...prev, [field]: message }))
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const validationErrors = validateRegister(form)
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors)
       setServerError('')
+      focusFirstInvalid(validationErrors)
       return
     }
 
@@ -47,6 +65,7 @@ export default function RegisterPage() {
       // Both, always: this response replaces whatever the last one showed.
       setErrors(fieldErrors)
       setServerError(formError)
+      focusFirstInvalid(fieldErrors)
     } finally {
       setLoading(false)
     }
@@ -61,16 +80,16 @@ export default function RegisterPage() {
       footer={<>Already have an account? <AuthFooterLink to="/login">Log in</AuthFooterLink></>}
     >
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-1">
-        <Field id="username" label="Username" error={errors.username}>
-          <TextInput id="username" name="username" type="text" autoComplete="username" value={form.username} onChange={handleChange} placeholder="e.g. michelletan" invalid={!!errors.username} />
+        <Field id="username" label="Username" error={errors.username} hint={USERNAME_HINT}>
+          <TextInput id="username" name="username" type="text" autoComplete="username" value={form.username} onChange={handleChange} onBlur={handleBlur} placeholder="e.g. michelletan" invalid={!!errors.username} />
         </Field>
 
         <Field id="email" label="Email" error={errors.email}>
-          <TextInput id="email" name="email" type="email" autoComplete="email" value={form.email} onChange={handleChange} placeholder="you@example.com" invalid={!!errors.email} />
+          <TextInput id="email" name="email" type="email" autoComplete="email" value={form.email} onChange={handleChange} onBlur={handleBlur} placeholder="you@example.com" invalid={!!errors.email} />
         </Field>
 
-        <Field id="password" label="Password" error={errors.password} hint="Must be at least 12 characters.">
-          <PasswordInput id="password" name="password" autoComplete="new-password" value={form.password} onChange={handleChange} placeholder="Enter at least 12 characters" invalid={!!errors.password} />
+        <Field id="password" label="Password" error={errors.password} hint={PASSWORD_HINT}>
+          <PasswordInput id="password" name="password" autoComplete="new-password" value={form.password} onChange={handleChange} onBlur={handleBlur} placeholder="Enter at least 12 characters" invalid={!!errors.password} />
         </Field>
 
         <Button type="submit" variant="primary" size="block" disabled={loading} className="mt-2">

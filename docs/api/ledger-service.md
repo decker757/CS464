@@ -38,9 +38,9 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
-| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (proposed, ADR 0024) |
-| GET | `/ledger/orders/me` | My live limit orders (proposed, ADR 0024) |
-| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (proposed, ADR 0024) |
+| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024, not built yet) |
+| GET | `/ledger/orders/me` | My live limit orders (ADR 0024, not built yet) |
+| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024, not built yet) |
 | GET | `/health` | Liveness and readiness probe |
 
 **Two routes write, and neither takes money.** `POST .../trades` takes no
@@ -119,7 +119,7 @@ neither can an operator changing `STARTING_CREDITS`: a new value reaches
 accounts granted after it and no others, and an account that already has its
 credits keeps them and stays readable.
 
-**Proposed, ADR 0024: not built yet. `reserved` and `available`.**
+**ADR 0024 (Accepted): not built yet. `reserved` and `available`.**
 
 ```jsonc
 {
@@ -294,11 +294,13 @@ constructing one.
 
 ## GET /ledger/portfolio/me
 
-[T-4] #24, and [3.4] #12 for settled markets. The caller's own positions and
+[T-4] #24, [3.4] #12 for settled markets, and [B-1] #359 for the profit and
+loss figures. The caller's own positions and
 their current value: what they
 hold in every market they have traded, each valued the way
 [ADR 0018](../adr/0018-positions-are-valued-at-liquidation.md) requires
-rather than at the marginal price.
+rather than at the marginal price, and what the lot comes to against the
+credits they started with.
 
 Any valid access token — a trader reads their own portfolio and nothing
 else's; there is no admin variant.
@@ -310,6 +312,10 @@ else's; there is no admin variant.
   "balance": "572.5121",
   "positions_value": "431.3568",
   "net_worth": "1003.8689",
+  "starting_credits": "1000.0000",
+  "realized_pnl": "3.8690",
+  "unrealized_pnl": "-0.0001",
+  "total_pnl": "3.8689",
   "positions": [
     {
       "market_id": "2b7e...",
@@ -384,6 +390,36 @@ and `unrealized_pnl` can be `null`.** Guard them before formatting.
 `unrealized_pnl` is `value - cost_basis`. `average_entry_price` is
 `cost_basis / quantity`, `ROUND_HALF_UP` at scale 4, and is display only, the
 same rule the preview's `average_price` follows.
+
+**The four portfolio-level figures answer "am I up or down".** Every amount
+here crosses the wire as a decimal string, and a browser must not do
+arithmetic on those, so the endpoint does the sums:
+
+| Field | What it is |
+| --- | --- |
+| `starting_credits` | What this user's signup grant actually paid them, read from that transaction's own entry. |
+| `realized_pnl` | Profit and loss already banked in `balance`: what the sells paid less the cost basis they released, plus what settlement paid less the basis of the holdings it settled. |
+| `unrealized_pnl` | The sum of the rows' own `unrealized_pnl` — what is still riding on positions nobody has closed. A settled row contributes nothing. |
+| `total_pnl` | `realized_pnl + unrealized_pnl`. |
+
+**`total_pnl` is `net_worth - starting_credits`, exactly.** That identity is
+how the four figures reconcile with the three above them, and it holds at
+scale 4 with no rounding: `realized_pnl` is
+`balance - starting_credits + the cost basis of every open position`, and
+`unrealized_pnl` is `positions_value` less that same basis, so the basis
+cancels. Rendering `total_pnl` beside `net_worth` and `starting_credits` can
+never show a figure that does not add up.
+
+**Nothing here is stored.** There is no P&L column and no balance column:
+every figure is derived from `ledger.entries` and the positions on each read,
+the same way `balance` is. A settled market's payout is in `balance` and its
+basis is closed, which is why its shares are banked rather than valued —
+counting them in `unrealized_pnl` as well would count the market twice.
+
+**`starting_credits` is the grant that was minted, not the `STARTING_CREDITS`
+setting.** Changing that setting never rewrites an entry (ADR 0009), so a user
+granted under the old value keeps reporting what they were actually given, and
+their P&L does not move when the deployment is reconfigured.
 
 **The balance, every position and every settlement record are read together,
 in one statement, with no lock.** So a trade committing mid-read cannot show
@@ -720,7 +756,7 @@ The per-user holdings check belongs to [T-3] #23 and only means anything
 taken under the trade's own lock; a preview that checked it here would be
 quoting a refusal that could already be stale by the time anyone acted on it.
 
-**Proposed, ADR 0024: not built yet. `post_trade_prices` ignores resting
+**ADR 0024 (Accepted): not built yet. `post_trade_prices` ignores resting
 orders.** The preview runs no cascade. `total`, `average_price` and `prices`
 are what the trade will be charged against, because the trade is priced before
 any resting order fills. `post_trade_prices` is the price after this trade
@@ -1024,7 +1060,7 @@ prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
 or from `GET .../snapshot` instead.
 
-**Proposed, ADR 0024: not built yet. Three changes to this route.**
+**ADR 0024 (Accepted): not built yet. Three changes to this route.**
 
 - The response gains `book_state_version`, a JSON number: the book's counter
   after this trade **and** every resting order it filled. `state_version` is
@@ -1130,12 +1166,12 @@ snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
 
-## Limit orders — Proposed, ADR 0024: not built yet
+## Limit orders — ADR 0024 (Accepted): not built yet
 
 [T-6] #26, [T-7] #27, [T-8] #28. **Nothing in this section exists yet.** It
 is the contract [FE][T-6] #61 builds against. Why the design looks like this:
 [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
-Proposed.
+Accepted.
 
 A limit order buys or sells at its limit price or better, against the market
 maker. It fills at once as far as the price allows, and the rest waits. When
@@ -1698,9 +1734,10 @@ pool account's feed…").
 user only by the id in a signed token (ADR 0003). Resolve names in the browser
 through auth's batch lookup on port 8000, `POST /admin/users/lookup` with
 `{"user_ids": [...]}`, 1 to 200 ids per request, which answers
-`{"users": [{"id", "username"}]}` (#273). Until that route lands, show a short
-id that links to the user page (#259). DECISIONS.md, "A market's trades carry
-`user_id`, not `username`…".
+`{"users": [{"id", "username"}]}` (#273). That route is built; swapping the
+short id that links to the user page for the username it returns is #259's
+remaining work. DECISIONS.md, "A market's trades carry `user_id`, not
+`username`…".
 
 **A market with no book is an empty `200`**: `trades: []`, `next_cursor:
 null`, `has_more: false`. An id that names no market reads the same way. Like
@@ -1820,5 +1857,5 @@ residue, so no request can provoke it.
 
 `market_not_binary`, `order_crosses_book`, `order_not_found`,
 `order_already_filled`, `order_already_cancelled` and `order_released` are
-proposed by ADR 0024 for the limit-order routes and are not built yet. They
+decided by ADR 0024 for the limit-order routes and are not built yet. They
 are documented in "Limit orders" above.
