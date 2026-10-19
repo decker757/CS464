@@ -84,6 +84,7 @@ from service.trading import (
 
 ZERO = Decimal(0)
 
+# Exactly two, the same fact as its twin `core/limit_orders.py::_BINARY_OUTCOMES`.
 _BINARY_OUTCOMES = 2
 
 # Namespaced like `trading.trade_key`, for its reasons: a client cannot claim
