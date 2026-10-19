@@ -425,6 +425,16 @@ request made: the order did not exist before it, and every later fill,
 from anyone's cascade, has a higher `state_version`. Finding fills by
 `context->>'order_id'` alone would return every fill the order has ever had.
 
+> **Amended 2026-10-19 by [T-7] #27.** A placement that fills on arrival now
+> runs the cascade before it commits, so the stored column and the response's
+> `book_state_version` are both the book's counter after that whole request:
+> the request's last fill, which can be a fill of another trader's order
+> rather than the placed order's own. It can therefore be higher than the
+> highest `state_version` in the placement's `fills`. The replay rule is
+> unchanged: the cascade runs before the order row is added, so it never
+> fills the order being placed, and that order's fills at or below the stored
+> counter are still exactly the fills the placement request made.
+
 ## Consequences
 
 **No service credential and no cross-service write.** The question
