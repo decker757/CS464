@@ -11,9 +11,12 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   const market = await publishMarket(admin, `Will ${uniqueName('trade')} happen?`)
   const trader = await registerTrader('tp_trader')
   // So the outcome's shares outstanding comfortably exceed what the main
-  // trader oversells below — otherwise the preview refuses with the
-  // market-wide insufficient_shares_outstanding before the trade route's
-  // per-user holding check ever gets a chance to (ledger-service.md).
+  // trader oversells below. A sell is priced against those, not against the
+  // seller's own position (ledger-service.md), which is the whole reason the
+  // panel clamps: without this buy the preview would refuse the oversell as
+  // insufficient_shares_outstanding, and the quote asserted down there —
+  // a confident price for shares the trader does not hold — would never
+  // appear.
   const other = await registerTrader('tp_other')
   await buy(other, market, 'Yes', '200.0000')
 
@@ -47,6 +50,11 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await expect(page.getByText(/you hold 6\.0000 shares/i)).toBeVisible()
   await page.getByLabel('Quantity (shares)').fill('100')
 
+  // The ledger still quotes this sell: it prices against the shares
+  // outstanding and has no holdings check at preview (ledger-service.md), so
+  // a confident price for 100 shares the trader does not own is exactly what
+  // the clamp is here to stop. The panel is what refuses it now.
+  await expect(page.getByLabel('trade preview')).toBeVisible()
   await expect(page.getByText(/you hold 6\.0000 shares, but this sell asks for 100\.0000/i)).toBeVisible()
   await expect(page.getByRole('button', { name: /^sell yes$/i })).toBeDisabled()
   await expect(balance).toHaveText('994 credits')
