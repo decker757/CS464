@@ -413,6 +413,22 @@ async def test_a_placement_that_would_fill_completely_is_refused_when_its_budget
     assert await _committed_counts(upstream) == before
 
 
+def test_a_start_of_batch_refusal_of_a_sell_placement_is_passed_on_unchanged() -> None:
+    """A sell has no budget to take back out of `reserved`, so the rewrite
+    hands posting's refusal on as it is rather than subtracting `None`. Not
+    reachable through `place` today, because posting checks only the accounts
+    a batch debits and a sell's fill credits the placer; this keeps the
+    rewrite safe if that changes."""
+    refusal = InsufficientFunds(
+        balance=Decimal("10.0000"),
+        reserved=Decimal("12.0000"),
+        available=Decimal("-2.0000"),
+        shortfall=Decimal("2.0000"),
+    )
+
+    assert orders._placement_refusal_of(refusal, None) is refusal
+
+
 async def test_a_first_ever_placement_mints_the_grant_and_is_accepted(
     session: AsyncSession, starting_credits: Decimal
 ) -> None:
