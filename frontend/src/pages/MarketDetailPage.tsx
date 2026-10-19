@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
@@ -88,10 +88,22 @@ export default function MarketDetailPage() {
   const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, string> } | null>(null)
   const heldByOutcome = held !== null && held.id === id ? held.byOutcome : null
 
+  // The most recent read's own number, so an answer that arrives after a
+  // newer one is dropped instead of overwriting it. BalanceContext keeps the
+  // same counter and names this exact case — the refetch after a trade
+  // answering before the mount's read does. The portfolio route values every
+  // position and mints the signup grant on a first read, so it is the slower
+  // of the two; without this, the pre-trade picture lands last and the panel
+  // spends the rest of the visit refusing to sell a position the ledger holds,
+  // with nothing to re-fire the read.
+  const latestHeldReadRef = useRef(0)
+
   const refetchHeld = useCallback(() => {
     if (!id) return
+    const requestId = ++latestHeldReadRef.current
     getMyPortfolio().then(
       portfolio => {
+        if (requestId !== latestHeldReadRef.current) return
         const mine = portfolio.positions.filter(position => position.market_id === id)
         setHeld({ id, byOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])) })
       },
