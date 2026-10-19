@@ -841,6 +841,8 @@ describe('CreateMarketPage', () => {
       const closeTime = screen.getByLabelText('Closes at *')
       expect(within(closeTime.parentElement!).getByText(STALE_CLOSE.message)).toBeInTheDocument()
       expect(closeTime).toBeEnabled()
+      // The banner the loaded market came with said read-only, and it is not any more.
+      expect(screen.queryByText(/read-only/i)).not.toBeInTheDocument()
       // Publishing the stored terms again can only be refused again.
       expect(screen.queryByRole('button', { name: /publish market/i })).not.toBeInTheDocument()
 
