@@ -58,7 +58,7 @@ async def add_order(
     order the price has passed would fill in that trade's cascade.
     """
     order_status = OrderStatus(status)
-    filled_quantity, value_filled = _rollups_of(
+    filled_quantity, spent = _rollups_of(
         order_status, filled_value=filled_value, limit_price=limit_price
     )
 
@@ -71,7 +71,7 @@ async def add_order(
         quantity=Decimal("1.0000"),
         filled_quantity=filled_quantity,
         budget=None if budget is None else Decimal(budget),
-        filled_value=value_filled,
+        filled_value=spent,
         status=order_status,
         book_state_version=0,
         idempotency_key=f"order:{uuid.uuid4()}",

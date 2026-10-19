@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 
 import pytest
 from alembic import command
@@ -120,6 +121,90 @@ def test_the_downgrade_leaves_no_trigger_function_behind(empty_schema) -> None:
         ).scalar_one(),
     )
     assert left is None
+
+
+def _plant_an_order_with_nothing_paid(connection) -> None:
+    """One order with three shares filled and nothing paid for them.
+
+    Legal under every CHECK revision 0004 built, which is why 0005 adds one.
+    A book and an outcome first, for the composite foreign key.
+    """
+    pool_account_id = uuid.uuid4()
+    market_id = uuid.uuid4()
+    outcome_id = uuid.uuid4()
+    connection.execute(
+        text("INSERT INTO ledger.accounts (id, kind, owner_id) VALUES (:id, 'pool', :owner)"),
+        {"id": pool_account_id, "owner": uuid.uuid4()},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO ledger.market_books (market_id, liquidity_b, seed_subsidy, "
+            "pool_account_id, state_version, state_changed_at, opened_at) "
+            "VALUES (:market, 100, 0, :account, 0, now(), now())"
+        ),
+        {"market": market_id, "account": pool_account_id},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO ledger.market_outcomes (market_id, outcome_id, position, q) "
+            "VALUES (:market, :outcome, 0, 0)"
+        ),
+        {"market": market_id, "outcome": outcome_id},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO ledger.orders (id, user_id, market_id, outcome_id, side, "
+            "limit_price, quantity, filled_quantity, budget, filled_value, status, "
+            "book_state_version, idempotency_key) "
+            "VALUES (:id, :user, :market, :outcome, 'buy', 0.5000, 10.0000, 3.0000, "
+            "10.0000, 0.0000, 'open', 0, 'order:planted-by-the-guard-test')"
+        ),
+        {
+            "id": uuid.uuid4(),
+            "user": uuid.uuid4(),
+            "market": market_id,
+            "outcome": outcome_id,
+        },
+    )
+
+
+def _revision() -> str:
+    return run_in_transaction(
+        _URL,
+        lambda connection: connection.execute(
+            text(f"SELECT version_num FROM {SCHEMA}.{VERSION_TABLE}")
+        ).scalar_one(),
+    )
+
+
+def _has_constraint(name: str) -> bool:
+    return run_in_transaction(
+        _URL,
+        lambda connection: connection.execute(
+            text(
+                "SELECT count(*) FROM pg_constraint "
+                f"WHERE conrelid = '{SCHEMA}.orders'::regclass AND conname = :name"
+            ),
+            {"name": name},
+        ).scalar_one()
+        == 1,
+    )
+
+
+def test_an_order_whose_fill_rollups_disagree_stops_revision_0005(empty_schema) -> None:
+    """0005's count, which runs nowhere else: CI's database is always empty, so
+    only a planted row reaches the branch. The step fails rather than leaving
+    Postgres to reject the ALTER, and the schema stays at 0004. #397."""
+    command.upgrade(alembic_config(ALEMBIC_INI, _URL), "0004")
+    run_in_transaction(_URL, _plant_an_order_with_nothing_paid)
+
+    # The type, not the wording: without the count, Postgres refuses the ALTER
+    # itself and this is a DBAPIError, so RuntimeError is the guard.
+    with pytest.raises(RuntimeError):
+        main()
+
+    assert not _has_constraint("ck_orders_filled_quantity_iff_filled_value")
+    assert _revision() == "0004"
 
 
 def test_a_schema_from_before_75_is_refused_and_left_as_it_was(empty_schema, capsys) -> None:
