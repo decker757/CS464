@@ -27,7 +27,9 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
 
-    bus = PriceBus(redis_url=settings.redis_url, hub=get_hub(), gate=get_gate())
+    bus = PriceBus(
+        redis_url=settings.redis_url.get_secret_value(), hub=get_hub(), gate=get_gate()
+    )
     app.state.bus = bus
     task = asyncio.create_task(bus.run(), name="price-bus")
 

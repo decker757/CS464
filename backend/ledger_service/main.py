@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # unreachable Redis does not stop boot, but parses eagerly, so a
         # mistyped REDIS_URL does (D-051).
         app.state.redis = redis.from_url(
-            settings.redis_url,
+            settings.redis_url.get_secret_value(),
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )

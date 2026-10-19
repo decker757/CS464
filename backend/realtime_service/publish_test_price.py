@@ -40,7 +40,9 @@ async def main() -> None:
         occurred_at=datetime.now(UTC),
     )
 
-    client = redis.from_url(get_settings().redis_url, decode_responses=True)
+    client = redis.from_url(
+        get_settings().redis_url.get_secret_value(), decode_responses=True
+    )
     try:
         await publish(client, event)
     finally:
