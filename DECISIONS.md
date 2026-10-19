@@ -9243,6 +9243,15 @@ fills the placement request made. A placement that rests writes no
 transaction, so nothing else records that counter, and fills found by
 `order_id` alone would include every later cascade's.
 
+*Amended 2026-10-19.* Since [T-7] #27 a placement that fills on arrival runs
+the cascade before it commits, so the stored `book_state_version`, and the
+response field it answers, are the book's counter after the whole request,
+cascade included: the request's last fill, which can be another trader's
+order's, so the counter can be higher than the highest `state_version` in
+`fills`. "The last fill's `state_version`" above means that. The replay rule
+holds as written: the cascade never fills the order being placed, which is
+added after it runs. ADR 0024 carries the same amendment.
+
 ---
 
 ### D-NEW — An order is executable when its floored fill passes the per-fill limit check; a resting order is one that is not
@@ -9802,11 +9811,17 @@ to the trade's cost: two different movements can carry the same amount.
 *Passing the refused order over*: the order would rest while executable,
 which breaks the invariant the next trade's cascade relies on.
 
-**Notes.** A placement keeps its own handling, in "A placement's
+**Notes.** A placement tells the two apart by the account instead, because
+its own refusal comes at the start of the batch, with no key:
+`InsufficientFunds` also carries `account_id`, the account the check refused.
+A refusal of the placer's account keeps its own handling, in "A placement's
 `insufficient_funds` reports the reservation without the new order, on both
-paths": its cascade finds nothing while the book is uncrossed (ADR 0024,
-"Termination"), so the only refusal it can meet is its own budget's, at the
-start of the batch.
+paths", as `409 insufficient_funds` with the placer's figures. A refusal of
+any other account is `500 cascade_fill_refused`, logged the same way. Its
+cascade finds nothing while the book is uncrossed (ADR 0024, "Termination"),
+so only a broken book reaches that 500. Keying the placement on its own
+fill's movement key, as the trade path is keyed, would turn the placer's own
+start-of-batch refusal into a 500.
 
 ---
 
