@@ -331,7 +331,8 @@ not count them.
   a partial fill and `filled` for the last.
 - **A cancel and a placement that does not fill send none.** The response to
   your own request carries the order. Another tab learns of it from
-  `GET /ledger/orders/me`.
+  `GET /ledger/orders/me`. An administrator's cancel of your order sends none
+  either: it leaves `GET /ledger/orders/me`.
 - **Order them by `fill.state_version`.** Keep the highest you have applied
   per `order_id`, and discard a frame at or below it. Two fills of one order
   are in one market, so their versions are ordered.
