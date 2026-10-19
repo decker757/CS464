@@ -1,6 +1,6 @@
 import type { MarketTrade } from '../../api/ledgerApi'
 import { HeaderCell, NumberCell, TableFrame } from '../ui/Table'
-import { formatCreditsPrecise } from '../../utils/formatCredits'
+import { formatAveragePrice } from '../../utils/formatCredits'
 import { shortId } from '../../utils/shortId'
 
 interface MarketTradeTableProps {
@@ -35,7 +35,7 @@ export default function MarketTradeTable({ trades, outcomeLabels }: MarketTradeT
             <td className="px-5 py-3 text-smu-navy">{outcomeLabels.get(trade.outcome_id) ?? trade.outcome_id}</td>
             <NumberCell>{trade.side === 'buy' ? 'Buy' : 'Sell'}</NumberCell>
             <NumberCell>{trade.quantity}</NumberCell>
-            <NumberCell>{formatCreditsPrecise(trade.average_price)}</NumberCell>
+            <NumberCell>{formatAveragePrice(trade.average_price)}</NumberCell>
           </tr>
         ))}
       </tbody>

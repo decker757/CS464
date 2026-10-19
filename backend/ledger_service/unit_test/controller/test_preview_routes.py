@@ -37,6 +37,8 @@ _FIELDS = {
     "quantity",
     "total",
     "average_price",
+    "payout_if_wins",
+    "profit_if_wins",
     "prices",
     "post_trade_prices",
 }
@@ -254,6 +256,47 @@ async def test_the_side_and_ids_are_echoed_back(
     assert body["outcome_id"] == str(market.outcomes[1])
     assert body["side"] == "sell"
     assert body["quantity"] == "1.5000"
+
+
+async def test_a_buy_s_payout_and_profit_are_money_strings_at_scale_four(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """#384: both as strings at the money scale, like `total`, even when the
+    quantity arrived as `10`. Buying 10 at the fixture's `q` is charged
+    7.3152, worked outside the engine, so the profit is 2.6848."""
+    market = Upstream()
+    await warm(session, market)
+
+    body = (
+        await client.get(
+            _path(market.market_id),
+            params=_params(market.outcomes[0], quantity="10"),
+            headers=trader_headers,
+        )
+    ).json()
+
+    assert body["total"] == "-7.3152"
+    assert body["payout_if_wins"] == "10.0000"
+    assert body["profit_if_wins"] == "2.6848"
+
+
+async def test_a_sell_s_payout_and_profit_are_json_null(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """Null on the wire, not the string `"None"` and not absent."""
+    market = Upstream()
+    await warm(session, market)
+
+    body = (
+        await client.get(
+            _path(market.market_id),
+            params=_params(market.outcomes[0], side="sell"),
+            headers=trader_headers,
+        )
+    ).json()
+
+    assert body["payout_if_wins"] is None
+    assert body["profit_if_wins"] is None
 
 
 # =========================================================================

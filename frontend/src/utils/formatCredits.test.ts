@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareCredits, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, unsignedCredits } from './formatCredits'
+import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -69,6 +69,20 @@ describe('formatCreditsPrecise', () => {
 
   it('shows a dash for anything that is not a plain decimal', () => {
     expect(formatCreditsPrecise('1E-4')).toBe('—')
+  })
+})
+
+describe('formatAveragePrice', () => {
+  // ledger-service.md: average_price can pass 1.0000 on a heavily skewed
+  // book. #247 picks credits-per-share as the one format for this field on
+  // every screen, for exactly this reason. Each input below differs from its
+  // expected output, so the assertion actually exercises the formatter.
+  it.each([
+    ['0.5', '0.5000'],
+    ['2', '2.0000'],
+    ['1.23456', '1.2345'],
+  ])('formats %s as %s', (input, expected) => {
+    expect(formatAveragePrice(input)).toBe(expected)
   })
 })
 
