@@ -681,7 +681,7 @@ def log_refused_fill(refusal: InsufficientFunds) -> None:
     )
 
 
-async def _post_with_fills(
+async def _post_trade_batch(
     session: AsyncSession, movements: list[Movement], *, trade_key: str, now: datetime
 ) -> list[Transaction]:
     """`posting.post_all` for a trade's batch, the trade's movement first.
@@ -905,7 +905,7 @@ async def execute(
     # 11. `post_all`, the trade first: it has to be affordable before any
     # resting order fills (ADR 0024). Commits everything pending above, with
     # every movement's legs, or none of it if this raises.
-    transactions = await _post_with_fills(
+    transactions = await _post_trade_batch(
         session, [movement, *(fill.movement for fill in fills)], trade_key=key, now=now
     )
 
