@@ -18,7 +18,7 @@ from contextlib import nullcontext
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_engine
@@ -39,6 +39,7 @@ from unit_test.trade_fixtures import (
     buy,
     entities,
     errors,
+    session_factory,
 )
 
 _SUSPENDED_BODY = {
@@ -267,3 +268,43 @@ async def test_the_suspension_check_holds_no_connection_while_auth_is_slow(
     clean = {"session in a transaction": False, "pooled connections checked out": 0}
     assert stalled.seen == [clean]
     assert idle == 0, f"{idle} backend(s) idle in transaction across the auth call"
+
+
+async def test_a_401_from_auth_is_logged_at_warning(
+    session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ledger has already verified the token itself, so auth refusing the
+    same token means the two services disagree about it: a signing key or an
+    issuer that differs, or clocks that do. Every trade then fails `401`, and
+    without a line in the log nothing says why. ADR 0022's follow-up."""
+    auth = _Auth(status_code=401, body={"error": {"code": "invalid_token"}})
+
+    with caplog.at_level("WARNING", logger="service.account_status"):
+        with pytest.raises(errors().NotAuthenticated):
+            await _check(session, auth, mint_token(uuid.uuid4()))
+
+    logged = [r.levelname for r in caplog.records if r.name == "service.account_status"]
+    assert logged == ["WARNING"]
+
+
+async def test_a_suspended_traders_attempt_on_a_cold_market_opens_no_book_and_mints_nothing(
+    session: AsyncSession,
+) -> None:
+    """ADR 0022: before `books.ensure_open` and `grants.ensure_granted`, "so a
+    suspended account's attempt cannot open and fund a cold market's pool or
+    mint its own starting grant". The market has never been touched, and the
+    trader never read a balance."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+
+    with pytest.raises(errors().AccountSuspended):
+        await buy(
+            session, upstream, user_id=user_id, auth_transport=_Auth.suspended().transport
+        )
+
+    ents = entities()
+    async with session_factory()() as other:
+        for table in (ents.MarketBook, ents.Account, ents.Transaction):
+            count = (await other.execute(select(func.count()).select_from(table))).scalar_one()
+            assert count == 0, f"a suspended attempt wrote to {table.__tablename__}"
+    assert upstream.calls == 0

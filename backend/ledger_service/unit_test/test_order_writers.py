@@ -30,9 +30,16 @@ from model.entities import Order
 from unit_test.writer_scan import writers_of
 
 # Every module allowed to write an order row, and how it holds the row still.
-# Empty until the placement, the cascade and the cancel each add their module
-# and the lock it takes.
-_KNOWN_WRITERS: dict[str, str] = {}
+_KNOWN_WRITERS = {
+    "service/cancellation.py": (
+        "takes the book row's FOR UPDATE before it reads the order it cancels"
+    ),
+    "service/orders.py": "takes the book row's FOR UPDATE before it inserts an order",
+    "service/trading.py": (
+        "the cascade rolls a fill into its order under the book row's FOR UPDATE, "
+        "which execute and the placement take first"
+    ),
+}
 
 
 def test_the_known_writers_are_the_only_writers_of_orders() -> None:

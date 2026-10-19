@@ -6074,6 +6074,13 @@ complete. Accepted as an edge. The fix is either a minimum seed in
 market_service's validation (decker757's), or settlement committing its
 record and audit entry alone, which would need its own decision.
 
+**Amended 2026-10-18.** A third kind of batch is refused the same way, before
+any lock: one whose `Movement.reservation_drop` is below zero, or is nonzero
+on a movement without exactly one USER account, or on one that does not debit
+that account. All are built by the server, like the key, so all are a bug and
+take this entry's 500. See "A refusal from the running check reports the
+balance before the batch".
+
 ---
 
 ### D-NEW — `post_all` asks about pending writes before it classifies a match, and replays only a whole batch
@@ -9236,6 +9243,15 @@ fills the placement request made. A placement that rests writes no
 transaction, so nothing else records that counter, and fills found by
 `order_id` alone would include every later cascade's.
 
+*Amended 2026-10-19.* Since [T-7] #27 a placement that fills on arrival runs
+the cascade before it commits, so the stored `book_state_version`, and the
+response field it answers, are the book's counter after the whole request,
+cascade included: the request's last fill, which can be another trader's
+order's, so the counter can be higher than the highest `state_version` in
+`fills`. "The last fill's `state_version`" above means that. The replay rule
+holds as written: the cascade never fills the order being placed, which is
+added after it runs. ADR 0024 carries the same amendment.
+
 ---
 
 ### D-NEW — An order is executable when its floored fill passes the per-fill limit check; a resting order is one that is not
@@ -9447,6 +9463,19 @@ replay alarm is unaffected. A test pins the first flush: a trade and a
 self-fill on the same `(user, market, outcome)` leave one position row
 carrying both changes.
 
+*Amended 2026-10-18.* Built in [T-7] #27 with the first flush repeated before
+every fill's position read, not only the cascade's first. Two fills of one
+owner in one outcome where the owner held nothing would otherwise each add a
+position row, and the second flush would fail on the duplicate. The test
+named above cannot be written: a self-fill on the trade's own
+`(user, market, outcome)` is a sell order, a sell order needs shares, so the
+row already exists and the identity map hands the cascade the trade's own
+changes without a flush. The test that pins the flush is two buy orders of
+one owner filling in one cascade, leaving one position row with both fills.
+The cascade's read of the open orders comes before the first flush and needs
+none: the trade writes no order row, and a placement inserts its own after
+its cascade has run.
+
 ---
 
 ### D-NEW — A placement that would cross the book is refused, `order_crosses_book`
@@ -9628,3 +9657,243 @@ as "A quantity takes money's scale of 4 at the API boundary" has it. On a buy
 charged its whole quantity, such as the smallest buys or a buy of an outcome
 priced near one, the profit can be zero or a tick below; it is reported as it
 is.
+
+---
+
+### D-NEW — The cascade loops until no waiting order is executable, and passes over an order it cannot fill
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** `core/limit_orders.py::cascade_of` repeats one step until it
+finds nothing: among the market's open orders that have not filled in this
+commit, in priority order ("Priority is price, then an identity `seq`
+assigned under the book lock"), take the first that is executable at the
+current `q` ("An order is executable when its floored fill passes the
+per-fill limit check; a resting order is one that is not"), and fill it. An
+order that is not executable is passed over, not a stop. An order that has
+filled is not taken again in the same commit.
+
+**Why.** An order can fail the check while one behind it passes: a
+remainder of `0.0001` is never executable, because its cost rounds up to a
+whole tick or its proceeds down to nothing, and a larger order with a
+slightly higher `d` can still fill. Stopping at the first order that cannot
+fill would leave the order behind it, the one that could fill, executable
+when the cascade ends, which breaks the invariant in "Resting orders fill
+against the AMM inside the trade that moved the price". Ending only when no
+waiting order is executable makes the invariant hold by construction. The
+loop runs at most `m + 1` times for `m` open orders, that decision's count,
+and each order fills at most once, which the realtime contract's one order
+frame per fill depends on.
+
+**Rejected.** *Stopping at the first order that cannot fill*: the case
+above. *One pass in priority order*: it finds the same fills only while no
+fill makes an order passed over earlier executable, and that rests on an
+argument about rounding at the tick rather than on the loop's exit
+condition.
+
+**Notes.** The planner is pure: it takes `q`, `b` and the open orders, and
+returns the fills in order, each priced by `trade_cost_of` against the `q`
+the fill before it left. A fill that `trade_cost_of` refuses as
+`cost_below_tick` or `proceeds_below_tick` is not executable. A market with
+more than two outcomes holds no orders, so a cascade there plans nothing.
+
+---
+
+### D-NEW — A refusal from the running check reports the balance before the batch
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** `InsufficientFunds` from `_refuse_overdrafts` carries
+`balance`, the account's balance before the batch, and `reserved`, the
+running reservation at the refused step. A refusal after a debit carries
+`required`, what the batch had taken from the account by that movement,
+`balance` less the running balance there; `available` is `balance - reserved`,
+and the refusal is `required > available`. A refusal at the start of the batch
+carries `shortfall`, `reserved - balance`, and no `required`; its `reserved`
+includes a placement's whole new budget, so its `available` is negative.
+
+**Why.** For the trade route, the trade is the batch's first movement, so
+`required` is its cost and `balance` and `available` are the figures before
+it, unchanged from what [FE] #49 reads today plus the two ADR 0024 adds. For
+two debits in one batch, `required` is both of them, which is what the netted
+check reported. The start-of-batch check has the balance and the reservation
+and nothing else (ADR 0024, "A refused placement carries `shortfall`, not
+`required`").
+
+**Rejected.** *The running balance at the refused step as `balance`*: a later
+debit's refusal would show a balance the account never had once the batch
+rolled back. *Leaving `reserved` and `available` out of the start-of-batch
+refusal*: the contract lists them for the placement's refusal, and the check
+has no other figures to give.
+
+**Notes.** Posting cannot check a drop against the order rows, only its sign
+and its account, so a drop that disagrees with them is for the limit-order
+stack's PR 5 to pin, where the cascade computes it. The floor at the start of
+the batch is the reservation after it plus the batch's drops, so an undersized
+drop is the one that loosens the check. With 100 held and a buy order of
+budget 60 that a fill exhausts, a drop of 50 instead of 60 starts the batch at
+50 reserved, and a trade of 45 ahead of the fill passes against the 40
+available. An over-large drop only refuses more.
+
+`posting.Movement.reservation_drop` is refused as `MalformedBatch` when it is
+below zero, nonzero on a movement without exactly one USER account, or
+nonzero on one that does not debit that account: a negative drop would lower
+the floor at the start of the batch, a drop on a movement that only credits
+its account is not the buy-order fill ADR 0024 gives a drop to, and
+a drop with no single account has nowhere to go. The placement in the
+limit-order stack's PR 4b may prefer to report its own `reserved` and
+`available`, excluding the new order, on the start-of-batch refusal; it would
+then catch and re-raise, or hand posting the figure.
+
+---
+
+### D-NEW — A placement's `insufficient_funds` reports the reservation without the new order, on both paths
+
+**Date:** 2026-10-18 · **Ticket:** #26 · **Status:** active
+
+**Decision.** A buy order whose budget does not fit is refused
+`409 insufficient_funds` with `balance`, `reserved`, `available` and
+`shortfall`, and the same three figures mean the same thing whether the order
+would have rested or filled on arrival. `reserved` is what the user's other
+live buy orders hold, without the new order, `available` is
+`balance - reserved`, and `shortfall` is the budget less `available`. On the
+resting path `service/orders.py` computes them itself under the account lock.
+On the path that fills, `posting`'s start-of-batch check refuses first with a
+`reserved` that includes the new budget, and the placement catches that
+refusal and raises it again with the new budget taken back out of `reserved`.
+`shortfall` is unchanged by that, because it is the same number either way.
+
+**Why.** The contract gives one row for both paths and tells the frontend to
+show how much more credit the budget needs. A trader who sees `available: 30`
+on the balance route should see `available: 30` on the refusal, not `-10`,
+and which path a refusal took depends on the price at that moment, which the
+trader cannot see. "A refusal from the running check reports the balance
+before the batch" left the choice to this placement in its Notes.
+
+**Rejected.** *Posting's figures as they are*: a negative `available` that no
+other route ever shows, and different figures for one situation depending on
+whether the order was marketable. *Handing posting the budget so that it
+reports the figure itself*: a placement-only argument on the shared write
+path, for a number the caller already has.
+
+**Notes.** Only a refusal that carries `shortfall` is rewritten. A refusal
+after a debit, with `required`, cannot happen on a placement's own fill,
+because a budget that fits at the start of the batch covers the fill (ADR
+0024, "A buy can never spend more than it reserved"); if one ever does, it
+passes through unchanged.
+
+---
+
+### D-NEW — A fill the running check refuses inside a cascade is `500 cascade_fill_refused`, told apart by the refused movement's key
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** `InsufficientFunds` carries `movement_key`, the idempotency key
+of the movement after which `posting`'s running check refused, and none for a
+refusal at the start of the batch. The trade path answers
+`409 insufficient_funds` only when that key is the trade's own. Any other
+refusal of a trade's batch, at the start of it or after a fill, is
+`500 cascade_fill_refused`: the commit rolls back, the trader is told nothing
+about the account that was refused, and the ledger logs the refusal's figures
+at ERROR on `service.trading`.
+
+**Why.** ADR 0024 makes a refused fill impossible by construction, because
+every fill is bounded by its own reservation, and says that if one happens it
+is a bug, a 500, logged. Only `posting` knows which movement it refused at, so
+it has to say. Without the key, a refusal of another owner's account would
+reach the trader as their own `insufficient_funds`, with that owner's balance
+and reservation in `details`. A refusal at the start of a trade's batch is a
+bug too: a trade drops no reservation, so its account's figure before the
+batch is the one every earlier commit already kept within the balance.
+
+**Rejected.** *Telling the two apart by the figures*, such as `required` equal
+to the trade's cost: two different movements can carry the same amount.
+*Passing the refused order over*: the order would rest while executable,
+which breaks the invariant the next trade's cascade relies on.
+
+**Notes.** A placement tells the two apart by the account instead, because
+its own refusal comes at the start of the batch, with no key:
+`InsufficientFunds` also carries `account_id`, the account the check refused.
+A refusal of the placer's account keeps its own handling, in "A placement's
+`insufficient_funds` reports the reservation without the new order, on both
+paths", as `409 insufficient_funds` with the placer's figures. A refusal of
+any other account is `500 cascade_fill_refused`, logged the same way. Its
+cascade finds nothing while the book is uncrossed (ADR 0024, "Termination"),
+so only a broken book reaches that 500. Keying the placement on its own
+fill's movement key, as the trade path is keyed, would turn the placer's own
+start-of-batch refusal into a 500.
+
+---
+
+### D-NEW — A cancel takes the book lock and no account lock
+
+**Date:** 2026-10-18 · **Ticket:** #28 · **Status:** active
+
+**Decision.** `POST /ledger/orders/{order_id}/cancel` reads the caller's order's
+`market_id` without a lock, takes that market's book row with `FOR UPDATE`,
+reads the order again under it, and either refuses or writes `status =
+'cancelled'` and `cancelled_at`, then commits. It takes no account lock and
+writes no entry. A filled order is `order_already_filled`, a cancelled one
+`order_already_cancelled`, and an open one on a market with a result
+`order_released`, in that order.
+
+**Why.** Every writer of an order row takes the book lock first (the
+2026-10-17 amendment to "The holdings check is read under the book lock, and
+the position takes no lock of its own"), so the cancel and a fill queue on one
+row, and whichever takes it first commits first. The re-read under the lock is
+what turns that into an answer: a fill that committed first has left either a
+smaller remainder or none. No account lock, because a cancel only lowers a
+reservation: every path that reads one under an account lock is checking that
+a debit fits, and a check that read it before the cancel committed read a
+higher figure, so it was stricter than it needed to be, never looser. The
+unlocked read decides only which book to lock and whether the order is the
+caller's, and neither can change: an order's market and owner are fixed at
+placement.
+
+**Rejected.** *An account lock after the book row*: it would serialise a
+cancel behind the owner's trades in other markets for no invariant. *A `FOR
+UPDATE` on the order row*: the book lock already holds it still, and the
+amendment's reversal trigger has not fired. *Loading the order before the
+lock*: the session's identity map would then answer the re-read with the
+stale row unless it were told to refresh, so the first read selects one
+column.
+
+**Notes.** The status is read before the result because a filled or
+cancelled order is never live, so reading `live` first would answer every one
+of them `order_released`; and a filled order on a market with a result had
+nothing left for the result to release.
+`test_cancel_order_concurrency.py` races a cancel against a fill in both
+orderings and the partial case; each test fails with the cancel's
+`books.lock_book` removed.
+
+### D-NEW — Order frames pass no version gate on the relay
+
+**Date:** 2026-10-18 · **Ticket:** #27 · **Status:** active
+
+**Decision.** After a commit that filled resting orders, the ledger publishes
+the commit's one `price` frame first and then one `order.update` message per
+fill, in fill order, each publish swallowing its own Redis failure
+(`service/trading.py::_publish_order_updates`). The realtime service forwards
+each order message to every socket of its `user_id` and runs it through no
+version gate, neither the per-market one prices use nor one of its own.
+
+**Why.** The price frame carries the book's final `state_version`, and every
+fill in that commit is at or below it, so the per-market gate would drop each
+order frame as stale the moment the price frame passed. A gate keyed by order
+id would hold one entry per order ever filled, for the life of the process,
+and still be no guarantee: replicas keep their own marks, so the client has to
+order one order's frames by `fill.state_version` anyway
+(docs/api/realtime-service.md, "Order updates"). The price frame keeps its
+place straight after the commit, where every subscriber of the market already
+expects it, and the order frames follow it.
+
+**Rejected.** *Order frames first*: no client depends on the order between the
+two, and the price frame is the one every subscriber of the market needs. *A per-order
+gate*: unbounded, and redundant with the client's rule. *Publishing on a
+cancel*: the contract says a cancel sends none, and its response carries the
+order.
+
+**Notes.** In the realtime suite,
+`test_order_frames_are_delivered_after_their_commits_price_frame` publishes
+the ledger's real sequence, a price frame at version 4 and order frames at 2
+and 3, and fails if the order frames go through the gate.
