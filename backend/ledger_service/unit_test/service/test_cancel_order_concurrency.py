@@ -23,6 +23,9 @@ order under the lock. The test waits until Postgres shows the other party
 queued on the book row, or until it has finished, which it can only do without
 the lock. Each test names what its assertions see when the cancel's
 `books.lock_book` is removed.
+
+An administrator's cancel racing the owner's ([T-8] #326) is at the end, in
+both orderings, the same way.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.errors import OrderAlreadyFilled
+from core.errors import OrderAlreadyCancelled, OrderAlreadyFilled
 from model.entities import OrderStatus, Transaction
 from service import cancellation, trading
 from unit_test.placement_fixtures import (
@@ -48,6 +51,7 @@ from unit_test.placement_fixtures import (
 from unit_test.sell_fixtures import assert_q_matches_positions
 from unit_test.settlement_fixtures import (
     Pause,
+    admin,
     finish,
     queued_on_the_book_or_finished,
     reached,
@@ -72,6 +76,8 @@ PART_BUDGET = Decimal("8.0000")
 PART_FILL = Decimal("9.4534")
 PART_COST = Decimal("3.6749")
 PART_LEFT = Decimal("4.3251")
+
+ADMIN_REASON = "The owner is suspended; releasing what the order holds."
 
 
 async def _resting_buy(session: AsyncSession, quantity: Decimal):
@@ -268,4 +274,105 @@ async def test_a_cancel_that_takes_the_book_first_leaves_the_order_unfilled(
     assert await balance_of_user(session, owner) == starting_credits
     assert await reserved_credits_of(session, owner) == Decimal(0)
     await assert_q_matches_positions(session, upstream.market_id)
+    await assert_ledger_balances(session)
+
+
+# =========================================================================
+# An administrator's cancel racing the owner's. [T-8] #326
+# =========================================================================
+async def _cancel_or_refusal(
+    own: AsyncSession,
+    order_id: uuid.UUID,
+    *,
+    owner: uuid.UUID,
+    by_admin: cancellation.AdminCancel | None,
+):
+    """One cancel's answer, the owner's when `by_admin` is None: what it
+    released, or `order_already_cancelled`."""
+    try:
+        if by_admin is None:
+            return await cancellation.cancel(own, order_id, user_id=owner)
+        return await cancellation.cancel(own, order_id, user_id=None, admin=by_admin)
+    except OrderAlreadyCancelled as refusal:
+        return refusal.code
+
+
+async def _admin_and_owner_cancel(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, *, admin_first: bool
+):
+    """Both cancel one resting order. The first takes the book lock and pauses
+    just after reading the order under it; the second is seen queued on the
+    book row; then the first is released. Returns the owner, the order and
+    the answers, the administrator's first."""
+    _, owner, _, order_id, _ = await _resting_buy(session, PART)
+    by_admin = cancellation.AdminCancel(actor=admin(), reason=ADMIN_REASON)
+
+    factory = session_factory()
+    start = asyncio.Barrier(2)
+    admin_session, owner_session = factory(), factory()
+    first = admin_session if admin_first else owner_session
+    pause = Pause(monkeypatch, cancellation, "_read_order", session=first, call=1)
+
+    async def run(own: AsyncSession, cancelling_as: cancellation.AdminCancel | None):
+        await own.connection()
+        await start.wait()
+        if own is not first:
+            await pause.reached.wait()
+        return await _cancel_or_refusal(own, order_id, owner=owner, by_admin=cancelling_as)
+
+    try:
+        admin_task = asyncio.create_task(run(admin_session, by_admin))
+        owner_task = asyncio.create_task(run(owner_session, None))
+        second_task = owner_task if admin_first else admin_task
+        tasks = [admin_task, owner_task]
+        try:
+            await reached(pause.reached, "the first cancel never read the order", tasks)
+            await queued_on_the_book_or_finished(second_task)
+        finally:
+            answers = await finish(tasks, pause.release, pause.reached)
+    finally:
+        await admin_session.close()
+        await owner_session.close()
+    return owner, order_id, answers
+
+
+async def _audit_entries_for(reader: AsyncSession, order_id: uuid.UUID) -> int:
+    from shared.audit import admin_actions  # noqa: PLC0415
+
+    stmt = select(func.count()).where(admin_actions.c.target_id == order_id)
+    count = (await reader.execute(stmt)).scalar_one()
+    await reader.rollback()
+    return count
+
+
+@pytest.mark.parametrize("admin_first", [True, False], ids=["admin_first", "owner_first"])
+async def test_an_administrators_cancel_and_the_owners_cancel_of_one_order_release_it_once(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    audit_reader: AsyncSession,
+    starting_credits: Decimal,
+    admin_first: bool,
+) -> None:
+    """#326: "Same book lock as the owner's cancel". Whichever takes the book
+    first cancels and releases the whole 8.0000; the other, reading the order
+    again under the lock, is `order_already_cancelled`. The audit entry is
+    written only when the administrator won.
+
+    Remove the cancel's `books.lock_book`: the second does not queue, reads
+    the order still open, and commits a second cancel, so both answer with a
+    release of 8.0000 and neither is refused.
+    """
+    owner, order_id, (by_admin, by_owner) = await _admin_and_owner_cancel(
+        session, monkeypatch, admin_first=admin_first
+    )
+
+    winner, loser = (by_admin, by_owner) if admin_first else (by_owner, by_admin)
+    assert loser == "order_already_cancelled"
+    assert not isinstance(winner, BaseException), winner
+    assert winner.released_credits == PART_BUDGET
+    row = await order_row(session, order_id)
+    assert (row.status, row.filled_quantity) == (OrderStatus.CANCELLED, Decimal(0))
+    assert await balance_of_user(session, owner) == starting_credits
+    assert await reserved_credits_of(session, owner) == Decimal(0)
+    assert await _audit_entries_for(audit_reader, order_id) == (1 if admin_first else 0)
     await assert_ledger_balances(session)
