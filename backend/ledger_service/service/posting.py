@@ -163,6 +163,7 @@ def _drops_by_account(movements: list[Movement]) -> dict[uuid.UUID, Decimal]:
     for movement in movements:
         if movement.reservation_drop == ZERO:
             continue
+        # Exactly one: `_refuse_if_malformed_batch` refused any other drop.
         (account_id,) = _user_account_ids_of(movement.legs)
         drops[account_id] = drops.get(account_id, ZERO) + _quantize(
             movement.reservation_drop
@@ -297,14 +298,18 @@ def _transaction_of(
 
 
 def _has_malformed_drop(movement: Movement) -> bool:
-    """A reservation drop below zero, or one on a movement without exactly one
-    USER account to lower: either would move the overdraft floor wrongly."""
+    """A reservation drop below zero, one on a movement without exactly one
+    USER account to lower, or one on a movement that does not debit that
+    account. Only a buy-order fill drops a reservation, and it debits its
+    buyer (ADR 0024), so each of these is a bug in the caller."""
     if movement.reservation_drop == ZERO:
         return False
-    return (
-        movement.reservation_drop < ZERO
-        or len(_user_account_ids_of(movement.legs)) != 1
-    )
+    user_account_ids = _user_account_ids_of(movement.legs)
+    if movement.reservation_drop < ZERO or len(user_account_ids) != 1:
+        return True
+    (account_id,) = user_account_ids
+    _, net = _net_by_account(movement.legs)[account_id]
+    return net >= ZERO
 
 
 def _refuse_if_malformed_batch(movements: list[Movement]) -> None:
@@ -424,12 +429,12 @@ async def post_all(
     The order is the design: round, refuse unbalanced legs, lock every account
     in the batch once, ascending by id (the caller's book lock comes first),
     then look the keys up, check each USER account against its reservation in
-    movement order (ADR 0024), and take one stamp, all under the locks, so a history lists movements in
-    the order they committed (#187). Movement *i* lands at that stamp plus *i*
-    µs. Looked up before the lock, a retry racing its original is refused as an
-    overdraft for a trade that succeeded (ADR 0015). `now` is one floor for the
-    batch. DECISIONS.md, "`posting.post_all` takes a list of `Movement`s,
-    commits once, and keeps `post`'s SAVEPOINT".
+    movement order (ADR 0024), and take one stamp, all under the locks, so a
+    history lists movements in the order they committed (#187). Movement *i*
+    lands at that stamp plus *i* µs. Looked up before the lock, a retry racing
+    its original is refused as an overdraft for a trade that succeeded (ADR
+    0015). `now` is one floor for the batch. DECISIONS.md, "`posting.post_all`
+    takes a list of `Movement`s, commits once, and keeps `post`'s SAVEPOINT".
     """
     _refuse_if_malformed_batch(movements)
 

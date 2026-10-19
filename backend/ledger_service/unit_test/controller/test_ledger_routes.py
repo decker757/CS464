@@ -8,12 +8,14 @@ what the wire looks like.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
 
 from core.roles import UserRole
+from model.entities import MarketResult, ResultKind
 from unit_test.conftest import bearer
 from unit_test.market_fixtures import market_with_outcomes
 from unit_test.order_fixtures import add_order
@@ -213,6 +215,52 @@ async def test_the_balance_route_reports_what_open_buy_orders_reserve(
         own["reserved"],
         own["available"],
     )
+
+
+async def test_the_balance_route_does_not_count_an_order_on_a_settled_market(
+    client: AsyncClient,
+    session,
+    trader_headers: dict[str, str],
+    user_id: uuid.UUID,
+) -> None:
+    """The live-order rule through the route's own statement, where the
+    reservation is a subquery inside the balance read: an order still `open`
+    on a market with a result reserves nothing. A live order beside it, in
+    another market, keeps the figure from being zero either way."""
+    await client.get(ME, headers=trader_headers)
+    live_market_id, live_outcome_ids = await market_with_outcomes(
+        session, liquidity_b=Decimal("100.0000")
+    )
+    settled_market_id, settled_outcome_ids = await market_with_outcomes(
+        session, liquidity_b=Decimal("100.0000")
+    )
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=live_market_id,
+        outcome_id=live_outcome_ids[0],
+        budget="48.1848",
+    )
+    await add_order(
+        session,
+        user_id=user_id,
+        market_id=settled_market_id,
+        outcome_id=settled_outcome_ids[0],
+        budget="20.0000",
+    )
+    session.add(
+        MarketResult(
+            market_id=settled_market_id,
+            kind=ResultKind.SETTLED,
+            outcome_id=settled_outcome_ids[0],
+            recorded_at=datetime.now(UTC),
+        )
+    )
+    await session.commit()
+
+    body = (await client.get(ME, headers=trader_headers)).json()
+
+    assert body["reserved"] == "48.1848"
 
 
 
