@@ -18,12 +18,13 @@ const CODE_MESSAGES: Record<string, string> = {
   market_already_settled: 'This market has already been settled. Reload to see its current state.',
   // Publishing re-runs every submission rule against the clock now (ADR
   // 0008), so a market submitted last week fails on a close time that has
-  // since passed. Nothing can edit a market once it has been submitted
-  // (#354), so neither a retry nor a reload is the advice; `refusalDetails`
-  // says which fields, for a caller that has them on screen.
+  // since passed. Neither a retry nor a reload is the advice: market_service
+  // takes a corrected resubmission of a submitted market (ADR 0004), and only
+  // that gets it published (#381). A caller with the fields on screen takes
+  // this refusal through `onTermsRefused` instead, and says it its own way.
   draft_incomplete:
-    'These terms no longer pass the checks for publishing, and a market cannot be edited '
-    + 'once it has been submitted. Create a new market with the corrections instead.',
+    'These terms no longer pass the checks for publishing. The market has to be corrected '
+    + 'and submitted again before it can be published.',
 }
 
 const GENERIC_FAILURE = 'Publishing this market failed. Please try again.'
@@ -50,10 +51,17 @@ const SUPERSEDING_CODES = new Set([
  *
  * `onPublished` fires once it succeeds, so a caller can repaint without
  * waiting for a refetch, the same as `useCloseMarket` and `useSettleMarket`.
+ * `onTermsRefused`, when given, takes a `draft_incomplete` refusal and the
+ * fields it names in place of this hook's message: the create form passes it,
+ * because it can reopen those fields for a resubmission (#381).
  * `marketId` may be null while a caller has not got one yet; publishing is
  * then refused here rather than guarded at each call site. Publication is one
  * way (ADR 0008), which is why the row confirms it first. */
-export function usePublishMarket(marketId: string | null, onPublished: () => void) {
+export function usePublishMarket(
+  marketId: string | null,
+  onPublished: () => void,
+  onTermsRefused?: (details: BlockingHint[]) => void,
+) {
   const [showPublishModal, setShowPublishModal] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [formError, setFormError] = useState('')
@@ -73,6 +81,11 @@ export function usePublishMarket(marketId: string | null, onPublished: () => voi
       onPublished()
     } catch (err) {
       const code = errorCode(err)
+      if (code === 'draft_incomplete' && onTermsRefused) {
+        onTermsRefused(errorDetails(err))
+        setShowPublishModal(false)
+        return
+      }
       setFormError((code && CODE_MESSAGES[code]) || GENERIC_FAILURE)
       setSuperseded(!!code && SUPERSEDING_CODES.has(code))
       setRefusalDetails(errorDetails(err))
