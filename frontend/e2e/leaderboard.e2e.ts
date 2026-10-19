@@ -19,7 +19,8 @@ test('the leaderboard renders a real ranking from the ledger', async ({ page }) 
   // once `me` arrives with a rank in it, not merely once the page has loaded.
   await expect.poll(async () => {
     await page.goto('/leaderboard')
-    await expect(page.getByRole('table')).toBeVisible()
+    // isVisible() never throws, so a board that is not computed yet is just
+    // another poll; an assertion in here would fail the whole test instead.
     return page.getByText(/Your rank: #\d+/).isVisible()
   }, { timeout: 90_000, intervals: [5_000] }).toBe(true)
 
