@@ -848,6 +848,14 @@ _CANCEL_ORDER_DESCRIPTION = (
 )
 
 
+def _cancellation_out(cancelled: cancellation.Cancellation) -> CancellationOut:
+    return CancellationOut(
+        order=_order_out(cancelled.order),
+        released_credits=cancelled.released_credits,
+        released_shares=cancelled.released_shares,
+    )
+
+
 @router.post(
     "/orders/{order_id}/cancel",
     response_model=CancellationOut,
@@ -889,11 +897,7 @@ async def cancel_order(
 ) -> CancellationOut:
     # `body` is never read: it is declared so that a field in it is refused.
     cancelled = await cancellation.cancel(session, order_id, user_id=user.user_id)
-    return CancellationOut(
-        order=_order_out(cancelled.order),
-        released_credits=cancelled.released_credits,
-        released_shares=cancelled.released_shares,
-    )
+    return _cancellation_out(cancelled)
 
 
 _TRADE_FEED_DESCRIPTION = (
