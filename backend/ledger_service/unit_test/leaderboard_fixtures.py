@@ -48,6 +48,7 @@ from unit_test.trade_fixtures import (
     buy,
     entities,
     fund,
+    lock_waiters,
     session_factory,
 )
 
@@ -377,16 +378,6 @@ _ADVISORY_LOCK_WAITERS = text(
 )
 
 
-async def advisory_lock_waiters() -> int:
-    """Backends of this role queued on an advisory lock, from Postgres's own
-    view. A fresh connection per call, because `pg_stat_activity` is
-    snapshotted once per transaction."""
-    from core.database import get_engine  # noqa: PLC0415
-
-    async with get_engine().connect() as conn:
-        return (await conn.execute(_ADVISORY_LOCK_WAITERS)).scalar_one()
-
-
 async def queued_on_the_advisory_lock(task: asyncio.Task, what: str) -> bool:
     """Wait until one backend is queued on an advisory lock (True), or `task`
     has finished without queueing (False). Fails naming `what` if neither
@@ -396,7 +387,7 @@ async def queued_on_the_advisory_lock(task: asyncio.Task, what: str) -> bool:
     while True:
         if task.done():
             return False
-        if await advisory_lock_waiters() == 1:
+        if await lock_waiters(_ADVISORY_LOCK_WAITERS) == 1:
             return True
         if loop.time() > deadline:
             pytest.fail(f"timed out: {what}")

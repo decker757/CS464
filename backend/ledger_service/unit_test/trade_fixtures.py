@@ -37,8 +37,9 @@ from typing import Protocol
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import TextClause
 
 from unit_test.conftest import (
     active_auth_transport,
@@ -793,7 +794,7 @@ def pausing_factory(pause: PausesAtCommit) -> async_sessionmaker[AsyncSession]:
 
 
 # --- forcing a branch -----------------------------------------------------
-_KEY_INSERT_WAITERS = (
+_KEY_INSERT_WAITERS = text(
     "SELECT count(*) FROM pg_stat_activity "
     "WHERE datname = current_database() "
     "AND usename = current_user "
@@ -804,17 +805,18 @@ _KEY_INSERT_WAITERS = (
 )
 
 
-async def _key_insert_waiters() -> int:
-    """Backends of this role whose INSERT into `ledger.transactions` waits on
-    another transaction, as the unique index makes it wait on an uncommitted
-    key. A fresh connection per call, because `pg_stat_activity` is
-    snapshotted once per transaction."""
-    from sqlalchemy import text  # noqa: PLC0415
+async def lock_waiters(probe: TextClause) -> int:
+    """How many backends of this role `probe` counts as waiting, from
+    Postgres's own view.
 
+    A fresh connection per call, because `pg_stat_activity` is snapshotted
+    once per transaction. The twin probes are `_KEY_INSERT_WAITERS` here and
+    `_ADVISORY_LOCK_WAITERS` in `leaderboard_fixtures`.
+    """
     from core.database import get_engine  # noqa: PLC0415
 
     async with get_engine().connect() as conn:
-        return (await conn.execute(text(_KEY_INSERT_WAITERS))).scalar_one()
+        return (await conn.execute(probe)).scalar_one()
 
 
 async def _queued_on_the_key(
@@ -833,7 +835,7 @@ async def _queued_on_the_key(
         _raise_if_failed(tasks)
         if loser.done():
             pytest.fail("the loser finished without waiting on the key")
-        if await _key_insert_waiters() == 1:
+        if await lock_waiters(_KEY_INSERT_WAITERS) == 1:
             return
         if loop.time() > deadline:
             pytest.fail(
