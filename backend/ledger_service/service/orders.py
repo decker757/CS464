@@ -149,7 +149,7 @@ class Placement:
     book_state_version: int
 
 
-def _order_view_of(order: Order, *, outcome_position: int, live: bool) -> OrderView:
+def order_view_of(order: Order, *, outcome_position: int, live: bool) -> OrderView:
     """The order object, with `released` and the reservations derived from
     `live`: an order that is not live holds nothing.
 
@@ -200,7 +200,7 @@ def _fill_of(transaction: Transaction) -> Fill:
     )
 
 
-def _views_query() -> Select[tuple[Order, int, bool]]:
+def views_query() -> Select[tuple[Order, int, bool]]:
     """Each order with its outcome's position and whether it is live."""
     return select(
         Order, MarketOutcome.position, reservations.order_is_live().label("live")
@@ -262,7 +262,7 @@ async def _replay_if_present(
     `book_state_version`, and a replay answers from it").
     """
     row = (
-        await session.execute(_views_query().where(Order.idempotency_key == key))
+        await session.execute(views_query().where(Order.idempotency_key == key))
     ).one_or_none()
     if row is None:
         return None
@@ -272,7 +272,7 @@ async def _replay_if_present(
     ):
         raise IdempotencyKeyReused
     return Placement(
-        order=_order_view_of(order, outcome_position=position, live=live),
+        order=order_view_of(order, outcome_position=position, live=live),
         fills=await _fills_of(session, order),
         book_state_version=order.book_state_version,
     )
@@ -377,7 +377,7 @@ async def _rest(
     session.add(order)
     await session.commit()
     return Placement(
-        order=_order_view_of(
+        order=order_view_of(
             order,
             outcome_position=outcome_position,
             live=order.status is OrderStatus.OPEN,
@@ -461,7 +461,7 @@ async def _commit_fill(
     await publish_order_updates(redis_client, filled, now=now)
 
     return Placement(
-        order=_order_view_of(
+        order=order_view_of(
             order,
             outcome_position=outcome_position,
             live=order.status is OrderStatus.OPEN,
@@ -611,11 +611,11 @@ async def list_live(session: AsyncSession, user_id: uuid.UUID) -> list[OrderView
     """The user's live orders, newest first: open, on a market with no result,
     closed markets included. Takes no lock and writes nothing."""
     stmt = (
-        _views_query()
+        views_query()
         .where(Order.user_id == user_id, reservations.order_is_live())
         .order_by(Order.seq.desc())
     )
     return [
-        _order_view_of(order, outcome_position=position, live=live)
+        order_view_of(order, outcome_position=position, live=live)
         for order, position, live in (await session.execute(stmt)).all()
     ]
