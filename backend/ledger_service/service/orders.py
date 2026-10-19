@@ -542,6 +542,8 @@ async def place(
     if outcome_id not in outcome_ids:
         raise UnknownOutcome
     index = outcome_ids.index(outcome_id)
+    # The column a retry and the order list report, not the list index.
+    outcome_position = outcomes[index].position
 
     open_orders = await list_open_orders(session, market_id)
     refuse_if_crosses_book(
@@ -574,7 +576,9 @@ async def place(
     if fill is None:
         # The book's counter after this request: the one it was placed against.
         order.book_state_version = book.state_version
-        return await _rest(session, order, account=user_account, outcome_position=index)
+        return await _rest(
+            session, order, account=user_account, outcome_position=outcome_position
+        )
 
     now = datetime.now(UTC)
     trade = PricedTrade(
@@ -601,7 +605,7 @@ async def place(
         account=user_account,
         trade=trade,
         outcomes=outcomes,
-        outcome_position=index,
+        outcome_position=outcome_position,
         now=now,
         redis_client=redis_client,
     )
