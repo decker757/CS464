@@ -4,13 +4,17 @@ import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
+import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
 import { WithProviders } from '../test/renderWithProviders'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
-const SNAPSHOT = 'http://localhost:8003/ledger/markets/:id/snapshot'
-const PORTFOLIO = 'http://localhost:8003/ledger/portfolio/me'
+const LEDGER_BASE = 'http://localhost:8003'
+const SNAPSHOT = `${LEDGER_BASE}/ledger/markets/:id/snapshot`
+const PORTFOLIO = `${LEDGER_BASE}/ledger/portfolio/me`
+const PREVIEW = `${LEDGER_BASE}/ledger/markets/:id/preview`
+const TRADES = `${LEDGER_BASE}/ledger/markets/:id/trades`
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
@@ -48,15 +52,50 @@ function portfolio(positions: { market_id: string; outcome_id: string; quantity:
   }
 }
 
+// A quote and a filled trade for the one test that buys through the panel, to
+// reach the holding read that follows a trade. The panel's own behaviour is
+// TradingPanel.test.tsx's job.
+function tradeQuote() {
+  return {
+    market_id: 'mkt-abc',
+    state_version: 1,
+    side: 'buy',
+    outcome_id: 'o1',
+    quantity: '10.0000',
+    total: '-5.1250',
+    average_price: '0.5125',
+    prices: [{ outcome_id: 'o1', position: 0, price: '0.5000' }, { outcome_id: 'o2', position: 1, price: '0.5000' }],
+    post_trade_prices: [{ outcome_id: 'o1', position: 0, price: '0.5250' }, { outcome_id: 'o2', position: 1, price: '0.4750' }],
+  }
+}
+
+function tradeResult() {
+  return {
+    transaction_id: 'tx-1',
+    user_id: '1',
+    market_id: 'mkt-abc',
+    outcome_id: 'o1',
+    side: 'buy',
+    quantity: '10.0000',
+    total: '-5.1250',
+    state_version: 2,
+  }
+}
+
 // MSW WebSocket link for the realtime price socket. Silently accepts
 // connections so the hook connects without errors; indicator tests drive
 // the close from the server side.
 const priceService = ws.link('ws://localhost:8004/ws/prices')
 
 // Stub WebSocket — most tests don't exercise live prices (that's in
-// useMarketPrices tests). A silent MSW handler keeps the hook happy.
+// useMarketPrices tests). A silent MSW handler keeps the hook happy. The
+// portfolio read is here rather than in one describe's own beforeEach because
+// every test that renders a tradeable market makes it, this one included.
 beforeEach(() => {
-  server.use(priceService.addEventListener('connection', () => { /* silent */ }))
+  server.use(
+    priceService.addEventListener('connection', () => { /* silent */ }),
+    http.get(PORTFOLIO, () => HttpResponse.json(portfolio())),
+  )
 })
 
 afterEach(() => {
@@ -113,8 +152,6 @@ describe('MarketDetailPage', () => {
       http.get(SNAPSHOT, () =>
         HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 }),
       ),
-      // No positions unless a test serves some.
-      http.get(PORTFOLIO, () => HttpResponse.json(portfolio())),
     )
   })
 
@@ -204,6 +241,88 @@ describe('MarketDetailPage', () => {
     await actor.click(screen.getByRole('button', { name: 'No' }))
 
     expect(screen.getByText(/you hold 6\.0000 shares/i)).toBeInTheDocument()
+  })
+
+  it('keeps the holding read after a trade when the slower read from before it answers last', async () => {
+    // The portfolio route values every position and mints the signup grant on
+    // a first read, so the mount's read can easily answer after the one a
+    // trade fires. Taking the last answer to arrive would leave the panel
+    // refusing to sell a position the ledger holds, for the rest of the visit:
+    // nothing re-fires the read, so only a reload would recover it.
+    const { held, release } = holdUntilReleased()
+    let reads = 0
+    server.use(
+      http.get(PORTFOLIO, async () => {
+        reads += 1
+        if (reads > 1) {
+          return HttpResponse.json(portfolio([{ market_id: 'mkt-abc', outcome_id: 'o1', quantity: '10.0000' }]))
+        }
+        // The picture from before the buy, on its way out since mount.
+        await held
+        return HttpResponse.json(portfolio())
+      }),
+      http.get(PREVIEW, () => HttpResponse.json(tradeQuote())),
+      http.post(TRADES, () => HttpResponse.json(tradeResult(), { status: 201 })),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+
+    await actor.type(await screen.findByLabelText('Quantity (shares)'), '10')
+    const buy = screen.getByRole('button', { name: /^buy yes$/i })
+    await waitFor(() => expect(buy).toBeEnabled())
+    await actor.click(buy)
+    await screen.findByText(/bought/i)
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 10.0000 shares'))
+
+    await act(async () => {
+      release()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 10.0000 shares')
+  })
+
+  it('shows the holding of the market it moved to', async () => {
+    const otherMarket = {
+      ...baseMarket,
+      id: 'mkt-other',
+      question: 'Will the other market resolve yes?',
+      outcomes: [{ id: 'p1', position: 0, label: 'Yes' }, { id: 'p2', position: 1, label: 'No' }],
+    }
+    // The second market's read is held, so the gap after the move is visible:
+    // outcome ids differ between markets, so the first market's answer would
+    // read as "holds nothing" here and clamp every sell on that.
+    const { held, release } = holdUntilReleased()
+    let reads = 0
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, ({ params }) =>
+        HttpResponse.json(params.id === 'mkt-other' ? otherMarket : baseMarket),
+      ),
+      http.get(PORTFOLIO, async () => {
+        reads += 1
+        if (reads > 1) await held
+        return HttpResponse.json(portfolio([
+          { market_id: 'mkt-abc', outcome_id: 'o1', quantity: '3.0000' },
+          { market_id: 'mkt-other', outcome_id: 'p1', quantity: '7.0000' },
+        ]))
+      }),
+    )
+    const actor = userEvent.setup()
+    const router = renderMovableRouter('mkt-abc')
+    await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
+    await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 3.0000 shares'))
+
+    await act(() => router.navigate('/markets/mkt-other'))
+
+    await screen.findByText(otherMarket.question)
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    expect(screen.queryByLabelText('shares held')).not.toBeInTheDocument()
+
+    release()
+
+    await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 7.0000 shares'))
   })
 
   it('shows trading closed message for closed markets', async () => {
@@ -328,24 +447,7 @@ describe('MarketDetailPage', () => {
       vi.useRealTimers()
     })
 
-    // #357's fourth finding: the status column still reads `open` until the
-    // sweep writes CLOSED a few seconds later (ADR 0011), so a badge read
-    // straight off it sits above the words "Trading is closed" saying Open.
-    it('shows a closed badge during the sweep window, while the column still says open', async () => {
-      server.use(
-        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
-          HttpResponse.json({ ...baseMarket, status: 'open', close_time: '2025-08-09T12:00:00Z' }),
-        ),
-      )
-      renderPage()
-      await screen.findByText(baseMarket.question)
-
-      expect(screen.getByText('Closed')).toBeInTheDocument()
-      expect(screen.queryByText('Open')).not.toBeInTheDocument()
-      expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
-    })
-
-    it('shows trading closed for an open market whose close time has passed', async () => {
+    it('shows trading closed, and a closed badge, for an open market whose close time has passed', async () => {
       server.use(
         http.get(`${MARKET_BASE}/public/markets/:id`, () =>
           HttpResponse.json({ ...baseMarket, close_time: '2025-08-09T12:00:00Z' }),
@@ -354,6 +456,12 @@ describe('MarketDetailPage', () => {
       renderPage()
       expect(await screen.findByText(/trading is closed/i)).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+      // #357's fourth finding: this is the sweep window, where the status
+      // column still reads `open` because CLOSED is written a few seconds
+      // later (ADR 0011). A badge read straight off the column would say Open
+      // directly above the line asserted above.
+      expect(screen.getByText('Closed')).toBeInTheDocument()
+      expect(screen.queryByText('Open')).not.toBeInTheDocument()
     })
 
     it('locks trading when the countdown reaches the close time', async () => {

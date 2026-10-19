@@ -326,20 +326,22 @@ describe('TradingPanel', () => {
     server.use(
       http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
         HttpResponse.json(
-          { error: { code: 'insufficient_shares_held', message: 'Not enough shares.', details: { held: '2.0000', requested: '10.0000' } } },
+          { error: { code: 'insufficient_shares_held', message: 'Not enough shares.', details: { held: '1234.5678', requested: '10.0000' } } },
           { status: 409 },
         ),
       ),
     )
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    renderPanel()
+    renderPanel({ heldByOutcome: { 'o-yes': '2000.0000' } })
     await actor.click(screen.getByRole('button', { name: /^sell$/i }))
     await typeQuantity(actor, '10')
     await screen.findByLabelText('trade preview')
 
     await actor.click(screen.getByRole('button', { name: /^sell yes$/i }))
 
-    expect(await screen.findByText(/you hold 2\.0000 shares, but this sell asks for 10\.0000/i)).toBeInTheDocument()
+    // Four figures and a thousands separator, so the message is pinned as
+    // formatted rather than printing whatever string the ledger sent.
+    expect(await screen.findByText(/you hold 1,234\.5678 shares, but this sell asks for 10\.0000/i)).toBeInTheDocument()
   })
 
   it('gives insufficient_shares_outstanding its own message instead of the generic one', async () => {
