@@ -42,6 +42,7 @@ from unit_test.trade_fixtures import (
     count_commits,
     hide_the_first_lookup,
     ledger_counts,
+    race_on_one_key,
 )
 
 TICK = timedelta(microseconds=1)
@@ -769,48 +770,52 @@ async def test_the_lookup_overdraft_and_stamp_reads_run_under_every_lock(
 
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
 async def test_a_key_found_only_by_the_insert_race_is_refused(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, dirty: bool
+    session: AsyncSession, dirty: bool
 ) -> None:
-    """`post`'s race handler, in batch form: the re-read after the SAVEPOINT's
-    `IntegrityError` gives the lookup's answers. K exists on accounts outside
-    the batch; the batch's other key does not. Partial, so a reused key on a
-    clean session; pending writes on a dirty one. Never a bare
-    `IntegrityError`."""
+    """`post`'s race handler, in batch form, raced for real. Another session
+    holds `taken` uncommitted on accounts outside the batch, so the lookup
+    under the account locks truly finds nothing and the batch's INSERT waits
+    on the unique index until that session commits. The re-read then finds
+    `taken` and not `fresh`: partial, so a reused key on a clean session and
+    pending writes on a dirty one. Never a bare `IntegrityError`, and only the
+    other session's money moves."""
     platform = await _platform(session)
     (outsider,) = await _new_accounts(session, AccountKind.USER, 1)
     (pool,) = await _new_accounts(session, AccountKind.MARKET_POOL, 1)
     first_winner, second_winner = await _new_accounts(session, AccountKind.USER, 2)
-    taken = _key("taken")
-    await posting.post(
-        session,
-        idempotency_key=taken,
-        kind=TransactionKind.SETTLEMENT,
-        legs=[_leg(platform, "-2.2222"), _leg(outsider, "2.2222")],
-    )
-    fresh = _key("fresh")
+    taken, fresh = _key("taken"), _key("fresh")
     stowaway = _stage_stowaway(session) if dirty else None
-    calls = hide_the_first_lookup(monkeypatch)
     expected = errors.PendingWritesOnReplay if dirty else errors.IdempotencyKeyReused
 
-    with capture_sql() as statements:
-        with pytest.raises(expected):
-            await posting.post_all(
-                session,
-                [
-                    _transfer(fresh, pool, first_winner, "1.0001"),
-                    _transfer(taken, pool, second_winner, "1.0002"),
-                ],
-            )
+    async def post_taken_elsewhere(own: AsyncSession) -> Transaction:
+        return await posting.post(
+            own,
+            idempotency_key=taken,
+            kind=TransactionKind.SETTLEMENT,
+            legs=[_leg(platform, "-2.2222"), _leg(outsider, "2.2222")],
+        )
 
-    assert calls[0] >= 1, "the lookup under the lock was not hidden"
-    assert any(_is_insert_into(s, "transactions") for s in statements), (
-        "the refusal came before the INSERT, so the race was not reached"
+    async def post_the_batch(own: AsyncSession) -> list[Transaction]:
+        return await posting.post_all(
+            own,
+            [
+                _transfer(fresh, pool, first_winner, "1.0001"),
+                _transfer(taken, pool, second_winner, "1.0002"),
+            ],
+        )
+
+    _, refused = await race_on_one_key(
+        session, post_as_loser=post_the_batch, post_as_winner=post_taken_elsewhere
     )
+
+    assert isinstance(refused, expected), f"got {refused!r}"
     async with get_session_factory()() as other:
         assert await _keys_written(other, [fresh]) == 0
         assert await _keys_written(other, [taken]) == 1
+        assert await accounts.balance_of(other, outsider.id) == Decimal("2.2222")
         if stowaway is not None:
             assert await _stowaway_count(other, stowaway) == 0
+        await assert_ledger_balances(other)
 
 
 async def test_a_whole_batch_found_only_by_the_insert_race_replays(
