@@ -11,16 +11,17 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Area | Issues | State |
 | --- | --- | --- |
 | Authentication | [A-1]–[A-3] #29–#31, UI #46–#48 | shipped, both sides |
-| Market creation | [1.1]–[1.3] #1–#3, UI #45 | shipped; restricting edits to drafts, [1.4] #4, is open |
-| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped; the trade feed's username lookup is #273 |
-| Resolution | [3.1]–[3.4] #9–#12, UI #52, #87 | shipped through settlement; the dispute countdown UI #59 and the settled-market UI #216 are open |
-| Admin and audit | [4.1]–[4.4] #13–#16, UI #57 | shipped; the suspend control UI is #60 |
+| Market creation | [1.1]–[1.3] #1–#3, [1.4] #4, UI #45 | shipped; a submitted market cannot yet be reopened from the list, #354 |
+| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped, including the trade feed's username lookup |
+| Resolution | [3.1]–[3.4] #9–#12, UI #52, #87, #216, #59 | shipped through settlement, with the settled-market payout screen and the dispute-window countdown |
+| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60 | shipped, including the suspend/unsuspend control |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41 | shipped; every balance is derived from append-only entries |
-| Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53 | shipped; limit orders [T-6]–[T-8] #26–#28 are designed in ADR 0024 and not built |
+| Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53 | shipped |
+| Limit orders | [T-6]–[T-8] #26–#28 | the backend is shipped — place, cancel, the cascade that fills resting orders inside a trade, order frames on the socket, and an administrator's cancel; the UI, #61, is open |
 | Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209 | shipped |
-| Leaderboard | [L-1] #38, [L-3] #40 | shipped; [L-2] #39 has its backend and waits on its UI #58 |
+| Leaderboard | [L-1] #38, [L-2] #39, [L-3] #40, UI #58 | shipped, the table and the caller's own ranking |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
-| Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
+| Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
 | Deployment | [5.1] #17, [5.2] #18 | containers and CI shipped; the deploy pipeline [5.3] #19 and the load test [5.4] #20 are open |
 
@@ -105,8 +106,9 @@ backend/auth_service/     registration, login, logout, sessions
 backend/market_service/   markets from draft to publication, closing them,
                           and the outcome a second administrator approves
 backend/audit_service/    reading the shared admin action log
-backend/ledger_service/   credits, trades, positions, settlement and the
-                          leaderboard: append-only entries, derived balances
+backend/ledger_service/   credits, trades, limit orders, positions,
+                          settlement and the leaderboard: append-only
+                          entries, derived balances
 backend/realtime_service/ live prices over a websocket; owns no data
 backend/shared/           the only code the services import from each other
 backend/*/migrations/     auth, market, ledger: each schema's Alembic history,
@@ -196,5 +198,4 @@ to make and would be expensive to reverse.
 - [0023](docs/adr/0023-sending-an-approved-outcome-back.md) sending an approved
   outcome back inside its stored dispute window, by any admin
 - [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
-  fill against the AMM inside the trade that moved the price — Accepted, and
-  not built
+  fill against the AMM inside the trade that moved the price
