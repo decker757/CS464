@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import terms_client_over
+from unit_test.placement_fixtures import place
 from unit_test.portfolio_fixtures import (
     ADR_AVERAGE,
     ADR_B,
@@ -86,6 +87,21 @@ from unit_test.trade_fixtures import (
 )
 
 OTHER = Decimal("41.0000")
+
+# A resting buy of 10 outcome-1 shares at 0.4500 on a flat b = 100 book, filled
+# whole when a trade of 90 outcome-0 shares leaves outcome 1 at 0.2891. Worked
+# outside the code with stdlib Decimal at 60 digits: the fill is C(90, 10) −
+# C(90, 0) = 2.99467912…, a buy rounded up. Selling 3 of the 10 back pays
+# C(90, 10) − C(90, 7) = 0.92048739…, rounded down, and keeps 2.9947 · 7/10 =
+# 2.09629 of the basis, half-up 2.0963, so it releases 0.8984 and banks
+# 0.9204 − 0.8984 = 0.0220.
+CASCADE_LIMIT = Decimal("0.4500")
+CASCADE_ORDER = Decimal("10.0000")
+CASCADE_TRADE = Decimal("90.0000")
+CASCADE_FILL_COST = Decimal("2.9947")
+CASCADE_SOLD = Decimal("3.0000")
+CASCADE_REMAINING_BASIS = Decimal("2.0963")
+CASCADE_REALIZED = Decimal("0.0220")
 
 
 async def _preview_sale(
@@ -600,6 +616,43 @@ async def test_a_part_sold_position_banks_that_sale_and_still_rides_the_rest(
     assert result.unrealized_pnl == REMAINING_VALUE - REMAINING_BASIS
     assert result.total_pnl == result.realized_pnl + result.unrealized_pnl
     assert result.net_worth - result.starting_credits == result.total_pnl
+
+
+async def test_a_cascade_fill_is_the_basis_its_owner_banks_a_sale_against(
+    session: AsyncSession,
+) -> None:
+    """[T-7] #27 and [B-1] #359: a resting order the cascade fills opens its
+    owner's position at what the fill cost, exactly as a trade of its size
+    would, so the portfolio shows that cost as the basis and banks nothing
+    yet. A later sale of part of it banks its proceeds less the basis it
+    released at average cost. The owner makes no trade of their own before
+    the sale, so 2.9947 can only have come from the fill."""
+    upstream = await market_at(session, ADR_B)
+    owner, _ = await funded(session)
+    trader, _ = await funded(session)
+    await place(
+        session,
+        upstream,
+        user_id=owner,
+        outcome=1,
+        limit_price=CASCADE_LIMIT,
+        quantity=CASCADE_ORDER,
+    )
+    await hold(session, upstream, user_id=trader, quantity=CASCADE_TRADE)
+
+    filled = await read_portfolio(session, owner)
+
+    position = row(filled, upstream.market_id, 1)
+    assert position.quantity == CASCADE_ORDER
+    assert str(position.cost_basis) == str(CASCADE_FILL_COST)
+    assert str(filled.realized_pnl) == "0.0000"
+
+    await sell(session, upstream, user_id=owner, outcome=1, quantity=CASCADE_SOLD)
+
+    sold = await read_portfolio(session, owner)
+
+    assert str(row(sold, upstream.market_id, 1).cost_basis) == str(CASCADE_REMAINING_BASIS)
+    assert str(sold.realized_pnl) == str(CASCADE_REALIZED)
 
 
 async def test_starting_credits_is_what_the_grant_minted_not_the_current_setting(
