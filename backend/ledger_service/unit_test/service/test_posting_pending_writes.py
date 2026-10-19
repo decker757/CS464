@@ -198,11 +198,12 @@ async def test_a_replay_found_by_the_insert_race_is_refused_too(
     """
     ents = entities()
     upstream = await _open_a_book(session)
-    platform = await accounts_module().ensure_platform(session)
-    pool = ents.Account(kind=ents.AccountKind.MARKET_POOL, owner_id=uuid.uuid4())
-    granted_elsewhere = ents.Account(kind=ents.AccountKind.USER, owner_id=uuid.uuid4())
-    granted_here = ents.Account(kind=ents.AccountKind.USER, owner_id=uuid.uuid4())
-    session.add_all([pool, granted_elsewhere, granted_here])
+    accounts = accounts_module()
+    platform = await accounts.ensure_platform(session)
+    pool = await accounts.ensure(session, ents.AccountKind.MARKET_POOL, uuid.uuid4())
+    user = ents.AccountKind.USER
+    granted_elsewhere = await accounts.ensure(session, user, uuid.uuid4())
+    granted_here = await accounts.ensure(session, user, uuid.uuid4())
     await session.commit()
     q_before = await _dirty_an_outcome(session, upstream)
     key = f"pending-writes:{uuid.uuid4()}"
@@ -227,9 +228,7 @@ async def test_a_replay_found_by_the_insert_race_is_refused_too(
     assert isinstance(refused, errors().PendingWritesOnReplay), f"got {refused!r}"
     async with session_factory()() as other:
         assert await transaction_count(other, key=key) == 1
-        assert (
-            await accounts_module().balance_of(other, granted_elsewhere.id) == _AMOUNT
-        )
+        assert await accounts.balance_of(other, granted_elsewhere.id) == _AMOUNT
         assert (await _first_outcome(other, upstream)).q == q_before
         await assert_ledger_balances(other)
 

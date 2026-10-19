@@ -817,22 +817,42 @@ async def _key_insert_waiters() -> int:
         return (await conn.execute(text(_KEY_INSERT_WAITERS))).scalar_one()
 
 
-async def _until(
-    condition: Callable[[], Awaitable[bool]],
-    what: str,
-    tasks: Sequence[asyncio.Task],
+async def _queued_on_the_key(
+    loser: asyncio.Task, tasks: Sequence[asyncio.Task]
 ) -> None:
-    """Poll `condition` until it holds, or fail naming `what`. A party that
-    died stops the wait with its own error rather than a timeout."""
+    """Wait until the loser's INSERT waits on the winner's uncommitted key.
+
+    Fails at once if the loser finished without waiting, as one posting a
+    different key does, and by name if it never queues: a loser whose legs
+    share an account with the winner's waits on that account's lock instead.
+    A party that died stops the wait with its own error.
+    """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + TIMEOUT
-    while not await condition():
-        for task in tasks:
-            if task.done() and not task.cancelled() and task.exception() is not None:
-                raise task.exception()
+    deadline = loop.time() + PROBE_TIMEOUT
+    while True:
+        _raise_if_failed(tasks)
+        if loser.done():
+            pytest.fail("the loser finished without waiting on the key")
+        if await _key_insert_waiters() == 1:
+            return
         if loop.time() > deadline:
-            pytest.fail(f"timed out: {what}")
+            pytest.fail(
+                "timed out: the loser's INSERT never waited on the winner's key"
+            )
         await asyncio.sleep(0.01)
+
+
+class _HeldAtCommit:
+    """`pausing_factory`'s pause: holds every commit until `release`, and
+    sets `reached` at the first, after the session's INSERTs have run."""
+
+    def __init__(self) -> None:
+        self.reached = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def on_commit(self, session: AsyncSession) -> None:
+        self.reached.set()
+        await self.release.wait()
 
 
 async def race_on_one_key(
@@ -856,23 +876,9 @@ async def race_on_one_key(
     winner's result and the loser's result or exception; a winner that
     raised is raised.
     """
-    from sqlalchemy.ext.asyncio import async_sessionmaker  # noqa: PLC0415
-
-    from core.database import get_engine  # noqa: PLC0415
-
     start = asyncio.Barrier(2)
-    winner_inserted = asyncio.Event()
-    release_the_commit = asyncio.Event()
-
-    class HeldAtCommit(AsyncSession):
-        async def commit(self) -> None:
-            winner_inserted.set()
-            await release_the_commit.wait()
-            await super().commit()
-
-    winners = async_sessionmaker(
-        get_engine(), class_=HeldAtCommit, expire_on_commit=False, autoflush=False
-    )
+    held = _HeldAtCommit()
+    winners = pausing_factory(held)
 
     async def as_winner() -> object:
         async with winners() as own:
@@ -883,36 +889,17 @@ async def race_on_one_key(
     async def as_loser() -> object:
         await loser.connection()
         await start.wait()
-        await winner_inserted.wait()
+        await held.reached.wait()
         return await post_as_loser(loser)
 
-    async def loser_waits_on_the_key() -> bool:
-        return await _key_insert_waiters() == 1
-
-    async def winner_is_at_its_commit() -> bool:
-        return winner_inserted.is_set()
-
-    tasks = [asyncio.create_task(as_winner()), asyncio.create_task(as_loser())]
+    winner_task = asyncio.create_task(as_winner())
+    loser_task = asyncio.create_task(as_loser())
+    tasks = [winner_task, loser_task]
     try:
-        await _until(
-            winner_is_at_its_commit, "the winner never reached its commit", tasks
-        )
-        await _until(
-            loser_waits_on_the_key,
-            "the loser's INSERT never waited on the winner's key",
-            tasks,
-        )
+        await reached(held.reached, "the winner never reached its commit", tasks)
+        await _queued_on_the_key(loser_task, tasks)
     finally:
-        release_the_commit.set()
-        try:
-            async with asyncio.timeout(TIMEOUT):
-                won, lost = await asyncio.gather(*tasks, return_exceptions=True)
-        except TimeoutError:
-            for task in tasks:
-                task.cancel()
-            pytest.fail(
-                "timed out: a party never finished after the commit was released"
-            )
+        won, lost = await finish(tasks, held.release)
     if isinstance(won, BaseException):
         raise won
     return won, lost
