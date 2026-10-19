@@ -75,16 +75,20 @@ export async function registerAdmin(label: string): Promise<Session> {
   return logInThroughApi(trader.username)
 }
 
-function promoteToAdmin(username: string): void {
-  // Interpolated into SQL below, and only ever a name uniqueName() made.
-  if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
-  const sql = `UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`
+/** Runs one UPDATE as the superuser, the way a first admin is made by hand, and checks it changed exactly one row. */
+function runSql(sql: string, failure: string): void {
   const output = execFileSync(
     'docker',
     ['compose', 'exec', '-T', 'db', 'psql', '-U', process.env.POSTGRES_USER ?? 'cs464', '-d', process.env.POSTGRES_DB ?? 'cs464', '-v', 'ON_ERROR_STOP=1', '-c', sql],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   )
-  if (!output.includes('UPDATE 1')) throw new Error(`promoting ${username} changed no row: ${output}`)
+  if (!output.includes('UPDATE 1')) throw new Error(`${failure}: ${output}`)
+}
+
+function promoteToAdmin(username: string): void {
+  // Interpolated into SQL below, and only ever a name uniqueName() made.
+  if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
+  runSql(`UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
 }
 
 interface MarketOut {
@@ -187,13 +191,7 @@ export async function approveOutcome(admin: Session, marketId: string, proposalI
  */
 export function backdateDisputeWindow(marketId: string): void {
   if (!/^[\w-]+$/.test(marketId)) throw new Error(`refusing to backdate ${marketId}`)
-  const sql = `UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`
-  const output = execFileSync(
-    'docker',
-    ['compose', 'exec', '-T', 'db', 'psql', '-U', process.env.POSTGRES_USER ?? 'cs464', '-d', process.env.POSTGRES_DB ?? 'cs464', '-v', 'ON_ERROR_STOP=1', '-c', sql],
-    { cwd: REPO_ROOT, encoding: 'utf8' },
-  )
-  if (!output.includes('UPDATE 1')) throw new Error(`backdating ${marketId} changed no row: ${output}`)
+  runSql(`UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`, `backdating ${marketId} changed no row`)
 }
 
 interface Snapshot {
