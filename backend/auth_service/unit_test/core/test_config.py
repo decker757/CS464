@@ -84,7 +84,8 @@ def test_settings_carry_nothing_from_another_domain() -> None:
 def test_no_secret_appears_when_the_settings_are_printed() -> None:
     """#307. pytest prints a Settings in a failure message, and so does any log
     line or exception that formats one. The signing key, the database password
-    and the ledger's key must appear in neither form."""
+    and the ledger's key must appear in neither form, nor in a `model_dump()`,
+    which `Field(repr=False)` would have left in clear."""
     signing_key = "signing-key-307-must-not-print"
     database_password = "db-password-307-must-not-print"
     ledger_key = "ledger-key-307-must-not-print-0123456789"
@@ -97,6 +98,6 @@ def test_no_secret_appears_when_the_settings_are_printed() -> None:
         _env_file=None,
     )
 
-    for rendered in (repr(settings), str(settings)):
+    for rendered in (repr(settings), str(settings), str(settings.model_dump())):
         for secret in (signing_key, database_password, ledger_key):
             assert secret not in rendered

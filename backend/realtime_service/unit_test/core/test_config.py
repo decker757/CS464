@@ -71,7 +71,8 @@ def test_cors_origins_parse_from_the_environment(
 def test_no_secret_appears_when_the_settings_are_printed() -> None:
     """#307. pytest prints a Settings in a failure message, and so does any log
     line or exception that formats one. The signing key and the Redis password
-    must appear in neither form."""
+    must appear in neither form, nor in a `model_dump()`, which
+    `Field(repr=False)` would have left in clear."""
     signing_key = "signing-key-307-must-not-print"
     redis_password = "redis-password-307-must-not-print"
     settings = Settings(
@@ -80,6 +81,6 @@ def test_no_secret_appears_when_the_settings_are_printed() -> None:
         _env_file=None,
     )
 
-    for rendered in (repr(settings), str(settings)):
+    for rendered in (repr(settings), str(settings), str(settings.model_dump())):
         for secret in (signing_key, redis_password):
             assert secret not in rendered

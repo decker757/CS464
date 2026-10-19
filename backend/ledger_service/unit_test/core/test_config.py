@@ -218,7 +218,8 @@ def test_no_secret_appears_when_the_settings_are_printed() -> None:
     """pytest prints a Settings in a failure message, which is how #307 was
     found, and so does any log line or exception that formats one. The signing
     key, the service key and the two URLs' passwords must appear in neither
-    form."""
+    form, nor in a `model_dump()`, which `Field(repr=False)` would have left
+    in clear."""
     signing_key = "signing-key-307-must-not-print"
     service_key = "service-key-307-must-not-print-0123456789"
     database_password = "db-password-307-must-not-print"
@@ -233,6 +234,6 @@ def test_no_secret_appears_when_the_settings_are_printed() -> None:
         _env_file=None,
     )
 
-    for rendered in (repr(settings), str(settings)):
+    for rendered in (repr(settings), str(settings), str(settings.model_dump())):
         for secret in (signing_key, service_key, database_password, redis_password):
             assert secret not in rendered
