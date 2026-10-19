@@ -342,7 +342,20 @@ describe('MarketDetailPage', () => {
       expect(await screen.findByText(/result is final; payout pending \(closed .+\)\./i)).toBeInTheDocument()
     })
 
-    it('shows no countdown for a market that is not approved', async () => {
+    it('shows no countdown for a market that is not approved, even with a live window', async () => {
+      // Everything else is what an approved market has, so the status is the
+      // only thing that can be hiding the countdown. With the default fixture
+      // there is no window at all and the gate is never what does the work.
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({
+            ...baseMarket,
+            status: 'closed',
+            proposed_outcome_id: 'o1',
+            dispute_window_ends_at: new Date(Date.now() + 300_000).toISOString(),
+          }),
+        ),
+      )
       renderPage()
       await screen.findByText(baseMarket.question)
       expect(screen.queryByText(/disputes close in/i)).not.toBeInTheDocument()
