@@ -417,11 +417,13 @@ def test_the_docs_error_table_for_a_placement_is_what_the_route_answers() -> Non
 # =========================================================================
 # Cancelling
 # =========================================================================
-def _cancel_path(order_id: object) -> str:
+def _cancel_path(order_id: str | uuid.UUID) -> str:
     return f"/ledger/orders/{order_id}/cancel"
 
 
-async def _placed(client, market: _Market, headers: dict[str, str], **overrides) -> dict:
+async def _placed(
+    client: httpx.AsyncClient, market: _Market, headers: dict[str, str], **overrides
+) -> dict:
     response = await client.post(
         _path(market.market_id), json=_body(market, **overrides), headers=headers
     )
