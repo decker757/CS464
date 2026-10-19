@@ -410,3 +410,25 @@ describe('MarketDetailPage', () => {
     expect(await screen.findByText(/live prices unavailable/i)).toBeInTheDocument()
   })
 })
+
+describe('MarketDetailPage — the browser tab', () => {
+  beforeEach(() => {
+    document.title = "PredictSMU — SMU's prediction market"
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json(baseMarket)),
+      http.get(SNAPSHOT, () =>
+        HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 }),
+      ),
+    )
+  })
+
+  it('names the tab after the question once it has loaded', async () => {
+    // This page's heading is the question rather than a PageTitle, so it is
+    // the one page that has to title itself (#356).
+    renderPage()
+
+    await screen.findByText(baseMarket.question)
+
+    expect(document.title).toBe(`${baseMarket.question} · PredictSMU`)
+  })
+})
