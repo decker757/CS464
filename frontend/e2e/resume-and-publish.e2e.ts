@@ -12,7 +12,7 @@ import { logIn, marketCard, selectTab } from './support/browser'
 // test, so the Draft and Submitted tabs hold nothing but this test's rows and
 // need no paging ([2.1] #5 scopes both to the caller).
 
-test('an admin resumes their own draft from the markets list, and it is the same market rather than a second one', async ({ page }) => {
+test('a draft typed on the create page gets its own address, and both ways back reach the same market', async ({ page }) => {
   const admin = await registerAdmin('rp_resume')
   const question = `Is ${uniqueName('abandoned')} resumed rather than duplicated?`
   const renamed = `Is ${uniqueName('resumed')} the very same market?`
@@ -24,23 +24,35 @@ test('an admin resumes their own draft from the markets list, and it is the same
   // (ADR 0004).
   await expect(page.getByText('Saved')).toBeVisible({ timeout: 15_000 })
 
-  // Leave the way an admin who is called away leaves, and come back through
-  // the list rather than the create page.
+  // #348's second repro started here, with the address bar still reading
+  // /admin/markets/new: coming back to that page minted a fresh draft_key, so
+  // the next keystroke created a second market. The first save moves the page
+  // to the market's own address, which makes the browser itself the resume
+  // point — a reload of this URL continues the market rather than starting
+  // one. (/admin/markets/new still means a new market, deliberately.)
+  await expect(page).toHaveURL(/\/admin\/markets\/[\w-]+\/edit$/)
+  const marketUrl = page.url()
+
+  // Leave the way an admin who is called away leaves, and come back the two
+  // ways there are. The address itself first.
+  await page.goto('/admin/markets')
+  await page.goto(marketUrl)
+  await expect(page.getByLabel('Question *')).toHaveValue(question)
+
+  // Then the list's own control, which must land on that same market.
   await page.goto('/admin/markets')
   await selectTab(page, /^draft/i)
   await marketCard(page, question).getByRole('link', { name: 'Resume draft' }).click()
-
-  // The form is filled from the server, not from anything this browser was
-  // still holding.
-  await expect(page).toHaveURL(/\/admin\/markets\/[\w-]+\/edit$/)
+  await expect(page).toHaveURL(marketUrl)
+  // Filled from the server, not from anything this browser was still holding.
   await expect(page.getByLabel('Question *')).toHaveValue(question)
 
   await page.getByLabel('Question *').fill(renamed)
   await expect(page.getByText('Saved')).toBeVisible({ timeout: 15_000 })
 
-  // Renaming cannot hide a duplicate: a second market would still be sitting
-  // here under the first question, which is exactly what the fresh draft_key
-  // used to create.
+  // One market, renamed. Renaming cannot hide a duplicate: a second market
+  // would still be sitting on this tab under the first question, which is
+  // exactly what the per-mount draft_key used to leave behind.
   await page.goto('/admin/markets')
   await selectTab(page, /^draft/i)
   await expect(marketCard(page, renamed)).toBeVisible()
