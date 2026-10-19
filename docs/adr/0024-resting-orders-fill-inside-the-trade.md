@@ -375,6 +375,14 @@ with no path to release": for a suspended owner the path is the market's
 result, and it is not in the owner's hands. If the review reads "stuck" more
 strictly, the administrator's cancel moves into this iteration.
 
+> **Amended 2026-10-19 by [T-8] #326.** The administrator's cancel is built:
+> `POST /ledger/admin/orders/{order_id}/cancel`, with a required reason and an
+> `order.cancelled_by_admin` audit entry. A suspended owner's reservation now
+> has a release path that does not wait for the market's result, so "Nothing
+> in this iteration releases it sooner" above no longer holds. The orders
+> still fill until an administrator cancels them. DECISIONS.md, "An
+> administrator can cancel any live order, with a reason".
+
 ### The preview stays AMM-only
 
 `GET /ledger/markets/{market_id}/preview` is a read and runs no cascade.

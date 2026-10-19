@@ -22,3 +22,9 @@ class AdminAction(StrEnum):
     # winner and the three figures in `context`; no label, no reason.
     # DECISIONS.md, "`market.settled` carries the winner and the three figures".
     MARKET_SETTLED = "market.settled"
+
+    # [T-8] #326. Appended in the cancel's transaction. The reason, and the
+    # order's owner and market in `context`. The owner's own cancel appends
+    # nothing, so every entry of this type is an administrator's.
+    # DECISIONS.md, "An administrator can cancel any live order, with a reason".
+    ORDER_CANCELLED_BY_ADMIN = "order.cancelled_by_admin"

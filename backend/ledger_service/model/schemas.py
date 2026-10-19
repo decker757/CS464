@@ -751,6 +751,31 @@ class CancelIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AdminCancelIn(BaseModel):
+    """The body of an administrator's cancel: why. [T-8] #326, ADR 0024.
+
+    `reason` is split as auth's `SuspensionRequest` splits it: the key and the
+    500-character ceiling are shape, checked here, so a body without it is
+    `422 invalid_request`; what it says is content, so a blank or short reason
+    parses and `service/cancellation.py` refuses it as
+    `cancellation_incomplete`. `extra="forbid"`, `CancelIn`'s reason: a cancel
+    releases the whole remainder, so a field naming an amount is refused.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(
+        max_length=500,
+        description=(
+            "Why this order is being cancelled. At least 10 characters once "
+            "trimmed. Recorded in the audit log against the administrator who "
+            "cancelled it, and kept nowhere else: it is not a field on the "
+            "order."
+        ),
+        examples=["The owner's account is suspended; releasing what the order holds."],
+    )
+
+
 class CancellationOut(BaseModel):
     """What a cancel released. [T-8] #28, ADR 0024."""
 

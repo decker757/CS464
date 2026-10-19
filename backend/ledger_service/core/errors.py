@@ -553,6 +553,19 @@ class OrderReleased(LedgerError):
     message = "This order's market has a result, so its remainder is already released."
 
 
+class CancellationIncomplete(LedgerError):
+    """An administrator's cancel came with an unusable reason. [T-8] #326.
+
+    Blank, or under ten characters once trimmed: auth's
+    `suspension_incomplete` rule. 422, and no `details`: the reason is the
+    only field that can be wrong, and the code already says so.
+    """
+
+    status_code = 422
+    code = "cancellation_incomplete"
+    message = "A reason of at least 10 characters is required to cancel another trader's order."
+
+
 class LeaderboardRefreshed(LedgerError):
     """A leaderboard cursor names a ranking that is no longer stored. [L-1] #38.
 

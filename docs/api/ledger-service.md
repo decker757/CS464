@@ -41,18 +41,21 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024) |
 | GET | `/ledger/orders/me` | My live limit orders (ADR 0024) |
 | POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024) |
+| POST | `/ledger/admin/orders/{order_id}/cancel` | Cancel any trader's limit order, with a reason (admin) |
 | GET | `/health` | Liveness and readiness probe |
 
-**Four routes write, and none takes money.** `POST .../trades` takes no
+**Five routes write, and none takes money.** `POST .../trades` takes no
 account, no amount and no leg, so a trader's own token is a safe credential
 for it in a way it could never be for a route that accepted one. That is
 [T-2] #22's answer to ADR 0009's deferred question. `POST .../orders` is the
 same shape: the body names a price and a quantity, the budget is computed and
 the account is the token's (ADR 0024). `POST .../cancel` takes an empty
 body: the order is the caller's, and what it releases is derived from the
-order row. `POST .../settlement` takes an administrator's token and an empty
-body: the winner comes from market_service, and the holders and amounts come
-from this service's own positions (ADR 0009's second amendment). Every other
+order row. `POST /ledger/admin/orders/.../cancel` is the same cancel for an
+administrator, and its body is only a reason. `POST .../settlement` takes an
+administrator's token and an empty body: the winner comes from market_service,
+and the holders and amounts come from this service's own positions (ADR 0009's
+second amendment). Every other
 route reads, and no route ever edits or removes an entry. The ledger is
 append-only, enforced by a database trigger rather than by the absence of a
 route.
@@ -1405,6 +1408,44 @@ cancel got there first, the order does not fill.
 | 409 | `order_released` | Its market has a result, and the remainder is already released. |
 | 422 | `invalid_request` | `order_id` is not a UUID, or the body is not empty. |
 
+### POST /ledger/admin/orders/{order_id}/cancel
+
+[T-8] #326. An administrator cancels any trader's live order, as its owner
+would. It exists for an order its owner cannot cancel: a suspended account's,
+once its last access token has expired, which would otherwise hold its
+reservation until the market has a result (ADR 0024, "A suspended owner's
+orders are checked at placement only").
+
+```jsonc
+// request
+{ "reason": "The owner's account is suspended; releasing what the order holds." }
+```
+
+`reason` is required, `extra="forbid"`. It must be at least 10 characters once
+trimmed and at most 500, the same rule as auth's suspension reason. It is
+recorded in the audit log as `order.cancelled_by_admin`, with the order's
+`user_id` and `market_id` in `context`, in the cancel's own transaction, and
+kept nowhere else. The owner's own cancel is not audited, so every entry of
+that type is an administrator's.
+
+The response is the owner's cancel's, above. Everything else is the owner's
+cancel too: the same orders (open, on a market with no result), the same book
+lock, so it never races a fill or the owner's own cancel, and the same 409s.
+It is not limited to the caller's orders, so a missing order is the only
+`404`. It posts no ledger entry, and no frame is published: the owner sees the
+order leave `GET /ledger/orders/me`.
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 403 | `not_an_administrator` | A trader, including the order's owner. Their own cancel is the route above. |
+| 404 | `order_not_found` | No such order. |
+| 409 | `order_already_filled` | It filled completely before the cancel. |
+| 409 | `order_already_cancelled` | It was already cancelled, by its owner or another administrator. |
+| 409 | `order_released` | Its market has a result, and the remainder is already released. |
+| 422 | `invalid_request` | `order_id` is not a UUID, `reason` is missing or over 500 characters, or the body has another field. |
+| 422 | `cancellation_incomplete` | `reason` is under 10 characters once trimmed. |
+
 ### What a limit order does to the rest of this page
 
 - **Balance:** `reserved` and `available` (above).
@@ -1888,4 +1929,5 @@ ledger logs the refusal, and the response names no other account's figures.
 placement's own. `order_not_found`, `order_already_filled`,
 `order_already_cancelled` and `order_released` (404 and 409, new in [T-8]
 #28) are the cancel route's own. All six are documented in "Limit orders"
-above.
+above. `cancellation_incomplete` (422, new in [T-8] #326) is the
+administrator's cancel's own, documented there too.

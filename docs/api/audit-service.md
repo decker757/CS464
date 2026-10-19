@@ -156,6 +156,7 @@ would let a stale audit schema abort a working admin action.
 | `market.marked_settled` | market_service | [3.4] #12 |
 | `user.suspended` | auth_service | [4.2] #14 |
 | `user.unsuspended` | auth_service | [4.2] #14 |
+| `order.cancelled_by_admin` | ledger_service | [T-8] #326 |
 
 Treat an unrecognised value as opaque rather than as an error: a newer service
 may be writing an action type this build has never heard of.

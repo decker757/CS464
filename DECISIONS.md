@@ -9939,3 +9939,60 @@ and its service's `test_no_secret_appears_when_the_settings_are_printed`
 should name it. A test that replaces such a setting with `monkeypatch.setattr`
 passes a `SecretStr`, since assignment is not validated. The migrate step reads
 `DATABASE_URL` from the environment, not from `Settings`, and is unaffected.
+
+---
+
+### D-NEW — An administrator can cancel any live order, with a reason
+
+**Date:** 2026-10-19 · **Ticket:** #326 · **Status:** active
+
+**Decision.** `POST /ledger/admin/orders/{order_id}/cancel` cancels any
+trader's live order, an open one on a market with no result, exactly as its
+owner's cancel would: the same `service/cancellation.py::cancel`, called with
+an `AdminCancel` instead of the owner's id, so the same book lock, the same
+re-read under it and the same refusals. It skips only the owner check. It
+needs an administrator's token, through `CurrentActor`, the settlement
+route's guard. Its body is one required field, `reason`, with auth's
+suspension rule: at most 500 characters in the schema (`invalid_request`),
+and at least 10 once trimmed in the service (`cancellation_incomplete`),
+checked before any read. In the cancel's own transaction it appends
+`order.cancelled_by_admin`, carrying the trimmed reason and the order's
+`user_id` and `market_id` in `context`. The owner's own cancel stays
+unaudited. Nothing is posted and no frame is published.
+
+**Why.** ADR 0024, "A suspended owner's orders are checked at placement
+only", leaves a suspended owner able to cancel only while their last access
+token lives, and after that the reservation is held until the market has a
+result, which a market that never gets one never gives. This is the release
+path #326 promised as the condition of that narrowing. It takes the owner's
+path rather than a copy, so the lock that keeps a cancel from racing a fill
+also keeps the two cancels from both winning. The audit entry is ADR 0006's
+shape for an administrator's decision; a trader withdrawing their own order
+is not one, which is also why every entry of this type is an
+administrator's.
+
+**Rejected.** *Accepting an administrator's token on the owner's route*: the
+owner's route takes an empty body, and an administrator cancelling their own
+order there would have to be either audited without a reason or not audited
+at all. *A path with no admin prefix*, as the admin trade feed has: it can
+share `/ledger/markets/{market_id}/trades` with the trade because the two
+differ by method, and both cancels are a `POST` on one order, so the second
+needs a path of its own. `/ledger/admin/` is new to the ledger and follows
+auth's `/admin/` routes. *`/ledger/users/{user_id}/orders/{order_id}/cancel`*,
+the shape of the ledger's admin reads of another user's money
+(`/ledger/users/{user_id}/balance` and `/entries`): an order fixes its owner,
+so the user id is a second key that has to be checked against the order, and
+a disagreement is one more way for an order that exists to answer
+`order_not_found`. It is the closer fit if an admin list of a user's orders
+lands as `GET /ledger/users/{user_id}/orders`, and the cost of moving is the
+route's decorator, its docs, its two contract tests and that check; the
+ledger then has two admin shapes until it does. *`order.cancelled` as the
+action*: it reads as if every cancel were logged. *Market_service's
+5000-character ceiling*: the suspension is the closer action, an
+administrator acting on one trader's account.
+
+**Notes.** `test_cancel_order_concurrency.py` races the administrator's
+cancel against the owner's in both orderings; each fails with the cancel's
+`books.lock_book` removed. The ledger keeps its own copy of the reason rule
+(`_refuse_if_reason_unusable`), a twin of auth's `user_admin._reason_problems`
+(ADR 0012).
