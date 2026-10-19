@@ -79,6 +79,13 @@ export interface Position {
   value: string | null
   // value − cost_basis. Can be negative.
   unrealized_pnl: string | null
+  // Null on every row until the ledger settles its market. `result` is
+  // `paid_out` for the winning outcome and `worthless` for any other;
+  // `payout` is the credits this row was paid — the row's quantity on a
+  // `paid_out` row, "0.0000" on a `worthless` one. Already in `balance`, so
+  // it is not added into `positions_value` again (ledger-service.md).
+  result: 'paid_out' | 'worthless' | null
+  payout: string | null
   state_version: number
 }
 
@@ -311,5 +318,24 @@ export interface MarketTradePage {
  * trader, so each row names its own `user_id` rather than reading "me". */
 export async function getMarketTrades(marketId: string, params?: { cursor?: string; limit?: number }): Promise<MarketTradePage> {
   const res = await api.get<MarketTradePage>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, { params })
+  return res.data
+}
+
+export interface SettlementResult {
+  market_id: string
+  outcome_id: string
+  recorded_at: string
+  holders_paid: number
+  total_paid: string
+  residue: string
+}
+
+/** Settles an approved market once it is `settleable` ([3.4] #12): the
+ * winner and the holders come from this service's own book, never the
+ * request, which is why it takes no body. Safe to repeat — a retry after
+ * `settlement_unconfirmed` replays the same answer rather than paying twice
+ * (ledger-service.md). */
+export async function settleMarket(marketId: string): Promise<SettlementResult> {
+  const res = await api.post<SettlementResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/settlement`)
   return res.data
 }

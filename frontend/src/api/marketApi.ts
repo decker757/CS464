@@ -71,6 +71,12 @@ export interface PublicMarketDetail {
   seed_subsidy: string
   published_at: string
   proposed_outcome_id: string | null
+  // True on an approved market once its dispute window has passed, and always
+  // true once settled — the ledger reads this directly rather than deriving
+  // it from dispute_window_ends_at, so a settle control does the same
+  // (market-service.md, [3.4] #12).
+  settleable: boolean
+  dispute_window_ends_at: string | null
 }
 
 export async function getMarket(id: string): Promise<PublicMarketDetail> {
@@ -162,7 +168,7 @@ export async function closeMarket(id: string, reason: string): Promise<MarketOut
 export interface MarketSummaryOut {
   id: string
   draft_key: string
-  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved'
+  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
   question: string | null
   close_time: string | null
   updated_at: string
@@ -175,6 +181,11 @@ export interface MarketOverviewRow {
   status: MarketSummaryOut['status']
   question: string | null
   close_time: string | null
+  // Same rule as PublicMarketDetail.settleable: true on an approved market
+  // once its dispute window has passed, always true once settled
+  // (market-service.md, [3.4] #12). The settle control reads this, not the clock.
+  settleable: boolean
+  dispute_window_ends_at: string | null
 }
 
 interface MarketOverviewResponse {

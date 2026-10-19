@@ -64,6 +64,7 @@ const LOCKED_BECAUSE: Record<LockedStatus, string> = {
   closed: 'This market has already been published, and it has closed.',
   pending_resolution: 'This market already has an outcome waiting for a second administrator.',
   approved: 'This market already has an approved outcome.',
+  settled: 'This market has already been settled and paid out.',
 }
 
 // What publish said, by the code it failed with. `draft_incomplete` has no way
