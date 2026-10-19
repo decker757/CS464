@@ -38,9 +38,9 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
-| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (proposed, ADR 0024) |
-| GET | `/ledger/orders/me` | My live limit orders (proposed, ADR 0024) |
-| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (proposed, ADR 0024) |
+| POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024, not built yet) |
+| GET | `/ledger/orders/me` | My live limit orders (ADR 0024, not built yet) |
+| POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024, not built yet) |
 | GET | `/health` | Liveness and readiness probe |
 
 **Two routes write, and neither takes money.** `POST .../trades` takes no
@@ -119,7 +119,7 @@ neither can an operator changing `STARTING_CREDITS`: a new value reaches
 accounts granted after it and no others, and an account that already has its
 credits keeps them and stays readable.
 
-**Proposed, ADR 0024: not built yet. `reserved` and `available`.**
+**ADR 0024 (Accepted): not built yet. `reserved` and `available`.**
 
 ```jsonc
 {
@@ -756,7 +756,7 @@ The per-user holdings check belongs to [T-3] #23 and only means anything
 taken under the trade's own lock; a preview that checked it here would be
 quoting a refusal that could already be stale by the time anyone acted on it.
 
-**Proposed, ADR 0024: not built yet. `post_trade_prices` ignores resting
+**ADR 0024 (Accepted): not built yet. `post_trade_prices` ignores resting
 orders.** The preview runs no cascade. `total`, `average_price` and `prices`
 are what the trade will be charged against, because the trade is priced before
 any resting order fills. `post_trade_prices` is the price after this trade
@@ -1060,7 +1060,7 @@ prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
 or from `GET .../snapshot` instead.
 
-**Proposed, ADR 0024: not built yet. Three changes to this route.**
+**ADR 0024 (Accepted): not built yet. Three changes to this route.**
 
 - The response gains `book_state_version`, a JSON number: the book's counter
   after this trade **and** every resting order it filled. `state_version` is
@@ -1166,12 +1166,12 @@ snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
 
-## Limit orders — Proposed, ADR 0024: not built yet
+## Limit orders — ADR 0024 (Accepted): not built yet
 
 [T-6] #26, [T-7] #27, [T-8] #28. **Nothing in this section exists yet.** It
 is the contract [FE][T-6] #61 builds against. Why the design looks like this:
 [ADR 0024](../adr/0024-resting-orders-fill-inside-the-trade.md), which is
-Proposed.
+Accepted.
 
 A limit order buys or sells at its limit price or better, against the market
 maker. It fills at once as far as the price allows, and the rest waits. When
@@ -1857,5 +1857,5 @@ residue, so no request can provoke it.
 
 `market_not_binary`, `order_crosses_book`, `order_not_found`,
 `order_already_filled`, `order_already_cancelled` and `order_released` are
-proposed by ADR 0024 for the limit-order routes and are not built yet. They
+decided by ADR 0024 for the limit-order routes and are not built yet. They
 are documented in "Limit orders" above.

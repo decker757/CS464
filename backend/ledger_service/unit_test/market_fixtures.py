@@ -1,9 +1,10 @@
-"""A persisted book, for the schema tests that need a market to point at.
+"""A persisted book, for the tests that need a market to point at.
 
-`test_positions_schema.py` and `test_result_schema.py` each reference a market
-and its outcomes through a composite foreign key, and neither is testing how
-the book is built. Project modules are reached inside the function, so a missing
-name fails one test rather than collection (D-007).
+`test_positions_schema.py`, `test_result_schema.py`, `test_order_schema.py`
+and `test_post_all.py` each need a book and its outcomes to point a row at,
+and none of them is testing how the book is built. Project modules are
+reached inside the function, so a missing name fails one test rather than
+collection (D-007).
 """
 
 from __future__ import annotations

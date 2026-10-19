@@ -216,9 +216,10 @@ that market. It is a second source of truth, rejected for the reason in
 > a leaderboard that looks flat. Both are arguments for the rule this record
 > rejects.
 
-> **Amended 2026-10-17. Proposed by [ADR 0024](0024-resting-orders-fill-inside-the-trade.md),
-> and not built yet. A note, not a supersession.** Limit orders as ADR 0024
-> designs them are not the second liquidity mechanism this reversal names.
+> **Amended 2026-10-17. Decided by
+> [ADR 0024](0024-resting-orders-fill-inside-the-trade.md) (Accepted
+> 2026-10-17), not built yet. A note, not a supersession.** Limit orders as ADR
+> 0024 designs them are not the second liquidity mechanism this reversal names.
 > Every sale, instant or a fill, is priced by `trade_cost_of` against the
 > book, and nothing is matched against a resting order. The cascade runs after
 > the triggering sale is priced, so it cannot change that sale's proceeds. The
