@@ -725,8 +725,10 @@ class PlacementOut(BaseModel):
     )
     book_state_version: int = Field(
         description=(
-            "The book's counter after the placement request: the last fill's "
-            "`state_version`, or the counter the order was placed against."
+            "The book's counter after this whole request, including any "
+            "resting orders the placement's cascade filled, so it can be "
+            "higher than the highest `state_version` in `fills`. The counter "
+            "the order was placed against when nothing filled."
         )
     )
 

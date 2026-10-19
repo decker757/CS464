@@ -37,6 +37,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
+    CascadeFillRefused,
     IdempotencyKeyReused,
     InsufficientFunds,
     MarketClosed,
@@ -77,6 +78,7 @@ from service.trading import (
     PricedTrade,
     _fill_key,
     _list_open_orders,
+    _log_refused_fill,
     _price_event_of,
     _read_outcomes,
     _read_position,
@@ -295,6 +297,7 @@ async def _refuse_if_budget_does_not_fit(
     available = balance - reserved
     if budget > available:
         raise InsufficientFunds(
+            account_id=account.id,
             balance=balance,
             reserved=reserved,
             available=available,
@@ -314,6 +317,7 @@ def _placement_refusal_of(
         return refusal
     reserved = refusal.reserved - budget
     return InsufficientFunds(
+        account_id=refusal.account_id,
         balance=refusal.balance,
         reserved=reserved,
         available=refusal.balance - reserved,
@@ -395,7 +399,12 @@ async def _commit_fill(
     redis_client: redis.Redis,
 ) -> Placement:
     """Run the cascade after the fill's pending writes, insert the order beside
-    them, commit it all through `post_all`, then publish one price frame."""
+    them, commit it all through `post_all`, then publish one price frame.
+
+    A refusal of the placer's own account is their `insufficient_funds`; one
+    of any other account is `CascadeFillRefused`, as on the trade path (D-NEW
+    "A fill the running check refuses inside a cascade is `500
+    cascade_fill_refused`")."""
     fill_version = book.state_version
     # Read once for the whole batch; `get_one` for the trade path's reason.
     pool_account = await session.get_one(Account, book.pool_account_id)
@@ -427,6 +436,9 @@ async def _commit_fill(
     try:
         transactions = await posting.post_all(session, [movement, *cascade], now=now)
     except InsufficientFunds as refusal:
+        if refusal.account_id != account.id:
+            _log_refused_fill(refusal)
+            raise CascadeFillRefused from refusal
         raise _placement_refusal_of(refusal, order.budget) from None
 
     # After the commit, never before it, as on the trade path (ADR 0010).

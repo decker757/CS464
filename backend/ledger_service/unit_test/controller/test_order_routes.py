@@ -70,7 +70,7 @@ _CONTRACT_CODES = {
         "idempotency_key_reused",
     ],
     "422": ["unknown_outcome", "quantity_too_large"],
-    "500": ["market_book_incomplete"],
+    "500": ["market_book_incomplete", "cascade_fill_refused"],
     "503": ["market_terms_unavailable", "auth_unavailable"],
 }
 

@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import InsufficientFunds, LedgerError
 from model.entities import OrderStatus, Transaction, TransactionKind
-from service import trading
+from service import reservations, trading
 from unit_test.market_fixtures import market_with_outcomes
 from unit_test.order_fixtures import add_order
 from unit_test.placement_fixtures import (
@@ -42,9 +42,17 @@ from unit_test.placement_fixtures import (
     place,
     reserved_credits_of,
 )
-from unit_test.sell_fixtures import assert_q_matches_positions, footprint, holding
+from unit_test.sell_fixtures import (
+    Footprint,
+    assert_q_matches_positions,
+    footprint,
+    hold,
+    holding,
+    version_of,
+)
 from unit_test.trade_fixtures import (
     Recorder,
+    Upstream,
     assert_ledger_balances,
     balance_of_user,
     book_row,
@@ -87,8 +95,23 @@ AFFORDABLE = Decimal("77.7777")
 AFFORDABLE_COST = Decimal("46.2674")
 AFFORDABLE_FILL_COST = Decimal("6.7376")
 
+# One owner's resting sell and buy, filled by another trader's buy of 54
+# outcome-0 shares (the last test's docstring works them).
+SOLD_FROM = Decimal("20.0000")
+SOLD_FROM_COST = Decimal("10.4992")
+RESTING_SELL = Decimal("15.0000")
+RESTING_SELL_LIMIT = Decimal("0.6500")
+RESTING_BUY = Decimal("5.0000")
+RESTING_BUY_LIMIT = Decimal("0.4000")
+RESTING_BUY_BUDGET = Decimal("2.0000")
+SELL_TRIGGER = Decimal("54.0000")
+RESTING_BUY_COST = Decimal("1.6426")
+SELL_FILL = Decimal("7.0960")
+SELL_FILL_PROCEEDS = Decimal("4.6692")
+SOLD_FROM_REMAINING_BASIS = Decimal("6.7741")
 
-async def _flat_market(session: AsyncSession):
+
+async def _flat_market(session: AsyncSession) -> Upstream:
     upstream = limit_upstream()
     await open_at(session, upstream, ZERO_Q)
     return upstream
@@ -117,7 +140,9 @@ async def _reserve_elsewhere(
     await session.commit()
 
 
-async def _fills_in(session: AsyncSession, market_id: uuid.UUID) -> list[tuple]:
+async def _fills_in(
+    session: AsyncSession, market_id: uuid.UUID
+) -> list[tuple[uuid.UUID, Decimal, Decimal, int]]:
     """Every fill of a resting order in the market, as `(order_id, quantity,
     total, state_version)`, in the order the fills happened."""
     session.expire_all()
@@ -141,7 +166,7 @@ async def _fills_in(session: AsyncSession, market_id: uuid.UUID) -> list[tuple]:
     ]
 
 
-async def _committed(market_id: uuid.UUID):
+async def _committed(market_id: uuid.UUID) -> Footprint:
     async with session_factory()() as other:
         return await footprint(other, market_id)
 
@@ -429,3 +454,82 @@ def test_a_trade_recorded_before_book_state_version_existed_answers_its_state_ve
 
     assert trading.result_of(transaction).book_state_version == 7
 
+
+
+# =========================================================================
+# A resting sell filled by somebody else's trade
+# =========================================================================
+async def test_a_cascade_fill_of_a_resting_sell_credits_its_owner_and_releases_basis_at_average_cost(
+    session: AsyncSession, starting_credits: Decimal
+) -> None:
+    """ADR 0024: a fill is a trade by the order's owner, and only a buy-order
+    fill drops a reservation of credits. One owner's two orders fill in one
+    trade's cascade: their buy of outcome 1, then their sell of outcome 0 in
+    part, which leaves the sell open at its limit and its remaining shares
+    reserved.
+
+    The owner holds 20 outcome-0 shares, bought on a flat book for 10.4992,
+    and rests a sell of 15 at 0.6500 and a buy of 5 outcome-1 shares at
+    0.4000, budget 2.0000. A buy of 54 outcome-0 shares takes `q` to
+    [74, 0] for 33.1952. The buy order fills whole for 1.6426, leaving
+    [74, 5]; the sell then sells 7.0960 for 4.6692, floored, leaving outcome
+    0 at 0.6500. The sale releases 10.4992 · 7.0960/20 of the basis and
+    keeps 10.4992 · 12.9040/20 = 6.77408384, half-up 6.7741: a floor keeps
+    6.7740, and releasing what the fill paid keeps 5.8300.
+
+    The owner's credit reservation loses the buy's budget and nothing for
+    the sell. Their `available` before the trade is 1.0000, under the sale's
+    4.6692, so a sell fill that dropped its proceeds would refuse the batch
+    at its start.
+    """
+    upstream = await _flat_market(session)
+    owner, trader = await _funded(session), await _funded(session)
+    await hold(session, upstream, user_id=owner, quantity=SOLD_FROM)
+    sell_order = await place(
+        session,
+        upstream,
+        user_id=owner,
+        side="sell",
+        limit_price=RESTING_SELL_LIMIT,
+        quantity=RESTING_SELL,
+    )
+    buy_order = await place(
+        session,
+        upstream,
+        user_id=owner,
+        outcome=1,
+        limit_price=RESTING_BUY_LIMIT,
+        quantity=RESTING_BUY,
+    )
+    elsewhere = starting_credits - SOLD_FROM_COST - RESTING_BUY_BUDGET - Decimal("1.0000")
+    await _reserve_elsewhere(session, owner, elsewhere)
+
+    await buy(
+        session,
+        upstream,
+        user_id=trader,
+        quantity=SELL_TRIGGER,
+        state_version=await version_of(session, upstream.market_id),
+        client_key="sell-trigger",
+    )
+
+    assert await _fills_in(session, upstream.market_id) == [
+        (buy_order.order.id, RESTING_BUY, -RESTING_BUY_COST, 3),
+        (sell_order.order.id, SELL_FILL, SELL_FILL_PROCEEDS, 4),
+    ]
+    sell_row = await order_row(session, sell_order.order.id)
+    assert sell_row.status is OrderStatus.OPEN
+    assert (sell_row.filled_quantity, sell_row.filled_value) == (SELL_FILL, SELL_FILL_PROCEEDS)
+    assert await reservations.reserved_shares_of(
+        session, owner, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
+    ) == RESTING_SELL - SELL_FILL
+    sold_from = await holding(session, owner, upstream.market_id, upstream.outcomes[0])
+    assert sold_from is not None
+    assert sold_from[0] == SOLD_FROM - SELL_FILL
+    assert str(sold_from[1]) == str(SOLD_FROM_REMAINING_BASIS)
+    assert await balance_of_user(session, owner) == (
+        starting_credits - SOLD_FROM_COST - RESTING_BUY_COST + SELL_FILL_PROCEEDS
+    )
+    assert await reserved_credits_of(session, owner) == elsewhere
+    await assert_q_matches_positions(session, upstream.market_id)
+    await assert_ledger_balances(session)
