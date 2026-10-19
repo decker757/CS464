@@ -9648,7 +9648,10 @@ be: pytest puts the target's repr in an `AttributeError` from
 test log, and any log line or exception that formats one does the same in a
 deploy. A URL counts because the form is `USER:PASSWORD@HOST`; the Redis URL
 counts because a deploy may give it a password, even though the default has
-none.
+none. This agrees with "`REDIS_URL` has a default in the ledger and none in
+the realtime service", which allows the ledger its default because that value
+is not a credential. It still is not; the type covers the value a deploy sets
+in its place.
 
 **Rejected.** *`Field(repr=False)`*, the smaller change #307 offered for the
 URLs: it hides the field from `repr` and `str` and nothing else, so
