@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/fixtures'
 import { PASSWORD, registerAdmin, registerTrader } from './support/backend'
 import { logIn } from './support/browser'
 
@@ -18,7 +18,7 @@ test('an admin suspends a trader through the UI, and that trader can no longer l
 
   await expect(page.getByRole('heading', { name: trader.username })).toBeVisible()
   await page.getByRole('button', { name: /^suspend$/i }).click()
-  await page.getByLabel(/reason/i).fill('Suspended by the end-to-end test.')
+  await page.getByLabel(/reason/i).fill('Typed by the end-to-end test.')
   await page.getByRole('button', { name: /confirm suspend/i }).click()
 
   await expect(page.getByText('Suspended')).toBeVisible()
@@ -29,6 +29,7 @@ test('an admin suspends a trader through the UI, and that trader can no longer l
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD)
   await page.getByRole('button', { name: /log in/i }).click()
 
-  await expect(page).not.toHaveURL(/\/markets$/)
-  await expect(page.getByRole('alert')).toBeVisible()
+  // The server's own message for 403 account_suspended, not just any alert:
+  // a wrong password or a downed service would also leave one on screen.
+  await expect(page.getByText('This account is suspended. Contact an administrator.')).toBeVisible()
 })
