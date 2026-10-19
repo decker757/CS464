@@ -3,8 +3,8 @@ import type { PublicMarketDetail } from '../api/marketApi'
 import { labelsFor, loadMarketsById } from './marketLabels'
 
 export interface EntryRow extends LedgerEntry {
-  // Only a trade row names a market and an outcome (ledger-service.md); the
-  // grant, and any kind this app does not recognise, do not.
+  // A trade row names a market and an outcome, and so does a settlement row
+  // (ledger-service.md); the grant, and any kind this app does not recognise, do not.
   isTrade: boolean
   // A settlement row also names a market and its winning outcome, joined the
   // same way as a trade row, but it is a payout, not a trade: its side and
