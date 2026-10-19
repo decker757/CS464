@@ -30,7 +30,8 @@ test('an admin settles an approved market once its dispute window has passed, an
   await card.getByRole('button', { name: /^settle$/i }).click()
   await page.getByRole('button', { name: /confirm settle/i }).click()
 
-  await expect(card.getByText('Settled').first()).toBeVisible()
+  // The status badge is the only "Settled" on the card.
+  await expect(card.getByText('Settled', { exact: true })).toBeVisible()
   await expect(card.getByRole('button', { name: /^settle$/i })).toHaveCount(0)
 
   const traderContext = await browser.newContext()
@@ -39,6 +40,8 @@ test('an admin settles an approved market once its dispute window has passed, an
   await traderPage.goto('/portfolio')
 
   await expect(traderPage.getByText(market.question)).toBeVisible()
-  await expect(traderPage.getByText(/paid out/i)).toBeVisible()
+  // The trader bought exactly 10 winning shares, so the amount comes from the
+  // ledger's own payout and not from anything the browser worked out.
+  await expect(traderPage.getByText(/paid out 10\.0000/i)).toBeVisible()
   await traderContext.close()
 })
