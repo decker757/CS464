@@ -650,8 +650,8 @@ class OrderOut(BaseModel):
     """One limit order as it stands now. [T-6] #26, ADR 0024.
 
     The order object of `docs/api/ledger-service.md`. Amounts are decimal
-    strings at scale 4, as everywhere here; JSON mode writes a `Decimal` that
-    way without a serializer.
+    strings at scale 4, as everywhere here, in a python-mode dump as well as
+    on the wire.
     """
 
     id: uuid.UUID
@@ -685,6 +685,14 @@ class OrderOut(BaseModel):
     created_at: UtcDatetime
     cancelled_at: UtcDatetime | None
 
+    @field_serializer("limit_price", "quantity", "filled_quantity")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("average_fill_price", "reserved_credits", "reserved_shares")
+    def _as_optional_string(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
+
 
 class FillOut(BaseModel):
     """One fill a placement made: a trade in the owner's history."""
@@ -693,6 +701,10 @@ class FillOut(BaseModel):
     quantity: Decimal
     total: Decimal = Field(description="Signed as the trade route signs it.")
     state_version: int = Field(description="The book's counter after this fill.")
+
+    @field_serializer("quantity", "total")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
 
 
 class PlacementOut(BaseModel):
