@@ -196,5 +196,5 @@ to make and would be expensive to reverse.
 - [0023](docs/adr/0023-sending-an-approved-outcome-back.md) sending an approved
   outcome back inside its stored dispute window, by any admin
 - [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
-  fill against the AMM inside the trade that moved the price — Proposed, and
+  fill against the AMM inside the trade that moved the price — Accepted, and
   not built

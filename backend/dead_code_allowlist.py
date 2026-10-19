@@ -20,3 +20,6 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
+
+# [T-6] #26 stack PR 4b: the placement writes it; delete this line there
+Order
