@@ -3,7 +3,8 @@
 
 Every movement is legs that sum to zero, keyed for idempotency and
 fingerprinted so a reused key is told apart from a retry, and serialised on
-account row locks so concurrent trades cannot overdraw an account.
+account row locks so concurrent trades cannot take an account below what its
+buy orders reserve (ADR 0024).
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
-from service import accounts
+from service import accounts, reservations
 
 # Every amount is rounded to the column's scale before it is compared,
 # checked or hashed. A check on an unrounded value checks a number Postgres is
@@ -62,12 +63,30 @@ class Leg:
 
 @dataclass(frozen=True)
 class Movement:
-    """One transaction of a batch: `post`'s keyword arguments as a record."""
+    """One transaction of a batch: `post`'s keyword arguments as a record,
+    plus the reservation drop only `post_all` takes.
+
+    `reservation_drop` is how far the movement lowers its one USER account's
+    reservation: a buy-order fill's cost, or the order's whole remaining
+    budget when the fill exhausts it, and zero for anything else (ADR 0024).
+    Not money, so not fingerprinted.
+    """
 
     idempotency_key: str
     kind: TransactionKind
     legs: list[Leg]
     context: dict[str, Any] | None = None
+    reservation_drop: Decimal = ZERO
+
+
+@dataclass
+class _Floor:
+    """One USER account during the overdraft walk: its balance before the
+    batch, and its running balance and reservation."""
+
+    balance_before: Decimal
+    balance: Decimal
+    reserved: Decimal
 
 
 def _quantize(amount: Decimal) -> Decimal:
@@ -112,6 +131,10 @@ def _replay(existing: Transaction, fingerprint: str) -> Transaction:
     return existing
 
 
+def _user_account_ids_of(legs: list[Leg]) -> set[uuid.UUID]:
+    return {leg.account.id for leg in legs if leg.account.kind is AccountKind.USER}
+
+
 def _net_by_account(legs: list[Leg]) -> dict[uuid.UUID, tuple[Account, Decimal]]:
     """Each account's net movement, keyed on the account id, not the object:
     legs assembled from two queries would otherwise be netted in halves.
@@ -123,21 +146,94 @@ def _net_by_account(legs: list[Leg]) -> dict[uuid.UUID, tuple[Account, Decimal]]
     return netted
 
 
-async def _refuse_overdrafts(session: AsyncSession, legs: list[Leg]) -> None:
-    """Raise `InsufficientFunds` if any USER account would end below zero.
+def _debited_users_of(batch_legs: list[list[Leg]]) -> dict[uuid.UUID, Account]:
+    """The USER accounts some movement of the batch takes credits from. Only
+    these are read: an account the batch only credits cannot be overdrawn."""
+    debited: dict[uuid.UUID, Account] = {}
+    for legs in batch_legs:
+        for account, net in _net_by_account(legs).values():
+            if net < ZERO and account.kind is AccountKind.USER:
+                debited[account.id] = account
+    return debited
 
-    Netted per account, and only accounts losing credits are read. An
-    allowlist on USER, not a list of exempt kinds: PLATFORM and MARKET_POOL
-    are meant to go negative (ADR 0009, D-009). Adding a kind here means
-    deciding it holds spendable money.
-    """
-    for account, delta in _net_by_account(legs).values():
-        if delta >= ZERO or account.kind is not AccountKind.USER:
+
+def _drops_by_account(movements: list[Movement]) -> dict[uuid.UUID, Decimal]:
+    """Each USER account's reservation drops, summed over the batch."""
+    drops: dict[uuid.UUID, Decimal] = {}
+    for movement in movements:
+        if movement.reservation_drop == ZERO:
             continue
+        # Exactly one: `_refuse_if_malformed_batch` refused any other drop.
+        (account_id,) = _user_account_ids_of(movement.legs)
+        drops[account_id] = drops.get(account_id, ZERO) + _quantize(
+            movement.reservation_drop
+        )
+    return drops
 
-        balance = await accounts.balance_of(session, account.id)
-        if balance + delta < ZERO:
-            raise InsufficientFunds(balance=balance, required=-delta)
+
+async def _floors_before_batch(
+    session: AsyncSession, movements: list[Movement], batch_legs: list[list[Leg]]
+) -> dict[uuid.UUID, _Floor]:
+    """Each debited USER account's balance and reservation before the batch.
+
+    Raises `InsufficientFunds` with a `shortfall` if the balance is already
+    below the reservation there. The reservation is read under the account
+    lock, after the caller has flushed its order rows, so it is the figure
+    after the batch; adding back the batch's drops gives the figure before
+    it. A placement's new buy order so counts at its whole budget (ADR 0024).
+    """
+    drops = _drops_by_account(movements)
+    floors: dict[uuid.UUID, _Floor] = {}
+    for account_id, account in _debited_users_of(batch_legs).items():
+        balance = await accounts.balance_of(session, account_id)
+        reserved = await reservations.reserved_of(session, account.owner_id)
+        reserved += drops.get(account_id, ZERO)
+        if balance < reserved:
+            raise InsufficientFunds(
+                account_id=account_id,
+                balance=balance,
+                reserved=reserved,
+                available=balance - reserved,
+                shortfall=reserved - balance,
+            )
+        floors[account_id] = _Floor(
+            balance_before=balance, balance=balance, reserved=reserved
+        )
+    return floors
+
+
+async def _refuse_overdrafts(
+    session: AsyncSession, movements: list[Movement], batch_legs: list[list[Leg]]
+) -> None:
+    """Raise `InsufficientFunds` if a USER account the batch debits is below
+    what its buy orders reserve, at the start of the batch or after any
+    movement that debits it. ADR 0024.
+
+    Walked in movement order, not netted, so nothing later in the batch, a
+    credit or a reservation a fill drops, pays for a debit before it. A
+    refusal after a debit carries `required`, what the batch had taken from
+    the account by then, and that movement's key. Every refusal names the
+    account it refused. An allowlist on USER, not a list of exempt kinds:
+    PLATFORM and MARKET_POOL are meant to go negative (ADR 0009, D-009).
+    Adding a kind here means deciding it holds spendable money.
+    """
+    floors = await _floors_before_batch(session, movements, batch_legs)
+    for movement, legs in zip(movements, batch_legs, strict=True):
+        for account_id, (_, net) in _net_by_account(legs).items():
+            floor = floors.get(account_id)
+            if floor is None:
+                continue
+            floor.balance += net
+            floor.reserved -= _quantize(movement.reservation_drop)
+            if net < ZERO and floor.balance < floor.reserved:
+                raise InsufficientFunds(
+                    account_id=account_id,
+                    balance=floor.balance_before,
+                    reserved=floor.reserved,
+                    available=floor.balance_before - floor.reserved,
+                    required=floor.balance_before - floor.balance,
+                    movement_key=movement.idempotency_key,
+                )
 
 
 async def _stamp_after_newest(
@@ -203,13 +299,31 @@ def _transaction_of(
     return transaction, entries
 
 
+def _has_malformed_drop(movement: Movement) -> bool:
+    """A reservation drop below zero, one on a movement without exactly one
+    USER account to lower, or one on a movement that does not debit that
+    account. Only a buy-order fill drops a reservation, and it debits its
+    buyer (ADR 0024), so each of these is a bug in the caller."""
+    if movement.reservation_drop == ZERO:
+        return False
+    user_account_ids = _user_account_ids_of(movement.legs)
+    if movement.reservation_drop < ZERO or len(user_account_ids) != 1:
+        return True
+    (account_id,) = user_account_ids
+    _, net = _net_by_account(movement.legs)[account_id]
+    return net >= ZERO
+
+
 def _refuse_if_malformed_batch(movements: list[Movement]) -> None:
-    """Raise `MalformedBatch` for no movements, or one key named twice. Before
-    any SQL: an empty batch would still commit the caller's pending writes, and
-    a repeated key would surface as the unique index's bare `IntegrityError`.
+    """Raise `MalformedBatch` for no movements, one key named twice, or a
+    malformed reservation drop. Before any SQL: an empty batch would still
+    commit the caller's pending writes, and a repeated key would surface as the
+    unique index's bare `IntegrityError`.
     """
     keys = [movement.idempotency_key for movement in movements]
     if not keys or len(set(keys)) != len(keys):
+        raise MalformedBatch
+    if any(_has_malformed_drop(movement) for movement in movements):
         raise MalformedBatch
 
 
@@ -316,13 +430,13 @@ async def post_all(
 
     The order is the design: round, refuse unbalanced legs, lock every account
     in the batch once, ascending by id (the caller's book lock comes first),
-    then look the keys up, check USER overdrafts netted across the whole batch,
-    and take one stamp, all under the locks, so a history lists movements in
-    the order they committed (#187). Movement *i* lands at that stamp plus *i*
-    µs. Looked up before the lock, a retry racing its original is refused as an
-    overdraft for a trade that succeeded (ADR 0015). `now` is one floor for the
-    batch. DECISIONS.md, "`posting.post_all` takes a list of `Movement`s,
-    commits once, and keeps `post`'s SAVEPOINT".
+    then look the keys up, check each USER account against its reservation in
+    movement order (ADR 0024), and take one stamp, all under the locks, so a
+    history lists movements in the order they committed (#187). Movement *i*
+    lands at that stamp plus *i* µs. Looked up before the lock, a retry racing
+    its original is refused as an overdraft for a trade that succeeded (ADR
+    0015). `now` is one floor for the batch. DECISIONS.md, "`posting.post_all`
+    takes a list of `Movement`s, commits once, and keeps `post`'s SAVEPOINT".
     """
     _refuse_if_malformed_batch(movements)
 
@@ -353,7 +467,7 @@ async def post_all(
             session, keys, fingerprints, existing, caller_pending=caller_pending
         )
 
-    await _refuse_overdrafts(session, all_legs)
+    await _refuse_overdrafts(session, movements, batch_legs)
 
     first_stamp = await _stamp_after_newest(
         session, account_ids, now or datetime.now(UTC)

@@ -81,6 +81,16 @@ with `pythonpath = . ..`.
 > it. `shared/migrating.py` keeps the `env.py` body and the own-schema filter,
 > and refuses a database from before #75. ADR 0020's note.
 
+> **Amended 2026-10-19 by #253.** `shared/testing.py` also gains
+> `open_audit_reader`, the `audit_svc` session through which auth's, market's
+> and ledger's suites read back the entries their own service appended. The
+> three conftests held three copies of one engine. Nothing about that reader
+> differs by suite, so a difference between copies could only be a mistake,
+> and a quiet one: a copy pointed at the superuser would still pass every
+> audit test. Each conftest keeps its `audit_reader` fixture, which names its
+> own role for the failure message. It is still test plumbing with no runtime
+> surface.
+
 The LMSR engine is the third thing ADR 0005 named. It does not exist yet and
 lands with [F-3] #43, into this package.
 

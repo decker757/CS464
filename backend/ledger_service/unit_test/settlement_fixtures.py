@@ -508,6 +508,27 @@ async def book_lock_waiters(
         await asyncio.sleep(0.01)
 
 
+async def queued_on_the_book_or_finished(party: asyncio.Task) -> None:
+    """Return once a backend waits on a book row lock or `party` has finished,
+    whichever comes first, or fail on the timeout.
+
+    For a race test that must fail, not time out, with the lock removed:
+    without it `party` never queues and runs to the end instead. A fresh
+    connection per poll, as `book_lock_waiters` does.
+    """
+    from core.database import get_engine  # noqa: PLC0415
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PROBE_TIMEOUT
+    while not party.done():
+        async with get_engine().connect() as conn:
+            if (await conn.execute(_BOOK_LOCK_WAITERS)).scalar_one() == 1:
+                return
+        if loop.time() > deadline:
+            pytest.fail("timed out: the party neither queued on the book nor finished")
+        await asyncio.sleep(0.01)
+
+
 async def finish(tasks: Sequence[asyncio.Task], *flags: asyncio.Event) -> list:
     """Release every pause and collect every party, never hanging the suite."""
     for flag in flags:

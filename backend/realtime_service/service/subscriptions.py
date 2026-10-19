@@ -1,4 +1,5 @@
-"""Who is watching which market: the fan-out, and nothing else. [F-2] #42
+"""Who is watching which market, and whose sockets are whose: the fan-out,
+and nothing else. [F-2] #42 [T-7] #27
 
 Knows no WebSocket: a subscriber is anything with `enqueue`, so the routing
 rules are tested without a socket. The real subscriber is
@@ -29,8 +30,8 @@ class Subscriber(Protocol):
 def _discard[K, V](index: dict[K, set[V]], key: K, value: V) -> None:
     """Remove one value from one entry of a set index, pruning an emptied entry.
 
-    Both of the hub's maps live as long as the process. Without pruning they
-    only grow, and `len(index)` stops meaning "entries in use".
+    The hub's maps live as long as the process. Without pruning they only
+    grow, and `len(index)` stops meaning "entries in use".
     """
     members = index.get(key)
     if members is None:
@@ -42,15 +43,19 @@ def _discard[K, V](index: dict[K, set[V]], key: K, value: V) -> None:
 
 
 class Hub:
-    """The subscriptions, indexed both ways.
+    """The subscriptions, indexed both ways, and the sockets by their user.
 
     `_by_market` serves every broadcast; `_by_subscriber` serves every
     disconnect, so dropping a connection is not a scan of every market.
+    `_by_user` serves every order frame and `_user_of` its disconnect; a
+    socket's user is not a subscription and counts against no ceiling.
     """
 
     def __init__(self) -> None:
         self._by_market: dict[uuid.UUID, set[Subscriber]] = {}
         self._by_subscriber: dict[Subscriber, set[uuid.UUID]] = {}
+        self._by_user: dict[uuid.UUID, set[Subscriber]] = {}
+        self._user_of: dict[Subscriber, uuid.UUID] = {}
 
     # -- introspection ----------------------------------------------------
 
@@ -103,10 +108,26 @@ class Hub:
         _discard(self._by_market, market_id, subscriber)
         _discard(self._by_subscriber, subscriber, market_id)
 
+    def attach_user(self, subscriber: Subscriber, user_id: uuid.UUID) -> None:
+        """Hand this subscriber `user_id`'s order frames from now on.
+
+        No command asks for it and no ceiling counts it: a socket receives its
+        own user's frames whatever it watches. docs/api/realtime-service.md.
+        """
+        self._user_of[subscriber] = user_id
+        self._by_user.setdefault(user_id, set()).add(subscriber)
+
     def forget(self, subscriber: Subscriber) -> None:
-        """Remove a subscriber from every market. Safe for one that never subscribed."""
+        """Remove a subscriber from every market and from its user.
+
+        Safe for one that never subscribed or was never attached.
+        """
         for market_id in list(self._by_subscriber.get(subscriber, ())):
             self.unsubscribe(subscriber, market_id)
+
+        user_id = self._user_of.pop(subscriber, None)
+        if user_id is not None:
+            _discard(self._by_user, user_id, subscriber)
 
     # -- delivery ---------------------------------------------------------
 
@@ -123,6 +144,19 @@ class Hub:
         for subscriber in list(watchers):
             subscriber.enqueue(frame)
         return len(watchers)
+
+    def send_to_user(self, user_id: uuid.UUID, frame: dict[str, Any]) -> int:
+        """Hand this frame to every subscriber attached to this user. Returns how many.
+
+        Iterates a copy, for `broadcast`'s reason.
+        """
+        sockets = self._by_user.get(user_id)
+        if not sockets:
+            return 0
+
+        for subscriber in list(sockets):
+            subscriber.enqueue(frame)
+        return len(sockets)
 
 
 _hub: Hub | None = None

@@ -13,6 +13,7 @@ is a route and a docstring rather than a second opinion about what these mean.
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 
@@ -59,27 +60,59 @@ class MalformedCursor(LedgerError):
 
 
 class InsufficientFunds(LedgerError):
-    """The transaction would take an account below zero. [T-2] #22.
+    """The batch would take an account below what its buy orders reserve.
+    [T-2] #22, ADR 0024.
 
     409 rather than 422: nothing about the request is malformed, and the same
     request may well succeed later or have succeeded a moment ago. It is the
     state of the account that refuses it.
 
-    Carries the balance and the shortfall, because the caller is a trading
-    service that has to tell somebody why their trade did not go through, and
-    "insufficient funds" on its own is the least useful true sentence available.
+    Carries the figures, because the caller has to tell somebody why their
+    trade did not go through, and "insufficient funds" on its own is the least
+    useful true sentence available. `balance` is the account's before the
+    batch. A refusal after a debit carries `required`, what the batch had
+    taken by then; a refusal at the start of the batch carries `shortfall`
+    instead, how far the reservation there exceeds the balance. D-NEW "A
+    refusal from the running check reports the balance before the batch".
+
+    `movement_key` is the idempotency key of the movement the check refused
+    after, None at the start of the batch, and `account_id` the account it
+    refused. Neither is in the response: they are how a caller tells its own
+    refusal from a fill's (D-NEW "A fill the running check refuses inside a
+    cascade is `500 cascade_fill_refused`").
     """
 
     status_code = 409
     code = "insufficient_funds"
 
-    def __init__(self, *, balance: object, required: object) -> None:
+    def __init__(
+        self,
+        *,
+        account_id: uuid.UUID,
+        balance: Decimal,
+        reserved: Decimal,
+        available: Decimal,
+        required: Decimal | None = None,
+        shortfall: Decimal | None = None,
+        movement_key: str | None = None,
+    ) -> None:
+        self.account_id = account_id
         self.balance = balance
+        self.reserved = reserved
+        self.available = available
         self.required = required
-        self.message = (
-            f"This account holds {balance} credits and the transaction needs "
-            f"{required}."
-        )
+        self.shortfall = shortfall
+        self.movement_key = movement_key
+        if shortfall is None:
+            self.message = (
+                f"This account holds {balance} credits, {available} of them "
+                f"available, and the transaction needs {required}."
+            )
+        else:
+            self.message = (
+                f"This account holds {balance} credits, {available} of them "
+                f"available, and this request needs {shortfall} more."
+            )
         super().__init__(self.message)
 
 
@@ -294,26 +327,31 @@ class InsufficientSharesOutstanding(LedgerError):
 
 
 class InsufficientSharesHeld(LedgerError):
-    """A sell larger than the caller's own position in that outcome. [T-3] #23.
+    """A sell larger than the caller's own position in that outcome, less what
+    their live sell orders in it reserve. [T-3] #23, ADR 0024.
 
     409 for `InsufficientFunds`' reason: the request is well formed and the
     state refuses it. Distinct from `InsufficientSharesOutstanding`, whose
-    remedy is not the caller's: this one is fixed by selling at most `held`.
+    remedy is not the caller's: this one is fixed by selling at most
+    `held - reserved`.
 
-    Carries both figures, which the raiser has already put at scale 4
+    Carries the figures, which the raiser has already put at scale 4
     (`service/trading.py`), so a caller with no position reads
     `"0.0000"` and a request of `10` reads `"10.0000"`, and a sell form can
-    offer "sell all" without a second request.
+    offer "sell all" without a second request. `held` is the whole position;
+    `reserved` is the part the caller's sell orders hold back.
     """
 
     status_code = 409
     code = "insufficient_shares_held"
 
-    def __init__(self, *, held: Decimal, requested: Decimal) -> None:
+    def __init__(self, *, held: Decimal, reserved: Decimal, requested: Decimal) -> None:
         self.held = held
+        self.reserved = reserved
         self.requested = requested
         self.message = (
-            f"This account holds {self.held} shares of this outcome and the "
+            f"This account holds {self.held} shares of this outcome, "
+            f"{self.reserved} of them reserved by its sell orders, and the "
             f"sell asks for {self.requested}."
         )
         super().__init__(self.message)
@@ -420,6 +458,101 @@ class QuoteStale(LedgerError):
         super().__init__(self.message)
 
 
+class OrderCrossesBook(LedgerError):
+    """A new limit order would fire, or be fired by, an open one. [T-6] #26.
+
+    ADR 0024, "Resting orders fill against the AMM inside the trade that moved
+    the price", keeps every open order unable to fill at the current price, and
+    "A placement that would cross the book is refused, `order_crosses_book`"
+    refuses the placement that would break that against another open order
+    pushing the price the other way. Your own orders count.
+
+    409 for `InsufficientFunds`'s reason: nothing about the request is
+    malformed, and the same limit is accepted once no opposing order is in the
+    way. `bound` is the nearest limit on the other side, in the new order's
+    own outcome terms, and the limit must clear it strictly: below it for a
+    buy, above it for a sell.
+    """
+
+    status_code = 409
+    code = "order_crosses_book"
+
+    def __init__(self, *, side: str, bound: Decimal) -> None:
+        self.side = side
+        self.bound = bound
+        direction = "below" if side == "buy" else "above"
+        self.message = (
+            f"An order is in the way at this price: a {side}'s limit must be "
+            f"{direction} {bound}"
+        )
+        super().__init__(self.message)
+
+
+class MarketNotBinary(LedgerError):
+    """A limit order on a market with more than two outcomes. [T-6] #26.
+
+    ADR 0024, "Binary markets only, and no crossed book": with three or more
+    outcomes there is no single price to rank orders on, and the cascade has
+    no termination proof. 409 for `InsufficientFunds`'s reason: the request is
+    well formed, and it is the market that refuses it. Trading the market
+    instantly still works.
+    """
+
+    status_code = 409
+    code = "market_not_binary"
+    message = "Limit orders are only available on markets with two outcomes."
+
+
+class OrderNotFound(LedgerError):
+    """No order with this id belongs to the caller. [T-8] #28.
+
+    Another trader's order reads the same as one that does not exist, so ids
+    cannot be probed (D-NEW "Cancel calls neither auth nor the market gate").
+    """
+
+    status_code = 404
+    code = "order_not_found"
+    message = "No such order."
+
+
+class OrderAlreadyFilled(LedgerError):
+    """A cancel found the order filled completely. [T-8] #28, ADR 0024.
+
+    The fill took the book lock first and committed first, so there is no
+    remainder to release. 409: the request was fine, the order moved on.
+    """
+
+    status_code = 409
+    code = "order_already_filled"
+    message = "This order has already filled completely."
+
+
+class OrderAlreadyCancelled(LedgerError):
+    """A cancel found the order cancelled already. [T-8] #28, ADR 0024.
+
+    A retried cancel lands here, and the client treats it as done: the first
+    cancel released the remainder, and a reservation is derived, so nothing
+    is released twice.
+    """
+
+    status_code = 409
+    code = "order_already_cancelled"
+    message = "This order has already been cancelled."
+
+
+class OrderReleased(LedgerError):
+    """A cancel found the order's market with a result. [T-8] #28, ADR 0024.
+
+    The result released the remainder in its own commit (D-NEW "An open order
+    is live only while its market has no result"), so a cancel has nothing
+    left to release.
+    """
+
+    status_code = 409
+    code = "order_released"
+    message = "This order's market has a result, so its remainder is already released."
+
+
 class LeaderboardRefreshed(LedgerError):
     """A leaderboard cursor names a ranking that is no longer stored. [L-1] #38.
 
@@ -467,9 +600,28 @@ class PendingWritesOnReplay(LedgerError):
     )
 
 
+class CascadeFillRefused(LedgerError):
+    """The overdraft check refused a trade's batch anywhere but at the trade's
+    own movement. [T-7] #27, ADR 0024.
+
+    Impossible by construction, because every fill is bounded by its own
+    order's reservation, so this is a bug in the server, like
+    `MalformedBatch`, and takes its status. It names no figures: they would
+    be another account's. D-NEW "A fill the running check refuses inside a
+    cascade is `500 cascade_fill_refused`".
+    """
+
+    status_code = 500
+    code = "cascade_fill_refused"
+    message = (
+        "A resting order this trade would have filled was refused by the "
+        "overdraft check. This is a bug in this service, not in the request."
+    )
+
+
 class MalformedBatch(LedgerError):
-    """`posting.post_all` was handed no movements, or one key twice.
-    [3.4] #12.
+    """`posting.post_all` was handed no movements, one key twice, or a
+    reservation drop it cannot apply. [3.4] #12, ADR 0024.
 
     "An empty batch, or one key twice in a batch, is `MalformedBatch`, a 500":
     the server builds every movement and every key, and the settlement
@@ -481,7 +633,9 @@ class MalformedBatch(LedgerError):
     status_code = 500
     code = "malformed_batch"
     message = (
-        "A batch of movements was empty or named one idempotency key twice. "
+        "A batch of movements was empty, named one idempotency key twice, or "
+        "carried a reservation drop below zero, with no single user account, "
+        "or on a movement that does not debit that account. "
         "This is a bug in this service, not in the request."
     )
 

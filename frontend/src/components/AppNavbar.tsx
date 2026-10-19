@@ -37,6 +37,9 @@ export default function AppNavbar() {
           <Link to="/history" className="text-sm text-white/75 hover:text-white">
             History
           </Link>
+          <Link to="/leaderboard" className="text-sm text-white/75 hover:text-white">
+            Leaderboard
+          </Link>
           {user.role === 'admin' && (
             <>
               <Link to="/admin/markets" className="text-sm text-white/75 hover:text-white">

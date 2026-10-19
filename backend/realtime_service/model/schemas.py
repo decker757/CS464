@@ -1,8 +1,9 @@
-"""The wire contract: `PriceEvent` in from Redis, frames out to the socket. [F-2] #42 [X-4] #37
+"""The wire contract: `PriceEvent` and `OrderEvent` in from Redis, frames out to the socket.
 
-OpenAPI cannot describe a socket, so `docs/api/realtime-service.md` is the
-other half and nothing checks that the two agree: change a field here, change
-it there. The ledger's copy of `PriceEvent` is pinned to these field names (D-048).
+[F-2] #42 [X-4] #37 [T-7] #27. OpenAPI cannot describe a socket, so
+`docs/api/realtime-service.md` is the other half and nothing checks that the
+two agree: change a field here, change it there. The ledger's copies of both
+events are pinned to these field names (D-048).
 
 Do not add a "prices sum to one" check. This service holds no `q` or `b`,
 cannot recompute the number, and relays what the owner said; it checks shape only.
@@ -116,6 +117,58 @@ class PriceEvent(BaseModel):
         docs/api/realtime-service.md.
         """
         return {"type": "price", **self.model_dump(mode="json")}
+
+
+class OrderFill(BaseModel):
+    """One fill of a resting order: a trade in its owner's history."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: uuid.UUID
+    quantity: Decimal
+    total: Decimal = Field(description="Signed as the trade route signs it: negative on a buy.")
+    state_version: int = Field(
+        ge=0,
+        description=(
+            "The book's counter after this fill. What a client orders one "
+            "order's frames by: two fills of one order are in one market."
+        ),
+    )
+
+
+class OrderEvent(BaseModel):
+    """One fill of a resting order, for its owner. The `order.update` payload.
+
+    ADR 0024. Relayed to every socket of `user_id` with no subscription, and
+    not through the version gate (D-NEW "Order frames pass no version gate on
+    the relay"). Extra fields are refused, as on `PriceEvent`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: uuid.UUID
+    user_id: uuid.UUID
+    market_id: uuid.UUID
+    outcome_id: uuid.UUID
+    side: Literal["buy", "sell"]
+    status: Literal["open", "filled"] = Field(
+        description=(
+            "`open` after a partial fill and `filled` after the last. A cancel "
+            "sends no frame, so nothing else arrives here."
+        )
+    )
+    quantity: Decimal
+    filled_quantity: Decimal = Field(description="Across every fill so far, this one included.")
+    fill: OrderFill
+    occurred_at: datetime = Field(description="For display only, as on `PriceEvent`.")
+
+    @field_serializer("occurred_at")
+    def _occurred_at_as_string(self, value: datetime) -> str:
+        return value.isoformat()
+
+    def frame(self) -> dict[str, Any]:
+        """This event as the server-to-client frame: flat, plus a `type`."""
+        return {"type": "order", **self.model_dump(mode="json")}
 
 
 # ---------------------------------------------------------------------------

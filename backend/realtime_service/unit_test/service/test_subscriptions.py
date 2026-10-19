@@ -277,3 +277,63 @@ def test_a_refused_subscription_changes_nothing(
 
     assert hub.subscriber_count(refused) == 0
     assert not hub.is_subscribed(watcher, refused)
+
+
+# ---------------------------------------------------------------------------
+# Order frames: by user, with no subscription (ADR 0024)
+# ---------------------------------------------------------------------------
+
+
+def test_an_order_frame_reaches_every_socket_of_its_owner_and_no_other() -> None:
+    """docs/api/realtime-service.md, "Order updates": every socket the owner
+    has open, whatever it watches, and nobody else's. Neither of the owner's
+    sockets has subscribed to anything."""
+    hub = Hub()
+    owner, somebody_else = uuid.uuid4(), uuid.uuid4()
+    first_tab, second_tab, other_tab = Recorder(), Recorder(), Recorder()
+    hub.attach_user(first_tab, owner)
+    hub.attach_user(second_tab, owner)
+    hub.attach_user(other_tab, somebody_else)
+
+    delivered = hub.send_to_user(owner, {"type": "order"})
+
+    assert delivered == 2
+    assert first_tab.frames == second_tab.frames == [{"type": "order"}]
+    assert other_tab.frames == []
+
+
+def test_a_forgotten_socket_receives_no_order_frame_and_leaves_no_user_behind() -> None:
+    """`forget` runs on every disconnect, so it is the only thing that takes a
+    closed socket out of the user index; one left there is written to on the
+    owner's every fill, and a user who has gone stays a key for good."""
+    hub = Hub()
+    owner = uuid.uuid4()
+    leaving, staying = Recorder(), Recorder()
+    hub.attach_user(leaving, owner)
+    hub.attach_user(staying, owner)
+
+    hub.forget(leaving)
+    assert hub.send_to_user(owner, {"type": "order"}) == 1
+    assert leaving.frames == []
+
+    hub.forget(staying)
+    assert hub.send_to_user(owner, {"type": "order"}) == 0
+    # Private on purpose: no caller needs the user index's keys, so a public
+    # accessor would exist only for this line. Nothing else can see the prune.
+    assert hub._by_user == {}
+
+
+def test_attaching_a_user_watches_no_market_and_counts_against_no_ceiling(
+    monkeypatch: pytest.MonkeyPatch, market_id: uuid.UUID
+) -> None:
+    """The contract: "There is no command to add, and the subscription ceiling
+    does not count them." A socket attached to its user is still one with no
+    subscriptions, so it may take its whole allowance."""
+    monkeypatch.setattr(get_settings(), "max_subscriptions_per_connection", 1)
+    hub = Hub()
+    watcher = Recorder()
+    hub.attach_user(watcher, uuid.uuid4())
+
+    assert hub.subscription_count(watcher) == 0
+    assert hub.connection_count == 0
+    hub.subscribe(watcher, market_id)  # must not raise
