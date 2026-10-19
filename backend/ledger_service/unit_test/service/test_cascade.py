@@ -43,6 +43,7 @@ from unit_test.placement_fixtures import (
     reserved_credits_of,
 )
 from unit_test.sell_fixtures import (
+    Footprint,
     assert_q_matches_positions,
     footprint,
     hold,
@@ -51,6 +52,7 @@ from unit_test.sell_fixtures import (
 )
 from unit_test.trade_fixtures import (
     Recorder,
+    Upstream,
     assert_ledger_balances,
     balance_of_user,
     book_row,
@@ -109,7 +111,7 @@ SELL_FILL_PROCEEDS = Decimal("4.6692")
 SOLD_FROM_REMAINING_BASIS = Decimal("6.7741")
 
 
-async def _flat_market(session: AsyncSession):
+async def _flat_market(session: AsyncSession) -> Upstream:
     upstream = limit_upstream()
     await open_at(session, upstream, ZERO_Q)
     return upstream
@@ -138,7 +140,9 @@ async def _reserve_elsewhere(
     await session.commit()
 
 
-async def _fills_in(session: AsyncSession, market_id: uuid.UUID) -> list[tuple]:
+async def _fills_in(
+    session: AsyncSession, market_id: uuid.UUID
+) -> list[tuple[uuid.UUID, Decimal, Decimal, int]]:
     """Every fill of a resting order in the market, as `(order_id, quantity,
     total, state_version)`, in the order the fills happened."""
     session.expire_all()
@@ -162,7 +166,7 @@ async def _fills_in(session: AsyncSession, market_id: uuid.UUID) -> list[tuple]:
     ]
 
 
-async def _committed(market_id: uuid.UUID):
+async def _committed(market_id: uuid.UUID) -> Footprint:
     async with session_factory()() as other:
         return await footprint(other, market_id)
 
