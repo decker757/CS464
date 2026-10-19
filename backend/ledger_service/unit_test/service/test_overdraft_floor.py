@@ -58,7 +58,7 @@ class _Trader:
             reservation_drop=Decimal(drop),
         )
 
-    def is_paid(self, amount: str) -> posting.Movement:
+    def is_paid(self, amount: str, *, drop: str = "0") -> posting.Movement:
         """A sell, or a sell-order fill, crediting the trader."""
         return posting.Movement(
             idempotency_key=f"paid:{uuid.uuid4()}",
@@ -67,6 +67,7 @@ class _Trader:
                 posting.Leg(account=self.pool, amount=-Decimal(amount)),
                 posting.Leg(account=self.user, amount=Decimal(amount)),
             ],
+            reservation_drop=Decimal(drop),
         )
 
     async def rest_order(self, session: AsyncSession, **fields: str | None) -> None:
@@ -254,19 +255,23 @@ async def test_a_self_fill_sale_before_a_buy_order_fill_is_allowed(
     assert await _balance_elsewhere(trader.user) == Decimal("45.0000")
 
 
-@pytest.mark.parametrize("shape", ["negative", "two_users"])
+@pytest.mark.parametrize("shape", ["negative", "two_users", "credit_only"])
 async def test_a_malformed_reservation_drop_is_refused(
     session: AsyncSession, shape: str
 ) -> None:
     """A drop names one USER account's reservation and only ever lowers it. A
     negative one would lower the floor at the start of the batch; one on a
-    movement between two USER accounts has no single account to lower.
-    Refused before any SQL, as `MalformedBatch`."""
+    movement between two USER accounts has no single account to lower; one on
+    a movement that only credits its account is not a buy-order fill, the one
+    movement ADR 0024 gives a drop. Refused before any SQL, as
+    `MalformedBatch`."""
     trader = await _trader_holding(session, "100.0000")
     other = await _trader_holding(session, "100.0000")
     before = await _counts_elsewhere()
     if shape == "negative":
         movement = trader.pays("10.0000", drop="-10.0000")
+    elif shape == "credit_only":
+        movement = trader.is_paid("10.0000", drop="10.0000")
     else:
         movement = posting.Movement(
             idempotency_key=f"between:{uuid.uuid4()}",
