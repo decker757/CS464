@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, signedAmountColor, unsignedCredits } from './formatCredits'
+import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, signedAmountColor, subtractCredits, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -129,6 +129,35 @@ describe('compareCredits', () => {
     // bad figure would be worse than one that shows "—" (formatPrice.ts).
     expect(compareCredits('1E-4', '5.0000')).toBe(0)
     expect(compareCredits('5.0000', '')).toBe(0)
+  })
+})
+
+describe('subtractCredits', () => {
+  // The buy preview's profit is the payout minus the cost the server quoted
+  // (#357), and both arrive as decimal strings. A float would get 10.0000 −
+  // 5.1250 right and 0.3 − 0.1 wrong, so every pair below is one a float
+  // would round or lose outright.
+  it.each([
+    ['10.0000', '5.1250', '4.8750', 'a buy at four decimal places'],
+    ['0.3', '0.1', '0.2', 'the classic float rounding error'],
+    ['10.0000', '12.5000', '-2.5000', 'a payout below the cost'],
+    ['10', '2.5', '7.5', 'fractions of different lengths'],
+    ['5.0000', '5.0000', '0.0000', 'nothing left over'],
+    ['1000000000000000000.0001', '0.0002', '999999999999999999.9999', 'past what a float keeps exactly'],
+  ])('subtracts %s − %s to %s (%s)', (left, right, expected) => {
+    expect(subtractCredits(left, right)).toBe(expected)
+  })
+
+  it('subtracts a negative right-hand side by adding it', () => {
+    expect(subtractCredits('5.0000', '-2.5000')).toBe('7.5000')
+  })
+
+  it('gives null for anything unreadable rather than throwing during render', () => {
+    // BigInt throws on "1E-4". The caller drops the row instead, the way
+    // isPlainCredits's note describes — a dash is not a credits figure, so
+    // this one cannot return one.
+    expect(subtractCredits('1E-4', '5.0000')).toBeNull()
+    expect(subtractCredits('5.0000', '')).toBeNull()
   })
 })
 
