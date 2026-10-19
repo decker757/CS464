@@ -23,6 +23,7 @@ const NOT_CLOSED_MESSAGES: Record<Exclude<MarketOut['status'], 'closed'>, string
   open: 'This market has not finished yet. Wait for it to close before proposing an outcome.',
   pending_resolution: 'An outcome has already been proposed for this market and is awaiting approval.',
   approved: 'An outcome has already been approved for this market.',
+  settled: 'This market has already been settled and paid out.',
 }
 
 // The markets list shows a market as closed the moment its close time passes;
