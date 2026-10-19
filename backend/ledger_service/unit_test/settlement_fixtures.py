@@ -368,32 +368,46 @@ async def positions_and_q(session: AsyncSession, market_id: uuid.UUID) -> tuple:
     return list(positions), list(q)
 
 
-async def settled_entries(reader: AsyncSession, *actor_ids: uuid.UUID) -> list:
-    """`market.settled` entries by these actors, read as `audit_svc`."""
+def _audit_table() -> Any:
+    """`audit.admin_actions`, imported late.
+
+    `shared.audit` declares it on its own `MetaData`, outside any service's
+    `Base`, and these fixtures keep that import inside the call the way the
+    readers here always have.
+    """
     from shared.audit import admin_actions  # noqa: PLC0415
 
+    return admin_actions
+
+
+async def _audit_rows(reader: AsyncSession, *restrictions: Any) -> list:
+    """Audit entries matching `restrictions`, read as `audit_svc`.
+
+    The rollback is why this is worth sharing: the reader holds SELECT and
+    nothing else, so a transaction left open would sit on the table for the
+    rest of the test.
+    """
     rows = (
-        await reader.execute(
-            select(admin_actions).where(
-                admin_actions.c.action_type == "market.settled",
-                admin_actions.c.actor_id.in_(actor_ids),
-            )
-        )
+        await reader.execute(select(_audit_table()).where(*restrictions))
     ).mappings().all()
     await reader.rollback()
     return [dict(row) for row in rows]
+
+
+async def settled_entries(reader: AsyncSession, *actor_ids: uuid.UUID) -> list:
+    """`market.settled` entries by these actors, read as `audit_svc`."""
+    table = _audit_table()
+    return await _audit_rows(
+        reader,
+        table.c.action_type == "market.settled",
+        table.c.actor_id.in_(actor_ids),
+    )
 
 
 async def entries_naming(reader: AsyncSession, target_id: uuid.UUID) -> list:
     """Every audit entry whose target is `target_id`, read as `audit_svc`.
     A fresh id per test, as `admin` gives, keeps them the test's own."""
-    from shared.audit import admin_actions  # noqa: PLC0415
-
-    rows = (
-        await reader.execute(select(admin_actions).where(admin_actions.c.target_id == target_id))
-    ).mappings().all()
-    await reader.rollback()
-    return [dict(row) for row in rows]
+    return await _audit_rows(reader, _audit_table().c.target_id == target_id)
 
 
 async def book_lock_is_free(market_id: uuid.UUID) -> bool:
