@@ -6076,9 +6076,10 @@ record and audit entry alone, which would need its own decision.
 
 **Amended 2026-10-18.** A third kind of batch is refused the same way, before
 any lock: one whose `Movement.reservation_drop` is below zero, or is nonzero
-on a movement without exactly one USER account. Both are built by the server,
-like the key, so both are a bug and take this entry's 500. See "A refusal from
-the running check reports the balance before the batch".
+on a movement without exactly one USER account, or on one that does not debit
+that account. All are built by the server, like the key, so all are a bug and
+take this entry's 500. See "A refusal from the running check reports the
+balance before the batch".
 
 ---
 
@@ -9703,9 +9704,20 @@ rolled back. *Leaving `reserved` and `available` out of the start-of-batch
 refusal*: the contract lists them for the placement's refusal, and the check
 has no other figures to give.
 
-**Notes.** `posting.Movement.reservation_drop` is refused as `MalformedBatch`
-when it is below zero, or nonzero on a movement without exactly one USER
-account: a negative drop would lower the floor at the start of the batch, and
+**Notes.** Posting cannot check a drop against the order rows, only its sign
+and its account, so a drop that disagrees with them is for the limit-order
+stack's PR 5 to pin, where the cascade computes it. The floor at the start of
+the batch is the reservation after it plus the batch's drops, so an undersized
+drop is the one that loosens the check. With 100 held and a buy order of
+budget 60 that a fill exhausts, a drop of 50 instead of 60 starts the batch at
+50 reserved, and a trade of 45 ahead of the fill passes against the 40
+available. An over-large drop only refuses more.
+
+`posting.Movement.reservation_drop` is refused as `MalformedBatch` when it is
+below zero, nonzero on a movement without exactly one USER account, or
+nonzero on one that does not debit that account: a negative drop would lower
+the floor at the start of the batch, a drop on a movement that only credits
+its account is not the buy-order fill ADR 0024 gives a drop to, and
 a drop with no single account has nowhere to go. The placement in the
 limit-order stack's PR 4b may prefer to report its own `reserved` and
 `available`, excluding the new order, on the start-of-batch refusal; it would
