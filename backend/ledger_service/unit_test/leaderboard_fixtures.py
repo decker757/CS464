@@ -39,12 +39,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from unit_test.conftest import auth_client_over
 from unit_test.sell_fixtures import version_of
 from unit_test.settlement_fixtures import (
-    PROBE_TIMEOUT,
     SettleUpstream,
     settle,
 )
 from unit_test.settlement_fixtures import warm as warm_settleable
-from unit_test.trade_fixtures import buy, entities, fund, session_factory
+from unit_test.trade_fixtures import (
+    PROBE_TIMEOUT,
+    buy,
+    entities,
+    fund,
+    session_factory,
+)
 
 LOOKUP_PATH = "/internal/users/lookup"
 
@@ -360,21 +365,6 @@ class CommitPause:
             [self.own_view] = await _generations_in(session, uncommitted)
             self.reached.set()
             await self.release.wait()
-
-
-def pausing_factory(pause: CommitPause) -> async_sessionmaker[AsyncSession]:
-    """The production factory's settings, with `pause.on_commit` run before
-    every commit."""
-    from core.database import get_engine  # noqa: PLC0415
-
-    class PausingSession(AsyncSession):
-        async def commit(self) -> None:
-            await pause.on_commit(self)
-            await super().commit()
-
-    return async_sessionmaker(
-        get_engine(), class_=PausingSession, expire_on_commit=False, autoflush=False
-    )
 
 
 _ADVISORY_LOCK_WAITERS = text(

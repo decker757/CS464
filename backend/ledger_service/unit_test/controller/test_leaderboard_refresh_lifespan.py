@@ -29,8 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import get_settings
 from unit_test.conftest import bearer
 from unit_test.leaderboard_read_fixtures import PATH, store_generation
-from unit_test.settlement_fixtures import PROBE_TIMEOUT, reached
-from unit_test.trade_fixtures import fund
+from unit_test.trade_fixtures import PROBE_TIMEOUT, fund, reached
 
 _TASK_NAME = "leaderboard-refresh"
 _MAIN_LOGGER = "main"

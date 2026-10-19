@@ -33,11 +33,12 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from typing import Protocol
 
 import httpx
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from unit_test.conftest import (
     active_auth_transport,
@@ -731,6 +732,64 @@ def writes(statements: Sequence[str]) -> list[str]:
 
 def locks(statements: Sequence[str]) -> list[str]:
     return [s for s in statements if "for update" in s.lower()]
+
+
+# --- pausing a party and waiting for it ------------------------------------
+# How long a probe waits for the state it needs before failing by name.
+# Everything here finishes in milliseconds; this only stops a hang.
+PROBE_TIMEOUT = 10.0
+
+
+def _raise_if_failed(tasks: Sequence[asyncio.Task]) -> None:
+    """A party that died stops the wait with its own error, not a timeout."""
+    for task in tasks:
+        if task.done() and not task.cancelled() and task.exception() is not None:
+            raise task.exception()
+
+
+async def reached(
+    flag: asyncio.Event, what: str, tasks: Sequence[asyncio.Task] = ()
+) -> None:
+    """Wait for `flag`, or fail naming `what`."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PROBE_TIMEOUT
+    while not flag.is_set():
+        _raise_if_failed(tasks)
+        if loop.time() > deadline:
+            pytest.fail(f"timed out: {what}")
+        await asyncio.sleep(0.01)
+
+
+async def finish(tasks: Sequence[asyncio.Task], *flags: asyncio.Event) -> list:
+    """Release every pause and collect every party, never hanging the suite."""
+    for flag in flags:
+        flag.set()
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT):
+            return await asyncio.gather(*tasks, return_exceptions=True)
+    except TimeoutError:
+        for task in tasks:
+            task.cancel()
+        pytest.fail("timed out: a party never finished after every pause was released")
+
+
+class PausesAtCommit(Protocol):
+    async def on_commit(self, session: AsyncSession) -> None: ...
+
+
+def pausing_factory(pause: PausesAtCommit) -> async_sessionmaker[AsyncSession]:
+    """The production factory's settings, with `pause.on_commit` run before
+    every commit."""
+    from core.database import get_engine  # noqa: PLC0415
+
+    class PausingSession(AsyncSession):
+        async def commit(self) -> None:
+            await pause.on_commit(self)
+            await super().commit()
+
+    return async_sessionmaker(
+        get_engine(), class_=PausingSession, expire_on_commit=False, autoflush=False
+    )
 
 
 # --- forcing a branch -----------------------------------------------------

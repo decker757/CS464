@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.roles import UserRole
 from unit_test.conftest import mint_token, set_q, terms_client_over
 from unit_test.trade_fixtures import (
+    PROBE_TIMEOUT,
+    _raise_if_failed,
     accounts_module,
     books,
     entities,
@@ -41,10 +43,6 @@ ZERO = Decimal(0)
 # moves it, so a residue is this minus what the winners hold.
 SUBSIDY = Decimal("250.0000")
 B = Decimal("137.0000")
-
-# How long a probe waits for the state it needs before failing by name.
-# Everything here finishes in milliseconds; this only stops a hang.
-PROBE_TIMEOUT = 10.0
 
 WINNER = 1
 LOSER = 0
@@ -451,26 +449,6 @@ class Pause:
         return self.results.get(id(session), [])
 
 
-def _raise_if_failed(tasks: Sequence[asyncio.Task]) -> None:
-    """A party that died stops the wait with its own error, not a timeout."""
-    for task in tasks:
-        if task.done() and not task.cancelled() and task.exception() is not None:
-            raise task.exception()
-
-
-async def reached(
-    flag: asyncio.Event, what: str, tasks: Sequence[asyncio.Task] = ()
-) -> None:
-    """Wait for `flag`, or fail naming `what`."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + PROBE_TIMEOUT
-    while not flag.is_set():
-        _raise_if_failed(tasks)
-        if loop.time() > deadline:
-            pytest.fail(f"timed out: {what}")
-        await asyncio.sleep(0.01)
-
-
 _BOOK_LOCK_WAITERS = text(
     "SELECT count(*) FROM pg_stat_activity "
     "WHERE datname = current_database() "
@@ -506,19 +484,6 @@ async def book_lock_waiters(
         if loop.time() > deadline:
             pytest.fail(f"timed out: {what} (book-lock waiters: {waiting})")
         await asyncio.sleep(0.01)
-
-
-async def finish(tasks: Sequence[asyncio.Task], *flags: asyncio.Event) -> list:
-    """Release every pause and collect every party, never hanging the suite."""
-    for flag in flags:
-        flag.set()
-    try:
-        async with asyncio.timeout(PROBE_TIMEOUT):
-            return await asyncio.gather(*tasks, return_exceptions=True)
-    except TimeoutError:
-        for task in tasks:
-            task.cancel()
-        pytest.fail("timed out: a party never finished after every pause was released")
 
 
 def raise_any(outcomes: Sequence[Any]) -> None:
