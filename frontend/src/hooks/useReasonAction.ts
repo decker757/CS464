@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { errorCode, errorDetails } from '../api/errors'
 
-export const MIN_REASON_LENGTH = 10
+const MIN_REASON_LENGTH = 10
 
 interface ReasonActionOptions<T> {
   /** Makes the call. Resolves with whatever the caller needs on success. */
@@ -28,8 +28,8 @@ interface ReasonActionOptions<T> {
 }
 
 /** The reason-popup shape shared by every admin action that collects a
- * reason and submits it: close ([2.3] #7), settle, suspend/unsuspend
- * ([4.2] #14), and dispute a result ([3.3] #11). A caller owns its own
+ * reason and submits it: close ([2.3] #7), suspend/unsuspend ([4.2] #14),
+ * and dispute a result ([3.3] #11). A caller owns its own
  * "which modal, if any, is open" state — `useSuspension`'s is a direction,
  * `useCloseMarket`'s is a boolean — so this only owns the reason field, the
  * submit, and sorting one error into a field message, a looked-up message,

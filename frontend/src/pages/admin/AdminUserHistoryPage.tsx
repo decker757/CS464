@@ -28,7 +28,9 @@ interface ChangedUser {
 function describeChange(changed: ChangedUser | null, userId: string | undefined): string | null {
   if (changed === null || changed.userId !== userId) return null
   if (!changed.user.is_suspended) return 'They can log in again now.'
-  return `Anything already signed in may keep working for up to ${Math.ceil(changed.takesEffectWithinSeconds / 60)} minutes.`
+  const minutes = Math.ceil(changed.takesEffectWithinSeconds / 60)
+  const unit = minutes === 1 ? 'minute' : 'minutes'
+  return `Anything already signed in may keep working for up to ${minutes} ${unit}.`
 }
 
 // [FE][4.1] #57. Reading another user's balance and history never mints a
