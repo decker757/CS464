@@ -58,8 +58,9 @@ class PriceBus:
         """Validate a message from `channel` onto `model`, or log a warning and
         drop it.
 
-        A warning, because a producer bug shows up only as prices that stop
-        updating, and this line is what names the service at fault.
+        A warning, because a producer bug shows up only as frames that never
+        arrive, prices that stop updating or fills nobody is told about, and
+        this line is what names the service at fault.
         """
         if not isinstance(raw, str):
             logger.warning("ignoring non-text message on %s", channel)
