@@ -3,7 +3,8 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import type { AdminAction } from '../../api/auditApi'
 import type { MarketOverviewRow } from '../../api/marketApi'
 import type { User } from '../../context/AuthContext'
 import { holdUntilReleased } from '../../test/holdUntilReleased'
@@ -12,6 +13,16 @@ import { server } from '../../test/server'
 import AdminMarketsPage from './AdminMarketsPage'
 
 const OVERVIEW = 'http://localhost:8001/markets/overview'
+const ACTIONS = 'http://localhost:8002/audit/actions'
+
+// Most tests in this file don't care about the Dispute control's data — an
+// empty page is a harmless default for every row that is not approved, and
+// the dispute-result describe block below overrides it for the ones that are.
+beforeEach(() => {
+  server.use(
+    http.get(ACTIONS, () => HttpResponse.json({ actions: [], next_cursor: null, has_more: false })),
+  )
+})
 
 const admin: User = { id: 'u1', username: 'admin1', email: 'admin@smu.edu.sg', role: 'admin', created_at: '2026-01-01' }
 
@@ -485,5 +496,65 @@ describe('AdminMarketsPage', () => {
 
     expect(await screen.findByText('Will it rain?')).toBeInTheDocument()
     expect(screen.getAllByText('Did it rain yesterday?')).toHaveLength(1)
+  })
+
+  // [FE][3.3] #59: the Dispute control needs the latest market.outcome_approved
+  // entry for its proposal_id and content, fetched once for the page rather
+  // than once per approved row.
+  describe('the dispute control\'s audit lookup', () => {
+    function approvedAction(overrides: Partial<AdminAction> = {}): AdminAction {
+      return {
+        id: 'a1',
+        occurred_at: '2026-01-01T00:00:00Z',
+        actor_id: 'admin-2',
+        actor_username: 'ihsan_b',
+        actor_role: 'admin',
+        action_type: 'market.outcome_approved',
+        target_type: 'market',
+        target_id: 'f6',
+        target_label: 'Did it rain yesterday?',
+        reason: null,
+        context: { proposal_id: 'prop-1', winning_outcome: 'Yes' },
+        source_service: 'market_service',
+        ...overrides,
+      }
+    }
+
+    it('does not call audit/actions when no row on the page is approved', async () => {
+      let calls = 0
+      server.use(http.get(ACTIONS, () => { calls += 1; return HttpResponse.json({ actions: [], next_cursor: null, has_more: false }) }))
+      mockList(mockMarkets.filter(m => m.status !== 'approved'))
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+      expect(calls).toBe(0)
+    })
+
+    it('calls audit/actions once when an approved row is on the page, and wires its entry into the row', async () => {
+      let calls = 0
+      server.use(
+        http.get(ACTIONS, ({ request }) => {
+          calls += 1
+          expect(new URL(request.url).searchParams.get('action_type')).toBe('market.outcome_approved')
+          return HttpResponse.json({ actions: [approvedAction()], next_cursor: null, has_more: false })
+        }),
+      )
+      mockList(mockMarkets.map(m => m.id === 'f6' ? { ...m, dispute_window_ends_at: '2099-01-01T00:00:00Z' } : m))
+      renderPage()
+
+      await screen.findByText('Did it rain yesterday?')
+
+      expect(await screen.findByRole('button', { name: /dispute result/i })).toBeInTheDocument()
+      expect(calls).toBe(1)
+    })
+
+    it('shows an error rather than a silently missing Dispute control when the audit fetch fails', async () => {
+      server.use(http.get(ACTIONS, () => HttpResponse.error()))
+      mockList(mockMarkets.map(m => m.id === 'f6' ? { ...m, dispute_window_ends_at: '2099-01-01T00:00:00Z' } : m))
+      renderPage()
+      await screen.findByText('Did it rain yesterday?')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/dispute controls/i)
+      expect(screen.queryByRole('button', { name: /dispute result/i })).not.toBeInTheDocument()
+    })
   })
 })

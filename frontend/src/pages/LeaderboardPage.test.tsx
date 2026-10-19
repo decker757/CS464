@@ -140,13 +140,77 @@ describe('LeaderboardPage', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
-  it('shows the board with no highlighted row when the caller is not ranked yet', async () => {
+  it('shows the board with no highlighted row and a muted not-ranked-yet line when the caller is not ranked yet', async () => {
     mockLeaderboard(page({ me: null, rows: page().rows.map(r => ({ ...r, is_me: false })) }))
     renderPage()
 
     expect(await screen.findByText('michelle_l')).toBeInTheDocument()
     expect(screen.getByRole('table')).toBeInTheDocument()
     expect(screen.queryByText('(you)')).not.toBeInTheDocument()
+    expect(screen.queryByText(/your rank/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/you are not ranked yet/i)).toBeInTheDocument()
+  })
+
+  describe('the caller\'s own rank', () => {
+    it('shows rank and net worth from me, matching the highlighted row, when it is on the loaded page', async () => {
+      mockLeaderboard(page())
+      renderPage()
+
+      expect(await screen.findByText('Your rank: #3')).toBeInTheDocument()
+      // Exact text, not getAllByText: a card reading "1,003.8689 credits"
+      // would pass the count assertion too without this matching the card's
+      // own text.
+      expect(screen.getByText('Net worth: 1,003.8689 credits')).toBeInTheDocument()
+    })
+
+    it('shows rank and net worth from me even when the caller\'s row is not on the loaded page', async () => {
+      // ledger-service.md: me comes from the ranking a page was served from,
+      // whether or not that row is on this particular page — this is the
+      // reason me exists separately from is_me at all.
+      mockLeaderboard(page({
+        me: { rank: 50, username: 'alice', net_worth: '12.5000' },
+        rows: page().rows.map(r => ({ ...r, is_me: false })),
+      }))
+      renderPage()
+
+      expect(await screen.findByText('Your rank: #50')).toBeInTheDocument()
+      expect(screen.getByText('Net worth: 12.5000 credits')).toBeInTheDocument()
+      expect(screen.queryByText('(you)')).not.toBeInTheDocument()
+    })
+
+    it('follows the new ranking\'s own rank after a 409 leaderboard_refreshed restart', async () => {
+      // Pins setMe in useLeaderboard's recovery path: nothing else would
+      // notice if that line were dropped, and the card would keep showing a
+      // rank from a ranking that no longer exists.
+      server.use(
+        http.get(LEADERBOARD, ({ request }) =>
+          new URL(request.url).searchParams.get('cursor') === 'page-2'
+            ? HttpResponse.json({ error: { code: 'leaderboard_refreshed', message: 'refreshed' } }, { status: 409 })
+            : HttpResponse.json(page({ next_cursor: 'page-2', has_more: true })),
+        ),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Your rank: #3')
+
+      // The restart must still meet a 409 on page-2, or load-more simply
+      // succeeds and the recovery path never runs: MSW prefers the newest
+      // handler, so a catch-all here would answer the cursor request too.
+      server.use(
+        http.get(LEADERBOARD, ({ request }) =>
+          new URL(request.url).searchParams.get('cursor') === 'page-2'
+            ? HttpResponse.json({ error: { code: 'leaderboard_refreshed', message: 'refreshed' } }, { status: 409 })
+            : HttpResponse.json(page({
+                me: { rank: 7, username: 'alice', net_worth: '1003.8689' },
+                rows: page().rows.map(r => ({ ...r, is_me: r.username === 'alice' ? false : r.is_me })),
+              })),
+        ),
+      )
+      await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+      expect(await screen.findByText('Your rank: #7')).toBeInTheDocument()
+      expect(screen.queryByText('Your rank: #3')).not.toBeInTheDocument()
+    })
   })
 
   it('shows an error when the API fails', async () => {

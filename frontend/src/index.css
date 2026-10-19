@@ -33,6 +33,7 @@
      exists because text on a 10% tint of its own tone reaches only about
      4.4:1 — `Badge` sits exactly there, at 11px. */
   --color-danger: #dc2626;
+  --color-danger-strong: #b91c1c;
   --color-success: #15803d;
   --color-success-strong: #166534;
   --color-warning: #b45309;

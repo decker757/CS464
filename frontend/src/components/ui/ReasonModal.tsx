@@ -7,6 +7,10 @@ interface ReasonModalProps {
   ariaLabel: string
   title: string
   description: string
+  /** Extra content between the description and the reason field — what is
+   * being acted on, for an action (like a dispute) where that is not
+   * otherwise on screen. */
+  details?: React.ReactNode
   fieldId: string
   reason: string
   onReasonChange: (reason: string) => void
@@ -27,6 +31,7 @@ export default function ReasonModal({
   ariaLabel,
   title,
   description,
+  details,
   fieldId,
   reason,
   onReasonChange,
@@ -41,6 +46,7 @@ export default function ReasonModal({
 }: ReasonModalProps) {
   return (
     <ModalShell ariaLabel={ariaLabel} title={title} description={description}>
+      {details}
       <Field id={fieldId} label="Reason *" error={reasonError}>
         <TextArea
           id={fieldId}

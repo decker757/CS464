@@ -58,3 +58,22 @@ export async function listUsers(params?: { q?: string; cursor?: string }): Promi
   const res = await api.get<AdminUserPage>('/admin/users', { params })
   return res.data
 }
+
+export interface SuspensionResult {
+  user: AdminUser
+  // How long a token already issued stays honoured elsewhere, never zero
+  // (auth-service.md). Show it, not "immediately".
+  takes_effect_within_seconds: number
+}
+
+/**
+ * Suspends or unsuspends an account, with a reason required both ways
+ * ([4.2] #14, auth-service.md). `suspended` is the state the account should
+ * end up in, not an action — asking for the state it is already in changes
+ * nothing and is not an error, so this needs no prior read of the account's
+ * current state to call correctly.
+ */
+export async function setSuspension(userId: string, suspended: boolean, reason: string): Promise<SuspensionResult> {
+  const res = await api.patch<SuspensionResult>(`/admin/users/${userId}/suspension`, { suspended, reason })
+  return res.data
+}
