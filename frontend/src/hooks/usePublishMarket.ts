@@ -66,15 +66,11 @@ export function usePublishMarket(
   const [publishing, setPublishing] = useState(false)
   const [formError, setFormError] = useState('')
   const [superseded, setSuperseded] = useState(false)
-  // Which fields a refusal was about, in the same shape a refused submission
-  // carries (ADR 0008). Only the form has those fields on screen.
-  const [refusalDetails, setRefusalDetails] = useState<BlockingHint[]>([])
 
   const handlePublish = async () => {
     if (!marketId || publishing) return
     setPublishing(true)
     setFormError('')
-    setRefusalDetails([])
     try {
       await publishMarket(marketId)
       setShowPublishModal(false)
@@ -88,7 +84,6 @@ export function usePublishMarket(
       }
       setFormError((code && CODE_MESSAGES[code]) || GENERIC_FAILURE)
       setSuperseded(!!code && SUPERSEDING_CODES.has(code))
-      setRefusalDetails(errorDetails(err))
       // The message is painted on the page behind the modal's overlay, so a
       // modal left open hides it. Same reasoning as `useReasonAction`.
       setShowPublishModal(false)
@@ -104,7 +99,6 @@ export function usePublishMarket(
     publishing,
     formError,
     superseded,
-    refusalDetails,
     handlePublish,
   }
 }
