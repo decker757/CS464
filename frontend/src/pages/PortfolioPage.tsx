@@ -16,6 +16,16 @@ interface PositionRow extends Position {
   outcomeLabel: string
 }
 
+interface StatCardProps {
+  label: string
+  value: string
+  emphasized?: boolean
+  /** A figure whose direction is the point, like P&L: shown with its sign
+   * and coloured by it, rather than in navy like a plain balance. */
+  signed?: boolean
+  children?: React.ReactNode
+}
+
 // A settled position is no longer valued: its price, value and P&L arrive as
 // null, and are shown as a dash rather than as zero ([3.4] #12).
 const NOT_VALUED = '—'
@@ -39,12 +49,31 @@ function PnlCell({ pnl, result, payout }: { pnl: string | null; result: Position
   )
 }
 
-// Shown at full precision so the three cards add up.
-function StatCard({ label, value, emphasized = false }: { label: string; value: string; emphasized?: boolean }) {
+// Realized and unrealized sit under the total they make up rather than being
+// folded into it: one is already banked in the balance, the other is still
+// riding on open positions, and those are different answers to "how am I
+// doing" (ledger-service.md). Label and figure share one element, the way
+// PnlCell writes "Paid out 5.0000". [B-1] #376
+function PnlPart({ label, value }: { label: string; value: string }) {
+  return (
+    <span className={signedAmountColor(value)}>
+      {label} {formatCreditsPrecise(value, { showSign: true })}
+    </span>
+  )
+}
+
+// Shown at full precision so the cards add up. A `signed` card reads its
+// direction from the sign as well as the colour, so colour is never the only
+// signal, and signedAmountColor leaves an exact zero neutral — an untouched
+// grant is flat, not a loss. [B-1] #376
+function StatCard({ label, value, emphasized = false, signed = false, children }: StatCardProps) {
   return (
     <Card className="px-6 py-5" borderColor={emphasized ? 'border-smu-navy/20' : undefined}>
       <DetailItem label={label}>
-        <p className="text-[22px] font-extrabold text-smu-navy">{formatCreditsPrecise(value)} credits</p>
+        <p className={`text-[19px] font-extrabold ${signed ? signedAmountColor(value) : 'text-smu-navy'}`}>
+          {formatCreditsPrecise(value, { showSign: signed })} credits
+        </p>
+        {children}
       </DetailItem>
     </Card>
   )
@@ -77,10 +106,21 @@ export default function PortfolioPage() {
 
       {!loading && !error && portfolio && (
         <>
-          <div className="mb-6 grid grid-cols-3 gap-4">
+          {/* Four cards rather than three, so they size themselves the way
+              the market list's do instead of squeezing a fourth in. */}
+          <div className="mb-6 grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-4">
             <StatCard label="Cash" value={portfolio.balance} />
             <StatCard label="Positions value" value={portfolio.positions_value} />
             <StatCard label="Net worth" value={portfolio.net_worth} emphasized />
+            {/* The ledger sends total_pnl as its own field so that nothing
+                here has to add two decimal strings together; it is rendered
+                exactly as it arrives (ledger-service.md). */}
+            <StatCard label="Total P&L" value={portfolio.total_pnl} emphasized signed>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs font-semibold">
+                <PnlPart label="Realized" value={portfolio.realized_pnl} />
+                <PnlPart label="Unrealized" value={portfolio.unrealized_pnl} />
+              </div>
+            </StatCard>
           </div>
 
           {rows.length === 0 && (
