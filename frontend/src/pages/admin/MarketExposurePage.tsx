@@ -9,7 +9,7 @@ import DetailItem from '../../components/ui/DetailItem'
 import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
 import { useMarketDetail } from '../../hooks/useMarketDetail'
-import { compareCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, unsignedCredits } from '../../utils/formatCredits'
+import { compareCredits, formatCreditsPrecise, isNegativeCredits, isPlainCredits, unsignedCredits } from '../../utils/formatCredits'
 
 interface WorstCase {
   outcomeId: string
@@ -17,10 +17,6 @@ interface WorstCase {
   residue: string
   /** True when the pool cannot cover that outcome's payout. */
   isShort: boolean
-}
-
-function isShortfall(residue: string): boolean {
-  return residue.startsWith('-') && !isZeroCredits(residue)
 }
 
 /** The outcome that costs the platform most if it wins: the smallest
@@ -40,7 +36,7 @@ function worstCaseOutcome(outcomes: OutcomeExposure[]): WorstCase | null {
     // naming the worst of the figures that can be read.
     if (residue === null || !isPlainCredits(residue)) continue
     if (worst === null || compareCredits(residue, worst.residue) < 0) {
-      worst = { outcomeId: outcome.outcome_id, residue, isShort: isShortfall(residue) }
+      worst = { outcomeId: outcome.outcome_id, residue, isShort: isNegativeCredits(residue) }
     }
   }
   return worst

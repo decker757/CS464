@@ -37,6 +37,12 @@ export function isZeroCredits(value: string): boolean {
   return /^0*$/.test(wholeRaw) && /^0*$/.test(fractionRaw)
 }
 
+/** Whether a decimal string is below zero — "-0.0000" is not. A residue the
+ * pool cannot cover, on the exposure summary and in its table alike (#377). */
+export function isNegativeCredits(value: string): boolean {
+  return value.startsWith('-') && !isZeroCredits(value)
+}
+
 // Two decimal strings as two plain integers in the same unit: each fraction
 // padded to the longer of the two, so BigInt reads the digits exactly where
 // two parsed floats would not. Null when either side is not a plain decimal,
