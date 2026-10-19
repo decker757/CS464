@@ -21,7 +21,7 @@ import pytest
 # asserts fail with no diff.
 pytest.register_assert_rewrite("shared.testing")
 
-from shared.testing import load_repo_env  # noqa: E402
+from shared.testing import load_repo_env, open_audit_reader  # noqa: E402
 
 
 # Before any project module is imported: `get_settings` is cached, so the first
@@ -42,11 +42,6 @@ os.environ["DATABASE_URL"] = _test_db
 # Fresh per run, so no key-shaped string sits in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 
-# [4.3] #15. The audit reader's own connection: `market_svc` holds INSERT on
-# the log and no SELECT, and reading it back through that role would prove the
-# grants weaker than they are. ADR 0006.
-_audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
-
 from collections.abc import Iterator  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
@@ -56,7 +51,7 @@ from decimal import Decimal  # noqa: E402
 import jwt  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from sqlalchemy import NullPool, event, func, select, update  # noqa: E402
+from sqlalchemy import event, func, select, update  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -84,17 +79,6 @@ _UNREACHABLE = (
     "Start it with:  docker compose up -d db\n"
     "Or point MARKET_TEST_DATABASE_URL at your own Postgres."
 )
-
-_NO_AUDIT_READER = (
-    "No audit reader configured.\n"
-    "The audit-log tests read back what this service appended, and they must "
-    "do it as audit_svc, because market_svc holds INSERT on "
-    "audit.admin_actions and no SELECT.\n"
-    "Add AUDIT_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
-    "  export AUDIT_TEST_DATABASE_URL="
-    "postgresql+asyncpg://audit_svc:PASSWORD@localhost:PORT/cs464_test"
-)
-
 
 def mint_token(
     user_id: uuid.UUID,
@@ -591,19 +575,10 @@ async def proposed_before_ids(session, actor: Actor) -> Market:
 
 @pytest.fixture
 async def audit_reader():
-    """A session on `audit.admin_actions`, connected as `audit_svc`, which may read it.
+    """The audit log, read as `audit_svc`.
 
-    It cannot clean up: nobody may delete from the log. Tests filter on a
-    fresh `actor()` id instead.
+    Reading it back as `market_svc`, which holds INSERT and no SELECT, would
+    prove the grants weaker than they are. Tests filter on a fresh `actor()` id.
     """
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: PLC0415
-
-    if not _audit_db:
-        pytest.fail(_NO_AUDIT_READER)
-
-    engine = create_async_engine(_audit_db, poolclass=NullPool)
-    try:
-        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
-            yield s
-    finally:
-        await engine.dispose()
+    async with open_audit_reader("market_svc") as session:
+        yield session

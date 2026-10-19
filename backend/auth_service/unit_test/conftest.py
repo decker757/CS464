@@ -17,7 +17,7 @@ import pytest
 # asserts fail with no diff.
 pytest.register_assert_rewrite("shared.testing")
 
-from shared.testing import load_repo_env  # noqa: E402
+from shared.testing import load_repo_env, open_audit_reader  # noqa: E402
 
 
 # Before any project module is imported: `get_settings` is cached on first call.
@@ -42,9 +42,6 @@ if not _test_db:
 # call, so a later assignment would never be read.
 os.environ["DATABASE_URL"] = _test_db
 
-# The audit tests read the log back as audit_svc, since auth_svc holds INSERT
-# and no SELECT. Only those tests need it, so it is not required here.
-_audit_db = os.environ.get("AUDIT_TEST_DATABASE_URL")
 # Fresh per run, so no key-shaped string sits in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
 os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
@@ -124,39 +121,11 @@ def registration_payload() -> dict[str, str]:
     }
 
 
-_NO_AUDIT_READER = (
-    "No audit reader configured.\n"
-    "The audit-log tests read back what this service appended, and they must "
-    "do it as audit_svc, because auth_svc holds INSERT on audit.admin_actions "
-    "and no SELECT.\n"
-    "Add AUDIT_TEST_DATABASE_URL to the repo-root .env, or export it:\n"
-    "  export AUDIT_TEST_DATABASE_URL="
-    "postgresql+asyncpg://audit_svc:PASSWORD@localhost:PORT/cs464_test"
-)
-
-
 @pytest.fixture
 async def audit_reader():
-    """A session on `audit.admin_actions`, connected as `audit_svc`.
-
-    Cannot clean up: nothing holds DELETE or TRUNCATE, so tests scope themselves
-    to an actor id nothing else has used. ADR 0006.
-    """
-    from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
-        async_sessionmaker,
-        create_async_engine,
-    )
-    from sqlalchemy.pool import NullPool  # noqa: PLC0415
-
-    if not _audit_db:
-        pytest.fail(_NO_AUDIT_READER)
-
-    engine = create_async_engine(_audit_db, poolclass=NullPool)
-    try:
-        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
-            yield s
-    finally:
-        await engine.dispose()
+    """The audit log, read as `audit_svc`: `auth_svc` holds INSERT on it and no SELECT."""
+    async with open_audit_reader("auth_svc") as session:
+        yield session
 
 
 @pytest.fixture
