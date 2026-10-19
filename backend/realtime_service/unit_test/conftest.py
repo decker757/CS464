@@ -92,7 +92,7 @@ def mint_token(
             "exp": now + timedelta(seconds=expires_in),
             "jti": secrets.token_urlsafe(16),
         },
-        secret if secret is not None else settings.jwt_secret,
+        secret if secret is not None else settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
 
@@ -147,7 +147,7 @@ def gate():
 
 @pytest.fixture
 def redis_url() -> str:
-    return get_settings().redis_url
+    return get_settings().redis_url.get_secret_value()
 
 
 @pytest.fixture

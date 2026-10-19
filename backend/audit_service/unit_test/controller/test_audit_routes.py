@@ -58,7 +58,9 @@ async def test_a_role_this_build_does_not_know_is_treated_as_a_trader(
     }
     if role is not None:
         claims["role"] = role
-    token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    token = jwt.encode(
+        claims, settings.jwt_secret.get_secret_value(), algorithm=settings.jwt_algorithm
+    )
 
     response = await client.get(_ACTIONS, headers={"Authorization": f"Bearer {token}"})
 

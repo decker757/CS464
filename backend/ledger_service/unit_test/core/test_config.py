@@ -56,7 +56,7 @@ def test_a_service_key_of_32_characters_is_accepted() -> None:
     """The boundary from the other side: a floor of 33 would refuse it."""
     settings = Settings(**_REQUIRED, _env_file=None)
 
-    assert settings.ledger_service_key == _SERVICE_KEY_32
+    assert settings.ledger_service_key.get_secret_value() == _SERVICE_KEY_32
 
 
 def test_starting_credits_has_a_default() -> None:
@@ -108,7 +108,7 @@ def test_redis_url_has_a_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
     settings = Settings(**_REQUIRED, _env_file=None)
 
-    assert settings.redis_url == "redis://redis:6379/0"
+    assert settings.redis_url.get_secret_value() == "redis://redis:6379/0"
 
 
 def test_the_app_boots_with_no_redis_url_in_the_environment(

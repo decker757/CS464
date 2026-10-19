@@ -121,7 +121,7 @@ def mint_token(
             "exp": now + timedelta(seconds=expires_in),
             "jti": secrets.token_urlsafe(16),
         },
-        settings.jwt_secret,
+        settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
 

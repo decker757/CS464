@@ -18,7 +18,7 @@ LOOKUP = "/internal/users/lookup"
 
 
 def _key() -> dict[str, str]:
-    return {"X-Service-Key": get_settings().ledger_service_key}
+    return {"X-Service-Key": get_settings().ledger_service_key.get_secret_value()}
 
 
 @pytest.fixture

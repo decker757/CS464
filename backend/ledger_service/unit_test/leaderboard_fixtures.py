@@ -84,7 +84,7 @@ def service_key() -> str:
     in PR 5 (ADR 0021: "the ledger reads the same variable to send")."""
     from core.config import get_settings  # noqa: PLC0415
 
-    return get_settings().ledger_service_key
+    return get_settings().ledger_service_key.get_secret_value()
 
 
 # --- the stand-in auth service --------------------------------------------
