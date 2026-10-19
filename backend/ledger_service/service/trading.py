@@ -702,20 +702,22 @@ async def _post_with_fills(
 
 async def _publish_order_updates(
     redis_client: redis.Redis,
-    orders: Sequence[Order],
-    transactions: Sequence[Transaction],
+    filled: Sequence[tuple[Order, Transaction]],
     *,
     now: datetime,
 ) -> None:
-    """One order frame per fill, in fill order, for each order's owner. Call it
-    after the commit, and after that commit's price frame (D-NEW "Order frames
-    pass no version gate on the relay").
+    """One order frame per fill, in fill order, for each order's owner: each
+    pair is an order and the transaction of its fill. Call it after the
+    commit, and after that commit's price frame (D-NEW "Order frames pass no
+    version gate on the relay").
 
-    `transactions[i]` is the fill of `orders[i]`. An order fills at most once
-    per commit (ADR 0024), so its row as committed is its state after that
-    fill. Each publish swallows its own failure, so one stops none of the rest.
+    An order fills at most once per commit (ADR 0024), so its row as committed
+    is its state after that fill. Only the Redis call is guarded:
+    `bus.publish_order` swallows a failed publish, so one stops none of the
+    rest. Building a frame is not: if it raised, the request would fail after
+    its commit and skip the frames after it.
     """
-    for order, transaction in zip(orders, transactions, strict=True):
+    for order, transaction in filled:
         event = _order_event_of(order, result_of(transaction), now=now)
         await bus.publish_order(redis_client, event, transaction_id=transaction.id)
 
@@ -922,8 +924,8 @@ async def execute(
         now=now,
     )
     await bus.publish(redis_client, event, transaction_id=result.transaction_id)
-    await _publish_order_updates(
-        redis_client, [fill.order for fill in fills], transactions[1:], now=now
-    )
+    # The trade's own transaction is first; the fills' follow, in fill order.
+    filled = list(zip([fill.order for fill in fills], transactions[1:], strict=True))
+    await _publish_order_updates(redis_client, filled, now=now)
 
     return result

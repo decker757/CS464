@@ -180,7 +180,12 @@ one. Order by `position` for the order the administrator arranged.
 changes, incremented in the **same database transaction** as the trade that
 moved it. It is not a timestamp: two trades can commit inside one clock tick,
 and server clocks disagree by more than the gap between trades. `occurred_at`
-is for display and must never be used to order two events.
+is for display and must never be used to order two events. It is the trade's
+own clock, too: after a trade whose cascade filled resting orders, the
+snapshot, the `price` frame and every `order` frame carry the trade's time,
+while the ledger stamps the batch's transactions at or after it, one
+microsecond apart, so the last fill's transaction reads a few microseconds
+later.
 
 **The server drops any price event not newer than the last it forwarded for
 that market.** That covers a duplicate from a producer retry and a redelivery

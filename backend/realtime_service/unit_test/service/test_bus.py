@@ -13,8 +13,7 @@ import uuid
 import pytest
 import redis.asyncio as redis
 
-from service import bus as bus_module
-from service.bus import PRICE_CHANNEL, PriceBus, publish
+from service.bus import ORDER_CHANNEL, PRICE_CHANNEL, PriceBus, publish
 from service.ordering import VersionGate
 from service.subscriptions import Hub
 from unit_test.conftest import REDIS_UNREACHABLE, Recorder, make_event, make_order_message
@@ -155,7 +154,7 @@ async def test_order_frames_are_delivered_after_their_commits_price_frame(
     await publish(publisher, make_event(market_id, 4))
     for version in (2, 3):
         message = make_order_message(owner, market_id=market_id, state_version=version)
-        await publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(message))
+        await publisher.publish(ORDER_CHANNEL, json.dumps(message))
 
     assert await _settle(lambda: len(owners_tab.frames) == 2)
     assert [frame["type"] for frame in owners_tab.frames] == ["order", "order"]
@@ -171,8 +170,8 @@ async def test_a_malformed_order_message_does_not_stop_the_bus(running_bus) -> N
     owners_tab = Recorder()
     hub.attach_user(owners_tab, owner)
 
-    await publisher.publish(bus_module.ORDER_CHANNEL, "}{")
-    await publisher.publish(bus_module.ORDER_CHANNEL, json.dumps(make_order_message(owner)))
+    await publisher.publish(ORDER_CHANNEL, "}{")
+    await publisher.publish(ORDER_CHANNEL, json.dumps(make_order_message(owner)))
 
     assert await _settle(lambda: owners_tab.frames), "bus died on a malformed message"
     assert len(owners_tab.frames) == 1

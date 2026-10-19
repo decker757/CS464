@@ -455,9 +455,10 @@ async def _commit_fill(
         now=now,
     )
     await bus.publish(redis_client, event, transaction_id=transactions[0].id)
-    await _publish_order_updates(
-        redis_client, [order, *(fill.order for fill in cascade)], transactions, now=now
-    )
+    # The placed order's own fill is the first transaction; the cascade's follow.
+    filled_orders = [order, *(fill.order for fill in cascade)]
+    filled = list(zip(filled_orders, transactions, strict=True))
+    await _publish_order_updates(redis_client, filled, now=now)
 
     return Placement(
         order=_order_view_of(
