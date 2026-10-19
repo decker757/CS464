@@ -124,7 +124,7 @@ def registration_payload() -> dict[str, str]:
 @pytest.fixture
 async def audit_reader():
     """The audit log, read as `audit_svc`: `auth_svc` holds INSERT on it and no SELECT."""
-    async with open_audit_reader("auth_svc") as session:
+    async with open_audit_reader(writer_role="auth_svc") as session:
         yield session
 
 

@@ -200,7 +200,7 @@ async def clean_database():
 @pytest.fixture
 async def audit_reader():
     """The audit log, read as `audit_svc`: `ledger_svc` holds INSERT on it and no SELECT."""
-    async with open_audit_reader("ledger_svc") as session:
+    async with open_audit_reader(writer_role="ledger_svc") as session:
         yield session
 
 

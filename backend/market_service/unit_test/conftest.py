@@ -580,5 +580,5 @@ async def audit_reader():
     Reading it back as `market_svc`, which holds INSERT and no SELECT, would
     prove the grants weaker than they are. Tests filter on a fresh `actor()` id.
     """
-    async with open_audit_reader("market_svc") as session:
+    async with open_audit_reader(writer_role="market_svc") as session:
         yield session
