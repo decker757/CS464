@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
@@ -92,6 +92,13 @@ function mockAuditActions(actions: Record<string, unknown>[]) {
   )
 }
 
+// Approving takes two steps now: the button opens a confirmation, and only
+// confirming it posts ([FE][3.2] #358).
+async function approve(actor: UserEvent) {
+  await actor.click(screen.getByRole('button', { name: /^approve$/i }))
+  await actor.click(screen.getByRole('button', { name: /confirm approval/i }))
+}
+
 function renderPage() {
   return render(
     <WithProviders user={admin}>
@@ -117,6 +124,26 @@ describe('DecideOutcomePage', () => {
     expect(screen.getByText('A note.')).toBeInTheDocument()
   })
 
+  // The two-person model rests on the rules shown to traders at creation
+  // being the rules applied at resolution, so the deciding admin has to read
+  // them here rather than in another tab (#358).
+  it('shows the resolution criteria, the sources as links and the close time, above the evidence', async () => {
+    mockGetMarket(publicMarket({
+      resolution_criteria: 'Resolves YES if the MSS rain gauge records over 1mm.',
+      resolution_sources: [{ id: 's1', position: 0, url: 'https://weather.gov.sg/climate', label: 'MSS climate record' }],
+    }))
+    mockAuditActions([proposedAction()])
+    renderPage()
+    await screen.findByText('Will it rain?')
+
+    expect(screen.getByText('Resolves YES if the MSS rain gauge records over 1mm.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'MSS climate record' })).toHaveAttribute('href', 'https://weather.gov.sg/climate')
+    expect(screen.getByText('Closes').nextElementSibling).toHaveTextContent(/1 Jan 2025/)
+
+    const headings = screen.getAllByRole('heading').map(h => h.textContent)
+    expect(headings.indexOf('How this market resolves')).toBeLessThan(headings.indexOf('Evidence'))
+  })
+
   it('disables Approve and Reject, with a reason, for the signed-in admin\'s own proposal', async () => {
     mockGetMarket(publicMarket())
     mockAuditActions([proposedAction({ actor_id: 'admin-1', actor_username: 'admin1' })])
@@ -126,6 +153,60 @@ describe('DecideOutcomePage', () => {
     expect(screen.getByRole('button', { name: /^approve$/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /^reject$/i })).toBeDisabled()
     expect(screen.getByText(/you proposed this outcome/i)).toBeInTheDocument()
+  })
+
+  // An approval pays out, and its only recovery is a dispute inside the
+  // window it opens itself (ADR 0023), so it is confirmed first —
+  // docs/api/market-service.md's "Approve has no other inputs — confirm,
+  // then POST".
+  it('asks for confirmation before approving, restating the question and the winner, and does not post until confirmed', async () => {
+    mockGetMarket(publicMarket())
+    mockAuditActions([proposedAction()])
+    let calls = 0
+    server.use(
+      http.post(`${MARKET_BASE}/markets/mkt-1/approve-outcome`, () => {
+        calls += 1
+        return HttpResponse.json(approvedMarketOut())
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will it rain?')
+
+    await actor.click(screen.getByRole('button', { name: /^approve$/i }))
+
+    const dialog = screen.getByRole('dialog', { name: /approve outcome/i })
+    expect(dialog).toHaveTextContent('Will it rain?')
+    expect(dialog).toHaveTextContent('Yes')
+    expect(dialog).toHaveTextContent(/payout/i)
+    expect(calls).toBe(0)
+
+    await actor.click(screen.getByRole('button', { name: /confirm approval/i }))
+
+    expect(await screen.findByText('Proposal Approved')).toBeInTheDocument()
+    expect(calls).toBe(1)
+  })
+
+  it('cancels the confirmation without approving', async () => {
+    mockGetMarket(publicMarket())
+    mockAuditActions([proposedAction()])
+    let calls = 0
+    server.use(
+      http.post(`${MARKET_BASE}/markets/mkt-1/approve-outcome`, () => {
+        calls += 1
+        return HttpResponse.json(approvedMarketOut())
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will it rain?')
+
+    await actor.click(screen.getByRole('button', { name: /^approve$/i }))
+    await actor.click(screen.getByRole('button', { name: /^cancel$/i }))
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^approve$/i })).toBeEnabled()
+    expect(calls).toBe(0)
   })
 
   it('approves and shows both the proposer and approver identities', async () => {
@@ -142,7 +223,7 @@ describe('DecideOutcomePage', () => {
     renderPage()
     await screen.findByText('Will it rain?')
 
-    await actor.click(screen.getByRole('button', { name: /^approve$/i }))
+    await approve(actor)
 
     expect(await screen.findByText('Proposal Approved')).toBeInTheDocument()
     expect(screen.getByText('Proposed by').nextElementSibling).toHaveTextContent(/ernest_t/)
@@ -205,7 +286,7 @@ describe('DecideOutcomePage', () => {
     renderPage()
     await screen.findByText('Will it rain?')
 
-    await actor.click(screen.getByRole('button', { name: /^approve$/i }))
+    await approve(actor)
 
     expect(await screen.findByText(/rejected and a new one made/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^approve$/i })).toBeDisabled()
