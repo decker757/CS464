@@ -34,7 +34,13 @@ class _Trader:
     """A funded USER account, a market pool to trade against, and a market
     for the trader's orders to rest in."""
 
-    def __init__(self, user: Account, pool: Account, market_id, outcome_id) -> None:
+    def __init__(
+        self,
+        user: Account,
+        pool: Account,
+        market_id: uuid.UUID,
+        outcome_id: uuid.UUID,
+    ) -> None:
         self.user = user
         self.pool = pool
         self.market_id = market_id
@@ -52,7 +58,7 @@ class _Trader:
             reservation_drop=Decimal(drop),
         )
 
-    def is_paid(self, amount: str) -> posting.Movement:
+    def is_paid(self, amount: str, *, drop: str = "0") -> posting.Movement:
         """A sell, or a sell-order fill, crediting the trader."""
         return posting.Movement(
             idempotency_key=f"paid:{uuid.uuid4()}",
@@ -61,9 +67,10 @@ class _Trader:
                 posting.Leg(account=self.pool, amount=-Decimal(amount)),
                 posting.Leg(account=self.user, amount=Decimal(amount)),
             ],
+            reservation_drop=Decimal(drop),
         )
 
-    async def order(self, session: AsyncSession, **fields) -> None:
+    async def rest_order(self, session: AsyncSession, **fields: str | None) -> None:
         await add_order(
             session,
             user_id=self.user.owner_id,
@@ -121,7 +128,7 @@ async def test_a_trade_beside_a_buy_order_that_fills_completely(
     its cost."""
     trader = await _trader_holding(session, "100.0000")
     before = await _counts_elsewhere()
-    await trader.order(session, budget="60.0000", filled_value="50.0000", status="filled")
+    await trader.rest_order(session, budget="60.0000", filled_value="50.0000", status="filled")
     batch = [trader.pays(trade), trader.pays("50.0000", drop="60.0000")]
 
     if not refused:
@@ -157,8 +164,8 @@ async def test_a_placement_whose_budget_does_not_fit_is_refused_at_the_start(
     placement passes."""
     trader = await _trader_holding(session, "100.0000")
     before = await _counts_elsewhere()
-    await trader.order(session, budget=other_budget)
-    await trader.order(session, budget="40.0000", filled_value="28.0000", status="filled")
+    await trader.rest_order(session, budget=other_budget)
+    await trader.rest_order(session, budget="40.0000", filled_value="28.0000", status="filled")
     batch = [trader.pays("28.0000", drop="40.0000")]
 
     if shortfall is None:
@@ -187,7 +194,7 @@ async def test_a_self_fill_cannot_pay_for_the_trade_that_triggered_it(
     60, and refused: it has to be affordable before any resting order fills."""
     trader = await _trader_holding(session, "100.0000")
     before = await _counts_elsewhere()
-    await trader.order(session, budget="60.0000", filled_value="20.0000")
+    await trader.rest_order(session, budget="60.0000", filled_value="20.0000")
     batch = [
         trader.pays("50.0000"),
         trader.is_paid("30.0000"),
@@ -210,8 +217,8 @@ async def test_two_buy_orders_fill_in_one_batch_one_exhausted_and_one_partial(
     part for 10. The batch starts at 90 reserved, and every step passes: 95
     against 90, 45 against 30, 35 against 20."""
     trader = await _trader_holding(session, "100.0000")
-    await trader.order(session, budget="60.0000", filled_value="50.0000", status="filled")
-    await trader.order(session, budget="30.0000", filled_value="10.0000")
+    await trader.rest_order(session, budget="60.0000", filled_value="50.0000", status="filled")
+    await trader.rest_order(session, budget="30.0000", filled_value="10.0000")
     batch = [
         trader.pays("5.0000"),
         trader.pays("50.0000", drop="60.0000"),
@@ -236,7 +243,7 @@ async def test_a_self_fill_sale_before_a_buy_order_fill_is_allowed(
     drop, 35, not the 60 before it: a buy-order fill lowers the floor by at
     least what it debits."""
     trader = await _trader_holding(session, "100.0000")
-    await trader.order(session, budget="60.0000", filled_value="25.0000")
+    await trader.rest_order(session, budget="60.0000", filled_value="25.0000")
     batch = [
         trader.pays("40.0000"),
         trader.is_paid("10.0000"),
@@ -248,19 +255,23 @@ async def test_a_self_fill_sale_before_a_buy_order_fill_is_allowed(
     assert await _balance_elsewhere(trader.user) == Decimal("45.0000")
 
 
-@pytest.mark.parametrize("shape", ["negative", "two_users"])
+@pytest.mark.parametrize("shape", ["negative", "two_users", "credit_only"])
 async def test_a_malformed_reservation_drop_is_refused(
     session: AsyncSession, shape: str
 ) -> None:
     """A drop names one USER account's reservation and only ever lowers it. A
     negative one would lower the floor at the start of the batch; one on a
-    movement between two USER accounts has no single account to lower.
-    Refused before any SQL, as `MalformedBatch`."""
+    movement between two USER accounts has no single account to lower; one on
+    a movement that only credits its account is not a buy-order fill, the one
+    movement ADR 0024 gives a drop. Refused before any SQL, as
+    `MalformedBatch`."""
     trader = await _trader_holding(session, "100.0000")
     other = await _trader_holding(session, "100.0000")
     before = await _counts_elsewhere()
     if shape == "negative":
         movement = trader.pays("10.0000", drop="-10.0000")
+    elif shape == "credit_only":
+        movement = trader.is_paid("10.0000", drop="10.0000")
     else:
         movement = posting.Movement(
             idempotency_key=f"between:{uuid.uuid4()}",

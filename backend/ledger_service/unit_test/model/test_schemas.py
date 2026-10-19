@@ -59,6 +59,21 @@ def test_a_balance_keeps_its_scale() -> None:
     assert out.model_dump()["balance"] == "0.5000"
 
 
+def test_reserved_and_available_serialise_as_strings_too() -> None:
+    """The module's rule holds for every amount on the balance, not only the
+    first: a python-mode dump gives strings, as the wire does (ADR 0024)."""
+    out = BalanceOut(
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        balance=Decimal("100.0000"),
+        reserved=Decimal("60.0000"),
+        available=Decimal("40.0000"),
+    )
+
+    dumped = out.model_dump()
+    assert (dumped["reserved"], dumped["available"]) == ("60.0000", "40.0000")
+
+
 def test_an_entry_amount_serialises_as_a_string() -> None:
     assert _entry(amount=Decimal("-250.0000")).model_dump()["amount"] == "-250.0000"
 
