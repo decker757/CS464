@@ -6,7 +6,7 @@ Settings every service shares are in `shared.config.ServiceSettings` (ADR
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from shared.config import ServiceSettings
 
@@ -15,7 +15,8 @@ class Settings(ServiceSettings):
     # --- Database -------------------------------------------------------
     # Required, no default: a default is a credential in the repository.
     # Form: postgresql+asyncpg://audit_svc:PASSWORD@HOST:PORT/NAME
-    database_url: str = Field(min_length=1)
+    # A SecretStr for the password in it (#307).
+    database_url: SecretStr = Field(min_length=1)
 
     # --- Paging -----------------------------------------------------------
     # The log only grows, so every read is bounded. Settings rather than
