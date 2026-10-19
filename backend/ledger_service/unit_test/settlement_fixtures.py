@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.roles import UserRole
 from unit_test.conftest import mint_token, set_q, terms_client_over
 from unit_test.trade_fixtures import (
+    PROBE_TIMEOUT,
+    _raise_if_failed,
     accounts_module,
     books,
     entities,
@@ -41,10 +43,6 @@ ZERO = Decimal(0)
 # moves it, so a residue is this minus what the winners hold.
 SUBSIDY = Decimal("250.0000")
 B = Decimal("137.0000")
-
-# How long a probe waits for the state it needs before failing by name.
-# Everything here finishes in milliseconds; this only stops a hang.
-PROBE_TIMEOUT = 10.0
 
 WINNER = 1
 LOSER = 0
@@ -449,13 +447,6 @@ class Pause:
 
     def results_for(self, session: AsyncSession) -> list[Any]:
         return self.results.get(id(session), [])
-
-
-def _raise_if_failed(tasks: Sequence[asyncio.Task]) -> None:
-    """A party that died stops the wait with its own error, not a timeout."""
-    for task in tasks:
-        if task.done() and not task.cancelled() and task.exception() is not None:
-            raise task.exception()
 
 
 async def reached(

@@ -28,15 +28,18 @@ there instead of silently hollowing out every rounding test.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from typing import Protocol
 
 import httpx
 import pytest
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import TextClause
 
 from unit_test.conftest import (
     active_auth_transport,
@@ -737,16 +740,188 @@ def locks(statements: Sequence[str]) -> list[str]:
     return [s for s in statements if "for update" in s.lower()]
 
 
+# --- pausing a party and waiting for it ------------------------------------
+# How long a probe waits for the state it needs before failing by name.
+# Everything here finishes in milliseconds; this only stops a hang.
+PROBE_TIMEOUT = 10.0
+
+
+def _raise_if_failed(tasks: Sequence[asyncio.Task]) -> None:
+    """A party that died stops the wait with its own error, not a timeout."""
+    for task in tasks:
+        if task.done() and not task.cancelled() and task.exception() is not None:
+            raise task.exception()
+
+
+async def reached(
+    flag: asyncio.Event, what: str, tasks: Sequence[asyncio.Task] = ()
+) -> None:
+    """Wait for `flag`, or fail naming `what`."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PROBE_TIMEOUT
+    while not flag.is_set():
+        _raise_if_failed(tasks)
+        if loop.time() > deadline:
+            pytest.fail(f"timed out: {what}")
+        await asyncio.sleep(0.01)
+
+
+async def finish(tasks: Sequence[asyncio.Task], *flags: asyncio.Event) -> list:
+    """Release every pause and collect every party, never hanging the suite."""
+    for flag in flags:
+        flag.set()
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT):
+            return await asyncio.gather(*tasks, return_exceptions=True)
+    except TimeoutError:
+        for task in tasks:
+            task.cancel()
+        pytest.fail("timed out: a party never finished after every pause was released")
+
+
+class PausesAtCommit(Protocol):
+    async def on_commit(self, session: AsyncSession) -> None: ...
+
+
+def pausing_factory(pause: PausesAtCommit) -> async_sessionmaker[AsyncSession]:
+    """The production factory's settings, with `pause.on_commit` run before
+    every commit."""
+    from core.database import get_engine  # noqa: PLC0415
+
+    class PausingSession(AsyncSession):
+        async def commit(self) -> None:
+            await pause.on_commit(self)
+            await super().commit()
+
+    return async_sessionmaker(
+        get_engine(), class_=PausingSession, expire_on_commit=False, autoflush=False
+    )
+
+
 # --- forcing a branch -----------------------------------------------------
+_KEY_INSERT_WAITERS = text(
+    "SELECT count(*) FROM pg_stat_activity "
+    "WHERE datname = current_database() "
+    "AND usename = current_user "
+    "AND wait_event_type = 'Lock' "
+    "AND wait_event = 'transactionid' "
+    "AND query ILIKE 'insert into ledger.transactions%' "
+    "AND pid <> pg_backend_pid()"
+)
+
+
+async def lock_waiters(probe: TextClause) -> int:
+    """How many backends of this role `probe` counts as waiting, from
+    Postgres's own view.
+
+    A fresh connection per call, because `pg_stat_activity` is snapshotted
+    once per transaction. The twin probes are `_KEY_INSERT_WAITERS` here and
+    `_ADVISORY_LOCK_WAITERS` in `leaderboard_fixtures`.
+    """
+    from core.database import get_engine  # noqa: PLC0415
+
+    async with get_engine().connect() as conn:
+        return (await conn.execute(probe)).scalar_one()
+
+
+async def _queued_on_the_key(
+    loser: asyncio.Task, tasks: Sequence[asyncio.Task]
+) -> None:
+    """Wait until the loser's INSERT waits on the winner's uncommitted key.
+
+    Fails at once if the loser finished without waiting, as one posting a
+    different key does, and by name if it never queues: a loser whose legs
+    share an account with the winner's waits on that account's lock instead.
+    A party that died stops the wait with its own error.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PROBE_TIMEOUT
+    while True:
+        _raise_if_failed(tasks)
+        if loser.done():
+            pytest.fail("the loser finished without waiting on the key")
+        if await lock_waiters(_KEY_INSERT_WAITERS) == 1:
+            return
+        if loop.time() > deadline:
+            pytest.fail(
+                "timed out: the loser's INSERT never waited on the winner's key"
+            )
+        await asyncio.sleep(0.01)
+
+
+class _HeldAtCommit:
+    """`pausing_factory`'s pause: holds every commit until `release`, and
+    sets `reached` at the first, after the session's INSERTs have run."""
+
+    def __init__(self) -> None:
+        self.reached = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def on_commit(self, session: AsyncSession) -> None:
+        self.reached.set()
+        await self.release.wait()
+
+
+async def race_on_one_key(
+    loser: AsyncSession,
+    *,
+    post_as_loser: Callable[[AsyncSession], Awaitable[object]],
+    post_as_winner: Callable[[AsyncSession], Awaitable[object]],
+) -> tuple[object, object]:
+    """Two sessions post one idempotency key, and meet only at its INSERT.
+
+    The winner runs on a session of its own and is held at its commit, after
+    its INSERT, holding the key uncommitted. Only then does the loser post, on
+    `loser`, so its lookup under the account locks truthfully finds nothing.
+    Its INSERT then waits on the unique index, and once `pg_stat_activity`
+    shows that wait the winner commits, the INSERT fails, and `post_all`'s
+    `IntegrityError` handler runs. Only timing is controlled; no function's
+    answer is changed. The legs must share no account, or the account locks
+    queue the loser before its lookup and the lookup finds the key.
+
+    Both parties connect and meet at a barrier first (ADR 0015). Returns the
+    winner's result and the loser's result or exception; a winner that
+    raised is raised.
+    """
+    start = asyncio.Barrier(2)
+    held = _HeldAtCommit()
+    winners = pausing_factory(held)
+
+    async def as_winner() -> object:
+        async with winners() as own:
+            await own.connection()
+            await start.wait()
+            return await post_as_winner(own)
+
+    async def as_loser() -> object:
+        await loser.connection()
+        await start.wait()
+        await held.reached.wait()
+        return await post_as_loser(loser)
+
+    winner_task = asyncio.create_task(as_winner())
+    loser_task = asyncio.create_task(as_loser())
+    tasks = [winner_task, loser_task]
+    try:
+        await reached(held.reached, "the winner never reached its commit", tasks)
+        await _queued_on_the_key(loser_task, tasks)
+    finally:
+        won, lost = await finish(tasks, held.release)
+    if isinstance(won, BaseException):
+        raise won
+    return won, lost
+
+
 def hide_the_first_lookup(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Make `_list_by_idempotency_keys`'s first call find nothing, so the key is
-    met only at the INSERT, as two sessions sharing no account meet it.
+    """Make `_list_by_idempotency_keys`'s first call find nothing, so a key
+    already committed is met only at the INSERT.
 
     Returns a one-item counter of the calls. Later calls, the re-read among
-    them, go to the real one. Shared by `test_post_all.py` and
-    `test_posting_pending_writes.py`: `post` posts a batch of one, so the two
-    reach this lookup through the same function (DECISIONS.md, "`post` is
-    `post_all` of one movement").
+    them, go to the real one. Only the whole-batch replay uses it, because no
+    real race reaches that answer: a matching fingerprint names the same
+    accounts, so the account locks queue the second session until the first
+    commits, and its lookup then finds every key. Every refusal is raced for
+    real with `race_on_one_key`.
     """
     module = posting()
     real = module._list_by_idempotency_keys

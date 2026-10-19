@@ -27,8 +27,8 @@ from unit_test.trade_fixtures import (
     entities,
     errors,
     grants,
-    hide_the_first_lookup,
     posting,
+    race_on_one_key,
     session_factory,
     token,
     transaction_count,
@@ -59,13 +59,10 @@ async def _seed(session: AsyncSession):
     return user, platform
 
 
-async def _seed_with_a_dirty_outcome(session: AsyncSession):
-    """`_seed`, plus the trade path's own pending write: `q` assigned on a
-    loaded `MarketOutcome`, left in `session.dirty` by `autoflush=False`.
-
-    The book is opened before `_seed` runs, not after: `ensure_open` rolls
-    back on a cold market, which would expire the accounts `_seed` returns.
-    """
+async def _open_a_book(session: AsyncSession) -> Upstream:
+    """A market with its book open. Call it before loading anything the
+    test keeps: `ensure_open` rolls back on a cold market, which would
+    expire what was loaded."""
     upstream = Upstream()
     await books().ensure_open(
         session,
@@ -73,8 +70,11 @@ async def _seed_with_a_dirty_outcome(session: AsyncSession):
         access_token=token(),
         terms_client=terms_client_over(upstream.transport),
     )
-    user, platform = await _seed(session)
-    outcome = (
+    return upstream
+
+
+async def _first_outcome(session: AsyncSession, upstream: Upstream):
+    return (
         await session.execute(
             select(entities().MarketOutcome).where(
                 entities().MarketOutcome.market_id == upstream.market_id,
@@ -82,8 +82,27 @@ async def _seed_with_a_dirty_outcome(session: AsyncSession):
             )
         )
     ).scalar_one()
+
+
+async def _dirty_an_outcome(session: AsyncSession, upstream: Upstream) -> Decimal:
+    """The trade path's own pending write: `q` assigned on a loaded
+    `MarketOutcome`, left in `session.dirty` by `autoflush=False`. Returns
+    `q` as it was."""
+    outcome = await _first_outcome(session, upstream)
+    q_before = outcome.q
     outcome.q = Decimal("41.0000")
     assert session.dirty
+    return q_before
+
+
+async def _seed_with_a_dirty_outcome(session: AsyncSession):
+    """`_seed`, plus the trade path's own pending write. The book is opened
+    before `_seed` runs, not after: `ensure_open` rolls back on a cold
+    market, which would expire the accounts `_seed` returns.
+    """
+    upstream = await _open_a_book(session)
+    user, platform = await _seed(session)
+    await _dirty_an_outcome(session, upstream)
     return user, platform
 
 
@@ -165,22 +184,53 @@ async def test_a_replay_with_a_pending_update_is_refused(
 
 
 async def test_a_replay_found_by_the_insert_race_is_refused_too(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    session: AsyncSession,
 ) -> None:
-    """`post`'s other replay: the lookup under the lock misses, the INSERT
-    hits the unique index, and the second lookup finds the key.
+    """`post`'s other replay, raced for real: another session holds the key
+    uncommitted, so the lookup under the lock truly misses, the INSERT waits
+    on the unique index, and the second lookup finds the key once the other
+    commits.
 
-    Driven by hiding the first lookup; real sessions reach it only when their
-    legs share no account. The rollback expires the pending write, which is
-    why `post` records it on entry.
+    Real sessions reach it only when their legs share no account. The
+    SAVEPOINT's rollback expires the pending write, which is why `post`
+    records it on entry. Nothing of this session's lands, neither its
+    movement nor its `q`.
     """
-    user, platform = await _seed_with_a_dirty_outcome(session)
+    ents = entities()
+    upstream = await _open_a_book(session)
+    accounts = accounts_module()
+    platform = await accounts.ensure_platform(session)
+    pool = await accounts.ensure(session, ents.AccountKind.MARKET_POOL, uuid.uuid4())
+    user = ents.AccountKind.USER
+    granted_elsewhere = await accounts.ensure(session, user, uuid.uuid4())
+    granted_here = await accounts.ensure(session, user, uuid.uuid4())
+    await session.commit()
+    q_before = await _dirty_an_outcome(session, upstream)
+    key = f"pending-writes:{uuid.uuid4()}"
 
-    lookups = hide_the_first_lookup(monkeypatch)
+    async def grant(own: AsyncSession, source, target):
+        return await posting().post(
+            own,
+            idempotency_key=key,
+            kind=ents.TransactionKind.SIGNUP_GRANT,
+            legs=[
+                posting().Leg(account=source, amount=-_AMOUNT),
+                posting().Leg(account=target, amount=_AMOUNT),
+            ],
+        )
 
-    with pytest.raises(errors().PendingWritesOnReplay):
-        await _replay(session, user, platform)
-    assert lookups[0] == 2, "the replay was not reached through the INSERT race"
+    _, refused = await race_on_one_key(
+        session,
+        post_as_loser=lambda own: grant(own, pool, granted_here),
+        post_as_winner=lambda own: grant(own, platform, granted_elsewhere),
+    )
+
+    assert isinstance(refused, errors().PendingWritesOnReplay), f"got {refused!r}"
+    async with session_factory()() as other:
+        assert await transaction_count(other, key=key) == 1
+        assert await accounts.balance_of(other, granted_elsewhere.id) == _AMOUNT
+        assert (await _first_outcome(other, upstream)).q == q_before
+        await assert_ledger_balances(other)
 
 
 async def test_the_refusal_commits_nothing(session: AsyncSession) -> None:

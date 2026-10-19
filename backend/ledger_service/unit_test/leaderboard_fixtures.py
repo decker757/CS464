@@ -39,12 +39,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from unit_test.conftest import auth_client_over
 from unit_test.sell_fixtures import version_of
 from unit_test.settlement_fixtures import (
-    PROBE_TIMEOUT,
     SettleUpstream,
     settle,
 )
 from unit_test.settlement_fixtures import warm as warm_settleable
-from unit_test.trade_fixtures import buy, entities, fund, session_factory
+from unit_test.trade_fixtures import (
+    PROBE_TIMEOUT,
+    buy,
+    entities,
+    fund,
+    lock_waiters,
+    session_factory,
+)
 
 LOOKUP_PATH = "/internal/users/lookup"
 
@@ -362,21 +368,6 @@ class CommitPause:
             await self.release.wait()
 
 
-def pausing_factory(pause: CommitPause) -> async_sessionmaker[AsyncSession]:
-    """The production factory's settings, with `pause.on_commit` run before
-    every commit."""
-    from core.database import get_engine  # noqa: PLC0415
-
-    class PausingSession(AsyncSession):
-        async def commit(self) -> None:
-            await pause.on_commit(self)
-            await super().commit()
-
-    return async_sessionmaker(
-        get_engine(), class_=PausingSession, expire_on_commit=False, autoflush=False
-    )
-
-
 _ADVISORY_LOCK_WAITERS = text(
     "SELECT count(*) FROM pg_stat_activity "
     "WHERE datname = current_database() "
@@ -385,16 +376,6 @@ _ADVISORY_LOCK_WAITERS = text(
     "AND wait_event = 'advisory' "
     "AND pid <> pg_backend_pid()"
 )
-
-
-async def advisory_lock_waiters() -> int:
-    """Backends of this role queued on an advisory lock, from Postgres's own
-    view. A fresh connection per call, because `pg_stat_activity` is
-    snapshotted once per transaction."""
-    from core.database import get_engine  # noqa: PLC0415
-
-    async with get_engine().connect() as conn:
-        return (await conn.execute(_ADVISORY_LOCK_WAITERS)).scalar_one()
 
 
 async def queued_on_the_advisory_lock(task: asyncio.Task, what: str) -> bool:
@@ -406,7 +387,7 @@ async def queued_on_the_advisory_lock(task: asyncio.Task, what: str) -> bool:
     while True:
         if task.done():
             return False
-        if await advisory_lock_waiters() == 1:
+        if await lock_waiters(_ADVISORY_LOCK_WAITERS) == 1:
             return True
         if loop.time() > deadline:
             pytest.fail(f"timed out: {what}")
