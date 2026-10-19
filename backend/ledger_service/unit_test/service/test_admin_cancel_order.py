@@ -21,7 +21,6 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
@@ -42,7 +41,7 @@ from unit_test.service.test_place_order import (
     _example_market,
     _funded,
 )
-from unit_test.settlement_fixtures import admin
+from unit_test.settlement_fixtures import admin, entries_naming
 from unit_test.trade_fixtures import transaction_count
 
 NOTHING = Decimal("0.0000")
@@ -61,17 +60,6 @@ async def _resting(session: AsyncSession):
         session, upstream, user_id=owner, limit_price=RESTING_LIMIT, quantity=RESTING_QUANTITY
     )
     return upstream, owner, placed.order.id
-
-
-async def _entries_for(reader: AsyncSession, order_id: uuid.UUID) -> list[dict]:
-    """Every audit entry naming this order, read as `audit_svc`."""
-    from shared.audit import admin_actions  # noqa: PLC0415
-
-    rows = (
-        await reader.execute(select(admin_actions).where(admin_actions.c.target_id == order_id))
-    ).mappings().all()
-    await reader.rollback()
-    return [dict(row) for row in rows]
 
 
 # =========================================================================
@@ -166,7 +154,7 @@ async def test_a_reason_of_exactly_ten_characters_once_trimmed_is_accepted_and_l
 
     await cancellation.cancel(session, order_id, user_id=None, admin=_by_admin(" 1234567890 "))
 
-    [entry] = await _entries_for(audit_reader, order_id)
+    [entry] = await entries_naming(audit_reader, order_id)
     assert entry["reason"] == "1234567890"
 
 
@@ -186,7 +174,7 @@ async def test_the_cancel_appends_order_cancelled_by_admin_naming_the_actor_the_
     await cancellation.cancel(session, order_id, user_id=None, admin=_by_admin(actor=actor))
 
     row, _ = await _committed(order_id, owner)
-    [entry] = await _entries_for(audit_reader, order_id)
+    [entry] = await entries_naming(audit_reader, order_id)
     assert entry["action_type"] == "order.cancelled_by_admin"
     assert (entry["actor_id"], entry["actor_username"], entry["actor_role"]) == (
         actor.id,
@@ -210,4 +198,4 @@ async def test_the_owners_own_cancel_appends_no_audit_entry(
 
     await cancellation.cancel(session, order_id, user_id=owner)
 
-    assert await _entries_for(audit_reader, order_id) == []
+    assert await entries_naming(audit_reader, order_id) == []

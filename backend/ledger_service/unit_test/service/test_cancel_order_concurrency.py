@@ -52,6 +52,7 @@ from unit_test.sell_fixtures import assert_q_matches_positions
 from unit_test.settlement_fixtures import (
     Pause,
     admin,
+    entries_naming,
     finish,
     queued_on_the_book_or_finished,
     reached,
@@ -336,15 +337,6 @@ async def _admin_and_owner_cancel(
     return owner, order_id, answers
 
 
-async def _audit_entries_for(reader: AsyncSession, order_id: uuid.UUID) -> int:
-    from shared.audit import admin_actions  # noqa: PLC0415
-
-    stmt = select(func.count()).where(admin_actions.c.target_id == order_id)
-    count = (await reader.execute(stmt)).scalar_one()
-    await reader.rollback()
-    return count
-
-
 @pytest.mark.parametrize("admin_first", [True, False], ids=["admin_first", "owner_first"])
 async def test_an_administrators_cancel_and_the_owners_cancel_of_one_order_release_it_once(
     session: AsyncSession,
@@ -374,5 +366,5 @@ async def test_an_administrators_cancel_and_the_owners_cancel_of_one_order_relea
     assert (row.status, row.filled_quantity) == (OrderStatus.CANCELLED, Decimal(0))
     assert await balance_of_user(session, owner) == starting_credits
     assert await reserved_credits_of(session, owner) == Decimal(0)
-    assert await _audit_entries_for(audit_reader, order_id) == (1 if admin_first else 0)
+    assert len(await entries_naming(audit_reader, order_id)) == (1 if admin_first else 0)
     await assert_ledger_balances(session)
