@@ -1,11 +1,19 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useBalance } from '../context/BalanceContext'
 import { formatCredits } from '../utils/formatCredits'
 import TopBar from './layout/TopBar'
 import Button from './ui/Button'
 import { buttonClass } from './ui/buttonClass'
+
+// NavLink sets aria-current="page" on the match itself, so "you are here" is
+// carried by the markup and not only by the colour (#356). Prefix matching is
+// deliberate: /markets/:id is still the Markets section, which is where a
+// trader spends most of their time.
+function navLinkClass({ isActive }: { isActive: boolean }): string {
+  return `text-sm transition ${isActive ? 'font-semibold text-smu-gold' : 'text-white/75 hover:text-white'}`
+}
 
 export default function AppNavbar() {
   const { user, logout } = useAuth()
@@ -31,29 +39,38 @@ export default function AppNavbar() {
     <TopBar>
       {user && (
         <div className="flex items-center gap-4">
-          <Link to="/portfolio" className="text-sm text-white/75 hover:text-white">
+          {/* First, because it is the thing the product is for. */}
+          <NavLink to="/markets" className={navLinkClass}>
+            Markets
+          </NavLink>
+          <NavLink to="/portfolio" className={navLinkClass}>
             Portfolio
-          </Link>
-          <Link to="/history" className="text-sm text-white/75 hover:text-white">
+          </NavLink>
+          <NavLink to="/history" className={navLinkClass}>
             History
-          </Link>
-          <Link to="/leaderboard" className="text-sm text-white/75 hover:text-white">
+          </NavLink>
+          <NavLink to="/leaderboard" className={navLinkClass}>
             Leaderboard
-          </Link>
+          </NavLink>
           {user.role === 'admin' && (
             <>
-              <Link to="/admin/markets" className="text-sm text-white/75 hover:text-white">
+              {/* The admin tools are a different kind of thing from the four
+                  above — a separate list, other people's markets, other
+                  people's accounts — so they are fenced off rather than
+                  sitting in the same run of links. */}
+              <span aria-hidden="true" className="h-5 w-px bg-white/25" />
+              <NavLink to="/admin/markets" end className={navLinkClass}>
                 All Markets
-              </Link>
-              <Link to="/admin/proposals" className="text-sm text-white/75 hover:text-white">
+              </NavLink>
+              <NavLink to="/admin/proposals" className={navLinkClass}>
                 Proposals
-              </Link>
-              <Link to="/admin/users" className="text-sm text-white/75 hover:text-white">
+              </NavLink>
+              <NavLink to="/admin/users" className={navLinkClass}>
                 Users
-              </Link>
-              <Link to="/admin/markets/new" className={buttonClass('outlineGoldOnNavy', 'sm')}>
+              </NavLink>
+              <NavLink to="/admin/markets/new" className={buttonClass('outlineGoldOnNavy', 'sm')}>
                 + New Market
-              </Link>
+              </NavLink>
             </>
           )}
           {balance !== undefined && (

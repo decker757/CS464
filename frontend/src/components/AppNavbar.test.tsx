@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -178,5 +178,59 @@ describe('AppNavbar — logging out', () => {
 
     release()
     await waitFor(() => expect(screen.queryByText('alice')).not.toBeInTheDocument())
+  })
+})
+
+describe('AppNavbar — finding your way around', () => {
+  it('puts Markets first in the signed-in navigation, for both roles', () => {
+    // [X-1]–[X-4] shipped the market list and then left it out of the nav, so
+    // from Portfolio or History the only way back was the browser's Back
+    // button. "All Markets" is the admin list and is not a substitute, which
+    // is why this has to hold for an admin too.
+    for (const user of [trader, admin]) {
+      renderNavbar(user)
+      const links = within(screen.getByRole('navigation')).getAllByRole('link')
+      // links[0] is the wordmark, which is the one link that is not a nav item.
+      expect(links[1]).toHaveAccessibleName('Markets')
+      cleanup()
+    }
+  })
+
+  it('marks the page you are on, and only that one', () => {
+    // Colour alone does not say "you are here" to a screen reader; NavLink
+    // sets aria-current="page" on the match, which is what carries it.
+    renderNavbar(trader)
+
+    expect(screen.getByRole('link', { name: 'Markets' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Portfolio' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('keeps a market detail page inside the Markets section', () => {
+    // /markets/:id is still Markets; an exact match would unmark the nav the
+    // moment a trader opened a market, which is most of the time they spend.
+    render(
+      <WithProviders user={trader}>
+        <MemoryRouter initialEntries={['/markets/abc-123']}>
+          <AppNavbar />
+        </MemoryRouter>
+      </WithProviders>,
+    )
+
+    expect(screen.getByRole('link', { name: 'Markets' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('does not mark Markets when an admin is on the admin market list', () => {
+    // /admin/markets is a different list. Prefix matching that treated it as
+    // /markets would light up both.
+    render(
+      <WithProviders user={admin}>
+        <MemoryRouter initialEntries={['/admin/markets']}>
+          <AppNavbar />
+        </MemoryRouter>
+      </WithProviders>,
+    )
+
+    expect(screen.getByRole('link', { name: 'Markets' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('link', { name: 'All Markets' })).toHaveAttribute('aria-current', 'page')
   })
 })

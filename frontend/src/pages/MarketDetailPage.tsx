@@ -9,6 +9,7 @@ import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
 import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useMarketPrices } from '../hooks/useMarketPrices'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
@@ -46,6 +47,10 @@ export default function MarketDetailPage() {
   const market = current?.market ?? null
   const loading = current === null
   const error = current?.failed ?? false
+  // This page's heading is the question rather than a PageTitle, so it
+  // names the tab itself. Null until the fetch lands, which leaves the
+  // previous title up rather than blanking it for the round trip (#356).
+  useDocumentTitle(market?.question)
 
   const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null)
   // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
