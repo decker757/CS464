@@ -574,9 +574,10 @@ describe('CreateMarketPage', () => {
   })
 
   // Publishing re-runs every submission rule against the clock (ADR 0008), so
-  // a market that sat submitted past its close time fails forever. Telling the
-  // admin to try again is wrong.
-  it('says a publish refused for draft_incomplete cannot be retried', async () => {
+  // a market that sat submitted past its close time fails until its terms
+  // change. Telling the admin to try again is wrong; correcting and
+  // resubmitting is what the server accepts (#381).
+  it('says a publish refused for draft_incomplete needs a correction, not a retry', async () => {
     server.use(
       http.post(`${MARKET_BASE}/markets`, async ({ request }) => {
         const body = await request.json() as { status: string }
@@ -597,9 +598,7 @@ describe('CreateMarketPage', () => {
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
     await actor.click(await screen.findByRole('button', { name: /publish market/i }))
     const alert = await screen.findByRole('alert')
-    // One wording for both screens that publish, so it says what is true of
-    // any of them rather than of this form alone (#348).
-    expect(alert).toHaveTextContent(/cannot be edited once it has been submitted/i)
+    expect(alert).toHaveTextContent(/submit the market again/i)
     expect(alert).not.toHaveTextContent(/try again/i)
   })
 
@@ -790,6 +789,132 @@ describe('CreateMarketPage', () => {
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load this market/i)
       expect(screen.queryByLabelText('Question *')).not.toBeInTheDocument()
+    })
+  })
+
+  // #381. Publishing re-runs every submission rule against the clock (ADR
+  // 0008), so a market that sat submitted past its close time is refused with
+  // draft_incomplete. The server takes a resubmission of a submitted market
+  // and re-runs every rule; it refuses only a save asking for `draft` (ADR
+  // 0004). The form used to stay locked, painting the reason under a field
+  // nobody could edit.
+  describe('after a publish refused because the terms no longer pass', () => {
+    const STALE_CLOSE = { field: 'close_time', message: 'Close time must be in the future.' }
+    const STALE_RESOLUTION = { field: 'resolution_time', message: 'Resolution time must be in the future.' }
+
+    function refusedOnTerms(details: { field: string; message: string }[]) {
+      return HttpResponse.json(
+        { error: { code: 'draft_incomplete', message: 'This market cannot be published yet.', details } },
+        { status: 422 },
+      )
+    }
+
+    function refusePublishOnTerms() {
+      server.use(http.post(`${MARKET_BASE}/markets/${STORED_ID}/publish`, () => refusedOnTerms([STALE_CLOSE])))
+    }
+
+    type SentSave = { draft_key: string; status: string; close_time?: string }
+
+    /** Accepts every save as the status it asked for, and records what each one sent. */
+    function acceptAndRecordSaves(): SentSave[] {
+      const sent: SentSave[] = []
+      server.use(
+        http.post(`${MARKET_BASE}/markets`, async ({ request }) => {
+          const { draft_key, status, close_time } = await request.json() as SentSave
+          sent.push({ draft_key, status, close_time })
+          return HttpResponse.json({ market: { ...storedMarket, status }, blocking_submission: [] })
+        }),
+      )
+      return sent
+    }
+
+    it('reopens the fields, and resubmits the correction under the stored key', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      refusePublishOnTerms()
+      const saves = acceptAndRecordSaves()
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+
+      await screen.findByText(STALE_CLOSE.message)
+      const closeTime = screen.getByLabelText('Closes at *')
+      expect(within(closeTime.parentElement!).getByText(STALE_CLOSE.message)).toBeInTheDocument()
+      expect(closeTime).toBeEnabled()
+      // Publishing the stored terms again can only be refused again.
+      expect(screen.queryByRole('button', { name: /publish market/i })).not.toBeInTheDocument()
+
+      fireEvent.change(closeTime, { target: { value: '2027-01-16T10:00' } })
+      await actor.click(screen.getByRole('button', { name: /resubmit for review/i }))
+
+      expect(await screen.findByRole('button', { name: /publish market/i })).toBeInTheDocument()
+      expect(saves).toEqual([
+        { draft_key: STORED_DRAFT_KEY, status: 'submitted', close_time: new Date(2027, 0, 16, 10, 0).toISOString() },
+      ])
+      // Submitted again, so read-only again, and the reason it was refused is gone.
+      expect(screen.getByLabelText('Closes at *')).toBeDisabled()
+      expect(screen.queryByText(STALE_CLOSE.message)).not.toBeInTheDocument()
+    })
+
+    it('reports a refused resubmission the way it reported the refused publish', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      refusePublishOnTerms()
+      server.use(http.post(`${MARKET_BASE}/markets`, () => refusedOnTerms([STALE_RESOLUTION])))
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await screen.findByText(STALE_CLOSE.message)
+      fireEvent.change(screen.getByLabelText('Closes at *'), { target: { value: '2027-01-16T10:00' } })
+      await actor.click(screen.getByRole('button', { name: /resubmit for review/i }))
+
+      await screen.findByText(STALE_RESOLUTION.message)
+      const resolutionTime = screen.getByLabelText('Resolves by *')
+      expect(within(resolutionTime.parentElement!).getByText(STALE_RESOLUTION.message)).toBeInTheDocument()
+      expect(resolutionTime).toBeEnabled()
+      // The server answered for every rule this time, and the close time passed.
+      expect(screen.queryByText(STALE_CLOSE.message)).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /resubmit for review/i })).toBeEnabled()
+      expect(screen.getByText(/not ready to submit/i)).toBeInTheDocument()
+    })
+
+    // The un-submit ADR 0004 refuses: a save asking for `draft` on a submitted
+    // market. Editable fields mean the autosave now has something to send, so
+    // only its own guard stops it.
+    it('never autosaves the market it reopened', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      refusePublishOnTerms()
+      const saves = acceptAndRecordSaves()
+      vi.useFakeTimers()
+      renderEditPage()
+      await act(() => vi.advanceTimersByTimeAsync(3100))
+
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /publish market/i })) })
+      await act(() => vi.advanceTimersByTimeAsync(100))
+      fireEvent.change(screen.getByLabelText('Question *'), { target: { value: 'Typed while correcting?' } })
+      await act(() => vi.advanceTimersByTimeAsync(6200))
+
+      expect(screen.getByLabelText('Question *')).toBeEnabled()
+      expect(saves).toEqual([])
+    })
+
+    // ADR 0008 is not reopened: only a refusal about the terms unlocks them.
+    it('keeps every field read-only when the publish is refused because the market is already live', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      server.use(
+        http.post(`${MARKET_BASE}/markets/${STORED_ID}/publish`, () =>
+          HttpResponse.json({ error: { code: 'market_already_open', message: 'refused' } }, { status: 409 }),
+        ),
+      )
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+
+      await screen.findByText(/already live for traders/i)
+      expect(screen.getByLabelText('Question *')).toBeDisabled()
+      expect(screen.getByLabelText('Closes at *')).toBeDisabled()
+      expect(screen.queryByRole('button', { name: /submit for review/i })).not.toBeInTheDocument()
     })
   })
 
