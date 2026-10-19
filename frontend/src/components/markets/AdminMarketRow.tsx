@@ -9,6 +9,7 @@ import ReasonModal from '../ui/ReasonModal'
 import { buttonClass } from '../ui/buttonClass'
 import { useCloseMarket } from '../../hooks/useCloseMarket'
 import { useDisputeMarket } from '../../hooks/useDisputeMarket'
+import { usePublishMarket } from '../../hooks/usePublishMarket'
 import { useSettleMarket } from '../../hooks/useSettleMarket'
 import { useWindowOpen } from '../../hooks/useWindowOpen'
 import { disputeWindowLine } from '../../utils/formatCountdown'
@@ -43,22 +44,26 @@ interface JustNow {
   disputedJustNow: boolean
   settledJustNow: boolean
   closedJustNow: boolean
+  publishedJustNow: boolean
 }
 
 // A send-back returns the market to closed, which beats everything else; after
-// that settled wins over closed because a market is closed before it is settled.
-function statusAfter(market: MarketOverviewRow, { disputedJustNow, settledJustNow, closedJustNow }: JustNow) {
+// that settled wins over closed because a market is closed before it is
+// settled, and closed wins over published because a market published from this
+// row can be closed early from it a moment later.
+function statusAfter(market: MarketOverviewRow, { disputedJustNow, settledJustNow, closedJustNow, publishedJustNow }: JustNow) {
   if (disputedJustNow) return 'closed'
   if (settledJustNow) return 'settled'
   if (closedJustNow) return 'closed'
+  if (publishedJustNow) return 'open'
   return market.status
 }
 
 // One market on the admin markets list ([2.1] #5). Only its creator can act on
-// it, e.g. propose its outcome. Closing it early ([2.3] #7) and settling
-// ([3.4] #12) are controls any administrator may use on anybody's market
-// (market-service.md's notes for #56, point 7), so both are driven from this
-// row rather than the creator check.
+// it, e.g. propose its outcome, resume its draft or publish it. Closing it
+// early ([2.3] #7) and settling ([3.4] #12) are controls any administrator may
+// use on anybody's market (market-service.md's notes for #56, point 7), so
+// both are driven from this row rather than the creator check.
 export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminMarketRowProps) {
   // Set once the close succeeds, so the row repaints without waiting for the
   // list's next fetch (market-service.md's notes for #56, point 5).
@@ -66,6 +71,8 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
   const [settledJustNow, setSettledJustNow] = useState(false)
   // Set once a send-back succeeds, same reasoning as closedJustNow/settledJustNow.
   const [disputedJustNow, setDisputedJustNow] = useState(false)
+  // Set once a publish succeeds, same reasoning again.
+  const [publishedJustNow, setPublishedJustNow] = useState(false)
   const {
     showCloseModal, openCloseModal, closeCloseModal,
     reason, setReason, closing, formError, reasonError, superseded,
@@ -75,6 +82,10 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
     showSettleModal, openSettleModal, closeSettleModal,
     settling, formError: settleError, superseded: settleSuperseded, needsReload: settleNeedsReload, handleSettle,
   } = useSettleMarket(market.id, () => setSettledJustNow(true))
+  const {
+    showPublishModal, openPublishModal, closePublishModal,
+    publishing, formError: publishError, superseded: publishSuperseded, handlePublish,
+  } = usePublishMarket(market.id, () => setPublishedJustNow(true))
 
   // Only present on an approved row (AdminMarketsPage only looks this up for
   // those), so it also doubles as "is there anything to dispute here."
@@ -86,7 +97,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
     canConfirm: canConfirmDispute, handleDispute,
   } = useDisputeMarket(market.id, approvedResult?.proposalId ?? null, () => setDisputedJustNow(true))
 
-  const status = statusAfter(market, { disputedJustNow, settledJustNow, closedJustNow })
+  const status = statusAfter(market, { disputedJustNow, settledJustNow, closedJustNow, publishedJustNow })
   // Same derivation as everywhere else on this page: a market whose countdown
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
@@ -131,8 +142,26 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
         {disputeError && (
           <RowError message={disputeError} onReload={disputeSuperseded ? () => window.location.reload() : undefined} />
         )}
+        {publishError && (
+          <RowError message={publishError} onReload={publishSuperseded ? () => window.location.reload() : undefined} />
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-3">
+        {/* Both are the creator's: market_service scopes `GET /markets/{id}`
+            and `publish` to the caller and answers 404 for anybody else's
+            market, so offering either to another administrator would offer a
+            control that cannot work. Neither appears past submitted — the
+            form freezes there and publication is one way (ADR 0008). */}
+        {isMine && status === 'draft' && (
+          <Link to={`/admin/markets/${market.id}/edit`} className={buttonClass('outline', 'xs')}>
+            Resume draft
+          </Link>
+        )}
+        {isMine && status === 'submitted' && !publishSuperseded && (
+          <Button variant="outline" size="xs" onClick={openPublishModal}>
+            Publish
+          </Button>
+        )}
         {isMine && status === 'closed' && (
           <Link to={`/admin/markets/${market.id}/propose-outcome`} className={buttonClass('outline', 'xs')}>
             Propose Outcome
@@ -182,6 +211,19 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
           confirmingLabel="Closing…"
           onCancel={closeCloseModal}
           onConfirm={handleClose}
+        />
+      )}
+
+      {showPublishModal && (
+        <ConfirmModal
+          ariaLabel="Publish market"
+          title="Publish this market?"
+          description="Traders can see it and trade in it immediately. There is no unpublish, and the terms cannot be edited afterwards."
+          isSubmitting={publishing}
+          confirmLabel="Confirm Publish"
+          confirmingLabel="Publishing…"
+          onCancel={closePublishModal}
+          onConfirm={handlePublish}
         />
       )}
 
