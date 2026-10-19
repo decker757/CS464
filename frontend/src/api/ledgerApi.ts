@@ -339,3 +339,44 @@ export async function settleMarket(marketId: string): Promise<SettlementResult> 
   const res = await api.post<SettlementResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/settlement`)
   return res.data
 }
+
+export interface LeaderboardRow {
+  rank: number
+  username: string
+  net_worth: string
+  is_me: boolean
+}
+
+/** The caller's own rank, username and net worth in the ranking a page came
+ * from — the same three fields as a row, but not necessarily on this page
+ * (ledger-service.md). Null when the caller is not in that ranking. */
+export interface LeaderboardMe {
+  rank: number
+  username: string
+  net_worth: string
+}
+
+export interface LeaderboardPage {
+  // Null before the ledger has ever completed a refresh.
+  computed_at: string | null
+  // True once computed_at is more than two refresh intervals old — the board
+  // shown is still the last complete ranking, never a partial one.
+  stale: boolean
+  // Every user the whole ranking holds, not just this page; the same on
+  // every page of one ranking.
+  ranked_users: number
+  me: LeaderboardMe | null
+  rows: LeaderboardRow[]
+  next_cursor: string | null
+  has_more: boolean
+}
+
+/** One page of the most recently computed ranking ([L-1] #38). `cursor`
+ * holds the caller to the ranking the first page came from; after that
+ * ranking has been replaced twice, the ledger answers `409
+ * leaderboard_refreshed` and the caller starts again from page one
+ * (ledger-service.md). */
+export async function getLeaderboard(params?: { cursor?: string; limit?: number }): Promise<LeaderboardPage> {
+  const res = await api.get<LeaderboardPage>(`${LEDGER_BASE}/ledger/leaderboard`, { params })
+  return res.data
+}
