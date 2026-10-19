@@ -319,12 +319,15 @@ async def _refuse_if_budget_does_not_fit(
         )
 
 
-def _placement_refusal_of(refusal: InsufficientFunds, budget: Decimal) -> InsufficientFunds:
+def _placement_refusal_of(
+    refusal: InsufficientFunds, budget: Decimal | None
+) -> InsufficientFunds:
     """`posting`'s start-of-batch refusal, with the new budget taken back out
     of `reserved`, so the figures are the resting path's. D-NEW "A
     placement's `insufficient_funds` reports the reservation without the new
-    order, on both paths". Any other refusal is returned as it is."""
-    if refusal.shortfall is None:
+    order, on both paths". Any other refusal, and any refusal of a sell,
+    which has no budget, is returned as it is."""
+    if refusal.shortfall is None or budget is None:
         return refusal
     reserved = refusal.reserved - budget
     return InsufficientFunds(
