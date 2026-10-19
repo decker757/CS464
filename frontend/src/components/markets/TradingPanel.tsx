@@ -1,14 +1,31 @@
 import { useRef, useState } from 'react'
-import { describeTradeError, errorCode, isDefiniteRejection } from '../../api/errors'
-import { postTrade, type TradeSide } from '../../api/ledgerApi'
+import { describeInsufficientFunds, describeInsufficientShares, describeTradeError, errorCode, isDefiniteRejection } from '../../api/errors'
+import { postTrade, type TradePreview, type TradeSide } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
 import { useTradeQuote } from '../../hooks/useTradeQuote'
-import { formatAveragePrice, formatCreditsPrecise, unsignedCredits } from '../../utils/formatCredits'
-import { formatPrice } from '../../utils/formatPrice'
+import { compareCredits, formatCreditsPrecise, isZeroCredits, unsignedCredits } from '../../utils/formatCredits'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 import { selectableClass } from '../ui/selectableClass'
+import TradePreviewSummary from './TradePreviewSummary'
+
+interface TradingPanelProps {
+  marketId: string
+  outcomes: PublicOutcome[]
+  // What the trader holds of each outcome of this market, as the ledger's own
+  // decimal strings; an outcome that is not a key is a holding of zero, since
+  // the portfolio route omits a position sold to nothing.
+  //
+  // Null while that read has not landed, or once it has failed. Then nothing
+  // is clamped: the ledger refuses an oversell with the exact figure anyway,
+  // where guessing zero here would stop a trader selling shares they own
+  // because one request went missing.
+  heldByOutcome: Record<string, string> | null
+  // A trade committed, so the holding above is out of date — the page re-reads
+  // it. The balance comes back through BalanceContext's own refetch.
+  onTraded: () => void
+}
 
 // Buy and Sell are the same toggle shape with a different active colour.
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
@@ -18,11 +35,43 @@ function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): st
   }`
 }
 
-export default function TradingPanel({ marketId, outcomes }: {
-  marketId: string
-  outcomes: PublicOutcome[]
-}) {
-  const { refetch: refetchBalance } = useBalance()
+interface TradeToCheck {
+  side: TradeSide
+  preview: TradePreview | null
+  // Trimmed, and '' when the field has already rejected it or is empty.
+  quantity: string
+  balance: string | null | undefined
+  heldQuantity: string | null
+}
+
+/**
+ * Why this trade cannot be sent, as a sentence, or '' when nothing here can
+ * tell. The server stays the authority on both figures — this only refuses
+ * what the screen can already prove the ledger would refuse, so the trader
+ * reads it before the round trip instead of after a failure state (#357).
+ *
+ * The cost is the one the preview quoted, never a recomputed one, and both
+ * comparisons go through compareCredits: these are decimal strings, and
+ * parsing them to compare would be the arithmetic formatCredits.ts exists to
+ * avoid.
+ */
+function refusalBeforeSending({ side, preview, quantity, balance, heldQuantity }: TradeToCheck): string {
+  if (side === 'sell') {
+    // On the quantity alone, so it answers while the quote is still in
+    // flight. A sell pays credits in, so the balance has nothing to say.
+    if (heldQuantity === null || !quantity) return ''
+    if (compareCredits(quantity, heldQuantity) <= 0) return ''
+    return describeInsufficientShares(heldQuantity, quantity)
+  }
+
+  if (!preview || typeof balance !== 'string') return ''
+  const cost = unsignedCredits(preview.total)
+  if (compareCredits(cost, balance) <= 0) return ''
+  return describeInsufficientFunds(balance, cost)
+}
+
+export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTraded }: TradingPanelProps) {
+  const { balance, refetch: refetchBalance } = useBalance()
 
   const [side, setSide] = useState<TradeSide>('buy')
   const [outcomeId, setOutcomeId] = useState(outcomes[0]?.id ?? '')
@@ -49,8 +98,10 @@ export default function TradingPanel({ marketId, outcomes }: {
   const visibleLastTrade = lastTradeFor === inputKey ? lastTrade : null
 
   const selectedOutcome = outcomes.find(o => o.id === outcomeId)
-  const priceNow = preview?.prices.find(p => p.outcome_id === outcomeId)
-  const priceAfter = preview?.post_trade_prices.find(p => p.outcome_id === outcomeId)
+  const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
+  // A quantity the field itself rejects says so under the field already; the
+  // clamp has nothing to add about it.
+  const refusal = refusalBeforeSending({ side, preview, quantity: quantityInputError ? '' : quantity.trim(), balance, heldQuantity })
 
   const submit = async () => {
     if (!preview || submitting) return
@@ -72,6 +123,7 @@ export default function TradingPanel({ marketId, outcomes }: {
       setLastTrade({ side, quantity: result.quantity, outcomeLabel: selectedOutcome?.label ?? '', total: result.total })
       setQuantity('')
       refetchBalance()
+      onTraded()
     } catch (err) {
       const code = errorCode(err)
       if (code === 'quote_stale') {
@@ -93,7 +145,7 @@ export default function TradingPanel({ marketId, outcomes }: {
     }
   }
 
-  const canSubmit = !!preview && !previewLoading && !submitting && !previewError
+  const canSubmit = !!preview && !previewLoading && !submitting && !previewError && !refusal
 
   return (
     <div>
@@ -136,9 +188,25 @@ export default function TradingPanel({ marketId, outcomes }: {
         </p>
       )}
 
-      <label htmlFor="trade-quantity" className="mb-1.5 block text-[13px] font-semibold text-smu-navy">
-        Quantity (shares)
-      </label>
+      <div className="mb-1.5 flex items-baseline justify-between">
+        <label htmlFor="trade-quantity" className="block text-[13px] font-semibold text-smu-navy">
+          Quantity (shares)
+        </label>
+        {side === 'sell' && heldQuantity !== null && (
+          <span aria-label="shares held" className="text-[13px] text-muted">
+            You hold {formatCreditsPrecise(heldQuantity)} shares
+            {!isZeroCredits(heldQuantity) && (
+              <button
+                type="button"
+                onClick={() => setQuantity(heldQuantity)}
+                className="ml-2 cursor-pointer font-semibold text-info hover:underline"
+              >
+                Max
+              </button>
+            )}
+          </span>
+        )}
+      </div>
       <input
         id="trade-quantity"
         type="number"
@@ -157,23 +225,10 @@ export default function TradingPanel({ marketId, outcomes }: {
       {!quantityInputError && previewError && <p role="alert" className="mb-3 text-xs text-danger">{previewError}</p>}
 
       {preview && !previewLoading && (
-        <div aria-label="trade preview" className="mb-3 rounded-control bg-smu-cream px-4 py-3 text-[13px]">
-          <div className="flex justify-between">
-            <span className="text-muted">{side === 'buy' ? 'Cost' : 'Proceeds'}</span>
-            <strong className="text-smu-navy">{formatCreditsPrecise(unsignedCredits(preview.total))} credits</strong>
-          </div>
-          <div className="mt-1 flex justify-between">
-            <span className="text-muted">Average price</span>
-            <span className="text-smu-navy">{formatAveragePrice(preview.average_price)}</span>
-          </div>
-          {priceNow && priceAfter && (
-            <div className="mt-1 flex justify-between">
-              <span className="text-muted">{selectedOutcome?.label} price</span>
-              <span className="text-smu-navy">{formatPrice(priceNow.price)} → {formatPrice(priceAfter.price)}</span>
-            </div>
-          )}
-        </div>
+        <TradePreviewSummary preview={preview} side={side} outcomeId={outcomeId} outcomeLabel={selectedOutcome?.label ?? ''} />
       )}
+
+      {refusal && <p role="alert" className="mb-3 text-xs text-danger">{refusal}</p>}
 
       {visibleSubmitError && <p role="alert" className="mb-3 text-xs text-danger">{visibleSubmitError}</p>}
 
