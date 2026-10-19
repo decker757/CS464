@@ -45,6 +45,27 @@ export function formatCountdown(endsAtIso: string, now: Date = new Date()): stri
 }
 
 /**
+ * The one sentence both dispute screens show about an approved market's
+ * window: the countdown while it is open, the closed instant once it is not,
+ * and `NO_WINDOW_RECORDED` when the server stored no end at all.
+ *
+ * `isOpen` is passed in rather than derived here so the line always agrees
+ * with whatever the caller used for its other decisions - on the admin list
+ * the same boolean decides whether Dispute result is offered at all, and a
+ * banner disagreeing with the button beside it would be worse than either.
+ *
+ * The absolute instant shows in the closed case too: a browser clock running
+ * fast would otherwise read "final" on a window genuinely still open, with
+ * nothing on screen to reveal the wrong clock (market-service.md's
+ * dispute-screen notes, point 1).
+ */
+export function disputeWindowLine(endsAtIso: string | null, isOpen: boolean): string {
+  if (endsAtIso === null) return NO_WINDOW_RECORDED
+  if (isOpen) return `Disputes close in ${formatCountdown(endsAtIso)}.`
+  return `Result is final; payout pending (closed ${formatAbsolute(endsAtIso)}).`
+}
+
+/**
  * Whether a dispute window, as `endsAtIso` names it, is still open — the same
  * display-only check the market detail page and the admin markets list both
  * need to decide between showing the countdown and "Result is final" (and,
