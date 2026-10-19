@@ -100,7 +100,14 @@ export interface SourceOut {
 
 export interface MarketOut {
   id: string
-  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved'
+  // The key this market was created under. Sending it back is what makes a
+  // later save continue this market instead of creating a second one, which
+  // is how the create form resumes a draft it did not start (#348).
+  draft_key: string
+  // Every status, the same set as `MarketSummaryOut`: the service types this
+  // as its whole `MarketStatus` enum, and one of this administrator's own
+  // markets can be settled like any other.
+  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
   question: string | null
   description: string | null
   outcomes: OutcomeOut[]

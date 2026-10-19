@@ -44,6 +44,10 @@ export default function App() {
             <Route path="/admin/users" element={<ProtectedRoute requireAdmin><AdminUsersPage /></ProtectedRoute>} />
             <Route path="/admin/users/:userId" element={<ProtectedRoute requireAdmin><AdminUserHistoryPage /></ProtectedRoute>} />
             <Route path="/admin/markets/new" element={<ProtectedRoute requireAdmin><CreateMarketPage /></ProtectedRoute>} />
+            {/* The same form, on a market the server already holds: a draft to
+                carry on with, or a submitted one to publish after a reload
+                (#348). */}
+            <Route path="/admin/markets/:id/edit" element={<ProtectedRoute requireAdmin><CreateMarketPage /></ProtectedRoute>} />
             <Route path="/admin/markets/:id/propose-outcome" element={<ProtectedRoute requireAdmin><ProposeOutcomePage /></ProtectedRoute>} />
             <Route path="/admin/proposals" element={<ProtectedRoute requireAdmin><ProposalsPage /></ProtectedRoute>} />
             <Route path="/admin/markets/:id/decide-outcome" element={<ProtectedRoute requireAdmin><DecideOutcomePage /></ProtectedRoute>} />

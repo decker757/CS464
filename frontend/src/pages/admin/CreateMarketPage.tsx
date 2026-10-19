@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { errorCode, errorDetails } from '../../api/errors'
 import {
   type BlockingHint,
+  type MarketOut,
   type SaveMarketResponse,
-  publishMarket,
+  getMyMarket,
   saveMarket,
 } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
@@ -17,6 +18,7 @@ import Field from '../../components/ui/Field'
 import PageTitle from '../../components/ui/PageTitle'
 import TextArea from '../../components/ui/TextArea'
 import TextInput from '../../components/ui/TextInput'
+import { usePublishMarket } from '../../hooks/usePublishMarket'
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -67,16 +69,6 @@ const LOCKED_BECAUSE: Record<LockedStatus, string> = {
   settled: 'This market has already been settled and paid out.',
 }
 
-// What publish said, by the code it failed with. `draft_incomplete` has no way
-// out from here: publishing re-runs every submission rule against the clock
-// (ADR 0008), and this form cannot reopen a market it has already submitted.
-// The service does allow a resubmission to change the terms; no screen offers
-// one yet (#354), so the advice is to start again.
-const PUBLISH_FAILED_GENERIC = 'Publish failed. Please try again.'
-const PUBLISH_FAILED_FOREVER =
-  'These terms no longer pass the checks for publishing, and this form cannot edit a market '
-  + 'once it has been submitted. Create a new market with the corrections instead.'
-
 function createDefaultForm(): FormState {
   return {
     question: '',
@@ -97,6 +89,20 @@ function createDefaultForm(): FormState {
 function toISO(s: string): string | undefined {
   if (!s) return undefined
   try { return new Date(s).toISOString() } catch { return undefined }
+}
+
+// The other direction, for a market loaded back into the form: a
+// datetime-local input wants local wall-clock time to the minute and no zone,
+// so `toISOString` would show an admin in Singapore a time eight hours off
+// their own. Minutes, because that is all the input offers — so a resumed
+// market whose close time carries seconds loses them on its next save.
+function toDateTimeInput(iso: string | null): string {
+  if (!iso) return ''
+  const when = new Date(iso)
+  if (isNaN(when.getTime())) return ''
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
+    + `T${pad(when.getHours())}:${pad(when.getMinutes())}`
 }
 
 function parseNum(s: string): number | undefined {
@@ -150,6 +156,49 @@ function sentSources(f: FormState) {
   return f.sources.filter(s => s.url.trim())
 }
 
+// --- a market the server already holds, coming back into the form (#348) ----
+
+// Its fields, as this form's. Row ids are the server's own, so a blocking hint
+// for outcomes[k] lands on the row it is about from the first render. An empty
+// list falls back to the blank form's rows: an empty row is how a new outcome
+// or source is typed, and a market saved without either would otherwise offer
+// nothing to type into.
+function formOf(market: MarketOut): FormState {
+  const blank = createDefaultForm()
+  return {
+    question: market.question ?? '',
+    description: market.description ?? '',
+    outcomes: market.outcomes.length
+      ? market.outcomes.map(outcome => ({ id: outcome.id, label: outcome.label }))
+      : blank.outcomes,
+    closeTime: toDateTimeInput(market.close_time),
+    resolutionTime: toDateTimeInput(market.resolution_time),
+    criteria: market.resolution_criteria ?? '',
+    sources: market.resolution_sources.length
+      ? market.resolution_sources.map(source => ({ id: source.id, url: source.url, label: source.label ?? '' }))
+      : blank.sources,
+    liquidityB: market.liquidity_b == null ? '' : String(market.liquidity_b),
+    seedSubsidy: market.seed_subsidy == null ? '' : String(market.seed_subsidy),
+  }
+}
+
+// The status it is frozen at, or undefined while it is still a draft this form
+// may write to. Same shape as `statusDisplay`: a status this frontend has not
+// been taught yet locks nothing.
+function lockedStatusOf(status: string): LockedStatus | undefined {
+  return Object.hasOwn(LOCKED_BECAUSE, status) ? status as LockedStatus : undefined
+}
+
+// What became of the edits that were open when a save discovered the market
+// had moved on. Nothing, when the market was already past draft before this
+// page loaded it: there was never anything typed here to lose.
+function describeLostEdits(lostEdits: boolean | null): string {
+  if (lostEdits === null) return ''
+  return lostEdits
+    ? 'The edits you had open when that happened were not saved.'
+    : 'Everything you typed had already been saved.'
+}
+
 /** The red × that removes one row of a repeating list. */
 function RemoveRowButton({ label, className = '', onClick }: { label: string; className?: string; onClick: () => void }) {
   return (
@@ -161,7 +210,22 @@ function RemoveRowButton({ label, className = '', onClick }: { label: string; cl
 
 export default function CreateMarketPage() {
   const navigate = useNavigate()
-  const [draftKey] = useState(() => crypto.randomUUID())
+  // Present on /admin/markets/:id/edit, absent on /admin/markets/new. The
+  // whole difference between resuming a market and creating one.
+  const { id: existingMarketId } = useParams<{ id: string }>()
+  // Seeded fresh for a new market and replaced by the loaded market's own key,
+  // because that key is what makes the next save continue that market rather
+  // than create a second one (#348).
+  const [draftKey, setDraftKey] = useState<string>(() => crypto.randomUUID())
+  // Which market this page last failed to read. Named rather than a flag, so
+  // an address that moves to another market is not met with the previous
+  // one's error, and so a read that failed is not retried on every render.
+  const [failedMarketId, setFailedMarketId] = useState<string | null>(null)
+  // True once this page has read a market it did not create here: a resumed
+  // draft, or one reopened after a reload. The heading says which job the
+  // page is doing, and must not change under an admin's hands the moment
+  // their first autosave gives a new market an address of its own.
+  const [hasLoadedMarket, setHasLoadedMarket] = useState(false)
 
   const [form, setForm] = useState<FormState>(createDefaultForm)
   const formRef = useRef<FormState>(form)
@@ -183,22 +247,44 @@ export default function CreateMarketPage() {
   // added or removed and before the next save catches up.
   const [sentIds, setSentIds] = useState<{ outcomes: string[]; sources: string[] }>({ outcomes: [], sources: [] })
   const [submitError, setSubmitError] = useState('')
-  const [publishError, setPublishError] = useState('')
-  // The per-field reasons from the last refused submit or publish. Both
-  // refusals carry the same `details` shape (ADR 0008), so one list serves
-  // both and the hints land under the same fields either way.
+  // The per-field reasons from the last refused submission. A refused publish
+  // carries the same `details` shape (ADR 0008) and `usePublishMarket` holds
+  // that list, so `getHint` reads both and the hints land under the same
+  // fields either way.
   const [refusalDetails, setRefusalDetails] = useState<BlockingHint[]>([])
   const [submitting, setSubmitting] = useState(false)
-  const [publishing, setPublishing] = useState(false)
   // When the server last accepted a save, so "Saved" does not read the same
   // three seconds and ten minutes later.
   const [savedAt, setSavedAt] = useState<Date | null>(null)
-  // Set once, when a save is refused because the market has moved past draft.
-  const [lockOut, setLockOut] = useState<{ status: LockedStatus; lostEdits: boolean } | null>(null)
+  // Set once, when a save is refused because the market has moved past draft,
+  // or when the market this page loaded was already past it. `lostEdits` is
+  // null in the second case: nothing had been typed here to lose.
+  const [lockOut, setLockOut] = useState<{ status: LockedStatus; lostEdits: boolean | null } | null>(null)
   const isSavingRef = useRef(false)
 
+  // The same hook the markets list publishes through, so there is one answer
+  // to "what does a refused publish mean" rather than one per screen — which
+  // matters more now this form survives a reload and can sit open long enough
+  // for somebody else to publish the market from the list.
+  const {
+    publishing,
+    formError: publishError,
+    superseded: publishSuperseded,
+    refusalDetails: publishRefusalDetails,
+    handlePublish,
+  } = usePublishMarket(marketId, () => navigate('/markets'))
+
+  // Derived, not stored: this page is loading exactly while the address names
+  // a market it has not read yet. Both routes render the same element in the
+  // same position, so moving between them reuses this component rather than
+  // remounting it — a flag seeded at mount would stay false, leaving the form
+  // on screen through the fetch for the answer to land on top of.
+  const hasLoadFailed = !!existingMarketId && failedMarketId === existingMarketId
+  const isLoadingMarket = !!existingMarketId && marketId !== existingMarketId && !hasLoadFailed
+
   const getHint = (field: string) =>
-    [...refusalDetails, ...(lastSave?.blocking_submission ?? [])].find(b => b.field === field)?.message
+    [...refusalDetails, ...publishRefusalDetails, ...(lastSave?.blocking_submission ?? [])]
+      .find(b => b.field === field)?.message
 
   const doSave = useCallback(async (status: 'draft' | 'submitted') => {
     const f = formRef.current
@@ -222,6 +308,16 @@ export default function CreateMarketPage() {
       setSentIds({ outcomes: f.outcomes.map(o => o.id), sources: sentSources(f).map(s => s.id) })
       setSavedAt(new Date())
       setSaveStatus('saved')
+      // The create page has just created a market while the address bar still
+      // says "new", and a reload of that page mints another draft_key and
+      // creates a second market — the other half of #348. Put the market's
+      // own address in the bar instead, and let the browser be the resume
+      // point. `replace`, so there is no Back to the page that would do it
+      // again; and only once, because `existingMarketId` is a dependency of
+      // this callback and is set by the time the next save runs.
+      if (!existingMarketId) {
+        navigate(`/admin/markets/${res.market.id}/edit`, { replace: true })
+      }
       return res
     } catch (err) {
       const code = errorCode(err)
@@ -243,15 +339,59 @@ export default function CreateMarketPage() {
     } finally {
       isSavingRef.current = false
     }
-  }, [draftKey])
+  }, [draftKey, existingMarketId, navigate])
+
+  // The market this page was opened on, back into the form ([1.1] #1's reload,
+  // #348). Everything the next save needs comes from here: the draft_key it
+  // continues, the id Publish names, and the status that decides whether this
+  // form may write at all.
+  useEffect(() => {
+    if (!existingMarketId) return
+    // Already the market on screen, which is where the redirect above lands:
+    // re-reading it would only fetch back what that save just wrote, over
+    // whatever has been typed since.
+    if (marketId === existingMarketId) return
+    // One read per market. Without this the failure below changes a
+    // dependency and asks for the same market again.
+    if (failedMarketId === existingMarketId) return
+    let cancelled = false
+    getMyMarket(existingMarketId)
+      .then(market => {
+        if (cancelled) return
+        const loaded = formOf(market)
+        setForm(loaded)
+        // What the server already holds, so the next autosave tick does not
+        // re-send the market it has just read back.
+        lastSavedRef.current = JSON.stringify(saveFields(loaded))
+        setDraftKey(market.draft_key)
+        setMarketId(market.id)
+        setMarketStatus(market.status)
+        setHasLoadedMarket(true)
+        // The market as the server has it, so the starting prices and the max
+        // platform loss are on screen before anything is typed. Nothing is
+        // blocking submission as far as this response says — only a save
+        // answers that, and the first one will.
+        setLastSave({ market, blocking_submission: [] })
+        setSentIds({ outcomes: loaded.outcomes.map(o => o.id), sources: sentSources(loaded).map(s => s.id) })
+        const frozenAt = lockedStatusOf(market.status)
+        if (frozenAt) setLockOut({ status: frozenAt, lostEdits: null })
+      })
+      .catch(() => { if (!cancelled) setFailedMarketId(existingMarketId) })
+    return () => { cancelled = true }
+  }, [existingMarketId, marketId, failedMarketId])
 
   useEffect(() => {
-    const id = setInterval(() => {
+    // Nothing autosaves until the market has landed. The form on screen is
+    // not the market's yet and `draftKey` is not the market's either, so a
+    // save from here would create a second market rather than continue this
+    // one — which is half of what #348 was.
+    if (isLoadingMarket) return
+    const timer = setInterval(() => {
       if (marketStatusRef.current !== 'draft') return
       doSave('draft').catch(() => {})
     }, 3000)
-    return () => clearInterval(id)
-  }, [doSave])
+    return () => clearInterval(timer)
+  }, [doSave, isLoadingMarket])
 
   const handleRetrySave = () => {
     // Same guard as the interval: nothing may write a draft over a market
@@ -274,22 +414,6 @@ export default function CreateMarketPage() {
         : 'Submission failed. Check all fields are complete and try again.')
     } finally {
       setSubmitting(false)
-    }
-  }
-
-  const handlePublish = async () => {
-    if (!marketId || publishing) return
-    setPublishing(true)
-    setPublishError('')
-    setRefusalDetails([])
-    try {
-      await publishMarket(marketId)
-      navigate('/markets')
-    } catch (err) {
-      const details = errorDetails(err)
-      if (details.length) setRefusalDetails(details)
-      setPublishError(errorCode(err) === 'draft_incomplete' ? PUBLISH_FAILED_FOREVER : PUBLISH_FAILED_GENERIC)
-      setPublishing(false)
     }
   }
 
@@ -329,12 +453,32 @@ export default function CreateMarketPage() {
     || priceInputError(form.liquidityB) !== undefined
   const seedSubsidyNum = parseNum(form.seedSubsidy)
 
+  if (isLoadingMarket) {
+    return (
+      <AppLayout width="max-w-[800px]">
+        <p className="text-sm text-muted">Loading market…</p>
+      </AppLayout>
+    )
+  }
+
+  // No form at all, rather than a blank one: a blank form here would be typed
+  // into and autosaved as a second market. A market belonging to another
+  // administrator is a 404 and lands here too (market-service.md).
+  if (hasLoadFailed) {
+    return (
+      <AppLayout width="max-w-[800px]">
+        <BackLink to="/admin/markets" label="All Markets" className="mb-4 block" />
+        <p role="alert" className="text-sm text-danger">Failed to load this market. Please try again.</p>
+      </AppLayout>
+    )
+  }
+
   return (
     <AppLayout width="max-w-[800px]">
       <div className="mb-8 flex items-start justify-between">
         <div>
           <BackLink to="/admin/markets" label="All Markets" className="mb-1.5 block" />
-          <PageTitle>New Market</PageTitle>
+          <PageTitle>{hasLoadedMarket ? 'Edit Market' : 'New Market'}</PageTitle>
         </div>
         {/* Always rendered, so a screen reader is already watching the region
             when the first message appears in it. */}
@@ -356,9 +500,7 @@ export default function CreateMarketPage() {
         <div role="alert" className="mb-6 rounded-control border border-warning/40 bg-warning/10 px-4 py-3 text-[13px] text-warning-strong">
           <p>
             {LOCKED_BECAUSE[lockOut.status]} The form is now read-only.{' '}
-            {lockOut.lostEdits
-              ? 'The edits you had open when that happened were not saved.'
-              : 'Everything you typed had already been saved.'}
+            {describeLostEdits(lockOut.lostEdits)}
           </p>
           <Link to={lockedMarketLink.to} className="mt-1 inline-block font-semibold underline">
             {lockedMarketLink.label}
@@ -571,14 +713,28 @@ export default function CreateMarketPage() {
 
         {isSubmitted && (
           <>
-            {publishError && <p role="alert" className="text-[13px] text-danger">{publishError}</p>}
-            <div className="flex items-center gap-2 text-[13px] text-muted">
-              <Badge tone="warning">Submitted</Badge>
-              Market is ready to be published.
-            </div>
-            <Button variant="gold" size="lg" onClick={handlePublish} disabled={publishing}>
-              {publishing ? 'Publishing…' : 'Publish Market'}
-            </Button>
+            {publishError && (
+              <div role="alert" className="flex items-center gap-2 text-[13px] text-danger">
+                <span>{publishError}</span>
+                {/* The market has moved past submitted, so nothing on this
+                    page is true any more and no retry can succeed. Same
+                    control the markets list's row offers for these codes. */}
+                {publishSuperseded && (
+                  <Button variant="outline" size="xs" onClick={() => window.location.reload()}>Reload</Button>
+                )}
+              </div>
+            )}
+            {!publishSuperseded && (
+              <>
+                <div className="flex items-center gap-2 text-[13px] text-muted">
+                  <Badge tone="warning">Submitted</Badge>
+                  Market is ready to be published.
+                </div>
+                <Button variant="gold" size="lg" onClick={handlePublish} disabled={publishing}>
+                  {publishing ? 'Publishing…' : 'Publish Market'}
+                </Button>
+              </>
+            )}
           </>
         )}
       </div>

@@ -11,6 +11,7 @@ import AdminMarketRow from './AdminMarketRow'
 const CLOSE = (id: string) => `http://localhost:8001/markets/${id}/close`
 const SETTLE = (id: string) => `http://localhost:8003/ledger/markets/${id}/settlement`
 const SEND_BACK = (id: string) => `http://localhost:8001/markets/${id}/send-back-outcome`
+const PUBLISH = (id: string) => `http://localhost:8001/markets/${id}/publish`
 
 const OPEN_MARKET: MarketOverviewRow = {
   id: 'm1',
@@ -628,6 +629,142 @@ describe('AdminMarketRow', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent('Sending this result back failed. Please try again.')
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: /dispute result/i })).toBeInTheDocument()
+    })
+  })
+
+  // #348. A market submitted or left as a draft in one sitting had no control
+  // anywhere in the app once the page was left: Publish rendered only from the
+  // create form's own session state. Both controls are the creator's, because
+  // market_service scopes `publish` and `GET /markets/{id}` to the caller and
+  // answers 404 for anybody else's market.
+  describe('resuming a draft and publishing a submitted market', () => {
+    const MY_DRAFT: MarketOverviewRow = { ...OPEN_MARKET, id: 'm4', status: 'draft', close_time: null }
+    const MY_SUBMITTED: MarketOverviewRow = { ...OPEN_MARKET, id: 'm5', status: 'submitted' }
+
+    const resumeLink = () => screen.queryByRole('link', { name: 'Resume draft' })
+    const publishButton = () => screen.queryByRole('button', { name: /^publish$/i })
+
+    async function openPublishModal(market: MarketOverviewRow = MY_SUBMITTED) {
+      renderRow(market, true)
+      const actor = userEvent.setup()
+      await actor.click(screen.getByRole('button', { name: /^publish$/i }))
+      return actor
+    }
+
+    // The ticket's third criterion: neither control may appear for a market
+    // past submitted, where it would only earn a 409 (ADR 0008). Nothing here
+    // reads close_time, so one market serves every row.
+    it.each([
+      { status: 'draft' as const, resume: true, publish: false },
+      { status: 'submitted' as const, resume: false, publish: true },
+      { status: 'open' as const, resume: false, publish: false },
+      { status: 'closed' as const, resume: false, publish: false },
+      { status: 'pending_resolution' as const, resume: false, publish: false },
+      { status: 'approved' as const, resume: false, publish: false },
+      { status: 'settled' as const, resume: false, publish: false },
+    ])('on my own $status market, Resume draft is $resume and Publish is $publish', ({ status, resume, publish }) => {
+      renderRow({ ...MY_DRAFT, status }, true)
+      expect(resumeLink() !== null).toBe(resume)
+      expect(publishButton() !== null).toBe(publish)
+    })
+
+    it.each(['draft', 'submitted'] as const)(
+      "offers neither control on another administrator's %s market",
+      (status) => {
+        renderRow({ ...MY_DRAFT, status }, false)
+        expect(resumeLink()).not.toBeInTheDocument()
+        expect(publishButton()).not.toBeInTheDocument()
+      },
+    )
+
+    it('links Resume draft at the edit route, which loads the market back into the form', () => {
+      renderRow(MY_DRAFT, true)
+      expect(resumeLink()).toHaveAttribute('href', `/admin/markets/${MY_DRAFT.id}/edit`)
+    })
+
+    it('asks for confirmation before publishing, and does not call the server until confirmed', async () => {
+      let calls = 0
+      server.use(http.post(PUBLISH(MY_SUBMITTED.id), () => { calls++; return HttpResponse.json({ status: 'open' }) }))
+      const actor = await openPublishModal()
+
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      expect(calls).toBe(0)
+
+      await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
+      expect(calls).toBe(1)
+    })
+
+    it('publishes the market and repaints the row as open, without a refetch', async () => {
+      server.use(http.post(PUBLISH(MY_SUBMITTED.id), () => HttpResponse.json({ status: 'open' })))
+      const actor = await openPublishModal()
+
+      await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
+
+      expect(await screen.findByText('Open')).toBeInTheDocument()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(publishButton()).not.toBeInTheDocument()
+    })
+
+    it('cancels without publishing the market', async () => {
+      let calls = 0
+      server.use(http.post(PUBLISH(MY_SUBMITTED.id), () => { calls++; return HttpResponse.json({ status: 'open' }) }))
+      const actor = await openPublishModal()
+
+      await actor.click(screen.getByRole('button', { name: /^cancel$/i }))
+
+      expect(calls).toBe(0)
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(publishButton()).toBeInTheDocument()
+    })
+
+    it('offers a Reload control and drops Publish once somebody else has published it', async () => {
+      server.use(
+        http.post(PUBLISH(MY_SUBMITTED.id), () =>
+          HttpResponse.json({ error: { code: 'market_already_open', message: 'refused' } }, { status: 409 })),
+      )
+      const actor = await openPublishModal()
+
+      await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/already live for traders/i)
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+      expect(publishButton()).not.toBeInTheDocument()
+    })
+
+    // Publishing re-runs every submission rule against the clock now (ADR
+    // 0008), so a market submitted last week fails on a close time that has
+    // since passed. No screen can edit a submitted market (#354), so a retry
+    // is not the advice and no reload helps.
+    it('says the terms no longer pass when publishing is refused as incomplete', async () => {
+      server.use(
+        http.post(PUBLISH(MY_SUBMITTED.id), () =>
+          HttpResponse.json(
+            {
+              error: {
+                code: 'draft_incomplete',
+                message: 'The market is not ready.',
+                details: [{ field: 'close_time', message: 'The close time has already passed.' }],
+              },
+            },
+            { status: 422 },
+          )),
+      )
+      const actor = await openPublishModal()
+
+      await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/no longer pass the checks for publishing/i)
+      expect(screen.queryByRole('button', { name: /reload/i })).not.toBeInTheDocument()
+    })
+
+    it('shows the generic failure and keeps Publish available for a retry when the server errors', async () => {
+      server.use(http.post(PUBLISH(MY_SUBMITTED.id), () => HttpResponse.error()))
+      const actor = await openPublishModal()
+
+      await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Publishing this market failed. Please try again.')
+      expect(publishButton()).toBeInTheDocument()
     })
   })
 })
