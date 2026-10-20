@@ -878,6 +878,9 @@ describe('CreateMarketPage', () => {
       expect(screen.queryByText(STALE_CLOSE.message)).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: /resubmit for review/i })).toBeEnabled()
       expect(screen.getByText(/not ready to submit/i)).toBeInTheDocument()
+      // A retry would be a draft save, which a submitted market refuses, so the
+      // header offers none: Resubmit is the way to try again.
+      expect(screen.queryByRole('button', { name: /^retry$/i })).not.toBeInTheDocument()
     })
 
     // The un-submit ADR 0004 refuses: a save asking for `draft` on a submitted
