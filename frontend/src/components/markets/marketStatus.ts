@@ -36,20 +36,11 @@ export function statusDisplay(status: string): { label: string; tone: Tone } {
 // before its close_time, and close_time stays in the future (market-service.md).
 // Takes MarketStatus | AdminMarketStatus: the admin's own markets can also be
 // draft or submitted, and neither is "open" either.
-//
-// A null close time is a market with no clock, so only the status can have
-// stopped it. Pass the null itself: new Date(null) is the 1970 epoch, which
-// reads as long past (#382).
-//
-// A close time that does not parse ('' among them) is a clock that cannot be
-// read, so it reads as stopped. Left to the comparison it would read as still
-// trading, because Invalid Date compares false against everything, and the
-// admin row would offer Close on a market the clock may already have stopped
-// (ADR 0014). The server decides either way; this keeps the screen from
-// offering what it cannot vouch for.
+// A null close time is no clock and reads as stopped, as the backend's
+// trading_is_open does; so does a date that does not parse (#382).
 export function tradingStopped(status: MarketStatus | AdminMarketStatus, closeTime: string | null, now = new Date()): boolean {
   if (status !== 'open') return true
-  if (closeTime === null) return false
+  if (closeTime === null) return true
   const closes = new Date(closeTime)
   if (Number.isNaN(closes.getTime())) return true
   return closes <= now
