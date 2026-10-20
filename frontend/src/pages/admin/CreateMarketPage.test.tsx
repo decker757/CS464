@@ -883,6 +883,30 @@ describe('CreateMarketPage', () => {
       expect(screen.queryByRole('button', { name: /^retry$/i })).not.toBeInTheDocument()
     })
 
+    // A resubmission can fail without the server naming a field: a 5xx or the
+    // network. The form stays open so the admin can try again, but nothing is
+    // marked above, so the banner must stop pointing at marks that are not
+    // there — and must still say the correction is unsaved.
+    it('stops pointing at marked fields when the resubmission failed without naming any', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      refusePublishOnTerms()
+      server.use(http.post(`${MARKET_BASE}/markets`, () => HttpResponse.error()))
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await screen.findByText(STALE_CLOSE.message)
+      fireEvent.change(screen.getByLabelText('Closes at *'), { target: { value: '2027-01-16T10:00' } })
+      await actor.click(screen.getByRole('button', { name: /resubmit for review/i }))
+
+      expect(await screen.findByText(/submission failed/i)).toBeInTheDocument()
+      expect(screen.queryByText(/correct the fields marked above/i)).not.toBeInTheDocument()
+      expect(screen.getByText(/nothing you change here is saved/i)).toBeInTheDocument()
+      // Still correcting, so the fields stay open and Resubmit is still there.
+      expect(screen.getByLabelText('Closes at *')).toBeEnabled()
+      expect(screen.getByRole('button', { name: /resubmit for review/i })).toBeEnabled()
+    })
+
     // The un-submit ADR 0004 refuses: a save asking for `draft` on a submitted
     // market. Editable fields mean the autosave now has something to send, so
     // only its own guard stops it.
