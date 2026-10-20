@@ -263,17 +263,22 @@ export default function CreateMarketPage() {
   const [lockOut, setLockOut] = useState<{ status: LockedStatus; lostEdits: boolean | null } | null>(null)
   const isSavingRef = useRef(false)
   // Set when a publish is refused because the terms no longer pass (ADR 0008),
-  // which reopens the fields; cleared once a resubmission is answered with
-  // anything but another refusal. market_service takes a resubmission of a
-  // submitted market and re-runs every rule; only a save asking for `draft` is
-  // refused (ADR 0004), and the autosave interval never sends one, because it
-  // runs only while the status is draft (#381).
+  // which reopens the fields. Cleared once a resubmission is accepted, or is
+  // refused because the market has moved on (a status refusal such as
+  // market_already_open, which locks the form instead); kept on a refusal that
+  // throws (draft_incomplete, a 5xx, the network), so the admin can correct
+  // and resubmit again. market_service takes a resubmission of a submitted
+  // market and re-runs every rule; only a save asking for `draft` is refused
+  // (ADR 0004), and the autosave interval never sends one, because it runs
+  // only while the status is draft (#381).
   const [isCorrecting, setIsCorrecting] = useState(false)
 
-  // The same hook the markets list publishes through, so there is one answer
-  // to "what does a refused publish mean" rather than one per screen — which
-  // matters more now this form survives a reload and can sit open long enough
-  // for somebody else to publish the market from the list.
+  // The same hook the markets list publishes through, so both screens send
+  // the publish and read its refusals in one place — which matters more now
+  // this form survives a reload and can sit open long enough for somebody else
+  // to publish the market from the list. The one refusal they answer
+  // differently is draft_incomplete: the list shows the hook's message, and
+  // this form passes the callback below and reopens its fields instead.
   const {
     publishing,
     formError: publishError,

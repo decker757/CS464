@@ -35,8 +35,10 @@ test('an admin corrects a close time that passed while the market sat submitted,
   // Submitted, so read-only until a publish is refused (ADR 0008).
   await expect(page.getByLabel('Closes at *')).toBeDisabled()
 
-  // The service reads its own clock, so wait on the time itself, with a
-  // second's margin, rather than on a fixed pause.
+  // Publish checks the close time against Postgres's `clock_timestamp()`, not
+  // this machine's clock, so wait on the time itself, with a second's margin,
+  // rather than on a fixed pause. The margin is there because Docker Desktop's
+  // VM clock can drift from the host's after a sleep.
   await expect.poll(() => Date.now(), { timeout: 15_000 }).toBeGreaterThan(closedBy + 1000)
 
   await page.getByRole('button', { name: /publish market/i }).click()
