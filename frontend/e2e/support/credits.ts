@@ -5,7 +5,8 @@
 //
 // An amount is a decimal string of at most four places, the way the ledger
 // sends one, and is held here as a whole number of ten-thousandths, so the
-// arithmetic is exact.
+// arithmetic is exact. Every function here takes only amounts of zero or
+// more, and throws on anything else, a negative P&L included.
 
 const UNITS_PER_CREDIT = 10_000n
 const PLACES = 4
@@ -62,7 +63,9 @@ export function formatPreciseCredits(amount: string): string {
   return `${groupThousands(wholePartOf(units))}.${fractionOf(units)}`
 }
 
-/** As the history shows money paid in, the grant among it. `+1,234.5678`. */
+/** As the history shows money paid in, the grant among it: `+1,234.5678`, and zero unsigned. */
 export function formatSignedCredits(amount: string): string {
-  return `+${formatPreciseCredits(amount)}`
+  const precise = formatPreciseCredits(amount)
+  if (unitsOf(amount) === 0n) return precise
+  return `+${precise}`
 }
