@@ -10286,7 +10286,8 @@ is shown to every trader in the market.
 transactions, found by their derived keys, and recomputes `total_owed` by
 re-running only the lot replay over the market's trades: without the guard
 and without the stake check, so a repeat always answers the first request's
-`200` body, and can fail only at market_service's step.
+`200` body, and can fail after the lookup only at market_service's `/void`
+step.
 
 **Why.** #221 revision 2 asks that whether refunds were cut be in the
 response, and that a repeat answer the same. The result row stores no totals
