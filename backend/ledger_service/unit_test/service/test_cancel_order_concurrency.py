@@ -132,7 +132,7 @@ async def _fill_then_cancel(
     factory = session_factory()
     start = asyncio.Barrier(2)
     trading_session, cancelling = factory(), factory()
-    pause = Pause(monkeypatch, trading, "_list_open_orders", session=trading_session, call=1)
+    pause = Pause(monkeypatch, trading, "list_open_orders", session=trading_session, call=1)
 
     async def run_trade():
         await trading_session.connection()
