@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
 import { WithProviders } from '../test/renderWithProviders'
@@ -39,7 +39,15 @@ function renderAt(path: string) {
         <ErrorBoundary>
           <Routes>
             <Route path="/markets/:id" element={<ThrowingPage />} />
-            <Route path="/portfolio" element={<p>portfolio page</p>} />
+            <Route
+              path="/portfolio"
+              element={
+                <>
+                  <p>portfolio page</p>
+                  <Link to="/markets/abc">A market that breaks</Link>
+                </>
+              }
+            />
             <Route path="/forms/new" element={<AddressChangingForm />} />
             <Route path="/forms/:id/edit" element={<AddressChangingForm />} />
           </Routes>
@@ -105,6 +113,19 @@ describe('ErrorBoundary', () => {
     // navigation changes the address under it and nothing else.
     expect(await screen.findByText('portfolio page')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Something went wrong' })).not.toBeInTheDocument()
+  })
+
+  it('catches a page that throws on the very navigation that reached it', async () => {
+    // The fault is raised in the same render as the location change. A reset
+    // that ran after the fault was recorded, rather than before, would clear
+    // it at once and render the throwing page again, outside any boundary.
+    const user = userEvent.setup()
+    renderAt('/portfolio')
+
+    await user.click(screen.getByRole('link', { name: 'A market that breaks' }))
+
+    expect(await screen.findByRole('heading', { name: 'Something went wrong' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Portfolio' })).toHaveAttribute('href', '/portfolio')
   })
 
   it('leaves a working page mounted when it changes its own address', async () => {
