@@ -1701,8 +1701,9 @@ the oldest ones, at what they cost. A filled limit order counts as the trade
 it was. A trade none of whose shares were sold is refunded exactly what it was
 charged. A trade some of whose shares were sold is refunded what its remaining
 shares cost at the price they were bought at, the cheapest of that trade's
-shares, rounded down to the tick; if that rounds to nothing, the refund is
-`0.0000` and writes no entry.
+shares, rounded down to the tick; if that rounds to nothing, that trade adds
+nothing to the position's refund. A position whose refund comes to `0.0000`
+writes no entry.
 
 If the market's pool cannot cover the refunds, the platform tops it up by at
 most one more seed (the market's `seed_subsidy`). Beyond that, **every refund
