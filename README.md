@@ -11,11 +11,11 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Area | Issues | State |
 | --- | --- | --- |
 | Authentication | [A-1]–[A-3] #29–#31, UI #46–#48 | shipped, both sides |
-| Market creation | [1.1]–[1.3] #1–#3, [1.4] #4, UI #45 | shipped; a submitted market cannot yet be reopened from the list, #354 |
+| Market creation | [1.1]–[1.3] #1–#3, [1.4] #4, UI #45, #354 | shipped |
 | Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped, including the trade feed's username lookup |
 | Resolution | [3.1]–[3.4] #9–#12, UI #52, #87, #216, #59 | shipped through settlement, with the settled-market payout screen and the dispute-window countdown |
 | Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60 | shipped, including the suspend/unsuspend control |
-| Credits | [B-1] #32, [B-2] #33, [F-1] #41 | shipped; every balance is derived from append-only entries |
+| Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss |
 | Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53 | shipped |
 | Limit orders | [T-6]–[T-8] #26–#28 | the backend is shipped — place, cancel, the cascade that fills resting orders inside a trade, order frames on the socket, and an administrator's cancel; the UI, #61, is open |
 | Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209 | shipped |
