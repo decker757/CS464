@@ -104,6 +104,16 @@ either: market_service cannot see trades (ADR 0003, and ADR 0023's "A 'has
 traded' check"), and that call moves no money. It is the direct-call gap,
 below.
 
+**If every administrator has a stake, nobody can void the market.** On a team
+this size, with administrators trading and ranked like anyone else, a busy
+market can have all of them in its replay. It is not a dead end. Any
+administrator, one with a stake included, can promote a user who never traded
+that market through `PATCH /admin/users/{user_id}/role` (ADR 0007). That user
+logs in again, because the role rides in the access token, and then voids.
+The promotion is logged as `user.role_changed`, so the log shows who was made
+an administrator before the void. It is a known edge, accepted (below), and a
+reversal trigger.
+
 ### When a market can be voided: the status column decides, and the window is send-back's
 
 | Stored status | Voidable? |
@@ -701,7 +711,13 @@ flip.
   market stays APPROVED with its money refunded. The ledger's settlement
   cannot pay it: the row refuses. A direct `/settle` could still mark it
   SETTLED, and the two services would then disagree for good. The same
-  judgement as ADR 0019's five-minute gap; fixing it is by hand.
+  judgement as ADR 0019's five-minute gap; fixing it is by hand. It is the
+  one state in this design where the two services tell different stories
+  about a market permanently, so it is a reversal trigger too.
+- If every administrator has traded a market, none of them can void it until
+  one promotes a user who never traded it ("Who may void", above). The
+  market waits in CLOSED, PENDING_RESOLUTION or APPROVED until then, which is
+  the wait the void exists to end, so it is a reversal trigger too.
 - A void holds PLATFORM's account lock for its whole batch when it posts a
   residue, so a first-time grant waits behind it. Carried over from
   settlement.
@@ -922,3 +938,15 @@ Each must fail with the line it guards removed.
 > **It is revisited if a stake has to mean more than a trade**, for example
 > an administrator's resting order that never filled. Today that order has
 > no transaction, and the void only releases it.
+>
+> **It is revisited if a market is ever stuck because every administrator has
+> a stake**, so that someone had to be promoted to void it, or could not be.
+> The promotion is the escape today. A team that needs it regularly needs a
+> different rule, such as a second administrator countersigning a void by one
+> with a stake.
+>
+> **It is revisited the first time a market's refunds commit and it is then
+> marked SETTLED**, through a direct `/settle` after `/void` refused it as
+> past the window. The ledger then holds a void and market_service a
+> settlement, for good. One such market is the evidence that market_service's
+> `/settle` has to ask the ledger for its record before it writes.
