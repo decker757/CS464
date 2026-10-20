@@ -101,7 +101,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
   // Same derivation as everywhere else on this page: a market whose countdown
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
-  const canClose = !tradingStopped(status, market.close_time ?? '')
+  const canClose = !tradingStopped(status, market.close_time)
   // A draft or a submitted market has no book and no trades, so neither the
   // exposure panel nor the price history has anything to show yet.
   const isPublished = market.status !== 'draft' && market.status !== 'submitted'
