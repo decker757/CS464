@@ -25,7 +25,7 @@ Fix it rather than leaving both.
 Append to the end. Never renumber, never delete — supersede.
 
 ```markdown
-### D-0NN — <short title>
+### D-NEW — <short title>
 
 **Date:** YYYY-MM-DD · **Ticket:** #NN · **Status:** active
 
@@ -39,7 +39,22 @@ Append to the end. Never renumber, never delete — supersede.
 Omit if there's nothing.
 ```
 
-Status is `active`, `superseded by D-0NN`, or `graduated to ADR NNNN`.
+A new entry is headed `D-NEW` and takes no number. It is cited by its title,
+as `D-NEW "<title>"`; inside this file the quoted title alone is enough. So a
+title must be unique: grep for it before adding one, and
+`grep -n "^### D-NEW — <title>" DECISIONS.md` finds the entry for any
+citation.
+
+D-001 to D-052 keep their numbers and are still cited by them (`D-041`).
+Nobody numbers a D-NEW entry, at merge or later.
+
+Why titles: two open branches that each append an entry would both take the
+next number, and the later merge would renumber its entry and every citation
+of it, the same way two branches that both add Alembic `0002` collide. Titles
+do not collide.
+
+Status is `active`, `superseded by D-0NN` or `superseded by "<title>"`, or
+`graduated to ADR NNNN`.
 
 ---
 
