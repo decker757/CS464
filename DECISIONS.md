@@ -41,9 +41,16 @@ Omit if there's nothing.
 
 A new entry is headed `D-NEW` and takes no number. It is cited by its title,
 as `D-NEW "<title>"`; inside this file the quoted title alone is enough. So a
-title must be unique: grep for it before adding one, and
-`grep -n "^### D-NEW — <title>" DECISIONS.md` finds the entry for any
-citation.
+title must be unique: search for it before adding one. The same search finds
+the entry for any citation:
+
+```bash
+grep -nF '### D-NEW — <title>' DECISIONS.md
+```
+
+Keep it literal (`-F`) and in single quotes. Titles hold backticks, which a
+shell runs as commands inside double quotes, and `[3.4]` or `*i*`, which grep
+reads as a pattern. Write an apostrophe in the title as `'\''`.
 
 D-001 to D-052 keep their numbers and are still cited by them (`D-041`).
 Nobody numbers a D-NEW entry, at merge or later.
