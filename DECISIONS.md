@@ -1998,6 +1998,11 @@ this route performs. #112's criterion is being reworded to match, the way
 they land unnumbered and get their numbers when the PR merges — which is also
 the rule `docs/adr/` already follows when citing this file.
 
+*Amended 2026-10-20 in #395: no entry gets a number at merge any more.* An
+entry after D-052 is headed `D-NEW`, is never numbered, and is cited by its
+title, as "Format for new entries" at the top of this file says. These five
+did get their numbers, and D-001 to D-052 keep theirs.
+
 ---
 
 ### D-051 — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
