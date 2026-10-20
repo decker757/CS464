@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom'
-import AppLayout from '../components/layout/AppLayout'
-import PageTitle from '../components/ui/PageTitle'
+import NoticePanel from '../components/layout/NoticePanel'
 import { buttonClass } from '../components/ui/buttonClass'
 import { useHomePath } from '../hooks/useHomePath'
 
@@ -15,14 +14,14 @@ export default function NotFoundPage() {
   const home = useHomePath()
 
   return (
-    <AppLayout width="max-w-[640px]">
-      <PageTitle className="mb-3">Page not found</PageTitle>
-      <p className="mb-8 text-muted">
-        There is no page at this address. The link may be mistyped, or the page may have moved.
-      </p>
-      <Link to={home} className={buttonClass('primary', 'md')}>
-        Go to the home page
-      </Link>
-    </AppLayout>
+    <NoticePanel
+      title="Page not found"
+      message="There is no page at this address. The link may be mistyped, or the page may have moved."
+      action={
+        <Link to={home} className={buttonClass('primary', 'md')}>
+          Go to the home page
+        </Link>
+      }
+    />
   )
 }

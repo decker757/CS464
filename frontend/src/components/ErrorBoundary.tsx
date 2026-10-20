@@ -1,7 +1,6 @@
 import { Component } from 'react'
 import { useLocation } from 'react-router-dom'
-import AppLayout from './layout/AppLayout'
-import PageTitle from './ui/PageTitle'
+import NoticePanel from './layout/NoticePanel'
 import { buttonClass } from './ui/buttonClass'
 
 interface ErrorBoundaryProps {
@@ -52,18 +51,18 @@ class FaultBoundary extends Component<FaultBoundaryProps, FaultBoundaryState> {
     // draws its own frame. The panel draws it again, which is why this has
     // to sit inside AuthProvider and BalanceProvider (#367's review).
     return (
-      <AppLayout width="max-w-[640px]">
-        <PageTitle className="mb-3">Something went wrong</PageTitle>
-        <p role="alert" className="mb-8 text-muted">
-          This page hit an error and could not be shown. Reload it to try again, or use the
-          navigation above to go somewhere else.
-        </p>
-        {/* A plain link, not the router's: loading the same address from the
-            server is the reload, and starts the app afresh. */}
-        <a href={this.props.address} className={buttonClass('primary', 'md')}>
-          Reload the page
-        </a>
-      </AppLayout>
+      <NoticePanel
+        title="Something went wrong"
+        message="This page hit an error and could not be shown. Reload it to try again, or use the navigation above to go somewhere else."
+        isAlert
+        action={
+          // A plain link, not the router's: loading the same address from the
+          // server is the reload, and starts the app afresh.
+          <a href={this.props.address} className={buttonClass('primary', 'md')}>
+            Reload the page
+          </a>
+        }
+      />
     )
   }
 }
