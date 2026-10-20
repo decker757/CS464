@@ -503,7 +503,9 @@ export default function CreateMarketPage() {
           {saveStatus === 'saved' && savedAt && (
             <span className="text-success">Saved at {savedAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}</span>
           )}
-          {saveStatus === 'error' && (
+          {/* Not while correcting: Retry sends a draft save, which a submitted
+              market refuses, and the refused resubmission says so below. */}
+          {saveStatus === 'error' && !isCorrecting && (
             <span className="flex items-center gap-2 text-danger">
               Save failed
               <Button variant="outline" size="xs" onClick={handleRetrySave}>Retry</Button>
