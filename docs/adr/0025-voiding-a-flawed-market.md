@@ -192,7 +192,8 @@ market's book holds `b`. Under the book lock, the void:
      proceeds floor to nothing raises `ProceedsBelowTick`
      (`core/pricing.py:141`). The void's core module reads that refusal as a
      refund of `0.0000`, as `liquidation_values_of` reads it as a value of
-     `0.0000` (`core/pricing.py:190-222`, the catch at `:217-219`).
+     `0.0000` (`core/pricing.py:190-222`, the catch at `:217-219`). That lot
+     adds nothing to its position's refund.
 6. **A holder's lots in one outcome add up to that position's refund.**
 
 The pricing engine is called only for partly-sold lots, at most once per buy.
@@ -257,7 +258,10 @@ Oldest first, the sale takes the first lot and the bottom 980 of the second,
 and the 10 left are the 990 lot's top shares, from `q = (990,0)`, refunded
 `C(1000,0) − C(990,0)`, which is **10.0000** at the engine's precision:
 **+0.6930**. Revision 2's +0.6929 priced those 10 as the lot's bottom shares,
-`C(20,0) − C(10,0)` rounded down to 9.9999; it is a gain either way.
+`C(20,0) − C(10,0)` rounded down to 9.9999; it is a gain either way. The
+0.0001 between the two figures is precision, not which shares: exactly,
+`C(1000,0) − C(990,0)` is 10 less about `e^−990`, which floors to 9.9999,
+and only reads 10.0000 because precision 50 cannot hold `e^−990`.
 
 **Why one trader alone cannot profit.** With nobody else trading in between, a
 sale undoes the newest lot at the same `q` it was bought at, so it receives
@@ -301,9 +305,11 @@ trades. With `S` the book's `seed_subsidy`:
   context at the pricing engine's precision of 50 (`core/lmsr.py:23`, the
   context `_engine_context` builds at `:31-38`), then floored to the tick. So
   the cut refunds never add up to more than `P + S`. The rounding left over
-  goes back to PLATFORM. The order and the precision are fixed because
-  `Decimal`'s default precision of 28 makes `3 × (1/3)` and `3 × 1 / 3`
-  differ, and two builders must not cut the same refund to different ticks.
+  goes back to PLATFORM. The order of operations is what keeps two builders
+  from cutting the same refund to different ticks: `3 × (1/3)` and
+  `3 × 1 / 3` differ at any finite precision, 50 included. Fixing the
+  precision as well makes the result deterministic, whatever context the
+  caller happens to run in.
 
 "A refund above zero" is judged **after** the cut. A refund the cut floors to
 `0.0000` writes no transaction, is not counted in `positions_refunded`, and
@@ -364,7 +370,9 @@ An administrator calls `POST /ledger/markets/{market_id}/void` with
      transaction records: no guard and no stake check, because neither can
      change what the first request did. Roll back, and go to step 8 with the
      **recorded** reason. A repeat therefore answers the first request's
-     `200` body, and can fail only at step 8.
+     `200` body. Like any request it can be refused at step 2, the read,
+     which runs before the lookup; after the lookup, it can fail only at
+     step 8.
    - `settled`: `409 market_already_settled`.
 
    This lookup may only short-circuit, never decide a write: a hit names a
@@ -807,8 +815,9 @@ Each must fail with the line it guards removed.
   (+0.2287) and under oldest first (+0.4573). The round trip, hold 10, buy
   990, sell 990, void: the refund is what the 10 cost. Red under oldest first
   (+0.6930).
-- **A partly-sold lot whose refund floors to nothing** is refunded `0.0000`,
-  writes no transaction, and fails nothing. Red if the core module lets
+- **A partly-sold lot whose refund floors to nothing** adds nothing to its
+  position's refund and fails nothing; on a position with no other lot, the
+  position writes no transaction. Red if the core module lets
   `ProceedsBelowTick` escape.
 - **The cut's arithmetic.** Three holders owed equal thirds of a short pool:
   each cut refund is the same tick whichever builder computes it. Red if the
