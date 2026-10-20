@@ -316,6 +316,24 @@ settlement, and [3.3] #11 decides what, if anything, a dispute can do to it.
 > agreed, and leads only to another two-person decision: the creator proposes
 > again and a different administrator approves.
 
+> **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
+> and not built yet. One administrator can end an approved market without a
+> winner.** [BE] #221's void accepts an APPROVED market while its dispute
+> window is open, from any administrator who has never traded the market. So
+> one administrator can now overturn a result two administrators agreed, which
+> is the first single-administrator action that does. APPROVED gains a third
+> exit, VOIDED, beside SETTLED and send-back's CLOSED, and every other write is
+> still `market_already_approved`.
+>
+> The two-person rule here protects who gets paid as a winner. A void pays no
+> winner: every holder is refunded at most what their shares cost, and
+> PLATFORM's top-up is capped at one seed. What it can do is deny the winners
+> their payout, inside the same window in which a send-back already can. An
+> administrator who has traded the market is refused
+> (`403 admin_has_a_stake`), and both services log the void
+> (`market.voided`, `market.marked_voided`). That is ADR 0007's trust model,
+> applied to a final action, and ADR 0025 asks the team to accept it.
+
 **The creator cannot approve their own market in a one-administrator
 deployment, and that is the rule working.** ADR 0007 already said to run the
 demonstration with two administrators, and the role-change endpoint makes that
