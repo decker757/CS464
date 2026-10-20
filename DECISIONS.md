@@ -39,10 +39,12 @@ Append to the end. Never renumber, never delete — supersede.
 Omit if there's nothing.
 ```
 
-A new entry is headed `D-NEW` and takes no number. It is cited by its title,
-as `D-NEW "<title>"`; inside this file the quoted title alone is enough. So a
-title must be unique: search for it before adding one. The same search finds
-the entry for any citation:
+A new entry is headed `D-NEW` and takes no number. It is cited by its title.
+Both forms in use are fine: `D-NEW "<title>"`, and `DECISIONS.md, "<title>"`
+where the sentence already needs the filename; inside this file the quoted
+title alone is enough. What matters is the exact title, because that is what
+the search finds. So a title must be unique: search for it before adding
+one. The same search finds the entry for any citation:
 
 ```bash
 grep -nF '### D-NEW — <title>' DECISIONS.md
@@ -52,6 +54,13 @@ Keep it literal (`-F`) and in single quotes. Titles hold backticks, which a
 shell runs as commands inside double quotes, and `[3.4]` or `*i*`, which grep
 reads as a pattern. Write an apostrophe in the title as `'\''`.
 
+Before adding an entry, check that no title is used twice. This prints nothing
+while every title is unique:
+
+```bash
+grep '^### D-NEW — ' DECISIONS.md | sed 's/^### D-NEW — //' | sort | uniq -d
+```
+
 D-001 to D-052 keep their numbers and are still cited by them (`D-041`).
 Nobody numbers a D-NEW entry, at merge or later.
 
@@ -60,8 +69,9 @@ next number, and the later merge would renumber its entry and every citation
 of it, the same way two branches that both add Alembic `0002` collide. Titles
 do not collide.
 
-Status is `active`, `superseded by D-0NN` or `superseded by "<title>"`, or
-`graduated to ADR NNNN`.
+Status is `active`, `superseded by "<title>"`, `closed by "<title>"` or
+`graduated to ADR NNNN`. Nothing is superseded by a number: the entry doing
+the superseding is always a D-NEW one.
 
 ---
 
