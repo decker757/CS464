@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AxiosError, type AxiosResponse } from 'axios'
-import { describeInsufficientFunds, describeInsufficientShares, describeTradeError } from './errors'
+import { GENERIC_ERROR, describeInsufficientFunds, describeInsufficientShares, describeOrderError, describeTradeError } from './errors'
 
 /** A 409 from the ledger's trade route, the shape describeTradeError reads. */
 function ledgerRefusal(code: string, details: Record<string, string>): AxiosError {
@@ -76,5 +76,64 @@ describe('describeTradeError on the two refusals that name figures', () => {
     expect(describeInsufficientShares('6.0000', '10.0000')).toBe(
       'You hold 6.0000 shares, but this sell asks for 10.0000.',
     )
+  })
+})
+
+describe('describeOrderError', () => {
+  it('names the bound a crossing buy has to stay below, as a percentage', () => {
+    // ADR 0024 keeps the book one-sided, and the trader's own resting orders
+    // count towards it — so the message has to name the price, not just say
+    // "in the way".
+    const message = describeOrderError(
+      ledgerRefusal('order_crosses_book', { side: 'buy', max_limit_price: '0.7000' }),
+    )
+    expect(message).toContain('below 70.0%')
+  })
+
+  it('names the bound a crossing sell has to stay above', () => {
+    const message = describeOrderError(
+      ledgerRefusal('order_crosses_book', { side: 'sell', min_limit_price: '0.3000' }),
+    )
+    expect(message).toContain('above 30.0%')
+  })
+
+  it('reads the shortfall, not the trade route\'s required, on a buy that does not fit', () => {
+    // The placement's insufficient_funds carries `shortfall` and no
+    // `required`: the whole budget must fit in `available` even when the
+    // order would fill for less (ledger-service.md).
+    const message = describeOrderError(
+      ledgerRefusal('insufficient_funds', {
+        balance: '994.8750', reserved: '15.0000', available: '979.8750', shortfall: '3970.1250',
+      }),
+    )
+    expect(message).toContain('979.8750')
+    expect(message).toContain('3,970.1250')
+  })
+
+  it('tells a trader their limit order is not available on a multi-outcome market', () => {
+    expect(describeOrderError(ledgerRefusal('market_not_binary', {}))).toMatch(/two outcomes/i)
+  })
+
+  it.each([
+    ['order_already_filled', /filled before the cancel/i],
+    ['order_already_cancelled', /already cancelled/i],
+    ['order_released', /already released/i],
+    ['order_not_found', /no longer there/i],
+  ])('explains the %s refusal a cancel can get', (code, expected) => {
+    expect(describeOrderError(ledgerRefusal(code, {}))).toMatch(expected)
+  })
+
+  it('falls back to the trade wording for a code both routes share', () => {
+    // unknown_outcome means the same thing on a placement as on a trade, so
+    // there is deliberately no second copy of its sentence.
+    expect(describeOrderError(ledgerRefusal('unknown_outcome', {}))).toMatch(/no longer part of this market/i)
+  })
+
+  it('falls back to the generic message for a code it has never seen', () => {
+    expect(describeOrderError(ledgerRefusal('something_new_entirely', {}))).toBe(GENERIC_ERROR)
+  })
+
+  it('falls back to the generic message for a failure that is not an API error', () => {
+    expect(describeOrderError(new Error('network down'))).toBe(GENERIC_ERROR)
   })
 })
