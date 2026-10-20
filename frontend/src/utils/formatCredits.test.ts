@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, signedAmountColor, subtractCredits, unsignedCredits } from './formatCredits'
+import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isNegativeCredits, isPlainCredits, isZeroCredits, signedAmountColor, subtractCredits, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -187,6 +187,17 @@ describe('isZeroCredits', () => {
     expect(isZeroCredits('0.0001')).toBe(false)
     expect(isZeroCredits('-0.0001')).toBe(false)
     expect(isZeroCredits('5.0000')).toBe(false)
+  })
+})
+
+describe('isNegativeCredits', () => {
+  it('is true below zero and false for a negative zero, so "-0.0000" is never a shortfall', () => {
+    // The exposure summary and the residue column both ask this (#377); a
+    // copy of it that read the minus sign alone would have the column say
+    // "tops up" beside a summary that says "keeps".
+    expect(isNegativeCredits('-0.0001')).toBe(true)
+    expect(isNegativeCredits('-0.0000')).toBe(false)
+    expect(isNegativeCredits('0.0001')).toBe(false)
   })
 })
 

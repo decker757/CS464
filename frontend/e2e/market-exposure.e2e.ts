@@ -30,8 +30,14 @@ test('an admin sees shares outstanding for a traded outcome, with no flag', asyn
   const yesCells = page.getByRole('row', { name: /yes/i }).getByRole('cell')
   const sharesCell = yesCells.nth(1)
   const payoutCell = yesCells.nth(2)
+  const residueCell = yesCells.nth(3)
   await expect(sharesCell).toHaveText('5.0000')
   await expect(payoutCell).toHaveText('5.0000')
+  // The residue in the ledger's own words (#377). A unit test feeds the cell a
+  // `residue_if_wins` this frontend wrote, so a field the ledger renamed would
+  // leave a bare "—" here and nothing else would go red. "Pool keeps", because
+  // the 250 seed subsidy covers a 5.0000 payout many times over.
+  await expect(residueCell).toHaveText(/^Pool keeps \d+\.\d{4}$/)
   expect(await page.getByRole('alert').count()).toBe(0)
 })
 

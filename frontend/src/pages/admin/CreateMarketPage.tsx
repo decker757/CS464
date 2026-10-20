@@ -57,9 +57,10 @@ const STATUS_AFTER_DRAFT: Record<string, LockedStatus> = {
 }
 
 // What the market turned out to be when a save was refused, for the banner
-// that explains why the form just went read-only. None of them is recoverable
-// on this screen: publication is one way, and this form locks itself the
-// moment a market leaves draft (ADR 0008).
+// that explains why the form just went read-only. Publication is one way (ADR
+// 0008), and this form locks itself the moment a market leaves draft. The one
+// way back in is a publish refused on the terms, which reopens a submitted
+// market for a resubmission (#381).
 const LOCKED_BECAUSE: Record<LockedStatus, string> = {
   submitted: 'This market has already been submitted for review.',
   open: 'This market has already been published and is live for traders.',
@@ -247,10 +248,10 @@ export default function CreateMarketPage() {
   // added or removed and before the next save catches up.
   const [sentIds, setSentIds] = useState<{ outcomes: string[]; sources: string[] }>({ outcomes: [], sources: [] })
   const [submitError, setSubmitError] = useState('')
-  // The per-field reasons from the last refused submission. A refused publish
-  // carries the same `details` shape (ADR 0008) and `usePublishMarket` holds
-  // that list, so `getHint` reads both and the hints land under the same
-  // fields either way.
+  // The per-field reasons from the last refused submission, or from a publish
+  // refused on the terms: the same `details` shape (ADR 0008), so the hints
+  // land under the same fields either way, and the next submission's answer
+  // replaces them.
   const [refusalDetails, setRefusalDetails] = useState<BlockingHint[]>([])
   const [submitting, setSubmitting] = useState(false)
   // When the server last accepted a save, so "Saved" does not read the same
@@ -261,18 +262,36 @@ export default function CreateMarketPage() {
   // null in the second case: nothing had been typed here to lose.
   const [lockOut, setLockOut] = useState<{ status: LockedStatus; lostEdits: boolean | null } | null>(null)
   const isSavingRef = useRef(false)
+  // Set when a publish is refused because the terms no longer pass (ADR 0008),
+  // which reopens the fields. Cleared once a resubmission is accepted, or is
+  // refused because the market has moved on (a status refusal such as
+  // market_already_open, which locks the form instead); kept on a refusal that
+  // throws (draft_incomplete, a 5xx, the network), so the admin can correct
+  // and resubmit again. market_service takes a resubmission of a submitted
+  // market and re-runs every rule; only a save asking for `draft` is refused
+  // (ADR 0004), and the autosave interval never sends one, because it runs
+  // only while the status is draft (#381).
+  const [isCorrecting, setIsCorrecting] = useState(false)
 
-  // The same hook the markets list publishes through, so there is one answer
-  // to "what does a refused publish mean" rather than one per screen — which
-  // matters more now this form survives a reload and can sit open long enough
-  // for somebody else to publish the market from the list.
+  // The same hook the markets list publishes through, so both screens send
+  // the publish and read its refusals in one place — which matters more now
+  // this form survives a reload and can sit open long enough for somebody else
+  // to publish the market from the list. The one refusal they answer
+  // differently is draft_incomplete: the list shows the hook's message, and
+  // this form passes the callback below and reopens its fields instead.
   const {
     publishing,
     formError: publishError,
     superseded: publishSuperseded,
-    refusalDetails: publishRefusalDetails,
     handlePublish,
-  } = usePublishMarket(marketId, () => navigate('/markets'))
+  } = usePublishMarket(marketId, () => navigate('/markets'), details => {
+    // The reasons go where a refused submission's do, so the next answer —
+    // accepted or refused — replaces them rather than sitting beside them.
+    setRefusalDetails(details)
+    // It said read-only, which stops being true here.
+    setLockOut(null)
+    setIsCorrecting(true)
+  })
 
   // Derived, not stored: this page is loading exactly while the address names
   // a market it has not read yet. Both routes render the same element in the
@@ -283,7 +302,7 @@ export default function CreateMarketPage() {
   const isLoadingMarket = !!existingMarketId && marketId !== existingMarketId && !hasLoadFailed
 
   const getHint = (field: string) =>
-    [...refusalDetails, ...publishRefusalDetails, ...(lastSave?.blocking_submission ?? [])]
+    [...refusalDetails, ...(lastSave?.blocking_submission ?? [])]
       .find(b => b.field === field)?.message
 
   const doSave = useCallback(async (status: 'draft' | 'submitted') => {
@@ -406,6 +425,7 @@ export default function CreateMarketPage() {
     setRefusalDetails([])
     try {
       await doSave('submitted')
+      setIsCorrecting(false)
     } catch (err) {
       const details = errorDetails(err)
       setRefusalDetails(details)
@@ -432,7 +452,14 @@ export default function CreateMarketPage() {
     setForm(f => ({ ...f, sources: f.sources.filter(s => s.id !== id) }))
 
   const isSubmitted = marketStatus === 'submitted'
-  const isLocked = marketStatus !== 'draft'
+  const isLocked = marketStatus !== 'draft' && !isCorrecting
+  const submitLabel = isCorrecting ? 'Resubmit for Review' : 'Submit for Review'
+  // "the fields marked above" only when the server named some. A refusal that
+  // names none — an empty `details`, a 5xx, the network — marks nothing, and
+  // the advice would then point at marks that are not there.
+  const correctionAdvice = refusalDetails.length > 0
+    ? 'Correct the fields marked above and submit the market again.'
+    : 'Correct them and submit the market again.'
   // A published market has a page traders can see. A submitted one has none
   // yet (#354), so the banner points at the admin list for that case.
   const lockedMarketLink = lockOut && lockOut.status !== 'submitted' && marketId
@@ -487,7 +514,9 @@ export default function CreateMarketPage() {
           {saveStatus === 'saved' && savedAt && (
             <span className="text-success">Saved at {savedAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}</span>
           )}
-          {saveStatus === 'error' && (
+          {/* Not while correcting: Retry sends a draft save, which a submitted
+              market refuses, and the refused resubmission says so below. */}
+          {saveStatus === 'error' && !isCorrecting && (
             <span className="flex items-center gap-2 text-danger">
               Save failed
               <Button variant="outline" size="xs" onClick={handleRetrySave}>Retry</Button>
@@ -703,15 +732,21 @@ export default function CreateMarketPage() {
       </SectionCard>
 
       <div className="flex flex-col items-start gap-3 pb-12">
+        {isCorrecting && (
+          <p role="alert" className="text-[13px] text-danger">
+            These terms no longer pass the checks for publishing. {correctionAdvice} Nothing
+            you change here is saved until the market is resubmitted.
+          </p>
+        )}
         {submitError && <p role="alert" className="text-[13px] text-danger">{submitError}</p>}
 
         {!isLocked && (
           <Button variant="primary" size="lg" onClick={handleSubmit} disabled={cannotSubmit}>
-            {submitting ? 'Submitting…' : 'Submit for Review'}
+            {submitting ? 'Submitting…' : submitLabel}
           </Button>
         )}
 
-        {isSubmitted && (
+        {isSubmitted && !isCorrecting && (
           <>
             {publishError && (
               <div role="alert" className="flex items-center gap-2 text-[13px] text-danger">

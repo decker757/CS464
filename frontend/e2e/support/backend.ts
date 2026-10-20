@@ -133,9 +133,9 @@ export async function saveDraft(admin: Session, question: string, options: { clo
   return save(admin, question, 'draft', undefined, options.closesInHours)
 }
 
-/** Submitted and not published, closing in thirty days. Only its creator sees it ([1.1] #1). */
-export async function submitMarket(admin: Session, question: string): Promise<Market> {
-  return save(admin, question, 'submitted')
+/** Submitted and not published, closing in thirty days unless told otherwise. Only its creator sees it ([1.1] #1). */
+export async function submitMarket(admin: Session, question: string, options: { closesInHours?: number } = {}): Promise<Market> {
+  return save(admin, question, 'submitted', undefined, options.closesInHours)
 }
 
 /**

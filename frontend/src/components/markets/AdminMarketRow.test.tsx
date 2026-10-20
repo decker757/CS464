@@ -733,8 +733,8 @@ describe('AdminMarketRow', () => {
 
     // Publishing re-runs every submission rule against the clock now (ADR
     // 0008), so a market submitted last week fails on a close time that has
-    // since passed. No screen can edit a submitted market (#354), so a retry
-    // is not the advice and no reload helps.
+    // since passed. Only a corrected resubmission gets it published (#381), so
+    // a retry is not the advice and no reload helps.
     it('says the terms no longer pass when publishing is refused as incomplete', async () => {
       server.use(
         http.post(PUBLISH(MY_SUBMITTED.id), () =>
@@ -753,7 +753,9 @@ describe('AdminMarketRow', () => {
 
       await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
 
-      expect(await screen.findByRole('alert')).toHaveTextContent(/no longer pass the checks for publishing/i)
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(/no longer pass the checks for publishing/i)
+      expect(alert).toHaveTextContent(/corrected and submitted again/i)
       expect(screen.queryByRole('button', { name: /reload/i })).not.toBeInTheDocument()
     })
 
