@@ -83,7 +83,7 @@ exception: the ledger calls it with any administrator's token, and it answers
 another administrator's draft or submitted market with
 `409 market_not_voidable`.
 
-## The seven statuses
+## The eight statuses
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
@@ -94,6 +94,7 @@ another administrator's draft or submitted market with
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 | `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
 | `settled` | `POST /markets/{id}/settle`, which the ledger calls after its payouts commit ([3.4] #12); the status alone does not prove the ledger paid ([ADR 0019](../adr/0019-settlement-across-services.md)) | yes, with the winning outcome |
+| `voided` | (proposed, ADR 0025; not built yet) `POST /markets/{id}/void`, which the ledger calls after its refunds commit ([BE] #221) | yes, with the reason and no winning outcome |
 
 The path is `draft → submitted → open → closed → pending_resolution →
 approved → settled` and nothing skips a step. Every save on a market past `submitted` is
@@ -1203,7 +1204,7 @@ GET /markets/overview?status=closed&limit=50
   status field. Proposing gates on the stored column (ADR 0013), so for up to
   one sweep interval a market shown here as `closed` refuses a proposal with
   `409 market_not_closed`; handle that 409.
-- **`?status=`** accepts any of the seven statuses, including `draft` and
+- **`?status=`** accepts any of the statuses above, including `draft` and
   `submitted`, which the trader filter refuses, and `settled`. Anything else is
   a `422`.
 - **`settleable`** ([3.4] #12) is a boolean on every row, so the settle control
@@ -1241,7 +1242,7 @@ GET /markets/overview?status=closed&limit=50
 **Proposed, ADR 0025: not built yet. What a void adds here.**
 
 - `?status=` accepts `voided`, and `counts` gains a `voided` key, `0` when
-  there are none. "The seven statuses" in the table below become eight.
+  there are none. The status table below accepts all eight.
 - **`voidable`** is a boolean on every row, the same flag as on the public
   detail below, derived against the same instant as the rest of the page.
 - Voided markets sort last with settled ones in the unfiltered view, after
@@ -1252,7 +1253,7 @@ GET /markets/overview?status=closed&limit=50
 
 | Query parameter | Rule |
 | --- | --- |
-| `status` | one of the seven statuses above; anything else is a `422` |
+| `status` | one of the statuses above (seven built, and `voided` proposed); anything else is a `422` |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
@@ -1289,7 +1290,7 @@ start again without a cursor instead.
 | 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
 | 403 | `not_an_administrator` | a trader |
-| 422 | — | `status` is not one of the seven, or `limit` is below 1 |
+| 422 | — | `status` is not one of the statuses above, or `limit` is below 1 |
 
 ## GET /markets/{id}
 
@@ -1407,13 +1408,13 @@ the first group explicitly.
 | Query parameter | Rule |
 | --- | --- |
 | `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`; anything else is a `422` |
-
-**Proposed, ADR 0025: not built yet.** `voided` is accepted too, and a voided
-market is in the second group of the order above, by when it stopped trading,
-like any other market that has stopped.
 | `q` | case-insensitive containment search over the question |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
+
+**Proposed, ADR 0025: not built yet.** `status` accepts `voided` too, and a
+voided market is in the second group of the order above, by when it stopped
+trading, like any other market that has stopped.
 
 `draft` and `submitted` are never returned, whether asked for by `status` or
 not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
@@ -1571,7 +1572,10 @@ settlement is `settleable`'s job.
 
 - **`voidable`**, a boolean, is `true` on a `closed` or `pending_resolution`
   market, on an `approved` market while `now < dispute_window_ends_at`, and on
-  a `voided` one, so a void whose last step failed can be finished. It is
+  a `voided` one. That last is for a market an administrator marked voided
+  by calling `POST /markets/{id}/void` directly, which refunds nobody: the
+  ledger can still refund it. (A void the ledger recorded never reads this
+  flag on a retry; it finishes from its own record.) It is
   `false` for every other status, and for an `approved` market from the
   window's end or with no `dispute_window_ends_at`. **It is judged on the
   stored status**, not the derived `status` above: a market past its
@@ -1894,9 +1898,10 @@ and this page's reads.
    from the overview row or the public detail; do not work it out from the
    status or the countdown.
 2. **The modal** has one required input, the reason. Enable its confirm
-   button at 10 trimmed characters. Say plainly that a void **cannot be
-   undone**, that every holder is refunded what their remaining shares cost,
-   and that the reason is shown to traders.
+   button at 10 trimmed characters and you will never see a
+   `422 void_incomplete`. Say plainly that a void **cannot be undone**, that
+   every holder is refunded what their remaining shares cost, and that the
+   reason is shown to traders.
 3. Repaint from the ledger's `200`. If `refunds_cut` is `true`, say so: "The
    pool could not cover every refund, so each was cut by the same share."
 4. Handle the refusals:
@@ -1907,6 +1912,11 @@ and this page's reads.
    - `409 market_already_settled`: someone settled it first. Reload.
    - `503 void_unconfirmed`: the refunds went through. Offer "Finish" which
      repeats the same request; never say the void failed.
+   - `503 market_terms_unavailable`: "The market service could not be
+     reached. Nothing was refunded; try again." Nothing was written.
+   - `500 void_replay_mismatch`: "This market's records do not add up, so it
+     cannot be voided. Nothing was refunded." Retrying will not help; it needs
+     a developer.
 5. **The market page** shows a "Voided" banner with `void_reason` and
    `voided_at`, and no winning outcome, for `status: "voided"`.
 6. **The portfolio** shows `result: "refunded"` rows as "Refunded", with
