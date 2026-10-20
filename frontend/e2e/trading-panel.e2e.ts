@@ -30,12 +30,12 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: 'Yes', exact: true }).click()
   await page.getByLabel('Quantity (shares)').fill('10')
   const preview = page.getByLabel('trade preview')
-  await expect(preview).toContainText('8.8592 credits')
-  await expect(preview).toContainText('0.8859')
+  await expect(preview.getByText('8.8592 credits', { exact: true })).toBeVisible()
+  await expect(preview.getByText('0.8859', { exact: true })).toBeVisible()
   await expect(preview).toContainText('88.1% → 89.1%')
   await page.getByRole('button', { name: /^buy yes$/i }).click()
 
-  await expect(page.getByText('Bought 10 Yes for 8.8592 credits.')).toBeVisible()
+  await expect(page.getByText('Bought 10 Yes for 8.8592 credits.', { exact: true })).toBeVisible()
   // The navbar shows whole credits, the fraction dropped.
   const afterTheBuy = subtractCredits(grant, '8.8592')
   await expect(balance).toHaveText(`${formatWholeCredits(afterTheBuy)} credits`)
@@ -45,7 +45,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await expect(page.getByLabel('trade preview')).toBeVisible()
   await page.getByRole('button', { name: /^sell yes$/i }).click()
 
-  await expect(page.getByText('Sold 4 Yes for 3.5557 credits.')).toBeVisible()
+  await expect(page.getByText('Sold 4 Yes for 3.5557 credits.', { exact: true })).toBeVisible()
   const afterTheSell = `${formatWholeCredits(addCredits(afterTheBuy, '3.5557'))} credits`
   await expect(balance).toHaveText(afterTheSell)
 
@@ -81,9 +81,10 @@ test('a buy the trader cannot afford is refused before the request', async ({ pa
   // Two thousand shares more than the grant has credits. On an untouched
   // two-outcome market at b = 100, buying q shares of one outcome costs
   // q - 100 ln 2 + 100 ln(1 + e^(-q/100)). Past 2,000 shares that last term
-  // is under 0.0000003, and the ledger rounds a buy's cost up to four places
-  // (ledger-service.md, POST .../trades), so it asks q - 69.3147: more than
-  // the grant, whatever the grant is.
+  // is under 0.0000003, and the preview rounds a buy's cost up to four places
+  // (ledger-service.md, GET /ledger/markets/{market_id}/preview, "The
+  // rounding direction, and why it is not symmetric"), so it asks
+  // q - 69.3147: more than the grant, whatever the grant is.
   const quantity = addCredits(grant, '2000')
   const cost = subtractCredits(quantity, '69.3147')
   await page.getByLabel('Quantity (shares)').fill(quantity)

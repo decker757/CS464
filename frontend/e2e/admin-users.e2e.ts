@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
-import { formatPreciseCredits, subtractCredits } from './support/credits'
+import { formatPreciseCredits, formatSignedCredits, subtractCredits } from './support/credits'
 
 // [FE][4.1] #57, through the real auth service and ledger: the search is the
 // auth service's own (GET /admin/users), the balance and history are the
@@ -40,8 +40,11 @@ test('an admin searches for a trader and reads their real balance and history', 
   await expect(page.getByText(`${balance} credits`, { exact: true })).toBeVisible()
   const rows = page.getByRole('row')
   await expect(rows.nth(1)).toContainText(market.question)
-  await expect(rows.nth(1)).toContainText('-2.5313')
+  // Each figure is matched as its own cell, not as part of the row's text,
+  // where "-12.5313" would contain it.
+  await expect(rows.nth(1).getByText('-2.5313', { exact: true })).toBeVisible()
   await expect(rows.nth(2)).toContainText('Starting grant')
+  await expect(rows.nth(2).getByText(formatSignedCredits(grant), { exact: true })).toBeVisible()
 })
 
 test('a trader who has never read their own balance shows zero, not an error', async ({ page }) => {
@@ -56,6 +59,6 @@ test('a trader who has never read their own balance shows zero, not an error', a
   await page.getByRole('button', { name: 'Search' }).click()
   await page.getByText(neverRead.username, { exact: true }).click()
 
-  await expect(page.getByText('0.0000 credits')).toBeVisible()
+  await expect(page.getByText('0.0000 credits', { exact: true })).toBeVisible()
   await expect(page.getByText(/no activity for this user yet/i)).toBeVisible()
 })
