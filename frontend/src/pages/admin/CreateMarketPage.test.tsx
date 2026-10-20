@@ -921,6 +921,30 @@ describe('CreateMarketPage', () => {
       expect(screen.getByLabelText('Closes at *')).toBeDisabled()
       expect(screen.queryByRole('button', { name: /submit for review/i })).not.toBeInTheDocument()
     })
+
+    // The same rule from the other side: the market was published from
+    // somewhere else while it was being corrected here. The resubmission's
+    // refusal is the first this form hears of it, and it has to lock again.
+    it('locks the form again when the resubmission finds the market already published', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      refusePublishOnTerms()
+      server.use(
+        http.post(`${MARKET_BASE}/markets`, () =>
+          HttpResponse.json({ error: { code: 'market_already_open', message: 'refused' } }, { status: 409 }),
+        ),
+      )
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await screen.findByText(STALE_CLOSE.message)
+      fireEvent.change(screen.getByLabelText('Closes at *'), { target: { value: '2027-01-16T10:00' } })
+      await actor.click(screen.getByRole('button', { name: /resubmit for review/i }))
+
+      expect(await screen.findByText(/already been published and is live for traders/i)).toBeInTheDocument()
+      expect(screen.getByLabelText('Question *')).toBeDisabled()
+      expect(screen.queryByRole('button', { name: /resubmit for review/i })).not.toBeInTheDocument()
+    })
   })
 
   // #348's second repro. The autosave created a market while the address bar
