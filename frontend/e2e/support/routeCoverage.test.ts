@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findUncoveredRoutes, parseDeclaredRoutes } from './routeCoverage'
+import { NOT_FOUND_PROBE, findUncoveredRoutes, parseDeclaredRoutes } from './routeCoverage'
 
 // [F-12] #341. The comparison behind the route-coverage guard, tested on its
 // own so the guard itself is proved by something faster than a browser run.
@@ -98,6 +98,29 @@ describe('findUncoveredRoutes', () => {
       allowlist: allowNothing,
     })
     expect(unmatchedVisits).toEqual(['/admin/users'])
+  })
+
+  it('still reports a page only the catch-all matches, and does not let it cover the catch-all', () => {
+    // `path="*"` (#355) matches every address there is, so without this the
+    // check above could never fire again: a route the parse missed would be
+    // credited to the 404 page instead of being reported.
+    const { unmatchedVisits, unvisited } = findUncoveredRoutes({
+      declared: ['/markets', '*'],
+      visited: ['/markets', '/admin/users'],
+      allowlist: allowNothing,
+    })
+    expect(unmatchedVisits).toEqual(['/admin/users'])
+    expect(unvisited).toEqual(['*'])
+  })
+
+  it('credits the catch-all with the one address a test opens to reach it on purpose', () => {
+    const { unmatchedVisits, unvisited } = findUncoveredRoutes({
+      declared: ['/markets', '*'],
+      visited: ['/markets', NOT_FOUND_PROBE],
+      allowlist: allowNothing,
+    })
+    expect(unmatchedVisits).toEqual([])
+    expect(unvisited).toEqual([])
   })
 
   it('credits a visit to the route that fits it best, not merely one that fits', () => {

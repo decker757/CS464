@@ -45,7 +45,7 @@ from service import audit, books
 from service.audit import Actor
 
 # The order object, built the way the placement and the order list build it.
-from service.orders import OrderView, _order_view_of, _views_query
+from service.orders import OrderView, order_view_of, views_query
 
 # Auth's suspension floor, which market_service's close and reject reasons use.
 _MIN_REASON_LENGTH = 10
@@ -99,7 +99,7 @@ async def _get_order_market(
 async def _read_order(session: AsyncSession, order_id: uuid.UUID) -> Row[tuple[Order, int, bool]]:
     """The order with its outcome's position and whether it is live. Call it
     holding the book lock, which holds the row still: no lock of its own."""
-    return (await session.execute(_views_query().where(Order.id == order_id))).one()
+    return (await session.execute(views_query().where(Order.id == order_id))).one()
 
 
 def _refuse_if_ended(order: Order, *, live: bool) -> None:
@@ -159,7 +159,7 @@ async def cancel(
     _refuse_if_ended(order, live=live)
 
     # What the order holds just before the cancel is what the cancel releases.
-    before = _order_view_of(order, outcome_position=position, live=True)
+    before = order_view_of(order, outcome_position=position, live=True)
     order.status = OrderStatus.CANCELLED
     order.cancelled_at = datetime.now(UTC)
     if admin is not None:
@@ -167,7 +167,7 @@ async def cancel(
     await session.commit()
 
     return Cancellation(
-        order=_order_view_of(order, outcome_position=position, live=False),
+        order=order_view_of(order, outcome_position=position, live=False),
         released_credits=before.reserved_credits,
         released_shares=before.reserved_shares,
     )

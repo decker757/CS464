@@ -76,19 +76,19 @@ from service import (
 # arrival writes exactly what an instant trade of its size writes.
 from service.trading import (
     PricedTrade,
-    _fill_key,
-    _list_open_orders,
-    _log_refused_fill,
-    _price_event_of,
-    _publish_order_updates,
-    _read_outcomes,
-    _read_position,
-    _refuse_if_short_of_shares,
-    _reservation_drop_of,
-    _resting_order_of,
-    _trade_movement_of,
-    _write_cascade,
-    _write_trade,
+    fill_key,
+    find_position,
+    list_open_orders,
+    list_outcomes,
+    log_refused_fill,
+    price_event_of,
+    publish_order_updates,
+    refuse_if_short_of_shares,
+    reservation_drop_of,
+    resting_order_of,
+    trade_movement_of,
+    write_cascade,
+    write_trade,
 )
 
 ZERO = Decimal(0)
@@ -149,7 +149,7 @@ class Placement:
     book_state_version: int
 
 
-def _order_view_of(order: Order, *, outcome_position: int, live: bool) -> OrderView:
+def order_view_of(order: Order, *, outcome_position: int, live: bool) -> OrderView:
     """The order object, with `released` and the reservations derived from
     `live`: an order that is not live holds nothing.
 
@@ -200,7 +200,7 @@ def _fill_of(transaction: Transaction) -> Fill:
     )
 
 
-def _views_query() -> Select[tuple[Order, int, bool]]:
+def views_query() -> Select[tuple[Order, int, bool]]:
     """Each order with its outcome's position and whether it is live."""
     return select(
         Order, MarketOutcome.position, reservations.order_is_live().label("live")
@@ -262,7 +262,7 @@ async def _replay_if_present(
     `book_state_version`, and a replay answers from it").
     """
     row = (
-        await session.execute(_views_query().where(Order.idempotency_key == key))
+        await session.execute(views_query().where(Order.idempotency_key == key))
     ).one_or_none()
     if row is None:
         return None
@@ -272,7 +272,7 @@ async def _replay_if_present(
     ):
         raise IdempotencyKeyReused
     return Placement(
-        order=_order_view_of(order, outcome_position=position, live=live),
+        order=order_view_of(order, outcome_position=position, live=live),
         fills=await _fills_of(session, order),
         book_state_version=order.book_state_version,
     )
@@ -377,7 +377,7 @@ async def _rest(
     session.add(order)
     await session.commit()
     return Placement(
-        order=_order_view_of(
+        order=order_view_of(
             order,
             outcome_position=outcome_position,
             live=order.status is OrderStatus.OPEN,
@@ -411,7 +411,7 @@ async def _commit_fill(
     # Read once for the whole batch; `get_one` for the trade path's reason.
     pool_account = await session.get_one(Account, book.pool_account_id)
     # Before the order is added, so the cascade never reads the order itself.
-    cascade = await _write_cascade(
+    cascade = await write_cascade(
         session, book, outcomes=outcomes, pool_account=pool_account, now=now
     )
     # The book's counter after this request: the last fill's.
@@ -424,14 +424,14 @@ async def _commit_fill(
     await session.flush()
     after_q = [outcome.q for outcome in outcomes]
 
-    movement = _trade_movement_of(
+    movement = trade_movement_of(
         trade,
         user_account=account,
         pool_account=pool_account,
-        idempotency_key=_fill_key(order.id, fill_version),
+        idempotency_key=fill_key(order.id, fill_version),
         state_version=fill_version,
         order_id=order.id,
-        reservation_drop=_reservation_drop_of(
+        reservation_drop=reservation_drop_of(
             order, cost=trade.cost.magnitude, value_before=ZERO
         ),
     )
@@ -441,12 +441,12 @@ async def _commit_fill(
         )
     except InsufficientFunds as refusal:
         if refusal.account_id != account.id:
-            _log_refused_fill(refusal)
+            log_refused_fill(refusal)
             raise CascadeFillRefused from refusal
         raise _placement_refusal_of(refusal, order.budget) from None
 
     # After the commit, never before it, as on the trade path (ADR 0010).
-    event = _price_event_of(
+    event = price_event_of(
         order.market_id,
         state_version=order.book_state_version,
         outcomes=outcomes,
@@ -458,10 +458,10 @@ async def _commit_fill(
     # The placed order's own fill is the first transaction; the cascade's follow.
     filled_orders = [order, *(fill.order for fill in cascade)]
     filled = list(zip(filled_orders, transactions, strict=True))
-    await _publish_order_updates(redis_client, filled, now=now)
+    await publish_order_updates(redis_client, filled, now=now)
 
     return Placement(
-        order=_order_view_of(
+        order=order_view_of(
             order,
             outcome_position=outcome_position,
             live=order.status is OrderStatus.OPEN,
@@ -534,7 +534,7 @@ async def place(
     if await books.find_result(session, market_id) is not None:
         raise MarketClosed
 
-    outcomes = await _read_outcomes(session, market_id)
+    outcomes = await list_outcomes(session, market_id)
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
     if len(outcomes) != _BINARY_OUTCOMES:
         raise MarketNotBinary
@@ -542,19 +542,21 @@ async def place(
     if outcome_id not in outcome_ids:
         raise UnknownOutcome
     index = outcome_ids.index(outcome_id)
+    # The column a retry and the order list report, not the list index.
+    outcome_position = outcomes[index].position
 
-    open_orders = await _list_open_orders(session, market_id)
+    open_orders = await list_open_orders(session, market_id)
     refuse_if_crosses_book(
-        [_resting_order_of(open_order, outcome_ids) for open_order in open_orders],
+        [resting_order_of(open_order, outcome_ids) for open_order in open_orders],
         outcome_index=index,
         side=side,
         limit_price=limit_price,
     )
-    position = await _read_position(
+    position = await find_position(
         session, user_id=user_id, market_id=market_id, outcome_id=outcome_id
     )
     if side is Side.SELL:
-        await _refuse_if_short_of_shares(
+        await refuse_if_short_of_shares(
             session,
             position,
             user_id=user_id,
@@ -574,7 +576,9 @@ async def place(
     if fill is None:
         # The book's counter after this request: the one it was placed against.
         order.book_state_version = book.state_version
-        return await _rest(session, order, account=user_account, outcome_position=index)
+        return await _rest(
+            session, order, account=user_account, outcome_position=outcome_position
+        )
 
     now = datetime.now(UTC)
     trade = PricedTrade(
@@ -585,7 +589,7 @@ async def place(
         quantity=fill.quantity,
         cost=fill.cost,
     )
-    _write_trade(
+    write_trade(
         session,
         book,
         outcomes=outcomes,
@@ -601,7 +605,7 @@ async def place(
         account=user_account,
         trade=trade,
         outcomes=outcomes,
-        outcome_position=index,
+        outcome_position=outcome_position,
         now=now,
         redis_client=redis_client,
     )
@@ -609,13 +613,17 @@ async def place(
 
 async def list_live(session: AsyncSession, user_id: uuid.UUID) -> list[OrderView]:
     """The user's live orders, newest first: open, on a market with no result,
-    closed markets included. Takes no lock and writes nothing."""
+    closed markets included. Takes no lock and writes nothing.
+
+    Unpaged on purpose. DECISIONS.md, "`GET /ledger/orders/me` returns every
+    live order, unpaged".
+    """
     stmt = (
-        _views_query()
+        views_query()
         .where(Order.user_id == user_id, reservations.order_is_live())
         .order_by(Order.seq.desc())
     )
     return [
-        _order_view_of(order, outcome_position=position, live=live)
+        order_view_of(order, outcome_position=position, live=live)
         for order, position, live in (await session.execute(stmt)).all()
     ]

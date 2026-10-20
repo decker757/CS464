@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
+import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
-import DetailItem from '../components/ui/DetailItem'
 import SectionCard from '../components/ui/SectionCard'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useMarketPrices } from '../hooks/useMarketPrices'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
@@ -46,6 +48,10 @@ export default function MarketDetailPage() {
   const market = current?.market ?? null
   const loading = current === null
   const error = current?.failed ?? false
+  // This page's heading is the question rather than a PageTitle, so it
+  // names the tab itself. Null until the fetch lands, which leaves the
+  // previous title up rather than blanking it for the round trip (#356).
+  useDocumentTitle(market?.question)
 
   const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null)
   // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
@@ -70,12 +76,64 @@ export default function MarketDetailPage() {
 
   const tradeable = market?.status === 'open' && !pastClose
 
+  // What the trader holds of each of this market's outcomes, for the sell
+  // clamp ([T-2] #357). The portfolio route carries every market's positions
+  // and names no questions or labels (ledger-service.md), so picking out this
+  // market's is the page's own join.
+  //
+  // Tagged with the market it was read for, like `loaded` above: outcome ids
+  // differ between markets, so an untagged map would read as "holds nothing"
+  // on the next market until its own read landed, and clamp every sell on
+  // that. Null says the holdings are unknown, which clamps nothing at all.
+  const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, string> } | null>(null)
+  const heldByOutcome = held !== null && held.id === id ? held.byOutcome : null
+
+  // The most recent read's own number, so an answer that arrives after a
+  // newer one is dropped instead of overwriting it. BalanceContext keeps the
+  // same counter and names this exact case — the refetch after a trade
+  // answering before the mount's read does. The portfolio route values every
+  // position and mints the signup grant on a first read, so it is the slower
+  // of the two; without this, the pre-trade picture lands last and the panel
+  // spends the rest of the visit refusing to sell a position the ledger holds,
+  // with nothing to re-fire the read.
+  const latestHeldReadRef = useRef(0)
+
+  const refetchHeld = useCallback(() => {
+    if (!id) return
+    const requestId = ++latestHeldReadRef.current
+    getMyPortfolio().then(
+      portfolio => {
+        if (requestId !== latestHeldReadRef.current) return
+        const mine = portfolio.positions.filter(position => position.market_id === id)
+        setHeld({ id, byOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])) })
+      },
+      // Leave the last known holdings up rather than blanking them, the same
+      // way BalanceContext keeps the last balance on a failed refetch.
+      () => {},
+    )
+  }, [id])
+
+  // Only for a market that can be traded: nothing else on this page uses the
+  // figure, and a closed or settled market has no sell to clamp.
+  useEffect(() => {
+    if (tradeable) refetchHeld()
+  }, [tradeable, refetchHeld])
+
   // An early close leaves close_time in the future, so "Closed <close_time>"
   // would name a date that has not happened yet.
   function closeLabel(m: PublicMarketDetail): string {
     if (!pastClose && !tradingStopped(m.status, m.close_time)) return `Closes ${formatDate(m.close_time)}`
     if (pastClose) return `Closed ${formatDate(m.close_time)}`
     return 'Closed early'
+  }
+
+  // The badge reads the same answer the panel is gated on rather than the raw
+  // status column. The clock closes a market and the sweep writes CLOSED a
+  // few seconds later (ADR 0011), so for that window the column still says
+  // `open` on a market nobody can trade — and a green "Open" chip would sit
+  // above the words "Trading is closed" (#357).
+  function badgeStatus(m: PublicMarketDetail): string {
+    return m.status === 'open' && !tradeable ? 'closed' : m.status
   }
 
   const winningOutcome = market?.proposed_outcome_id
@@ -98,7 +156,7 @@ export default function MarketDetailPage() {
         <>
           <div className="mb-8">
             <div className="mb-4 flex items-center gap-3">
-              <StatusBadge status={market.status} />
+              <StatusBadge status={badgeStatus(market)} />
               <span className="text-[13px] text-subtle">{closeLabel(market)}</span>
             </div>
             <h1 className="text-[26px] leading-[1.4] font-extrabold tracking-[-0.3px] text-smu-navy">{market.question}</h1>
@@ -153,39 +211,14 @@ export default function MarketDetailPage() {
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
-              <TradingPanel marketId={market.id} outcomes={market.outcomes} />
+              <TradingPanel marketId={market.id} outcomes={market.outcomes} heldByOutcome={heldByOutcome} onTraded={refetchHeld} />
             ) : (
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
             )}
           </Card>
 
           <SectionCard title="About this market">
-            <div className="flex flex-col gap-4 text-sm text-smu-navy">
-              <DetailItem label="Resolution criteria">
-                <p className="leading-[1.6]">{market.resolution_criteria}</p>
-              </DetailItem>
-              <div className="grid grid-cols-2 gap-4">
-                <DetailItem label="Closes">
-                  <p>{formatDate(market.close_time)}</p>
-                </DetailItem>
-                <DetailItem label="Resolves by">
-                  <p>{formatDate(market.resolution_time)}</p>
-                </DetailItem>
-              </div>
-              {market.resolution_sources.length > 0 && (
-                <DetailItem label="Resolution sources">
-                  <ul className="mt-1 flex flex-col gap-1">
-                    {market.resolution_sources.map(src => (
-                      <li key={src.id}>
-                        <a href={src.url} target="_blank" rel="noopener noreferrer" className="text-info">
-                          {src.label ?? src.url}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </DetailItem>
-              )}
-            </div>
+            <ResolutionDetails market={market} />
           </SectionCard>
         </>
       )}

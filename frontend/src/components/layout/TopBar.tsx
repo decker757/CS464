@@ -1,16 +1,12 @@
 import { Link } from 'react-router-dom'
-import { useAuth } from '../../context/AuthContext'
+import { useHomePath } from '../../hooks/useHomePath'
 import Logo from '../ui/Logo'
 
 /** The navy bar across the top of every page: the logo, then whatever controls the page passes. */
 export default function TopBar({ children }: { children?: React.ReactNode }) {
-  const { user } = useAuth()
-
   // The wordmark is the one way back that every page has, so it points at the
-  // page that visitor calls home: the market list once signed in, the landing
-  // page otherwise. `undefined` is "not known yet", and the pages rendered in
-  // that state are the guest ones (GuestOnly renders while it resolves).
-  const home = user ? '/markets' : '/'
+  // page that visitor calls home.
+  const home = useHomePath()
 
   return (
     <header className="bg-smu-navy">

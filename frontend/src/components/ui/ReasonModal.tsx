@@ -45,7 +45,7 @@ export default function ReasonModal({
   onConfirm,
 }: ReasonModalProps) {
   return (
-    <ModalShell ariaLabel={ariaLabel} title={title} description={description}>
+    <ModalShell ariaLabel={ariaLabel} title={title} description={description} onClose={onCancel} isSubmitting={isSubmitting}>
       {details}
       <Field id={fieldId} label="Reason *" error={reasonError}>
         <TextArea

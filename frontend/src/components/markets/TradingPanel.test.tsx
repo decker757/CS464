@@ -52,10 +52,21 @@ function mockPreviewError(code: string, message: string, status = 422, details?:
   )
 }
 
-function renderPanel() {
+// More shares of either outcome than any test here sells, so the sell clamp
+// is never what refuses a trade unless a test says what is held.
+const HELD_PLENTY = { 'o-yes': '100.0000', 'o-no': '100.0000' }
+
+interface PanelOptions {
+  balance?: string | null | undefined
+  heldByOutcome?: Record<string, string> | null
+  refetch?: () => Promise<void>
+  onTraded?: () => void
+}
+
+function renderPanel({ balance = '1000.0000', heldByOutcome = HELD_PLENTY, refetch = vi.fn(async () => {}), onTraded = vi.fn() }: PanelOptions = {}) {
   return render(
-    <BalanceContext.Provider value={{ balance: '1000.0000', refetch: vi.fn(async () => {}) }}>
-      <TradingPanel marketId={MARKET_ID} outcomes={outcomes} />
+    <BalanceContext.Provider value={{ balance, refetch }}>
+      <TradingPanel marketId={MARKET_ID} outcomes={outcomes} heldByOutcome={heldByOutcome} onTraded={onTraded} />
     </BalanceContext.Provider>,
   )
 }
@@ -175,9 +186,10 @@ describe('TradingPanel', () => {
     expect(typeof sentBody?.idempotency_key).toBe('string')
   })
 
-  it('clears the quantity field and refetches the balance after a successful trade', async () => {
+  it('clears the quantity field, refetches the balance and re-reads the holding after a successful trade', async () => {
     mockPreview(previewResponse())
     const refetch = vi.fn(async () => {})
+    const onTraded = vi.fn()
     server.use(
       http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
         HttpResponse.json({
@@ -187,11 +199,7 @@ describe('TradingPanel', () => {
       ),
     )
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    render(
-      <BalanceContext.Provider value={{ balance: '1000.0000', refetch }}>
-        <TradingPanel marketId={MARKET_ID} outcomes={outcomes} />
-      </BalanceContext.Provider>,
-    )
+    renderPanel({ refetch, onTraded })
     await typeQuantity(actor, '10')
     await screen.findByLabelText('trade preview')
 
@@ -200,6 +208,9 @@ describe('TradingPanel', () => {
     await screen.findByText(/bought/i)
     expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(null)
     expect(refetch).toHaveBeenCalledTimes(1)
+    // Without this the holding the sell clamp reads is the one from before
+    // the buy, so selling what was just bought is refused by this panel.
+    expect(onTraded).toHaveBeenCalledTimes(1)
   })
 
   it('re-previews automatically on a 409 quote_stale, re-enables submit, and sends the same key with the new state_version on confirm', async () => {
@@ -308,24 +319,29 @@ describe('TradingPanel', () => {
   })
 
   it('shows what is held and what was asked for on insufficient_shares_held', async () => {
+    // The panel's own clamp reads a holding fetched before the click, so a
+    // position that shrank in between still reaches this refusal — the
+    // ledger is the authority on what is held, not this screen (#357).
     mockPreview(previewResponse({ side: 'sell', total: '5.1250' }))
     server.use(
       http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
         HttpResponse.json(
-          { error: { code: 'insufficient_shares_held', message: 'Not enough shares.', details: { held: '2.0000', requested: '10.0000' } } },
+          { error: { code: 'insufficient_shares_held', message: 'Not enough shares.', details: { held: '1234.5678', requested: '10.0000' } } },
           { status: 409 },
         ),
       ),
     )
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    renderPanel()
+    renderPanel({ heldByOutcome: { 'o-yes': '2000.0000' } })
     await actor.click(screen.getByRole('button', { name: /^sell$/i }))
     await typeQuantity(actor, '10')
     await screen.findByLabelText('trade preview')
 
     await actor.click(screen.getByRole('button', { name: /^sell yes$/i }))
 
-    expect(await screen.findByText(/you hold 2\.0000 shares, but this sell asks for 10\.0000/i)).toBeInTheDocument()
+    // Four figures and a thousands separator, so the message is pinned as
+    // formatted rather than printing whatever string the ledger sent.
+    expect(await screen.findByText(/you hold 1,234\.5678 shares, but this sell asks for 10\.0000/i)).toBeInTheDocument()
   })
 
   it('gives insufficient_shares_outstanding its own message instead of the generic one', async () => {
@@ -548,6 +564,153 @@ describe('TradingPanel', () => {
     await actor.click(screen.getByRole('button', { name: /^no$/i }))
 
     expect(screen.queryByLabelText('trade preview')).not.toBeInTheDocument()
+  })
+
+  // #357's first finding: a share pays exactly 1 credit, so the payout is
+  // the quantity and the profit is the quantity minus the cost the server
+  // quoted. Without them the trader is left doing the arithmetic that turns
+  // a cost into a bet.
+  it('shows what a buy pays if it wins and the profit, and neither on a sell', async () => {
+    mockPreview(previewResponse())
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+
+    await typeQuantity(actor, '10')
+
+    const preview = await screen.findByLabelText('trade preview')
+    // 10 shares pay 10 credits and cost 5.1250, so the profit is 4.8750 —
+    // exactly, which is the point of subtracting the strings.
+    expect(preview).toHaveTextContent('Pays if it wins')
+    expect(preview).toHaveTextContent('10.0000 credits')
+    expect(preview).toHaveTextContent('+4.8750')
+
+    // A sell gives the shares up, so there is no payout to win: showing one
+    // here would promise the trader both the proceeds and the payout.
+    mockPreview(previewResponse({ side: 'sell', total: '5.1250' }))
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    await actor.clear(screen.getByLabelText('Quantity (shares)'))
+    await typeQuantity(actor, '10')
+
+    await screen.findByText('Proceeds')
+    expect(screen.getByLabelText('trade preview')).not.toHaveTextContent('Pays if it wins')
+  })
+
+  // #357's second finding: the balance is already in context, so a trade the
+  // trader cannot afford should never cost a round trip to find out.
+  it('blocks a buy that costs more than the balance, before any request', async () => {
+    let tradeCalls = 0
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () => {
+        tradeCalls += 1
+        return HttpResponse.json({ error: { code: 'insufficient_funds', message: 'Not enough.' } }, { status: 409 })
+      }),
+    )
+    mockPreview(previewResponse({ quantity: '2000.0000', total: '-1500.0000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ balance: '1000.0000' })
+
+    await typeQuantity(actor, '2000')
+
+    expect(await screen.findByText(/you have 1,000\.0000 credits, but this trade needs 1,500\.0000/i)).toBeInTheDocument()
+    const submit = screen.getByRole('button', { name: /^buy yes$/i })
+    expect(submit).toBeDisabled()
+
+    await actor.click(submit)
+    expect(tradeCalls).toBe(0)
+  })
+
+  it('allows a buy that costs exactly the balance', async () => {
+    // The boundary the check must not round the wrong way: spending every
+    // credit you have is a trade the ledger accepts.
+    mockPreview(previewResponse({ quantity: '2000.0000', total: '-1000.0000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ balance: '1000.0000' })
+
+    await typeQuantity(actor, '2000')
+
+    await screen.findByLabelText('trade preview')
+    expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeEnabled()
+  })
+
+  it('never blocks a sell on the balance, however little the trader has', async () => {
+    // A sell pays credits in rather than taking them out, so the balance has
+    // nothing to say about it: a trader with nothing left must still be able
+    // to sell what they hold.
+    mockPreview(previewResponse({ side: 'sell', total: '5.1250' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ balance: '0.0000' })
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    await typeQuantity(actor, '10')
+
+    await screen.findByLabelText('trade preview')
+    expect(screen.getByRole('button', { name: /^sell yes$/i })).toBeEnabled()
+  })
+
+  // #357's third finding: the preview prices a sell against the shares
+  // outstanding, not against the trader's own position, so it quotes
+  // confidently for shares they do not hold.
+  it('shows the holding on the sell side and fills the field with Max', async () => {
+    mockPreview(previewResponse({ side: 'sell', total: '5.1250' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' } })
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 6.0000 shares')
+
+    await actor.click(screen.getByRole('button', { name: /^max$/i }))
+
+    expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(6)
+  })
+
+  it('blocks a sell of more shares than the trader holds, before any request', async () => {
+    let tradeCalls = 0
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () => {
+        tradeCalls += 1
+        return HttpResponse.json({ error: { code: 'insufficient_shares_held', message: 'Not enough.' } }, { status: 409 })
+      }),
+    )
+    mockPreview(previewResponse({ side: 'sell', total: '5.1250' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' } })
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    await typeQuantity(actor, '10')
+
+    expect(await screen.findByText(/you hold 6\.0000 shares, but this sell asks for 10\.0000/i)).toBeInTheDocument()
+    const submit = screen.getByRole('button', { name: /^sell yes$/i })
+    expect(submit).toBeDisabled()
+    await actor.click(submit)
+    expect(tradeCalls).toBe(0)
+
+    // The holding is per outcome: No is a different position, and this one
+    // holds nothing of it.
+    await actor.click(screen.getByRole('button', { name: /^no$/i }))
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 0.0000 shares')
+  })
+
+  it('refuses nothing while the figures the two checks need are missing', async () => {
+    // A balance that has not loaded (null, or still undefined) or a holding
+    // read that failed must not lock the panel: the ledger refuses with the
+    // exact figure either way, where clamping to what this screen does not
+    // know stops a trade the trader can actually make.
+    mockPreview(previewResponse({ quantity: '2000.0000', total: '-1500.0000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ balance: null, heldByOutcome: null })
+
+    await typeQuantity(actor, '2000')
+
+    await screen.findByLabelText('trade preview')
+    expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeEnabled()
+
+    mockPreview(previewResponse({ side: 'sell', quantity: '2000.0000', total: '1500.0000' }))
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    await act(() => vi.advanceTimersByTimeAsync(300))
+
+    await screen.findByText('Proceeds')
+    expect(screen.getByRole('button', { name: /^sell yes$/i })).toBeEnabled()
+    expect(screen.queryByText(/you hold/i)).not.toBeInTheDocument()
   })
 
   it('does not apply a quote fetched for a quantity the trader already changed away from', async () => {

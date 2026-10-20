@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { useDocumentTitle } from '../../hooks/useDocumentTitle'
 import Eyebrow from '../ui/Eyebrow'
 import { ChevronLeftIcon } from '../ui/icons'
 import Logo from '../ui/Logo'
@@ -21,8 +22,15 @@ interface AuthLayoutProps {
 
 const MESSAGE_CLASS = 'mb-4 rounded-control border px-3.5 py-[11px] text-[13px]'
 
-/** The shared frame of the login and register pages. */
+/** The shared frame of the login and register pages.
+ *
+ * Names the tab after `title` for the same reason `PageTitle` does (#356):
+ * the heading and the tab are then one string, and the landing page is left
+ * with index.html's own title, which already names the product better than
+ * "Home" would. */
 export default function AuthLayout({ eyebrow, title, subtitle, notice, error, footer, children }: AuthLayoutProps) {
+  useDocumentTitle(title)
+
   return (
     <div className="flex min-h-screen">
       <BrandPanel />

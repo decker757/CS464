@@ -138,7 +138,7 @@ also what keeps delivery ordered per socket — firing a task per send would not
 block either, and would reintroduce the reordering `service/ordering.py` exists
 to prevent, one layer lower.
 
-**Nothing in `PriceBus._dispatch` or `_dispatch_order` may raise.** Both run
+**Nothing in `FrameBus._dispatch` or `_dispatch_order` may raise.** Both run
 inside the `listen` loop, and an exception escaping would tear down the
 subscription for every connected client on this replica because one producer
 sent one bad frame. A malformed

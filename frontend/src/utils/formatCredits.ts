@@ -6,9 +6,10 @@
 //
 // Anything that is not a plain signed decimal shows "—" rather than letting
 // BigInt throw during render and take the whole page down (formatPrice.ts).
-// The sign, the whole part and the fraction are captured, so compareCredits
-// below can read the digits it orders without a second regex saying the same
-// thing. Everything else here only asks whether a value matches at all.
+// The sign, the whole part and the fraction are captured, so the comparison
+// and the subtraction below can read the digits they work on without a
+// second regex saying the same thing. Everything else here only asks whether
+// a value matches at all.
 const PLAIN_SIGNED_DECIMAL = /^(-?)(\d+)(?:\.(\d+))?$/
 
 /** Whether a value is a plain signed decimal, and so safe to format or
@@ -36,29 +37,76 @@ export function isZeroCredits(value: string): boolean {
   return /^0*$/.test(wholeRaw) && /^0*$/.test(fractionRaw)
 }
 
-/**
- * -1, 0 or 1: whether `left` is less than, the same as, or more than `right`.
- *
- * A comparison, not arithmetic — nothing here adds, subtracts or negates a
- * figure, and the caller still displays the strings it was given. Padding
- * both fractions to the same length leaves two plain integers, which BigInt
- * orders exactly where two parsed floats would not. A value that is not a
- * plain decimal orders as equal rather than letting BigInt throw during
- * render; `isPlainCredits` is how a caller drops one instead.
- */
-export function compareCredits(left: string, right: string): number {
+/** Whether a decimal string is below zero — "-0.0000" is not. A residue the
+ * pool cannot cover, on the exposure summary and in its table alike (#377). */
+export function isNegativeCredits(value: string): boolean {
+  return value.startsWith('-') && !isZeroCredits(value)
+}
+
+// Two decimal strings as two plain integers in the same unit: each fraction
+// padded to the longer of the two, so BigInt reads the digits exactly where
+// two parsed floats would not. Null when either side is not a plain decimal,
+// which is how both callers below bail out instead of letting BigInt throw
+// during render.
+function toSameScale(left: string, right: string): { leftUnits: bigint; rightUnits: bigint; fractionDigits: number } | null {
   const leftParts = PLAIN_SIGNED_DECIMAL.exec(left)
   const rightParts = PLAIN_SIGNED_DECIMAL.exec(right)
-  if (!leftParts || !rightParts) return 0
+  if (!leftParts || !rightParts) return null
 
   const [, leftSign, leftWhole, leftFraction = ''] = leftParts
   const [, rightSign, rightWhole, rightFraction = ''] = rightParts
   const fractionDigits = Math.max(leftFraction.length, rightFraction.length)
-  const leftUnits = BigInt(leftSign + leftWhole + leftFraction.padEnd(fractionDigits, '0'))
-  const rightUnits = BigInt(rightSign + rightWhole + rightFraction.padEnd(fractionDigits, '0'))
+  return {
+    leftUnits: BigInt(leftSign + leftWhole + leftFraction.padEnd(fractionDigits, '0')),
+    rightUnits: BigInt(rightSign + rightWhole + rightFraction.padEnd(fractionDigits, '0')),
+    fractionDigits,
+  }
+}
 
-  if (leftUnits < rightUnits) return -1
-  return leftUnits > rightUnits ? 1 : 0
+/**
+ * -1, 0 or 1: whether `left` is less than, the same as, or more than `right`.
+ *
+ * A comparison, not arithmetic — nothing here negates a figure, and the
+ * caller still displays the strings it was given. A value that is not a
+ * plain decimal orders as equal rather than letting BigInt throw during
+ * render; `isPlainCredits` is how a caller drops one instead.
+ */
+export function compareCredits(left: string, right: string): number {
+  const scaled = toSameScale(left, right)
+  if (!scaled) return 0
+
+  if (scaled.leftUnits < scaled.rightUnits) return -1
+  return scaled.leftUnits > scaled.rightUnits ? 1 : 0
+}
+
+/**
+ * `left` minus `right`, as a decimal string — the one piece of arithmetic in
+ * this file, and exact.
+ *
+ * A buy's profit is what it pays if it wins minus what the server charged
+ * for it (#357), and both arrive as decimal strings. BigInt subtracts the
+ * scaled integers without a float anywhere, and the digits go back together
+ * with the decimal places the longer of the two inputs had, so the answer is
+ * as precise as the figures it came from and no more.
+ *
+ * Null, rather than a dash, when either side is not a plain decimal: this
+ * returns a credits value for a caller to format, and "—" is not one. The
+ * caller drops the figure, the way `isPlainCredits`'s note describes.
+ */
+export function subtractCredits(left: string, right: string): string | null {
+  const scaled = toSameScale(left, right)
+  if (!scaled) return null
+
+  const difference = scaled.leftUnits - scaled.rightUnits
+  const sign = difference < 0n ? '-' : ''
+  const digits = (difference < 0n ? -difference : difference).toString()
+  if (scaled.fractionDigits === 0) return sign + digits
+
+  // One digit more than the fraction needs, so a value below 1 keeps its
+  // leading zero: 4 units at 4 decimal places is "0.0004", not ".0004".
+  const padded = digits.padStart(scaled.fractionDigits + 1, '0')
+  const whole = padded.slice(0, padded.length - scaled.fractionDigits)
+  return `${sign}${whole}.${padded.slice(padded.length - scaled.fractionDigits)}`
 }
 
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
@@ -67,7 +115,7 @@ export function compareCredits(left: string, right: string): number {
 // an actual loss or an actual gain; zero stays neutral.
 export function signedAmountColor(value: string): string {
   if (isZeroCredits(value)) return 'text-muted'
-  if (value.startsWith('-')) return 'text-danger'
+  if (isNegativeCredits(value)) return 'text-danger'
   return 'text-success'
 }
 

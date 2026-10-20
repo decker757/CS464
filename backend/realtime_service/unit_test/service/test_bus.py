@@ -13,7 +13,7 @@ import uuid
 import pytest
 import redis.asyncio as redis
 
-from service.bus import ORDER_CHANNEL, PRICE_CHANNEL, PriceBus, publish
+from service.bus import ORDER_CHANNEL, PRICE_CHANNEL, FrameBus, publish
 from service.ordering import VersionGate
 from service.subscriptions import Hub
 from unit_test.conftest import REDIS_UNREACHABLE, Recorder, make_event, make_order_message
@@ -37,7 +37,7 @@ async def running_bus(redis_url: str):
     published before the subscribe lands.
     """
     hub, gate = Hub(), VersionGate()
-    bus = PriceBus(redis_url=redis_url, hub=hub, gate=gate)
+    bus = FrameBus(redis_url=redis_url, hub=hub, gate=gate)
     task = asyncio.create_task(bus.run())
 
     if not await _settle(lambda: bus.connected):
@@ -180,7 +180,7 @@ async def test_a_malformed_order_message_does_not_stop_the_bus(running_bus) -> N
 async def test_an_unreachable_redis_is_retried_rather_than_fatal() -> None:
     """A bus that gave up would leave a healthy-looking service relaying
     nothing, forever. `run` must keep going and keep reporting disconnected."""
-    bus = PriceBus(
+    bus = FrameBus(
         # Nothing listens on port 1, so this fails fast rather than hanging.
         redis_url="redis://localhost:1/0",
         hub=Hub(),

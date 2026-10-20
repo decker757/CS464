@@ -26,7 +26,7 @@ export default function ConfirmModal({
   onConfirm,
 }: ConfirmModalProps) {
   return (
-    <ModalShell ariaLabel={ariaLabel} title={title} description={description}>
+    <ModalShell ariaLabel={ariaLabel} title={title} description={description} onClose={onCancel} isSubmitting={isSubmitting}>
       <div className="mt-4 flex justify-end gap-3">
         <Button variant="outline" size="sm" onClick={onCancel} disabled={isSubmitting}>
           Cancel

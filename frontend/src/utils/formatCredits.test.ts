@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isPlainCredits, isZeroCredits, unsignedCredits } from './formatCredits'
+import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isNegativeCredits, isPlainCredits, isZeroCredits, signedAmountColor, subtractCredits, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
   it('drops the decimal part', () => {
@@ -132,6 +132,35 @@ describe('compareCredits', () => {
   })
 })
 
+describe('subtractCredits', () => {
+  // The buy preview's profit is the payout minus the cost the server quoted
+  // (#357), and both arrive as decimal strings. A float would get 10.0000 −
+  // 5.1250 right and 0.3 − 0.1 wrong, so every pair below is one a float
+  // would round or lose outright.
+  it.each([
+    ['10.0000', '5.1250', '4.8750', 'a buy at four decimal places'],
+    ['0.3', '0.1', '0.2', 'the classic float rounding error'],
+    ['10.0000', '12.5000', '-2.5000', 'a payout below the cost'],
+    ['10', '2.5', '7.5', 'fractions of different lengths'],
+    ['5.0000', '5.0000', '0.0000', 'nothing left over'],
+    ['1000000000000000000.0001', '0.0002', '999999999999999999.9999', 'past what a float keeps exactly'],
+  ])('subtracts %s − %s to %s (%s)', (left, right, expected) => {
+    expect(subtractCredits(left, right)).toBe(expected)
+  })
+
+  it('subtracts a negative right-hand side by adding it', () => {
+    expect(subtractCredits('5.0000', '-2.5000')).toBe('7.5000')
+  })
+
+  it('gives null for anything unreadable rather than throwing during render', () => {
+    // BigInt throws on "1E-4". The caller drops the row instead, the way
+    // isPlainCredits's note describes — a dash is not a credits figure, so
+    // this one cannot return one.
+    expect(subtractCredits('1E-4', '5.0000')).toBeNull()
+    expect(subtractCredits('5.0000', '')).toBeNull()
+  })
+})
+
 describe('isPlainCredits', () => {
   it('accepts a signed decimal, with or without a fraction', () => {
     expect(isPlainCredits('-400.0000')).toBe(true)
@@ -158,5 +187,29 @@ describe('isZeroCredits', () => {
     expect(isZeroCredits('0.0001')).toBe(false)
     expect(isZeroCredits('-0.0001')).toBe(false)
     expect(isZeroCredits('5.0000')).toBe(false)
+  })
+})
+
+describe('isNegativeCredits', () => {
+  it('is true below zero and false for a negative zero, so "-0.0000" is never a shortfall', () => {
+    // The exposure summary and the residue column both ask this (#377); a
+    // copy of it that read the minus sign alone would have the column say
+    // "tops up" beside a summary that says "keeps".
+    expect(isNegativeCredits('-0.0001')).toBe(true)
+    expect(isNegativeCredits('-0.0000')).toBe(false)
+    expect(isNegativeCredits('0.0001')).toBe(false)
+  })
+})
+
+describe('signedAmountColor', () => {
+  it('keeps an exact zero neutral, so a portfolio nobody has traded reads flat', () => {
+    // [B-1] #376 and ADR 0018: zero is neither a gain nor a loss, so an
+    // untouched signup grant must not come out red, and a fresh position's
+    // unrealized P&L must not come out green. The gain and the loss are
+    // here as the contrast that makes "neutral" mean something.
+    expect(signedAmountColor('0.0000')).toBe('text-muted')
+    expect(signedAmountColor('-0.0000')).toBe('text-muted')
+    expect(signedAmountColor('0.0001')).toBe('text-success')
+    expect(signedAmountColor('-0.0001')).toBe('text-danger')
   })
 })

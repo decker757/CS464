@@ -96,14 +96,30 @@ export interface Portfolio {
   positions_value: string
   // balance + positions_value, exactly — nothing rounded after the valuation.
   net_worth: string
+  // What this user's signup grant actually paid them, read from that
+  // transaction's own entry — not the STARTING_CREDITS setting, which can
+  // change without rewriting an entry (ADR 0009).
+  starting_credits: string
+  // P&L already banked in `balance`: what the sells and settlements paid,
+  // less the cost basis they released. Can be negative.
+  realized_pnl: string
+  // The sum of the positions' own `unrealized_pnl` — what is still riding on
+  // positions nobody has closed. A settled row contributes nothing.
+  unrealized_pnl: string
+  // realized_pnl + unrealized_pnl, and net_worth - starting_credits, exactly.
+  // The endpoint does the sums because the browser must not do arithmetic on
+  // these strings ([B-1] #359): render this field, never a total of the
+  // other two.
+  total_pnl: string
   positions: Position[]
 }
 
 /**
- * The signed-in user's positions, cash and net worth ([T-4] #24). Only
- * positions with quantity > 0 are included — a position sold to zero is
- * omitted, not zeroed. Carries ids only; market question and outcome labels
- * are this frontend's own join, never market_service's job here.
+ * The signed-in user's positions, cash, net worth and profit and loss
+ * ([T-4] #24, [B-1] #359). Only positions with quantity > 0 are included — a
+ * position sold to zero is omitted, not zeroed. Carries ids only; market
+ * question and outcome labels are this frontend's own join, never
+ * market_service's job here.
  */
 export async function getMyPortfolio(): Promise<Portfolio> {
   const res = await api.get<Portfolio>(`${LEDGER_BASE}/ledger/portfolio/me`)

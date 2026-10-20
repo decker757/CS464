@@ -46,10 +46,13 @@ export default function checkRouteCoverage(): void {
   }
   if (unmatchedVisits.length > 0) {
     problems.push(
-      `A test opened these, and they match no route in App.tsx:\n${listed(unmatchedVisits)}\n\n` +
+      `A test opened these, and they match no route in App.tsx but the catch-all:\n${listed(unmatchedVisits)}\n\n` +
         'That usually means the guard can no longer read App.tsx properly — a\n' +
         'route moved into a child component, or its path stopped being a plain\n' +
-        'string. Until it is fixed, the pages it cannot see are unguarded.',
+        'string. Until it is fixed, the pages it cannot see are unguarded.\n' +
+        'A test that means to open a page that does not exist opens\n' +
+        'NOT_FOUND_PROBE from support/routeCoverage.ts, the one such address\n' +
+        'the guard accepts.',
     )
   }
   if (problems.length > 0) throw new Error(`\nRoute coverage (#341)\n\n${problems.join('\n\n')}\n`)

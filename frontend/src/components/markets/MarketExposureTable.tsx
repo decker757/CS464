@@ -1,6 +1,6 @@
 import type { OutcomeExposure } from '../../api/ledgerApi'
 import { HeaderCell, NumberCell, TableFrame, TableHeaderRow } from '../ui/Table'
-import { formatCreditsPrecise } from '../../utils/formatCredits'
+import { formatCreditsPrecise, isNegativeCredits, isPlainCredits, signedAmountColor, unsignedCredits } from '../../utils/formatCredits'
 
 interface MarketExposureTableProps {
   outcomes: OutcomeExposure[]
@@ -9,6 +9,25 @@ interface MarketExposureTableProps {
 
 function formatOrDash(value: string | null): string {
   return value === null ? '—' : formatCreditsPrecise(value)
+}
+
+/** A residue in the worst-case line's words (#374), so the column and the
+ * line above it say the same thing: a shortfall is what the platform tops
+ * up, its minus dropped because "tops up" already says which way it points,
+ * and anything else is what the pool keeps. A minus sign alone is the
+ * narrowest glyph on the row and colour alone fails a red-green colour-blind
+ * admin, so the words carry the direction and the colour backs them (#377). */
+function ResidueCell({ residue }: { residue: string | null }) {
+  if (residue === null || !isPlainCredits(residue)) return <NumberCell>—</NumberCell>
+
+  const words = isNegativeCredits(residue)
+    ? `Platform tops up ${formatCreditsPrecise(unsignedCredits(residue))}`
+    : `Pool keeps ${formatCreditsPrecise(residue)}`
+  return (
+    <NumberCell>
+      <span className={signedAmountColor(residue)}>{words}</span>
+    </NumberCell>
+  )
 }
 
 /** Shares outstanding, the payout if an outcome wins, and what the pool would
@@ -31,7 +50,7 @@ export default function MarketExposureTable({ outcomes, outcomeLabels }: MarketE
             <td className="px-5 py-3 text-smu-navy">{outcomeLabels.get(outcome.outcome_id) ?? outcome.outcome_id}</td>
             <NumberCell>{outcome.shares_outstanding}</NumberCell>
             <NumberCell>{formatOrDash(outcome.payout_if_wins)}</NumberCell>
-            <NumberCell>{formatOrDash(outcome.residue_if_wins)}</NumberCell>
+            <ResidueCell residue={outcome.residue_if_wins} />
           </tr>
         ))}
       </tbody>

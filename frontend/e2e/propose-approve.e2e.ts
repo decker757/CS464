@@ -30,7 +30,15 @@ test('one admin proposes an outcome and a second admin approves it', async ({ br
   await approverPage.goto('/admin/proposals')
   await expect(marketCard(approverPage, market.question)).toContainText(`Proposed by ${proposer.username}`)
   await marketCard(approverPage, market.question).getByRole('link', { name: 'Review' }).click()
-  await approverPage.getByRole('button', { name: 'Approve' }).click()
+  // The rules the market was published under reach the decide screen from the
+  // public market read, which no MSW test can prove (#358).
+  await expect(approverPage.getByText('Resolves YES if the end-to-end test says so.')).toBeVisible()
+  await expect(approverPage.getByRole('link', { name: 'Source' })).toBeVisible()
+
+  await approverPage.getByRole('button', { name: 'Approve', exact: true }).click()
+  const confirmation = approverPage.getByRole('dialog', { name: 'Approve outcome' })
+  await expect(confirmation).toContainText(market.question)
+  await confirmation.getByRole('button', { name: 'Confirm Approval' }).click()
 
   await expect(approverPage.getByRole('heading', { name: 'Proposal Approved' })).toBeVisible()
   // The "Approved by" line, not the navbar's username.

@@ -801,6 +801,15 @@ class Order(Base):
             "budget IS NULL OR filled_value <= budget",
             name="ck_orders_filled_value_within_budget",
         ),
+        # A fill moves both rollups or neither. A quantity that advanced alone
+        # would leave the reservation — `SUM(budget - filled_value)` over live
+        # orders, `service/reservations.py` — holding credits the fill has
+        # already spent, so the trader is refused for `insufficient_funds` on
+        # money they have and the balance code takes the blame.
+        CheckConstraint(
+            "(filled_quantity > 0) = (filled_value > 0)",
+            name="ck_orders_filled_quantity_iff_filled_value",
+        ),
         CheckConstraint(
             "(status = 'filled') = (filled_quantity = quantity)",
             name="ck_orders_filled_iff_nothing_remains",
