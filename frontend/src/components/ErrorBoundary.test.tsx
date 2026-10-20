@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { useState } from 'react'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
 import { WithProviders } from '../test/renderWithProviders'
@@ -15,6 +16,22 @@ function ThrowingPage(): never {
   throw new Error(FAULT_MESSAGE)
 }
 
+// The create form's shape (#348): it moves its own address from /new to
+// /:id/edit once the server has the draft, and must not lose what was typed.
+function AddressChangingForm() {
+  const navigate = useNavigate()
+  const [question, setQuestion] = useState('')
+  return (
+    <>
+      <label htmlFor="question">Question</label>
+      <input id="question" value={question} onChange={event => setQuestion(event.target.value)} />
+      <button type="button" onClick={() => navigate('/forms/2/edit', { replace: true })}>
+        Save
+      </button>
+    </>
+  )
+}
+
 function renderAt(path: string) {
   render(
     <WithProviders user={trader}>
@@ -23,6 +40,8 @@ function renderAt(path: string) {
           <Routes>
             <Route path="/markets/:id" element={<ThrowingPage />} />
             <Route path="/portfolio" element={<p>portfolio page</p>} />
+            <Route path="/forms/new" element={<AddressChangingForm />} />
+            <Route path="/forms/:id/edit" element={<AddressChangingForm />} />
           </Routes>
         </ErrorBoundary>
       </MemoryRouter>
@@ -77,5 +96,18 @@ describe('ErrorBoundary', () => {
     // navigation changes the address under it and nothing else.
     expect(await screen.findByText('portfolio page')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Something went wrong' })).not.toBeInTheDocument()
+  })
+
+  it('leaves a working page mounted when it changes its own address', async () => {
+    // Clearing the fault on navigation is easiest written as a key on the
+    // location, and that remounts every page on every navigation: this form
+    // would come back empty.
+    const user = userEvent.setup()
+    renderAt('/forms/new')
+
+    await user.type(screen.getByLabelText('Question'), 'Will it rain?')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(screen.getByLabelText('Question')).toHaveValue('Will it rain?')
   })
 })
