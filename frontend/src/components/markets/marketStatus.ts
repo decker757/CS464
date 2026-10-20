@@ -36,8 +36,14 @@ export function statusDisplay(status: string): { label: string; tone: Tone } {
 // before its close_time, and close_time stays in the future (market-service.md).
 // Takes MarketStatus | AdminMarketStatus: the admin's own markets can also be
 // draft or submitted, and neither is "open" either.
-export function tradingStopped(status: MarketStatus | AdminMarketStatus, closeTime: string, now = new Date()): boolean {
-  return status !== 'open' || new Date(closeTime) <= now
+//
+// A null close time is a market with no clock, so only the status can have
+// stopped it. Pass the null itself: new Date(null) is the 1970 epoch, which
+// reads as long past (#382).
+export function tradingStopped(status: MarketStatus | AdminMarketStatus, closeTime: string | null, now = new Date()): boolean {
+  if (status !== 'open') return true
+  if (closeTime === null) return false
+  return new Date(closeTime) <= now
 }
 
 // "Closes {date}" only while the market can still trade, so a market closed
