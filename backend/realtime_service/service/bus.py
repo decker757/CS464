@@ -35,7 +35,7 @@ _BACKOFF_INITIAL_SECONDS = 0.5
 _BACKOFF_MAX_SECONDS = 10.0
 
 
-class PriceBus:
+class FrameBus:
     """Subscribes to both channels and drives the hub until it is cancelled."""
 
     def __init__(self, *, redis_url: str, hub: Hub, gate: VersionGate) -> None:
@@ -152,7 +152,7 @@ class PriceBus:
         return subscribed
 
     async def run(self) -> None:
-        """Consume the channel forever, reconnecting with backoff.
+        """Consume the channels forever, reconnecting with backoff.
 
         Returns only on cancellation; every other failure is retried.
         """
@@ -165,7 +165,7 @@ class PriceBus:
                 raise
             except Exception:
                 subscribed = False
-                logger.exception("price bus disconnected; retrying in %.1fs", backoff)
+                logger.exception("frame bus disconnected; retrying in %.1fs", backoff)
 
             # Sleep out here, after `_consume` has closed its client; sleeping
             # in the except branch would hold a dead connection open for the
