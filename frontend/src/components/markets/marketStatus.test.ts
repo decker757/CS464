@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCloseCountdown, formatCloseTime } from './marketStatus'
+import { formatCloseCountdown, formatCloseTime, tradingStopped } from './marketStatus'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -41,5 +41,18 @@ describe('formatCloseCountdown', () => {
   // early, and its close_time stays in the future.
   it('reads Closed on a market closed early, whose close time has not passed', () => {
     expect(formatCloseCountdown('closed', closingIn(3 * HOUR), NOW)).toBe('Closed')
+  })
+})
+
+// #382. Neither input may switch off the clock half ADR 0011 makes the authority.
+describe('tradingStopped', () => {
+  // No close time is no clock: stopped, as the backend's trading_is_open says.
+  it('reads an open market with no close time as stopped, as the backend does', () => {
+    expect(tradingStopped('open', null, NOW)).toBe(true)
+  })
+
+  // Invalid Date compares false against everything, so unguarded this read as trading.
+  it('reads an unparseable close time as stopped rather than still trading', () => {
+    expect(tradingStopped('open', '', NOW)).toBe(true)
   })
 })
