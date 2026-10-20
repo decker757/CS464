@@ -543,11 +543,12 @@ async def _proposal_to_decide(
 
     Shared by approve and reject so they cannot drift. The order is the
     contract: the unscoped row lock, then state (the error a status in
-    `_PAST_DECISION_STATUS_ERRORS` gives, else `MarketNotPendingResolution`),
-    then identity against `proposed_by_id` — never the username or
-    `creator_id` (`SecondAdministratorRequired`), then the quoted
-    `proposal_id` (`ProposalSuperseded`). A null id matches only a proposal
-    made before ids existed.
+    `_PAST_DECISION_STATUS_ERRORS` gives, then `MarketNotPendingResolution`
+    for any status but PENDING_RESOLUTION), then identity against
+    `proposed_by_id` — never the username or `creator_id`
+    (`SecondAdministratorRequired`), then the quoted `proposal_id`
+    (`ProposalSuperseded`). A null id matches only a proposal made before ids
+    existed.
     """
     market = await get_any(session, market_id, for_update=True)
 
