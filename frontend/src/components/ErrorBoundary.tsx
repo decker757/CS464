@@ -18,6 +18,8 @@ interface FaultBoundaryProps {
 
 interface FaultBoundaryState {
   hasFailed: boolean
+  /** The navigation the state was last brought up to date with. */
+  seenLocationKey: string
 }
 
 /**
@@ -26,22 +28,21 @@ interface FaultBoundaryState {
  * hands it the two things it needs from the router.
  */
 class FaultBoundary extends Component<FaultBoundaryProps, FaultBoundaryState> {
-  state: FaultBoundaryState = { hasFailed: false }
+  state: FaultBoundaryState = { hasFailed: false, seenLocationKey: this.props.locationKey }
 
   // Only *that* it failed. The error itself is never put on screen: React
   // has already logged it, stack and all, to the console for a developer, and
   // a user can do nothing with it.
-  static getDerivedStateFromError(): FaultBoundaryState {
+  static getDerivedStateFromError(): Partial<FaultBoundaryState> {
     return { hasFailed: true }
   }
 
   // Cleared when the address changes, rather than keyed on it. A key would
   // remount every page on every navigation, and the create form changes its
   // own address under a form that has to stay mounted (#348).
-  componentDidUpdate(previous: FaultBoundaryProps) {
-    if (this.state.hasFailed && previous.locationKey !== this.props.locationKey) {
-      this.setState({ hasFailed: false })
-    }
+  static getDerivedStateFromProps(props: FaultBoundaryProps, state: FaultBoundaryState): Partial<FaultBoundaryState> | null {
+    if (props.locationKey === state.seenLocationKey) return null
+    return { hasFailed: false, seenLocationKey: props.locationKey }
   }
 
   render() {
