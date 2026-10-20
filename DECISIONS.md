@@ -3271,6 +3271,9 @@ reconnect storm.
 **Notes.** Recorded in #127 from the comment at `realtime_service/service/bus.py`,
 which the refactor shortened.
 
+*Amended 2026-10-20 by #394: the class is now `FrameBus`. The rule is
+unchanged.*
+
 ---
 
 ### D-NEW — The subscription hub keeps two indexes, and prunes both through one helper
