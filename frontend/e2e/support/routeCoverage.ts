@@ -4,6 +4,18 @@ import { matchRoutes } from 'react-router-dom'
 // of node and playwright, so `routeCoverage.test.ts` can run it under vitest;
 // reading the files and failing the run is `globalTeardown.ts`'s job.
 
+/**
+ * The one address a test opens to reach the 404 page on purpose (#355).
+ *
+ * The catch-all `path="*"` matches every address there is, so a visit only it
+ * matches is exactly what `unmatchedVisits` exists to report: a page whose
+ * real route the parse missed. Every such visit is still reported, except this
+ * one, which is the only visit that credits the catch-all.
+ */
+export const NOT_FOUND_PROBE = '/e2e-no-such-page'
+
+const CATCH_ALL = '*'
+
 export interface AllowedRoute {
   path: string
   reason: string
@@ -52,7 +64,7 @@ interface Uncovered {
   staleAllowlist: string[]
   /** Excused, but `App.tsx` no longer declares it. */
   unknownAllowlist: string[]
-  /** Opened, but matching no declared route — so the parse missed something. */
+  /** Opened, but matching no declared route bar the catch-all — so the parse missed something. */
   unmatchedVisits: string[]
 }
 
@@ -76,7 +88,8 @@ export function findUncoveredRoutes({ declared, visited, allowlist }: Coverage):
   for (const pathname of visited) {
     const matched = matchRoutes(routes, pathname)
     const route = matched?.at(-1)?.route.path
-    if (route === undefined) {
+    const isStrayCatchAll = route === CATCH_ALL && pathname !== NOT_FOUND_PROBE
+    if (route === undefined || isStrayCatchAll) {
       if (!unmatchedVisits.includes(pathname)) unmatchedVisits.push(pathname)
       continue
     }
