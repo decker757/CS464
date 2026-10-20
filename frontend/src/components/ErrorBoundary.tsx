@@ -74,7 +74,9 @@ class FaultBoundary extends Component<FaultBoundaryProps, FaultBoundaryState> {
  */
 export default function ErrorBoundary({ children }: ErrorBoundaryProps) {
   const location = useLocation()
-  const address = `${location.pathname}${location.search}${location.hash}`
+  // No hash: a link to the address already showing plus a fragment only
+  // scrolls, and loads nothing.
+  const address = `${location.pathname}${location.search}`
 
   return (
     <FaultBoundary locationKey={location.key} address={address}>
