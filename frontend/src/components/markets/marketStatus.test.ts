@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCloseCountdown, formatCloseTime } from './marketStatus'
+import { formatCloseCountdown, formatCloseTime, tradingStopped } from './marketStatus'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -41,5 +41,24 @@ describe('formatCloseCountdown', () => {
   // early, and its close_time stays in the future.
   it('reads Closed on a market closed early, whose close time has not passed', () => {
     expect(formatCloseCountdown('closed', closingIn(3 * HOUR), NOW)).toBe('Closed')
+  })
+})
+
+// #382. The clock half of tradingStopped is the half ADR 0011 makes the
+// authority, so neither of these may switch it off by accident.
+describe('tradingStopped', () => {
+  // No close time means no clock exists to have passed, so the status alone
+  // answers. Deliberately so: new Date(null) is the 1970 epoch, which would
+  // read every such market as stopped.
+  it('answers from the status alone when there is no close time', () => {
+    expect(tradingStopped('open', null, NOW)).toBe(false)
+  })
+
+  // A close time that does not parse is a clock that cannot be read, not one
+  // that has not passed. Invalid Date compares false against everything, so
+  // without a guard this read as still trading, and the admin row offered
+  // Close on a market the clock may already have stopped (ADR 0014).
+  it('reads an unparseable close time as stopped rather than still trading', () => {
+    expect(tradingStopped('open', '', NOW)).toBe(true)
   })
 })
