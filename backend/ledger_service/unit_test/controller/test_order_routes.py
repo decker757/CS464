@@ -36,6 +36,7 @@ from unit_test.placement_fixtures import record_result
 _ORDER_HEADING = "### POST /ledger/markets/{market_id}/orders"
 _CANCEL_HEADING = "### POST /ledger/orders/{order_id}/cancel"
 _MY_ORDERS = "/ledger/orders/me"
+_MY_ORDERS_HEADING = "### GET /ledger/orders/me"
 
 # The order object's fields, and nothing else: a gained field is a contract
 # change #61 has to hear about.
@@ -386,6 +387,18 @@ async def test_my_orders_is_200_with_the_callers_live_orders_newest_first(
     assert [order["id"] for order in mine.json()["orders"]] == list(reversed(placed))
     assert all(set(order) == _ORDER_FIELDS for order in mine.json()["orders"])
     assert theirs.json() == {"orders": []}
+
+
+async def test_my_orders_takes_no_query_parameters(trade_client) -> None:
+    """It stays unpaged. DECISIONS.md, "`GET /ledger/orders/me` returns every
+    live order, unpaged": a `limit` or a `cursor` here is a contract change
+    [FE][T-6] #61 has to hear about before it lands."""
+    client, _ = trade_client
+    schema = (await client.get("/openapi.json")).json()
+
+    assert schema["paths"][_MY_ORDERS]["get"].get("parameters", []) == []
+    section = _section(_doc(), _MY_ORDERS_HEADING).split("\n### ", 1)[0]
+    assert "No query parameters and no paging" in section
 
 
 # =========================================================================
