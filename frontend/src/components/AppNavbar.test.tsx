@@ -41,7 +41,12 @@ function renderInApp() {
     http.get('http://localhost:8000/auth/me', () => HttpResponse.json(trader)),
     http.post('http://localhost:8000/auth/logout', () => HttpResponse.json({ message: 'Logged out.' })),
     http.get('http://localhost:8003/ledger/balances/me', () =>
-      HttpResponse.json({ user_id: trader.id, account_id: 'acc-1', balance: '1000.0000' }),
+      HttpResponse.json({
+        user_id: trader.id, account_id: 'acc-1',
+        // `available` is what the navbar shows: the two differ whenever a
+        // resting buy order holds credits (ADR 0024).
+        balance: '1000.0000', reserved: '0.0000', available: '1000.0000',
+      }),
     ),
   )
   render(
@@ -120,6 +125,23 @@ describe('AppNavbar', () => {
   it('shows Balance unavailable when the load has failed', () => {
     renderNavbar(trader, null)
     expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
+  })
+
+  it('shows what is available to spend, not the balance a resting order has reserved part of', () => {
+    // ADR 0024: a resting buy order's credits stay in `balance` but cannot
+    // be spent, so the figure under "available balance" has to be
+    // `available`. Showing `balance` here would overstate it by exactly what
+    // the trader's own orders hold.
+    render(
+      <WithProviders user={trader} balance="1000.0000" available="985.0000">
+        <MemoryRouter>
+          <AppNavbar />
+        </MemoryRouter>
+      </WithProviders>,
+    )
+
+    expect(screen.getByLabelText('available balance')).toHaveTextContent('985 credits')
+    expect(screen.queryByText('1,000 credits')).not.toBeInTheDocument()
   })
 
   it('shows the real balance fetched through BalanceProvider, not just a stubbed one', async () => {
