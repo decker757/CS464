@@ -1697,14 +1697,19 @@ to market_service's step, and this route refunds it.
 Each share still held is refunded at what its holder paid for it. Sales that
 already happened stand. Where a holder sold part of what they bought, a sale
 counts as selling their **newest** shares first, so the shares refunded are
-the oldest ones, at what they cost. A share bought in one trade of several is
-refunded at the cost of its place in that trade. A filled limit order counts
-as the trade it was. Each refund is rounded down to the tick.
+the oldest ones, at what they cost. A filled limit order counts as the trade
+it was. A trade none of whose shares were sold is refunded exactly what it was
+charged. A trade some of whose shares were sold is refunded what its remaining
+shares cost at the price they were bought at, the cheapest of that trade's
+shares, rounded down to the tick; if that rounds to nothing, the refund is
+`0.0000` and writes no entry.
 
 If the market's pool cannot cover the refunds, the platform tops it up by at
 most one more seed (the market's `seed_subsidy`). Beyond that, **every refund
-is cut by the same fraction**, rounded down. Whatever the pool holds after
-the refunds goes to the platform, so the pool ends at `0.0000`.
+is cut by the same fraction**, rounded down. A refund the cut takes to
+`0.0000` writes no entry and is not counted in `positions_refunded`. Whatever
+the pool holds after the refunds goes to the platform, so the pool ends at
+`0.0000`.
 
 ### The response
 
@@ -1756,7 +1761,11 @@ After a void:
 
 A repeat answers the same `200` with the same nine fields. A repeat checks
 this service's record before market_service's status, so a market that has
-been refunded is never refused for its status, and every repeat calls
+been refunded is never refused for its status. It sums the figures from the
+first request's entries, and re-runs only the replay of the market's trades,
+to work out `total_owed`, which no entry records. It runs neither the
+consistency check nor the stake check, so an administrator who traded the
+market can still finish another administrator's void. Every repeat calls
 market_service's step again, which answers `200` without writing on a market
 already `voided`.
 
@@ -1776,8 +1785,9 @@ is left `approved` with its money refunded. That needs fixing by hand.
 ### Errors
 
 Checked in this order. The first that applies answers. A recorded void skips
-the status, book, replay and stake steps: after the read, it goes straight to
-the void step.
+the status, book, replay and stake steps, re-running only the part of the
+replay that works out `total_owed` (above), and after the read it goes
+straight to the void step.
 
 | Step | Status | `code` | When |
 | --- | --- | --- | --- |
@@ -1785,7 +1795,7 @@ the void step.
 | token | 401 | `invalid_token` | Missing, malformed or expired access token. |
 | token | 403 | `not_an_administrator` | A trader. |
 | validation | 422 | `invalid_request` | `reason` missing, not a string or over 5,000 characters, any other field, or a `market_id` that is not a UUID. |
-| validation | 422 | `void_incomplete` | `reason` is under 10 characters once trimmed. |
+| validation | 422 | `void_incomplete` | `reason` is under 10 characters once trimmed. No `error.details`, like the administrator's cancel's `cancellation_incomplete`. |
 | read | 401 | `invalid_token` | market_service refused the forwarded token. |
 | read | 404 | `market_not_found` | No such market, including a draft or a submitted one. |
 | read | 503 | `market_terms_unavailable` | market_service could not be reached, answered with unusable terms, or answered `404` for a market this service holds a book for. |
