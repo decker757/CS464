@@ -10000,3 +10000,67 @@ cancel against the owner's in both orderings; each fails with the cancel's
 `books.lock_book` removed. The ledger keeps its own copy of the reason rule
 (`_refuse_if_reason_unusable`), a twin of auth's `user_admin._reason_problems`
 (ADR 0012).
+
+---
+
+### D-NEW — GET /ledger/orders/me returns every live order, unpaged
+
+**Date:** 2026-10-20 · **Ticket:** #393 · **Status:** active
+
+**Decision.** `GET /ledger/orders/me` keeps the contract it shipped with in
+#26: every live order the caller has, newest first, in one response read by
+one statement (`service/orders.py::list_live`), with no `limit` and no
+`cursor`. It does not page through `shared/paging.py` as the ledger's history
+routes do. A client replaces its whole list with each response.
+
+**Why.**
+- *It is a snapshot, not a feed.* docs/api/ledger-service.md calls it the
+  snapshot for order frames, fetched when the page opens and again after every
+  socket reconnect, and docs/api/realtime-service.md, "Order updates", says the
+  same. It is also the only way another tab learns that an order has left the
+  book: neither the owner's cancel nor an administrator's publishes a frame,
+  and nor does a result that releases an order. A keyset walk is not one point
+  in time. The list is newest first, so an order placed between page 1 and
+  page 2 sorts ahead of page 1 and the walk never reaches it, and an order
+  cancelled after its page was read stays on screen as live with no frame
+  coming to correct it. The routes that page walk a set that only grows at the
+  newest end, which a keyset cursor handles: `entries/me` and the
+  administrator's `users/{user_id}/entries`, the market trade feed and the
+  audit feed. The leaderboard walks one stored generation, frozen for the
+  walk. This set changes in the middle, under the reader.
+- *The routes that page are the history-shaped ones, not every list.*
+  `GET /ledger/portfolio/me` returns every held position in one response from
+  one statement, so a trade committing mid-read cannot show its debit without
+  its shares ("The portfolio reads its balance and positions in one statement,
+  after the grant, with no lock").
+  `GET /ledger/markets/{market_id}/price-history` returns every point
+  unpaged; its `from` and `to` bound the payload, not the work.
+- *The read is cheap, and something else gets slow first.*
+  `ix_ledger_orders_open_by_user` is partial on `status = 'open'`, so filled
+  and cancelled orders cost it nothing. Every balance read, every debit's
+  overdraft check and every placement's budget check already sum the user's
+  live buy orders (`service/reservations.py::reserved_query_of`), through an
+  index on `user_id` alone that holds the sells beside them. A trader with
+  enough live orders to make this response slow makes their own balance and
+  every debit slow first, and paging this route would fix neither.
+
+**Rejected.**
+- *Keyset paging with the shared cursor*, as #393 asked: the two failures
+  above, on the route the realtime contract names as the recovery path, and a
+  contract change for [FE][T-6] #61 to buy them.
+- *Paging at REPEATABLE READ*, as the admin overview does for its counts: that
+  holds one snapshot inside one request, and a walk spans several.
+- *A `limit` with no cursor*: a client cannot tell a short list from a cut
+  one, and the orders it cannot see still hold credits its balance shows as
+  reserved.
+
+**Notes.** No contract change: docs/api/ledger-service.md already says "No
+query parameters and no paging". #61 builds the open-orders list against it
+and replaces the whole list on each fetch.
+
+**Reversal trigger.** A cap on live orders per trader at placement (a new
+`409` on `POST /ledger/markets/{market_id}/orders`), which bounds this
+response and the reservation sums together and lets the contract state the
+bound; or a read of this route measured as slow, whose fix is that cap rather
+than paging. Either way this entry is revisited, and paging comes back, if at
+all, beside the cap.
