@@ -61,12 +61,27 @@ interface PanelOptions {
   heldByOutcome?: Record<string, string> | null
   refetch?: () => Promise<void>
   onTraded?: () => void
+  // Off by default so these tests drive the market-order body directly, as
+  // they did before the order-type toggle existed. The limit half has its
+  // own file.
+  limitOrdersAllowed?: boolean
+  onOrderPlaced?: () => void
 }
 
-function renderPanel({ balance = '1000.0000', heldByOutcome = HELD_PLENTY, refetch = vi.fn(async () => {}), onTraded = vi.fn() }: PanelOptions = {}) {
+function renderPanel({
+  balance = '1000.0000', heldByOutcome = HELD_PLENTY, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
+  limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
+}: PanelOptions = {}) {
   return render(
-    <BalanceContext.Provider value={{ balance, refetch }}>
-      <TradingPanel marketId={MARKET_ID} outcomes={outcomes} heldByOutcome={heldByOutcome} onTraded={onTraded} />
+    <BalanceContext.Provider value={{ balance, available: balance, refetch }}>
+      <TradingPanel
+        marketId={MARKET_ID}
+        outcomes={outcomes}
+        limitOrdersAllowed={limitOrdersAllowed}
+        heldByOutcome={heldByOutcome}
+        onTraded={onTraded}
+        onOrderPlaced={onOrderPlaced}
+      />
     </BalanceContext.Provider>,
   )
 }

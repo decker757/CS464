@@ -8,11 +8,21 @@ import { compareCredits, formatCreditsPrecise, isZeroCredits, unsignedCredits } 
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 import { selectableClass } from '../ui/selectableClass'
+import LimitOrderFields from './LimitOrderFields'
 import TradePreviewSummary from './TradePreviewSummary'
+
+type OrderType = 'market' | 'limit'
 
 interface TradingPanelProps {
   marketId: string
   outcomes: PublicOutcome[]
+  // Whether this market takes limit orders at all: they are binary-markets
+  // only, and anything else is refused market_not_binary, so the choice is
+  // hidden rather than offered and refused (ledger-service.md, ADR 0024).
+  limitOrdersAllowed: boolean
+  // A limit order was placed, so the open-orders list, the balance and the
+  // holdings are stale.
+  onOrderPlaced: () => void
   // What the trader holds of each outcome of this market, as the ledger's own
   // decimal strings; an outcome that is not a key is a holding of zero, since
   // the portfolio route omits a position sold to nothing.
@@ -67,7 +77,11 @@ interface TradeToCheck {
   preview: TradePreview | null
   // Trimmed, and '' when the field has already rejected it or is empty.
   quantity: string
-  balance: string | null | undefined
+  // What a trade may actually spend: the balance less what resting buy
+  // orders reserve (ADR 0024). Reading `balance` here would let the screen
+  // wave through a trade the ledger then refuses for funds it has already
+  // committed to an order.
+  available: string | null | undefined
   heldQuantity: string | null
 }
 
@@ -82,7 +96,7 @@ interface TradeToCheck {
  * parsing them to compare would be the arithmetic formatCredits.ts exists to
  * avoid.
  */
-function refusalBeforeSending({ side, preview, quantity, balance, heldQuantity }: TradeToCheck): string {
+function refusalBeforeSending({ side, preview, quantity, available, heldQuantity }: TradeToCheck): string {
   if (side === 'sell') {
     // On the quantity alone, so it answers while the quote is still in
     // flight. A sell pays credits in, so the balance has nothing to say.
@@ -91,15 +105,18 @@ function refusalBeforeSending({ side, preview, quantity, balance, heldQuantity }
     return describeInsufficientShares(heldQuantity, quantity)
   }
 
-  if (!preview || typeof balance !== 'string') return ''
+  if (!preview || typeof available !== 'string') return ''
   const cost = unsignedCredits(preview.total)
-  if (compareCredits(cost, balance) <= 0) return ''
-  return describeInsufficientFunds(balance, cost)
+  if (compareCredits(cost, available) <= 0) return ''
+  return describeInsufficientFunds(available, cost)
 }
 
-export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTraded }: TradingPanelProps) {
-  const { balance, refetch: refetchBalance } = useBalance()
+export default function TradingPanel({
+  marketId, outcomes, limitOrdersAllowed, heldByOutcome, onTraded, onOrderPlaced,
+}: TradingPanelProps) {
+  const { available, refetch: refetchBalance } = useBalance()
 
+  const [orderType, setOrderType] = useState<OrderType>('market')
   const [side, setSide] = useState<TradeSide>('buy')
   const [outcomeId, setOutcomeId] = useState(outcomes[0]?.id ?? '')
   const [quantity, setQuantity] = useState('')
@@ -128,7 +145,7 @@ export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTrad
   const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
   // A quantity the field itself rejects says so under the field already; the
   // clamp has nothing to add about it.
-  const refusal = refusalBeforeSending({ side, preview, quantity: quantityInputError ? '' : quantity.trim(), balance, heldQuantity })
+  const refusal = refusalBeforeSending({ side, preview, quantity: quantityInputError ? '' : quantity.trim(), available, heldQuantity })
 
   const submit = async () => {
     if (!preview || submitting) return
@@ -176,6 +193,26 @@ export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTrad
 
   return (
     <div>
+      {/* Market or limit first, since it decides which fields follow. Each
+          toggle row carries its own heading (#430's ToggleRow), so a screen
+          reader meets three labelled questions rather than six loose
+          buttons. */}
+      {limitOrdersAllowed && (
+        <ToggleRow id="order-type-label" label="Order type">
+          {(['market', 'limit'] as const).map(type => (
+            <button
+              key={type}
+              type="button"
+              aria-pressed={orderType === type}
+              onClick={() => setOrderType(type)}
+              className={`flex-1 cursor-pointer rounded-control border py-2.5 text-sm font-semibold transition ${selectableClass(orderType === type)}`}
+            >
+              {type === 'market' ? 'Market' : 'Limit'}
+            </button>
+          ))}
+        </ToggleRow>
+      )}
+
       <ToggleRow id="trade-side-label" label="Buy or sell">
         <button
           type="button"
@@ -209,6 +246,17 @@ export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTrad
         ))}
       </ToggleRow>
 
+      {orderType === 'limit' ? (
+        <LimitOrderFields
+          marketId={marketId}
+          side={side}
+          outcomeId={outcomeId}
+          outcomeLabel={selectedOutcome?.label ?? ''}
+          heldQuantity={heldQuantity}
+          onPlaced={onOrderPlaced}
+        />
+      ) : (
+      <>
       {visibleLastTrade && (
         <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success">
           {visibleLastTrade.side === 'buy' ? 'Bought' : 'Sold'} {visibleLastTrade.quantity} {visibleLastTrade.outcomeLabel} for {formatCreditsPrecise(unsignedCredits(visibleLastTrade.total))} credits.
@@ -264,6 +312,8 @@ export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTrad
           ? 'Submitting…'
           : `${side === 'buy' ? 'Buy' : 'Sell'} ${selectedOutcome?.label ?? ''}`}
       </Button>
+      </>
+      )}
     </div>
   )
 }
