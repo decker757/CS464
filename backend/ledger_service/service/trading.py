@@ -165,7 +165,8 @@ def trade_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
 _FILL_KEY_PREFIX = "order-fill"
 
 
-def _fill_key(order_id: uuid.UUID, state_version: int) -> str:
+def fill_key(order_id: uuid.UUID, state_version: int) -> str:
+    """The server-derived idempotency key of an order's fill at `state_version`."""
     return f"{_FILL_KEY_PREFIX}:{order_id}:{state_version}"
 
 
@@ -293,10 +294,12 @@ async def _replay_if_present(
     return result_of(existing)
 
 
-async def _read_outcomes(
+async def list_outcomes(
     session: AsyncSession, market_id: uuid.UUID
 ) -> Sequence[MarketOutcome]:
-    """Read after the book lock is taken, so the statement log shows the
+    """The market's outcomes, in `position` order.
+
+    Read after the book lock is taken, so the statement log shows the
     price and the staleness comparison were made against a read that follows
     the lock rather than one that predates it (ADR 0015)."""
     stmt = (
@@ -307,7 +310,7 @@ async def _read_outcomes(
     return (await session.execute(stmt)).scalars().all()
 
 
-async def _read_position(
+async def find_position(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
@@ -325,7 +328,7 @@ async def _read_position(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _refuse_if_short_of_shares(
+async def refuse_if_short_of_shares(
     session: AsyncSession,
     position: Position | None,
     *,
@@ -397,7 +400,7 @@ def _release_from_position(
     position.updated_at = now
 
 
-def _write_trade(
+def write_trade(
     session: AsyncSession,
     book: MarketBook,
     *,
@@ -430,7 +433,7 @@ def _write_trade(
         _release_from_position(position, quantity=trade.quantity, now=now)
 
 
-def _trade_movement_of(
+def trade_movement_of(
     trade: PricedTrade,
     *,
     user_account: Account,
@@ -479,7 +482,7 @@ def _trade_movement_of(
     )
 
 
-def _price_event_of(
+def price_event_of(
     market_id: uuid.UUID,
     *,
     state_version: int,
@@ -527,7 +530,7 @@ def _order_event_of(order: Order, fill: TradeResult, *, now: datetime) -> OrderE
     )
 
 
-async def _list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list[Order]:
+async def list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list[Order]:
     """The market's open orders, in no order: the cascade and the crossing
     check rank them themselves. Call it holding the book lock, which every
     writer of an order row takes first, so the read takes no lock of its own.
@@ -536,7 +539,7 @@ async def _list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list
     return list((await session.execute(stmt)).scalars())
 
 
-def _resting_order_of(order: Order, outcome_ids: Sequence[uuid.UUID]) -> RestingOrder:
+def resting_order_of(order: Order, outcome_ids: Sequence[uuid.UUID]) -> RestingOrder:
     """The core's view of an order row. `seq` is unique, so a `PlannedFill`
     maps back to its row by it."""
     return RestingOrder(
@@ -548,7 +551,7 @@ def _resting_order_of(order: Order, outcome_ids: Sequence[uuid.UUID]) -> Resting
     )
 
 
-def _reservation_drop_of(order: Order, *, cost: Decimal, value_before: Decimal) -> Decimal:
+def reservation_drop_of(order: Order, *, cost: Decimal, value_before: Decimal) -> Decimal:
     """How far a fill already rolled into `order` lowers its owner's
     reservation: its cost while the order stays open, everything the order
     still held once it fills, `budget` less what it had spent before this
@@ -585,7 +588,7 @@ async def _write_fill(
     # an earlier fill has only added. D-NEW "The cascade flushes before its
     # first read and again before `post_all`", amended: before every fill.
     await session.flush()
-    position = await _read_position(
+    position = await find_position(
         session, user_id=order.user_id, market_id=order.market_id, outcome_id=order.outcome_id
     )
     trade = PricedTrade(
@@ -596,7 +599,7 @@ async def _write_fill(
         quantity=fill.quantity,
         cost=fill.cost,
     )
-    _write_trade(
+    write_trade(
         session,
         book,
         outcomes=outcomes,
@@ -610,20 +613,20 @@ async def _write_fill(
 
     owner_account = await accounts.find(session, AccountKind.USER, order.user_id)
     assert owner_account is not None  # the placement minted the owner's grant
-    return _trade_movement_of(
+    return trade_movement_of(
         trade,
         user_account=owner_account,
         pool_account=pool_account,
-        idempotency_key=_fill_key(order.id, book.state_version),
+        idempotency_key=fill_key(order.id, book.state_version),
         state_version=book.state_version,
         order_id=order.id,
-        reservation_drop=_reservation_drop_of(
+        reservation_drop=reservation_drop_of(
             order, cost=fill.cost.magnitude, value_before=value_before
         ),
     )
 
 
-async def _write_cascade(
+async def write_cascade(
     session: AsyncSession,
     book: MarketBook,
     *,
@@ -640,13 +643,13 @@ async def _write_cascade(
     caller's writes left it, and each is written as it was planned. Call it
     holding the book lock. Commits nothing.
     """
-    open_orders = await _list_open_orders(session, book.market_id)
+    open_orders = await list_open_orders(session, book.market_id)
     outcome_ids = [outcome.outcome_id for outcome in outcomes]
     by_seq = {order.seq: order for order in open_orders}
     plan = cascade_of(
         [outcome.q for outcome in outcomes],
         book.liquidity_b,
-        [_resting_order_of(order, outcome_ids) for order in open_orders],
+        [resting_order_of(order, outcome_ids) for order in open_orders],
     )
     written: list[WrittenFill] = []
     for fill in plan:
@@ -664,7 +667,7 @@ async def _write_cascade(
     return written
 
 
-def _log_refused_fill(refusal: InsufficientFunds) -> None:
+def log_refused_fill(refusal: InsufficientFunds) -> None:
     """Log at ERROR, with its figures, a refusal `CascadeFillRefused` keeps
     from the caller: they are another account's (D-NEW "A fill the running
     check refuses inside a cascade is `500 cascade_fill_refused`")."""
@@ -679,7 +682,7 @@ def _log_refused_fill(refusal: InsufficientFunds) -> None:
     )
 
 
-async def _post_with_fills(
+async def _post_trade_batch(
     session: AsyncSession, movements: list[Movement], *, trade_key: str, now: datetime
 ) -> list[Transaction]:
     """`posting.post_all` for a trade's batch, the trade's movement first.
@@ -696,11 +699,11 @@ async def _post_with_fills(
     except InsufficientFunds as refusal:
         if refusal.movement_key == trade_key:
             raise
-        _log_refused_fill(refusal)
+        log_refused_fill(refusal)
         raise CascadeFillRefused from refusal
 
 
-async def _publish_order_updates(
+async def publish_order_updates(
     redis_client: redis.Redis,
     filled: Sequence[tuple[Order, Transaction]],
     *,
@@ -814,7 +817,7 @@ async def execute(
     # which that projection does not return, and its empty-read fallback
     # would call `books.ensure_open` under this lock. The guard after it is
     # the shared one, so the trade refuses exactly the books the preview does.
-    outcomes = await _read_outcomes(session, market_id)
+    outcomes = await list_outcomes(session, market_id)
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
     q = [outcome.q for outcome in outcomes]
     b = book.liquidity_b
@@ -832,11 +835,11 @@ async def execute(
     # and any pricing. This user's position in this outcome less what their
     # sell orders reserve, not the market's shares outstanding, and read
     # without a lock of its own: the book lock holds it still.
-    position = await _read_position(
+    position = await find_position(
         session, user_id=user_id, market_id=market_id, outcome_id=outcome_id
     )
     if side is Side.SELL:
-        await _refuse_if_short_of_shares(
+        await refuse_if_short_of_shares(
             session,
             position,
             user_id=user_id,
@@ -863,7 +866,7 @@ async def execute(
         quantity=quantity,
         cost=cost,
     )
-    _write_trade(
+    write_trade(
         session,
         book,
         outcomes=outcomes,
@@ -879,13 +882,13 @@ async def execute(
     pool_account = await session.get_one(Account, book.pool_account_id)
 
     # 10b. The cascade, after the trade's own writes, on the price they left.
-    fills = await _write_cascade(
+    fills = await write_cascade(
         session, book, outcomes=outcomes, pool_account=pool_account, now=now
     )
 
     # After every write, so the context carries the trade's own version and
     # the book's after the cascade.
-    movement = _trade_movement_of(
+    movement = trade_movement_of(
         trade,
         user_account=user_account,
         pool_account=pool_account,
@@ -903,7 +906,7 @@ async def execute(
     # 11. `post_all`, the trade first: it has to be affordable before any
     # resting order fills (ADR 0024). Commits everything pending above, with
     # every movement's legs, or none of it if this raises.
-    transactions = await _post_with_fills(
+    transactions = await _post_trade_batch(
         session, [movement, *(fill.movement for fill in fills)], trade_key=key, now=now
     )
 
@@ -915,7 +918,7 @@ async def execute(
     # commit, never before it, and never on a rejection or a replay — both of
     # which have already returned by this point. A publish failure is
     # swallowed inside `bus.publish` and never reaches here.
-    event = _price_event_of(
+    event = price_event_of(
         market_id,
         state_version=result.book_state_version,
         outcomes=outcomes,
@@ -926,6 +929,6 @@ async def execute(
     await bus.publish(redis_client, event, transaction_id=result.transaction_id)
     # The trade's own transaction is first; the fills' follow, in fill order.
     filled = list(zip([fill.order for fill in fills], transactions[1:], strict=True))
-    await _publish_order_updates(redis_client, filled, now=now)
+    await publish_order_updates(redis_client, filled, now=now)
 
     return result

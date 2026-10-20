@@ -109,7 +109,7 @@ async def test_two_trades_crossing_the_same_orders_keep_every_invariant(
     factory = session_factory()
     start = asyncio.Barrier(2)
     first_session, second_session = factory(), factory()
-    pause = Pause(monkeypatch, trading, "_list_open_orders", session=first_session, call=1)
+    pause = Pause(monkeypatch, trading, "list_open_orders", session=first_session, call=1)
 
     async def run(own: AsyncSession, trader: uuid.UUID, *, waits: bool):
         await own.connection()

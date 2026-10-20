@@ -9982,6 +9982,10 @@ order.
 the ledger's real sequence, a price frame at version 4 and order frames at 2
 and 3, and fails if the order frames go through the gate.
 
+**Amended 2026-10-20.** The function that publishes the order frames is now
+public, `service/trading.py::publish_order_updates`, because the placement in
+`service/orders.py` calls it too (#391). The decision is unchanged.
+
 ---
 
 ### D-NEW — A setting that can hold a credential is a `SecretStr`, URLs included
