@@ -44,20 +44,14 @@ describe('formatCloseCountdown', () => {
   })
 })
 
-// #382. The clock half of tradingStopped is the half ADR 0011 makes the
-// authority, so neither of these may switch it off by accident.
+// #382. Neither input may switch off the clock half ADR 0011 makes the authority.
 describe('tradingStopped', () => {
-  // No close time means no clock exists to have passed, so the status alone
-  // answers. Deliberately so: new Date(null) is the 1970 epoch, which would
-  // read every such market as stopped.
-  it('answers from the status alone when there is no close time', () => {
-    expect(tradingStopped('open', null, NOW)).toBe(false)
+  // No close time is no clock: stopped, as the backend's trading_is_open says.
+  it('reads an open market with no close time as stopped, as the backend does', () => {
+    expect(tradingStopped('open', null, NOW)).toBe(true)
   })
 
-  // A close time that does not parse is a clock that cannot be read, not one
-  // that has not passed. Invalid Date compares false against everything, so
-  // without a guard this read as still trading, and the admin row offered
-  // Close on a market the clock may already have stopped (ADR 0014).
+  // Invalid Date compares false against everything, so unguarded this read as trading.
   it('reads an unparseable close time as stopped rather than still trading', () => {
     expect(tradingStopped('open', '', NOW)).toBe(true)
   })
