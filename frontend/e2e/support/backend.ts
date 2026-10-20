@@ -6,6 +6,7 @@
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
+import { isBelow } from './credits'
 
 // The same variables the app is built with, and the same defaults.
 const AUTH_URL = process.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -63,6 +64,38 @@ export async function registerTrader(label: string): Promise<Session> {
     password: PASSWORD,
   })
   return { id: body.user.id, username: body.user.username, accessToken: body.tokens.access_token }
+}
+
+// The most any one trader in the suite spends: tp_other's 200 Yes shares in
+// trading-panel.e2e.ts, on an untouched market at b = 100. A bigger buy
+// anywhere raises it.
+const LARGEST_SPEND = '143.3781'
+
+let grantRead: Promise<string> | undefined
+
+/**
+ * What the ledger grants a new trader (ADR 0009), whatever STARTING_CREDITS
+ * the stack was started with: `starting_credits` from the portfolio, which is
+ * the grant actually minted (ledger-service.md). Read off a trader of its own,
+ * never the one under test, so a test of the first read minting the grant
+ * still makes that first read itself. Once per worker.
+ */
+export function startingGrant(): Promise<string> {
+  if (!grantRead) grantRead = readStartingGrant()
+  return grantRead
+}
+
+async function readStartingGrant(): Promise<string> {
+  const probe = await registerTrader('grant_probe')
+  const portfolio = await call<{ starting_credits: string }>('GET', `${LEDGER_URL}/ledger/portfolio/me`, probe.accessToken)
+  const grant = portfolio.starting_credits
+  if (isBelow(grant, LARGEST_SPEND)) {
+    throw new Error(
+      `STARTING_CREDITS is too small for the end-to-end suite: the ledger grants ${grant} credits, and ` +
+        `trading-panel.e2e.ts has one trader spend ${LARGEST_SPEND}. Set it to at least that and recreate the ledger.`,
+    )
+  }
+  return grant
 }
 
 /**

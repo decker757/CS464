@@ -14,7 +14,9 @@ export default defineConfig({
   // [F-12] #341. The setup forgets the last run's pages; the teardown fails the
   // run if a route in App.tsx was never opened. The teardown is a no-op unless
   // `CI` is set, so running one file locally does not fail on the rest.
-  globalSetup: './e2e/support/globalSetup.ts',
+  // #373. The second setup stops the run if STARTING_CREDITS is too small for
+  // the suite's buys.
+  globalSetup: ['./e2e/support/globalSetup.ts', './e2e/support/startingGrantCheck.ts'],
   globalTeardown: './e2e/support/globalTeardown.ts',
   // No retries: a test that passes on its second try is a flaky test, and a
   // retry would hide it.
