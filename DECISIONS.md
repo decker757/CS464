@@ -10031,35 +10031,41 @@ routes do. A client replaces its whole list with each response.
   administrator's `users/{user_id}/entries`, the market trade feed and the
   audit feed walk a history that only grows at the newest end, and the
   leaderboard walks one stored generation, frozen for the walk.
-- *The routes that page are the history-shaped ones, not every list.*
+- *Unpaged is already the ledger's normal case.*
   `GET /ledger/portfolio/me` returns every held position in one response from
   one statement, so a trade committing mid-read cannot show its debit without
   its shares ("The portfolio reads its balance and positions in one statement,
   after the grant, with no lock").
   `GET /ledger/markets/{market_id}/price-history` returns every point
   unpaged; its `from` and `to` bound the payload, not the work.
-- *The read is cheap, and something else gets slow first.*
+- *The read is cheap, and the cap below bounds it better than paging.*
   `ix_ledger_orders_open_by_user` is partial on `status = 'open'`, so filled
   and cancelled orders cost it nothing. Every balance read, every debit's
   overdraft check and every placement's budget check already sum the user's
   live buy orders (`service/reservations.py::reserved_query_of`), through an
-  index on `user_id` alone that holds the sells beside them. A trader with
-  enough live orders to make this response slow makes their own balance and
-  every debit slow first, and paging this route would fix neither.
+  index on `user_id` alone that holds the sells beside them. Those sums
+  return one number however many rows they add up; this route builds one
+  object per row, so it is the read that grows first. The cap named in the
+  reversal trigger bounds it and the sums together, where paging would bound
+  only this one.
 
 **Rejected.**
-- *Keyset paging with the shared cursor*, as #393 asked: the two failures
-  above, on the route the realtime contract names as the recovery path, and a
-  contract change for [FE][T-6] #61 to buy them.
+- *Keyset paging with the shared cursor*, as #393 asked: an order removed
+  after its page was read stays on screen as live with no frame coming to
+  correct it, on the route the realtime contract names as the recovery path,
+  and a contract change for [FE][T-6] #61 to buy that.
 - *Paging at REPEATABLE READ*, as the admin overview does for its counts: that
   holds one snapshot inside one request, and a walk spans several.
 - *A `limit` with no cursor*: a client cannot tell a short list from a cut
   one, and the orders it cannot see still hold credits its balance shows as
   reserved.
 
-**Notes.** No contract change: docs/api/ledger-service.md already says "No
-query parameters and no paging". #61 builds the open-orders list against it
-and replaces the whole list on each fetch.
+**Notes.** No change to the request or response: docs/api/ledger-service.md
+already says "No query parameters and no paging". #61 builds the open-orders
+list against it and replaces the whole list on each fetch. Nothing caps the
+list today: placement is not rate limited, and at the 0.0001 minimum limit
+and quantity a trader's starting credits buy millions of live buy orders.
+That is the cap's job, not paging's.
 
 **Reversal trigger.** A cap on live orders per trader at placement (a new
 `409` on `POST /ledger/markets/{market_id}/orders`), which bounds this
