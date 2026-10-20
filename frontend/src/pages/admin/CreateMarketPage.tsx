@@ -454,6 +454,12 @@ export default function CreateMarketPage() {
   const isSubmitted = marketStatus === 'submitted'
   const isLocked = marketStatus !== 'draft' && !isCorrecting
   const submitLabel = isCorrecting ? 'Resubmit for Review' : 'Submit for Review'
+  // "the fields marked above" only when the server named some. A refusal that
+  // names none — an empty `details`, a 5xx, the network — marks nothing, and
+  // the advice would then point at marks that are not there.
+  const correctionAdvice = refusalDetails.length > 0
+    ? 'Correct the fields marked above and submit the market again.'
+    : 'Correct them and submit the market again.'
   // A published market has a page traders can see. A submitted one has none
   // yet (#354), so the banner points at the admin list for that case.
   const lockedMarketLink = lockOut && lockOut.status !== 'submitted' && marketId
@@ -728,9 +734,8 @@ export default function CreateMarketPage() {
       <div className="flex flex-col items-start gap-3 pb-12">
         {isCorrecting && (
           <p role="alert" className="text-[13px] text-danger">
-            These terms no longer pass the checks for publishing. Correct the fields marked
-            above and submit the market again. Nothing you change here is saved until it is
-            resubmitted.
+            These terms no longer pass the checks for publishing. {correctionAdvice} Nothing
+            you change here is saved until the market is resubmitted.
           </p>
         )}
         {submitError && <p role="alert" className="text-[13px] text-danger">{submitError}</p>}
