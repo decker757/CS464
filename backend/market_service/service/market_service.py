@@ -65,15 +65,16 @@ from service.validation import (
     problems_blocking_submission,
 )
 
-# Statuses whose terms no save may write, and the error each one gives.
-# ADR 0008, 0013, 0016. A table rather than `status not in (DRAFT, SUBMITTED)`
-# because each status owes a different error. Do not reuse it to gate
-# `close_early`, `propose_outcome` or the decisions: each of those *requires*
-# one of these states, so "frozen" is the wrong question for them.
-_FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
-    MarketStatus.OPEN: MarketAlreadyOpen,
-    MarketStatus.CLOSED: MarketClosed,
-    MarketStatus.PENDING_RESOLUTION: MarketPendingResolution,
+# The three status tables nest, innermost first: each spreads the one above
+# it, so a status added to an inner table is refused by every outer one too.
+# DECISIONS.md, "The market_service status tables are composed in a refactor
+# PR before VOIDED is added".
+
+# Statuses in which a decision on a proposal comes too late, and the error each
+# one gives; see `_proposal_to_decide`. Not derived from `DECIDED_STATUSES`,
+# which says whose winner is shown: the two lists agree today, but they answer
+# different questions.
+_PAST_DECISION_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
     MarketStatus.APPROVED: MarketAlreadyApproved,
     MarketStatus.SETTLED: MarketAlreadySettled,
 }
@@ -82,8 +83,18 @@ _FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
 # checked before the callers' other state gates; see `_refuse_if_resolving`.
 _RESOLUTION_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
     MarketStatus.PENDING_RESOLUTION: MarketPendingResolution,
-    MarketStatus.APPROVED: MarketAlreadyApproved,
-    MarketStatus.SETTLED: MarketAlreadySettled,
+    **_PAST_DECISION_STATUS_ERRORS,
+}
+
+# Statuses whose terms no save may write, and the error each one gives.
+# ADR 0008, 0013, 0016. A table rather than `status not in (DRAFT, SUBMITTED)`
+# because each status owes a different error. Do not reuse it to gate
+# `close_early`, `propose_outcome` or the decisions: each of those *requires*
+# one of these states, so "frozen" is the wrong question for them.
+_FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
+    MarketStatus.OPEN: MarketAlreadyOpen,
+    MarketStatus.CLOSED: MarketClosed,
+    **_RESOLUTION_STATUS_ERRORS,
 }
 
 # Same code and `details` as a refused submission; only the sentence differs.
@@ -531,19 +542,18 @@ async def _proposal_to_decide(
     """Lock the market a decision is about, or raise why it cannot be decided. ADR 0016.
 
     Shared by approve and reject so they cannot drift. The order is the
-    contract: the unscoped row lock, then state (`MarketAlreadyApproved`,
-    `MarketAlreadySettled`, `MarketNotPendingResolution`), then identity
-    against `proposed_by_id` — never the username or `creator_id`
-    (`SecondAdministratorRequired`), then the quoted `proposal_id`
-    (`ProposalSuperseded`). A null id matches only a proposal made before ids
-    existed.
+    contract: the unscoped row lock, then state (the error a status in
+    `_PAST_DECISION_STATUS_ERRORS` gives, else `MarketNotPendingResolution`),
+    then identity against `proposed_by_id` — never the username or
+    `creator_id` (`SecondAdministratorRequired`), then the quoted
+    `proposal_id` (`ProposalSuperseded`). A null id matches only a proposal
+    made before ids existed.
     """
     market = await get_any(session, market_id, for_update=True)
 
-    if market.status is MarketStatus.APPROVED:
-        raise MarketAlreadyApproved
-    if market.status is MarketStatus.SETTLED:
-        raise MarketAlreadySettled
+    error = _PAST_DECISION_STATUS_ERRORS.get(market.status)
+    if error is not None:
+        raise error
     if market.status is not MarketStatus.PENDING_RESOLUTION:
         raise MarketNotPendingResolution
 
