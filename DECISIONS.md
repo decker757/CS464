@@ -10003,7 +10003,7 @@ cancel against the owner's in both orderings; each fails with the cancel's
 
 ---
 
-### D-NEW — GET /ledger/orders/me returns every live order, unpaged
+### D-NEW — `GET /ledger/orders/me` returns every live order, unpaged
 
 **Date:** 2026-10-20 · **Ticket:** #393 · **Status:** active
 
@@ -10017,17 +10017,20 @@ routes do. A client replaces its whole list with each response.
 - *It is a snapshot, not a feed.* docs/api/ledger-service.md calls it the
   snapshot for order frames, fetched when the page opens and again after every
   socket reconnect, and docs/api/realtime-service.md, "Order updates", says the
-  same. It is also the only way another tab learns that an order has left the
-  book: neither the owner's cancel nor an administrator's publishes a frame,
-  and nor does a result that releases an order. A keyset walk is not one point
-  in time. The list is newest first, so an order placed between page 1 and
-  page 2 sorts ahead of page 1 and the walk never reaches it, and an order
-  cancelled after its page was read stays on screen as live with no frame
-  coming to correct it. The routes that page walk a set that only grows at the
-  newest end, which a keyset cursor handles: `entries/me` and the
+  same. The client replaces its state with what it reads, so the read has to
+  be one point in time. A history feed need not be: a row its walk has not
+  reached is one its reader can afford to miss until it reads from the top
+  again, and a row it has shown stays true. This set loses members in the
+  middle, under the reader: a cancel, a complete fill or a result's release
+  takes an order out wherever it sits in the list. A keyset walk is not one
+  point in time, so an order removed after its page was read stays on screen
+  as live, and for a cancel or a release no frame comes to correct it: neither
+  the owner's cancel nor an administrator's publishes one, and nor does a
+  result. This route is the only way another tab learns such an order has
+  gone. The routes that page are the other kind: `entries/me` and the
   administrator's `users/{user_id}/entries`, the market trade feed and the
-  audit feed. The leaderboard walks one stored generation, frozen for the
-  walk. This set changes in the middle, under the reader.
+  audit feed walk a history that only grows at the newest end, and the
+  leaderboard walks one stored generation, frozen for the walk.
 - *The routes that page are the history-shaped ones, not every list.*
   `GET /ledger/portfolio/me` returns every held position in one response from
   one statement, so a trade committing mid-read cannot show its debit without
