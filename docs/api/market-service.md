@@ -83,7 +83,7 @@ exception: the ledger calls it with any administrator's token, and it answers
 another administrator's draft or submitted market with
 `409 market_not_voidable`.
 
-## The eight statuses
+## The eight statuses (seven built, and `voided` proposed)
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
@@ -1204,7 +1204,8 @@ GET /markets/overview?status=closed&limit=50
   status field. Proposing gates on the stored column (ADR 0013), so for up to
   one sweep interval a market shown here as `closed` refuses a proposal with
   `409 market_not_closed`; handle that 409.
-- **`?status=`** accepts any of the statuses above, including `draft` and
+- **`?status=`** accepts any of the seven built statuses above (and `voided`
+  once ADR 0025 is built; until then it is a `422`), including `draft` and
   `submitted`, which the trader filter refuses, and `settled`. Anything else is
   a `422`.
 - **`settleable`** ([3.4] #12) is a boolean on every row, so the settle control
@@ -1290,7 +1291,7 @@ start again without a cursor instead.
 | 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
 | 403 | `not_an_administrator` | a trader |
-| 422 | — | `status` is not one of the statuses above, or `limit` is below 1 |
+| 422 | — | `status` is not one of the seven built statuses (`voided` too, until ADR 0025 is built), or `limit` is below 1 |
 
 ## GET /markets/{id}
 
@@ -1913,7 +1914,8 @@ and this page's reads.
    - `503 void_unconfirmed`: the refunds went through. Offer "Finish" which
      repeats the same request; never say the void failed.
    - `503 market_terms_unavailable`: "The market service could not be
-     reached. Nothing was refunded; try again." Nothing was written.
+     reached; try again." Make no claim about refunds: on a "Finish" repeat
+     after `void_unconfirmed`, the refunds have already gone through.
    - `500 void_replay_mismatch`: "This market's records do not add up, so it
      cannot be voided. Nothing was refunded." Retrying will not help; it needs
      a developer.
