@@ -78,10 +78,16 @@ let grantRead: Promise<string> | undefined
  * the stack was started with: `starting_credits` from the portfolio, which is
  * the grant actually minted (ledger-service.md). Read off a trader of its own,
  * never the one under test, so a test of the first read minting the grant
- * still makes that first read itself. Once per worker.
+ * still makes that first read itself. Once per worker, unless the read
+ * fails: a failure is not kept, so the next test reads again.
  */
 export function startingGrant(): Promise<string> {
-  if (!grantRead) grantRead = readStartingGrant()
+  if (!grantRead) {
+    grantRead = readStartingGrant()
+    grantRead.catch(() => {
+      grantRead = undefined
+    })
+  }
   return grantRead
 }
 
@@ -92,7 +98,7 @@ async function readStartingGrant(): Promise<string> {
   if (isBelow(grant, LARGEST_SPEND)) {
     throw new Error(
       `STARTING_CREDITS is too small for the end-to-end suite: the ledger grants ${grant} credits, and ` +
-        `trading-panel.e2e.ts has one trader spend ${LARGEST_SPEND}. Set it to at least that and recreate the ledger.`,
+        `one trader in the suite spends ${LARGEST_SPEND}. Set it to at least that and recreate the ledger.`,
     )
   }
   return grant
