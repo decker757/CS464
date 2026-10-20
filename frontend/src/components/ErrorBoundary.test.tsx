@@ -86,6 +86,15 @@ describe('ErrorBoundary', () => {
     expect(screen.getByRole('link', { name: 'Reload the page' })).toHaveAttribute('href', '/markets/abc?tab=history')
   })
 
+  it('leaves a #fragment out of the reload address', () => {
+    renderAt('/markets/abc?tab=history#x')
+
+    // A link to the address already showing plus a fragment is an in-page
+    // jump: the browser scrolls and loads nothing, so the button would do
+    // nothing at all.
+    expect(screen.getByRole('link', { name: 'Reload the page' })).toHaveAttribute('href', '/markets/abc?tab=history')
+  })
+
   it('clears the fault once the user navigates somewhere else', async () => {
     const user = userEvent.setup()
     renderAt('/markets/abc')
