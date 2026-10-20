@@ -18,7 +18,7 @@ describe('subtractCredits', () => {
   })
 
   it('reads an amount with fewer than four places as if padded', () => {
-    expect(subtractCredits('2500', '0.0001')).toBe('2499.9999')
+    expect(subtractCredits('2500.5', '0.0001')).toBe('2500.4999')
   })
 
   it('refuses to go below zero rather than return a figure no screen can show', () => {
@@ -27,8 +27,8 @@ describe('subtractCredits', () => {
 })
 
 describe('addCredits', () => {
-  it('adds exactly, carrying nothing it should not', () => {
-    expect(addCredits('1234.5678', '2000')).toBe('3234.5678')
+  it('adds exactly, carrying across the decimal point', () => {
+    expect(addCredits('0.9999', '0.0001')).toBe('1.0000')
   })
 })
 
@@ -70,5 +70,9 @@ describe('formatPreciseCredits', () => {
 describe('formatSignedCredits', () => {
   it('marks money paid in with a plus, as the history shows the grant', () => {
     expect(formatSignedCredits('1000.0000')).toBe('+1,000.0000')
+  })
+
+  it('leaves zero unsigned, as the app does', () => {
+    expect(formatSignedCredits('0.0000')).toBe('0.0000')
   })
 })
