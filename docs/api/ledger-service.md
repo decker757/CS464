@@ -1372,7 +1372,7 @@ the page opens and again after every socket reconnect
 (`docs/api/realtime-service.md`, "Order updates").
 
 It is unpaged on purpose, so replace your whole list with each response
-rather than merging into it: DECISIONS.md, "GET /ledger/orders/me returns
+rather than merging into it: DECISIONS.md, "`GET /ledger/orders/me` returns
 every live order, unpaged".
 
 | Status | `code` | When |
