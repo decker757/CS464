@@ -160,16 +160,17 @@ name, a test that just covers a criterion.
 
 Use the format at the top of the file. Append only — never renumber, never delete.
 A decision that changes gets a new entry, and the old one is marked superseded by
-the new entry's title. The author never writes a number: a new entry stays
-`D-NEW` until its PR merges. Never take the next number from the file.
+the new entry's title. The author never writes a number: a new entry is headed
+`D-NEW` and is never numbered. Never take the next number from the file.
 
 If a decision is big enough to constrain someone else's work or would be expensive
 to reverse, it needs an ADR, and **writing it is part of the ticket** — a new record
 in `docs/adr/`, or an amendment block on the one whose claim is changing. Two
 conditions on either: it names a **reversal trigger** — the condition under which
 the decision goes back, stated as something testable rather than as a feeling —
-and it cites DECISIONS.md entries **by title, never by number**, because those
-numbers have shifted on merges and an ADR is the permanent record.
+and it cites a D-NEW entry in DECISIONS.md **by its title; D-001 to D-052 by
+number**, because a number taken on a branch collides on merge and an ADR is the
+permanent record.
 
 Amend rather than supersede when the subject is unchanged and only a claim has
 moved; write a new record when the decision spans more than one existing record's

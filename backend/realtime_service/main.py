@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from controller.routes import router as realtime_router
 from core.config import get_settings
-from service.bus import PriceBus
+from service.bus import FrameBus
 from service.ordering import get_gate
 from service.subscriptions import get_hub
 
@@ -27,11 +27,11 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
 
-    bus = PriceBus(
+    bus = FrameBus(
         redis_url=settings.redis_url.get_secret_value(), hub=get_hub(), gate=get_gate()
     )
     app.state.bus = bus
-    task = asyncio.create_task(bus.run(), name="price-bus")
+    task = asyncio.create_task(bus.run(), name="frame-bus")
 
     try:
         yield
@@ -86,7 +86,7 @@ def create_app() -> FastAPI:
         Redis blip worse for users. The connections are still live, the client
         still has its last price, and the bus reconnects on its own.
         """
-        bus: PriceBus | None = getattr(request.app.state, "bus", None)
+        bus: FrameBus | None = getattr(request.app.state, "bus", None)
         return {
             "status": "ok",
             "bus": "connected" if bus is not None and bus.connected else "disconnected",
