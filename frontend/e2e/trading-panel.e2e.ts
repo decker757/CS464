@@ -1,12 +1,14 @@
 import { expect, test } from './support/fixtures'
-import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
+import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
+import { addCredits, formatPreciseCredits, formatWholeCredits, subtractCredits } from './support/credits'
 
 // [FE][T-2/T-3] #49, through the real ledger: the preview and trade routes,
 // against a real book. Exactly what unit tests against MSW mocks can't
 // catch — a request body or response field drifting from the backend would
 // still pass those.
 test('a trader buys, then sells part of it, through the real trading panel', async ({ page }) => {
+  const grant = await startingGrant()
   const admin = await registerAdmin('tp_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('trade')} happen?`)
   const trader = await registerTrader('tp_trader')
@@ -34,7 +36,9 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: /^buy yes$/i }).click()
 
   await expect(page.getByText('Bought 10 Yes for 8.8592 credits.')).toBeVisible()
-  await expect(balance).toHaveText('991 credits')
+  // The navbar shows whole credits, the fraction dropped.
+  const afterTheBuy = subtractCredits(grant, '8.8592')
+  await expect(balance).toHaveText(`${formatWholeCredits(afterTheBuy)} credits`)
 
   await page.getByRole('button', { name: /^sell$/i }).click()
   await page.getByLabel('Quantity (shares)').fill('4')
@@ -42,7 +46,8 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: /^sell yes$/i }).click()
 
   await expect(page.getByText('Sold 4 Yes for 3.5557 credits.')).toBeVisible()
-  await expect(balance).toHaveText('994 credits')
+  const afterTheSell = `${formatWholeCredits(addCredits(afterTheBuy, '3.5557'))} credits`
+  await expect(balance).toHaveText(afterTheSell)
 
   // The clamp reads the position the ledger reports after that sell, so this
   // is also the one check that the holding is re-read once a trade commits
@@ -57,7 +62,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await expect(page.getByLabel('trade preview')).toBeVisible()
   await expect(page.getByText(/you hold 6\.0000 shares, but this sell asks for 100\.0000/i)).toBeVisible()
   await expect(page.getByRole('button', { name: /^sell yes$/i })).toBeDisabled()
-  await expect(balance).toHaveText('994 credits')
+  await expect(balance).toHaveText(afterTheSell)
 })
 
 // [FE][T-2] #357's second finding, end to end: the balance comes from the
@@ -65,6 +70,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
 // a real stack proves the panel compares the two the ledger's own way and
 // stops the trade before it is ever sent.
 test('a buy the trader cannot afford is refused before the request', async ({ page }) => {
+  const grant = await startingGrant()
   const admin = await registerAdmin('tb_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('budget')} happen?`)
   const trader = await registerTrader('tb_trader')
@@ -72,13 +78,20 @@ test('a buy the trader cannot afford is refused before the request', async ({ pa
   await logIn(page, trader)
   await page.goto(`/markets/${market.id}`)
 
-  // A thousand starting credits (ADR 0009) against a buy that costs about
-  // 4,931 of them: b is 100, so the cost of 5,000 shares is far past it.
-  await page.getByLabel('Quantity (shares)').fill('5000')
+  // Two thousand shares more than the grant has credits. On an untouched
+  // two-outcome market at b = 100, buying q shares of one outcome costs
+  // q - 100 ln 2 + 100 ln(1 + e^(-q/100)). Past 2,000 shares that last term
+  // is under 0.0000003, and the ledger rounds a buy's cost up to four places
+  // (ledger-service.md, POST .../trades), so it asks q - 69.3147: more than
+  // the grant, whatever the grant is.
+  const quantity = addCredits(grant, '2000')
+  const cost = subtractCredits(quantity, '69.3147')
+  await page.getByLabel('Quantity (shares)').fill(quantity)
   await expect(page.getByLabel('trade preview')).toBeVisible()
 
-  await expect(page.getByText(/you have 1,000\.0000 credits, but this trade needs 4,93/i)).toBeVisible()
+  const refusal = `You have ${formatPreciseCredits(grant)} credits, but this trade needs ${formatPreciseCredits(cost)}.`
+  await expect(page.getByText(refusal, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
   // Nothing was sent: the balance is still the untouched starting grant.
-  await expect(page.getByLabel('available balance')).toHaveText('1,000 credits')
+  await expect(page.getByLabel('available balance')).toHaveText(`${formatWholeCredits(grant)} credits`)
 })

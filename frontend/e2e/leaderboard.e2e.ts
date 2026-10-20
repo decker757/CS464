@@ -1,6 +1,7 @@
 import { expect, test } from './support/fixtures'
-import { registerTrader } from './support/backend'
+import { registerTrader, startingGrant } from './support/backend'
 import { logIn } from './support/browser'
+import { formatPreciseCredits } from './support/credits'
 
 // [FE][L-1] #58 and [FE][L-2] #39, through the real ledger: GET
 // /ledger/leaderboard is a unit test's own idea of what the ledger sends, fed
@@ -10,6 +11,7 @@ import { logIn } from './support/browser'
 // refresh rather than asserting on the first load.
 test('the leaderboard renders a real ranking from the ledger', async ({ page }) => {
   test.setTimeout(120_000)
+  const grant = await startingGrant()
   const trader = await registerTrader('board')
   // Logging in reads the balance, which lazily mints the ledger account
   // (ADR 0009) — that is what makes this trader rankable, not a trade.
@@ -24,11 +26,12 @@ test('the leaderboard renders a real ranking from the ledger', async ({ page }) 
     return page.getByText(/Your rank: #\d+/).isVisible()
   }, { timeout: 90_000, intervals: [5_000] }).toBe(true)
 
-  // A trader with no positions is ranked at their balance, STARTING_CREDITS
-  // (1000 in .env.example), so these come from the ledger's own figures: a
-  // renamed `net_worth` would render "—" and fail here.
-  await expect(page.getByText(/Net worth: [\d,]+\.\d{4} credits/)).toBeVisible()
+  // A trader with no positions is ranked at their balance, the starting
+  // grant, so these come from the ledger's own figures: a renamed
+  // `net_worth` would render "—" and fail here.
+  const netWorth = formatPreciseCredits(grant)
+  await expect(page.getByText(`Net worth: ${netWorth} credits`, { exact: true })).toBeVisible()
   const myRow = page.locator('tr', { hasText: trader.username })
-  await expect(myRow).toContainText('1,000.0000')
+  await expect(myRow.getByText(netWorth, { exact: true })).toBeVisible()
   await expect(myRow).toContainText('(you)')
 })
