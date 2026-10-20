@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { formatCreditsPrecise, isPlainCredits, isZeroCredits, subtractCredits } from '../utils/formatCredits'
+import { formatPrice } from '../utils/formatPrice'
 
 export interface ApiError {
   error: {
@@ -171,6 +172,88 @@ export function describeTradeError(err: unknown): string {
     }
   }
   return TRADE_FIXED_MESSAGES[code] ?? GENERIC_ERROR
+}
+
+// Placement and cancel codes with a fixed message (ledger-service.md, "Limit
+// orders"). order_crosses_book and insufficient_funds carry figures and are
+// built from their details below, so they are not here.
+const ORDER_FIXED_MESSAGES: Record<string, string> = {
+  market_not_binary: 'Limit orders are only available on markets with two outcomes.',
+  market_closed: 'This market has closed, so it takes no new orders.',
+  idempotency_key_reused: 'That request already placed a different order. Reload to see your orders.',
+  cascade_fill_refused: 'The ledger could not complete this order. Nothing was placed; please report this.',
+  // The four cancel refusals. "Already cancelled" is a success as far as the
+  // trader is concerned: a retried cancel lands here (ledger-service.md).
+  order_not_found: 'That order is no longer there. Reload to see your orders.',
+  order_already_filled: 'That order filled before the cancel reached it.',
+  order_already_cancelled: 'That order was already cancelled.',
+  order_released: 'This market has a result, so what the order held is already released.',
+}
+
+/**
+ * Why a resting order blocks this price, as a sentence. ADR 0024 keeps the
+ * book one-sided: a buy must sit strictly below the lowest resting sell, a
+ * sell strictly above the highest resting buy. The caller's own orders
+ * count, which is the part traders find surprising, so the bound is named.
+ */
+export function describeOrderCrossesBook(side: string, bound: string): string {
+  return side === 'buy'
+    ? `An order is in the way at this price: a buy's limit must be below ${formatPrice(bound)}.`
+    : `An order is in the way at this price: a sell's limit must be above ${formatPrice(bound)}.`
+}
+
+/**
+ * A buy order whose budget does not fit. Unlike the trade route's
+ * `insufficient_funds`, this one carries `shortfall` and no `required`: the
+ * whole budget has to fit in `available` even when the order would fill for
+ * less, so the useful number is how much more credit is needed (ADR 0024).
+ *
+ * Second sentence as #411's: where the rest of the balance went, but only
+ * when an order is actually holding some of it.
+ */
+export function describeOrderShortfall(
+  available: string,
+  shortfall: string,
+  openOrders?: { balance: string; reserved: string },
+): string {
+  const refusal = `You have ${formatCreditsPrecise(available)} credits available, ${formatCreditsPrecise(shortfall)} short of what this order reserves.`
+  if (!openOrders || !isReserving(openOrders.reserved) || !isPlainCredits(openOrders.balance)) return refusal
+
+  return `${refusal} Your balance is ${formatCreditsPrecise(openOrders.balance)}, and ${formatCreditsPrecise(openOrders.reserved)} of it is held by your open buy orders.`
+}
+
+/** What the trader should do about a failed placement or cancel (ledger-service.md). */
+export function describeOrderError(err: unknown): string {
+  const code = errorCode(err)
+  if (!code) return GENERIC_ERROR
+  const details = tradeErrorDetails(err)
+  if (code === 'order_crosses_book' && typeof details.side === 'string') {
+    const bound = details.side === 'buy' ? details.max_limit_price : details.min_limit_price
+    if (typeof bound === 'string') return describeOrderCrossesBook(details.side, bound)
+  }
+  if (code === 'insufficient_funds') {
+    const available = tradeErrorFigure(details, 'available')
+    const shortfall = tradeErrorFigure(details, 'shortfall')
+    const balance = tradeErrorFigure(details, 'balance')
+    const reserved = tradeErrorFigure(details, 'reserved')
+    if (available !== undefined && shortfall !== undefined) {
+      const openOrders = balance !== undefined && reserved !== undefined ? { balance, reserved } : undefined
+      return describeOrderShortfall(available, shortfall, openOrders)
+    }
+  }
+  if (code === 'insufficient_shares_held') {
+    const held = tradeErrorFigure(details, 'held')
+    const requested = tradeErrorFigure(details, 'requested')
+    // The sell's own reservation reads the same here as on a trade, so this
+    // is #411's sentence rather than a second wording of it.
+    if (held !== undefined && requested !== undefined) {
+      return describeInsufficientShares(held, requested, tradeErrorFigure(details, 'reserved'))
+    }
+  }
+  // Everything a placement shares with a trade — unknown_outcome,
+  // quantity_too_large, market_not_found, invalid_request — reads the same
+  // either way, so the trade table answers for those rather than a second copy.
+  return ORDER_FIXED_MESSAGES[code] ?? describeTradeError(err)
 }
 
 interface FormErrorOptions {
