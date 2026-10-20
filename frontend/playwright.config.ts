@@ -11,9 +11,10 @@ export default defineConfig({
   testDir: './e2e',
   // `.e2e.ts`, not `.spec.ts`, so vitest's default pattern never picks these up.
   testMatch: '**/*.e2e.ts',
-  // [F-12] #341. The first setup forgets the last run's pages; the teardown fails the
-  // run if a route in App.tsx was never opened. The teardown is a no-op unless
-  // `CI` is set, so running one file locally does not fail on the rest.
+  // [F-12] #341. The first setup forgets the last run's pages; the teardown
+  // fails the run if a route in App.tsx was never opened. The teardown is a
+  // no-op unless `CI` is set, so running one file locally does not fail on
+  // the rest.
   // #373. The second setup stops the run if STARTING_CREDITS is too small for
   // the suite's buys.
   globalSetup: ['./e2e/support/globalSetup.ts', './e2e/support/startingGrantCheck.ts'],
