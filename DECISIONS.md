@@ -25,7 +25,7 @@ Fix it rather than leaving both.
 Append to the end. Never renumber, never delete — supersede.
 
 ```markdown
-### D-0NN — <short title>
+### D-NEW — <short title>
 
 **Date:** YYYY-MM-DD · **Ticket:** #NN · **Status:** active
 
@@ -39,7 +39,39 @@ Append to the end. Never renumber, never delete — supersede.
 Omit if there's nothing.
 ```
 
-Status is `active`, `superseded by D-0NN`, or `graduated to ADR NNNN`.
+A new entry is headed `D-NEW` and takes no number. It is cited by its title.
+Both forms in use are fine: `D-NEW "<title>"`, and `DECISIONS.md, "<title>"`
+where the sentence already needs the filename; inside this file the quoted
+title alone is enough. What matters is the exact title, because that is what
+the search finds. So a title must be unique: search for it before adding
+one. The same search finds the entry for any citation:
+
+```bash
+grep -nF '### D-NEW — <title>' DECISIONS.md
+```
+
+Keep it literal (`-F`) and in single quotes. Titles hold backticks, which a
+shell runs as commands inside double quotes, and `[3.4]` or `*i*`, which grep
+reads as a pattern. Write an apostrophe in the title as `'\''`.
+
+Before adding an entry, check that no title is used twice. This prints nothing
+while every title is unique:
+
+```bash
+grep '^### D-NEW — ' DECISIONS.md | sed 's/^### D-NEW — //' | sort | uniq -d
+```
+
+D-001 to D-052 keep their numbers and are still cited by them (`D-041`).
+Nobody numbers a D-NEW entry, at merge or later.
+
+Why titles: two open branches that each append an entry would both take the
+next number, and the later merge would renumber its entry and every citation
+of it, the same way two branches that both add Alembic `0002` collide. Titles
+do not collide.
+
+Status is `active`, `superseded by "<title>"`, `closed by "<title>"` or
+`graduated to ADR NNNN`. Nothing is superseded by a number: the entry doing
+the superseding is always a D-NEW one.
 
 ---
 
@@ -1975,6 +2007,11 @@ this route performs. #112's criterion is being reworded to match, the way
 **These five entries cite each other by title rather than by number**, because
 they land unnumbered and get their numbers when the PR merges — which is also
 the rule `docs/adr/` already follows when citing this file.
+
+*Amended 2026-10-20 in #395: no entry gets a number at merge any more.* An
+entry after D-052 is headed `D-NEW`, is never numbered, and is cited by its
+title, as "Format for new entries" at the top of this file says. These five
+did get their numbers, and D-001 to D-052 keep theirs.
 
 ---
 
