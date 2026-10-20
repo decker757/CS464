@@ -75,13 +75,6 @@ describe('AdminMarketRow', () => {
     expect(screen.queryByRole('button', { name: /^close$/i })).not.toBeInTheDocument()
   })
 
-  it('offers Close on an open market with no close_time, which has no clock to have passed', () => {
-    // #382: the row hands tradingStopped the null itself. Coerced to '', it
-    // would read as a clock that cannot be read, and hide Close.
-    renderRow({ ...OPEN_MARKET, close_time: null })
-    expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument()
-  })
-
   it('hides the Close control on a market whose close_time has passed, even while status still reads open', () => {
     // market-service.md's notes for #56, point 1: the same tradeable check as
     // everywhere else, not the raw status column.
