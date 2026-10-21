@@ -8,23 +8,29 @@ replay (DECISIONS.md, "The `from`/`to` window and the carry-in point are
 applied in `core`, after the replay of every trade"). The result sits beside
 the points, which end at the last trade ("Settlement adds no point to the
 price history; the series ends at the last trade").
+
+`list_prices_at` is the same replay cut at one moment, for many markets at
+once: the batch snapshot's prices a week ago ([X-1] #446).
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Row, select
+from sqlalchemy import Row, Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import PriceHistoryInconsistent
 from core.price_history import ReplayedTrade, price_history_of, window_of
-from model.entities import Entry, ResultKind, Transaction
+from model.entities import Entry, MarketBook, ResultKind, Transaction
 from service import book_prices, books, ledger_service, trading
 from service.book_prices import PricedOutcome
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -138,3 +144,58 @@ async def price_history_of_market(
         result_recorded_at=None if result is None else result.recorded_at,
     )
 
+
+def _trades_up_to_query(market_ids: Sequence[uuid.UUID], at: datetime) -> Select:
+    """Every trade at or before `at` on these markets' pools, each row also
+    carrying its `market_id` and the book's `opened_at`, ordered by market and
+    then like the feed. `ix_ledger_entries_account_feed` serves each pool."""
+    return (
+        ledger_service.trade_entries_query()
+        .add_columns(MarketBook.market_id, MarketBook.opened_at)
+        .join(MarketBook, MarketBook.pool_account_id == Entry.account_id)
+        .where(MarketBook.market_id.in_(market_ids), Entry.created_at <= at)
+        .order_by(MarketBook.market_id, Entry.created_at, Entry.id)
+    )
+
+
+async def list_prices_at(
+    session: AsyncSession,
+    outcomes_by_market: Mapping[uuid.UUID, Sequence[Row]],
+    *,
+    at: datetime,
+) -> dict[uuid.UUID, list[PricedOutcome]]:
+    """Each market's prices as they stood at `at`, after its last trade at or
+    before then. [X-1] #446.
+
+    `outcomes_by_market` holds each market's book rows in position order, as
+    `book_prices.list_book_outcomes_for_markets` reads them. One statement
+    reads every market's trades, with no lock. A market with no trade by `at`
+    is absent, and so is one whose trades the replay refuses, which is logged.
+    """
+    query = _trades_up_to_query(list(outcomes_by_market), at)
+    trades_by_market: dict[uuid.UUID, list[Row]] = {}
+    for row in (await session.execute(query)).all():
+        trades_by_market.setdefault(row.market_id, []).append(row)
+
+    prices_by_market = {}
+    for market_id, trade_rows in trades_by_market.items():
+        outcomes = outcomes_by_market[market_id]
+        position_of = {row.outcome_id: row.position for row in outcomes}
+        try:
+            replayed = price_history_of(
+                trades=[_replayed_trade_of(row, position_of) for row in trade_rows],
+                outcome_count=len(outcomes),
+                b=outcomes[0].liquidity_b,
+                opened_at=trade_rows[0].opened_at,
+            )
+        except ValueError:
+            logger.warning(
+                "no prices at %s for market %s: its trades skip or reorder a "
+                "state version",
+                at,
+                market_id,
+            )
+            continue
+        last_point = replayed[-1]
+        prices_by_market[market_id] = book_prices.priced(outcomes, list(last_point.prices))
+    return prices_by_market
