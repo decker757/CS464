@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import FilterPill from '../ui/FilterPill'
 import SearchForm from '../ui/SearchForm'
-import { STATUS_CONFIG } from './marketStatus'
+import { statusDisplay } from './marketStatus'
 
 // The statuses GET /public/markets accepts, in the order market-service.md
 // lists them; draft and submitted are never listed to a trader.
@@ -12,8 +12,13 @@ export type StatusFilter = (typeof STATUS_FILTERS)[number]
 // its label are drawn from one place instead of "All" being copied in by hand.
 const FILTER_OPTIONS: (StatusFilter | null)[] = [null, ...STATUS_FILTERS]
 
+// The trader's words, not the lifecycle's: "Pending" and "Approved" are
+// steps of a state machine that exists for a rule a trader knows nothing
+// about, and nothing on this screen explained the difference between
+// Approved and Settled ([X-1] #431). marketStatus.ts holds the mapping and
+// why the administrator's list keeps its own words.
 function filterLabel(status: StatusFilter | null): string {
-  return status === null ? 'All' : STATUS_CONFIG[status].label
+  return status === null ? 'All' : statusDisplay(status, 'trader').label
 }
 
 interface MarketFiltersProps {
@@ -86,7 +91,7 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
             <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={handleClearQuery} />
           )}
           {status !== null && (
-            <ActiveFilterChip label={`Status: ${STATUS_CONFIG[status].label}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
+            <ActiveFilterChip label={`Status: ${filterLabel(status)}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
           )}
           <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
             Clear all

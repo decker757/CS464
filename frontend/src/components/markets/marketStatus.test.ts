@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCloseCountdown, formatCloseTime, tradingStopped } from './marketStatus'
+import { formatCloseCountdown, formatCloseTime, statusDisplay, tradingStopped } from './marketStatus'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -54,5 +54,37 @@ describe('tradingStopped', () => {
   // Invalid Date compares false against everything, so unguarded this read as trading.
   it('reads an unparseable close time as stopped rather than still trading', () => {
     expect(tradingStopped('open', '', NOW)).toBe(true)
+  })
+})
+
+// [X-1] #431 AC 3. Three of the seven statuses are named after a step of the
+// resolution machinery rather than after anything a trader can act on:
+// `pending_resolution` and `approved` are both "the result is being decided",
+// one of them only because a second administrator has to agree (ADR 0016),
+// and an approved result still goes back to CLOSED if it is sent back inside
+// its dispute window (ADR 0023) — so only `settled` is final. The admin's own
+// screens keep the precise words, which is why those are the default.
+describe('statusDisplay', () => {
+  it.each([
+    { status: 'pending_resolution', toAdmins: 'Pending',  toTraders: 'Resolving' },
+    { status: 'approved',           toAdmins: 'Approved', toTraders: 'Awaiting payout' },
+    { status: 'settled',            toAdmins: 'Settled',  toTraders: 'Resolved' },
+  ])('calls a $status market "$toAdmins" to an admin and "$toTraders" to a trader', ({ status, toAdmins, toTraders }) => {
+    expect(statusDisplay(status).label).toBe(toAdmins)
+    expect(statusDisplay(status, 'admin').label).toBe(toAdmins)
+    expect(statusDisplay(status, 'trader').label).toBe(toTraders)
+  })
+
+  // The words both sides already share, and the ones the trader's filter and
+  // the admin's tabs have in common.
+  it('leaves the statuses that need no translation alone', () => {
+    expect(statusDisplay('open', 'trader')).toEqual(statusDisplay('open'))
+    expect(statusDisplay('closed', 'trader')).toEqual(statusDisplay('closed'))
+  })
+
+  // A status this frontend has not heard of yet is still shown rather than
+  // crashing the page, in whosever words were asked for.
+  it('shows a status it does not know by its own name', () => {
+    expect(statusDisplay('sent_back', 'trader')).toEqual({ label: 'sent back', tone: 'neutral' })
   })
 })
