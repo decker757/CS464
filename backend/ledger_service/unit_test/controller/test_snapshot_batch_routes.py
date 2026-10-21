@@ -2,8 +2,8 @@
 
 What the controller owns: the route needs a signed-in caller of any role, it
 refuses more ids than its documented cap, and each item in the answer is the
-single snapshot's body plus `credits_traded` (#447). Which markets are answered, and in what order, is
-`test_snapshot_batch.py`'s.
+single snapshot's body plus `credits_traded` (#447). Which markets are
+answered, and in what order, is `test_snapshot_batch.py`'s.
 """
 
 from __future__ import annotations
