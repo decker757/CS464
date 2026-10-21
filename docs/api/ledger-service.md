@@ -390,9 +390,9 @@ a resting sell order is waiting to sell, because those are still the caller's
 until a fill takes them. `reserved_shares` is what the caller's live sell
 orders of that outcome still hold back: the sum of their
 `quantity - filled_quantity`, which is the order object's own
-`reserved_shares` summed per outcome. A sell, instant or a new sell order, can take
-`quantity - reserved_shares`, and the trade route refuses anything more with
-`insufficient_shares_held`, whose `details` carry the same `reserved`. So a
+`reserved_shares` summed per outcome. A sell, instant or a new sell order, can
+take `quantity - reserved_shares`, and the trade route refuses anything more
+with `insufficient_shares_held`, whose `details` carry the same `reserved`. So a
 sell control's maximum is `quantity - reserved_shares`, never the whole
 position. The figure is a decimal string at scale 4, `"0.0000"` where no live
 sell order holds any, and never null. A settled row always reports
