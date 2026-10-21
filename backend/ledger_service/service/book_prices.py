@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,21 +36,26 @@ class PricedOutcome:
     price: Decimal
 
 
+def _book_outcomes_query() -> Select:
+    """`market_books` joined to `market_outcomes`, one row per outcome, with
+    the columns a price is computed from. In one statement, D-013."""
+    return select(
+        MarketBook.state_version,
+        MarketBook.liquidity_b,
+        MarketBook.state_changed_at,
+        MarketOutcome.outcome_id,
+        MarketOutcome.position,
+        MarketOutcome.q,
+    ).join(MarketOutcome, MarketOutcome.market_id == MarketBook.market_id)
+
+
 async def list_book_outcomes(
     session: AsyncSession, market_id: uuid.UUID
 ) -> Sequence[Row]:
     """This market's book joined to its outcomes, one row per outcome ordered
     by position. Empty when no book exists; never opens one, never locks."""
     stmt = (
-        select(
-            MarketBook.state_version,
-            MarketBook.liquidity_b,
-            MarketBook.state_changed_at,
-            MarketOutcome.outcome_id,
-            MarketOutcome.position,
-            MarketOutcome.q,
-        )
-        .join(MarketOutcome, MarketOutcome.market_id == MarketBook.market_id)
+        _book_outcomes_query()
         .where(MarketBook.market_id == market_id)
         .order_by(MarketOutcome.position)
     )

@@ -9,10 +9,12 @@ closed market still has a price to render, and the reconnect needs one.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
+from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.lmsr import prices as lmsr_prices
@@ -28,6 +30,18 @@ class Snapshot:
     state_version: int
     prices: list[PricedOutcome]
     occurred_at: datetime
+
+
+def _snapshot_of(market_id: uuid.UUID, rows: Sequence[Row]) -> Snapshot:
+    """A market's snapshot from its book rows, one per outcome in position
+    order, as `book_prices` reads them."""
+    q = [row.q for row in rows]
+    return Snapshot(
+        market_id=market_id,
+        state_version=rows[0].state_version,
+        prices=book_prices.priced(rows, lmsr_prices(q, rows[0].liquidity_b)),
+        occurred_at=rows[0].state_changed_at,
+    )
 
 
 async def snapshot(
@@ -46,15 +60,5 @@ async def snapshot(
     rows = await book_prices.read_or_open(
         session, market_id, access_token=access_token, terms_client=terms_client
     )
-
-    state_version = rows[0].state_version
-    b = rows[0].liquidity_b
-    q = [row.q for row in rows]
-
-    return Snapshot(
-        market_id=market_id,
-        state_version=state_version,
-        prices=book_prices.priced(rows, lmsr_prices(q, b)),
-        occurred_at=rows[0].state_changed_at,
-    )
+    return _snapshot_of(market_id, rows)
 
