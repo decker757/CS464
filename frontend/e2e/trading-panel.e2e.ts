@@ -31,7 +31,9 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByLabel('Quantity (shares)').fill('10')
   const preview = page.getByLabel('trade preview')
   await expect(preview.getByText('8.8592 credits', { exact: true })).toBeVisible()
-  await expect(preview.getByText('0.8859', { exact: true })).toBeVisible()
+  // The unit is part of the row (#430), so match the whole string rather than
+  // the figure alone: an exact matcher without it is what broke dev (#470).
+  await expect(preview.getByText('0.8859 credits/share', { exact: true })).toBeVisible()
   await expect(preview).toContainText('88.1% → 89.1%')
   await page.getByRole('button', { name: /^buy yes$/i }).click()
 
