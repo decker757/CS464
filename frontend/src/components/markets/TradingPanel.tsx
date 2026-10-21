@@ -28,11 +28,38 @@ interface TradingPanelProps {
 }
 
 // Buy and Sell are the same toggle shape with a different active colour.
+//
+// Green for buy and red for sell is the convention Polymarket and Kalshi both
+// use, and here it is also the colour the rest of the panel speaks: the
+// confirmation banner is `success`, a refusal is `danger`, a profit figure is
+// whichever its sign makes it. So this row keeps its tint rather than taking
+// the navy fill the outcome row below it uses. What #430 found is real all the
+// same — two same-shaped rows a few pixels apart disagreeing about what "on"
+// looks like — and `ToggleRow` answers it by giving each row its own heading,
+// so they read as two questions and not as one control in two halves.
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
   const activeClass = activeColor === 'success' ? 'border-success bg-success/10 text-success' : 'border-danger bg-danger/10 text-danger'
   return `flex-1 cursor-pointer rounded-control border py-2.5 text-sm font-semibold transition ${
     active ? activeClass : selectableClass(false)
   }`
+}
+
+// One labelled row of toggles, headed the way the quantity field below is
+// headed. The heading is what separates the two rows; `role="group"` with the
+// heading as its name is the same separation for a screen reader, which
+// otherwise meets four pressable buttons in a row with nothing to say which
+// question each answers.
+function ToggleRow({ id, label, children }: { id: string; label: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-4">
+      <p id={id} className="mb-1.5 text-[13px] font-semibold text-smu-navy">
+        {label}
+      </p>
+      <div role="group" aria-labelledby={id} className="flex gap-2">
+        {children}
+      </div>
+    </div>
+  )
 }
 
 interface TradeToCheck {
@@ -149,7 +176,7 @@ export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTrad
 
   return (
     <div>
-      <div className="mb-3 flex gap-2">
+      <ToggleRow id="trade-side-label" label="Buy or sell">
         <button
           type="button"
           onClick={() => setSide('buy')}
@@ -166,9 +193,9 @@ export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTrad
         >
           Sell
         </button>
-      </div>
+      </ToggleRow>
 
-      <div className="mb-3 flex gap-2">
+      <ToggleRow id="trade-outcome-label" label="Outcome">
         {outcomes.map(outcome => (
           <button
             key={outcome.id}
@@ -180,7 +207,7 @@ export default function TradingPanel({ marketId, outcomes, heldByOutcome, onTrad
             {outcome.label}
           </button>
         ))}
-      </div>
+      </ToggleRow>
 
       {visibleLastTrade && (
         <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success">
