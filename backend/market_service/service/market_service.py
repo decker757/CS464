@@ -65,10 +65,13 @@ from service.validation import (
     problems_blocking_submission,
 )
 
-# The three status tables nest, innermost first: each spreads the one above
+# --- the status tables -----------------------------------------------------
+# The three tables below nest, innermost first: each spreads the one above
 # it, so a status added to an inner table is refused by every outer one too.
-# DECISIONS.md, "The market_service status tables are composed in a refactor
-# PR before VOIDED is added".
+# Not the other way: a status that should only freeze the terms, as OPEN and
+# CLOSED do, goes in `_FROZEN_STATUS_ERRORS` alone. DECISIONS.md, "The
+# market_service status tables are composed in a refactor PR before VOIDED
+# is added".
 
 # Statuses in which a decision on a proposal comes too late, and the error each
 # one gives; see `_proposal_to_decide`. Not derived from `DECIDED_STATUSES`,
