@@ -14,12 +14,12 @@ import { logIn, marketCard, setQueryParams } from './support/browser'
 // box is page state and does not survive the remount a Back causes, so
 // scoping the request itself is the only way the list is the same list, and
 // the same height, on both sides of the Back.
-const MARKETS = 8
+const MARKETS = 5
 // The card to open: far enough down that scrolling to it is a real offset,
 // and far enough from the end that the offset is nowhere near the bottom of
 // the page. At the bottom the browser clamps the scroll to whatever the page
 // can reach, which would make this a test about the page's exact height.
-const CARD_TO_OPEN = 3
+const CARD_TO_OPEN = 2
 
 test('coming back from a market returns the browse list to where it was', async ({ page }) => {
   const admin = await registerAdmin('sr_admin')
@@ -32,9 +32,11 @@ test('coming back from a market returns the browse list to where it was', async 
   const trader = await registerTrader('sr_trader')
 
   await setQueryParams(page, '/public/markets', { q: run })
-  // One column, so eight cards are taller than the window and there is
-  // something to scroll in the first place.
-  await page.setViewportSize({ width: 600, height: 500 })
+  // One column and a short window, so five cards are taller than what is on
+  // screen and there is something to scroll in the first place. Five rather
+  // than more: every market here is a market every other test's browse list
+  // then pages through, and this is a shared database.
+  await page.setViewportSize({ width: 500, height: 400 })
   await logIn(page, trader)
 
   // Every card's prices in before anything is scrolled: a card grows by a
