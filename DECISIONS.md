@@ -10151,6 +10151,13 @@ nothing; it is a POST only because its input is a list.
 **Reversal trigger.** A second list-taking route on the ledger that chooses a
 different shape, at which point the two are made to agree.
 
+**Amended 2026-10-21.** Each item is now the single snapshot's body **plus
+`prices_7d_ago`** ([X-1] #446), a field only the batch carries ("The batch
+snapshot carries each outcome's price a week ago, not the change, and the
+single snapshot does not"). The point of the bullet above still holds: every
+field the single snapshot has means the same in the item, so the frontend
+renders all three with one function and reads the extra field beside it.
+
 ---
 
 ### D-NEW — The batch snapshot takes at most 200 ids, and refuses more
@@ -10280,3 +10287,189 @@ appears in the request; a repeated id is not an error.
   of one market to reconcile.
 
 **Reversal trigger.** None expected.
+
+---
+
+### D-NEW — A card's price change is measured over seven days
+
+**Date:** 2026-10-21 · **Ticket:** #446 · **Status:** active
+
+**Decision.** The batch snapshot reports each market's prices as they stood
+seven days before the request. One window, fixed in code
+(`service/snapshot.py::_PRICE_CHANGE_WINDOW`), not a setting and not a request
+parameter.
+
+**Why.**
+- *Classroom markets trade in bursts.* Trading clusters around the week's
+  class meetings, and a market can sit untouched for days between them. Over
+  24 hours most cards would compare today's price with an identical one from
+  yesterday and show no change on nearly every market, most days. Seven days
+  spans one cycle of class meetings, so the change a card shows is the one
+  the last session made.
+- *The landing page already promises it.* Its example card has read
+  "YES · 7-day trend" and "up from 52.0% a week ago" since #64. Seven days
+  makes the product say what the landing page says.
+- *Decided once, on the server.* #446: the window is "decided once instead of
+  each caller picking". A request parameter is each caller picking; a setting
+  is a number the frontend's label has to match and cannot read.
+- *The length costs nothing.* The baseline replays every trade up to the
+  window's start whatever its length ("The prices a week ago are replayed from
+  each pool's trades up to the window's start, in one statement for every
+  market").
+
+**Rejected.** 24 hours, for the reason above. A `window` query parameter. A
+setting.
+
+**Reversal trigger.** Markets that trade many times a day, where a week
+smooths away everything a trader would want to see. The field's name carries
+the window, so changing it is a visible contract change.
+
+---
+
+### D-NEW — The batch snapshot carries each outcome's price a week ago, not the change, and the single snapshot does not
+
+**Date:** 2026-10-21 · **Ticket:** #446 · **Status:** active
+
+**Decision.** Each item of `POST /ledger/markets/snapshots` gains
+`prices_7d_ago`: a list in the shape and order of `prices`
+(`outcome_id`, `position`, `price`), or null when the market has no baseline.
+The card's change is `price` minus the entry with the same `outcome_id`. The
+single snapshot and the `price` socket frame do not carry it.
+
+**Why.**
+- *The prior price, not the change.* The item already holds the current
+  price, so the prior price is the one new fact. A change would restate the
+  current price inside a difference, and would be wrong against any newer
+  price the card later holds; the prior price stays right against all of
+  them. The landing copy, "up from 52.0% a week ago", needs the prior price
+  itself. Both prices come from `book_prices.priced`, the one quantizer, so
+  their difference is exact at four places.
+- *Every outcome.* The card shows a chip per outcome, binary and multi-outcome
+  alike (up to ten). On a multi-outcome market no one outcome is "the" price,
+  and on a binary one the second entry is the complement, which costs nothing
+  and keeps one path.
+- *Null for the whole list, not per outcome.* A baseline is a state of the
+  whole book; a market has one or it has not.
+- *The batch only.* The detail page draws price history rather than a delta,
+  and the socket frame is published per trade by a relay that owns no data
+  (ADR 0010). On the single snapshot it would be an extra read on every page
+  open and every reconnect for a field nobody shows. The item stays a superset
+  of the single snapshot's body, which is what the one render function needs.
+  "The batch snapshot is `POST /ledger/markets/snapshots`, a read with a body"
+  carries an amendment saying so.
+
+**Rejected.**
+- *The change itself*, for the reasons above.
+- *One outcome's price* (the first, or the leader): blank chips on every
+  multi-outcome card.
+- *A map beside `snapshots`*, keyed by market id: it would keep the item
+  exactly the single snapshot's body, but makes the frontend join two
+  structures, and #432 shaped the item so per-market fields ride on it.
+- *Carrying it on the single snapshot too*, for the cost above.
+
+**Reversal trigger.** A second screen that wants the change for one market,
+such as the detail page's header.
+
+---
+
+### D-NEW — A card's price change is measured from the last trade at or before seven days ago, and a market with none has no change
+
+**Date:** 2026-10-21 · **Ticket:** #446 · **Status:** active
+
+**Decision.** `prices_7d_ago` is the market's prices after its last trade
+whose `created_at` is at or before `now - 7 days`. A market with no such trade
+has none: null. A market whose last trade is older than that, and which has not
+traded since, has `prices_7d_ago` equal to `prices`, a change of exactly zero.
+`now` is Python's clock, read once in the controller.
+
+**Why.**
+- *A market's history starts at its first trade, not at its book's opening.*
+  #446: a market with "less history than the window shows no delta rather than
+  ... a change measured from the seed price". The opening point is the seed,
+  uniform prices nobody chose (#445). So "less history than the window" means
+  precisely: no trade at or before the window's start. That covers a market
+  never traded and one first traded inside the window, even when its book was
+  open, at its seed, at the window's start.
+- *At or before*, like price history: a chart drawn from `from` starts at the
+  level a trade stamped exactly `from` set, because `from` includes that point
+  ("Price history returns raw points, one per trade, filtered by `from` and
+  `to` with a carry-in point; nothing is bucketed").
+- *Zero, not null, when nothing traded in the window.* The baseline is a price
+  traders set, and it held all week, so the change is truly zero. The ticket's
+  "misleading zero" is a zero with no baseline behind it, which null already
+  prevents. Null here would make a quiet market look like a new one.
+- *Python's clock.* Every entry's `created_at` is stamped from Python's clock
+  by `posting.post` ("A movement's timestamp is fixed under its account locks,
+  not trusted from the clock"), so the cutoff is measured on the clock that
+  stamped the trades. Read once, in the controller ("One clock per request,
+  read at the controller, Python's not the transaction's"); the read decides
+  and writes nothing, so the transaction's clock buys nothing here. Replica
+  skew of seconds moves a seven-day edge by seconds.
+
+**Rejected.** The book's opening as a baseline. Null for a market that has not
+moved. The database clock.
+
+**Reversal trigger.** None expected.
+
+---
+
+### D-NEW — The prices a week ago are replayed from each pool's trades up to the window's start, in one statement for every market
+
+**Date:** 2026-10-21 · **Ticket:** #446 · **Status:** active
+
+**Decision.** `service/price_history.py::list_prices_at` reads every trade at
+or before the cutoff on the requested markets' pool accounts in one statement:
+`ledger_service.trade_entries_query()` joined to `market_books` on
+`pool_account_id`, `market_id IN (...)`, `created_at <= cutoff`, ordered by
+market, `created_at`, `id`. Each market's trades go through the price-history
+replay (`core/price_history.py::price_history_of`), and the last point is
+priced with `book_prices.priced`. The batch therefore sends two statements
+however many markets it is asked about: #432's book read and this one. No
+lock, no new index, no migration. A market whose trades the replay refuses gets
+null, and a warning in the log.
+
+**Why.**
+- *Nothing stores a past price.* A trade's `context` records its outcome,
+  side, quantity and `state_version`, not the `q` it left. So the price at the
+  cutoff needs every trade up to it, which is the replay price history already
+  runs ("Price history is replayed from the trades on the pool's feed, and
+  nothing stores it"). A `DISTINCT ON` the last trade before the cutoff would
+  name the trade, not its price.
+- *The time condition belongs in SQL here,* unlike the one "The `from`/`to`
+  window and the carry-in point are applied in `core`, after the replay of
+  every trade" rejects. That one dropped the trades before `from`; this keeps
+  every trade from the first up to the cutoff. The pool's feed is in commit
+  order, which is `state_version` order, so those trades are a prefix of it:
+  the replay still starts at version 1, and its 1, 2, 3, ... check still holds.
+- *An existing index serves it.* `ix_ledger_entries_account_feed`
+  (`account_id`, `created_at DESC`, `id DESC`) answers
+  `account_id = <pool> AND created_at <= cutoff` for each pool, reached from
+  `market_books` by its primary key.
+- *The two statements cannot disagree about the baseline.* The current prices
+  come from the book read; the baseline from this one, a moment later, under
+  READ COMMITTED. A trade committing between them may be visible to the second
+  and not the first. But it is stamped no earlier than its own request's clock,
+  so to fall at or before `now - 7 days` it would have to have been in flight
+  for a week. The baseline is settled history, and no interleaving moves it.
+  The card subtracts the baseline from the `prices` in the same item, which
+  carry their own `state_version`.
+- *A refused replay costs one card its delta,* for the reason "A book the batch
+  snapshot cannot price is left out and logged" gives. That market's `prices`
+  are unaffected, and its price history reports
+  `500 price_history_inconsistent`.
+
+**Rejected.**
+- *Subtracting the window's trades from the current `q`.* It reads fewer rows,
+  but a trade committing between the two statements would be subtracted from a
+  `q` that never included it, so it would need one statement or a
+  repeatable-read transaction. It would also need its own reading of a trade
+  row.
+- *Summing the signed quantities in SQL from `context`.* A second reading of a
+  trade's context beside `trade_fields_of`, which price history and the trade
+  feed share so that a trade means the same thing on every route.
+
+**Notes.** The rows read are every trade older than a week on the requested
+markets. Price history measured the replay at about 0.12 s for 10,000 trades.
+
+**Reversal trigger.** A batch read measured as slow. Then the trade records the
+`q` it leaves, and the baseline becomes one `DISTINCT ON` per pool.
