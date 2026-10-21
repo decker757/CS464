@@ -25,6 +25,9 @@ sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/         0002 only: a login role, and 02-schemas.sql re-run
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
+docs/architecture.md    three mermaid diagrams — the services and their
+                        schemas, a trade across three services, the ERDs —
+                        each naming the ADR it was drawn from
 DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
                         cited from code comments by number (D-001 to D-052)
                         or, after those, by title (D-NEW "<title>")
