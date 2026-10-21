@@ -30,8 +30,9 @@ test('an admin sees a trade in the price history and the trade log', async ({ pa
   const newestTrade = rows.nth(1)
   await expect(newestTrade).toContainText('Buy')
   await expect(newestTrade).toContainText('5.0000')
-  // The user column is the trader's id, cut short (MarketTradeTable).
-  await expect(newestTrade).toContainText(trader.id.slice(0, 8))
+  // The user column names the trader, joined in from auth's lookup
+  // (MarketTradeTable, #434); trade-log-usernames.e2e.ts owns that join.
+  await expect(newestTrade).toContainText(trader.username)
   // The date column read a field the ledger really sends.
   const dateCell = newestTrade.getByRole('cell').first()
   await expect(dateCell).not.toContainText('Invalid Date')
