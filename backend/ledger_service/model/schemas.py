@@ -3,11 +3,12 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-Four request models, for the four routes that write: `TradeIn` for [T-2]
+Five request models, for the five routes that write: `TradeIn` for [T-2]
 #22's `POST /ledger/markets/{market_id}/trades`, `OrderIn` for [T-6] #26's
 `POST /ledger/markets/{market_id}/orders`, `CancelIn` for [T-8] #28's
-`POST /ledger/orders/{order_id}/cancel`, and `SettlementIn` for [3.4] #12's
-`POST /ledger/markets/{market_id}/settlement`. None carries an account, an
+`POST /ledger/orders/{order_id}/cancel`, `AdminCancelIn` for [T-8] #326's
+`POST /ledger/admin/orders/{order_id}/cancel`, and `SettlementIn` for [3.4]
+#12's `POST /ledger/markets/{market_id}/settlement`. None carries an account, an
 amount or a leg — `extra="forbid"` refuses a body naming one — which is the
 answer ADR 0009's amendments give to how a caller authenticates to a write
 path. `SnapshotsIn` is the body of a route that only reads, [X-1] #432's
