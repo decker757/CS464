@@ -15,8 +15,18 @@ export interface OutcomePrice {
 // docs/api/realtime-service.md
 export interface PriceState {
   market_id: string
+  // The book's counter, incremented under the lock on every trade, with a
+  // CHECK (state_version >= 0) on the column. **Zero means nobody has ever
+  // traded this market**, and its prices are the untouched LMSR seed — a
+  // uniform 50/50 on a binary book, which is an opening price and not an
+  // opinion anybody holds (#445).
   state_version: number
   prices: OutcomePrice[]
+  // The book's `state_changed_at`: when the trade that last moved `q` took
+  // its price. On a market nobody has traded this is `opened_at` instead —
+  // opening the book was the last state change there has been (D-029,
+  // ledger-service.md) — so it is only a "last traded" time when
+  // `state_version` is above zero.
   occurred_at: string
 }
 
