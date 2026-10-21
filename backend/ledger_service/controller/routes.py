@@ -100,6 +100,7 @@ from service import (
     trading,
 )
 from service.book_prices import PricedOutcome
+from service.snapshot import Snapshot
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -473,6 +474,16 @@ _SNAPSHOT_DESCRIPTION = (
 )
 
 
+def _snapshot_out(result: Snapshot) -> SnapshotOut:
+    """The wire form of one market's snapshot."""
+    return SnapshotOut(
+        market_id=result.market_id,
+        state_version=result.state_version,
+        prices=_prices_out(result.prices),
+        occurred_at=result.occurred_at,
+    )
+
+
 @router.get(
     "/markets/{market_id}/snapshot",
     response_model=SnapshotOut,
@@ -500,12 +511,7 @@ async def market_snapshot(
     result = await snapshot_service.snapshot(
         session, market_id, access_token=access_token, terms_client=terms_client
     )
-    return SnapshotOut(
-        market_id=result.market_id,
-        state_version=result.state_version,
-        prices=_prices_out(result.prices),
-        occurred_at=result.occurred_at,
-    )
+    return _snapshot_out(result)
 
 
 _EXPOSURE_DESCRIPTION = (
