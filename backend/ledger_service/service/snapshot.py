@@ -112,9 +112,9 @@ async def list_snapshots(
                 market_id,
             )
             continue
-        snapshot = _snapshot_of(market_id, rows)
+        single = _snapshot_of(market_id, rows)
         snapshots.append(
-            ListedSnapshot(**vars(snapshot), credits_traded=rows[0].credits_traded)
+            ListedSnapshot(**vars(single), credits_traded=rows[0].credits_traded)
         )
     return snapshots
 
