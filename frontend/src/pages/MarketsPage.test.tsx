@@ -36,9 +36,11 @@ function snapshotFor(marketId: string, prices: string[]) {
   }
 }
 
-// The link that wraps the card holding this question.
+// The card holding this question: the whole panel, not the link inside it, so
+// the Retry control that deliberately sits outside that link counts as part
+// of the card (MarketCard, #431).
 function cardFor(question: string): HTMLElement {
-  const card = screen.getByText(question).closest('a')
+  const card = screen.getByText(question).closest('a')?.parentElement
   if (!card) throw new Error(`no card for ${question}`)
   return card
 }
@@ -232,10 +234,39 @@ describe('MarketsPage', () => {
     expect(within(failed).getByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(within(failed).getByLabelText('Yes price')).toHaveTextContent('—')
     expect(within(failed).getByLabelText('No price')).toHaveTextContent('—')
+    // [X-1] #431 AC 1: the dash says a number is missing, and the card now
+    // says which kind of missing it is. A card still waiting for its answer
+    // says the other thing.
+    expect(within(failed).getByRole('alert')).toHaveTextContent('Prices could not be loaded.')
+    expect(within(failed).queryByText('Loading prices…')).not.toBeInTheDocument()
     // [X-1] #445 AC 3: a price nobody could read is not a market nobody has
-    // traded. The dash stays the only thing said about it (#431 separates the
-    // dash's own two meanings).
+    // traded, and must not borrow its wording.
     expect(within(failed).queryByText(/no trades yet/i)).not.toBeInTheDocument()
+  })
+
+  // [X-1] #431 AC 1: the failed card's own way back. Telling the two apart is
+  // only worth doing because one of them can be retried, and a market that
+  // has stopped trading is never read again by itself.
+  it("reads a card's prices again when its Retry is clicked", async () => {
+    let failing = true
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })),
+      http.get(SNAPSHOT, () =>
+        failing ? HttpResponse.error() : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000'])),
+      ),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will inflation fall below 2%?')
+    const card = within(cardFor('Will inflation fall below 2%?'))
+    await waitFor(() => expect(card.getByRole('alert')).toBeInTheDocument())
+
+    failing = false
+    await actor.click(card.getByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(card.getByLabelText('Yes price')).toHaveTextContent('70.0%'))
+    expect(card.queryByRole('alert')).not.toBeInTheDocument()
+    expect(card.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
   })
 
   // [X-1] #445 AC 1: state_version 0 is the book saying nobody has ever traded
@@ -506,8 +537,10 @@ describe('MarketsPage', () => {
     })
 
     // #258 added `settled`, and `approved` now means approved and waiting for
-    // payout, so "Settled" has to ask for settled markets and not approved ones.
-    it('asks the server for settled markets when Settled is chosen', async () => {
+    // payout, so the last pill has to ask for settled markets and not approved
+    // ones. It reads "Resolved" to a trader (#431); `settled` is still the
+    // status it sends.
+    it('asks the server for settled markets when Resolved is chosen', async () => {
       const statusesSent: (string | null)[] = []
       const settled = {
         id: 's7', status: 'settled', question: 'Did the referendum pass?', close_time: '2025-02-01T00:00:00Z',
@@ -524,11 +557,38 @@ describe('MarketsPage', () => {
       renderPage()
       await screen.findByText('Will SMU win SUNIG?')
 
-      await actor.click(screen.getByRole('button', { name: 'Settled' }))
+      await actor.click(screen.getByRole('button', { name: 'Resolved' }))
 
       expect(await screen.findByText('Did the referendum pass?')).toBeInTheDocument()
       expect(statusesSent.at(-1)).toBe('settled')
-      expect(within(cardFor('Did the referendum pass?')).getByText('Settled')).toBeInTheDocument()
+      expect(within(cardFor('Did the referendum pass?')).getByText('Resolved')).toBeInTheDocument()
+    })
+
+    // [X-1] #431 AC 3: the pills read the admin's lifecycle words, and
+    // "Pending" and "Approved" are steps of a state machine that exists for a
+    // rule (ADR 0016) a trader knows nothing about. Each pill still asks for
+    // one status, which is all GET /public/markets accepts.
+    it("names the resolution statuses in the trader's words and asks for the right one", async () => {
+      const statusesSent: (string | null)[] = []
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets`, ({ request }) => {
+          statusesSent.push(new URL(request.url).searchParams.get('status'))
+          return HttpResponse.json({ markets: mockMarkets, next_cursor: null })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will SMU win SUNIG?')
+      const filters = within(screen.getByRole('group', { name: /filter by status/i }))
+
+      expect(filters.queryByRole('button', { name: 'Pending' })).not.toBeInTheDocument()
+      expect(filters.queryByRole('button', { name: 'Approved' })).not.toBeInTheDocument()
+      expect(filters.getByRole('button', { name: 'Awaiting payout' })).toBeInTheDocument()
+
+      await actor.click(filters.getByRole('button', { name: 'Resolving' }))
+
+      await waitFor(() => expect(statusesSent.at(-1)).toBe('pending_resolution'))
+      expect(screen.getByText('Status: Resolving ×')).toBeInTheDocument()
     })
 
     it('applies a search and a status together', async () => {
