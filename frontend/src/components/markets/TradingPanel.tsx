@@ -48,7 +48,10 @@ interface TradingPanelProps {
 // looks like — and `ToggleRow` answers it by giving each row its own heading,
 // so they read as two questions and not as one control in two halves.
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
-  const activeClass = activeColor === 'success' ? 'border-success bg-success/10 text-success' : 'border-danger bg-danger/10 text-danger'
+  // Text reads the `-strong` tone, not the plain one: the plain tone on its
+  // own 10% tint is 4.14–4.39:1, short of AA's 4.5:1 for text this size
+  // (#380). The border keeps the plain tone — it is a shape, not text.
+  const activeClass = activeColor === 'success' ? 'border-success bg-success/10 text-success-strong' : 'border-danger bg-danger/10 text-danger-strong'
   return `flex-1 cursor-pointer rounded-control border py-2.5 text-sm font-semibold transition ${
     active ? activeClass : selectableClass(false)
   }`
@@ -258,7 +261,7 @@ export default function TradingPanel({
       ) : (
       <>
       {visibleLastTrade && (
-        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success">
+        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
           {visibleLastTrade.side === 'buy' ? 'Bought' : 'Sold'} {visibleLastTrade.quantity} {visibleLastTrade.outcomeLabel} for {formatCreditsPrecise(unsignedCredits(visibleLastTrade.total))} credits.
         </p>
       )}
