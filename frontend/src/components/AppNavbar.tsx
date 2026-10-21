@@ -18,7 +18,13 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
 /** The balance as a readout and not a control: a figure and its unit, inside
  * the account cluster. It used to carry the active link's exact two classes,
  * which read as a page you could open (#437) — so the emphasis is on the
- * number alone now, and the gold stays with the navigation it belongs to. */
+ * number alone now, and the gold stays with the navigation it belongs to.
+ *
+ * The figure goes through `formatCredits`, which is also what the portfolio's
+ * balance card uses: this bar and that card show the same field of the same
+ * response, and one truncating while the other did not is how the same screen
+ * came to read 9,993 here and 9,993.8938 there (#443). Pick a precision for
+ * one of them and it has to be the same helper, or they drift again. */
 function BalanceReadout({ balance }: { balance: string | null }) {
   return (
     <span aria-label="available balance" className="text-sm whitespace-nowrap text-white/70">
