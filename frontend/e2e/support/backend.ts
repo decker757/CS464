@@ -242,16 +242,33 @@ export async function snapshot(session: Session, marketId: string): Promise<Snap
   return call<Snapshot>('GET', `${LEDGER_URL}/ledger/markets/${marketId}/snapshot`, session.accessToken)
 }
 
+// A buy the grant cannot cover means LARGEST_SPEND above is out of date, not
+// that the ledger is wrong — and `insufficient_funds` on its own points at the
+// balance rather than at the configuration, which is the failure #373 is
+// about, one layer along. Every other refusal is passed through untouched:
+// close-market.e2e.ts matches `market_closed` on this message.
+export function withGuardHint(refusal: unknown, quantity: string): unknown {
+  if (!(refusal instanceof Error) || !refusal.message.includes('insufficient_funds')) return refusal
+  return new Error(
+    `${refusal.message}\nThis buy of ${quantity} shares costs more than the ledger grants a trader. ` +
+      `Raise LARGEST_SPEND in e2e/support/backend.ts to what it costs, and STARTING_CREDITS to at least that.`,
+  )
+}
+
 /** Buys `quantity` shares of one outcome at the current quote. */
 export async function buy(trader: Session, market: Market, outcomeLabel: string, quantity: string): Promise<void> {
   const outcome = market.outcomes.find(candidate => candidate.label === outcomeLabel)
   if (!outcome) throw new Error(`no outcome ${outcomeLabel} on ${market.question}`)
   const { state_version } = await snapshot(trader, market.id)
-  await call('POST', `${LEDGER_URL}/ledger/markets/${market.id}/trades`, trader.accessToken, {
-    outcome_id: outcome.id,
-    side: 'buy',
-    quantity,
-    state_version,
-    idempotency_key: randomUUID(),
-  })
+  try {
+    await call('POST', `${LEDGER_URL}/ledger/markets/${market.id}/trades`, trader.accessToken, {
+      outcome_id: outcome.id,
+      side: 'buy',
+      quantity,
+      state_version,
+      idempotency_key: randomUUID(),
+    })
+  } catch (refusal) {
+    throw withGuardHint(refusal, quantity)
+  }
 }
