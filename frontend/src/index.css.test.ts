@@ -48,8 +48,9 @@ function tintOver(colour: Colour, surface: Colour, alpha: number): Colour {
 }
 
 const tokens = readColourTokens()
+const WHITE: Colour = [1, 1, 1]
 const SURFACES: Record<string, Colour> = {
-  'a white card': [1, 1, 1],
+  'a white card': WHITE,
   'the cream page': tokens['smu-cream'],
 }
 
@@ -110,6 +111,24 @@ describe('badge text on its own tint', () => {
   )('$tone over its tint on $surface', ({ text, tint, surface }) => {
     const background = tintOver(tokens[tint], SURFACES[surface], 0.1)
     expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})
+
+// `buttonClass.ts` disables a button by replacing its variant with a neutral
+// plate rather than dimming it, so that it stops reading as a working button
+// [#452]. That only holds if the label on the plate is still readable:
+// "disabled" must not mean "illegible".
+describe('a disabled button', () => {
+  it('reads secondary text on the light plate', () => {
+    expect(contrastRatio(tokens['secondary'], tokens['track'])).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+
+  // The on-navy variants have no light plate to use, so there the plate is a
+  // 10% white wash over the navy and the label is white at 60%.
+  it('reads a dimmed white on the wash over navy', () => {
+    const plate = tintOver(WHITE, tokens['smu-navy'], 0.1)
+    const label = tintOver(WHITE, plate, 0.6)
+    expect(contrastRatio(label, plate)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
   })
 })
 
