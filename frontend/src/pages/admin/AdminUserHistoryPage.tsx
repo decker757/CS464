@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useParams } from 'react-router-dom'
 import type { AdminUser } from '../../api/authApi'
 import { getUserBalance, getUserEntries, type AdminBalance } from '../../api/ledgerApi'
@@ -13,6 +13,7 @@ import ReasonModal from '../../components/ui/ReasonModal'
 import { useAuth } from '../../context/AuthContext'
 import { useSuspension } from '../../hooks/useSuspension'
 import { usePagedList } from '../../hooks/usePagedList'
+import { useUsernames } from '../../hooks/useUsernames'
 import { formatCreditsPrecise } from '../../utils/formatCredits'
 import { joinEntryPage, pagedEntryOptions } from '../../utils/ledgerEntries'
 
@@ -55,6 +56,17 @@ export default function AdminUserHistoryPage() {
   const currentUser = changedUser ?? linkedUser ?? null
   const takesEffectNote = describeChange(changed, userId)
 
+  // Asked only when no name is in hand: arriving from the user list carries
+  // one in router state, and a reload is what drops it. An investigation
+  // screen that names nobody is the whole of [2.4] #434, so the name is read
+  // from auth rather than left as the id in the heading.
+  const idsToName = useMemo(
+    () => (userId !== undefined && linkedUser === undefined ? [userId] : []),
+    [userId, linkedUser],
+  )
+  const lookedUpNames = useUsernames(idsToName)
+  const username = currentUser?.username ?? (userId === undefined ? undefined : lookedUpNames.get(userId))
+
   const { user: signedInUser } = useAuth()
   const canActOnThisAccount = userId !== undefined && userId !== signedInUser?.id
 
@@ -94,10 +106,14 @@ export default function AdminUserHistoryPage() {
     <AppLayout width="max-w-[1100px]">
       <BackLink to="/admin/users" label="Users" className="mb-4 block" />
       <div className="mb-2 flex items-center gap-3">
-        <PageTitle>{currentUser ? `${currentUser.username}'s History` : `History for ${userId}`}</PageTitle>
+        <PageTitle>{username ? `${username}'s History` : `History for ${userId}`}</PageTitle>
         {currentUser?.is_suspended && <Badge tone="danger">Suspended</Badge>}
       </div>
       {currentUser && <p className="mb-2 text-sm text-subtle">{currentUser.email}</p>}
+      {/* The id, once the heading names the user instead: it is what support
+          and the audit log quote, and the heading was where it used to be
+          copied from. Still in the heading while no name is known. */}
+      {username && <p className="mb-2 text-xs text-subtle">{userId}</p>}
 
       {/* Both always shown, not one state-aware toggle: there is no
           GET /admin/users/{id} to confirm current state after a reload, so a

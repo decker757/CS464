@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import type { MarketTrade } from '../../api/ledgerApi'
 import MarketTradeTable from './MarketTradeTable'
@@ -10,9 +11,24 @@ const TRADES: MarketTrade[] = [
 
 const OUTCOME_LABELS = new Map([['o-yes', 'Yes'], ['o-no', 'No']])
 
+const USERNAMES = new Map([
+  ['aaaaaaaa-1111-2222-3333-444444444444', 'alice'],
+  ['bbbbbbbb-1111-2222-3333-444444444444', 'bob'],
+])
+
+function renderTable(trades: MarketTrade[], outcomeLabels = OUTCOME_LABELS, usernames = USERNAMES) {
+  // The User column links to each trader's history page, so the table needs
+  // a router around it.
+  return render(
+    <MemoryRouter>
+      <MarketTradeTable trades={trades} outcomeLabels={outcomeLabels} usernames={usernames} />
+    </MemoryRouter>,
+  )
+}
+
 describe('MarketTradeTable', () => {
   it('shows every trade with its date, user, outcome, side, quantity and price', () => {
-    render(<MarketTradeTable trades={TRADES} outcomeLabels={OUTCOME_LABELS} />)
+    renderTable(TRADES)
 
     // A real date, read from created_at: a wrong field name renders
     // "Invalid Date". en-SG is day/month/year, and noon UTC on 1 January is
@@ -20,8 +36,8 @@ describe('MarketTradeTable', () => {
     const [, firstTrade] = screen.getAllByRole('row')
     expect(within(firstTrade).getAllByRole('cell')[0]).toHaveTextContent(/^0?1\/0?1\/2026, /)
 
-    expect(screen.getByText('aaaaaaaa')).toBeInTheDocument()
-    expect(screen.getByText('bbbbbbbb')).toBeInTheDocument()
+    expect(screen.getByText('alice')).toBeInTheDocument()
+    expect(screen.getByText('bob')).toBeInTheDocument()
     expect(screen.getByText('Yes')).toBeInTheDocument()
     expect(screen.getByText('No')).toBeInTheDocument()
     expect(screen.getByText('Buy')).toBeInTheDocument()
@@ -30,8 +46,28 @@ describe('MarketTradeTable', () => {
     expect(screen.getByText('0.6000')).toBeInTheDocument()
   })
 
+  it('links each trader to their own history page', () => {
+    // [2.4] #434: the screen for spotting manipulation should not make an
+    // admin copy a hex fragment into a search on another tab.
+    renderTable(TRADES)
+
+    expect(screen.getByRole('link', { name: 'alice' }))
+      .toHaveAttribute('href', '/admin/users/aaaaaaaa-1111-2222-3333-444444444444')
+  })
+
+  it('falls back to the short id for a trader the lookup did not name, and still links', () => {
+    // An id auth left out of the answer, or never named because the lookup
+    // failed, shows as it did before the names arrived — never a blank cell.
+    // The page it links to is addressed by the id, not by the name, so the
+    // link works either way.
+    renderTable(TRADES, OUTCOME_LABELS, new Map([['aaaaaaaa-1111-2222-3333-444444444444', 'alice']]))
+
+    expect(screen.getByRole('link', { name: 'bbbbbbbb' }))
+      .toHaveAttribute('href', '/admin/users/bbbbbbbb-1111-2222-3333-444444444444')
+  })
+
   it('falls back to the raw outcome id when the market\'s outcomes have not loaded', () => {
-    render(<MarketTradeTable trades={TRADES} outcomeLabels={new Map()} />)
+    renderTable(TRADES, new Map())
     expect(screen.getByText('o-yes')).toBeInTheDocument()
   })
 
@@ -44,7 +80,7 @@ describe('MarketTradeTable', () => {
     const skewed: MarketTrade[] = [
       { ...TRADES[0], transaction_id: 't3', average_price: '2' },
     ]
-    render(<MarketTradeTable trades={skewed} outcomeLabels={OUTCOME_LABELS} />)
+    renderTable(skewed)
     expect(screen.getByText('2.0000')).toBeInTheDocument()
   })
 })

@@ -42,4 +42,11 @@ export const handlers = [
   http.post(`${BASE}/auth/logout`, () =>
     HttpResponse.json({ message: 'Logged out.' })
   ),
+
+  // [2.4] #434. Every admin screen that shows user ids names them through
+  // this. The default answers "none of these ids names a user", which is the
+  // short-id fallback: a test about the names overrides it with server.use.
+  http.post(`${BASE}/admin/users/lookup`, () =>
+    HttpResponse.json({ users: [] })
+  ),
 ]
