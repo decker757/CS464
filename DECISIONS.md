@@ -3867,6 +3867,13 @@ and `payout`, and its value fields are null" exists to prevent. See "A settled
 row's payout is its quantity, and its result comes from
 `ledger.market_results`, joined in the portfolio's one statement".*
 
+**Amended 2026-10-21.** #410 adds `ledger.orders` to the statement: each
+outcome row carries the caller's live sell orders' reserved shares as a
+correlated subquery. The argument above is why it is not a second read: a
+fill committing between two reads could show the position before it and the
+reservation after it. See "A portfolio row carries the shares its owner's live
+sells hold back, read in the portfolio's one statement".
+
 ---
 
 ### D-NEW — The portfolio carries ids only, and makes no call to market_service
@@ -10113,3 +10120,60 @@ response and the reservation sums together and lets the contract state the
 bound; or a read of this route measured as slow, whose fix is that cap rather
 than paging. Either way this entry is revisited, and paging comes back, if at
 all, beside the cap.
+
+---
+
+### D-NEW — A portfolio row carries the shares its owner's live sells hold back, read in the portfolio's one statement
+
+**Date:** 2026-10-21 · **Ticket:** #410 · **Status:** active
+
+**Decision.** Every row of `GET /ledger/portfolio/me` carries
+`reserved_shares`: the sum of `quantity - filled_quantity` over the caller's
+live sell orders of that outcome, a decimal string at scale 4, `"0.0000"`
+where there are none and never null. `quantity` keeps its meaning, the whole
+position, and so do `value`, `cost_basis` and `average_entry_price`. The
+figure is a correlated subquery in the portfolio's one statement, built by
+`service/reservations.py::reserved_shares_query_of`, the same SELECT the sell
+paths' holding check runs. `service/portfolio.py` adds it to the statement and
+returns it beside the positions, keyed by `(market_id, outcome_id)`;
+`service/valuation.py` does not see it.
+
+**Why.**
+- *The trade route already refuses on this figure.* ADR 0024 limits an
+  instant sell to the position less what the seller's live sells reserve, and
+  `insufficient_shares_held` reports `reserved` beside `held`. A client that
+  offers `quantity` as the most a trader can sell offers a number that is
+  refused once a sell order rests. Per `frontend/CLAUDE.md`, a figure the
+  browser needs and the API does not return is a backend ticket, not a second
+  call and a subtraction in the browser.
+- *Derived, never stored.* For the reason a balance is not stored (ADR 0009)
+  and a reservation is not (ADR 0024): every fill, cancel and result would
+  have to keep a column in step, and none of them needs to now.
+- *In the one statement.* "The portfolio reads its balance and positions in
+  one statement, after the grant, with no lock": a fill moves the position
+  and the order's `filled_quantity` in one commit, so two reads could show
+  one of them without the other.
+- *Beside the valuation, not inside it.* `held_outcomes_query` and
+  `valuation_of` are shared with the leaderboard refresh, which values every
+  holder and has no use for this figure. Putting it on `PortfolioPosition`
+  would make the refresh compute it for every holder, or leave the field
+  meaning nothing on the refresh's rows.
+- *Liveness is `order_is_live`.* An order on a market with a result is not
+  live whatever its status reads ("An open order is live only while its
+  market has no result"), so a settled row reports `"0.0000"`.
+
+**Rejected.**
+- *`available_shares`, `quantity - reserved_shares`, in place of the
+  reservation*: the issue asks for the reservation, and the order object
+  already names that figure `reserved_shares`, so one name means one thing on
+  both routes. The subtraction is exact at scale 4, with no rounding to get
+  wrong.
+- *Taking the reservation off `quantity`*: the shares are still held and
+  still valued (ADR 0018's 2026-10-17 amendment), and `average_entry_price`
+  divides by the whole holding.
+- *A second statement through `reservations.reserved_shares_of` per
+  position*: N statements and N snapshots, as above.
+
+**Reversal trigger.** A portfolio read measured as slow because of this
+subquery, or a sell order that holds back shares by some rule other than its
+unfilled quantity.
