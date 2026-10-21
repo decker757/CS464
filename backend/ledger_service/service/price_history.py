@@ -85,6 +85,19 @@ async def _replayed_trades_of(
     return [_replayed_trade_of(row, position_of) for row in rows]
 
 
+def _trades_up_to_query(market_ids: Sequence[uuid.UUID], at: datetime) -> Select:
+    """Every trade at or before `at` on these markets' pools, each row also
+    carrying its `market_id` and the book's `opened_at`, ordered by market and
+    then like the feed. `ix_ledger_entries_account_feed` serves each pool."""
+    return (
+        ledger_service.trade_entries_query()
+        .add_columns(MarketBook.market_id, MarketBook.opened_at)
+        .join(MarketBook, MarketBook.pool_account_id == Entry.account_id)
+        .where(MarketBook.market_id.in_(market_ids), Entry.created_at <= at)
+        .order_by(MarketBook.market_id, Entry.created_at, Entry.id)
+    )
+
+
 async def price_history_of_market(
     session: AsyncSession,
     market_id: uuid.UUID,
@@ -145,19 +158,6 @@ async def price_history_of_market(
     )
 
 
-def _trades_up_to_query(market_ids: Sequence[uuid.UUID], at: datetime) -> Select:
-    """Every trade at or before `at` on these markets' pools, each row also
-    carrying its `market_id` and the book's `opened_at`, ordered by market and
-    then like the feed. `ix_ledger_entries_account_feed` serves each pool."""
-    return (
-        ledger_service.trade_entries_query()
-        .add_columns(MarketBook.market_id, MarketBook.opened_at)
-        .join(MarketBook, MarketBook.pool_account_id == Entry.account_id)
-        .where(MarketBook.market_id.in_(market_ids), Entry.created_at <= at)
-        .order_by(MarketBook.market_id, Entry.created_at, Entry.id)
-    )
-
-
 async def list_prices_at(
     session: AsyncSession,
     outcomes_by_market: Mapping[uuid.UUID, Sequence[Row]],
@@ -170,7 +170,7 @@ async def list_prices_at(
     `outcomes_by_market` holds each market's book rows in position order, as
     `book_prices.list_book_outcomes_for_markets` reads them. One statement
     reads every market's trades, with no lock. A market with no trade by `at`
-    is absent, and so is one whose trades the replay refuses, which is logged.
+    is absent, and so is one whose trades cannot be replayed, which is logged.
     """
     query = _trades_up_to_query(list(outcomes_by_market), at)
     trades_by_market: dict[uuid.UUID, list[Row]] = {}
@@ -188,10 +188,13 @@ async def list_prices_at(
                 b=outcomes[0].liquidity_b,
                 opened_at=trade_rows[0].opened_at,
             )
-        except ValueError:
+        # ValueError: the trades skip or reorder a state version. LookupError:
+        # a trade on an outcome row the book no longer holds. Either costs this
+        # card its baseline, never the whole list (DECISIONS.md, "A book the
+        # batch snapshot cannot price is left out and logged").
+        except (ValueError, LookupError):
             logger.warning(
-                "no prices at %s for market %s: its trades skip or reorder a "
-                "state version",
+                "no prices at %s for market %s: its trades cannot be replayed",
                 at,
                 market_id,
             )
