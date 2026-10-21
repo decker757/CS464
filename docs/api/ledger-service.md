@@ -921,9 +921,11 @@ seven days, fixed, and the moment is the ledger's clock at the request.
   price, which nobody chose, so no change is measured from it. Show no delta.
 - **Equal to `prices` when the market has not traded since**: a real change
   of zero over the window, not missing data.
-- Null too, and logged, in the one case the ledger cannot rebuild the price:
-  a market whose trades skip or reorder a `state_version`, which price history
-  answers with `500 price_history_inconsistent`. Its `prices` are unaffected.
+- Null too, and logged, when the ledger cannot rebuild the price: a market
+  whose trades skip or reorder a `state_version` (price history answers it
+  with `500 price_history_inconsistent`), or whose book has lost an outcome
+  row a trade was made on. Its `prices` are unaffected, and so is every other
+  market in the answer.
 
 The single snapshot and the `price` frame do not carry it.
 
@@ -938,14 +940,16 @@ with no book is absent from `snapshots`, not an error: an id that names no
 market, a draft, and a published market nobody has previewed, traded or
 snapshotted all read the same way, because a book is only ever opened for a
 published market. Unlike the single snapshot, **this route opens no book**: it
-writes nothing and never calls market_service, so it costs one indexed read
+writes nothing and never calls market_service, so it costs two indexed reads
 however many of its markets are cold. To price a still-trading market the
 batch left out, ask the single snapshot for it, which opens its book once;
 from then on the batch answers it.
 
 A book this service holds but cannot price, which the single snapshot refuses
 with `500 market_book_incomplete`, is absent here too and logged, so one
-damaged market costs only its own card.
+damaged market costs only its own card. A book that can be priced but whose
+trades cannot be replayed keeps its card and loses only `prices_7d_ago`
+(above).
 
 **One statement reads every market's book**, with no lock, so each
 snapshot's `state_version` is the version its `prices` were computed from, as
