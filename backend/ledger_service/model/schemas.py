@@ -10,7 +10,8 @@ Four request models, for the four routes that write: `TradeIn` for [T-2]
 `POST /ledger/markets/{market_id}/settlement`. None carries an account, an
 amount or a leg — `extra="forbid"` refuses a body naming one — which is the
 answer ADR 0009's amendments give to how a caller authenticates to a write
-path.
+path. `SnapshotsIn` is the body of a route that only reads, [X-1] #432's
+`POST /ledger/markets/snapshots`, a POST because its input is a list.
 
 **Amounts are strings, and that is the one deliberate departure from the market
 service**, whose `MarketOut` serialises `liquidity_b` as a JSON number. That was
@@ -40,6 +41,11 @@ from model.entities import Entry, ResultKind, TransactionKind
 
 # `as_utc` stamps a naive value UTC on the way out.
 UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
+
+# The most ids one batch snapshot read accepts: market_service's
+# `max_page_size`, so any page of the browse list fits one request.
+# DECISIONS.md, "The batch snapshot takes at most 200 ids, and refuses more".
+MAX_SNAPSHOT_IDS = 200
 
 
 class BalanceOut(BaseModel):
@@ -942,6 +948,38 @@ class SnapshotOut(BaseModel):
         only asserted the offset was present, which is true of both.
         """
         return value.isoformat()
+
+
+class SnapshotsIn(BaseModel):
+    """The markets a batch snapshot read asks about. [X-1] #432.
+
+    Over the cap is `422 invalid_request` rather than clamped: a market a
+    clamp left out would read as a market with no book.
+    """
+
+    market_ids: list[uuid.UUID] = Field(
+        max_length=MAX_SNAPSHOT_IDS,
+        description=(
+            "At most 200, counted as sent. A repeated id is answered once, "
+            "and an empty list is answered with no snapshots."
+        ),
+    )
+
+
+class SnapshotListOut(BaseModel):
+    """The current price of every requested market that has a book. [X-1] #432.
+
+    Each item is `SnapshotOut`, the single snapshot's body. An object around a
+    list of objects, so a field can be added to the answer or to each market
+    later without breaking a client (#446, #447).
+    """
+
+    snapshots: list[SnapshotOut] = Field(
+        description=(
+            "In the order each id first appears in `market_ids`. An id with "
+            "no book here, or a book that cannot be priced, is absent."
+        ),
+    )
 
 
 class PricePointOut(BaseModel):
