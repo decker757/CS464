@@ -67,11 +67,27 @@ export default function MarketDetailPage() {
   const { orders, refetch: refetchOrders, applyFrame } = useMyOrders(!!ordersPossible)
   const ordersHere = orders?.filter(order => order.market_id === market?.id) ?? []
 
+  // Through a ref because the holdings read is declared below this, where it
+  // sits with the state it writes; a frame can arrive before that line runs.
+  const refetchHeldRef = useRef<() => void>(() => {})
+
+  // A fill moves credits and shares, and the frame carries neither — only
+  // the filled quantity, which it applies to the row at once. The money
+  // figures come from their own routes: the balance, and the holdings the
+  // sell clamp reads. The order's own `reserved_*` is left to the next read
+  // of the list, since re-reading it here would answer from before the fill
+  // and undo the quantity the frame just showed.
+  const onFrame = useCallback((frame: Parameters<typeof applyFrame>[0]) => {
+    applyFrame(frame)
+    refetchBalance()
+    refetchHeldRef.current()
+  }, [applyFrame, refetchBalance])
+
   // One socket for the page: price frames keep the prices above current, and
   // order frames the list below it. Order frames need no subscribe, so they
   // arrive on this same connection (realtime-service.md, "Order updates").
   const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
-    onOrderFrame: applyFrame,
+    onOrderFrame: onFrame,
     onReconnected: refetchOrders,
   })
   // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
@@ -132,6 +148,11 @@ export default function MarketDetailPage() {
       () => {},
     )
   }, [id])
+
+  // After the render rather than during it, which React refs require.
+  useEffect(() => {
+    refetchHeldRef.current = refetchHeld
+  }, [refetchHeld])
 
   // Only for a market that can be traded: nothing else on this page uses the
   // figure, and a closed or settled market has no sell to clamp.

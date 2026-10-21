@@ -24,6 +24,12 @@ interface OpenOrdersListProps {
  * `reserved_credits` or `reserved_shares` is shown as "held", since that is
  * the figure explaining why a balance looks smaller than it did: a resting
  * buy's credits are still in `balance` but not in `available` (ADR 0024).
+ *
+ * "Held" lags a fill the socket reported. An `order` frame carries the
+ * filled quantity and no money, so the quantity moves at once and this
+ * figure catches up on the next read of the list — a placement, a cancel or
+ * a reconnect. The authoritative figure for what the trader can spend is
+ * the balance in the navbar, which the page re-reads on every fill.
  */
 export default function OpenOrdersList({ orders, outcomes, onCancelled }: OpenOrdersListProps) {
   // The order a cancel is in flight for, so only its own button shows the
