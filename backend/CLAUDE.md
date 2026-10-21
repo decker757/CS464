@@ -103,8 +103,11 @@ factories, plugin registries or config flags with one user.
   only what a caller cannot see from the signature — what it raises, what it
   locks, whether it commits.
 - Keep a comment to about five lines. Longer reasoning belongs in
-  `DECISIONS.md` or an ADR, and the comment cites it: `# D-041` or
-  `# ADR 0015: the wider lock goes first`.
+  `DECISIONS.md` or an ADR, and the comment cites it. D-001 to D-052 by
+  number: `# D-041`. An entry after D-052 by its exact title, in either form
+  in use: `# D-NEW "A position sold to zero keeps its row"` or
+  `# DECISIONS.md, "A position sold to zero keeps its row"`. An ADR by
+  number: `# ADR 0015: the wider lock goes first`.
 - Do not narrate history ("used to", "changed in #77") — that is `git log`.
   The one exception is a warning against a tempting wrong change:
   `# Do not gate on status == OPEN; the clock decides. ADR 0011.`

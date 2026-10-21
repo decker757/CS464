@@ -232,6 +232,66 @@ describe('MarketsPage', () => {
     expect(within(failed).getByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(within(failed).getByLabelText('Yes price')).toHaveTextContent('—')
     expect(within(failed).getByLabelText('No price')).toHaveTextContent('—')
+    // [X-1] #445 AC 3: a price nobody could read is not a market nobody has
+    // traded. The dash stays the only thing said about it (#431 separates the
+    // dash's own two meanings).
+    expect(within(failed).queryByText(/no trades yet/i)).not.toBeInTheDocument()
+  })
+
+  // [X-1] #445 AC 1: state_version 0 is the book saying nobody has ever traded
+  // it, and its prices are the untouched LMSR seed. Rendering them puts a
+  // uniform 50.0% on the card, which reads as a crowd split down the middle —
+  // the opposite statement.
+  it('invites the first trade on a market nobody has traded, rather than showing its seed price', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
+      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('a1', ['0.5000', '0.5000']), state_version: 0 })),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    const card = cardFor('Will SMU win SUNIG?')
+
+    expect(await within(card).findByText(/no trades yet/i)).toBeInTheDocument()
+    // No seed price, and no dash either: there is no number to show at all.
+    expect(within(card).queryByLabelText('Yes price')).not.toBeInTheDocument()
+    expect(within(card).queryByText('50.0%')).not.toBeInTheDocument()
+    // The outcomes are still named (#214); only their prices are withheld.
+    expect(within(card).getByText('Yes')).toBeInTheDocument()
+    expect(within(card).getByText('No')).toBeInTheDocument()
+  })
+
+  // The same market nobody traded, after it stopped trading: still not a
+  // 50/50 opinion, and no longer a market anybody can be the first to price.
+  // A card inviting a trade on a closed market would be its own lie.
+  it('does not invite a trade on a market that closed untraded', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })),
+      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('b2', ['0.5000', '0.5000']), state_version: 0 })),
+    )
+    renderPage()
+    await screen.findByText('Will inflation fall below 2%?')
+    const card = cardFor('Will inflation fall below 2%?')
+
+    expect(await within(card).findByText(/closed without a single trade/i)).toBeInTheDocument()
+    expect(within(card).queryByText(/be the first/i)).not.toBeInTheDocument()
+    expect(within(card).queryByLabelText('Yes price')).not.toBeInTheDocument()
+  })
+
+  // [X-1] #445 AC 2 and AC 4: a book that has moved says when, off the
+  // browser's own clock so it lands in the reader's time zone.
+  it('says how long ago a traded market last moved', async () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
+      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('a1', ['0.6200', '0.3800']), occurred_at: threeHoursAgo })),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    const card = cardFor('Will SMU win SUNIG?')
+
+    await waitFor(() => expect(within(card).getByLabelText('Yes price')).toHaveTextContent('62.0%'))
+    expect(within(card).getByText('Last trade 3h ago')).toBeInTheDocument()
+    expect(within(card).queryByText(/no trades yet/i)).not.toBeInTheDocument()
   })
 
   // #214: a market can have any labels and more than two outcomes, and the

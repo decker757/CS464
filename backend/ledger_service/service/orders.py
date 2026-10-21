@@ -613,7 +613,11 @@ async def place(
 
 async def list_live(session: AsyncSession, user_id: uuid.UUID) -> list[OrderView]:
     """The user's live orders, newest first: open, on a market with no result,
-    closed markets included. Takes no lock and writes nothing."""
+    closed markets included. Takes no lock and writes nothing.
+
+    Unpaged on purpose. DECISIONS.md, "`GET /ledger/orders/me` returns every
+    live order, unpaged".
+    """
     stmt = (
         views_query()
         .where(Order.user_id == user_id, reservations.order_is_live())

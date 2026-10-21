@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -10,8 +10,12 @@ import MarketPriceHistoryPage from './MarketPriceHistoryPage'
 
 const LEDGER_BASE = 'http://localhost:8003'
 const MARKET_BASE = 'http://localhost:8001'
+const AUTH_BASE = 'http://localhost:8000'
 
 const admin: User = { id: 'u1', username: 'admin1', email: 'admin@smu.edu.sg', role: 'admin', created_at: '2026-01-01' }
+
+const ALICE_ID = 'aaaaaaaa-1111-2222-3333-444444444444'
+const BOB_ID = 'bbbbbbbb-1111-2222-3333-444444444444'
 
 function market(overrides: Record<string, unknown> = {}) {
   return {
@@ -39,7 +43,7 @@ function trade(overrides: Record<string, unknown> = {}) {
   return {
     transaction_id: 't1',
     created_at: '2026-01-02T12:00:00Z',
-    user_id: 'aaaaaaaa-1111-2222-3333-444444444444',
+    user_id: ALICE_ID,
     outcome_id: 'o-yes',
     side: 'buy',
     quantity: '10.0000',
@@ -73,6 +77,23 @@ function mockPriceHistory(id: string, points: Record<string, unknown>[], overrid
 
 function mockTrades(id: string, trades: Record<string, unknown>[], nextCursor: string | null = null) {
   server.use(http.get(`${LEDGER_BASE}/ledger/markets/${id}/trades`, () => HttpResponse.json({ trades, next_cursor: nextCursor, has_more: nextCursor !== null })))
+}
+
+/**
+ * Names the ids the page asks about, leaving out any id `usernames` has no
+ * entry for, the way auth leaves an id that names no user out of the answer.
+ * Gives back the batches it was asked for, so a test can show the page asked
+ * once for the whole page of trades rather than once per row.
+ */
+function mockLookup(usernames: Record<string, string>): string[][] {
+  const batches: string[][] = []
+  server.use(http.post(`${AUTH_BASE}/admin/users/lookup`, async ({ request }) => {
+    const { user_ids } = (await request.json()) as { user_ids: string[] }
+    batches.push(user_ids)
+    const named = user_ids.filter(id => id in usernames).map(id => ({ id, username: usernames[id] }))
+    return HttpResponse.json({ users: named })
+  }))
+  return batches
 }
 
 function renderPage(marketId = 'mkt-1') {
@@ -175,7 +196,7 @@ describe('MarketPriceHistoryPage', () => {
     server.use(http.get(`${LEDGER_BASE}/ledger/markets/mkt-1/trades`, () => {
       tradeReads += 1
       const trades = [trade()]
-      if (tradeReads > 1) trades.push(trade({ transaction_id: 't2', user_id: 'bbbbbbbb-1111-2222-3333-444444444444' }))
+      if (tradeReads > 1) trades.push(trade({ transaction_id: 't2', user_id: BOB_ID }))
       return HttpResponse.json({ trades, next_cursor: null, has_more: false })
     }))
     const actor = userEvent.setup()
@@ -198,7 +219,7 @@ describe('MarketPriceHistoryPage', () => {
         const cursor = new URL(request.url).searchParams.get('cursor')
         cursorsSeen.push(cursor)
         return cursor === 'page-2'
-          ? HttpResponse.json({ trades: [trade({ transaction_id: 't2', user_id: 'bbbbbbbb-1111-2222-3333-444444444444' })], next_cursor: null, has_more: false })
+          ? HttpResponse.json({ trades: [trade({ transaction_id: 't2', user_id: BOB_ID })], next_cursor: null, has_more: false })
           : HttpResponse.json({ trades: [trade()], next_cursor: 'page-2', has_more: true })
       }),
     )
@@ -210,6 +231,86 @@ describe('MarketPriceHistoryPage', () => {
 
     expect(await screen.findByText('bbbbbbbb')).toBeInTheDocument()
     expect(cursorsSeen).toEqual([null, 'page-2'])
+  })
+
+  it('names every trader on the trade log, asking auth once for the whole page', async () => {
+    // [2.4] #434. The ledger sends a user_id and no username, because it
+    // holds no user table (ADR 0003), so the browser joins the names in
+    // through auth's batch lookup — one request for the page, not one a row.
+    mockMarket('mkt-1', market())
+    mockPriceHistory('mkt-1', [])
+    mockTrades('mkt-1', [trade(), trade({ transaction_id: 't2', user_id: BOB_ID })])
+    const batches = mockLookup({ [ALICE_ID]: 'alice', [BOB_ID]: 'bob' })
+
+    renderPage()
+
+    expect(await screen.findByRole('link', { name: 'alice' })).toHaveAttribute('href', `/admin/users/${ALICE_ID}`)
+    expect(screen.getByRole('link', { name: 'bob' })).toHaveAttribute('href', `/admin/users/${BOB_ID}`)
+    expect(batches).toEqual([[ALICE_ID, BOB_ID]])
+  })
+
+  it('leaves a trader auth did not name on their short id', async () => {
+    // An id that names no user is left out of the answer rather than refused
+    // (auth-service.md), and that row shows what it showed before the names
+    // arrived — never a blank cell.
+    mockMarket('mkt-1', market())
+    mockPriceHistory('mkt-1', [])
+    mockTrades('mkt-1', [trade(), trade({ transaction_id: 't2', user_id: BOB_ID })])
+    mockLookup({ [ALICE_ID]: 'alice' })
+
+    renderPage()
+
+    expect(await screen.findByRole('link', { name: 'alice' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'bbbbbbbb' })).toBeInTheDocument()
+  })
+
+  it('keeps the trade log when the lookup fails, with no error of its own', async () => {
+    // The names sit on top of rows that are already on screen, so a failed
+    // lookup degrades to the short ids it replaced and must never empty the
+    // table or report a failure the admin can do nothing about (#434).
+    mockMarket('mkt-1', market())
+    mockPriceHistory('mkt-1', [{ state_version: 0, occurred_at: '2026-01-01T00:00:00Z', prices: [{ outcome_id: 'o-yes', position: 0, price: '0.6000' }] }])
+    mockTrades('mkt-1', [trade()])
+    let timesAsked = 0
+    server.use(http.post(`${AUTH_BASE}/admin/users/lookup`, () => {
+      timesAsked += 1
+      return HttpResponse.error()
+    }))
+
+    renderPage()
+
+    // Asserted after the lookup has failed, not merely before it answered:
+    // the short id is on screen while the request is still in flight, so
+    // waiting for the failure is what makes this about the failure.
+    await screen.findByRole('link', { name: 'aaaaaaaa' })
+    await waitFor(() => expect(timesAsked).toBe(1))
+    expect(screen.getByRole('link', { name: 'aaaaaaaa' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('asks only about the ids the next page of trades adds', async () => {
+    // One batch per page of trades, so a log paged well past auth's limit of
+    // 200 ids a request can never ask for more than it will name
+    // (useUsernames, auth-service.md).
+    mockMarket('mkt-1', market())
+    mockPriceHistory('mkt-1', [])
+    server.use(
+      http.get(`${LEDGER_BASE}/ledger/markets/mkt-1/trades`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        return cursor === 'page-2'
+          ? HttpResponse.json({ trades: [trade({ transaction_id: 't2', user_id: BOB_ID })], next_cursor: null, has_more: false })
+          : HttpResponse.json({ trades: [trade()], next_cursor: 'page-2', has_more: true })
+      }),
+    )
+    const batches = mockLookup({ [ALICE_ID]: 'alice', [BOB_ID]: 'bob' })
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByRole('link', { name: 'alice' })
+
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+
+    expect(await screen.findByRole('link', { name: 'bob' })).toBeInTheDocument()
+    expect(batches).toEqual([[ALICE_ID], [BOB_ID]])
   })
 
   it('shows a link back to all markets', async () => {

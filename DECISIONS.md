@@ -25,7 +25,7 @@ Fix it rather than leaving both.
 Append to the end. Never renumber, never delete — supersede.
 
 ```markdown
-### D-0NN — <short title>
+### D-NEW — <short title>
 
 **Date:** YYYY-MM-DD · **Ticket:** #NN · **Status:** active
 
@@ -39,7 +39,39 @@ Append to the end. Never renumber, never delete — supersede.
 Omit if there's nothing.
 ```
 
-Status is `active`, `superseded by D-0NN`, or `graduated to ADR NNNN`.
+A new entry is headed `D-NEW` and takes no number. It is cited by its title.
+Both forms in use are fine: `D-NEW "<title>"`, and `DECISIONS.md, "<title>"`
+where the sentence already needs the filename; inside this file the quoted
+title alone is enough. What matters is the exact title, because that is what
+the search finds. So a title must be unique: search for it before adding
+one. The same search finds the entry for any citation:
+
+```bash
+grep -nF '### D-NEW — <title>' DECISIONS.md
+```
+
+Keep it literal (`-F`) and in single quotes. Titles hold backticks, which a
+shell runs as commands inside double quotes, and `[3.4]` or `*i*`, which grep
+reads as a pattern. Write an apostrophe in the title as `'\''`.
+
+Before adding an entry, check that no title is used twice. This prints nothing
+while every title is unique:
+
+```bash
+grep '^### D-NEW — ' DECISIONS.md | sed 's/^### D-NEW — //' | sort | uniq -d
+```
+
+D-001 to D-052 keep their numbers and are still cited by them (`D-041`).
+Nobody numbers a D-NEW entry, at merge or later.
+
+Why titles: two open branches that each append an entry would both take the
+next number, and the later merge would renumber its entry and every citation
+of it, the same way two branches that both add Alembic `0002` collide. Titles
+do not collide.
+
+Status is `active`, `superseded by "<title>"`, `closed by "<title>"` or
+`graduated to ADR NNNN`. Nothing is superseded by a number: the entry doing
+the superseding is always a D-NEW one.
 
 ---
 
@@ -1976,6 +2008,11 @@ this route performs. #112's criterion is being reworded to match, the way
 they land unnumbered and get their numbers when the PR merges — which is also
 the rule `docs/adr/` already follows when citing this file.
 
+*Amended 2026-10-20 in #395: no entry gets a number at merge any more.* An
+entry after D-052 is headed `D-NEW`, is never numbered, and is cited by its
+title, as "Format for new entries" at the top of this file says. These five
+did get their numbers, and D-001 to D-052 keep theirs.
+
 ---
 
 ### D-051 — A mistyped `REDIS_URL` stops the ledger booting; an unreachable one does not
@@ -3270,6 +3307,9 @@ reconnect storm.
 
 **Notes.** Recorded in #127 from the comment at `realtime_service/service/bus.py`,
 which the refactor shortened.
+
+*Amended 2026-10-20 by #394: the class is now `FrameBus`. The rule is
+unchanged.*
 
 ---
 
@@ -10000,3 +10040,76 @@ cancel against the owner's in both orderings; each fails with the cancel's
 `books.lock_book` removed. The ledger keeps its own copy of the reason rule
 (`_refuse_if_reason_unusable`), a twin of auth's `user_admin._reason_problems`
 (ADR 0012).
+
+---
+
+### D-NEW — `GET /ledger/orders/me` returns every live order, unpaged
+
+**Date:** 2026-10-20 · **Ticket:** #393 · **Status:** active
+
+**Decision.** `GET /ledger/orders/me` keeps the contract it shipped with in
+#26: every live order the caller has, newest first, in one response read by
+one statement (`service/orders.py::list_live`), with no `limit` and no
+`cursor`. It does not page through `shared/paging.py` as the ledger's history
+routes do. A client replaces its whole list with each response.
+
+**Why.**
+- *It is a snapshot, not a feed.* docs/api/ledger-service.md calls it the
+  snapshot for order frames, fetched when the page opens and again after every
+  socket reconnect, and docs/api/realtime-service.md, "Order updates", says the
+  same. The client replaces its state with what it reads, so the read has to
+  be one point in time. A history feed need not be: a row its walk has not
+  reached is one its reader can afford to miss until it reads from the top
+  again, and a row it has shown stays true. This set loses members in the
+  middle, under the reader: a cancel, a complete fill or a result's release
+  takes an order out wherever it sits in the list. A keyset walk is not one
+  point in time, so an order removed after its page was read stays on screen
+  as live, and for a cancel or a release no frame comes to correct it: neither
+  the owner's cancel nor an administrator's publishes one, and nor does a
+  result. This route is the only way another tab learns such an order has
+  gone. The routes that page are the other kind: `entries/me` and the
+  administrator's `users/{user_id}/entries`, the market trade feed and the
+  audit feed walk a history that only grows at the newest end, and the
+  leaderboard walks one stored generation, frozen for the walk.
+- *Unpaged is already the ledger's normal case.*
+  `GET /ledger/portfolio/me` returns every held position in one response from
+  one statement, so a trade committing mid-read cannot show its debit without
+  its shares ("The portfolio reads its balance and positions in one statement,
+  after the grant, with no lock").
+  `GET /ledger/markets/{market_id}/price-history` returns every point
+  unpaged; its `from` and `to` bound the payload, not the work.
+- *The read is cheap, and the cap below bounds it better than paging.*
+  `ix_ledger_orders_open_by_user` is partial on `status = 'open'`, so filled
+  and cancelled orders cost it nothing. Every balance read, every debit's
+  overdraft check and every placement's budget check already sum the user's
+  live buy orders (`service/reservations.py::reserved_query_of`), through an
+  index on `user_id` alone that holds the sells beside them. Those sums
+  return one number however many rows they add up; this route builds one
+  object per row, so it is the read that grows first. The cap named in the
+  reversal trigger bounds it and the sums together, where paging would bound
+  only this one.
+
+**Rejected.**
+- *Keyset paging with the shared cursor*, as #393 asked: an order removed
+  after its page was read stays on screen as live with no frame coming to
+  correct it, on the route the realtime contract names as the recovery path,
+  and a contract change for [FE][T-6] #61 to buy that.
+- *Paging at REPEATABLE READ*, as the admin overview does for its counts: that
+  holds one snapshot inside one request, and a walk spans several.
+- *A `limit` with no cursor*: a client cannot tell a short list from a cut
+  one, and the orders it cannot see still hold credits its balance shows as
+  reserved.
+
+**Notes.** No change to the request or response: docs/api/ledger-service.md
+already says "No query parameters and no paging". #61 builds the open-orders
+list against it and replaces the whole list on each fetch. Nothing caps the
+list today: placement is not rate limited, and at the 0.0001 minimum limit
+and quantity a trader's starting credits buy millions of live buy orders.
+That is the cap's job, not paging's.
+
+**Reversal trigger.** A cap on live orders per trader at placement (a new
+`409` on `POST /ledger/markets/{market_id}/orders`), which bounds this
+response and the reservation sums together and lets the contract state the
+bound; or a read of this route measured as slow, whose fix is that cap rather
+than paging. Either way this entry is revisited, and paging comes back, if at
+all, beside the cap.

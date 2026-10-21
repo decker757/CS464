@@ -11,7 +11,7 @@ import main
 
 
 class _RecordingBus:
-    """Stands in for `PriceBus` and keeps the URL it was built with. `run`
+    """Stands in for `FrameBus` and keeps the URL it was built with. `run`
     waits to be cancelled, as the real one does, and never dials Redis."""
 
     def __init__(self, *, redis_url: object, hub: object, gate: object) -> None:
@@ -29,7 +29,7 @@ async def test_the_bus_is_given_the_configured_redis_url(
     its reconnect loop retries every failure, so the socket tests would wait
     rather than fail. The expected value is the environment conftest
     configured, not Settings."""
-    monkeypatch.setattr(main, "PriceBus", _RecordingBus)
+    monkeypatch.setattr(main, "FrameBus", _RecordingBus)
     app = main.create_app()
 
     async with app.router.lifespan_context(app):

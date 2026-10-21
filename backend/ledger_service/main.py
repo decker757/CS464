@@ -25,7 +25,7 @@ from service.leaderboard_refresher import run_leaderboard_refresher
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Seconds, for connect and every read and write on the price bus (D-051).
+# Seconds, for connect and every read and write on the bus (D-051).
 # Without it a Redis that never answers makes the publish wait instead of
 # raise, hanging a committed trade. Equals redis-py 8.1's default; stated so a
 # version change cannot make it None.

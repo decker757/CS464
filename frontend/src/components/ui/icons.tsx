@@ -52,3 +52,11 @@ export function ChevronLeftIcon({ size = 14, className }: IconProps) {
     </svg>
   )
 }
+
+export function ChevronDownIcon({ size = 14, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={className}>
+      <polyline points="2,5 7,10 12,5" />
+    </svg>
+  )
+}
