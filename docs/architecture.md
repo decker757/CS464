@@ -265,6 +265,7 @@ erDiagram
         numeric seed_subsidy
         uuid pool_account_id FK
         bigint state_version "advanced in the same transaction as the trade"
+        numeric credits_traded "every trade's credits, raised beside state_version"
         timestamptz state_changed_at
         timestamptz opened_at
     }
