@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { getMarketPriceHistory, getMarketTrades, type MarketTrade, type MarketTradePage, type PriceHistory } from '../../api/ledgerApi'
 import AppLayout from '../../components/layout/AppLayout'
@@ -11,6 +11,7 @@ import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
 import { useMarketDetail } from '../../hooks/useMarketDetail'
 import { usePagedList } from '../../hooks/usePagedList'
+import { useUsernames } from '../../hooks/useUsernames'
 
 const pagedTradeOptions = {
   itemsOf: (page: MarketTradePage) => page.trades,
@@ -70,6 +71,12 @@ export default function MarketPriceHistoryPage() {
   )
   const { items: trades, hasMore, isLoading: tradesLoading, hasError: tradesError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchTrades, pagedTradeOptions)
 
+  // The traders on the rows now loaded, named in one request. Memoised over
+  // `trades`, which changes identity only when a page arrives, so the lookup
+  // is asked once per page of trades rather than once per render.
+  const traderIds = useMemo(() => trades.map(trade => trade.user_id), [trades])
+  const usernames = useUsernames(traderIds)
+
   const winningOutcomeId = history?.winning_outcome_id ?? null
   const winnerLabel = winningOutcomeId === null ? null : outcomeLabels.get(winningOutcomeId) ?? winningOutcomeId
 
@@ -118,7 +125,7 @@ export default function MarketPriceHistoryPage() {
           )}
           {!tradesLoading && !tradesError && trades.length > 0 && (
             <>
-              <MarketTradeTable trades={trades} outcomeLabels={outcomeLabels} />
+              <MarketTradeTable trades={trades} outcomeLabels={outcomeLabels} usernames={usernames} />
               {hasMore && (
                 <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="trades" onLoadMore={loadMore} />
               )}

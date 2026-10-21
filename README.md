@@ -98,6 +98,27 @@ Each service reads its own `<SERVICE>_TEST_DATABASE_URL` from the root `.env`,
 so a suite always connects as its own restricted role rather than as the
 superuser. That is what makes the cross-schema denial tests mean something.
 
+## Architecture
+
+Three diagrams, in [`docs/architecture.md`](docs/architecture.md). They are
+mermaid, so GitHub renders them and there is nothing to install or regenerate,
+and each one names the ADR or `DECISIONS.md` entry it was drawn from — a
+diagram with no provenance drifts away from the decision it describes and
+nobody notices.
+
+- [**The services and what they own**](docs/architecture.md#the-services-and-what-they-own):
+  the five services, the four Postgres schemas, Redis, who may read what, and
+  the two surprises — `realtime` has no database at all, and the one shared
+  table is appended to by three services and readable by one.
+- [**A trade, end to end**](docs/architecture.md#a-trade-end-to-end): the path
+  that crosses three services. Where the two upstream checks go, where the
+  single commit is, and why the price frame is published after it and can
+  never fail the trade.
+- [**The schemas**](docs/architecture.md#the-schemas): `market` and `ledger` as
+  ERDs, including the balance column `ledger.accounts` does not have.
+
+They live in their own file rather than inline so that each exists once.
+
 ## How it is put together
 
 ```
@@ -117,6 +138,7 @@ sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/           0002 only: a login role, and 02-schemas.sql re-run
 docs/adr/                 decisions and why they were made
 docs/api/                 endpoint contracts for the frontend
+docs/architecture.md      the three diagrams above, each citing its ADR
 scripts/                  weekly sprint digest to Telegram
 .github/workflows/        CI, one path-filtered workflow per area
 ```

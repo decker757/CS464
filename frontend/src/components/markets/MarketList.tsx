@@ -37,7 +37,7 @@ export default function MarketList({ query, status }: MarketListProps) {
   const { items: markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchMarketPage, pagedMarketsOptions)
   // `markets` keeps its identity until the list itself changes, so the prices
   // are fetched then and not on every render.
-  const { pricesByMarket, readAt } = usePricesForMarkets(markets)
+  const { snapshotsByMarket, readAt } = usePricesForMarkets(markets)
   const isFiltered = query !== '' || status !== null
 
   return (
@@ -69,7 +69,7 @@ export default function MarketList({ query, status }: MarketListProps) {
           )}
 
           <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
-            {markets.map((market) => <MarketCard key={market.id} market={market} prices={pricesByMarket.get(market.id)} />)}
+            {markets.map((market) => <MarketCard key={market.id} market={market} snapshot={snapshotsByMarket.get(market.id)} />)}
           </div>
 
           {hasMore && (
