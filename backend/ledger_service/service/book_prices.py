@@ -62,6 +62,21 @@ async def list_book_outcomes(
     return (await session.execute(stmt)).all()
 
 
+async def list_book_outcomes_for_markets(
+    session: AsyncSession, market_ids: Sequence[uuid.UUID]
+) -> Sequence[Row]:
+    """`list_book_outcomes` for many markets in one statement, ordered by
+    market id then position, each row also carrying its `market_id`. A market
+    with no book has no rows; never opens one, never locks."""
+    stmt = (
+        _book_outcomes_query()
+        .add_columns(MarketBook.market_id)
+        .where(MarketBook.market_id.in_(market_ids))
+        .order_by(MarketBook.market_id, MarketOutcome.position)
+    )
+    return (await session.execute(stmt)).all()
+
+
 def refuse_unpriceable(outcome_count: int, b: Decimal | None) -> None:
     """Raise `MarketBookIncomplete` for a book the engine cannot price.
 
