@@ -38,7 +38,7 @@ function LeaderboardMiniCard() {
       <p className="mb-1.5 text-[10px] text-subtle">🏆 Leaderboard</p>
       {EXAMPLE_LEADERS.map(({ rank, name, credits }) => (
         <div key={rank} className="mb-1 flex items-center justify-between text-[11px]">
-          <span className="w-5 font-bold text-smu-gold">{rank}</span>
+          <span className="w-5 font-bold text-smu-gold-text">{rank}</span>
           <span className="flex-1 pl-1 font-semibold text-smu-navy">{name}</span>
           <span className="text-muted">{formatCredits(credits)} credits</span>
         </div>
