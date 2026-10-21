@@ -3,8 +3,8 @@ import { NavLink } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useBalance } from '../context/BalanceContext'
 import { formatCredits } from '../utils/formatCredits'
+import AccountMenu from './AccountMenu'
 import TopBar from './layout/TopBar'
-import Button from './ui/Button'
 import { buttonClass } from './ui/buttonClass'
 
 // NavLink sets aria-current="page" on the match itself, so "you are here" is
@@ -13,6 +13,24 @@ import { buttonClass } from './ui/buttonClass'
 // trader spends most of their time.
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   return `text-sm transition ${isActive ? 'font-semibold text-smu-gold' : 'text-white/75 hover:text-white'}`
+}
+
+/** The balance as a readout and not a control: a figure and its unit, inside
+ * the account cluster. It used to carry the active link's exact two classes,
+ * which read as a page you could open (#437) — so the emphasis is on the
+ * number alone now, and the gold stays with the navigation it belongs to. */
+function BalanceReadout({ balance }: { balance: string | null }) {
+  return (
+    <span aria-label="available balance" className="text-sm whitespace-nowrap text-white/70">
+      {balance === null ? (
+        'Balance unavailable'
+      ) : (
+        <>
+          <span className="font-semibold text-white tabular-nums">{formatCredits(balance)}</span> credits
+        </>
+      )}
+    </span>
+  )
 }
 
 export default function AppNavbar() {
@@ -34,11 +52,14 @@ export default function AppNavbar() {
     }
   }
 
-  // Everything is behind `user`, so no page offers "Log Out" to a signed-out visitor.
+  // The brand half of the bar is public and the rest of it is not, so no page
+  // offers "Log Out" to a signed-out visitor.
+  if (!user) return <TopBar />
+
   return (
-    <TopBar>
-      {user && (
-        <div className="flex items-center gap-4">
+    <TopBar
+      nav={
+        <>
           {/* First, because it is the thing the product is for. */}
           <NavLink to="/markets" className={navLinkClass}>
             Markets
@@ -73,17 +94,17 @@ export default function AppNavbar() {
               </NavLink>
             </>
           )}
-          {balance !== undefined && (
-            <span aria-label="available balance" className="text-sm font-semibold text-smu-gold">
-              {balance === null ? 'Balance unavailable' : `${formatCredits(balance)} credits`}
-            </span>
-          )}
-          <span className="text-sm text-white/75">{user.username}</span>
-          <Button variant="outlineOnNavy" size="sm" onClick={handleLogout} disabled={loggingOut}>
-            {loggingOut ? 'Signing out…' : 'Log Out'}
-          </Button>
-        </div>
-      )}
+        </>
+      }
+    >
+      {/* Money, identity and sign-out as one group at the far right, outside
+          the navigation: the balance stays on screen because it is the figure
+          a trader checks most, and the menu holds the two things that are
+          about the account rather than about where to go. */}
+      <div className="flex items-center gap-4 rounded-full border border-white/10 bg-white/5 py-1 pr-1 pl-4">
+        {balance !== undefined && <BalanceReadout balance={balance} />}
+        <AccountMenu username={user.username} email={user.email} isLoggingOut={loggingOut} onLogout={handleLogout} />
+      </div>
     </TopBar>
   )
 }
