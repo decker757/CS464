@@ -95,8 +95,10 @@ describe('TradingPanel', () => {
     const preview = await screen.findByLabelText('trade preview')
     expect(preview).toHaveTextContent('5.1250 credits')
     // Average price is credits per share, not a probability (#247): shown at
-    // the same precision as every other credits figure, never as a percentage.
-    expect(preview).toHaveTextContent('0.5125')
+    // the same precision as every other credits figure, never as a percentage,
+    // and carrying the unit, because a bare decimal sitting between a credits
+    // row and a percentage row reads as a probability (#430).
+    expect(preview).toHaveTextContent('0.5125 credits/share')
     expect(preview).not.toHaveTextContent('51.3%')
   })
 
@@ -126,6 +128,18 @@ describe('TradingPanel', () => {
 
     const preview = await screen.findByLabelText('trade preview')
     expect(preview).toHaveTextContent('2.0000')
+  })
+
+  it('heads the side and outcome toggles separately, so the two rows are not one control', () => {
+    // #430: the two rows are the same shape and sit a few pixels apart, and
+    // the side row keeps the green/red trading convention rather than the
+    // outcome row's navy fill. The headings are what stops a trader reading
+    // the pair as one control disagreeing with itself, and they are the
+    // groups' names for a screen reader too.
+    renderPanel()
+
+    expect(screen.getByRole('group', { name: 'Buy or sell' })).toContainElement(screen.getByRole('button', { name: 'Buy' }))
+    expect(screen.getByRole('group', { name: 'Outcome' })).toContainElement(screen.getByRole('button', { name: 'Yes' }))
   })
 
   it('does not fetch a preview before the debounce settles', async () => {
