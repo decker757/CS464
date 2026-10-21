@@ -59,7 +59,7 @@ export default function MarketPreviewCard() {
   return (
     <div className="w-full rounded-2xl border border-t-[3px] border-smu-gold/30 border-t-smu-gold bg-white px-6 pt-6 pb-5 shadow-hero">
       <div className="mb-3.5 flex items-center justify-between">
-        <span className="rounded-full bg-smu-gold/10 px-[9px] py-[3px] text-[10px] font-bold tracking-[0.6px] text-smu-gold uppercase">
+        <span className="rounded-full bg-smu-gold/10 px-[9px] py-[3px] text-[10px] font-bold tracking-[0.6px] text-smu-gold-text uppercase">
           Example
         </span>
         <span className="text-[11px] text-muted">Closes 30 Oct</span>
@@ -104,8 +104,8 @@ export default function MarketPreviewCard() {
           assistive technology so nobody is offered an action this page cannot
           perform. */}
       <div aria-hidden className="mb-4 flex gap-2 text-[13px] font-bold">
-        <span className="flex-1 rounded-lg border border-success/25 bg-success/10 py-[9px] text-center text-success">Buy YES</span>
-        <span className="flex-1 rounded-lg border border-danger/20 bg-danger/8 py-[9px] text-center text-danger">Buy NO</span>
+        <span className="flex-1 rounded-lg border border-success/25 bg-success/10 py-[9px] text-center text-success-strong">Buy YES</span>
+        <span className="flex-1 rounded-lg border border-danger/20 bg-danger/8 py-[9px] text-center text-danger-strong">Buy NO</span>
       </div>
 
       <p className="rounded-lg bg-surface-muted px-3 py-[9px] text-xs text-muted">
