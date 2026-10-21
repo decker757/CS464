@@ -60,10 +60,11 @@ commits.
    `quantize_cost` — which refuses a zero result itself (D-041). The preview
    prices through the same function, so the two code paths cannot disagree
    about what a trade costs.
-10. The writes: `state_version` up by one, `state_changed_at` to the time
-    taken here under the book lock (which the snapshot and the price frame
-    report; the ledger entries may land a little later, #187), the traded
-    outcome's `q`, and the position —
+10. The writes: `state_version` up by one, `credits_traded` up by what the
+    trade moved, `state_changed_at` to the time taken here under the book
+    lock (which the snapshot and the price frame report; the ledger entries
+    may land a little later, #187), the traded outcome's `q`, and the
+    position —
     added to on a buy, released at average cost on a sell — all as pending ORM
     changes, none of them committed yet.
 10b. The cascade ([T-7] #27, ADR 0024): every resting order the new price
@@ -410,10 +411,12 @@ def write_trade(
     trade: PricedTrade,
     now: datetime,
 ) -> None:
-    """The trade's pending writes: `state_version` up by one,
-    `state_changed_at`, the traded outcome's `q`, and the position. Commits
-    nothing; the caller's `posting.post_all` commits them."""
+    """The trade's pending writes: `state_version` up by one, `credits_traded`
+    up by the trade's magnitude, `state_changed_at`, the traded outcome's `q`,
+    and the position. Commits nothing; the caller's `posting.post_all` commits
+    them."""
     book.state_version += 1
+    book.credits_traded += trade.cost.magnitude
     book.state_changed_at = now
     outcomes[index].q = trade.cost.after_q[index]
 
