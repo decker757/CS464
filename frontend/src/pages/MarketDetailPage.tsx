@@ -4,14 +4,17 @@ import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
+import OpenOrdersList from '../components/markets/OpenOrdersList'
 import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
 import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
+import { useBalance } from '../context/BalanceContext'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useMarketPrices } from '../hooks/useMarketPrices'
+import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
@@ -40,6 +43,7 @@ function Banner({ className, children }: { className: string; children: React.Re
 
 export default function MarketDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const { refetch: refetchBalance } = useBalance()
   // Tagged with the market id it was loaded for, so moving to another market
   // shows that one loading rather than the last one's market or error.
   const [loaded, setLoaded] = useState<{ id: string; market: PublicMarketDetail | null; failed: boolean } | null>(null)
@@ -53,7 +57,23 @@ export default function MarketDetailPage() {
   // previous title up rather than blanking it for the round trip (#356).
   useDocumentTitle(market?.question)
 
-  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null)
+  // Limit orders are binary-markets-only: anything else is refused
+  // market_not_binary, so the form is hidden rather than offered and refused
+  // (ledger-service.md). The list is read whenever the market could carry
+  // orders of the trader's — including a closed one, whose orders stay
+  // cancellable until the market has a result (ADR 0024).
+  const binaryMarket = market?.outcomes.length === 2
+  const ordersPossible = binaryMarket && market?.status !== 'settled'
+  const { orders, refetch: refetchOrders, applyFrame } = useMyOrders(!!ordersPossible)
+  const ordersHere = orders?.filter(order => order.market_id === market?.id) ?? []
+
+  // One socket for the page: price frames keep the prices above current, and
+  // order frames the list below it. Order frames need no subscribe, so they
+  // arrive on this same connection (realtime-service.md, "Order updates").
+  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
+    onOrderFrame: applyFrame,
+    onReconnected: refetchOrders,
+  })
   // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
   // so the controls lock the moment close_time passes, without a refetch.
   const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
@@ -118,6 +138,15 @@ export default function MarketDetailPage() {
   useEffect(() => {
     if (tradeable) refetchHeld()
   }, [tradeable, refetchHeld])
+
+  // A placement or a cancel moves credits, or what they reserve, and a
+  // placement that filled also changed the holdings the sell clamp reads.
+  // The balance comes back through BalanceContext, as it does after a trade.
+  const onOrdersChanged = useCallback(() => {
+    refetchOrders()
+    refetchBalance()
+    refetchHeld()
+  }, [refetchOrders, refetchBalance, refetchHeld])
 
   // An early close leaves close_time in the future, so "Closed <close_time>"
   // would name a date that has not happened yet.
@@ -211,11 +240,27 @@ export default function MarketDetailPage() {
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
-              <TradingPanel marketId={market.id} outcomes={market.outcomes} heldByOutcome={heldByOutcome} onTraded={refetchHeld} />
+              <TradingPanel
+                marketId={market.id}
+                outcomes={market.outcomes}
+                limitOrdersAllowed={!!binaryMarket}
+                heldByOutcome={heldByOutcome}
+                onTraded={refetchHeld}
+                onOrderPlaced={onOrdersChanged}
+              />
             ) : (
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
             )}
           </Card>
+
+          {/* Outlives the form above: a closed market's orders stay
+              cancellable until the market has a result (ADR 0024), so this
+              renders whenever the trader has one here. */}
+          {ordersHere.length > 0 && (
+            <SectionCard title="Your open orders" className="mb-6">
+              <OpenOrdersList orders={ordersHere} outcomes={market.outcomes} onCancelled={onOrdersChanged} />
+            </SectionCard>
+          )}
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />
