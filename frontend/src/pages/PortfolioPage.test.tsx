@@ -145,8 +145,12 @@ describe('PortfolioPage', () => {
     mockPortfolio(portfolio({ balance: '9993.8938', positions_value: '6.1062', net_worth: '10000.0000', positions: [] }))
     renderPage('9993.8938')
 
+    // Both halves are awaited, because they arrive from two unrelated
+    // sources: the bar's figure is in BalanceContext from the first render,
+    // and the page's waits on the portfolio request. Awaiting one says
+    // nothing about the other, and whichever lands first is a coin toss.
+    expect(await within(screen.getByRole('main')).findByText('9,993.89')).toBeInTheDocument()
     expect(await within(screen.getByRole('banner')).findByText('9,993.89')).toBeInTheDocument()
-    expect(within(screen.getByRole('main')).getByText('9,993.89')).toBeInTheDocument()
   })
 
   it('shows total P&L as a signed headline figure when the trader is up', async () => {
@@ -195,10 +199,13 @@ describe('PortfolioPage', () => {
     mockMarket('mkt-1', market())
     renderPage()
 
+    // The card and the row are two renders apart — the cards come with the
+    // portfolio, the rows only once the markets they name have loaded too —
+    // so each is awaited rather than one standing in for the other.
     expect(await screen.findByText('0')).toBeInTheDocument()
-    expect(screen.queryByText('-0')).not.toBeInTheDocument()
     expect(screen.getByText('Unrealized 0')).toBeInTheDocument()
-    expect(screen.getByText('-0.0001')).toBeInTheDocument()
+    expect(await screen.findByText('-0.0001')).toBeInTheDocument()
+    expect(screen.queryByText('-0')).not.toBeInTheDocument()
   })
 
   it('reads as flat, not as a loss, for a trader who has never traded', async () => {
