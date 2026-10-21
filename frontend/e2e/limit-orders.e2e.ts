@@ -1,4 +1,5 @@
-import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
+import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
+import { creditsLess, formatRoundedCredits } from './support/credits'
 import { expect, test } from './support/fixtures'
 import { logIn } from './support/browser'
 
@@ -8,6 +9,7 @@ import { logIn } from './support/browser'
 // rest, watching it fill from an `order` frame, and cancelling it
 // (#347 and #378's reviews both asked for it here).
 test('a trader rests a limit order, watches another trade fill it, and cancels the remainder', async ({ page }) => {
+  const grant = await startingGrant()
   const admin = await registerAdmin('lo_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('limit')} happen?`)
   const trader = await registerTrader('lo_trader')
@@ -16,7 +18,7 @@ test('a trader rests a limit order, watches another trade fill it, and cancels t
   await page.goto(`/markets/${market.id}`)
 
   const availableBalance = page.getByLabel('available balance')
-  await expect(availableBalance).toHaveText('1,000 credits')
+  await expect(availableBalance).toHaveText(`${formatRoundedCredits(grant)} credits`)
 
   // A buy well under the current price (0.5000 on a fresh book) rests
   // instead of filling.
@@ -30,7 +32,8 @@ test('a trader rests a limit order, watches another trade fill it, and cancels t
 
   // The order's own budget — 0.30 × 50 — is reserved, so what is available
   // to spend drops by it while the balance itself does not (ADR 0024).
-  await expect(availableBalance).toHaveText('985 credits')
+  const afterTheReserve = creditsLess(grant, '15.0000')
+  await expect(availableBalance).toHaveText(`${formatRoundedCredits(afterTheReserve)} credits`)
 
   const orderRow = page.getByRole('row').filter({ hasText: '30.0%' })
   // Quantity, filled-so-far and what the order holds ([T-6] #26's fourth
@@ -64,7 +67,7 @@ test('a trader rests a limit order, watches another trade fill it, and cancels t
   // The cancel released what the remainder was holding, so nothing of this
   // trader's is reserved any more and available is their whole balance
   // again — the shares the partial fill bought having been paid for.
-  await expect(availableBalance).not.toHaveText('985 credits')
+  await expect(availableBalance).not.toHaveText(`${formatRoundedCredits(afterTheReserve)} credits`)
 })
 
 test('an order filled the rest of the way by another trade leaves the list on its own', async ({ page }) => {
