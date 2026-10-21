@@ -13,6 +13,7 @@ const MARKET_BASE = 'http://localhost:8001'
 const LEDGER_BASE = 'http://localhost:8003'
 const SNAPSHOT = `${LEDGER_BASE}/ledger/markets/:id/snapshot`
 const PORTFOLIO = `${LEDGER_BASE}/ledger/portfolio/me`
+const ORDERS = `${LEDGER_BASE}/ledger/orders/me`
 const PREVIEW = `${LEDGER_BASE}/ledger/markets/:id/preview`
 const TRADES = `${LEDGER_BASE}/ledger/markets/:id/trades`
 
@@ -95,6 +96,9 @@ beforeEach(() => {
   server.use(
     priceService.addEventListener('connection', () => { /* silent */ }),
     http.get(PORTFOLIO, () => HttpResponse.json(portfolio())),
+    // Every binary market reads this for the open-orders list ([T-6] #61);
+    // no orders is the default, so most tests see no list at all.
+    http.get(ORDERS, () => HttpResponse.json({ orders: [] })),
   )
 })
 
@@ -573,6 +577,142 @@ describe('MarketDetailPage', () => {
     await waitFor(() => expect(wsClient).not.toBeNull())
     act(() => wsClient!.close(4403))
     expect(await screen.findByText(/live prices unavailable/i)).toBeInTheDocument()
+  })
+
+  // [FE][T-6] #61: placing a limit order and watching it rest, fill and be
+  // cancelled, all on the market's own page.
+  describe('limit orders', () => {
+    function restingOrder(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'ord-1',
+        market_id: 'mkt-abc',
+        outcome_id: 'o1',
+        outcome_position: 0,
+        side: 'buy',
+        limit_price: '0.3000',
+        quantity: '50.0000',
+        filled_quantity: '0.0000',
+        average_fill_price: null,
+        reserved_credits: '15.0000',
+        reserved_shares: null,
+        status: 'open',
+        created_at: '2026-10-20T15:52:10.744443Z',
+        cancelled_at: null,
+        ...overrides,
+      }
+    }
+
+    it('offers the Limit choice on a binary market', async () => {
+      renderPage()
+      expect(await screen.findByRole('button', { name: 'Limit' })).toBeInTheDocument()
+    })
+
+    it('hides the Limit choice on a market with more than two outcomes', async () => {
+      // The ledger refuses one with market_not_binary, so the control is not
+      // offered rather than offered and refused (ledger-service.md).
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({
+          ...baseMarket,
+          outcomes: [
+            { id: 'o1', position: 0, label: 'Yes' },
+            { id: 'o2', position: 1, label: 'No' },
+            { id: 'o3', position: 2, label: 'Maybe' },
+          ],
+        })),
+      )
+      renderPage()
+      await screen.findByText(baseMarket.question)
+      expect(screen.queryByRole('button', { name: 'Limit' })).not.toBeInTheDocument()
+    })
+
+    it('shows the trader\'s resting order with its limit, quantity and filled-so-far', async () => {
+      server.use(http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder({ filled_quantity: '20.5465' })] })))
+      renderPage()
+
+      expect(await screen.findByText('Your open orders')).toBeInTheDocument()
+      const row = screen.getAllByRole('row')[1]
+      expect(row).toHaveTextContent('30.0%')
+      expect(row).toHaveTextContent('50.0000')
+      expect(row).toHaveTextContent('20.5465')
+    })
+
+    it('shows no open-orders section when the trader has none here', async () => {
+      // The list is scoped to this market: an order on another one belongs
+      // on that market's page, not this one.
+      server.use(http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder({ market_id: 'other-market' })] })))
+      renderPage()
+      await screen.findByText(baseMarket.question)
+      expect(screen.queryByText('Your open orders')).not.toBeInTheDocument()
+    })
+
+    it('moves filled-so-far from an order frame, with no reload', async () => {
+      // realtime-service.md, "Order updates": a fill reaches the owner on
+      // every socket they have open, with no subscribe of its own.
+      let wsClient: { send(data: string): void } | null = null
+      server.use(
+        http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder()] })),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      renderPage()
+      await screen.findByText('Your open orders')
+      await waitFor(() => expect(screen.getAllByRole('row')[1]).toHaveTextContent('0.0000'))
+
+      await waitFor(() => expect(wsClient).not.toBeNull())
+      act(() => wsClient!.send(JSON.stringify({
+        type: 'order',
+        order_id: 'ord-1',
+        market_id: 'mkt-abc',
+        status: 'open',
+        quantity: '50.0000',
+        filled_quantity: '12.5000',
+        fill: { transaction_id: 't1', quantity: '12.5000', total: '-3.7500', state_version: 7 },
+        occurred_at: '2026-10-20T16:00:00Z',
+      })))
+
+      await waitFor(() => expect(screen.getAllByRole('row')[1]).toHaveTextContent('12.5000'))
+    })
+
+    it('drops the order from the list once a frame says it filled in full', async () => {
+      let wsClient: { send(data: string): void } | null = null
+      server.use(
+        http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder()] })),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      renderPage()
+      await screen.findByText('Your open orders')
+
+      await waitFor(() => expect(wsClient).not.toBeNull())
+      act(() => wsClient!.send(JSON.stringify({
+        type: 'order',
+        order_id: 'ord-1',
+        market_id: 'mkt-abc',
+        status: 'filled',
+        quantity: '50.0000',
+        filled_quantity: '50.0000',
+        fill: { transaction_id: 't2', quantity: '50.0000', total: '-15.0000', state_version: 8 },
+        occurred_at: '2026-10-20T16:01:00Z',
+      })))
+
+      // The list holds live orders only, so a filled one leaves it — and
+      // with the last one gone, so does the section.
+      await waitFor(() => expect(screen.queryByText('Your open orders')).not.toBeInTheDocument())
+    })
   })
 })
 
