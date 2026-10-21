@@ -19,6 +19,9 @@ on:
       - "backend/**"
       - "sql/**"
       - "docker-compose.yml"
+      # [5.4] #440. The migration guard tests read the scale override, so a
+      # change to it on its own has to bring the backend suites with it.
+      - "docker-compose.scale.yml"
       # [F-12] #342. The coverage job is the only thing that runs
       # scripts/test_coverage_summary.py, so a change to the script alone has
       # to bring this workflow with it.
@@ -32,6 +35,9 @@ on:
       - "backend/**"
       - "sql/**"
       - "docker-compose.yml"
+      # [5.4] #440. The migration guard tests read the scale override, so a
+      # change to it on its own has to bring the backend suites with it.
+      - "docker-compose.scale.yml"
       # [F-12] #342. The coverage job is the only thing that runs
       # scripts/test_coverage_summary.py, so a change to the script alone has
       # to bring this workflow with it.

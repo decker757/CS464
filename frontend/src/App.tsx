@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import ErrorBoundary from './components/ErrorBoundary'
 import GuestOnly from './components/GuestOnly'
 import ProtectedRoute from './components/ProtectedRoute'
+import ScrollRestoration from './components/ScrollRestoration'
 import { AuthProvider } from './context/AuthContext'
 import { BalanceProvider } from './context/BalanceContext'
 import LandingPage from './pages/LandingPage'
@@ -49,6 +50,10 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
+      {/* Inside the router and outside the routes: it reads the history entry
+          the router is on, and must outlive the page it is putting back where
+          the trader left it ([X-1] #431). */}
+      <ScrollRestoration />
       <AppFrame>
         <Routes>
           <Route path="/" element={<GuestOnly><LandingPage /></GuestOnly>} />

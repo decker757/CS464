@@ -194,16 +194,31 @@ def schema_catalog(connection: Connection, schema: str) -> dict[str, list[str]]:
     return catalog
 
 
-def compose_service(name: str) -> dict[str, Any]:
-    """One service's block from `docker-compose.yml`, parsed rather than pattern-matched.
+def compose_service(name: str, *, compose_file: str = "docker-compose.yml") -> dict[str, Any]:
+    """One service's block from a repo-root compose file, parsed rather than pattern-matched.
+
+    `compose_file` names the override to read instead, which is how [5.4] #440's
+    tests reach `docker-compose.scale.yml`. The blocks come back unmerged, so an
+    override's block holds only what that file changes.
 
     PyYAML arrives with `uvicorn[standard]` in every service; the shared suite
     never calls this.
     """
     import yaml  # noqa: PLC0415
 
-    compose = (_repo_root() / "docker-compose.yml").read_text(encoding="utf-8")
-    return yaml.safe_load(compose)["services"][name]
+    class ComposeLoader(yaml.SafeLoader):
+        """SafeLoader plus compose's `!reset`, which PyYAML refuses as unknown.
+
+        `ports: !reset null` is how an override empties one of the base file's
+        lists instead of being appended to it ([5.4] #440). The tag means "no
+        value at all", so it reads as None. No other compose tag is taught
+        here: an unknown one should fail loudly rather than be guessed at.
+        """
+
+    ComposeLoader.add_constructor("!reset", lambda loader, node: None)
+
+    compose = (_repo_root() / compose_file).read_text(encoding="utf-8")
+    return yaml.load(compose, Loader=ComposeLoader)["services"][name]
 
 
 def assert_baseline_downgrades_and_upgrades_again(
