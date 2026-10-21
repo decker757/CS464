@@ -25,10 +25,12 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from service import cancellation
+from service.portfolio import Portfolio
 from unit_test.placement_fixtures import limit_upstream, open_at, place, record_result
 from unit_test.portfolio_fixtures import funded, read_portfolio
 from unit_test.sell_fixtures import hold
 from unit_test.service.test_place_order import EXAMPLE_LIMIT, HELD, ZERO_Q
+from unit_test.trade_fixtures import Upstream
 
 # The placement suite's marketable sell: 30 at 0.6000 fills 13.7867 and rests.
 MARKETABLE_QUANTITY = Decimal("30.0000")
@@ -42,7 +44,7 @@ RESTING_BUY_LIMIT = Decimal("0.1000")
 OUTCOME_ONE = Decimal("41.0000")
 
 
-def _reserved(result, upstream, outcome: int) -> str:
+def _reserved(result: Portfolio, upstream: Upstream, outcome: int) -> str:
     """The row's reserved shares as a string, so the scale is checked too."""
     key = (upstream.market_id, upstream.outcomes[outcome])
     return str(result.reserved_shares[key])
