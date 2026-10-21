@@ -5,8 +5,8 @@ What a client fetches on opening a page and on every reconnect
 book first, through `service/book_prices.py`. It never gates on status: a
 closed market still has a price to render, and the reconnect needs one.
 
-`list_snapshots` is the same price for a list of cards ([X-1] #432), and
-opens no book.
+`list_snapshots` is the same price for a list of cards ([X-1] #432), with
+the credits each market has traded ([X-1] #447), and opens no book.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 import httpx
 from sqlalchemy.engine import Row
@@ -37,6 +38,15 @@ class Snapshot:
     state_version: int
     prices: list[PricedOutcome]
     occurred_at: datetime
+
+
+@dataclass(frozen=True)
+class ListedSnapshot(Snapshot):
+    """A market's snapshot as the batch answers it, with the credits its trades
+    have moved. DECISIONS.md, "The batch snapshot carries `credits_traded`, and
+    the single snapshot does not"."""
+
+    credits_traded: Decimal
 
 
 def _snapshot_of(market_id: uuid.UUID, rows: Sequence[Row]) -> Snapshot:
@@ -72,9 +82,10 @@ async def snapshot(
 
 async def list_snapshots(
     session: AsyncSession, market_ids: Sequence[uuid.UUID]
-) -> list[Snapshot]:
+) -> list[ListedSnapshot]:
     """The current price of each market in `market_ids` that has a book here,
-    once each, in the order its id first appears. [X-1] #432.
+    and the credits it has traded, once each, in the order its id first
+    appears. [X-1] #432, #447.
 
     One statement reads them all, with no lock. Opens no book, asks
     market_service nothing and writes nothing: an id with no book is absent
@@ -101,6 +112,9 @@ async def list_snapshots(
                 market_id,
             )
             continue
-        snapshots.append(_snapshot_of(market_id, rows))
+        snapshot = _snapshot_of(market_id, rows)
+        snapshots.append(
+            ListedSnapshot(**vars(snapshot), credits_traded=rows[0].credits_traded)
+        )
     return snapshots
 
