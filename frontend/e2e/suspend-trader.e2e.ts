@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { PASSWORD, registerAdmin, registerTrader } from './support/backend'
-import { logIn } from './support/browser'
+import { logIn, logOut } from './support/browser'
 
 // [FE][4.2] #60, through the real auth service: an admin's own view of
 // is_suspended is fed through MSW everywhere else, so this is the one seam
@@ -23,8 +23,7 @@ test('an admin suspends a trader through the UI, and that trader can no longer l
 
   await expect(page.getByText('Suspended')).toBeVisible()
 
-  await page.getByRole('button', { name: 'Log Out' }).click()
-  await expect(page).toHaveURL(/\/login$/)
+  await logOut(page, admin)
   await page.getByLabel('Username or Email').fill(trader.username)
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD)
   await page.getByRole('button', { name: /log in/i }).click()
