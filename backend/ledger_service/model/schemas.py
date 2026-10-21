@@ -967,15 +967,30 @@ class SnapshotsIn(BaseModel):
     )
 
 
+class ListedSnapshotOut(SnapshotOut):
+    """One market in the batch snapshot: the single snapshot's body, plus what
+    a card shows beside it. [X-1] #446.
+    """
+
+    prices_7d_ago: list[OutcomePriceOut] | None = Field(
+        description=(
+            "Each outcome's price seven days before this read: the price "
+            "after the last trade at or before then, in the shape of `prices`. "
+            "Null when the market has no trade that old."
+        ),
+    )
+
+
 class SnapshotListOut(BaseModel):
     """The current price of every requested market that has a book. [X-1] #432.
 
-    Each item is `SnapshotOut`, the single snapshot's body. An object around a
-    list of objects, so a field can be added to the answer or to each market
-    later without breaking a client (#446, #447).
+    Each item is `ListedSnapshotOut`, the single snapshot's body plus the
+    batch's own fields. An object around a list of objects, so a field can be
+    added to the answer or to each market later without breaking a client
+    (#446, #447).
     """
 
-    snapshots: list[SnapshotOut] = Field(
+    snapshots: list[ListedSnapshotOut] = Field(
         description=(
             "In the order each id first appears in `market_ids`. An id with "
             "no book here, or a book that cannot be priced, is absent."
