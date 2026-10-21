@@ -155,19 +155,9 @@ ZERO = Decimal(0)
 # re-check below — one key names one market.
 _KEY_PREFIX = "trade"
 
-
-def trade_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
-    return f"{_KEY_PREFIX}:{user_id}:{market_id}:{client_key}"
-
-
 # D-NEW "An order's idempotency key and each fill's key are derived by the
 # server": a fill on arrival and a cascade's fill alike.
 _FILL_KEY_PREFIX = "order-fill"
-
-
-def fill_key(order_id: uuid.UUID, state_version: int) -> str:
-    """The server-derived idempotency key of an order's fill at `state_version`."""
-    return f"{_FILL_KEY_PREFIX}:{order_id}:{state_version}"
 
 
 @dataclass(frozen=True)
@@ -213,32 +203,6 @@ class TradeResult:
     total: Decimal
     state_version: int
     book_state_version: int
-
-
-def result_of(transaction: Transaction) -> TradeResult:
-    """The one function that builds a response from a `Transaction`.
-
-    The fresh path and both replay paths all call this, so a retry cannot
-    return a different shape from the original — the two could disagree only
-    if there were two builders, and there is one.
-    """
-    context = transaction.context or {}
-    state_version = int(context["state_version"])
-    # A trade from before the cascade has no `book_state_version`, and no
-    # cascade ran then, so its own version is the same number (D-NEW "The
-    # trade response carries `book_state_version`, and still no prices").
-    book_state_version = int(context.get("book_state_version", state_version))
-    return TradeResult(
-        transaction_id=transaction.id,
-        user_id=uuid.UUID(str(context["user_id"])),
-        market_id=uuid.UUID(str(context["market_id"])),
-        outcome_id=uuid.UUID(str(context["outcome_id"])),
-        side=str(context["side"]),
-        quantity=Decimal(str(context["quantity"])),
-        total=Decimal(str(context["total"])),
-        state_version=state_version,
-        book_state_version=book_state_version,
-    )
 
 
 def _matches(
@@ -294,68 +258,6 @@ async def _replay_if_present(
     return result_of(existing)
 
 
-async def list_outcomes(
-    session: AsyncSession, market_id: uuid.UUID
-) -> Sequence[MarketOutcome]:
-    """The market's outcomes, in `position` order.
-
-    Read after the book lock is taken, so the statement log shows the
-    price and the staleness comparison were made against a read that follows
-    the lock rather than one that predates it (ADR 0015)."""
-    stmt = (
-        select(MarketOutcome)
-        .where(MarketOutcome.market_id == market_id)
-        .order_by(MarketOutcome.position)
-    )
-    return (await session.execute(stmt)).scalars().all()
-
-
-async def find_position(
-    session: AsyncSession,
-    *,
-    user_id: uuid.UUID,
-    market_id: uuid.UUID,
-    outcome_id: uuid.UUID,
-) -> Position | None:
-    """The triple-keyed row, or `None`. No `with_for_update()`: every writer
-    of a position is this path, and this path has already queued on the book
-    row, so the book lock is what holds the row still."""
-    stmt = select(Position).where(
-        Position.user_id == user_id,
-        Position.market_id == market_id,
-        Position.outcome_id == outcome_id,
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def refuse_if_short_of_shares(
-    session: AsyncSession,
-    position: Position | None,
-    *,
-    user_id: uuid.UUID,
-    market_id: uuid.UUID,
-    outcome_id: uuid.UUID,
-    quantity: Decimal,
-) -> None:
-    """Raise `InsufficientSharesHeld` if a sell of `quantity` is more than the
-    position less what the seller's live sell orders in that outcome reserve.
-
-    Call it holding the book lock, which holds both figures still. The trade
-    and the placement both sell through it: "Reserved shares cannot be sold
-    twice" (ADR 0024).
-    """
-    held = position.quantity if position is not None else ZERO
-    reserved = await reservations.reserved_shares_of(
-        session, user_id, market_id=market_id, outcome_id=outcome_id
-    )
-    if quantity > held - reserved:
-        raise InsufficientSharesHeld(
-            held=held.quantize(QUANTUM),
-            reserved=reserved.quantize(QUANTUM),
-            requested=quantity.quantize(QUANTUM),
-        )
-
-
 def _add_to_position(
     session: AsyncSession,
     position: Position | None,
@@ -400,114 +302,6 @@ def _release_from_position(
     position.updated_at = now
 
 
-def write_trade(
-    session: AsyncSession,
-    book: MarketBook,
-    *,
-    outcomes: Sequence[MarketOutcome],
-    index: int,
-    position: Position | None,
-    trade: PricedTrade,
-    now: datetime,
-) -> None:
-    """The trade's pending writes: `state_version` up by one,
-    `state_changed_at`, the traded outcome's `q`, and the position. Commits
-    nothing; the caller's `posting.post_all` commits them."""
-    book.state_version += 1
-    book.state_changed_at = now
-    outcomes[index].q = trade.cost.after_q[index]
-
-    if trade.side is Side.BUY:
-        _add_to_position(
-            session,
-            position,
-            user_id=trade.user_id,
-            market_id=trade.market_id,
-            outcome_id=trade.outcome_id,
-            quantity=trade.quantity,
-            cost=trade.cost.magnitude,
-            now=now,
-        )
-    else:
-        assert position is not None  # the holding check in execute
-        _release_from_position(position, quantity=trade.quantity, now=now)
-
-
-def trade_movement_of(
-    trade: PricedTrade,
-    *,
-    user_account: Account,
-    pool_account: Account,
-    idempotency_key: str,
-    state_version: int,
-    book_state_version: int | None = None,
-    order_id: uuid.UUID | None = None,
-    reservation_drop: Decimal = ZERO,
-) -> Movement:
-    """The trade's one movement: the trader's leg and the pool's, under the
-    derived key, with the `context` the response is rebuilt from ("The trade
-    response is reconstructed from `Transaction.context`"). `state_version` is
-    the book's counter after the bump.
-
-    A trade passes `book_state_version`, the counter after its cascade, which
-    `context` stores as an eighth key so a replay answers it. An order's fill
-    passes its `order_id` instead, beside the seven keys (D-NEW "A fill's
-    `context` is a trade's, plus `order_id`"), and the drop it causes in the
-    owner's reservation (ADR 0024).
-    """
-    context: dict[str, object] = {
-        "user_id": str(trade.user_id),
-        "market_id": str(trade.market_id),
-        "outcome_id": str(trade.outcome_id),
-        "side": trade.side.value,
-        "quantity": str(trade.quantity),
-        "total": str(trade.cost.total),
-        "state_version": state_version,
-    }
-    if book_state_version is not None:
-        context["book_state_version"] = book_state_version
-    if order_id is not None:
-        context["order_id"] = str(order_id)
-
-    kind = TransactionKind.TRADE_BUY if trade.side is Side.BUY else TransactionKind.TRADE_SELL
-    return Movement(
-        idempotency_key=idempotency_key,
-        kind=kind,
-        legs=[
-            Leg(account=user_account, amount=trade.cost.total),
-            Leg(account=pool_account, amount=-trade.cost.total),
-        ],
-        context=context,
-        reservation_drop=reservation_drop,
-    )
-
-
-def price_event_of(
-    market_id: uuid.UUID,
-    *,
-    state_version: int,
-    outcomes: Sequence[MarketOutcome],
-    after_q: Sequence[Decimal],
-    b: Decimal,
-    now: datetime,
-) -> PriceEvent:
-    """The price frame for the book a commit left behind.
-
-    `book_prices.priced`, the snapshot's own function, so the frame and
-    `GET .../snapshot` give the same strings for the same state because there
-    is one quantizer, not because two copies agree.
-    """
-    return PriceEvent(
-        market_id=market_id,
-        state_version=state_version,
-        prices=[
-            OutcomePrice(outcome_id=p.outcome_id, position=p.position, price=p.price)
-            for p in book_prices.priced(outcomes, lmsr_prices(after_q, b))
-        ],
-        occurred_at=now,
-    )
-
-
 def _order_event_of(order: Order, fill: TradeResult, *, now: datetime) -> OrderEvent:
     """The order frame for one committed fill: the order as the fill left it,
     and the fill as `result_of` reads it back from its transaction."""
@@ -528,39 +322,6 @@ def _order_event_of(order: Order, fill: TradeResult, *, now: datetime) -> OrderE
         ),
         occurred_at=now,
     )
-
-
-async def list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list[Order]:
-    """The market's open orders, in no order: the cascade and the crossing
-    check rank them themselves. Call it holding the book lock, which every
-    writer of an order row takes first, so the read takes no lock of its own.
-    The latch has just said the market has no result, so open is live."""
-    stmt = select(Order).where(Order.market_id == market_id, Order.status == OrderStatus.OPEN)
-    return list((await session.execute(stmt)).scalars())
-
-
-def resting_order_of(order: Order, outcome_ids: Sequence[uuid.UUID]) -> RestingOrder:
-    """The core's view of an order row. `seq` is unique, so a `PlannedFill`
-    maps back to its row by it."""
-    return RestingOrder(
-        seq=order.seq,
-        outcome_index=outcome_ids.index(order.outcome_id),
-        side=order.side,
-        limit_price=order.limit_price,
-        remaining=order.quantity - order.filled_quantity,
-    )
-
-
-def reservation_drop_of(order: Order, *, cost: Decimal, value_before: Decimal) -> Decimal:
-    """How far a fill already rolled into `order` lowers its owner's
-    reservation: its cost while the order stays open, everything the order
-    still held once it fills, `budget` less what it had spent before this
-    fill, and nothing on a sell (ADR 0024)."""
-    if order.side is Side.SELL:
-        return ZERO
-    if order.status is OrderStatus.FILLED:
-        return order.budget - value_before
-    return cost
 
 
 def _add_fill_to(order: Order, fill: PlannedFill) -> None:
@@ -626,6 +387,239 @@ async def _write_fill(
     )
 
 
+async def _post_trade_batch(
+    session: AsyncSession, movements: list[Movement], *, trade_key: str, now: datetime
+) -> list[Transaction]:
+    """`posting.post_all` for a trade's batch, the trade's movement first.
+    Commits.
+
+    Raises `InsufficientFunds` only for a refusal at the trade's own movement.
+    Any other refusal is `CascadeFillRefused`, logged at ERROR with its
+    figures: ADR 0024 makes it impossible, and the trader must not be shown
+    another account's balance (D-NEW "A fill the running check refuses inside
+    a cascade is `500 cascade_fill_refused`").
+    """
+    try:
+        return await posting.post_all(session, movements, now=now)
+    except InsufficientFunds as refusal:
+        if refusal.movement_key == trade_key:
+            raise
+        log_refused_fill(refusal)
+        raise CascadeFillRefused from refusal
+
+
+def trade_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
+    return f"{_KEY_PREFIX}:{user_id}:{market_id}:{client_key}"
+
+
+def result_of(transaction: Transaction) -> TradeResult:
+    """The one function that builds a response from a `Transaction`.
+
+    The fresh path and both replay paths all call this, so a retry cannot
+    return a different shape from the original — the two could disagree only
+    if there were two builders, and there is one.
+    """
+    context = transaction.context or {}
+    state_version = int(context["state_version"])
+    # A trade from before the cascade has no `book_state_version`, and no
+    # cascade ran then, so its own version is the same number (D-NEW "The
+    # trade response carries `book_state_version`, and still no prices").
+    book_state_version = int(context.get("book_state_version", state_version))
+    return TradeResult(
+        transaction_id=transaction.id,
+        user_id=uuid.UUID(str(context["user_id"])),
+        market_id=uuid.UUID(str(context["market_id"])),
+        outcome_id=uuid.UUID(str(context["outcome_id"])),
+        side=str(context["side"]),
+        quantity=Decimal(str(context["quantity"])),
+        total=Decimal(str(context["total"])),
+        state_version=state_version,
+        book_state_version=book_state_version,
+    )
+
+
+async def list_outcomes(
+    session: AsyncSession, market_id: uuid.UUID
+) -> Sequence[MarketOutcome]:
+    """The market's outcomes, in `position` order.
+
+    Read after the book lock is taken, so the statement log shows the
+    price and the staleness comparison were made against a read that follows
+    the lock rather than one that predates it (ADR 0015)."""
+    stmt = (
+        select(MarketOutcome)
+        .where(MarketOutcome.market_id == market_id)
+        .order_by(MarketOutcome.position)
+    )
+    return (await session.execute(stmt)).scalars().all()
+
+
+async def find_position(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+) -> Position | None:
+    """The triple-keyed row, or `None`. No `with_for_update()`: every writer
+    of a position is this path, and this path has already queued on the book
+    row, so the book lock is what holds the row still."""
+    stmt = select(Position).where(
+        Position.user_id == user_id,
+        Position.market_id == market_id,
+        Position.outcome_id == outcome_id,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def refuse_if_short_of_shares(
+    session: AsyncSession,
+    position: Position | None,
+    *,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    quantity: Decimal,
+) -> None:
+    """Raise `InsufficientSharesHeld` if a sell of `quantity` is more than the
+    position less what the seller's live sell orders in that outcome reserve.
+
+    Call it holding the book lock, which holds both figures still. The trade
+    and the placement both sell through it: "Reserved shares cannot be sold
+    twice" (ADR 0024).
+    """
+    held = position.quantity if position is not None else ZERO
+    reserved = await reservations.reserved_shares_of(
+        session, user_id, market_id=market_id, outcome_id=outcome_id
+    )
+    if quantity > held - reserved:
+        raise InsufficientSharesHeld(
+            held=held.quantize(QUANTUM),
+            reserved=reserved.quantize(QUANTUM),
+            requested=quantity.quantize(QUANTUM),
+        )
+
+
+def write_trade(
+    session: AsyncSession,
+    book: MarketBook,
+    *,
+    outcomes: Sequence[MarketOutcome],
+    index: int,
+    position: Position | None,
+    trade: PricedTrade,
+    now: datetime,
+) -> None:
+    """The trade's pending writes: `state_version` up by one,
+    `state_changed_at`, the traded outcome's `q`, and the position. Commits
+    nothing; the caller's `posting.post_all` commits them."""
+    book.state_version += 1
+    book.state_changed_at = now
+    outcomes[index].q = trade.cost.after_q[index]
+
+    if trade.side is Side.BUY:
+        _add_to_position(
+            session,
+            position,
+            user_id=trade.user_id,
+            market_id=trade.market_id,
+            outcome_id=trade.outcome_id,
+            quantity=trade.quantity,
+            cost=trade.cost.magnitude,
+            now=now,
+        )
+    else:
+        assert position is not None  # the holding check in execute
+        _release_from_position(position, quantity=trade.quantity, now=now)
+
+
+async def list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list[Order]:
+    """The market's open orders, in no order: the cascade and the crossing
+    check rank them themselves. Call it holding the book lock, which every
+    writer of an order row takes first, so the read takes no lock of its own.
+    The latch has just said the market has no result, so open is live."""
+    stmt = select(Order).where(Order.market_id == market_id, Order.status == OrderStatus.OPEN)
+    return list((await session.execute(stmt)).scalars())
+
+
+def resting_order_of(order: Order, outcome_ids: Sequence[uuid.UUID]) -> RestingOrder:
+    """The core's view of an order row. `seq` is unique, so a `PlannedFill`
+    maps back to its row by it."""
+    return RestingOrder(
+        seq=order.seq,
+        outcome_index=outcome_ids.index(order.outcome_id),
+        side=order.side,
+        limit_price=order.limit_price,
+        remaining=order.quantity - order.filled_quantity,
+    )
+
+
+def fill_key(order_id: uuid.UUID, state_version: int) -> str:
+    """The server-derived idempotency key of an order's fill at `state_version`."""
+    return f"{_FILL_KEY_PREFIX}:{order_id}:{state_version}"
+
+
+def reservation_drop_of(order: Order, *, cost: Decimal, value_before: Decimal) -> Decimal:
+    """How far a fill already rolled into `order` lowers its owner's
+    reservation: its cost while the order stays open, everything the order
+    still held once it fills, `budget` less what it had spent before this
+    fill, and nothing on a sell (ADR 0024)."""
+    if order.side is Side.SELL:
+        return ZERO
+    if order.status is OrderStatus.FILLED:
+        return order.budget - value_before
+    return cost
+
+
+def trade_movement_of(
+    trade: PricedTrade,
+    *,
+    user_account: Account,
+    pool_account: Account,
+    idempotency_key: str,
+    state_version: int,
+    book_state_version: int | None = None,
+    order_id: uuid.UUID | None = None,
+    reservation_drop: Decimal = ZERO,
+) -> Movement:
+    """The trade's one movement: the trader's leg and the pool's, under the
+    derived key, with the `context` the response is rebuilt from ("The trade
+    response is reconstructed from `Transaction.context`"). `state_version` is
+    the book's counter after the bump.
+
+    A trade passes `book_state_version`, the counter after its cascade, which
+    `context` stores as an eighth key so a replay answers it. An order's fill
+    passes its `order_id` instead, beside the seven keys (D-NEW "A fill's
+    `context` is a trade's, plus `order_id`"), and the drop it causes in the
+    owner's reservation (ADR 0024).
+    """
+    context: dict[str, object] = {
+        "user_id": str(trade.user_id),
+        "market_id": str(trade.market_id),
+        "outcome_id": str(trade.outcome_id),
+        "side": trade.side.value,
+        "quantity": str(trade.quantity),
+        "total": str(trade.cost.total),
+        "state_version": state_version,
+    }
+    if book_state_version is not None:
+        context["book_state_version"] = book_state_version
+    if order_id is not None:
+        context["order_id"] = str(order_id)
+
+    kind = TransactionKind.TRADE_BUY if trade.side is Side.BUY else TransactionKind.TRADE_SELL
+    return Movement(
+        idempotency_key=idempotency_key,
+        kind=kind,
+        legs=[
+            Leg(account=user_account, amount=trade.cost.total),
+            Leg(account=pool_account, amount=-trade.cost.total),
+        ],
+        context=context,
+        reservation_drop=reservation_drop,
+    )
+
+
 async def write_cascade(
     session: AsyncSession,
     book: MarketBook,
@@ -682,25 +676,30 @@ def log_refused_fill(refusal: InsufficientFunds) -> None:
     )
 
 
-async def _post_trade_batch(
-    session: AsyncSession, movements: list[Movement], *, trade_key: str, now: datetime
-) -> list[Transaction]:
-    """`posting.post_all` for a trade's batch, the trade's movement first.
-    Commits.
+def price_event_of(
+    market_id: uuid.UUID,
+    *,
+    state_version: int,
+    outcomes: Sequence[MarketOutcome],
+    after_q: Sequence[Decimal],
+    b: Decimal,
+    now: datetime,
+) -> PriceEvent:
+    """The price frame for the book a commit left behind.
 
-    Raises `InsufficientFunds` only for a refusal at the trade's own movement.
-    Any other refusal is `CascadeFillRefused`, logged at ERROR with its
-    figures: ADR 0024 makes it impossible, and the trader must not be shown
-    another account's balance (D-NEW "A fill the running check refuses inside
-    a cascade is `500 cascade_fill_refused`").
+    `book_prices.priced`, the snapshot's own function, so the frame and
+    `GET .../snapshot` give the same strings for the same state because there
+    is one quantizer, not because two copies agree.
     """
-    try:
-        return await posting.post_all(session, movements, now=now)
-    except InsufficientFunds as refusal:
-        if refusal.movement_key == trade_key:
-            raise
-        log_refused_fill(refusal)
-        raise CascadeFillRefused from refusal
+    return PriceEvent(
+        market_id=market_id,
+        state_version=state_version,
+        prices=[
+            OutcomePrice(outcome_id=p.outcome_id, position=p.position, price=p.price)
+            for p in book_prices.priced(outcomes, lmsr_prices(after_q, b))
+        ],
+        occurred_at=now,
+    )
 
 
 async def publish_order_updates(
