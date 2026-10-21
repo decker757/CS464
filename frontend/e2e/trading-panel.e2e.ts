@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
-import { creditsLess, creditsPlus, formatPreciseCredits, formatWholeCredits } from './support/credits'
+import { creditsLess, creditsPlus, formatPreciseCredits, formatRoundedCredits } from './support/credits'
 
 // [FE][T-2/T-3] #49, through the real ledger: the preview and trade routes,
 // against a real book. Exactly what unit tests against MSW mocks can't
@@ -38,9 +38,11 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: /^buy yes$/i }).click()
 
   await expect(page.getByText('Bought 10 Yes for 8.8592 credits.', { exact: true })).toBeVisible()
-  // The navbar shows whole credits, the fraction dropped.
+  // The navbar shows the balance rounded to the cent, so this is the grant
+  // less what the trade actually cost rather than the whole credits of it:
+  // the fraction used to be dropped, which is #443.
   const afterTheBuy = creditsLess(grant, '8.8592')
-  await expect(balance).toHaveText(`${formatWholeCredits(afterTheBuy)} credits`)
+  await expect(balance).toHaveText(`${formatRoundedCredits(afterTheBuy)} credits`)
 
   await page.getByRole('button', { name: /^sell$/i }).click()
   await page.getByLabel('Quantity (shares)').fill('4')
@@ -48,7 +50,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: /^sell yes$/i }).click()
 
   await expect(page.getByText('Sold 4 Yes for 3.5557 credits.', { exact: true })).toBeVisible()
-  const afterTheSell = `${formatWholeCredits(creditsPlus(afterTheBuy, '3.5557'))} credits`
+  const afterTheSell = `${formatRoundedCredits(creditsPlus(afterTheBuy, '3.5557'))} credits`
   await expect(balance).toHaveText(afterTheSell)
 
   // The clamp reads the position the ledger reports after that sell, so this
@@ -96,5 +98,5 @@ test('a buy the trader cannot afford is refused before the request', async ({ pa
   await expect(page.getByText(refusal, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
   // Nothing was sent: the balance is still the untouched starting grant.
-  await expect(page.getByLabel('available balance')).toHaveText(`${formatWholeCredits(grant)} credits`)
+  await expect(page.getByLabel('available balance')).toHaveText(`${formatRoundedCredits(grant)} credits`)
 })

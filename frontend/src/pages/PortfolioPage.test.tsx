@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
@@ -79,13 +79,18 @@ function mockMarket(id: string, body: Record<string, unknown>) {
   server.use(http.get(`${MARKET_BASE}/public/markets/${id}`, () => HttpResponse.json(body)))
 }
 
-function renderPage() {
+/** The page inside the frame it really renders in, which is what puts the
+ * navbar's balance readout on screen beside the page's own figures.
+ * `balance` is the navbar's: undefined, the default, is still-loading, and
+ * the readout does not render at all. */
+function renderPage(balance?: string | null) {
   return render(
     <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <BalanceContext.Provider value={{ balance: undefined, refetch: async () => {} }}>
+      <BalanceContext.Provider value={{ balance, refetch: async () => {} }}>
         <MemoryRouter initialEntries={['/portfolio']}>
           <Routes>
             <Route path="/portfolio" element={<PortfolioPage />} />
+            <Route path="/markets" element={<p>market list</p>} />
             <Route path="/markets/:id" element={<p>market detail</p>} />
           </Routes>
         </MemoryRouter>
@@ -95,17 +100,53 @@ function renderPage() {
 }
 
 describe('PortfolioPage', () => {
-  it('shows cash, positions value and net worth at full precision, so they add up', async () => {
-    // formatCredits alone would truncate each to a whole number - 997, 2 and
-    // 999 - which do not sum correctly and would show "0 credits" for a
-    // positions value under 1.
+  it('calls the money a balance, in credits, with the unit beside each figure and not inside it', async () => {
+    // #443: this card said CASH while the navbar called the same number
+    // credits and the history called it balance after — three names for one
+    // quantity, two of them on screen at once, and nothing saying whether
+    // cash was some subset of credits. `balance` is the ledger's own field
+    // name and the word the other two already used.
+    //
+    // Each figure is matched exactly, which only passes while the unit is a
+    // node of its own: said once per card, not folded into all four figures.
     mockPortfolio(portfolio())
     mockMarket('mkt-1', market())
     renderPage()
 
-    expect(await screen.findByText('997.4687 credits')).toBeInTheDocument()
-    expect(screen.getByText('2.5312 credits')).toBeInTheDocument()
-    expect(screen.getByText('999.9999 credits')).toBeInTheDocument()
+    expect(await screen.findByText('Balance')).toBeInTheDocument()
+    expect(screen.queryByText('Cash')).not.toBeInTheDocument()
+    expect(screen.getByText('997.47')).toBeInTheDocument()
+    expect(screen.getAllByText('credits')).toHaveLength(4)
+  })
+
+  it('rounds each card to the cent, dropping neither the cents nor the credits', async () => {
+    // #443: four cards reading ".0000 credits" was most of what the eye saw,
+    // and the navbar's answer — the whole credits and nothing else — loses
+    // real money, so 997.4687 is 997.47 and never 997. net_worth is 999.9999,
+    // which comes to a round thousand once it is rounded rather than cut.
+    // The ledger's own four places are still in the table below.
+    mockPortfolio(portfolio())
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    expect(await screen.findByText('997.47')).toBeInTheDocument()
+    expect(screen.getByText('2.53')).toBeInTheDocument()
+    expect(screen.getByText('1,000')).toBeInTheDocument()
+    expect(screen.queryByText('997.4687')).not.toBeInTheDocument()
+    expect(screen.queryByText('997')).not.toBeInTheDocument()
+  })
+
+  it('renders the same balance as the navbar, the same way, on the same screen', async () => {
+    // #443, watched live through a trade: the navbar truncated and the page
+    // did not, so one screen showed 9,993 up in the bar and 9,993.8938 on the
+    // card — the same field of the same response, 0.89 credits apart. Both go
+    // through formatCredits now, so the figure is found twice: once in the
+    // banner, once in the page.
+    mockPortfolio(portfolio({ balance: '9993.8938', positions_value: '6.1062', net_worth: '10000.0000', positions: [] }))
+    renderPage('9993.8938')
+
+    expect(await within(screen.getByRole('banner')).findByText('9,993.89')).toBeInTheDocument()
+    expect(within(screen.getByRole('main')).getByText('9,993.89')).toBeInTheDocument()
   })
 
   it('shows total P&L as a signed headline figure when the trader is up', async () => {
@@ -125,7 +166,7 @@ describe('PortfolioPage', () => {
     renderPage()
 
     expect(await screen.findByText('Total P&L')).toBeInTheDocument()
-    expect(screen.getByText('+3.8690 credits')).toBeInTheDocument()
+    expect(screen.getByText('+3.87')).toBeInTheDocument()
   })
 
   it('shows total P&L with a minus sign when the trader is down', async () => {
@@ -141,7 +182,23 @@ describe('PortfolioPage', () => {
     }))
     renderPage()
 
-    expect(await screen.findByText('-12.5000 credits')).toBeInTheDocument()
+    expect(await screen.findByText('-12.50')).toBeInTheDocument()
+  })
+
+  it('reads a loss of less than a cent as flat, never as "-0"', async () => {
+    // ADR 0018 values a position at liquidation, so a position on a book
+    // nobody else has traded is a few ten-thousandths down the moment it is
+    // opened — the fixture's own -0.0001. At the cent that is flat, and "-0"
+    // is not a figure to put in front of anybody (#443). The exact dust is
+    // still in the position's own row, which keeps all four places.
+    mockPortfolio(portfolio())
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    expect(await screen.findByText('0')).toBeInTheDocument()
+    expect(screen.queryByText('-0')).not.toBeInTheDocument()
+    expect(screen.getByText('Unrealized 0')).toBeInTheDocument()
+    expect(screen.getByText('-0.0001')).toBeInTheDocument()
   })
 
   it('reads as flat, not as a loss, for a trader who has never traded', async () => {
@@ -161,8 +218,8 @@ describe('PortfolioPage', () => {
     renderPage()
 
     expect(await screen.findByText('Total P&L')).toBeInTheDocument()
-    expect(screen.getAllByText('0.0000 credits')).toHaveLength(2)
-    expect(screen.queryByText('+0.0000 credits')).not.toBeInTheDocument()
+    expect(screen.getAllByText('0')).toHaveLength(2)
+    expect(screen.queryByText('+0')).not.toBeInTheDocument()
   })
 
   it('shows realized and unrealized apart, each labelled, not merged into the total', async () => {
@@ -183,9 +240,9 @@ describe('PortfolioPage', () => {
     mockMarket('mkt-1', market())
     renderPage()
 
-    expect(await screen.findByText('Realized +6.0000')).toBeInTheDocument()
-    expect(screen.getByText('Unrealized -1.1111')).toBeInTheDocument()
-    expect(screen.getByText('+4.8889 credits')).toBeInTheDocument()
+    expect(await screen.findByText('Realized +6')).toBeInTheDocument()
+    expect(screen.getByText('Unrealized -1.11')).toBeInTheDocument()
+    expect(screen.getByText('+4.89')).toBeInTheDocument()
   })
 
   it('shows the total the ledger sent, never one worked out in the browser', async () => {
@@ -207,9 +264,9 @@ describe('PortfolioPage', () => {
     }))
     renderPage()
 
-    expect(await screen.findByText('+7.7777 credits')).toBeInTheDocument()
-    expect(screen.queryByText('+1.0000 credits')).not.toBeInTheDocument()
-    expect(screen.queryByText('+2.0000 credits')).not.toBeInTheDocument()
+    expect(await screen.findByText('+7.78')).toBeInTheDocument()
+    expect(screen.queryByText('+1')).not.toBeInTheDocument()
+    expect(screen.queryByText('+2')).not.toBeInTheDocument()
   })
 
   it('shows each position with its market question and outcome label', async () => {
@@ -344,8 +401,10 @@ describe('PortfolioPage', () => {
     mockMarket('mkt-1', market({ status: 'settled' }))
     renderPage()
 
-    expect(await screen.findByText('0.0000 credits')).toBeInTheDocument()
-    expect(screen.getAllByText('1,000.0000 credits')).toHaveLength(2)
+    expect(await screen.findByText('Paid out 5.0000')).toBeInTheDocument()
+    expect(screen.getAllByText('1,000')).toHaveLength(2)
+    // The wrong answer, spelled out: the payout counted a second time.
+    expect(screen.queryByText('1,005')).not.toBeInTheDocument()
   })
 
   it('fetches each distinct market only once across multiple positions in it', async () => {
@@ -363,7 +422,7 @@ describe('PortfolioPage', () => {
     expect(calls).toBe(1)
   })
 
-  it('still shows cash, net worth and the other rows when one market fails to load', async () => {
+  it('still shows the balance, net worth and the other rows when one market fails to load', async () => {
     // Promise.all would fail the whole page here; Promise.allSettled must not.
     server.use(http.get(`${MARKET_BASE}/public/markets/mkt-1`, () => HttpResponse.error()))
     mockMarket('mkt-2', market({ id: 'mkt-2', question: 'Will SMU win SUNIG?', outcomes: [{ id: 'o-win', position: 0, label: 'Yes' }] }))
@@ -375,8 +434,8 @@ describe('PortfolioPage', () => {
     }))
     renderPage()
 
-    expect(await screen.findByText('997.4687 credits')).toBeInTheDocument()
-    expect(screen.getByText('999.9999 credits')).toBeInTheDocument()
+    expect(await screen.findByText('997.47')).toBeInTheDocument()
+    expect(screen.getByText('1,000')).toBeInTheDocument()
     expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(screen.getByText('Unknown market')).toBeInTheDocument()
   })
@@ -390,11 +449,15 @@ describe('PortfolioPage', () => {
     expect(link).toHaveAttribute('href', '/markets/mkt-1')
   })
 
-  it('shows an empty state when there are no positions', async () => {
+  it('offers the market list as a control from the empty state, not as the name of a page', async () => {
+    // #443: this used to read "Visit the markets page to start trading", with
+    // "markets page" as plain text. The one person who sees this screen empty
+    // is the one who has never traded, so the next step is handed to them.
     mockPortfolio(portfolio({ positions: [] }))
     renderPage()
 
     expect(await screen.findByText(/no open positions/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /browse markets/i })).toHaveAttribute('href', '/markets')
   })
 
   it('shows an error when the portfolio fails to load', async () => {

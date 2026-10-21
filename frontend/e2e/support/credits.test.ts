@@ -3,8 +3,8 @@ import {
   creditsLess,
   creditsPlus,
   formatPreciseCredits,
+  formatRoundedCredits,
   formatSignedCredits,
-  formatWholeCredits,
   isBelow,
 } from './credits'
 
@@ -51,13 +51,20 @@ describe('reading an amount', () => {
   })
 })
 
-describe('formatWholeCredits', () => {
-  it('drops the fraction as the navbar does, rather than rounding it', () => {
-    expect(formatWholeCredits('999.9999')).toBe('999')
-  })
-
-  it('groups the thousands with commas', () => {
-    expect(formatWholeCredits('1234567.8900')).toBe('1,234,567')
+describe('formatRoundedCredits', () => {
+  // #443: the navbar and the portfolio's cards round to the cent. They used
+  // to drop the fraction, so 999.9999 read as 999 — a figure 0.9999 credits
+  // short of the one the same screen showed elsewhere.
+  it.each([
+    ['999.9999', '1,000', 'a carry the whole way across the decimal point'],
+    ['1234.5678', '1,234.57', 'the grant the end-to-end run is given'],
+    ['1234.5649', '1,234.56', 'just below the half'],
+    ['1234.5650', '1,234.57', 'exactly the half, which goes up'],
+    ['1234567.8900', '1,234,567.89', 'thousands grouped with commas'],
+    ['1234.0000', '1,234', 'a whole number of credits, with no decimal part'],
+    ['0.0049', '0', 'less than half a cent, which is no cents at all'],
+  ])('shows %s as %s (%s)', (amount, expected) => {
+    expect(formatRoundedCredits(amount)).toBe(expected)
   })
 })
 
