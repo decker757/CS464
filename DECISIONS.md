@@ -10425,7 +10425,7 @@ market, `created_at`, `id`. Each market's trades go through the price-history
 replay (`core/price_history.py::price_history_of`), and the last point is
 priced with `book_prices.priced`. The batch therefore sends two statements
 however many markets it is asked about: #432's book read and this one. No
-lock, no new index, no migration. A market whose trades the replay refuses gets
+lock, no new index, no migration. A market whose trades cannot be replayed gets
 null, and a warning in the log.
 
 **Why.**
@@ -10453,10 +10453,13 @@ null, and a warning in the log.
   for a week. The baseline is settled history, and no interleaving moves it.
   The card subtracts the baseline from the `prices` in the same item, which
   carry their own `state_version`.
-- *A refused replay costs one card its delta,* for the reason "A book the batch
-  snapshot cannot price is left out and logged" gives. That market's `prices`
-  are unaffected, and its price history reports
-  `500 price_history_inconsistent`.
+- *A replay that cannot run costs one card its delta,* for the reason "A book
+  the batch snapshot cannot price is left out and logged" gives. Two things
+  stop it: trades whose versions skip or reorder (`ValueError`, which price
+  history reports as `500 price_history_inconsistent`), and a trade on an
+  outcome row the book no longer holds, which still passes
+  `refuse_unpriceable` when two rows remain (`KeyError` or `IndexError`).
+  That market's `prices` are unaffected.
 
 **Rejected.**
 - *Subtracting the window's trades from the current `q`.* It reads fewer rows,
