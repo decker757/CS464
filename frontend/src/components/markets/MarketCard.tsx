@@ -85,11 +85,13 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
   }, [hasStopped])
 
   return (
-    <Card interactive className="h-full px-6 py-5">
+    <Card interactive className="h-full">
       {/* The link covers the card's content and stops short of its Retry
           control: a button inside an anchor is not valid HTML, and a click on
-          one would open the market as well as read the price again. */}
-      <Link to={`/markets/${market.id}`} className="block cursor-pointer">
+          one would open the market as well as read the price again. The
+          padding is the link's rather than the card's, so every pixel the
+          trader reads as the card still opens it. */}
+      <Link to={`/markets/${market.id}`} className="block cursor-pointer px-6 py-5">
         <div className="mb-3 flex items-center justify-between gap-2">
           <StatusBadge status={market.status} audience="trader" />
           <span className="text-right text-xs text-subtle">{formatCloseCountdown(market.status, market.close_time, now)}</span>
@@ -125,7 +127,8 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
         {lastTradeAgo && <p className="mt-3 text-xs text-subtle">Last trade {lastTradeAgo}</p>}
       </Link>
       {hasFailedPrices && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        /* No top padding: the link's own bottom padding is the gap. */
+        <div className="flex flex-wrap items-center gap-2 px-6 pb-5">
           <p role="alert" className="text-xs text-danger">{PRICES_FAILED}</p>
           <Button variant="outline" size="xs" onClick={onRetryPrice}>Retry</Button>
         </div>
