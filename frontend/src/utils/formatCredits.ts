@@ -113,7 +113,13 @@ export function subtractCredits(left: string, right: string): string | null {
 // say it is never a gain on a book nobody else has traded, and the same is
 // true of a signed amount that happens to land on exactly zero. Only colour
 // an actual loss or an actual gain; zero stays neutral.
+//
+// Anything that is not a plain signed decimal is neutral too — the same
+// bail-out the three formatters above have, because a value that arrives
+// missing (#436) must not take the whole portfolio down with it. The figure
+// is unreadable, not lost or gained.
 export function signedAmountColor(value: string): string {
+  if (!isPlainCredits(value)) return 'text-muted'
   if (isZeroCredits(value)) return 'text-muted'
   if (isNegativeCredits(value)) return 'text-danger'
   return 'text-success'

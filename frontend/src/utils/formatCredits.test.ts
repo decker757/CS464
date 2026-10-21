@@ -212,4 +212,18 @@ describe('signedAmountColor', () => {
     expect(signedAmountColor('0.0001')).toBe('text-success')
     expect(signedAmountColor('-0.0001')).toBe('text-danger')
   })
+
+  it('is neutral for anything that is not a plain signed decimal, instead of throwing', () => {
+    // #436: the ledger container once omitted total_pnl, and the portfolio
+    // page went to the error boundary on value.startsWith of undefined.
+    // The module's own rule says such a value renders as nothing — here it
+    // is neutral, the same bail-out the formatters have, and a renamed or
+    // newly-nullable money field can never green/red a figure that is
+    // actually unreadable.
+    expect(signedAmountColor(undefined as unknown as string)).toBe('text-muted')
+    expect(signedAmountColor(null as unknown as string)).toBe('text-muted')
+    expect(signedAmountColor('')).toBe('text-muted')
+    expect(signedAmountColor('1E-4')).toBe('text-muted')
+    expect(signedAmountColor('NaN')).toBe('text-muted')
+  })
 })
