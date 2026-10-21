@@ -4,11 +4,13 @@
 proceeds alike, a resting order's fills included (DECISIONS.md, "A market's
 activity is the credits it has traded, buys and sells alike"). Read back
 through `service/snapshot.py::list_snapshots`, its one reader. Two trades
-racing over one book are `test_trade_concurrency.py`'s.
+racing over one book are `test_trade_concurrency.py`'s, and each market's own
+figure is `test_snapshot_batch.py`'s.
 
 The figures are literals worked outside the code: the sell suite's worked
-example at `b = 137` and the placement suite's at `b = 100`, each pinned
-where it is defined.
+example at `b = 137`, and at `b = 100` the placement suite's fill on arrival
+and `test_cascade.py`'s trade and cascade fill after it, each pinned where it
+is defined.
 """
 
 from __future__ import annotations

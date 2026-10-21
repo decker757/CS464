@@ -127,27 +127,38 @@ def test_the_downgrade_leaves_no_trigger_function_behind(empty_schema) -> None:
     assert left is None
 
 
+def _account(connection, kind: str) -> uuid.UUID:
+    account_id = uuid.uuid4()
+    connection.execute(
+        text("INSERT INTO ledger.accounts (id, kind, owner_id) VALUES (:id, :kind, :owner)"),
+        {"id": account_id, "kind": kind, "owner": uuid.uuid4()},
+    )
+    return account_id
+
+
+def _book(connection) -> tuple[uuid.UUID, uuid.UUID]:
+    """A book and its pool account, as `(market_id, pool_account_id)`."""
+    market_id = uuid.uuid4()
+    pool_account_id = _account(connection, "market_pool")
+    connection.execute(
+        text(
+            "INSERT INTO ledger.market_books (market_id, liquidity_b, seed_subsidy, "
+            "pool_account_id, state_version, state_changed_at, opened_at) "
+            "VALUES (:market, 100, 250, :account, 0, now(), now())"
+        ),
+        {"market": market_id, "account": pool_account_id},
+    )
+    return market_id, pool_account_id
+
+
 def _plant_an_order_with_nothing_paid(connection) -> None:
     """One order with three shares filled and nothing paid for them.
 
     Legal under every CHECK revision 0004 built, which is why 0005 adds one.
     A book and an outcome first, for the composite foreign key.
     """
-    pool_account_id = uuid.uuid4()
-    market_id = uuid.uuid4()
+    market_id, _ = _book(connection)
     outcome_id = uuid.uuid4()
-    connection.execute(
-        text("INSERT INTO ledger.accounts (id, kind, owner_id) VALUES (:id, 'pool', :owner)"),
-        {"id": pool_account_id, "owner": uuid.uuid4()},
-    )
-    connection.execute(
-        text(
-            "INSERT INTO ledger.market_books (market_id, liquidity_b, seed_subsidy, "
-            "pool_account_id, state_version, state_changed_at, opened_at) "
-            "VALUES (:market, 100, 0, :account, 0, now(), now())"
-        ),
-        {"market": market_id, "account": pool_account_id},
-    )
     connection.execute(
         text(
             "INSERT INTO ledger.market_outcomes (market_id, outcome_id, position, q) "
@@ -211,30 +222,6 @@ def test_an_order_whose_fill_rollups_disagree_stops_revision_0005(empty_schema) 
     assert _revision() == "0004"
 
 
-def _account(connection, kind: str) -> uuid.UUID:
-    account_id = uuid.uuid4()
-    connection.execute(
-        text("INSERT INTO ledger.accounts (id, kind, owner_id) VALUES (:id, :kind, :owner)"),
-        {"id": account_id, "kind": kind, "owner": uuid.uuid4()},
-    )
-    return account_id
-
-
-def _book(connection) -> tuple[uuid.UUID, uuid.UUID]:
-    """A book and its pool account, as `(market_id, pool_account_id)`."""
-    market_id = uuid.uuid4()
-    pool_account_id = _account(connection, "market_pool")
-    connection.execute(
-        text(
-            "INSERT INTO ledger.market_books (market_id, liquidity_b, seed_subsidy, "
-            "pool_account_id, state_version, state_changed_at, opened_at) "
-            "VALUES (:market, 100, 250, :account, 0, now(), now())"
-        ),
-        {"market": market_id, "account": pool_account_id},
-    )
-    return market_id, pool_account_id
-
-
 def _post(connection, kind: str, *, pool: uuid.UUID, other: uuid.UUID, amount: str) -> None:
     """One movement of `amount` into the pool from `other`, with both legs."""
     transaction_id = uuid.uuid4()
@@ -251,7 +238,12 @@ def _post(connection, kind: str, *, pool: uuid.UUID, other: uuid.UUID, amount: s
                 "INSERT INTO ledger.entries (id, transaction_id, account_id, amount) "
                 "VALUES (:id, :transaction, :account, :amount)"
             ),
-            {"id": uuid.uuid4(), "transaction": transaction_id, "account": account_id, "amount": leg},
+            {
+                "id": uuid.uuid4(),
+                "transaction": transaction_id,
+                "account": account_id,
+                "amount": leg,
+            },
         )
 
 
