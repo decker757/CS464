@@ -512,6 +512,52 @@ async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
     await assert_ledger_balances(session)
 
 
+async def test_two_traders_racing_on_one_book_both_count_in_credits_traded(
+    session: AsyncSession,
+) -> None:
+    """#447's DoD: the counter stays correct under parallel trades. Both
+    traders fill, the second priced after the first, and the figure is what
+    both paid (DECISIONS.md, "`credits_traded` is a counter on the book,
+    raised in `write_trade` under the book lock").
+
+    Remove `.with_for_update()` from the trade's `market_books` read, or the
+    raise in `write_trade`, and this fails: unlocked, both read the same
+    figure and the later commit keeps only its own trade.
+    """
+    upstream = Upstream()
+    users = [uuid.uuid4(), uuid.uuid4()]
+    await warm(session, upstream)
+    for user_id in users:
+        await fund(session, user_id)
+
+    start = asyncio.Barrier(len(users))
+    factory = session_factory()
+
+    async def attempt(user_id: uuid.UUID):
+        async with factory() as own:
+            await own.connection()
+            await start.wait()
+
+            async def buy_at(version: int):
+                return await buy(
+                    own,
+                    upstream,
+                    user_id=user_id,
+                    state_version=version,
+                    client_key=f"key-{user_id}",
+                )
+
+            return await retry_on_quote_stale(
+                own, buy_at, version=0, retries=len(users) * 4
+            )
+
+    async with asyncio.timeout(TIMEOUT):
+        await asyncio.gather(*(attempt(u) for u in users))
+
+    paid = -sum(_sequential_totals(len(users)))
+    assert (await book_row(session, upstream.market_id)).credits_traded == paid
+
+
 # =========================================================================
 # Ordering: what the lock is not held across
 # =========================================================================

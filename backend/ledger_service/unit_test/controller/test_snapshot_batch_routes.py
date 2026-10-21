@@ -2,7 +2,7 @@
 
 What the controller owns: the route needs a signed-in caller of any role, it
 refuses more ids than its documented cap, and each item in the answer is the
-single snapshot's body. Which markets are answered, and in what order, is
+single snapshot's body plus `credits_traded` (#447). Which markets are answered, and in what order, is
 `test_snapshot_batch.py`'s.
 """
 
@@ -102,13 +102,15 @@ async def test_an_empty_list_is_answered_with_no_snapshots(
 # =========================================================================
 # The wire
 # =========================================================================
-async def test_each_item_is_the_single_snapshots_body(
+async def test_each_item_is_the_single_snapshots_body_plus_credits_traded(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
     """docs/api/ledger-service.md: the answer is `{"snapshots": [...]}`, and
     each item is the single snapshot's body for the same market, field for
     field, so one render function serves the batch, the single read and the
-    socket frame."""
+    socket frame. Plus `credits_traded`, a decimal string, which the single
+    snapshot does not carry (DECISIONS.md, "The batch snapshot carries
+    `credits_traded`, and the single snapshot does not")."""
     market = Upstream()
     await warm(session, market)
     single = await client.get(
@@ -121,4 +123,4 @@ async def test_each_item_is_the_single_snapshots_body(
 
     body = response.json()
     assert set(body) == {"snapshots"}
-    assert body["snapshots"][0] == single.json()
+    assert body["snapshots"][0] == {**single.json(), "credits_traded": "0.0000"}
