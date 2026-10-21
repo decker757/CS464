@@ -24,6 +24,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.book_fixtures import capture_sql, mentioning, warm
+from unit_test.conftest import drop_outcome_row
 from unit_test.price_history_fixtures import (
     WIRE_PRICES,
     entry_times,
@@ -141,9 +142,10 @@ async def test_a_market_with_no_trade_at_or_before_the_window_start_has_no_basel
 async def test_a_feed_that_skips_a_state_version_has_no_baseline_and_keeps_its_price(
     session: AsyncSession,
 ) -> None:
-    """DECISIONS.md, "The baseline is replayed from the pool's trades up to
-    the window's start, in one statement for every market": a feed the replay
-    refuses costs that card its delta only, not the whole list its prices."""
+    """DECISIONS.md, "The prices a week ago are replayed from each pool's
+    trades up to the window's start, in one statement for every market": a
+    feed the replay refuses costs that card its delta only, not the whole list
+    its prices."""
     market = await gapped(session)
 
     [listed] = await _snapshot_service().list_snapshots(
@@ -152,6 +154,33 @@ async def test_a_feed_that_skips_a_state_version_has_no_baseline_and_keeps_its_p
 
     assert listed.market_id == market.market_id
     assert listed.prices_7d_ago is None
+
+
+async def test_a_book_cut_short_of_an_outcome_row_has_no_baseline_and_the_rest_are_answered(
+    session: AsyncSession,
+) -> None:
+    """DECISIONS.md, "A book the batch snapshot cannot price is left out and
+    logged": one damaged book must not blank the whole list. A three-outcome
+    book with its middle row deleted still passes `refuse_unpriceable` with
+    two rows, and a trade on its last outcome no longer has a place in the
+    replay's `q`. Its delta goes; its price and its neighbour stay."""
+    damaged = Upstream(outcomes=3)
+    await open_at_zero(session, damaged)
+    await hold(session, damaged, user_id=uuid.uuid4(), quantity=Decimal("50"), outcome=2)
+    await drop_outcome_row(session, damaged.market_id, position=1)
+    healthy = Upstream()
+    await open_at_zero(session, healthy)
+
+    result = await _snapshot_service().list_snapshots(
+        session,
+        [damaged.market_id, healthy.market_id],
+        now=_a_day_past_the_window(),
+    )
+
+    assert [(listed.market_id, listed.prices_7d_ago) for listed in result] == [
+        (damaged.market_id, None),
+        (healthy.market_id, None),
+    ]
 
 
 # =========================================================================
