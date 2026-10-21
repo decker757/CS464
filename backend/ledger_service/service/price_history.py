@@ -13,7 +13,7 @@ price history; the series ends at the last trade").
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -48,35 +48,35 @@ class PriceHistory:
     result_recorded_at: datetime | None
 
 
+def _replayed_trade_of(row: Row, position_of: Mapping[uuid.UUID, int]) -> ReplayedTrade:
+    """One trade entry as the replay needs it. Read by `trade_fields_of` and
+    `trading.result_of`, the readers the trade feed uses, so a trade means the
+    same thing on both routes."""
+    transaction = Transaction(id=row.transaction_id, kind=row.kind, context=row.context)
+    fields = ledger_service.trade_fields_of(transaction, row.amount)
+    return ReplayedTrade(
+        position=position_of[fields.outcome_id],
+        side=fields.side,
+        quantity=fields.quantity,
+        state_version=trading.result_of(transaction).state_version,
+        occurred_at=row.created_at,
+    )
+
+
 async def _replayed_trades_of(
     session: AsyncSession, pool_account_id: uuid.UUID, outcomes: Sequence[Row]
 ) -> list[ReplayedTrade]:
     """Every trade on the pool's feed, oldest first.
 
     Ordered like `ix_ledger_entries_account_feed`, so the order is the order
-    the trades committed in, which is `state_version` order. Each row is read
-    by `trade_fields_of` and `trading.result_of`, the readers the trade feed
-    uses, so a trade means the same thing on both routes.
+    the trades committed in, which is `state_version` order.
     """
     position_of = {row.outcome_id: row.position for row in outcomes}
     query = ledger_service.pool_trade_query(pool_account_id).order_by(
         Entry.created_at, Entry.id
     )
-
-    trades = []
-    for row in (await session.execute(query)).all():
-        transaction = Transaction(id=row.transaction_id, kind=row.kind, context=row.context)
-        fields = ledger_service.trade_fields_of(transaction, row.amount)
-        trades.append(
-            ReplayedTrade(
-                position=position_of[fields.outcome_id],
-                side=fields.side,
-                quantity=fields.quantity,
-                state_version=trading.result_of(transaction).state_version,
-                occurred_at=row.created_at,
-            )
-        )
-    return trades
+    rows = (await session.execute(query)).all()
+    return [_replayed_trade_of(row, position_of) for row in rows]
 
 
 async def price_history_of_market(
@@ -137,3 +137,4 @@ async def price_history_of_market(
         winning_outcome_id=None if result is None else result.outcome_id,
         result_recorded_at=None if result is None else result.recorded_at,
     )
+
