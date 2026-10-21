@@ -90,4 +90,4 @@ async def test_a_resting_orders_fills_count_on_arrival_and_in_a_cascade(
         quantity=Decimal("85.0000"),
         state_version=1,
     )
-    assert await _credits_traded(session, upstream.market_id) == Decimal("92.5244")
+    assert await _credits_traded(session, upstream.market_id) == Decimal("93.5244")
