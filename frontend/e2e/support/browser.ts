@@ -11,6 +11,14 @@ export async function logIn(page: Page, session: Session): Promise<void> {
   await expect(page).toHaveURL(/\/markets$/)
 }
 
+/** Signs out through the account menu, which is where Log Out lives (#437). */
+export async function logOut(page: Page, session: Session): Promise<void> {
+  // The button carries the signed-in username, so that is its name.
+  await page.getByRole('button', { name: session.username }).click()
+  await page.getByRole('button', { name: 'Log Out' }).click()
+  await expect(page).toHaveURL(/\/login$/)
+}
+
 /**
  * The card on a markets list whose question is `question`. Two levels up from
  * the question's text, which is how the admin list and the proposals list
