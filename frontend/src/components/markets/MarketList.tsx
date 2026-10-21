@@ -69,7 +69,7 @@ export default function MarketList({ query, status }: MarketListProps) {
           )}
 
           <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
-            {markets.map((market) => <MarketCard key={market.id} market={market} prices={snapshotsByMarket.get(market.id)?.prices} />)}
+            {markets.map((market) => <MarketCard key={market.id} market={market} snapshot={snapshotsByMarket.get(market.id)} />)}
           </div>
 
           {hasMore && (
