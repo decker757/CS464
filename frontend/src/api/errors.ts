@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { formatCreditsPrecise } from '../utils/formatCredits'
+import { formatCreditsPrecise, isPlainCredits, isZeroCredits, subtractCredits } from '../utils/formatCredits'
 
 export interface ApiError {
   error: {
@@ -43,9 +43,10 @@ export function errorDetails(err: unknown): { field: string; message: string }[]
 /**
  * `error.details` for the ledger trade codes that send a flat object rather
  * than a field-message list — quote_stale's `{quoted, current}`,
- * insufficient_funds's `{balance, required}`, insufficient_shares_held's
- * `{held, requested}` (ledger-service.md). Read the keys that code names;
- * nothing validates the shape beyond "an object, or nothing."
+ * insufficient_funds's `{balance, required, reserved, available}`,
+ * insufficient_shares_held's `{held, requested, reserved}`
+ * (ledger-service.md). Read the keys that code names; nothing validates the
+ * shape beyond "an object, or nothing."
  */
 export function tradeErrorDetails(err: unknown): Record<string, unknown> {
   if (!axios.isAxiosError(err)) return {}
@@ -84,18 +85,66 @@ const TRADE_FIXED_MESSAGES: Record<string, string> = {
 }
 
 /**
+ * Whether a reservation figure is worth a sentence of its own: a decimal
+ * string above zero. Missing it — the panel's own pre-send check has no such
+ * figure — or a value that is not a plain decimal, or exactly zero, all mean
+ * the same thing for wording: this trader has no open orders to be told
+ * about, so the message must not mention any (#411).
+ */
+function isReserving(reserved: string | undefined): reserved is string {
+  return reserved !== undefined && isPlainCredits(reserved) && !isZeroCredits(reserved)
+}
+
+/**
  * The two refusals a screen can see coming, worded once. The trading panel
  * checks the balance and the holding it already has before it sends anything
  * (#357), and the ledger answers `insufficient_funds` or
  * `insufficient_shares_held` when its own figures disagree — the trader
  * reads the same sentence whichever side caught it.
+ *
+ * The ledger refuses a buy on `available`, the balance less what the
+ * trader's own open buy orders reserve ([T-6] #26), so that is the figure the
+ * message names, with a second sentence for where the rest of the balance
+ * went. `available` is the ledger's own answer rather than a subtraction
+ * here, because it is the number the refusal was made on. #411.
  */
-export function describeInsufficientFunds(balance: string, required: string): string {
-  return `You have ${formatCreditsPrecise(balance)} credits, but this trade needs ${formatCreditsPrecise(required)}.`
+export function describeInsufficientFunds(
+  balance: string,
+  required: string,
+  openOrders?: { reserved: string; available: string },
+): string {
+  const withoutOrders = `You have ${formatCreditsPrecise(balance)} credits, but this trade needs ${formatCreditsPrecise(required)}.`
+  if (!openOrders || !isReserving(openOrders.reserved) || !isPlainCredits(openOrders.available)) return withoutOrders
+
+  const refusal = `You have ${formatCreditsPrecise(openOrders.available)} credits available, but this trade needs ${formatCreditsPrecise(required)}.`
+  const whereTheRestWent = `Your balance is ${formatCreditsPrecise(balance)}, and ${formatCreditsPrecise(openOrders.reserved)} of it is held by your open buy orders.`
+  return `${refusal} ${whereTheRestWent}`
 }
 
-export function describeInsufficientShares(held: string, requested: string): string {
-  return `You hold ${formatCreditsPrecise(held)} shares, but this sell asks for ${formatCreditsPrecise(requested)}.`
+/**
+ * The same shape for a sell, which the ledger refuses on the position less
+ * what the trader's own open sell orders reserve. `details` names `held` and
+ * `reserved` and no third figure, so what is left to sell is the one
+ * subtraction — exact, over the decimal strings, never a parsed float.
+ * "Held" stays the whole position, the way the contract uses the word, so
+ * the shares the orders take are *reserved* rather than held. #411.
+ */
+export function describeInsufficientShares(held: string, requested: string, reserved?: string): string {
+  const withoutOrders = `You hold ${formatCreditsPrecise(held)} shares, but this sell asks for ${formatCreditsPrecise(requested)}.`
+  if (!isReserving(reserved)) return withoutOrders
+
+  const available = subtractCredits(held, reserved)
+  if (available === null) return withoutOrders
+
+  const refusal = `You have ${formatCreditsPrecise(available)} shares available to sell, but this sell asks for ${formatCreditsPrecise(requested)}.`
+  const whereTheRestWent = `You hold ${formatCreditsPrecise(held)} in all, and ${formatCreditsPrecise(reserved)} of them are reserved by your open sell orders.`
+  return `${refusal} ${whereTheRestWent}`
+}
+
+/** One `error.details` figure, when the ledger sent it as a decimal string. */
+function tradeErrorFigure(details: Record<string, unknown>, key: string): string | undefined {
+  const value = details[key]
+  return typeof value === 'string' ? value : undefined
 }
 
 /** What the trader should do about a failed preview or trade (ledger-service.md). */
@@ -104,11 +153,22 @@ export function describeTradeError(err: unknown): string {
   if (!code) return GENERIC_ERROR
   const details = tradeErrorDetails(err)
   if (code === 'quote_stale') return 'Prices moved while you were looking. Getting a fresh quote…'
-  if (code === 'insufficient_funds' && typeof details.balance === 'string' && typeof details.required === 'string') {
-    return describeInsufficientFunds(details.balance, details.required)
+  if (code === 'insufficient_funds') {
+    const balance = tradeErrorFigure(details, 'balance')
+    const required = tradeErrorFigure(details, 'required')
+    const reserved = tradeErrorFigure(details, 'reserved')
+    const available = tradeErrorFigure(details, 'available')
+    if (balance !== undefined && required !== undefined) {
+      const openOrders = reserved !== undefined && available !== undefined ? { reserved, available } : undefined
+      return describeInsufficientFunds(balance, required, openOrders)
+    }
   }
-  if (code === 'insufficient_shares_held' && typeof details.held === 'string' && typeof details.requested === 'string') {
-    return describeInsufficientShares(details.held, details.requested)
+  if (code === 'insufficient_shares_held') {
+    const held = tradeErrorFigure(details, 'held')
+    const requested = tradeErrorFigure(details, 'requested')
+    if (held !== undefined && requested !== undefined) {
+      return describeInsufficientShares(held, requested, tradeErrorFigure(details, 'reserved'))
+    }
   }
   return TRADE_FIXED_MESSAGES[code] ?? GENERIC_ERROR
 }
