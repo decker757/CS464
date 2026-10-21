@@ -67,6 +67,35 @@ test('a trader rests a limit order, watches another trade fill it, and cancels t
   await expect(availableBalance).not.toHaveText('985 credits')
 })
 
+test('an order filled the rest of the way by another trade leaves the list on its own', async ({ page }) => {
+  const admin = await registerAdmin('lo_full_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('fullfill')} happen?`)
+  const trader = await registerTrader('lo_full_trader')
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  // Small enough that one trade can take the whole thing, so the fill that
+  // lands is the order's last and its frame reads `filled` rather than
+  // `open` (realtime-service.md, "Order updates").
+  await page.getByRole('button', { name: 'Limit' }).click()
+  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await page.getByLabel('Limit price').fill('0.45')
+  await page.getByLabel('Quantity (shares)').fill('2')
+  await page.getByRole('button', { name: /place buy order/i }).click()
+  await expect(page.getByRole('status')).toContainText(/resting until the price reaches it/i)
+  await expect(page.getByText('Your open orders')).toBeVisible()
+
+  // Pushes Yes well below 0.45, which fills all 2 shares inside that trade.
+  const other = await registerTrader('lo_full_other')
+  await buy(other, market, 'No', '120.0000')
+
+  // The list holds live orders only, so the frame that completes the order
+  // takes the row — and with it the whole section — off the page, with no
+  // reload and no cancel.
+  await expect(page.getByText('Your open orders')).toHaveCount(0, { timeout: 20_000 })
+})
+
 test('a limit order priced through the market fills on arrival', async ({ page }) => {
   const admin = await registerAdmin('lo_fill_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('fill')} happen?`)
