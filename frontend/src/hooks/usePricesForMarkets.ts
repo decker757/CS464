@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getMarketSnapshot, type OutcomePrice } from '../api/ledgerApi'
+import { getMarketSnapshot, type PriceState } from '../api/ledgerApi'
 import type { PublicMarketSummary } from '../api/marketApi'
 import { tradingStopped } from '../components/markets/marketStatus'
 
@@ -7,8 +7,16 @@ import { tradingStopped } from '../components/markets/marketStatus'
 type PricedMarket = Pick<PublicMarketSummary, 'id' | 'status' | 'close_time'>
 
 export interface MarketPrices {
-  /** By market id. A market is absent until its snapshot arrives. */
-  pricesByMarket: Map<string, OutcomePrice[]>
+  /**
+   * The whole snapshot, by market id. A market is absent until its own
+   * snapshot arrives.
+   *
+   * The whole answer and not just `prices`: `state_version` is the only thing
+   * that tells an untraded book from a contested one, since both quote the
+   * same seed price, and `occurred_at` is when the book last moved (#445).
+   * Keeping them costs nothing — they are on the wire either way.
+   */
+  snapshotsByMarket: Map<string, PriceState>
   /** When the most recent snapshot landed; null until the first one does. */
   readAt: Date | null
 }
@@ -20,8 +28,8 @@ export interface MarketPrices {
 // re-reads the same snapshot route it already uses.
 export const PRICE_REFRESH_MS = 30_000
 
-// The current prices of every market in a list, by market id, for the browse
-// page's cards ([X-1] #126). A market is missing from the map until its
+// The current price snapshot of every market in a list, by market id, for the
+// browse page's cards ([X-1] #126). A market is missing from the map until its
 // snapshot arrives, and stays missing if the request fails, so its card shows
 // "—" either way.
 //
@@ -36,7 +44,7 @@ export const PRICE_REFRESH_MS = 30_000
 // has stopped trading cannot get a new price, so re-reading it would only cost
 // the ledger an LMSR evaluation per card per tick.
 export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
-  const [pricesByMarket, setPricesByMarket] = useState<Map<string, OutcomePrice[]>>(new Map())
+  const [snapshotsByMarket, setSnapshotsByMarket] = useState<Map<string, PriceState>>(new Map())
   const [readAt, setReadAt] = useState<Date | null>(null)
   // A market counts as answered when its request settles, not when it is sent:
   // a request the cleanup cancelled must be sent again, and StrictMode cancels
@@ -70,7 +78,7 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
           inFlightIds.delete(marketId)
           if (cancelled) return
           answeredIds.current.add(marketId)
-          setPricesByMarket(previous => new Map(previous).set(marketId, snapshot.prices))
+          setSnapshotsByMarket(previous => new Map(previous).set(marketId, snapshot))
           // Only a read that answered moves this. A failing refresh has to show
           // as a time going stale, which is the whole reason the screen says it.
           setReadAt(new Date())
@@ -104,5 +112,5 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     }
   }, [markets])
 
-  return { pricesByMarket, readAt }
+  return { snapshotsByMarket, readAt }
 }
