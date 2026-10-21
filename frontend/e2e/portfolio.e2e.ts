@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
-import { formatPreciseCredits, subtractCredits } from './support/credits'
+import { creditsLess, formatPreciseCredits } from './support/credits'
 
 // [T-4] #24, through the real ledger and market_service: the portfolio
 // route carries ids only, and the page's own join against
@@ -26,8 +26,8 @@ test('a trader sees their position, with the market question and outcome label j
   // plus the 2.5312 the shares are worth. Every figure is matched whole: with
   // some grants one is the tail of another, "1,002.5312 credits" of
   // "2.5312 credits".
-  const cash = formatPreciseCredits(subtractCredits(grant, '2.5313'))
-  const netWorth = formatPreciseCredits(subtractCredits(grant, '0.0001'))
+  const cash = formatPreciseCredits(creditsLess(grant, '2.5313'))
+  const netWorth = formatPreciseCredits(creditsLess(grant, '0.0001'))
   await expect(page.getByText(`${cash} credits`, { exact: true })).toBeVisible()
   await expect(page.getByText('2.5312 credits', { exact: true })).toBeVisible()
   await expect(page.getByText(`${netWorth} credits`, { exact: true })).toBeVisible()

@@ -37,14 +37,14 @@ function groupThousands(whole: bigint): string {
 }
 
 /** `amount` less `spent`, exactly, as a plain four-place amount. */
-export function subtractCredits(amount: string, spent: string): string {
+export function creditsLess(amount: string, spent: string): string {
   const left = unitsOf(amount) - unitsOf(spent)
   if (left < 0n) throw new Error(`${amount} less ${spent} is below zero`)
   return amountOf(left)
 }
 
 /** `amount` plus `more`, exactly, as a plain four-place amount. */
-export function addCredits(amount: string, more: string): string {
+export function creditsPlus(amount: string, more: string): string {
   return amountOf(unitsOf(amount) + unitsOf(more))
 }
 

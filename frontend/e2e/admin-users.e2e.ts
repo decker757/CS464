@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
-import { formatPreciseCredits, formatSignedCredits, subtractCredits } from './support/credits'
+import { creditsLess, formatPreciseCredits, formatSignedCredits } from './support/credits'
 
 // [FE][4.1] #57, through the real auth service and ledger: the search is the
 // auth service's own (GET /admin/users), the balance and history are the
@@ -36,7 +36,7 @@ test('an admin searches for a trader and reads their real balance and history', 
   // liquidity_b is 100 and nothing else traded against this market, so this
   // is exact, not just present — the one test that talks to the real ledger:
   // the grant less the 2.5313 the buy cost.
-  const balance = formatPreciseCredits(subtractCredits(grant, '2.5313'))
+  const balance = formatPreciseCredits(creditsLess(grant, '2.5313'))
   await expect(page.getByText(`${balance} credits`, { exact: true })).toBeVisible()
   const rows = page.getByRole('row')
   await expect(rows.nth(1)).toContainText(market.question)

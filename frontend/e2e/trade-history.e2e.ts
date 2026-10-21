@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
-import { formatPreciseCredits, formatSignedCredits, subtractCredits } from './support/credits'
+import { creditsLess, formatPreciseCredits, formatSignedCredits } from './support/credits'
 
 // [FE][T-5] #53, through the real ledger and market_service: the history
 // route carries ids only, and the page's own join against
@@ -29,7 +29,7 @@ test('a trader sees their starting grant and a trade, newest first, with the mar
   // are exact, not just present — the one test that talks to the real ledger.
   await expect(rows.nth(1).getByText('0.5063', { exact: true })).toBeVisible()
   await expect(rows.nth(1).getByText('-2.5313', { exact: true })).toBeVisible()
-  const balanceAfter = formatPreciseCredits(subtractCredits(grant, '2.5313'))
+  const balanceAfter = formatPreciseCredits(creditsLess(grant, '2.5313'))
   await expect(rows.nth(1).getByText(balanceAfter, { exact: true })).toBeVisible()
   await expect(rows.nth(2)).toContainText('Starting grant')
   await expect(rows.nth(2).getByText(formatSignedCredits(grant), { exact: true })).toBeVisible()

@@ -1,34 +1,34 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addCredits,
+  creditsLess,
+  creditsPlus,
   formatPreciseCredits,
   formatSignedCredits,
   formatWholeCredits,
   isBelow,
-  subtractCredits,
 } from './credits'
 
 // #373. The end-to-end specs work their expected figures out from the grant
 // the ledger reports, through these, so a mistake here would make every one of
 // them expect the wrong thing. Tested on their own, with the answers typed out.
 
-describe('subtractCredits', () => {
+describe('creditsLess', () => {
   it('takes a trade off the grant exactly, borrowing across the decimal point', () => {
-    expect(subtractCredits('1234.5678', '8.8592')).toBe('1225.7086')
+    expect(creditsLess('1234.5678', '8.8592')).toBe('1225.7086')
   })
 
   it('reads an amount with fewer than four places as if padded', () => {
-    expect(subtractCredits('2500.5', '0.0001')).toBe('2500.4999')
+    expect(creditsLess('2500.5', '0.0001')).toBe('2500.4999')
   })
 
   it('refuses to go below zero rather than return a figure no screen can show', () => {
-    expect(() => subtractCredits('100.0000', '143.3781')).toThrow(/below zero/)
+    expect(() => creditsLess('100.0000', '143.3781')).toThrow(/below zero/)
   })
 })
 
-describe('addCredits', () => {
+describe('creditsPlus', () => {
   it('adds exactly, carrying across the decimal point', () => {
-    expect(addCredits('0.9999', '0.0001')).toBe('1.0000')
+    expect(creditsPlus('0.9999', '0.0001')).toBe('1.0000')
   })
 })
 
@@ -45,9 +45,9 @@ describe('isBelow', () => {
 
 describe('reading an amount', () => {
   it('refuses anything but a plain decimal of at most four places', () => {
-    expect(() => subtractCredits('1.23456', '0')).toThrow(/not a credits amount/)
-    expect(() => subtractCredits('1e3', '0')).toThrow(/not a credits amount/)
-    expect(() => subtractCredits('1,000.0000', '0')).toThrow(/not a credits amount/)
+    expect(() => creditsLess('1.23456', '0')).toThrow(/not a credits amount/)
+    expect(() => creditsLess('1e3', '0')).toThrow(/not a credits amount/)
+    expect(() => creditsLess('1,000.0000', '0')).toThrow(/not a credits amount/)
   })
 })
 

@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
-import { addCredits, formatPreciseCredits, formatWholeCredits, subtractCredits } from './support/credits'
+import { creditsLess, creditsPlus, formatPreciseCredits, formatWholeCredits } from './support/credits'
 
 // [FE][T-2/T-3] #49, through the real ledger: the preview and trade routes,
 // against a real book. Exactly what unit tests against MSW mocks can't
@@ -37,7 +37,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
 
   await expect(page.getByText('Bought 10 Yes for 8.8592 credits.', { exact: true })).toBeVisible()
   // The navbar shows whole credits, the fraction dropped.
-  const afterTheBuy = subtractCredits(grant, '8.8592')
+  const afterTheBuy = creditsLess(grant, '8.8592')
   await expect(balance).toHaveText(`${formatWholeCredits(afterTheBuy)} credits`)
 
   await page.getByRole('button', { name: /^sell$/i }).click()
@@ -46,7 +46,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: /^sell yes$/i }).click()
 
   await expect(page.getByText('Sold 4 Yes for 3.5557 credits.', { exact: true })).toBeVisible()
-  const afterTheSell = `${formatWholeCredits(addCredits(afterTheBuy, '3.5557'))} credits`
+  const afterTheSell = `${formatWholeCredits(creditsPlus(afterTheBuy, '3.5557'))} credits`
   await expect(balance).toHaveText(afterTheSell)
 
   // The clamp reads the position the ledger reports after that sell, so this
@@ -85,8 +85,8 @@ test('a buy the trader cannot afford is refused before the request', async ({ pa
   // (ledger-service.md, GET /ledger/markets/{market_id}/preview, "The
   // rounding direction, and why it is not symmetric"), so it asks
   // q - 69.3147: more than the grant, whatever the grant is.
-  const quantity = addCredits(grant, '2000')
-  const cost = subtractCredits(quantity, '69.3147')
+  const quantity = creditsPlus(grant, '2000')
+  const cost = creditsLess(quantity, '69.3147')
   await page.getByLabel('Quantity (shares)').fill(quantity)
   await expect(page.getByLabel('trade preview')).toBeVisible()
 
