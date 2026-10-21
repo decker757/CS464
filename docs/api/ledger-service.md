@@ -885,7 +885,11 @@ Any valid access token, any role, exactly like the single snapshot above.
         { "outcome_id": "4f2a...", "position": 0, "price": "0.6236" },
         { "outcome_id": "b7e1...", "position": 1, "price": "0.3764" }
       ],
-      "occurred_at": "2026-09-15T09:12:44.318000+00:00"
+      "occurred_at": "2026-09-15T09:12:44.318000+00:00",
+      "prices_7d_ago": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.5200" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.4800" }
+      ]
     },
     {
       "market_id": "a50a...",
@@ -894,15 +898,34 @@ Any valid access token, any role, exactly like the single snapshot above.
         { "outcome_id": "0c33...", "position": 0, "price": "0.5000" },
         { "outcome_id": "e9d4...", "position": 1, "price": "0.5000" }
       ],
-      "occurred_at": "2026-10-20T08:00:03.112000+00:00"
+      "occurred_at": "2026-10-20T08:00:03.112000+00:00",
+      "prices_7d_ago": null
     }
   ]
 }
 ```
 
 **Each item is the single snapshot's body** for that market, field for field,
-so it renders with the same function as the single snapshot and the `price`
-socket frame. Every field above means what it means there.
+**plus `prices_7d_ago`**, so it renders with the same function as the single
+snapshot and the `price` socket frame. Every other field means what it means
+there.
+
+**`prices_7d_ago`** ([X-1] #446) is each outcome's price as it stood seven
+days before the request, in the shape and order of `prices`: the price after
+the market's last trade at or before that moment. A card's change is `price`
+minus its `prices_7d_ago` entry with the same `outcome_id`. The window is
+seven days, fixed, and the moment is the ledger's clock at the request.
+
+- **Null when the market has no trade that old**: never traded, or traded
+  only within the last seven days. A book that was open then stood at its seed
+  price, which nobody chose, so no change is measured from it. Show no delta.
+- **Equal to `prices` when the market has not traded since**: a real change
+  of zero over the window, not missing data.
+- Null too, and logged, in the one case the ledger cannot rebuild the price:
+  a market whose trades skip or reorder a `state_version`, which price history
+  answers with `500 price_history_inconsistent`. Its `prices` are unaffected.
+
+The single snapshot and the `price` frame do not carry it.
 
 **At most 200 ids.** 200 is `GET /public/markets`' largest page
 (`docs/api/market-service.md`), so any page of the browse list fits in one
@@ -924,9 +947,11 @@ A book this service holds but cannot price, which the single snapshot refuses
 with `500 market_book_incomplete`, is absent here too and logged, so one
 damaged market costs only its own card.
 
-**One statement reads every market**, with no lock, so each snapshot's
-`state_version` is the version its `prices` were computed from, as on the
-single route. Each market is answered once, in the order its id first appears
+**One statement reads every market's book**, with no lock, so each
+snapshot's `state_version` is the version its `prices` were computed from, as
+on the single route. **One more reads their trades** up to seven days ago, for
+`prices_7d_ago`; however many markets are asked about, the route sends those
+two. Each market is answered once, in the order its id first appears
 in `market_ids`. Like the single snapshot, it never checks whether a market is
 still open (ADR 0017): a closed or settled market is answered with its last
 price.
