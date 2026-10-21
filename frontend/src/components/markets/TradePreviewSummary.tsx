@@ -59,8 +59,12 @@ export default function TradePreviewSummary({ preview, side, outcomeId, outcomeL
           )}
         </>
       )}
+      {/* The unit is on the figure, the way the credits rows above carry
+          theirs. An average price is credits per share and not a probability
+          (#247), but a bare decimal between a credits row and a percentage row
+          reads as one — so this row says which it is (#430). */}
       <Row label="Average price">
-        <span className="text-smu-navy">{formatAveragePrice(preview.average_price)}</span>
+        <span className="text-smu-navy">{formatAveragePrice(preview.average_price)} credits/share</span>
       </Row>
       {priceNow && priceAfter && (
         <Row label={`${outcomeLabel} price`}>
