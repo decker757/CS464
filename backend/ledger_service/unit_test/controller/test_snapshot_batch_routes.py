@@ -76,7 +76,8 @@ async def test_one_id_over_the_cap_is_refused(
     client: AsyncClient, trader_headers: dict[str, str]
 ) -> None:
     """AC1's cap, one past its edge: `422 invalid_request`, naming
-    `market_ids`. DECISIONS.md, "The batch snapshot takes at most 200 ids"."""
+    `market_ids`. DECISIONS.md, "The batch snapshot takes at most 200 ids, and
+    refuses more"."""
     response = await client.post(
         _PATH, json={"market_ids": _ids(_CAP + 1)}, headers=trader_headers
     )
