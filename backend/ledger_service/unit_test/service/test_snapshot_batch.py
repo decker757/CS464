@@ -27,6 +27,10 @@ from unit_test.book_fixtures import (
 )
 from unit_test.conftest import drop_outcome_row
 
+# None of these markets has a trade, so where the price-change window falls
+# changes nothing here.
+_NOW = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+
 
 def _snapshot_service():
     """Imported inside each test, so a missing name fails one test rather than
@@ -82,7 +86,7 @@ async def test_each_market_is_answered_with_its_own_book(
     await _move(session, second, state_version=3, state_changed_at=second_moved)
 
     result = await _snapshot_service().list_snapshots(
-        session, [first.market_id, second.market_id]
+        session, [first.market_id, second.market_id], now=_NOW
     )
 
     assert [snapshot.market_id for snapshot in result] == [
@@ -119,7 +123,7 @@ async def test_an_unknown_id_is_absent_and_the_rest_are_answered(
     await warm(session, known)
 
     result = await _snapshot_service().list_snapshots(
-        session, [uuid.uuid4(), known.market_id]
+        session, [uuid.uuid4(), known.market_id], now=_NOW
     )
 
     assert [snapshot.market_id for snapshot in result] == [known.market_id]
@@ -137,7 +141,7 @@ async def test_a_book_that_cannot_be_priced_is_absent_and_the_rest_are_answered(
     await drop_outcome_row(session, damaged.market_id, position=1)
 
     result = await _snapshot_service().list_snapshots(
-        session, [damaged.market_id, healthy.market_id]
+        session, [damaged.market_id, healthy.market_id], now=_NOW
     )
 
     assert [snapshot.market_id for snapshot in result] == [healthy.market_id]
@@ -152,7 +156,7 @@ async def test_the_answer_follows_the_order_the_ids_were_sent(
     markets = await _three_warm_markets(session)
     sent = sorted((market.market_id for market in markets), reverse=True)
 
-    result = await _snapshot_service().list_snapshots(session, sent)
+    result = await _snapshot_service().list_snapshots(session, sent, now=_NOW)
 
     assert [snapshot.market_id for snapshot in result] == sent
 
@@ -167,7 +171,7 @@ async def test_a_repeated_id_is_answered_once_where_it_first_appears(
     await warm(session, second)
 
     result = await _snapshot_service().list_snapshots(
-        session, [second.market_id, first.market_id, second.market_id]
+        session, [second.market_id, first.market_id, second.market_id], now=_NOW
     )
 
     assert [snapshot.market_id for snapshot in result] == [
@@ -180,19 +184,19 @@ async def test_a_repeated_id_is_answered_once_where_it_first_appears(
 # The read it makes
 # =========================================================================
 async def test_one_statement_reads_every_market(session: AsyncSession) -> None:
-    """No N+1: three markets cost one statement touching `market_books`, and it
-    joins `market_outcomes`, so each `state_version` comes from the same read
-    as the `q` it prices (D-013)."""
+    """No N+1: three markets cost one statement touching `market_outcomes`,
+    and it reads `market_books` too, so each `state_version` comes from the
+    same read as the `q` it prices (D-013)."""
     markets = await _three_warm_markets(session)
 
     with capture_sql() as statements:
         await _snapshot_service().list_snapshots(
-            session, [market.market_id for market in markets]
+            session, [market.market_id for market in markets], now=_NOW
         )
 
-    book_reads = mentioning(statements, "market_books")
+    book_reads = mentioning(statements, "market_outcomes")
     assert len(book_reads) == 1, f"expected one statement, sent:\n{statements}"
-    assert "market_outcomes" in book_reads[0].lower(), book_reads[0]
+    assert "market_books" in book_reads[0].lower(), book_reads[0]
 
 
 async def test_the_batch_takes_no_lock(session: AsyncSession) -> None:
@@ -202,7 +206,7 @@ async def test_the_batch_takes_no_lock(session: AsyncSession) -> None:
 
     with capture_sql() as statements:
         await _snapshot_service().list_snapshots(
-            session, [market.market_id for market in markets]
+            session, [market.market_id for market in markets], now=_NOW
         )
 
     locking = [s for s in statements if "for update" in s.lower()]

@@ -9,11 +9,15 @@ single snapshot's body. Which markets are answered, and in what order, is
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from controller import routes
 from unit_test.book_fixtures import Upstream, warm
+from unit_test.price_history_fixtures import WIRE_PRICES, entry_times, traded
 
 _PATH = "/ledger/markets/snapshots"
 
@@ -121,4 +125,38 @@ async def test_each_item_is_the_single_snapshots_body(
 
     body = response.json()
     assert set(body) == {"snapshots"}
-    assert body["snapshots"][0] == single.json()
+    assert body["snapshots"][0] == {**single.json(), "prices_7d_ago": None}
+
+
+async def test_the_prices_a_week_ago_are_read_against_the_clock_at_the_request(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC1: the item carries the prices the market had seven days before the
+    request, as strings in the shape of `prices`. The clock is pinned a week
+    after the second of three trades, so the answer is that trade's prices
+    and the item's own `prices` are the third's."""
+    scenario = await traded(session)
+    times = await entry_times(session, [scenario.b_buy.transaction_id])
+    pinned = times[scenario.b_buy.transaction_id] + timedelta(days=7)
+
+    class _PinnedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            return pinned
+
+    monkeypatch.setattr(routes, "datetime", _PinnedClock)
+
+    response = await client.post(
+        _PATH, json={"market_ids": [str(scenario.market_id)]}, headers=trader_headers
+    )
+
+    assert response.status_code == 200, response.json()
+    [item] = response.json()["snapshots"]
+    outcomes = [str(outcome_id) for outcome_id in scenario.upstream.outcomes]
+    assert item["prices_7d_ago"] == [
+        {"outcome_id": outcomes[0], "position": 0, "price": WIRE_PRICES[2][0]},
+        {"outcome_id": outcomes[1], "position": 1, "price": WIRE_PRICES[2][1]},
+    ]
