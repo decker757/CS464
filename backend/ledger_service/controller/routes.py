@@ -70,6 +70,7 @@ from model.schemas import (
     LeaderboardPageOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
+    ListedSnapshotOut,
     MarketTradeListResponse,
     OrderIn,
     OrderListOut,
@@ -104,7 +105,7 @@ from service import (
     trading,
 )
 from service.book_prices import PricedOutcome
-from service.snapshot import Snapshot
+from service.snapshot import ListedSnapshot, Snapshot
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -518,11 +519,22 @@ async def market_snapshot(
     return _snapshot_out(result)
 
 
+def _listed_snapshot_out(result: ListedSnapshot) -> ListedSnapshotOut:
+    """One market in the batch: the single snapshot's body, plus its
+    `credits_traded`."""
+    return ListedSnapshotOut(
+        **_snapshot_out(result).model_dump(), credits_traded=result.credits_traded
+    )
+
+
 _SNAPSHOTS_DESCRIPTION = (
     "[X-1] #432. The current price of many markets in one request, for a "
     "list of cards. A POST because its input is a list; it writes nothing.\n\n"
     "Any valid access token, any role, like the single snapshot.\n\n"
-    "Each item in `snapshots` is the single snapshot's body for that market. "
+    "Each item in `snapshots` is the single snapshot's body for that market, "
+    "plus `credits_traded`: every credit its trades have moved, buys and "
+    "sells alike, a resting order's fills included, as a decimal string, and "
+    "`0.0000` for a market nobody has traded. "
     "Each market is answered once, in the order its id first appears in "
     "`market_ids`. One statement reads them all, with no lock.\n\n"
     "**An id with no book here is absent, not an error.** Unlike the single "
@@ -553,7 +565,9 @@ async def market_snapshots(
     body: SnapshotsIn, user: CurrentUser, session: DbSession
 ) -> SnapshotListOut:
     results = await snapshot_service.list_snapshots(session, body.market_ids)
-    return SnapshotListOut(snapshots=[_snapshot_out(result) for result in results])
+    return SnapshotListOut(
+        snapshots=[_listed_snapshot_out(result) for result in results]
+    )
 
 
 _EXPOSURE_DESCRIPTION = (
