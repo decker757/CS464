@@ -26,10 +26,12 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
  * it by exactly what the trader's own orders hold (ADR 0024, #61).
  *
  * It goes through `formatCredits`, which is also what the portfolio's balance
- * card uses: this bar and that card show figures from the same response, and
- * one truncating while the other did not is how the same screen came to read
- * 9,993 here and 9,993.8938 there (#443). Pick a precision for one of them
- * and it has to be the same helper, or they drift again. */
+ * card uses. The two are different figures now — this bar shows `available`
+ * from the balance route, that card `balance` from the portfolio route, and
+ * they differ by what resting buy orders reserve — but one truncating while
+ * the other did not is how the same screen came to read 9,993 here and
+ * 9,993.8938 there (#443). Pick a precision for one of them and it has to be
+ * the same helper, or they drift again. */
 function BalanceReadout({ available }: { available: string | null }) {
   return (
     <span aria-label="available balance" className="text-sm whitespace-nowrap text-white/70">
