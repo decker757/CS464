@@ -28,9 +28,10 @@ export interface MyOrders {
  *
  * On top of that, an `order` frame moves `filled_quantity` on the row it
  * names, and a frame that completes an order drops it, since the list holds
- * live orders only. A frame carries no reservation figures, so a row's
- * `reserved_credits` is stale between a fill and the next read; a caller
- * that needs that figure exactly — a balance — reads its own route.
+ * live orders only. A frame carries no reservation figures, so the caller
+ * re-reads the list once it has applied one: the frame is published after
+ * the commit that wrote the fill, so that read already shows what the order
+ * still holds.
  */
 export function useMyOrders(enabled: boolean): MyOrders {
   const [orders, setOrders] = useState<Order[] | null>(null)

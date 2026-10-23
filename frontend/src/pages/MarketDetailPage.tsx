@@ -121,16 +121,17 @@ export default function MarketDetailPage() {
   const refetchHeldRef = useRef<() => void>(() => {})
 
   // A fill moves credits and shares, and the frame carries neither — only
-  // the filled quantity, which it applies to the row at once. The money
-  // figures come from their own routes: the balance, and the holdings the
-  // sell clamp reads. The order's own `reserved_*` is left to the next read
-  // of the list, since re-reading it here would answer from before the fill
-  // and undo the quantity the frame just showed.
+  // the filled quantity, which it applies to the row at once. Everything
+  // else is read again: the list, for what the order still holds, the
+  // balance, and the holdings the sell clamp reads. The ledger publishes the
+  // frame after the commit that wrote the fill (realtime-service.md,
+  // "Publishing"), so a read sent now already includes it.
   const onFrame = useCallback((frame: Parameters<typeof applyFrame>[0]) => {
     applyFrame(frame)
+    refetchOrders()
     refetchBalance()
     refetchHeldRef.current()
-  }, [applyFrame, refetchBalance])
+  }, [applyFrame, refetchOrders, refetchBalance])
 
   // One socket for the page: price frames keep the prices above current, and
   // order frames the list below it. Order frames need no subscribe, so they
