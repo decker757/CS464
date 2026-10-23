@@ -680,6 +680,38 @@ describe('MarketDetailPage', () => {
       await waitFor(() => expect(screen.getAllByRole('row')[1]).toHaveTextContent('12.5000'))
     })
 
+    it('re-reads the list after an order frame, so what the order holds follows the fill', async () => {
+      // The frame carries no money, and the ledger publishes it after the
+      // commit that wrote the fill (realtime-service.md, "Publishing"), so a
+      // read sent once it has arrived already shows the smaller reservation.
+      let served = [restingOrder()]
+      let wsClient: { send(data: string): void } | null = null
+      server.use(
+        http.get(ORDERS, () => HttpResponse.json({ orders: served })),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+        }),
+      )
+      renderPage()
+      const row = () => screen.getByRole('row', { name: /buy yes/i })
+      await waitFor(() => expect(row()).toHaveTextContent('15.0000 credits'))
+      await waitFor(() => expect(wsClient).not.toBeNull())
+
+      served = [restingOrder({ filled_quantity: '12.5000', average_fill_price: '0.2700', reserved_credits: '11.6250' })]
+      act(() => wsClient!.send(JSON.stringify({
+        type: 'order',
+        order_id: 'ord-1',
+        market_id: 'mkt-abc',
+        status: 'open',
+        quantity: '50.0000',
+        filled_quantity: '12.5000',
+        fill: { transaction_id: 't1', quantity: '12.5000', total: '-3.3750', state_version: 7 },
+        occurred_at: '2026-10-20T16:00:00Z',
+      })))
+
+      await waitFor(() => expect(row()).toHaveTextContent('11.6250 credits'))
+    })
+
     it('drops the order from the list once a frame says it filled in full', async () => {
       let wsClient: { send(data: string): void } | null = null
       server.use(
