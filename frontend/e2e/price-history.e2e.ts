@@ -57,3 +57,21 @@ test('a trader sees the price history on the market page', async ({ page }) => {
   await expect(page.locator('.recharts-line-curve')).toHaveCount(market.outcomes.length)
   await expect(page.getByText('Failed to load price history.')).toHaveCount(0)
 })
+
+// [FE][T-5] #453. A trader with the app open across a deploy asks for a chart
+// chunk the server no longer has. Only a real browser loading the built bundle
+// can fail that download; the market page must still trade.
+test('a chart chunk that fails to download leaves the market page trading', async ({ page }) => {
+  const admin = await registerAdmin('phf_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('chartfail')} resolve yes?`)
+  const trader = await registerTrader('phf_trader')
+  // Two points, so the page asks for the chart rather than saying no trades.
+  await buy(trader, market, 'Yes', '5')
+
+  await page.route('**/PriceHistoryChart-*.js', route => route.abort())
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  await expect(page.getByText('Price history unavailable. Reload the page to try again.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Buy Yes', exact: true })).toBeVisible()
+})

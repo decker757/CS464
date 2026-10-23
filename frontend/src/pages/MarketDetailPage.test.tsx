@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
@@ -1056,6 +1056,24 @@ describe('MarketDetailPage — price history', () => {
     expect(await screen.findByText('Failed to load price history.')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('Failed to load price history.')
     expect(screen.getByRole('button', { name: /^buy$/i })).toBeInTheDocument()
+  })
+
+  it('keeps the trading panel when the chart itself fails, and says the history is unavailable', async () => {
+    // The likeliest fault is the chart's chunk failing to download after a
+    // deploy, which only a browser can do: price-history.e2e.ts aborts it.
+    // Here the chart throws while drawing a point with no prices, which
+    // reaches the same place. Without a boundary of its own, the throw takes
+    // the whole page down with it, trading panel included.
+    const quietReactsReport = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => quietReactsReport.mockRestore())
+    server.use(http.get(THIS_MARKETS_HISTORY, () =>
+      HttpResponse.json(priceHistory('mkt-abc', [threeTrades[0], { ...threeTrades[1], prices: null }])),
+    ))
+
+    renderPage()
+
+    expect(await screen.findByText('Price history unavailable. Reload the page to try again.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeInTheDocument()
   })
 })
 
