@@ -636,6 +636,40 @@ describe('MarketDetailPage', () => {
       expect(row).toHaveTextContent('20.5465')
     })
 
+    it('reads no holdings on a closed market, even when the socket asks for a re-read', async () => {
+      // The holdings only feed the sell clamp, and a closed market has no
+      // sell to clamp. Its orders still re-read on every ack, since they stay
+      // cancellable until the market has a result (ADR 0024).
+      let holdingReads = 0
+      let orderReads = 0
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status: 'closed' })),
+        http.get(PORTFOLIO, () => {
+          holdingReads += 1
+          return HttpResponse.json(portfolio())
+        }),
+        http.get(ORDERS, () => {
+          orderReads += 1
+          return HttpResponse.json({ orders: [restingOrder()] })
+        }),
+        priceService.addEventListener('connection', ({ client }) => {
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      renderPage()
+
+      // The mount's read and the ack's: the ack has been handled.
+      await waitFor(() => expect(orderReads).toBe(2))
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+
+      expect(holdingReads).toBe(0)
+    })
+
     it('says the open orders could not be loaded, and loads them on a retry', async () => {
       // Without this a failed first read looks exactly like having no
       // orders, and a trader with one resting cannot reach its cancel.
