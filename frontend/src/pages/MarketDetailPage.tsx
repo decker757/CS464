@@ -9,6 +9,7 @@ import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
+import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
 import { useBalance } from '../context/BalanceContext'
@@ -79,8 +80,11 @@ export default function MarketDetailPage() {
   // cancellable until the market has a result (ADR 0024).
   const binaryMarket = market?.outcomes.length === 2
   const ordersPossible = binaryMarket && market?.status !== 'settled'
-  const { orders, refetch: refetchOrders, applyFrame } = useMyOrders(!!ordersPossible)
+  const { orders, hasError: ordersReadFailed, refetch: refetchOrders, applyFrame } = useMyOrders(!!ordersPossible)
   const ordersHere = orders?.filter(order => order.market_id === market?.id) ?? []
+  // Only before any list has landed: a re-read that fails later leaves the
+  // last list on screen, and an error over it would say the wrong thing.
+  const ordersUnavailable = orders === null && ordersReadFailed
 
   // What the trader holds of each of this market's outcomes, for the sell
   // clamp ([T-2] #357). The portfolio route carries every market's positions
@@ -301,7 +305,14 @@ export default function MarketDetailPage() {
               none, so a refused cancel's message survives the re-read that
               empties the list; keyed by market, so the message does not
               follow the trader to the next one. */}
-          <OpenOrdersList key={market.id} orders={ordersHere} outcomes={market.outcomes} onCancelled={onOrdersChanged} />
+          {ordersUnavailable ? (
+            <SectionCard title="Your open orders" className="mb-6">
+              <p role="alert" className="mb-3 text-xs text-danger">Your open orders could not be loaded.</p>
+              <Button variant="outline" size="xs" onClick={refetchOrders}>Try again</Button>
+            </SectionCard>
+          ) : (
+            <OpenOrdersList key={market.id} orders={ordersHere} outcomes={market.outcomes} onCancelled={onOrdersChanged} />
+          )}
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />
