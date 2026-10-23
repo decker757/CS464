@@ -33,11 +33,37 @@ describe('MarketPreviewCard', () => {
     expect(screen.queryByText(/bought/i)).not.toBeInTheDocument()
   })
 
-  it('writes the price as a percentage, the way the rest of the app does', () => {
+  // The market page shows each side's price once, as a percentage over the
+  // words "implied probability". The card used to repeat the YES price as a
+  // headline figure beside a bar for each side, which the page has neither of
+  // (#435).
+  it('writes each side’s price once, the way the market page does', () => {
     render(<MarketPreviewCard />)
 
-    // The current price and the YES row, both from the one price constant.
-    expect(screen.getAllByText('64.0%')).toHaveLength(2)
+    expect(screen.getByText('64.0%')).toBeInTheDocument()
+    expect(screen.getByText('36.0%')).toBeInTheDocument()
+    expect(screen.getAllByText('implied probability')).toHaveLength(2)
     expect(screen.queryAllByText(/[$¢]/)).toHaveLength(0)
+  })
+
+  // The seven-day sparkline and "up from 52.0% a week ago" (#435). The market
+  // page draws no chart and reports no trend, so a visitor shown one here is
+  // shown a feature that is not there after signing up. The sparkline has no
+  // text, so the drawing itself is what the second assertion looks for.
+  it('draws no price history, which the market page does not have', () => {
+    const { container } = render(<MarketPreviewCard />)
+
+    expect(screen.queryByText(/trend|a week ago/i)).not.toBeInTheDocument()
+    expect(container.querySelector('svg')).toBeNull()
+  })
+
+  // The trading panel has one buy button, named after the outcome chosen in
+  // the toggle above it, with no price on it. The card used to draw a priced
+  // button for each side (#435).
+  it('draws one buy control, for the chosen side, with no price on it', () => {
+    render(<MarketPreviewCard />)
+
+    expect(screen.getByText('Buy YES')).toBeInTheDocument()
+    expect(screen.queryByText(/buy no/i)).not.toBeInTheDocument()
   })
 })
