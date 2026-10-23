@@ -762,15 +762,24 @@ describe('TradingPanel', () => {
     expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(4)
   })
 
-  it('offers nothing to sell, not a negative, while the orders list lags a smaller holding', () => {
+  it('offers nothing to sell, not a negative, while the orders list lags a smaller holding', async () => {
     // A sell order's fill lowers the position and its reservation together,
     // but they arrive on two reads, and the holdings read can land first.
+    mockPreview(previewResponse({ side: 'sell', quantity: '0.5000', total: '0.2500' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     renderPanel({ heldByOutcome: { 'o-yes': '1.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })
 
     fireEvent.click(screen.getByRole('button', { name: /^sell$/i }))
 
     expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 1.0000 shares')
     expect(screen.queryByRole('button', { name: /^max$/i })).not.toBeInTheDocument()
+
+    // The refusal agrees with the line above it: nothing left, never -1.0000.
+    await typeQuantity(actor, '0.5')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'You have 0.0000 shares available to sell, but this sell asks for 0.5000. '
+      + 'You hold 1.0000 in all, and 1.0000 of them are reserved by your open sell orders.',
+    )
   })
 
   it('refuses nothing while the figures the two checks need are missing', async () => {
