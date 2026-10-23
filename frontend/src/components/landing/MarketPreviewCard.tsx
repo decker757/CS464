@@ -1,4 +1,5 @@
 import { formatPrice } from '../../utils/formatPrice'
+import { selectableClass } from '../ui/selectableClass'
 
 // A static, decorative market card for the landing page. None of it is live
 // data, and the card says so on its face — a visitor who reads it should not
@@ -50,15 +51,17 @@ export default function MarketPreviewCard() {
       {/* The trading panel's outcome toggle and buy button, as a picture:
           nothing to click, so they are plain spans rather than buttons, and
           hidden from assistive technology so nobody is offered an action this
-          page cannot perform. */}
-      <div aria-hidden className="mb-4 text-[13px]">
+          page cannot perform. The toggle takes the panel's own colours, and
+          pointer-events-none keeps their one hover state from firing on a
+          picture. */}
+      <div aria-hidden className="pointer-events-none mb-4 text-[13px]">
         <div className="mb-2 flex gap-2">
           {EXAMPLE_OUTCOMES.map(({ label }) => {
             const isChosen = label === EXAMPLE_CHOSEN_OUTCOME
             return (
               <span
                 key={label}
-                className={`flex-1 rounded-lg border py-[7px] text-center font-medium ${isChosen ? 'border-smu-navy bg-smu-navy text-white' : 'border-smu-navy/20 text-smu-navy'}`}
+                className={`flex-1 rounded-lg border py-[7px] text-center font-medium ${selectableClass(isChosen)}`}
               >
                 {label}
               </span>
