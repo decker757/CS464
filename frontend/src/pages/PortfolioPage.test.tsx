@@ -81,12 +81,13 @@ function mockMarket(id: string, body: Record<string, unknown>) {
 
 /** The page inside the frame it really renders in, which is what puts the
  * navbar's balance readout on screen beside the page's own figures.
- * `balance` is the navbar's: undefined, the default, is still-loading, and
- * the readout does not render at all. */
+ * `balance`, undefined by default, is still-loading and the readout does not
+ * render at all. The navbar itself reads `available`, not `balance` (ADR
+ * 0024, #61); nothing here reserves credits, so the two are the same figure. */
 function renderPage(balance?: string | null) {
   return render(
     <AuthContext.Provider value={{ user: trader, login: () => {}, logout: async () => {} }}>
-      <BalanceContext.Provider value={{ balance, refetch: async () => {} }}>
+      <BalanceContext.Provider value={{ balance, available: balance, refetch: async () => {} }}>
         <MemoryRouter initialEntries={['/portfolio']}>
           <Routes>
             <Route path="/portfolio" element={<PortfolioPage />} />

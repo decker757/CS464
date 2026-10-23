@@ -20,19 +20,26 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
  * which read as a page you could open (#437) — so the emphasis is on the
  * number alone now, and the gold stays with the navigation it belongs to.
  *
- * The figure goes through `formatCredits`, which is also what the portfolio's
- * balance card uses: this bar and that card show the same field of the same
- * response, and one truncating while the other did not is how the same screen
- * came to read 9,993 here and 9,993.8938 there (#443). Pick a precision for
- * one of them and it has to be the same helper, or they drift again. */
-function BalanceReadout({ balance }: { balance: string | null }) {
+ * The figure is `available`, not `balance`: once a resting buy order reserves
+ * credits they are still counted in `balance` but cannot be spent, so a
+ * readout labelled "available balance" that showed `balance` would overstate
+ * it by exactly what the trader's own orders hold (ADR 0024, #61).
+ *
+ * It goes through `formatCredits`, which is also what the portfolio's balance
+ * card uses. The two are different figures now — this bar shows `available`
+ * from the balance route, that card `balance` from the portfolio route, and
+ * they differ by what resting buy orders reserve — but one truncating while
+ * the other did not is how the same screen came to read 9,993 here and
+ * 9,993.8938 there (#443). Pick a precision for one of them and it has to be
+ * the same helper, or they drift again. */
+function BalanceReadout({ available }: { available: string | null }) {
   return (
     <span aria-label="available balance" className="text-sm whitespace-nowrap text-white/70">
-      {balance === null ? (
+      {available === null ? (
         'Balance unavailable'
       ) : (
         <>
-          <span className="font-semibold text-white tabular-nums">{formatCredits(balance)}</span> credits
+          <span className="font-semibold text-white tabular-nums">{formatCredits(available)}</span> credits
         </>
       )}
     </span>
@@ -41,7 +48,7 @@ function BalanceReadout({ balance }: { balance: string | null }) {
 
 export default function AppNavbar() {
   const { user, logout } = useAuth()
-  const { balance } = useBalance()
+  const { available } = useBalance()
   const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = async () => {
@@ -108,7 +115,7 @@ export default function AppNavbar() {
           a trader checks most, and the menu holds the two things that are
           about the account rather than about where to go. */}
       <div className="flex items-center gap-4 rounded-full border border-white/10 bg-white/5 py-1 pr-1 pl-4">
-        {balance !== undefined && <BalanceReadout balance={balance} />}
+        {available !== undefined && <BalanceReadout available={available} />}
         <AccountMenu username={user.username} email={user.email} isLoggingOut={loggingOut} onLogout={handleLogout} />
       </div>
     </TopBar>
