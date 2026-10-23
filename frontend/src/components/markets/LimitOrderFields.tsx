@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { describeOrderError, errorCode, isDefiniteRejection } from '../../api/errors'
 import { placeOrder, type Order, type TradeSide } from '../../api/ledgerApi'
 import { useBalance } from '../../context/BalanceContext'
-import { formatCreditsPrecise, isZeroCredits } from '../../utils/formatCredits'
+import { formatAveragePrice, formatCreditsPrecise, isZeroCredits } from '../../utils/formatCredits'
 import { formatPrice } from '../../utils/formatPrice'
 import { limitPriceError, quantityError } from '../../utils/orderInput'
 import Button from '../ui/Button'
@@ -28,7 +28,8 @@ function placedMessage(order: Order, outcomeLabel: string): string {
   const action = order.side === 'buy' ? 'Buy' : 'Sell'
   const at = `${action} ${order.quantity} ${outcomeLabel} at ${formatPrice(order.limit_price)}`
   if (order.status === 'filled') {
-    return `${at}: filled in full at ${formatPrice(order.average_fill_price ?? order.limit_price)}.`
+    // Credits per share, as the trade preview shows its average (#247).
+    return `${at}: filled in full at ${formatAveragePrice(order.average_fill_price ?? order.limit_price)} credits/share.`
   }
   if (!isZeroCredits(order.filled_quantity)) {
     return `${at}: ${order.filled_quantity} filled, the rest is resting.`
