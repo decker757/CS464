@@ -58,6 +58,9 @@ const HELD_PLENTY = { 'o-yes': '100.0000', 'o-no': '100.0000' }
 
 interface PanelOptions {
   balance?: string | null | undefined
+  // What a trade may spend: `balance` less what resting buy orders reserve.
+  // Defaults to `balance`, an account with no resting orders.
+  available?: string | null | undefined
   heldByOutcome?: Record<string, string> | null
   refetch?: () => Promise<void>
   onTraded?: () => void
@@ -69,11 +72,11 @@ interface PanelOptions {
 }
 
 function renderPanel({
-  balance = '1000.0000', heldByOutcome = HELD_PLENTY, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
+  balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
   limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
 }: PanelOptions = {}) {
   return render(
-    <BalanceContext.Provider value={{ balance, available: balance, refetch }}>
+    <BalanceContext.Provider value={{ balance, available, refetch }}>
       <TradingPanel
         marketId={MARKET_ID}
         outcomes={outcomes}
@@ -646,6 +649,20 @@ describe('TradingPanel', () => {
 
     await actor.click(submit)
     expect(tradeCalls).toBe(0)
+  })
+
+  it('blocks a buy that fits the balance but not what is available, before any request', async () => {
+    // ADR 0024: a resting buy order's credits stay in `balance` and cannot be
+    // spent, so the check reads `available`. Here the balance would wave the
+    // trade through and the ledger would then refuse it.
+    mockPreview(previewResponse({ quantity: '30.0000', total: '-20.0000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ balance: '1000.0000', available: '10.0000' })
+
+    await typeQuantity(actor, '30')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('You have 10.0000 credits, but this trade needs 20.0000.')
+    expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
   })
 
   it('allows a buy that costs exactly the balance', async () => {
