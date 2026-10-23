@@ -222,10 +222,35 @@ function describeOrderShortfall(
   return `${refusal} Your balance is ${formatCreditsPrecise(openOrders.balance)}, and ${formatCreditsPrecise(openOrders.reserved)} of it is held by your open buy orders.`
 }
 
+/**
+ * The fields an `invalid_request` names: the last part of each entry's
+ * `loc`, as `limit_price` for `['body', 'limit_price']` (ledger-service.md,
+ * "Errors"). Empty for any other error, or a `details` that is not a list.
+ */
+function invalidFieldsOf(err: unknown): string[] {
+  if (!axios.isAxiosError(err)) return []
+  const details = (err.response?.data as { error?: { details?: unknown } } | undefined)?.error?.details
+  if (!Array.isArray(details)) return []
+  const fields: string[] = []
+  for (const entry of details as Partial<ValidationEntry>[]) {
+    const loc = entry.loc
+    if (Array.isArray(loc) && loc.length > 0) fields.push(String(loc[loc.length - 1]))
+  }
+  return fields
+}
+
 /** What the trader should do about a failed placement or cancel (ledger-service.md). */
 export function describeOrderError(err: unknown): string {
   const code = errorCode(err)
   if (!code) return GENERIC_ERROR
+  // The trade table's sentence for this one is about a quantity, which the
+  // order ticket checks before sending; a limit price it can still get wrong
+  // is the case worth naming, and anything else says no field at all.
+  if (code === 'invalid_request') {
+    return invalidFieldsOf(err).includes('limit_price')
+      ? "That limit price isn't valid."
+      : "Some of this order's details aren't valid."
+  }
   const details = tradeErrorDetails(err)
   if (code === 'order_crosses_book' && typeof details.side === 'string') {
     const bound = details.side === 'buy' ? details.max_limit_price : details.min_limit_price
@@ -242,9 +267,9 @@ export function describeOrderError(err: unknown): string {
     }
   }
   // Everything a placement shares with a trade — insufficient_shares_held,
-  // unknown_outcome, quantity_too_large, market_not_found, invalid_request —
-  // reads the same either way, so the trade table answers for those rather
-  // than a second copy.
+  // unknown_outcome, quantity_too_large, market_not_found — reads the same
+  // either way, so the trade table answers for those rather than a second
+  // copy.
   return ORDER_FIXED_MESSAGES[code] ?? describeTradeError(err)
 }
 
