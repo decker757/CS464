@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import MalformedCursor
 from core.paging import encode_cursor
+from core.roles import UserRole
 from model.entities import User
 from service import user_admin
 
@@ -28,6 +29,7 @@ async def _make(
     *,
     age: int = 0,
     suspended: bool = False,
+    role: UserRole = UserRole.TRADER,
 ) -> User:
     """One account, registered `age` seconds after `_EPOCH`."""
     user = User(
@@ -35,6 +37,7 @@ async def _make(
         email=email,
         password_hash="not-a-real-hash",
         is_suspended=suspended,
+        role=role,
         created_at=_EPOCH + timedelta(seconds=age),
     )
     session.add(user)
@@ -215,6 +218,102 @@ async def test_a_cursor_past_the_end_is_an_empty_page(session: AsyncSession) -> 
     assert page.has_more is False
 
 
+# --- the role and suspension filters [4.1] #479 ----------------------------
+
+
+async def _mixed_staff(session: AsyncSession) -> None:
+    """One account in each of the four role-and-suspension states."""
+    await _make(session, "ernest_t", "ernest@example.com", age=1, role=UserRole.ADMIN)
+    await _make(
+        session,
+        "ihsan_k",
+        "ihsan@example.com",
+        age=2,
+        role=UserRole.ADMIN,
+        suspended=True,
+    )
+    await _make(session, "michelle_l", "michelle@example.com", age=3)
+    await _make(session, "bob_1", "bob@example.com", age=4, suspended=True)
+
+
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    [
+        (UserRole.ADMIN, ["ihsan_k", "ernest_t"]),
+        (UserRole.TRADER, ["bob_1", "michelle_l"]),
+    ],
+)
+async def test_a_role_lists_only_the_accounts_holding_it(
+    session: AsyncSession, role: UserRole, expected: list[str]
+) -> None:
+    """"Who are my admins", suspended ones included."""
+    await _mixed_staff(session)
+
+    assert await _search(session, role=role) == expected
+
+
+@pytest.mark.parametrize(
+    ("is_suspended", "expected"),
+    [
+        (True, ["bob_1", "ihsan_k"]),
+        (False, ["michelle_l", "ernest_t"]),
+    ],
+)
+async def test_a_suspension_state_lists_only_the_accounts_in_it(
+    session: AsyncSession, is_suspended: bool, expected: list[str]
+) -> None:
+    """"Who is suspended", administrators included."""
+    await _mixed_staff(session)
+
+    assert await _search(session, is_suspended=is_suspended) == expected
+
+
+async def test_the_two_filters_and_the_query_narrow_together(
+    session: AsyncSession,
+) -> None:
+    """Each condition is ANDed: `ihsan_k` alone is an admin, suspended, and
+    matched by `example`; `bob_1` misses on the role, `ernest_t` on the
+    suspension, and `ihsan_alt` on the query."""
+    await _mixed_staff(session)
+    await _make(
+        session,
+        "ihsan_alt",
+        "alt@company.co",
+        age=5,
+        role=UserRole.ADMIN,
+        suspended=True,
+    )
+
+    assert await _search(
+        session, query="example", role=UserRole.ADMIN, is_suspended=True
+    ) == ["ihsan_k"]
+
+
+async def test_a_filtered_list_pages_through_every_match_and_nothing_else(
+    session: AsyncSession,
+) -> None:
+    """A trader between every pair of admins and at both ends, so a filter
+    applied to the fetched rows rather than in the query would come up short
+    of the page and misreport `has_more`."""
+    await _make(session, "trader_0", "t0@example.com", age=0)
+    await _make(session, "admin_1", "a1@example.com", age=1, role=UserRole.ADMIN)
+    await _make(session, "trader_2", "t2@example.com", age=2)
+    await _make(session, "admin_3", "a3@example.com", age=3, role=UserRole.ADMIN)
+    await _make(session, "trader_4", "t4@example.com", age=4)
+    await _make(session, "admin_5", "a5@example.com", age=5, role=UserRole.ADMIN)
+    await _make(session, "trader_6", "t6@example.com", age=6)
+
+    first = await user_admin.search_users(session, role=UserRole.ADMIN, limit=2)
+    second = await user_admin.search_users(
+        session, role=UserRole.ADMIN, limit=2, cursor=first.next_cursor
+    )
+
+    assert [u.username for u in first.users] == ["admin_5", "admin_3"]
+    assert first.has_more is True
+    assert [u.username for u in second.users] == ["admin_1"]
+    assert second.has_more is False
+
+
 # --- what a search is not -------------------------------------------------
 
 
@@ -238,4 +337,11 @@ def test_searching_is_not_an_audited_action() -> None:
     """Boundary guard: no `actor` here, since a search decides nothing. ADR 0006."""
     params = set(inspect.signature(user_admin.search_users).parameters)
 
-    assert params == {"session", "query", "limit", "cursor"}
+    assert params == {
+        "session",
+        "query",
+        "role",
+        "is_suspended",
+        "limit",
+        "cursor",
+    }

@@ -264,6 +264,52 @@ async def test_a_query_narrows_the_list(
     assert [user["username"] for user in response.json()["users"]] == ["michelle_l"]
 
 
+@pytest.mark.parametrize(
+    ("role", "expected"), [("admin", ["admin_one"]), ("trader", ["michelle_l"])]
+)
+async def test_a_role_narrows_the_list(
+    admin_client: AsyncClient, target_user_id: str, role: str, expected: list[str]
+) -> None:
+    """That `role` reaches the service layer; filtering is tested there."""
+    response = await admin_client.get(USERS, params={"role": role})
+
+    assert [user["username"] for user in response.json()["users"]] == expected
+
+
+@pytest.mark.parametrize(
+    ("is_suspended", "expected"), [("true", ["michelle_l"]), ("false", ["admin_one"])]
+)
+async def test_a_suspension_state_narrows_the_list(
+    admin_client: AsyncClient,
+    target_user_id: str,
+    session,
+    is_suspended: str,
+    expected: list[str],
+) -> None:
+    """That `is_suspended` reaches the service layer; filtering is tested there."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    await session.execute(
+        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = 'michelle_l'")
+    )
+    await session.commit()
+
+    response = await admin_client.get(USERS, params={"is_suspended": is_suspended})
+
+    assert [user["username"] for user in response.json()["users"]] == expected
+
+
+async def test_an_unknown_role_filter_is_422_naming_the_parameter(
+    admin_client: AsyncClient,
+) -> None:
+    """The vocabulary is closed, so `super_admin` is a caller error, not an
+    empty list that reads as "nobody holds it". ADR 0007."""
+    response = await admin_client.get(USERS, params={"role": "super_admin"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "role"]
+
+
 async def test_the_list_carries_the_id_the_ledger_takes(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
