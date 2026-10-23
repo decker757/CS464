@@ -222,6 +222,23 @@ describe('LimitOrderFields', () => {
     expect(keys[0]).toBe(keys[1])
   })
 
+  it.each([
+    ['a 500', 500, 'internal_error'],
+    ['idempotency_key_reused', 409, 'idempotency_key_reused'],
+  ])('re-reads the orders after %s, which may mean the order was placed', async (_name, status, code) => {
+    // A 5xx or a lost reply may have committed the order, and a reused key
+    // means an earlier request with it did: either way the list below may
+    // already hold it.
+    server.use(http.post(ORDERS, () => HttpResponse.json({ error: { code, message: 'no' } }, { status })))
+    const { actor, onPlaced } = renderFields()
+
+    await fillIn(actor, '0.3', '50')
+    await actor.click(screen.getByRole('button', { name: /place buy order/i }))
+
+    await screen.findByRole('alert')
+    expect(onPlaced).toHaveBeenCalled()
+  })
+
   it('takes a fresh key after a refusal that definitely placed nothing', async () => {
     const keys: unknown[] = []
     server.use(http.post(ORDERS, async ({ request }) => {
