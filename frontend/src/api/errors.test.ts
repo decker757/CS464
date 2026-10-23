@@ -2,14 +2,19 @@ import { describe, expect, it } from 'vitest'
 import { AxiosError, type AxiosResponse } from 'axios'
 import { GENERIC_ERROR, describeInsufficientFunds, describeInsufficientShares, describeOrderError, describeTradeError } from './errors'
 
-/** A 409 from the ledger's trade route, the shape describeTradeError reads.
- *  `details` is a list only for invalid_request, as pydantic's entries. */
-function ledgerRefusal(code: string, details: Record<string, string> | { loc: string[]; msg: string; type: string }[]): AxiosError {
+/** A refusal from the ledger's trade route, the shape describeTradeError
+ *  reads: a 409 unless a test says otherwise. `details` is a list only for
+ *  invalid_request, as pydantic's entries, which arrives as a 422. */
+function ledgerRefusal(
+  code: string,
+  details: Record<string, string> | { loc: string[]; msg: string; type: string }[],
+  status = 409,
+): AxiosError {
   const response = {
-    status: 409,
+    status,
     data: { error: { code, message: 'Refused.', details } },
   } as AxiosResponse
-  return new AxiosError('Request failed with status code 409', 'ERR_BAD_REQUEST', undefined, undefined, response)
+  return new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_REQUEST', undefined, undefined, response)
 }
 
 // #411: the ledger refuses a buy on `available` and a sell on the position
@@ -148,14 +153,14 @@ describe('describeOrderError', () => {
     // price at or outside 0 and 1, or at five places, is refused this way).
     const err = ledgerRefusal('invalid_request', [
       { loc: ['body', 'limit_price'], msg: 'Input should be less than 1', type: 'less_than' },
-    ])
+    ], 422)
     expect(describeOrderError(err)).toBe("That limit price isn't valid.")
   })
 
   it('names no field when an invalid_request is about something else', () => {
     const err = ledgerRefusal('invalid_request', [
       { loc: ['body', 'side'], msg: "Input should be 'buy' or 'sell'", type: 'literal_error' },
-    ])
+    ], 422)
     expect(describeOrderError(err)).toBe("Some of this order's details aren't valid.")
   })
 

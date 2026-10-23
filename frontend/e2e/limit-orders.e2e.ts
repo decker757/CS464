@@ -38,7 +38,7 @@ test('a trader rests a limit order, watches another trade fill it, and cancels t
   await expect(availableBalance).toHaveText(`${formatRoundedCredits(creditsLess(grant, '15.0000'))} credits`)
 
   // The row is found by the cancel control that names this order, and each
-  // figure by its own cell, so a figure turning up in another column fails.
+  // figure by a cell of that row holding exactly that text.
   const orderRow = page.getByRole('row').filter({
     has: page.getByRole('button', { name: 'Cancel buy Yes at 0.3000', exact: true }),
   })

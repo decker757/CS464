@@ -2,7 +2,6 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
-import { BalanceContext } from '../../context/BalanceContext'
 import { server } from '../../test/server'
 import LimitOrderFields from './LimitOrderFields'
 
@@ -49,17 +48,15 @@ function fieldsFor({
   onPlaced = vi.fn(),
 }: FieldsOptions = {}) {
   return (
-    <BalanceContext.Provider value={{ balance: '1000.0000', available: '1000.0000', refetch: async () => {} }}>
-      <LimitOrderFields
-        marketId={MARKET_ID}
-        side={side}
-        outcomeId={outcomeId}
-        outcomeLabel={outcomeLabel}
-        heldQuantity={heldQuantity}
-        sellableQuantity={sellableQuantity}
-        onPlaced={onPlaced}
-      />
-    </BalanceContext.Provider>
+    <LimitOrderFields
+      marketId={MARKET_ID}
+      side={side}
+      outcomeId={outcomeId}
+      outcomeLabel={outcomeLabel}
+      heldQuantity={heldQuantity}
+      sellableQuantity={sellableQuantity}
+      onPlaced={onPlaced}
+    />
   )
 }
 
