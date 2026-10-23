@@ -1029,6 +1029,53 @@ describe('MarketDetailPage — price history', () => {
     expect(screen.queryByText(NO_TRADES_YET)).not.toBeInTheDocument()
   })
 
+  it('reads the history again after the trader\'s own limit order fills on arrival', async () => {
+    // A marketable placement fills inside the same request, as an ordinary
+    // buy against the book (ADR 0024), so the history gains a point exactly
+    // as it does for a market trade.
+    let placed = false
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', placed
+        ? [pricePoint(0, '2026-09-13T14:12:03Z', '0.5000', '0.5000'), pricePoint(1, '2026-09-13T15:00:00Z', '0.5250', '0.4750')]
+        : []))),
+      http.post(`${LEDGER_BASE}/ledger/markets/:id/orders`, () => {
+        placed = true
+        return HttpResponse.json({
+          order: {
+            id: 'ord-1',
+            market_id: 'mkt-abc',
+            outcome_id: 'o1',
+            outcome_position: 0,
+            side: 'buy',
+            limit_price: '0.9000',
+            quantity: '10.0000',
+            filled_quantity: '10.0000',
+            average_fill_price: '0.5125',
+            reserved_credits: '0.0000',
+            reserved_shares: null,
+            status: 'filled',
+            created_at: '2026-09-13T15:00:00Z',
+            cancelled_at: null,
+          },
+          fills: [{ transaction_id: 't1', quantity: '10.0000', total: '-5.1250', state_version: 1 }],
+          book_state_version: 1,
+        }, { status: 201 })
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    expect(await screen.findByText(NO_TRADES_YET)).toBeInTheDocument()
+
+    await actor.click(await screen.findByRole('button', { name: 'Limit' }))
+    await actor.type(screen.getByLabelText('Limit price'), '0.9')
+    await actor.type(screen.getByLabelText('Quantity (shares)'), '10')
+    await actor.click(screen.getByRole('button', { name: /^place buy order$/i }))
+    await screen.findByText(/filled in full/i)
+
+    expect(await screen.findByText(/showing all 2 price points/i)).toBeInTheDocument()
+    expect(screen.queryByText(NO_TRADES_YET)).not.toBeInTheDocument()
+  })
+
   it('shows the trading panel while the price history is still on its way', async () => {
     // The panel is the point of the page (#453): it must not wait on the read.
     const { held, release } = holdUntilReleased()
