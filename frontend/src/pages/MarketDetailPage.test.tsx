@@ -1001,6 +1001,34 @@ describe('MarketDetailPage — price history', () => {
     expect(await screen.findByText(NO_TRADES_YET)).toBeInTheDocument()
   })
 
+  it('reads the history again after the trader\'s own trade, so a first trade is charted', async () => {
+    // "No trades yet" is false the moment this trader has traded, and the
+    // page has nothing else that would ever read the history again.
+    let traded = false
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', traded
+        ? [pricePoint(0, '2026-09-13T14:12:03Z', '0.5000', '0.5000'), pricePoint(1, '2026-09-13T15:00:00Z', '0.5250', '0.4750')]
+        : []))),
+      http.get(PREVIEW, () => HttpResponse.json(tradeQuote())),
+      http.post(TRADES, () => {
+        traded = true
+        return HttpResponse.json(tradeResult(), { status: 201 })
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    expect(await screen.findByText(NO_TRADES_YET)).toBeInTheDocument()
+
+    await actor.type(await screen.findByLabelText('Quantity (shares)'), '10')
+    const buy = screen.getByRole('button', { name: /^buy yes$/i })
+    await waitFor(() => expect(buy).toBeEnabled())
+    await actor.click(buy)
+    await screen.findByText(/bought/i)
+
+    expect(await screen.findByText(/showing all 2 price points/i)).toBeInTheDocument()
+    expect(screen.queryByText(NO_TRADES_YET)).not.toBeInTheDocument()
+  })
+
   it('shows the trading panel while the price history is still on its way', async () => {
     // The panel is the point of the page (#453): it must not wait on the read.
     const { held, release } = holdUntilReleased()
