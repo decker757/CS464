@@ -135,7 +135,8 @@ export default function MarketDetailPage() {
 
   // The price history is read once, so the trader's own trade would leave it
   // behind: on a fresh market it would go on saying nobody has traded. Each
-  // trade here re-reads it (#453). Other traders' trades are not followed.
+  // trade or limit placement here re-reads it (#453). Other traders' trades
+  // are not followed, nor a resting order's later fill (an order frame).
   const [tradesMade, setTradesMade] = useState(0)
   const handleTraded = useCallback(() => {
     refetchHeld()
@@ -154,6 +155,16 @@ export default function MarketDetailPage() {
     refetchBalance()
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
+
+  // A limit order that fills on arrival is an ordinary buy or sell against
+  // the book (ADR 0024), so it moves the history the way a trade does. The
+  // panel does not say whether it filled, and a re-read that finds nothing
+  // new costs one request. Not in onOrdersChanged: that also runs on every
+  // cancel and every subscribe ack.
+  const handleOrderPlaced = useCallback(() => {
+    onOrdersChanged()
+    setTradesMade(count => count + 1)
+  }, [onOrdersChanged])
 
   // A fill moves credits and shares, and the frame carries neither — only
   // the filled quantity, which it applies to the row at once. Everything
@@ -295,7 +306,7 @@ export default function MarketDetailPage() {
                 heldByOutcome={heldByOutcome}
                 reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
                 onTraded={handleTraded}
-                onOrderPlaced={onOrdersChanged}
+                onOrderPlaced={handleOrderPlaced}
               />
             ) : (
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
