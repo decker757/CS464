@@ -14,7 +14,7 @@ import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
 import { useBalance } from '../context/BalanceContext'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
-import { useMarketPrices } from '../hooks/useMarketPrices'
+import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
@@ -136,22 +136,18 @@ export default function MarketDetailPage() {
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
 
-  // Through a ref because the holdings read is declared below this, where it
-  // sits with the state it writes; a frame can arrive before that line runs.
-  const refetchHeldRef = useRef<() => void>(() => {})
-
   // A fill moves credits and shares, and the frame carries neither — only
   // the filled quantity, which it applies to the row at once. Everything
   // else is read again: the list, for what the order still holds, the
   // balance, and the holdings the sell clamp reads. The ledger publishes the
   // frame after the commit that wrote the fill (realtime-service.md,
   // "Publishing"), so a read sent now already includes it.
-  const onFrame = useCallback((frame: Parameters<typeof applyFrame>[0]) => {
+  const onFrame = useCallback((frame: OrderFrame) => {
     applyFrame(frame)
     refetchOrders()
     refetchBalance()
-    refetchHeldRef.current()
-  }, [applyFrame, refetchOrders, refetchBalance])
+    refetchHeld()
+  }, [applyFrame, refetchOrders, refetchBalance, refetchHeld])
 
   // One socket for the page: price frames keep the prices above current, and
   // order frames the list below it. Order frames need no subscribe, so they
@@ -181,11 +177,6 @@ export default function MarketDetailPage() {
   }, [id])
 
   const tradeable = market?.status === 'open' && !pastClose
-
-  // After the render rather than during it, which React refs require.
-  useEffect(() => {
-    refetchHeldRef.current = refetchHeld
-  }, [refetchHeld])
 
   // Only for a market that can be traded: nothing else on this page uses the
   // figure, and a closed or settled market has no sell to clamp.
