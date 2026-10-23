@@ -2,9 +2,9 @@ import { useRef, useState } from 'react'
 import { describeOrderError, errorCode, isDefiniteRejection } from '../../api/errors'
 import { placeOrder, type Order, type TradeSide } from '../../api/ledgerApi'
 import { useBalance } from '../../context/BalanceContext'
-import { formatAveragePrice, formatCreditsPrecise, isZeroCredits } from '../../utils/formatCredits'
+import { formatAveragePrice, isZeroCredits } from '../../utils/formatCredits'
 import { formatPrice } from '../../utils/formatPrice'
-import { limitPriceError, quantityError } from '../../utils/orderInput'
+import { describeSharesToSell, limitPriceError, quantityError } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 
@@ -18,6 +18,9 @@ interface LimitOrderFieldsProps {
   // What the trader holds of this outcome, as the ledger's own decimal
   // string; null while that read has not landed, which shows no figure.
   heldQuantity: string | null
+  // The part of that no open sell order holds back, which is all a new sell
+  // order can offer; null exactly when `heldQuantity` is.
+  sellableQuantity: string | null
   // An order was placed, so the open-orders list, the balance and the
   // holdings are all stale.
   onPlaced: () => void
@@ -51,7 +54,7 @@ function placedMessage(order: Order, outcomeLabel: string): string {
  * implementation of that rounding could only disagree with it.
  */
 export default function LimitOrderFields({
-  marketId, side, outcomeId, outcomeLabel, heldQuantity, onPlaced,
+  marketId, side, outcomeId, outcomeLabel, heldQuantity, sellableQuantity, onPlaced,
 }: LimitOrderFieldsProps) {
   const { refetch: refetchBalance } = useBalance()
 
@@ -138,9 +141,9 @@ export default function LimitOrderFields({
         <label htmlFor="limit-quantity" className="block text-[13px] font-semibold text-smu-navy">
           Quantity (shares)
         </label>
-        {side === 'sell' && heldQuantity !== null && (
+        {side === 'sell' && heldQuantity !== null && sellableQuantity !== null && (
           <span aria-label="shares held" className="text-[13px] text-muted">
-            You hold {formatCreditsPrecise(heldQuantity)} shares
+            {describeSharesToSell(heldQuantity, sellableQuantity)}
           </span>
         )}
       </div>

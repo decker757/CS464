@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMyPortfolio } from '../api/ledgerApi'
+import { getMyPortfolio, type Order } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
@@ -17,6 +17,7 @@ import { useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
+import { addCredits } from '../utils/formatCredits'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
@@ -35,6 +36,20 @@ function outcomeBannerLabel(status: MarketStatus): string {
   if (status === 'settled') return 'Settled'
   if (status === 'approved') return 'Approved outcome'
   return 'Proposed outcome'
+}
+
+// What the trader's own open sell orders hold back of each outcome, summed:
+// the ledger will not sell those shares a second time
+// (insufficient_shares_held, ledger-service.md), so the panel's sell check
+// stops short of them. A buy reserves credits, never shares.
+function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
+  const reserved: Record<string, string> = {}
+  for (const order of orders) {
+    if (order.side !== 'sell' || order.reserved_shares === null) continue
+    const total = addCredits(reserved[order.outcome_id] ?? '0', order.reserved_shares)
+    if (total !== null) reserved[order.outcome_id] = total
+  }
+  return reserved
 }
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
@@ -271,6 +286,7 @@ export default function MarketDetailPage() {
                 outcomes={market.outcomes}
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
+                reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
                 onTraded={refetchHeld}
                 onOrderPlaced={onOrdersChanged}
               />
