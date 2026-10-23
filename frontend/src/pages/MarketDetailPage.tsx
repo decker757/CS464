@@ -86,6 +86,12 @@ export default function MarketDetailPage() {
   // last list on screen, and an error over it would say the wrong thing.
   const ordersUnavailable = orders === null && ordersReadFailed
 
+  // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
+  // so the controls lock the moment close_time passes, without a refetch.
+  const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
+  const pastClose = market !== null && !closeTimeStillAhead
+  const tradeable = market?.status === 'open' && !pastClose
+
   // What the trader holds of each of this market's outcomes, for the sell
   // clamp ([T-2] #357). The portfolio route carries every market's positions
   // and names no questions or labels (ledger-service.md), so picking out this
@@ -108,8 +114,11 @@ export default function MarketDetailPage() {
   // with nothing to re-fire the read.
   const latestHeldReadRef = useRef(0)
 
+  // Only for a market that can be traded, whoever asks — the mount, a trade,
+  // an order frame or a socket ack: nothing else on this page uses the
+  // figure, and a closed or settled market has no sell to clamp.
   const refetchHeld = useCallback(() => {
-    if (!id) return
+    if (!id || !tradeable) return
     const requestId = ++latestHeldReadRef.current
     getMyPortfolio().then(
       portfolio => {
@@ -121,7 +130,7 @@ export default function MarketDetailPage() {
       // way BalanceContext keeps the last balance on a failed refetch.
       () => {},
     )
-  }, [id])
+  }, [id, tradeable])
 
   // A placement or a cancel moves credits, or what they reserve, and a
   // placement that filled also changed the holdings the sell clamp reads.
@@ -156,10 +165,6 @@ export default function MarketDetailPage() {
     onOrderFrame: onFrame,
     onSubscribed: onOrdersChanged,
   })
-  // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
-  // so the controls lock the moment close_time passes, without a refetch.
-  const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
-  const pastClose = market !== null && !closeTimeStillAhead
   // Re-evaluates the instant the dispute window closes, rather than only at
   // whatever render happens to run next — an approved market has no trades
   // to force one, so without this "Disputes close in 3h" could sit on
@@ -176,13 +181,10 @@ export default function MarketDetailPage() {
     return () => { cancelled = true }
   }, [id])
 
-  const tradeable = market?.status === 'open' && !pastClose
-
-  // Only for a market that can be traded: nothing else on this page uses the
-  // figure, and a closed or settled market has no sell to clamp.
+  // On mount, and again whenever the market turns tradeable.
   useEffect(() => {
-    if (tradeable) refetchHeld()
-  }, [tradeable, refetchHeld])
+    refetchHeld()
+  }, [refetchHeld])
 
   // An early close leaves close_time in the future, so "Closed <close_time>"
   // would name a date that has not happened yet.
