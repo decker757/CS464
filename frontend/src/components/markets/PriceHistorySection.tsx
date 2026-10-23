@@ -28,12 +28,12 @@ export default function PriceHistorySection({ marketId, outcomes }: PriceHistory
   const [read, setRead] = useState<HistoryRead>({ status: 'loading' })
 
   useEffect(() => {
-    let ignored = false
+    let cancelled = false
     getMarketPriceHistory(marketId).then(
-      history => { if (!ignored) setRead({ status: 'loaded', points: history.points }) },
-      () => { if (!ignored) setRead({ status: 'failed' }) },
+      history => { if (!cancelled) setRead({ status: 'loaded', points: history.points }) },
+      () => { if (!cancelled) setRead({ status: 'failed' }) },
     )
-    return () => { ignored = true }
+    return () => { cancelled = true }
   }, [marketId])
 
   return (
