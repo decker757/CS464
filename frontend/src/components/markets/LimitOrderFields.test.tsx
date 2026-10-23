@@ -104,7 +104,8 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.3', '50')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent(/resting until the price reaches it/i)
+    // The limit in the units it was typed in.
+    expect(await screen.findByRole('status')).toHaveTextContent('Buy 50.0000 Yes at 0.3000: resting until the price reaches it.')
     expect(onPlaced).toHaveBeenCalled()
   })
 
@@ -174,7 +175,8 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.8', '50')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/must be below 70\.0%/i)
+    // In the units the field takes, not a percentage of them.
+    expect(await screen.findByRole('alert')).toHaveTextContent("a buy's limit must be below 0.7000.")
     // The order in the way may be one of the trader's own, so the list is
     // worth re-reading even though nothing was placed.
     expect(onPlaced).toHaveBeenCalled()

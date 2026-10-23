@@ -81,21 +81,22 @@ describe('describeTradeError on the two refusals that name figures', () => {
 })
 
 describe('describeOrderError', () => {
-  it('names the bound a crossing buy has to stay below, as a percentage', () => {
+  it('names the bound a crossing buy has to stay below, in the units the limit field takes', () => {
     // ADR 0024 keeps the book one-sided, and the trader's own resting orders
     // count towards it — so the message has to name the price, not just say
     // "in the way".
     const message = describeOrderError(
       ledgerRefusal('order_crosses_book', { side: 'buy', max_limit_price: '0.7000' }),
     )
-    expect(message).toContain('below 70.0%')
+    // The field takes 0.70, so the bound reads 0.7000 rather than 70.0%.
+    expect(message).toContain('below 0.7000')
   })
 
   it('names the bound a crossing sell has to stay above', () => {
     const message = describeOrderError(
       ledgerRefusal('order_crosses_book', { side: 'sell', min_limit_price: '0.3000' }),
     )
-    expect(message).toContain('above 30.0%')
+    expect(message).toContain('above 0.3000')
   })
 
   it('reads the shortfall, not the trade route\'s required, on a buy that does not fit', () => {

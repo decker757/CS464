@@ -631,7 +631,7 @@ describe('MarketDetailPage', () => {
 
       expect(await screen.findByText('Your open orders')).toBeInTheDocument()
       const row = screen.getAllByRole('row')[1]
-      expect(row).toHaveTextContent('30.0%')
+      expect(row).toHaveTextContent('0.3000')
       expect(row).toHaveTextContent('50.0000')
       expect(row).toHaveTextContent('20.5465')
     })
