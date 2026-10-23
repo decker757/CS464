@@ -4,7 +4,7 @@ import { postTrade, type TradePreview, type TradeSide } from '../../api/ledgerAp
 import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
 import { useTradeQuote } from '../../hooks/useTradeQuote'
-import { compareCredits, formatCreditsPrecise, isNegativeCredits, isZeroCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
+import { compareCredits, formatCreditsPrecise, isZeroCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
 import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
@@ -94,14 +94,21 @@ interface TradeToCheck {
   reservedShares: string | undefined
 }
 
-/** The part of a holding a new sell may take: the position less what the
- *  trader's open sell orders reserve. Never below zero — a holdings read that
- *  lands before the orders list catches up must not show a negative. */
+/** What the trader's open sell orders hold back of a holding, never more
+ *  than the holding itself. A sell order's fill lowers both, but they arrive
+ *  on two reads, and a holdings read that lands before the orders list
+ *  catches up would otherwise leave a negative to sell — in the line above
+ *  the field and in the refusal under it alike. */
+function sharesReservedOf(held: string, reserved: string | undefined): string | undefined {
+  if (reserved === undefined) return undefined
+  return compareCredits(reserved, held) > 0 ? held : reserved
+}
+
+/** The part of a holding a new sell may take: the position less what is
+ *  reserved, as `sharesReservedOf` caps it. */
 function sharesLeftToSell(held: string, reserved: string | undefined): string {
   if (reserved === undefined) return held
-  const left = subtractCredits(held, reserved)
-  if (left === null) return held
-  return isNegativeCredits(left) ? '0.0000' : left
+  return subtractCredits(held, reserved) ?? held
 }
 
 /**
@@ -164,7 +171,7 @@ export default function TradingPanel({
 
   const selectedOutcome = outcomes.find(o => o.id === outcomeId)
   const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
-  const reservedShares = reservedSharesByOutcome[outcomeId]
+  const reservedShares = heldQuantity === null ? undefined : sharesReservedOf(heldQuantity, reservedSharesByOutcome[outcomeId])
   const sellableQuantity = heldQuantity === null ? null : sharesLeftToSell(heldQuantity, reservedShares)
   // A quantity the field itself rejects says so under the field already; the
   // clamp has nothing to add about it.
