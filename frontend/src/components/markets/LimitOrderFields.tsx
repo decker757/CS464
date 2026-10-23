@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react'
 import { describeOrderError, errorCode, isDefiniteRejection } from '../../api/errors'
 import { placeOrder, type Order, type TradeSide } from '../../api/ledgerApi'
-import { useBalance } from '../../context/BalanceContext'
 import { formatAveragePrice, isZeroCredits } from '../../utils/formatCredits'
 import { formatPrice } from '../../utils/formatPrice'
 import { describeSharesToSell, limitPriceError, quantityError } from '../../utils/orderInput'
@@ -21,8 +20,8 @@ interface LimitOrderFieldsProps {
   // The part of that no open sell order holds back, which is all a new sell
   // order can offer; null exactly when `heldQuantity` is.
   sellableQuantity: string | null
-  // An order was placed, so the open-orders list, the balance and the
-  // holdings are all stale.
+  // An order was placed, or may have been, so the open-orders list, the
+  // balance and the holdings are all stale. The page re-reads all three.
   onPlaced: () => void
 }
 
@@ -41,6 +40,17 @@ function placedMessage(order: Order, outcomeLabel: string): string {
 }
 
 /**
+ * Whether a failed placement may still have placed the order, so the list is
+ * worth re-reading: no answer at all or a 5xx may have committed it, and
+ * `idempotency_key_reused` means an earlier request under this key did
+ * (ledger-service.md). `order_crosses_book` is re-read for its own reason,
+ * at the call: the order in the way may be one of the trader's own.
+ */
+function mayHavePlaced(err: unknown): boolean {
+  return !isDefiniteRejection(err) || errorCode(err) === 'idempotency_key_reused'
+}
+
+/**
  * The limit price and quantity half of the order ticket ([T-6] #26, ADR
  * 0024). A buy fills at its limit or below, a sell at its limit or above;
  * whatever cannot fill now rests until a later trade moves the price onto
@@ -56,8 +66,6 @@ function placedMessage(order: Order, outcomeLabel: string): string {
 export default function LimitOrderFields({
   marketId, side, outcomeId, outcomeLabel, heldQuantity, sellableQuantity, onPlaced,
 }: LimitOrderFieldsProps) {
-  const { refetch: refetchBalance } = useBalance()
-
   const [limitPrice, setLimitPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -91,17 +99,11 @@ export default function LimitOrderFields({
       setPlaced(placedMessage(result.order, outcomeLabel))
       setLimitPrice('')
       setQuantity('')
-      // A placement that filled moved credits, and one that rests reserves
-      // them — either way the balance route's figures changed.
-      refetchBalance()
       onPlaced()
     } catch (err) {
       setSubmitError(describeOrderError(err))
       if (isDefiniteRejection(err)) idempotencyKeyRef.current = crypto.randomUUID()
-      // An order refused for crossing the book was blocked by a resting
-      // order that may be one of the trader's own, so the list below is
-      // worth re-reading.
-      if (errorCode(err) === 'order_crosses_book') onPlaced()
+      if (mayHavePlaced(err) || errorCode(err) === 'order_crosses_book') onPlaced()
     } finally {
       setSubmitting(false)
     }
