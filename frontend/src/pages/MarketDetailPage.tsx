@@ -133,6 +133,15 @@ export default function MarketDetailPage() {
     )
   }, [id, tradeable])
 
+  // The price history is read once, so the trader's own trade would leave it
+  // behind: on a fresh market it would go on saying nobody has traded. Each
+  // trade here re-reads it (#453). Other traders' trades are not followed.
+  const [tradesMade, setTradesMade] = useState(0)
+  const handleTraded = useCallback(() => {
+    refetchHeld()
+    setTradesMade(count => count + 1)
+  }, [refetchHeld])
+
   // A placement or a cancel moves credits, or what they reserve, and a
   // placement that filled also changed the holdings the sell clamp reads.
   // The balance comes back through BalanceContext, as it does after a trade.
@@ -285,7 +294,7 @@ export default function MarketDetailPage() {
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
                 reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
-                onTraded={refetchHeld}
+                onTraded={handleTraded}
                 onOrderPlaced={onOrdersChanged}
               />
             ) : (
@@ -312,7 +321,7 @@ export default function MarketDetailPage() {
               them, so the history arriving after first paint never moves the
               controls a trader is reaching for (#453). Every status: a closed
               market's history still says how it got there. */}
-          <PriceHistorySection marketId={market.id} outcomes={market.outcomes} />
+          <PriceHistorySection key={tradesMade} marketId={market.id} outcomes={market.outcomes} />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />
