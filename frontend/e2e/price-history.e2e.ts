@@ -38,3 +38,22 @@ test('an admin sees a trade in the price history and the trade log', async ({ pa
   await expect(dateCell).not.toContainText('Invalid Date')
   await expect(dateCell).toHaveText(/\d{1,2}\/\d{1,2}\/\d{4}/)
 })
+
+// [FE][T-5] #453. The same route, read from the market page with a trader's
+// cookie. ledger-service.md opens it to any role, and only the real ledger can
+// show that a trader is answered rather than refused as on an admin route; the
+// lines also prove the chart's own chunk loaded from the built bundle.
+test('a trader sees the price history on the market page', async ({ page }) => {
+  const admin = await registerAdmin('phm_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('pricechart')} resolve yes?`)
+  const trader = await registerTrader('phm_trader')
+  // The book's opening and this trade: two points, so there is a line to draw.
+  await buy(trader, market, 'Yes', '5')
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  // Waited on first, for the same reason as above.
+  await expect(page.locator('.recharts-line-curve')).toHaveCount(market.outcomes.length)
+  await expect(page.getByText('Failed to load price history.')).toHaveCount(0)
+})
