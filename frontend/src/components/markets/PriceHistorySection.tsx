@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { getMarketPriceHistory, type PricePoint } from '../../api/ledgerApi'
+import ErrorBoundary from '../ErrorBoundary'
 import SectionCard from '../ui/SectionCard'
 
 interface PriceHistorySectionProps {
@@ -21,6 +22,10 @@ const PriceHistoryChart = lazy(() => import('./PriceHistoryChart'))
 // Both while the read is on its way and while the chart's chunk is: to the
 // trader they are one wait.
 const LOADING = <p className="text-sm text-muted">Loading price history…</p>
+
+const CHART_UNAVAILABLE = (
+  <p role="alert" className="text-sm text-danger">Price history unavailable. Reload the page to try again.</p>
+)
 
 /** The market's price history for a trader deciding whether to buy, from the
  * route ledger-service.md opens to any role ([FE][T-5] #453). */
@@ -50,10 +55,17 @@ export default function PriceHistorySection({ marketId, outcomes }: PriceHistory
         <p className="text-sm text-muted">No trades yet. The price has not moved since this market opened.</p>
       )}
 
+      {/* A chunk that fails to download — a deploy replaced it under an open
+          tab — or a chart that throws stops here, not at the app's boundary,
+          which would take the trading panel down with it. No retry: lazy()
+          keeps the rejected import for the session, so only a reload loads
+          the chunk again, and the message says so. */}
       {read.status === 'loaded' && read.points.length >= 2 && (
-        <Suspense fallback={LOADING}>
-          <PriceHistoryChart outcomes={outcomes} points={read.points} />
-        </Suspense>
+        <ErrorBoundary fallback={CHART_UNAVAILABLE}>
+          <Suspense fallback={LOADING}>
+            <PriceHistoryChart outcomes={outcomes} points={read.points} />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </SectionCard>
   )
