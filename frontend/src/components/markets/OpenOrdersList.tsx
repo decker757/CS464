@@ -3,7 +3,7 @@ import { describeOrderError, errorCode } from '../../api/errors'
 import { cancelOrder, type Order } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
 import { formatCreditsPrecise } from '../../utils/formatCredits'
-import { formatPrice } from '../../utils/formatPrice'
+import { formatLimitPrice } from '../../utils/formatPrice'
 import { HeaderCell, NumberCell, TableFrame, TableHeaderRow } from '../ui/Table'
 import Button from '../ui/Button'
 import SectionCard from '../ui/SectionCard'
@@ -100,7 +100,7 @@ export default function OpenOrdersList({ orders, outcomes, onCancelled }: OpenOr
                     </span>{' '}
                     {label}
                   </td>
-                  <NumberCell>{formatPrice(order.limit_price)}</NumberCell>
+                  <NumberCell>{formatLimitPrice(order.limit_price)}</NumberCell>
                   <NumberCell>{formatCreditsPrecise(order.quantity)}</NumberCell>
                   <NumberCell>{formatCreditsPrecise(order.filled_quantity)}</NumberCell>
                   <NumberCell>{held}</NumberCell>
@@ -110,7 +110,7 @@ export default function OpenOrdersList({ orders, outcomes, onCancelled }: OpenOr
                       size="xs"
                       onClick={() => cancel(order.id)}
                       disabled={!!cancelling}
-                      aria-label={`Cancel ${order.side} ${label} at ${formatPrice(order.limit_price)}`}
+                      aria-label={`Cancel ${order.side} ${label} at ${formatLimitPrice(order.limit_price)}`}
                     >
                       {cancelling === order.id ? 'Cancelling…' : 'Cancel'}
                     </Button>

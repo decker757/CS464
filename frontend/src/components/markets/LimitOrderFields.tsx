@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { describeOrderError, errorCode, isDefiniteRejection } from '../../api/errors'
 import { placeOrder, type Order, type TradeSide } from '../../api/ledgerApi'
 import { formatAveragePrice, isZeroCredits } from '../../utils/formatCredits'
-import { formatPrice } from '../../utils/formatPrice'
+import { formatLimitPrice } from '../../utils/formatPrice'
 import { describeSharesToSell, limitPriceError, quantityError } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
@@ -28,7 +28,7 @@ interface LimitOrderFieldsProps {
 /** What the placement did, for the line shown after it commits. */
 function placedMessage(order: Order, outcomeLabel: string): string {
   const action = order.side === 'buy' ? 'Buy' : 'Sell'
-  const at = `${action} ${order.quantity} ${outcomeLabel} at ${formatPrice(order.limit_price)}`
+  const at = `${action} ${order.quantity} ${outcomeLabel} at ${formatLimitPrice(order.limit_price)}`
   if (order.status === 'filled') {
     // Credits per share, as the trade preview shows its average (#247).
     return `${at}: filled in full at ${formatAveragePrice(order.average_fill_price ?? order.limit_price)} credits/share.`

@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { formatCreditsPrecise, isPlainCredits, isZeroCredits, subtractCredits } from '../utils/formatCredits'
-import { formatPrice } from '../utils/formatPrice'
+import { formatLimitPrice } from '../utils/formatPrice'
 
 export interface ApiError {
   error: {
@@ -198,8 +198,8 @@ const ORDER_FIXED_MESSAGES: Record<string, string> = {
  */
 function describeOrderCrossesBook(side: string, bound: string): string {
   return side === 'buy'
-    ? `An order is in the way at this price: a buy's limit must be below ${formatPrice(bound)}.`
-    : `An order is in the way at this price: a sell's limit must be above ${formatPrice(bound)}.`
+    ? `An order is in the way at this price: a buy's limit must be below ${formatLimitPrice(bound)}.`
+    : `An order is in the way at this price: a sell's limit must be above ${formatLimitPrice(bound)}.`
 }
 
 /**
