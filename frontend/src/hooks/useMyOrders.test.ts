@@ -66,6 +66,20 @@ describe('useMyOrders', () => {
     expect(result.current.orders).toBeNull()
   })
 
+  it('reads nothing on a refetch while disabled either', async () => {
+    // The page re-reads on every socket ack, on markets with no limit orders
+    // too; those reads must still cost the ledger nothing.
+    let reads = 0
+    server.use(http.get(ORDERS, () => { reads += 1; return HttpResponse.json({ orders: [order()] }) }))
+    const { result } = renderHook(() => useMyOrders(false))
+
+    act(() => { result.current.refetch() })
+    await act(() => new Promise(resolve => setTimeout(resolve, 10)))
+
+    expect(reads).toBe(0)
+    expect(result.current.orders).toBeNull()
+  })
+
   it('moves filled_quantity on the order a frame names', async () => {
     mockOrders([order()])
     const { result } = renderHook(() => useMyOrders(true))
