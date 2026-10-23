@@ -38,10 +38,13 @@ function orderResponse(overrides: Record<string, unknown> = {}, fills: unknown[]
 interface FieldsOptions {
   side?: 'buy' | 'sell'
   heldQuantity?: string | null
+  sellableQuantity?: string | null
   onPlaced?: () => void
 }
 
-function renderFields({ side = 'buy', heldQuantity = '100.0000', onPlaced = vi.fn() }: FieldsOptions = {}) {
+function renderFields({
+  side = 'buy', heldQuantity = '100.0000', sellableQuantity = heldQuantity, onPlaced = vi.fn(),
+}: FieldsOptions = {}) {
   render(
     <BalanceContext.Provider value={{ balance: '1000.0000', available: '1000.0000', refetch: async () => {} }}>
       <LimitOrderFields
@@ -50,6 +53,7 @@ function renderFields({ side = 'buy', heldQuantity = '100.0000', onPlaced = vi.f
         outcomeId="o-yes"
         outcomeLabel="Yes"
         heldQuantity={heldQuantity}
+        sellableQuantity={sellableQuantity}
         onPlaced={onPlaced}
       />
     </BalanceContext.Provider>,
@@ -181,6 +185,13 @@ describe('LimitOrderFields', () => {
   it('shows the holding on a sell, so the trader knows what they can offer', () => {
     renderFields({ side: 'sell', heldQuantity: '42.0000' })
     expect(screen.getByLabelText('shares held')).toHaveTextContent('42.0000')
+  })
+
+  it('shows what is left to sell when open sell orders reserve part of the holding', () => {
+    // A second sell order can only offer what the first does not hold back
+    // (ledger-service.md's insufficient_shares_held).
+    renderFields({ side: 'sell', heldQuantity: '42.0000', sellableQuantity: '30.0000' })
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 30.0000 of your 42.0000 shares')
   })
 
   it('shows no holding figure while that read has not landed', () => {

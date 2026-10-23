@@ -767,6 +767,26 @@ describe('MarketDetailPage', () => {
       reReadAfterFill.release()
     })
 
+    it('gives the trading panel what the sell orders on this market reserve, so it offers only the rest', async () => {
+      // The join is the page's: the holdings come from the portfolio, the
+      // reservations from the open-orders list. A buy reserves no shares, and
+      // an order on another market belongs to that market's page.
+      server.use(
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([{ market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000' }]))),
+        http.get(ORDERS, () => HttpResponse.json({ orders: [
+          restingOrder({ id: 'ord-1', side: 'sell', limit_price: '0.7000', quantity: '1.5000', reserved_credits: null, reserved_shares: '1.5000' }),
+          restingOrder({ id: 'ord-2', side: 'sell', limit_price: '0.8000', quantity: '0.5000', reserved_credits: null, reserved_shares: '0.5000' }),
+          restingOrder({ id: 'ord-3', market_id: 'mkt-other', side: 'sell', reserved_credits: null, reserved_shares: '3.0000' }),
+          restingOrder({ id: 'ord-4' }),
+        ] })),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
+
+      await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 4.0000 of your 6.0000 shares'))
+    })
+
     it('re-reads the balance and the holdings, not only the orders, after a reconnect', async () => {
       // realtime-service.md, "Reconnecting": frames published while the
       // socket was away are gone, so fetch GET /ledger/orders/me and the

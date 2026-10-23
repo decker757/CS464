@@ -62,6 +62,7 @@ interface PanelOptions {
   // Defaults to `balance`, an account with no resting orders.
   available?: string | null | undefined
   heldByOutcome?: Record<string, string> | null
+  reservedSharesByOutcome?: Record<string, string>
   refetch?: () => Promise<void>
   onTraded?: () => void
   // Off by default so these tests drive the market-order body directly, as
@@ -72,7 +73,7 @@ interface PanelOptions {
 }
 
 function renderPanel({
-  balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
+  balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, reservedSharesByOutcome = {}, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
   limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
 }: PanelOptions = {}) {
   return render(
@@ -82,6 +83,7 @@ function renderPanel({
         outcomes={outcomes}
         limitOrdersAllowed={limitOrdersAllowed}
         heldByOutcome={heldByOutcome}
+        reservedSharesByOutcome={reservedSharesByOutcome}
         onTraded={onTraded}
         onOrderPlaced={onOrderPlaced}
       />
@@ -734,6 +736,30 @@ describe('TradingPanel', () => {
     // holds nothing of it.
     await actor.click(screen.getByRole('button', { name: /^no$/i }))
     expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 0.0000 shares')
+  })
+
+  it('blocks a sell of shares that open sell orders already reserve, before any request', async () => {
+    // The ledger refuses a sell on the position less what the trader's open
+    // sell orders hold back (ledger-service.md's insufficient_shares_held),
+    // so the check here does too, and Max offers only what is left.
+    mockPreview(previewResponse({ side: 'sell', total: '2.5000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 4.0000 of your 6.0000 shares')
+
+    await typeQuantity(actor, '5')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'You have 4.0000 shares available to sell, but this sell asks for 5.0000. '
+      + 'You hold 6.0000 in all, and 2.0000 of them are reserved by your open sell orders.',
+    )
+    expect(screen.getByRole('button', { name: /^sell yes$/i })).toBeDisabled()
+
+    await actor.clear(screen.getByLabelText('Quantity (shares)'))
+    await actor.click(screen.getByRole('button', { name: /^max$/i }))
+    expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(4)
   })
 
   it('refuses nothing while the figures the two checks need are missing', async () => {
