@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
@@ -940,6 +940,14 @@ describe('MarketDetailPage — price history', () => {
     pricePoint(1, '2026-09-14T09:00:00Z', '0.6225', '0.3775'),
     pricePoint(2, '2026-09-15T09:00:00Z', '0.5744', '0.4256'),
   ]
+
+  // The chart is a lazy chunk, and the first test to draw it would otherwise
+  // pay for loading recharts inside findByText's one-second window: on a busy
+  // machine it missed. Loaded once here, every test below finds the module
+  // already in the cache, and what each one waits on is the page alone.
+  beforeAll(async () => {
+    await import('../components/markets/PriceHistoryChart')
+  })
 
   beforeEach(() => {
     server.use(
