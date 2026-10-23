@@ -69,7 +69,15 @@ export default function LimitOrderFields({
   const [limitPrice, setLimitPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // Each message is kept with the input it was written for, and shown only
+  // while that input is still what the ticket holds — TradingPanel's
+  // `inputKey`, for the same reason. The side and the outcome are chosen in
+  // the panel above and arrive as props, so without this a refusal or a
+  // "placed" line about a buy of Yes would sit under a sell of No.
+  const inputKey = `${side}:${outcomeId}:${limitPrice}:${quantity}`
+  const [submitErrorFor, setSubmitErrorFor] = useState('')
   const [submitError, setSubmitError] = useState('')
+  const [placedFor, setPlacedFor] = useState('')
   const [placed, setPlaced] = useState('')
   // Regenerated only once the server has given a definite answer, exactly as
   // on the trade route: a lost reply or a 5xx may still have placed the
@@ -81,10 +89,13 @@ export default function LimitOrderFields({
   const sizeError = quantityError(quantity)
   const ready = !!limitPrice.trim() && !!quantity.trim() && !priceError && !sizeError
   const canSubmit = ready && !submitting
+  const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
+  const visiblePlaced = placedFor === inputKey ? placed : ''
 
   const submit = async () => {
     if (!canSubmit) return
     setSubmitting(true)
+    setSubmitErrorFor(inputKey)
     setSubmitError('')
     setPlaced('')
     try {
@@ -96,6 +107,9 @@ export default function LimitOrderFields({
         idempotency_key: idempotencyKeyRef.current,
       })
       idempotencyKeyRef.current = crypto.randomUUID()
+      // Keyed to the cleared fields, which is what the line renders against
+      // once this commits.
+      setPlacedFor(`${side}:${outcomeId}::`)
       setPlaced(placedMessage(result.order, outcomeLabel))
       setLimitPrice('')
       setQuantity('')
@@ -111,9 +125,9 @@ export default function LimitOrderFields({
 
   return (
     <div>
-      {placed && (
+      {visiblePlaced && (
         <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success">
-          {placed}
+          {visiblePlaced}
         </p>
       )}
 
@@ -161,7 +175,7 @@ export default function LimitOrderFields({
       />
       {sizeError && <p role="alert" className="mb-3 text-xs text-danger">{sizeError}</p>}
 
-      {submitError && <p role="alert" className="mt-2 mb-3 text-xs text-danger">{submitError}</p>}
+      {visibleSubmitError && <p role="alert" className="mt-2 mb-3 text-xs text-danger">{visibleSubmitError}</p>}
 
       <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit} className="mt-2">
         {submitting ? 'Placing…' : `Place ${side} order`}
