@@ -4,21 +4,24 @@ import { formatPrice } from '../../utils/formatPrice'
 // data, and the card says so on its face — a visitor who reads it should not
 // come away believing this market or these prices exist.
 //
-// It is also a picture of the market page as it is today, and nothing more:
-// each side's price over "implied probability", then the trading panel's
-// outcome toggle and its one unpriced buy button. It used to draw a seven-day
-// trend, a bar per side and a priced button per side, none of which a trader
-// finds after signing up (#435). Something added to the market page can be
-// added here; nothing should be drawn here first.
+// It is also a picture of the market page, and never more than it: each
+// side's price over "implied probability", then the trading panel's outcome
+// toggle and its one unpriced buy button. It used to draw a seven-day trend, a
+// bar per side and a priced button per side, none of which the market page had
+// when #435 removed them. The card may show less than the page; something
+// reaches the card only after it reaches the page.
 //
 // The made-up prices are decimal strings, the way the API sends a real one, so
 // the card shows them through the app's own formatter instead of inventing a
-// second way to write a price.
+// second way to write a price. The labels are the create form's defaults, and
+// the panel prints a label as it is written, so the toggle and the button say
+// "Yes"; the price tile's capitals are its CSS, as on the market page.
 const EXAMPLE_OUTCOMES = [
-  { label: 'YES', price: '0.64' },
-  { label: 'NO', price: '0.36' },
+  { label: 'Yes', price: '0.64' },
+  { label: 'No', price: '0.36' },
 ]
-const EXAMPLE_CHOSEN_OUTCOME = 'YES'
+// The trading panel starts on the first outcome, so the picture does too.
+const EXAMPLE_CHOSEN_OUTCOME = EXAMPLE_OUTCOMES[0].label
 
 export default function MarketPreviewCard() {
   return (
