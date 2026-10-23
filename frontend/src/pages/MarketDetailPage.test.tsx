@@ -636,6 +636,23 @@ describe('MarketDetailPage', () => {
       expect(row).toHaveTextContent('20.5465')
     })
 
+    it('says the open orders could not be loaded, and loads them on a retry', async () => {
+      // Without this a failed first read looks exactly like having no
+      // orders, and a trader with one resting cannot reach its cancel.
+      let failing = true
+      server.use(http.get(ORDERS, () => (failing ? HttpResponse.error() : HttpResponse.json({ orders: [restingOrder()] }))))
+      const actor = userEvent.setup()
+      renderPage()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Your open orders could not be loaded.')
+
+      failing = false
+      await actor.click(screen.getByRole('button', { name: 'Try again' }))
+
+      expect(await screen.findByRole('button', { name: /^cancel buy yes/i })).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
     it('shows no open-orders section when the trader has none here', async () => {
       // The list is scoped to this market: an order on another one belongs
       // on that market's page, not this one.
