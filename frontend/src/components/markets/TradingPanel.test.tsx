@@ -762,6 +762,17 @@ describe('TradingPanel', () => {
     expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(4)
   })
 
+  it('offers nothing to sell, not a negative, while the orders list lags a smaller holding', () => {
+    // A sell order's fill lowers the position and its reservation together,
+    // but they arrive on two reads, and the holdings read can land first.
+    renderPanel({ heldByOutcome: { 'o-yes': '1.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 1.0000 shares')
+    expect(screen.queryByRole('button', { name: /^max$/i })).not.toBeInTheDocument()
+  })
+
   it('refuses nothing while the figures the two checks need are missing', async () => {
     // A balance that has not loaded (null, or still undefined) or a holding
     // read that failed must not lock the panel: the ledger refuses with the
