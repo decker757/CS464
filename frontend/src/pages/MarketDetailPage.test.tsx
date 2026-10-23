@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
@@ -15,6 +15,7 @@ const SNAPSHOT = `${LEDGER_BASE}/ledger/markets/:id/snapshot`
 const PORTFOLIO = `${LEDGER_BASE}/ledger/portfolio/me`
 const PREVIEW = `${LEDGER_BASE}/ledger/markets/:id/preview`
 const TRADES = `${LEDGER_BASE}/ledger/markets/:id/trades`
+const PRICE_HISTORY = `${LEDGER_BASE}/ledger/markets/:id/price-history`
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
@@ -90,11 +91,14 @@ const priceService = ws.link('ws://localhost:8004/ws/prices')
 // Stub WebSocket — most tests don't exercise live prices (that's in
 // useMarketPrices tests). A silent MSW handler keeps the hook happy. The
 // portfolio read is here rather than in one describe's own beforeEach because
-// every test that renders a tradeable market makes it, this one included.
+// every test that renders a tradeable market makes it, this one included. So
+// is the price history (#453), which every market the page shows reads: a
+// market with no book yet, unless a test serves one.
 beforeEach(() => {
   server.use(
     priceService.addEventListener('connection', () => { /* silent */ }),
     http.get(PORTFOLIO, () => HttpResponse.json(portfolio())),
+    http.get(PRICE_HISTORY, ({ params }) => HttpResponse.json(priceHistory(String(params.id), []))),
   )
 })
 
@@ -128,6 +132,23 @@ function renderMovableRouter(marketId: string) {
     </WithProviders>,
   )
   return router
+}
+
+// One point of GET .../price-history: the price after a trade, or the book's
+// opening at state_version 0 (ledger-service.md).
+function pricePoint(version: number, occurredAt: string, yes: string, no: string) {
+  return {
+    state_version: version,
+    occurred_at: occurredAt,
+    prices: [
+      { outcome_id: 'o1', position: 0, price: yes },
+      { outcome_id: 'o2', position: 1, price: no },
+    ],
+  }
+}
+
+function priceHistory(marketId: string, points: ReturnType<typeof pricePoint>[]) {
+  return { market_id: marketId, points, result: null, winning_outcome_id: null, result_recorded_at: null }
 }
 
 function priceFrame(version: number, yes: string, no: string) {
@@ -573,6 +594,102 @@ describe('MarketDetailPage', () => {
     await waitFor(() => expect(wsClient).not.toBeNull())
     act(() => wsClient!.close(4403))
     expect(await screen.findByText(/live prices unavailable/i)).toBeInTheDocument()
+  })
+})
+
+// [FE][T-5] #453: the history a trader reads before deciding, from the route
+// docs/api/ledger-service.md opens to any role. The chart's own drawing is
+// PriceHistoryChart.test.tsx's job; these are about what this page hands it,
+// and what it shows instead when there is nothing to draw.
+describe('MarketDetailPage — price history', () => {
+  const THIS_MARKETS_HISTORY = `${LEDGER_BASE}/ledger/markets/mkt-abc/price-history`
+  const NO_TRADES_YET = 'No trades yet. The price has not moved since this market opened.'
+
+  const threeTrades = [
+    pricePoint(0, '2026-09-13T14:12:03Z', '0.5000', '0.5000'),
+    pricePoint(1, '2026-09-14T09:00:00Z', '0.6225', '0.3775'),
+    pricePoint(2, '2026-09-15T09:00:00Z', '0.5744', '0.4256'),
+  ]
+
+  beforeEach(() => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json(baseMarket)),
+      http.get(SNAPSHOT, () =>
+        HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 }),
+      ),
+    )
+  })
+
+  it('charts the price history of the market being traded', async () => {
+    // Served for this market's id only: any other id gets the empty default.
+    server.use(http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))))
+
+    renderPage()
+
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+    const legend = screen.getByRole('list', { name: 'Outcomes' })
+    expect(within(legend).getByText('Yes')).toBeInTheDocument()
+    expect(within(legend).getByText('No')).toBeInTheDocument()
+  })
+
+  it('charts the history of a market that has stopped trading', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status: 'settled' })),
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+    )
+
+    renderPage()
+
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+  })
+
+  it('says nobody has traded, rather than charting the opening price alone', async () => {
+    // One point is the book's opening and nothing else: a chart of it is a
+    // lone dot and a range control with nothing to narrow.
+    server.use(http.get(THIS_MARKETS_HISTORY, () =>
+      HttpResponse.json(priceHistory('mkt-abc', [pricePoint(0, '2026-09-13T14:12:03Z', '0.5000', '0.5000')])),
+    ))
+
+    renderPage()
+
+    expect(await screen.findByText(NO_TRADES_YET)).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Time range' })).not.toBeInTheDocument()
+  })
+
+  it('says nobody has traded on a market the ledger has no book for yet', async () => {
+    // The default handler's empty history: no point at all, not even the opening.
+    renderPage()
+
+    expect(await screen.findByText(NO_TRADES_YET)).toBeInTheDocument()
+  })
+
+  it('shows the trading panel while the price history is still on its way', async () => {
+    // The panel is the point of the page (#453): it must not wait on the read.
+    const { held, release } = holdUntilReleased()
+    server.use(http.get(THIS_MARKETS_HISTORY, async () => {
+      await held
+      return HttpResponse.json(priceHistory('mkt-abc', threeTrades))
+    }))
+
+    renderPage()
+
+    expect(await screen.findByRole('button', { name: /^buy$/i })).toBeInTheDocument()
+    expect(screen.getByText('Loading price history…')).toBeInTheDocument()
+
+    release()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+  })
+
+  it('says the history failed and keeps the trading panel when the read fails', async () => {
+    server.use(http.get(THIS_MARKETS_HISTORY, () =>
+      HttpResponse.json({ error: { code: 'internal_error', message: 'Boom.' } }, { status: 500 }),
+    ))
+
+    renderPage()
+
+    expect(await screen.findByText('Failed to load price history.')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to load price history.')
+    expect(screen.getByRole('button', { name: /^buy$/i })).toBeInTheDocument()
   })
 })
 
