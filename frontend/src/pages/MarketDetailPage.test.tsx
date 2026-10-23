@@ -1066,8 +1066,10 @@ describe('MarketDetailPage — price history', () => {
     // the whole page down with it, trading panel included.
     const quietReactsReport = vi.spyOn(console, 'error').mockImplementation(() => {})
     onTestFinished(() => quietReactsReport.mockRestore())
+    // Not through priceHistory(), whose type would refuse the broken point.
+    const brokenPoint = { ...threeTrades[1], prices: null }
     server.use(http.get(THIS_MARKETS_HISTORY, () =>
-      HttpResponse.json(priceHistory('mkt-abc', [threeTrades[0], { ...threeTrades[1], prices: null }])),
+      HttpResponse.json({ ...priceHistory('mkt-abc', []), points: [threeTrades[0], brokenPoint] }),
     ))
 
     renderPage()
