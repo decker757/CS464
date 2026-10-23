@@ -106,9 +106,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderPage(marketId = 'mkt-abc') {
+function renderPage(marketId = 'mkt-abc', { refetchBalance }: { refetchBalance?: () => Promise<void> } = {}) {
   return render(
-    <WithProviders user={trader}>
+    <WithProviders user={trader} refetchBalance={refetchBalance}>
       <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
         <Routes>
           <Route path="/markets/:id" element={<MarketDetailPage />} />
@@ -712,6 +712,50 @@ describe('MarketDetailPage', () => {
       // The list holds live orders only, so a filled one leaves it — and
       // with the last one gone, so does the section.
       await waitFor(() => expect(screen.queryByText('Your open orders')).not.toBeInTheDocument())
+    })
+
+    it('re-reads the balance and the holdings, not only the orders, after a reconnect', async () => {
+      // realtime-service.md, "Reconnecting": frames published while the
+      // socket was away are gone, so fetch GET /ledger/orders/me and the
+      // balance again. A fill missed in that gap moved credits and shares too.
+      let wsClient: { close(code?: number): void } | null = null
+      let snapshotReads = 0
+      let holdingReads = 0
+      server.use(
+        http.get(SNAPSHOT, () => {
+          snapshotReads += 1
+          return HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 })
+        }),
+        http.get(PORTFOLIO, () => {
+          holdingReads += 1
+          return HttpResponse.json(portfolio())
+        }),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      const refetchBalance = vi.fn(async () => {})
+      renderPage('mkt-abc', { refetchBalance })
+
+      // The mount's snapshot and the one after the first ack: the ack has
+      // been handled once both are in.
+      await waitFor(() => expect(snapshotReads).toBe(2))
+      await waitFor(() => expect(holdingReads).toBeGreaterThan(0))
+      const balanceReadsBefore = refetchBalance.mock.calls.length
+      const holdingReadsBefore = holdingReads
+
+      act(() => wsClient!.close(1000))
+      // The reconnect's own ack, after the one-second backoff.
+      await waitFor(() => expect(snapshotReads).toBe(3), { timeout: 3000 })
+
+      expect(refetchBalance.mock.calls.length).toBeGreaterThan(balanceReadsBefore)
+      await waitFor(() => expect(holdingReads).toBeGreaterThan(holdingReadsBefore))
     })
 
     it('keeps a refused cancel\'s message on screen when the re-read leaves no orders', async () => {
