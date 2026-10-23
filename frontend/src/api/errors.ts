@@ -196,7 +196,7 @@ const ORDER_FIXED_MESSAGES: Record<string, string> = {
  * sell strictly above the highest resting buy. The caller's own orders
  * count, which is the part traders find surprising, so the bound is named.
  */
-export function describeOrderCrossesBook(side: string, bound: string): string {
+function describeOrderCrossesBook(side: string, bound: string): string {
   return side === 'buy'
     ? `An order is in the way at this price: a buy's limit must be below ${formatPrice(bound)}.`
     : `An order is in the way at this price: a sell's limit must be above ${formatPrice(bound)}.`
@@ -211,7 +211,7 @@ export function describeOrderCrossesBook(side: string, bound: string): string {
  * Second sentence as #411's: where the rest of the balance went, but only
  * when an order is actually holding some of it.
  */
-export function describeOrderShortfall(
+function describeOrderShortfall(
   available: string,
   shortfall: string,
   openOrders?: { balance: string; reserved: string },
@@ -241,18 +241,10 @@ export function describeOrderError(err: unknown): string {
       return describeOrderShortfall(available, shortfall, openOrders)
     }
   }
-  if (code === 'insufficient_shares_held') {
-    const held = tradeErrorFigure(details, 'held')
-    const requested = tradeErrorFigure(details, 'requested')
-    // The sell's own reservation reads the same here as on a trade, so this
-    // is #411's sentence rather than a second wording of it.
-    if (held !== undefined && requested !== undefined) {
-      return describeInsufficientShares(held, requested, tradeErrorFigure(details, 'reserved'))
-    }
-  }
-  // Everything a placement shares with a trade — unknown_outcome,
-  // quantity_too_large, market_not_found, invalid_request — reads the same
-  // either way, so the trade table answers for those rather than a second copy.
+  // Everything a placement shares with a trade — insufficient_shares_held,
+  // unknown_outcome, quantity_too_large, market_not_found, invalid_request —
+  // reads the same either way, so the trade table answers for those rather
+  // than a second copy.
   return ORDER_FIXED_MESSAGES[code] ?? describeTradeError(err)
 }
 
