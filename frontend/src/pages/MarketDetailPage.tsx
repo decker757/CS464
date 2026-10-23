@@ -4,6 +4,7 @@ import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
+import PriceHistorySection from '../components/markets/PriceHistorySection'
 import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
@@ -216,6 +217,12 @@ export default function MarketDetailPage() {
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
             )}
           </Card>
+
+          {/* Below the panel rather than above it, so the history arriving
+              after first paint never moves the controls a trader is reaching
+              for (#453). Every status: a closed market's history still says
+              how it got there. */}
+          <PriceHistorySection marketId={market.id} outcomes={market.outcomes} />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />
