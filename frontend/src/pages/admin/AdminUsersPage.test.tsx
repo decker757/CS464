@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
@@ -39,6 +39,33 @@ function mockUsers(users: Record<string, unknown>[], nextCursor: string | null =
       HttpResponse.json({ users, next_cursor: nextCursor, has_more: nextCursor !== null }),
     ),
   )
+}
+
+// What the page asked GET /admin/users for, one entry per request, so a test
+// can read the parameters of the latest one.
+interface SentParams {
+  q: string | null
+  role: string | null
+  is_suspended: string | null
+  cursor: string | null
+}
+
+function recordRequests(usersFor: (sent: SentParams) => Record<string, unknown>[]): SentParams[] {
+  const sent: SentParams[] = []
+  server.use(
+    http.get(`${AUTH_BASE}/admin/users`, ({ request }) => {
+      const params = new URL(request.url).searchParams
+      const entry = {
+        q: params.get('q'),
+        role: params.get('role'),
+        is_suspended: params.get('is_suspended'),
+        cursor: params.get('cursor'),
+      }
+      sent.push(entry)
+      return HttpResponse.json({ users: usersFor(entry), next_cursor: null, has_more: false })
+    }),
+  )
+  return sent
 }
 
 function renderPage() {
@@ -116,6 +143,101 @@ describe('AdminUsersPage', () => {
     server.use(http.get(`${AUTH_BASE}/admin/users`, () => HttpResponse.error()))
     renderPage()
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load/i)
+  })
+
+  it.each([
+    ['Filter by role', 'Admins only', { role: 'admin', is_suspended: null }],
+    ['Filter by role', 'Traders only', { role: 'trader', is_suspended: null }],
+    ['Filter by status', 'Suspended only', { role: null, is_suspended: 'true' }],
+    ['Filter by status', 'Active only', { role: null, is_suspended: 'false' }],
+  ])('%s: %s asks the server for exactly that, and shows what it returns', async (group, pill, expected) => {
+    mockUsers([adminUser({ id: 't1', username: 'alice' })])
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('alice')
+
+    const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin', is_suspended: true })])
+    await actor.click(within(screen.getByRole('group', { name: group })).getByRole('button', { name: pill }))
+
+    expect(await screen.findByText('carol')).toBeInTheDocument()
+    expect(screen.queryByText('alice')).not.toBeInTheDocument()
+    expect(sent.at(-1)).toEqual({ q: null, cursor: null, ...expected })
+  })
+
+  it('combines both filters with the search, and shows the chosen pill as pressed', async () => {
+    mockUsers([adminUser({ id: 't1', username: 'alice' })])
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('alice')
+
+    const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin', is_suspended: true })])
+    await actor.type(screen.getByLabelText(/search by username or email/i), 'car')
+    await actor.click(screen.getByRole('button', { name: /search/i }))
+    const roles = within(screen.getByRole('group', { name: 'Filter by role' }))
+    await actor.click(roles.getByRole('button', { name: 'Admins only' }))
+    await actor.click(within(screen.getByRole('group', { name: 'Filter by status' })).getByRole('button', { name: 'Suspended only' }))
+
+    expect(await screen.findByText('carol')).toBeInTheDocument()
+    expect(sent.at(-1)).toEqual({ q: 'car', role: 'admin', is_suspended: 'true', cursor: null })
+    expect(roles.getByRole('button', { name: 'Admins only' })).toHaveAttribute('aria-pressed', 'true')
+    expect(roles.getByRole('button', { name: 'Any role' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('goes back to every role when Any role is chosen again', async () => {
+    mockUsers([adminUser({ id: 't1', username: 'alice' })])
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('alice')
+
+    const sent = recordRequests(sentParams =>
+      sentParams.role === 'admin'
+        ? [adminUser({ id: 'a1', username: 'carol', role: 'admin' })]
+        : [adminUser({ id: 't1', username: 'alice' }), adminUser({ id: 'a1', username: 'carol', role: 'admin' })],
+    )
+    const roles = within(screen.getByRole('group', { name: 'Filter by role' }))
+    await actor.click(roles.getByRole('button', { name: 'Admins only' }))
+    await screen.findByText('carol')
+    await actor.click(roles.getByRole('button', { name: 'Any role' }))
+
+    expect(await screen.findByText('alice')).toBeInTheDocument()
+    expect(sent.at(-1)).toEqual({ q: null, role: null, is_suspended: null, cursor: null })
+  })
+
+  it('starts the list again from page one when a filter changes', async () => {
+    server.use(
+      http.get(`${AUTH_BASE}/admin/users`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        return cursor === 'page-2'
+          ? HttpResponse.json({ users: [adminUser({ id: 't2', username: 'bob' })], next_cursor: null, has_more: false })
+          : HttpResponse.json({ users: [adminUser({ id: 't1', username: 'alice' })], next_cursor: 'page-2', has_more: true })
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('alice')
+    await actor.click(screen.getByRole('button', { name: /load more/i }))
+    await screen.findByText('bob')
+
+    const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin' })])
+    await actor.click(within(screen.getByRole('group', { name: 'Filter by role' })).getByRole('button', { name: 'Admins only' }))
+
+    expect(await screen.findByText('carol')).toBeInTheDocument()
+    expect(screen.queryByText('alice')).not.toBeInTheDocument()
+    expect(screen.queryByText('bob')).not.toBeInTheDocument()
+    expect(sent.at(-1)).toEqual({ q: null, role: 'admin', is_suspended: null, cursor: null })
+  })
+
+  it('says no users match the filters, not that there are no users, when a filter finds nobody', async () => {
+    mockUsers([adminUser()])
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('alice')
+
+    mockUsers([])
+    await actor.click(within(screen.getByRole('group', { name: 'Filter by status' })).getByRole('button', { name: 'Suspended only' }))
+
+    expect(await screen.findByText('No users match these filters.')).toBeInTheDocument()
+    expect(screen.queryByText(/no users yet/i)).not.toBeInTheDocument()
   })
 
   it('links to the selected user\'s history, carrying the user along as router state', async () => {
