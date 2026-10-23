@@ -106,8 +106,10 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.9', '10')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    // The average fill price, not the limit: what it actually cost.
-    expect(await screen.findByRole('status')).toHaveTextContent(/filled in full at 51\.3%/i)
+    // The average fill price, not the limit: what it actually cost. Credits
+    // per share, never a percentage (#247): it can pass 1.0000 on a skewed
+    // book, which a percentage cannot show.
+    expect(await screen.findByRole('status')).toHaveTextContent('filled in full at 0.5125 credits/share.')
   })
 
   it('says how much filled when only part of the order did', async () => {
