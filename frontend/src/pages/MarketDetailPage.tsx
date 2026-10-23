@@ -67,51 +67,6 @@ export default function MarketDetailPage() {
   const { orders, refetch: refetchOrders, applyFrame } = useMyOrders(!!ordersPossible)
   const ordersHere = orders?.filter(order => order.market_id === market?.id) ?? []
 
-  // Through a ref because the holdings read is declared below this, where it
-  // sits with the state it writes; a frame can arrive before that line runs.
-  const refetchHeldRef = useRef<() => void>(() => {})
-
-  // A fill moves credits and shares, and the frame carries neither — only
-  // the filled quantity, which it applies to the row at once. The money
-  // figures come from their own routes: the balance, and the holdings the
-  // sell clamp reads. The order's own `reserved_*` is left to the next read
-  // of the list, since re-reading it here would answer from before the fill
-  // and undo the quantity the frame just showed.
-  const onFrame = useCallback((frame: Parameters<typeof applyFrame>[0]) => {
-    applyFrame(frame)
-    refetchBalance()
-    refetchHeldRef.current()
-  }, [applyFrame, refetchBalance])
-
-  // One socket for the page: price frames keep the prices above current, and
-  // order frames the list below it. Order frames need no subscribe, so they
-  // arrive on this same connection (realtime-service.md, "Order updates").
-  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
-    onOrderFrame: onFrame,
-    onReconnected: refetchOrders,
-  })
-  // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
-  // so the controls lock the moment close_time passes, without a refetch.
-  const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
-  const pastClose = market !== null && !closeTimeStillAhead
-  // Re-evaluates the instant the dispute window closes, rather than only at
-  // whatever render happens to run next — an approved market has no trades
-  // to force one, so without this "Disputes close in 3h" could sit on
-  // screen long after payout ([3.3] #11).
-  const disputeWindowStillOpen = useWindowOpen(market?.dispute_window_ends_at ?? null)
-
-  useEffect(() => {
-    if (!id) return
-    let cancelled = false
-    getMarket(id).then(
-      found => { if (!cancelled) setLoaded({ id, market: found, failed: false }) },
-      () => { if (!cancelled) setLoaded({ id, market: null, failed: true }) },
-    )
-    return () => { cancelled = true }
-  }, [id])
-
-  const tradeable = market?.status === 'open' && !pastClose
-
   // What the trader holds of each of this market's outcomes, for the sell
   // clamp ([T-2] #357). The portfolio route carries every market's positions
   // and names no questions or labels (ledger-service.md), so picking out this
@@ -149,6 +104,63 @@ export default function MarketDetailPage() {
     )
   }, [id])
 
+  // A placement or a cancel moves credits, or what they reserve, and a
+  // placement that filled also changed the holdings the sell clamp reads.
+  // The balance comes back through BalanceContext, as it does after a trade.
+  // A reconnect re-reads all three too: a fill whose frame was published
+  // while the socket was away moved every one of them (realtime-service.md,
+  // "Reconnecting" — the orders and the balance again).
+  const onOrdersChanged = useCallback(() => {
+    refetchOrders()
+    refetchBalance()
+    refetchHeld()
+  }, [refetchOrders, refetchBalance, refetchHeld])
+
+  // Through a ref because the holdings read is declared below this, where it
+  // sits with the state it writes; a frame can arrive before that line runs.
+  const refetchHeldRef = useRef<() => void>(() => {})
+
+  // A fill moves credits and shares, and the frame carries neither — only
+  // the filled quantity, which it applies to the row at once. The money
+  // figures come from their own routes: the balance, and the holdings the
+  // sell clamp reads. The order's own `reserved_*` is left to the next read
+  // of the list, since re-reading it here would answer from before the fill
+  // and undo the quantity the frame just showed.
+  const onFrame = useCallback((frame: Parameters<typeof applyFrame>[0]) => {
+    applyFrame(frame)
+    refetchBalance()
+    refetchHeldRef.current()
+  }, [applyFrame, refetchBalance])
+
+  // One socket for the page: price frames keep the prices above current, and
+  // order frames the list below it. Order frames need no subscribe, so they
+  // arrive on this same connection (realtime-service.md, "Order updates").
+  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
+    onOrderFrame: onFrame,
+    onReconnected: onOrdersChanged,
+  })
+  // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
+  // so the controls lock the moment close_time passes, without a refetch.
+  const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
+  const pastClose = market !== null && !closeTimeStillAhead
+  // Re-evaluates the instant the dispute window closes, rather than only at
+  // whatever render happens to run next — an approved market has no trades
+  // to force one, so without this "Disputes close in 3h" could sit on
+  // screen long after payout ([3.3] #11).
+  const disputeWindowStillOpen = useWindowOpen(market?.dispute_window_ends_at ?? null)
+
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    getMarket(id).then(
+      found => { if (!cancelled) setLoaded({ id, market: found, failed: false }) },
+      () => { if (!cancelled) setLoaded({ id, market: null, failed: true }) },
+    )
+    return () => { cancelled = true }
+  }, [id])
+
+  const tradeable = market?.status === 'open' && !pastClose
+
   // After the render rather than during it, which React refs require.
   useEffect(() => {
     refetchHeldRef.current = refetchHeld
@@ -159,15 +171,6 @@ export default function MarketDetailPage() {
   useEffect(() => {
     if (tradeable) refetchHeld()
   }, [tradeable, refetchHeld])
-
-  // A placement or a cancel moves credits, or what they reserve, and a
-  // placement that filled also changed the holdings the sell clamp reads.
-  // The balance comes back through BalanceContext, as it does after a trade.
-  const onOrdersChanged = useCallback(() => {
-    refetchOrders()
-    refetchBalance()
-    refetchHeld()
-  }, [refetchOrders, refetchBalance, refetchHeld])
 
   // An early close leaves close_time in the future, so "Closed <close_time>"
   // would name a date that has not happened yet.
