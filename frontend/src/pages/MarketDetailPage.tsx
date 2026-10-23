@@ -276,12 +276,11 @@ export default function MarketDetailPage() {
 
           {/* Outlives the form above: a closed market's orders stay
               cancellable until the market has a result (ADR 0024), so this
-              renders whenever the trader has one here. */}
-          {ordersHere.length > 0 && (
-            <SectionCard title="Your open orders" className="mb-6">
-              <OpenOrdersList orders={ordersHere} outcomes={market.outcomes} onCancelled={onOrdersChanged} />
-            </SectionCard>
-          )}
+              renders whenever the trader has one here. Mounted even with
+              none, so a refused cancel's message survives the re-read that
+              empties the list; keyed by market, so the message does not
+              follow the trader to the next one. */}
+          <OpenOrdersList key={market.id} orders={ordersHere} outcomes={market.outcomes} onCancelled={onOrdersChanged} />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />
