@@ -648,9 +648,18 @@ describe('MarketDetailPage', () => {
     it('moves filled-so-far from an order frame, with no reload', async () => {
       // realtime-service.md, "Order updates": a fill reaches the owner on
       // every socket they have open, with no subscribe of its own.
+      //
+      // The page re-reads the list after a frame too. That read is held
+      // here, so what moves the row is the frame and nothing else.
+      let filled = false
+      const reReadAfterFill = holdUntilReleased()
       let wsClient: { send(data: string): void } | null = null
       server.use(
-        http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder()] })),
+        http.get(ORDERS, async () => {
+          if (!filled) return HttpResponse.json({ orders: [restingOrder()] })
+          await reReadAfterFill.held
+          return HttpResponse.json({ orders: [restingOrder({ filled_quantity: '12.5000', reserved_credits: '11.2500' })] })
+        }),
         priceService.addEventListener('connection', ({ client }) => {
           wsClient = client
           client.addEventListener('message', event => {
@@ -666,6 +675,7 @@ describe('MarketDetailPage', () => {
       await waitFor(() => expect(screen.getAllByRole('row')[1]).toHaveTextContent('0.0000'))
 
       await waitFor(() => expect(wsClient).not.toBeNull())
+      filled = true
       act(() => wsClient!.send(JSON.stringify({
         type: 'order',
         order_id: 'ord-1',
@@ -678,6 +688,7 @@ describe('MarketDetailPage', () => {
       })))
 
       await waitFor(() => expect(screen.getAllByRole('row')[1]).toHaveTextContent('12.5000'))
+      reReadAfterFill.release()
     })
 
     it('re-reads the list after an order frame, so what the order holds follows the fill', async () => {
@@ -713,9 +724,17 @@ describe('MarketDetailPage', () => {
     })
 
     it('drops the order from the list once a frame says it filled in full', async () => {
+      // The re-read that follows the frame is held, as above, so the frame
+      // is what takes the row away.
+      let filled = false
+      const reReadAfterFill = holdUntilReleased()
       let wsClient: { send(data: string): void } | null = null
       server.use(
-        http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder()] })),
+        http.get(ORDERS, async () => {
+          if (!filled) return HttpResponse.json({ orders: [restingOrder()] })
+          await reReadAfterFill.held
+          return HttpResponse.json({ orders: [] })
+        }),
         priceService.addEventListener('connection', ({ client }) => {
           wsClient = client
           client.addEventListener('message', event => {
@@ -730,6 +749,7 @@ describe('MarketDetailPage', () => {
       await screen.findByText('Your open orders')
 
       await waitFor(() => expect(wsClient).not.toBeNull())
+      filled = true
       act(() => wsClient!.send(JSON.stringify({
         type: 'order',
         order_id: 'ord-1',
@@ -744,6 +764,7 @@ describe('MarketDetailPage', () => {
       // The list holds live orders only, so a filled one leaves it — and
       // with the last one gone, so does the section.
       await waitFor(() => expect(screen.queryByText('Your open orders')).not.toBeInTheDocument())
+      reReadAfterFill.release()
     })
 
     it('re-reads the balance and the holdings, not only the orders, after a reconnect', async () => {
