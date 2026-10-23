@@ -713,6 +713,28 @@ describe('MarketDetailPage', () => {
       // with the last one gone, so does the section.
       await waitFor(() => expect(screen.queryByText('Your open orders')).not.toBeInTheDocument())
     })
+
+    it('keeps a refused cancel\'s message on screen when the re-read leaves no orders', async () => {
+      // A refused cancel re-reads the list, and when the order was the
+      // market's only one that read comes back empty. The message saying why
+      // the cancel did nothing has to outlive the row it was about.
+      let served = [restingOrder()]
+      server.use(
+        http.get(ORDERS, () => HttpResponse.json({ orders: served })),
+        http.post(`${LEDGER_BASE}/ledger/orders/:id/cancel`, () => {
+          served = []
+          return HttpResponse.json({ error: { code: 'order_already_filled', message: 'too late' } }, { status: 409 })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+
+      await actor.click(await screen.findByRole('button', { name: /^cancel buy yes/i }))
+
+      // The re-read has landed once the row is gone.
+      await waitFor(() => expect(screen.queryByRole('button', { name: /^cancel buy yes/i })).not.toBeInTheDocument())
+      expect(screen.getByRole('alert')).toHaveTextContent('That order filled before the cancel reached it.')
+    })
   })
 })
 

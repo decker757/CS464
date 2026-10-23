@@ -105,7 +105,10 @@ describe('OpenOrdersList', () => {
 
     await actor.click(screen.getByRole('button', { name: /cancel/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/already cancelled/i)
+    // ledger-service.md: "treat it as done". So it reads as a status line,
+    // not as an alert the trader has to act on.
+    expect(await screen.findByRole('status')).toHaveTextContent('That order was already cancelled.')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('does not send a second cancel while one is in flight', async () => {
