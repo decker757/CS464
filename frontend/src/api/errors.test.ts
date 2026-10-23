@@ -123,6 +123,17 @@ describe('describeOrderError', () => {
     expect(describeOrderError(ledgerRefusal(code, {}))).toMatch(expected)
   })
 
+  it('words a sell order\'s insufficient_shares_held the way a trade\'s is worded', () => {
+    // #411's sentence, reached through the trade table rather than a second
+    // copy of the branch.
+    const err = ledgerRefusal('insufficient_shares_held', { held: '6.0000', requested: '10.0000', reserved: '2.0000' })
+
+    expect(describeOrderError(err)).toBe(
+      'You have 4.0000 shares available to sell, but this sell asks for 10.0000. '
+      + 'You hold 6.0000 in all, and 2.0000 of them are reserved by your open sell orders.',
+    )
+  })
+
   it('falls back to the trade wording for a code both routes share', () => {
     // unknown_outcome means the same thing on a placement as on a trade, so
     // there is deliberately no second copy of its sentence.
