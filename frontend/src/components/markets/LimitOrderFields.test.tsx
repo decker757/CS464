@@ -37,28 +37,39 @@ function orderResponse(overrides: Record<string, unknown> = {}, fills: unknown[]
 
 interface FieldsOptions {
   side?: 'buy' | 'sell'
+  outcomeId?: string
+  outcomeLabel?: string
   heldQuantity?: string | null
   sellableQuantity?: string | null
   onPlaced?: () => void
 }
 
-function renderFields({
-  side = 'buy', heldQuantity = '100.0000', sellableQuantity = heldQuantity, onPlaced = vi.fn(),
+function fieldsFor({
+  side = 'buy', outcomeId = 'o-yes', outcomeLabel = 'Yes', heldQuantity = '100.0000', sellableQuantity = heldQuantity,
+  onPlaced = vi.fn(),
 }: FieldsOptions = {}) {
-  render(
+  return (
     <BalanceContext.Provider value={{ balance: '1000.0000', available: '1000.0000', refetch: async () => {} }}>
       <LimitOrderFields
         marketId={MARKET_ID}
         side={side}
-        outcomeId="o-yes"
-        outcomeLabel="Yes"
+        outcomeId={outcomeId}
+        outcomeLabel={outcomeLabel}
         heldQuantity={heldQuantity}
         sellableQuantity={sellableQuantity}
         onPlaced={onPlaced}
       />
-    </BalanceContext.Provider>,
+    </BalanceContext.Provider>
   )
-  return { actor: userEvent.setup(), onPlaced }
+}
+
+function renderFields(options: FieldsOptions = {}) {
+  const onPlaced = options.onPlaced ?? vi.fn()
+  const { rerender } = render(fieldsFor({ ...options, onPlaced }))
+  // The panel above chooses the side and the outcome, so a test changes them
+  // the way the panel does: as new props on the same mounted fields.
+  const rerenderWith = (changes: FieldsOptions) => rerender(fieldsFor({ ...options, onPlaced, ...changes }))
+  return { actor: userEvent.setup(), onPlaced, rerenderWith }
 }
 
 async function fillIn(actor: ReturnType<typeof userEvent.setup>, price: string, quantity: string) {
@@ -180,6 +191,37 @@ describe('LimitOrderFields', () => {
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/3,970\.1250 short/i)
+  })
+
+  it('drops the placed line once the trader turns to the other side', async () => {
+    // The line names a side and an outcome, so on the other side it would
+    // describe an order the ticket is no longer set up for.
+    server.use(http.post(ORDERS, () => HttpResponse.json(orderResponse(), { status: 201 })))
+    const { actor, rerenderWith } = renderFields()
+
+    await fillIn(actor, '0.3', '50')
+    await actor.click(screen.getByRole('button', { name: /place buy order/i }))
+    await screen.findByRole('status')
+
+    rerenderWith({ side: 'sell' })
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('drops a refusal once the trader picks the other outcome', async () => {
+    server.use(http.post(ORDERS, () => HttpResponse.json(
+      { error: { code: 'order_crosses_book', message: 'in the way', details: { side: 'buy', max_limit_price: '0.7000' } } },
+      { status: 409 },
+    )))
+    const { actor, rerenderWith } = renderFields()
+
+    await fillIn(actor, '0.8', '50')
+    await actor.click(screen.getByRole('button', { name: /place buy order/i }))
+    await screen.findByRole('alert')
+
+    rerenderWith({ outcomeId: 'o-no', outcomeLabel: 'No' })
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('shows the holding on a sell, so the trader knows what they can offer', () => {
