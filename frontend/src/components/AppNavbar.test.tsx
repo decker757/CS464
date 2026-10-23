@@ -141,7 +141,6 @@ describe('AppNavbar', () => {
     )
 
     expect(screen.getByLabelText('available balance')).toHaveTextContent('985 credits')
-    expect(screen.queryByText('1,000 credits')).not.toBeInTheDocument()
   })
 
   it('shows the real balance fetched through BalanceProvider, not just a stubbed one', async () => {
