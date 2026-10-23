@@ -13,10 +13,20 @@ const EXAMPLE_LEADERS = [
 ]
 const EXAMPLE_NET_WORTH = '1580'
 
-/** A small card pinned to a corner of the preview. Pass its position in `className`. */
+/**
+ * A small card overlapping one edge of the preview. Pass its side and its
+ * overlap in `className`.
+ *
+ * The cards used to be pinned absolutely to the preview's corners, behind it,
+ * and the preview hid most of their text at every width: "…redits" was all a
+ * visitor saw of the standings (#435). They now stack above and below the
+ * preview in the flow, so nothing can slide under it, and sit in front of it,
+ * so the few pixels they share land on the preview's padding and not on either
+ * card's text.
+ */
 function FloatingCard({ className, children }: { className: string; children: React.ReactNode }) {
   return (
-    <div className={`absolute z-[2] rounded-xl border border-smu-gold/25 bg-white px-4 py-3 shadow-float ${className}`}>
+    <div className={`relative z-[4] rounded-xl border border-smu-gold/25 bg-white px-4 py-3 shadow-float ${className}`}>
       {children}
     </div>
   )
@@ -24,7 +34,7 @@ function FloatingCard({ className, children }: { className: string; children: Re
 
 function PortfolioMiniCard() {
   return (
-    <FloatingCard className="-bottom-6 -left-8 w-40">
+    <FloatingCard className="-mt-2 -ml-8 w-40 self-start">
       <p className="mb-1 text-[10px] text-subtle">My Portfolio</p>
       <p className="text-lg leading-none font-extrabold text-success">+12.4%</p>
       <p className="mt-0.5 text-[11px] text-muted">{formatCredits(EXAMPLE_NET_WORTH)} credits</p>
@@ -34,7 +44,7 @@ function PortfolioMiniCard() {
 
 function LeaderboardMiniCard() {
   return (
-    <FloatingCard className="-top-5 -right-6 w-[196px]">
+    <FloatingCard className="-mr-6 -mb-2 w-[196px] self-end">
       <p className="mb-1.5 text-[10px] text-subtle">🏆 Leaderboard</p>
       {EXAMPLE_LEADERS.map(({ rank, name, credits }) => (
         <div key={rank} className="mb-1 flex items-center justify-between text-[11px]">
@@ -81,12 +91,12 @@ export default function LandingHero() {
         </div>
 
         <div className="flex items-center justify-center">
-          <div className="relative w-full max-w-[380px] pt-6 pb-8">
+          <div className="relative flex w-full max-w-[380px] flex-col">
             <div aria-hidden className="pointer-events-none absolute top-1/2 left-1/2 z-0 h-4/5 w-[90%] -translate-1/2 rounded-3xl bg-radial from-smu-gold/18 to-transparent to-70% blur-[20px]" />
+            <LeaderboardMiniCard />
             <div className="relative z-[3] origin-bottom -rotate-[1.5deg] drop-shadow-hero">
               <MarketPreviewCard />
             </div>
-            <LeaderboardMiniCard />
             <PortfolioMiniCard />
           </div>
         </div>
