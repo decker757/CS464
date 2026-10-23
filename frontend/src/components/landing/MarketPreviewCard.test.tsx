@@ -46,11 +46,14 @@ describe('MarketPreviewCard', () => {
     expect(screen.queryAllByText(/[$¢]/)).toHaveLength(0)
   })
 
-  // The seven-day sparkline and "up from 52.0% a week ago" (#435). The market
-  // page draws no chart and reports no trend, so a visitor shown one here is
-  // shown a feature that is not there after signing up. The sparkline has no
-  // text, so the drawing itself is what the second assertion looks for.
-  it('draws no price history, which the market page does not have', () => {
+  // The seven-day sparkline and "up from 52.0% a week ago" (#435). When #435
+  // removed them the market page had no chart and no trend, so the card was
+  // showing a visitor a feature they would not find after signing up. A chart
+  // on the market page does not make this test wrong: the card may show less
+  // than the page, never more. Whether the example gains a chart again is
+  // #453's call, and that PR deletes this test if it does. The sparkline has
+  // no text, so the drawing itself is what the second assertion looks for.
+  it('draws no price history', () => {
     const { container } = render(<MarketPreviewCard />)
 
     expect(screen.queryByText(/trend|a week ago/i)).not.toBeInTheDocument()
@@ -58,12 +61,13 @@ describe('MarketPreviewCard', () => {
   })
 
   // The trading panel has one buy button, named after the outcome chosen in
-  // the toggle above it, with no price on it. The card used to draw a priced
-  // button for each side (#435).
+  // the toggle above it as the label is written ("Buy Yes", not "Buy YES"),
+  // with no price on it. The card used to draw a priced button for each side
+  // (#435).
   it('draws one buy control, for the chosen side, with no price on it', () => {
     render(<MarketPreviewCard />)
 
-    expect(screen.getByText('Buy YES')).toBeInTheDocument()
+    expect(screen.getByText('Buy Yes')).toBeInTheDocument()
     expect(screen.queryByText(/buy no/i)).not.toBeInTheDocument()
   })
 })
