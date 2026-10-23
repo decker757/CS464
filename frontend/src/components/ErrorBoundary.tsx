@@ -15,6 +15,8 @@ interface FaultBoundaryProps {
   locationKey: string
   /** The address that failed, which "Reload the page" loads again. */
   address: string
+  /** ErrorBoundary's own `fallback`, passed through: rendered in place of the
+   * recovery panel, which then never shows. */
   fallback?: React.ReactNode
   children: React.ReactNode
 }

@@ -1109,7 +1109,8 @@ describe('MarketDetailPage — price history', () => {
     // The likeliest fault is the chart's chunk failing to download after a
     // deploy, which only a browser can do: price-history.e2e.ts aborts it.
     // Here the chart throws while drawing a point with no prices, which
-    // reaches the same place. Without a boundary of its own, the throw takes
+    // reaches the same place: toChartRows (utils/priceHistoryChart.ts)
+    // iterates point.prices, and null is not iterable. Without a boundary of its own, the throw takes
     // the whole page down with it, trading panel included.
     const quietReactsReport = vi.spyOn(console, 'error').mockImplementation(() => {})
     onTestFinished(() => quietReactsReport.mockRestore())
