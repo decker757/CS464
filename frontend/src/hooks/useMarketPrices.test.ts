@@ -178,12 +178,12 @@ describe('useMarketPrices', () => {
     // frame published before the socket was listening, so only a read after
     // the ack can show it — the same gap the snapshot above is fetched again
     // to close.
-    const onReconnected = vi.fn()
-    renderHook(() => useMarketPrices('m1', { onReconnected }))
+    const onSubscribed = vi.fn()
+    renderHook(() => useMarketPrices('m1', { onSubscribed }))
 
     subscribe(latest())
 
-    expect(onReconnected).toHaveBeenCalledTimes(1)
+    expect(onSubscribed).toHaveBeenCalledTimes(1)
   })
 
   // AC 5: the snapshot and the socket race after a reconnect, and the newer one wins.

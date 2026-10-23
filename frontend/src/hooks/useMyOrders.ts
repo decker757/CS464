@@ -11,7 +11,7 @@ export interface MyOrders {
    *  on screen, and an error over it would say the wrong thing. */
   hasError: boolean
   /** Re-reads the list. Call it after placing or cancelling an order, and
-   *  after a socket reconnect. */
+   *  on every socket ack. Does nothing while the hook is disabled. */
   refetch: () => void
   /** Applies one `order` frame from the realtime socket. Pass this as
    *  `useMarketPrices`'s `onOrderFrame` — this hook owns no connection, so a
@@ -75,6 +75,9 @@ export function useMyOrders(enabled: boolean): MyOrders {
   }, [])
 
   const refetch = useCallback(() => {
+    // A market that cannot carry orders costs the ledger nothing, whoever
+    // asks for the read.
+    if (!enabled) return
     const requestId = ++latestReadRef.current
     readInFlightRef.current = true
     framesDuringReadRef.current = []
@@ -101,7 +104,7 @@ export function useMyOrders(enabled: boolean): MyOrders {
         setHasError(true)
       },
     )
-  }, [reduceFrame])
+  }, [enabled, reduceFrame])
 
   const applyFrame = useCallback((frame: OrderFrame) => {
     if (readInFlightRef.current) {
@@ -112,9 +115,8 @@ export function useMyOrders(enabled: boolean): MyOrders {
   }, [reduceFrame])
 
   useEffect(() => {
-    if (!enabled) return
     refetch()
-  }, [enabled, refetch])
+  }, [refetch])
 
   return { orders, hasError, refetch, applyFrame }
 }

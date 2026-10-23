@@ -107,9 +107,10 @@ export default function MarketDetailPage() {
   // A placement or a cancel moves credits, or what they reserve, and a
   // placement that filled also changed the holdings the sell clamp reads.
   // The balance comes back through BalanceContext, as it does after a trade.
-  // A reconnect re-reads all three too: a fill whose frame was published
-  // while the socket was away moved every one of them (realtime-service.md,
-  // "Reconnecting" — the orders and the balance again).
+  // Every subscribe ack re-reads all three too, the first one included: a
+  // fill whose frame was published before the socket was listening — while
+  // it was away, or before it first attached — moved every one of them
+  // (realtime-service.md, "Reconnecting": the orders and the balance again).
   const onOrdersChanged = useCallback(() => {
     refetchOrders()
     refetchBalance()
@@ -138,7 +139,7 @@ export default function MarketDetailPage() {
   // arrive on this same connection (realtime-service.md, "Order updates").
   const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
     onOrderFrame: onFrame,
-    onReconnected: onOrdersChanged,
+    onSubscribed: onOrdersChanged,
   })
   // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
   // so the controls lock the moment close_time passes, without a refetch.
