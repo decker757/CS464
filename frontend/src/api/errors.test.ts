@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { AxiosError, type AxiosResponse } from 'axios'
 import { GENERIC_ERROR, describeInsufficientFunds, describeInsufficientShares, describeOrderError, describeTradeError } from './errors'
 
-/** A 409 from the ledger's trade route, the shape describeTradeError reads. */
-function ledgerRefusal(code: string, details: Record<string, string>): AxiosError {
+/** A 409 from the ledger's trade route, the shape describeTradeError reads.
+ *  `details` is a list only for invalid_request, as pydantic's entries. */
+function ledgerRefusal(code: string, details: Record<string, string> | { loc: string[]; msg: string; type: string }[]): AxiosError {
   const response = {
     status: 409,
     data: { error: { code, message: 'Refused.', details } },
@@ -138,6 +139,23 @@ describe('describeOrderError', () => {
     // unknown_outcome means the same thing on a placement as on a trade, so
     // there is deliberately no second copy of its sentence.
     expect(describeOrderError(ledgerRefusal('unknown_outcome', {}))).toMatch(/no longer part of this market/i)
+  })
+
+  it('names the limit price when an invalid_request is about it', () => {
+    // The trade table's invalid_request sentence is about a quantity, which
+    // would send the trader to the wrong field (ledger-service.md: a limit
+    // price at or outside 0 and 1, or at five places, is refused this way).
+    const err = ledgerRefusal('invalid_request', [
+      { loc: ['body', 'limit_price'], msg: 'Input should be less than 1', type: 'less_than' },
+    ])
+    expect(describeOrderError(err)).toBe("That limit price isn't valid.")
+  })
+
+  it('names no field when an invalid_request is about something else', () => {
+    const err = ledgerRefusal('invalid_request', [
+      { loc: ['body', 'side'], msg: "Input should be 'buy' or 'sell'", type: 'literal_error' },
+    ])
+    expect(describeOrderError(err)).toBe("Some of this order's details aren't valid.")
   })
 
   it('falls back to the generic message for a code it has never seen', () => {
