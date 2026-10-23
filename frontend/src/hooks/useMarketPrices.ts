@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getMarketSnapshot, type OutcomePrice, type PriceState } from '../api/ledgerApi'
 
 export type { OutcomePrice }
@@ -16,9 +16,52 @@ type MarketPriceState = {
   status: ConnectionStatus
 }
 
+/** One `order` frame: a fill of one of the caller's resting orders
+ *  (docs/api/realtime-service.md, "Order updates"). */
+export interface OrderFrame {
+  type: 'order'
+  order_id: string
+  market_id: string
+  status: 'open' | 'filled' | 'cancelled' | 'released'
+  quantity: string
+  filled_quantity: string
+  fill: { state_version: number }
+}
+
+interface MarketPriceOptions {
+  /**
+   * Called for each `order` frame this connection receives.
+   *
+   * Order frames need no subscribe: a socket gets the frames of the user its
+   * token names, whatever markets it follows. They ride this connection
+   * rather than one of their own so a page holds a single socket, which is
+   * also what keeps "the" socket unambiguous in a test.
+   */
+  onOrderFrame?: (frame: OrderFrame) => void
+  /** Called on every `subscribed` ack, the first one included. Frames
+   *  published before it never reached this socket — while a dropped
+   *  connection was away, or between the caller's mount read and the first
+   *  ack — so a listener that tracks state re-reads it here ([X-4] #37's
+   *  recovery path, realtime-service.md "Reconnecting"). */
+  onSubscribed?: () => void
+}
+
 // Current prices and connection status; retains last known prices during reconnect rather than blanking them.
-export function useMarketPrices(marketId: string | null): { prices: OutcomePrice[] | null; status: ConnectionStatus } {
+export function useMarketPrices(
+  marketId: string | null,
+  { onOrderFrame, onSubscribed }: MarketPriceOptions = {},
+): { prices: OutcomePrice[] | null; status: ConnectionStatus } {
   const [state, setState] = useState<MarketPriceState | null>(null)
+
+  // Read through refs inside the socket's own callbacks, so a caller passing
+  // a fresh closure each render does not tear the connection down and
+  // rebuild it. The effect below depends on marketId alone, as it did.
+  const onOrderFrameRef = useRef(onOrderFrame)
+  const onSubscribedRef = useRef(onSubscribed)
+  useEffect(() => {
+    onOrderFrameRef.current = onOrderFrame
+    onSubscribedRef.current = onSubscribed
+  })
 
   useEffect(() => {
     if (!marketId) return
@@ -82,8 +125,13 @@ export function useMarketPrices(marketId: string | null): { prices: OutcomePrice
           // the socket, and everything earlier is in this snapshot. The
           // version check drops any overlap.
           loadSnapshot().catch(() => {})
+          // On every ack, the first included, for the snapshot's reason: the
+          // caller's own mount read can miss a frame published before this.
+          onSubscribedRef.current?.()
         } else if (msg.type === 'price') {
           apply(msg as PriceState)
+        } else if (msg.type === 'order') {
+          onOrderFrameRef.current?.(msg as OrderFrame)
         }
       }
 

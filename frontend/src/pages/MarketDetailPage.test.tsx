@@ -13,6 +13,7 @@ const MARKET_BASE = 'http://localhost:8001'
 const LEDGER_BASE = 'http://localhost:8003'
 const SNAPSHOT = `${LEDGER_BASE}/ledger/markets/:id/snapshot`
 const PORTFOLIO = `${LEDGER_BASE}/ledger/portfolio/me`
+const ORDERS = `${LEDGER_BASE}/ledger/orders/me`
 const PREVIEW = `${LEDGER_BASE}/ledger/markets/:id/preview`
 const TRADES = `${LEDGER_BASE}/ledger/markets/:id/trades`
 
@@ -95,6 +96,9 @@ beforeEach(() => {
   server.use(
     priceService.addEventListener('connection', () => { /* silent */ }),
     http.get(PORTFOLIO, () => HttpResponse.json(portfolio())),
+    // Every binary market reads this for the open-orders list ([T-6] #61);
+    // no orders is the default, so most tests see no list at all.
+    http.get(ORDERS, () => HttpResponse.json({ orders: [] })),
   )
 })
 
@@ -102,9 +106,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderPage(marketId = 'mkt-abc') {
+function renderPage(marketId = 'mkt-abc', { refetchBalance }: { refetchBalance?: () => Promise<void> } = {}) {
   return render(
-    <WithProviders user={trader}>
+    <WithProviders user={trader} refetchBalance={refetchBalance}>
       <MemoryRouter initialEntries={[`/markets/${marketId}`]}>
         <Routes>
           <Route path="/markets/:id" element={<MarketDetailPage />} />
@@ -573,6 +577,332 @@ describe('MarketDetailPage', () => {
     await waitFor(() => expect(wsClient).not.toBeNull())
     act(() => wsClient!.close(4403))
     expect(await screen.findByText(/live prices unavailable/i)).toBeInTheDocument()
+  })
+
+  // [FE][T-6] #61: placing a limit order and watching it rest, fill and be
+  // cancelled, all on the market's own page.
+  describe('limit orders', () => {
+    function restingOrder(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'ord-1',
+        market_id: 'mkt-abc',
+        outcome_id: 'o1',
+        outcome_position: 0,
+        side: 'buy',
+        limit_price: '0.3000',
+        quantity: '50.0000',
+        filled_quantity: '0.0000',
+        average_fill_price: null,
+        reserved_credits: '15.0000',
+        reserved_shares: null,
+        status: 'open',
+        created_at: '2026-10-20T15:52:10.744443Z',
+        cancelled_at: null,
+        ...overrides,
+      }
+    }
+
+    it('offers the Limit choice on a binary market', async () => {
+      renderPage()
+      expect(await screen.findByRole('button', { name: 'Limit' })).toBeInTheDocument()
+    })
+
+    it('hides the Limit choice on a market with more than two outcomes', async () => {
+      // The ledger refuses one with market_not_binary, so the control is not
+      // offered rather than offered and refused (ledger-service.md).
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({
+          ...baseMarket,
+          outcomes: [
+            { id: 'o1', position: 0, label: 'Yes' },
+            { id: 'o2', position: 1, label: 'No' },
+            { id: 'o3', position: 2, label: 'Maybe' },
+          ],
+        })),
+      )
+      renderPage()
+      await screen.findByText(baseMarket.question)
+      expect(screen.queryByRole('button', { name: 'Limit' })).not.toBeInTheDocument()
+    })
+
+    it('shows the trader\'s resting order with its limit, quantity and filled-so-far', async () => {
+      server.use(http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder({ filled_quantity: '20.5465' })] })))
+      renderPage()
+
+      expect(await screen.findByText('Your open orders')).toBeInTheDocument()
+      const row = screen.getAllByRole('row')[1]
+      expect(row).toHaveTextContent('0.3000')
+      expect(row).toHaveTextContent('50.0000')
+      expect(row).toHaveTextContent('20.5465')
+    })
+
+    it('reads no holdings on a closed market, even when the socket asks for a re-read', async () => {
+      // The holdings only feed the sell clamp, and a closed market has no
+      // sell to clamp. Its orders still re-read on every ack, since they stay
+      // cancellable until the market has a result (ADR 0024).
+      let holdingReads = 0
+      let orderReads = 0
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status: 'closed' })),
+        http.get(PORTFOLIO, () => {
+          holdingReads += 1
+          return HttpResponse.json(portfolio())
+        }),
+        http.get(ORDERS, () => {
+          orderReads += 1
+          return HttpResponse.json({ orders: [restingOrder()] })
+        }),
+        priceService.addEventListener('connection', ({ client }) => {
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      renderPage()
+
+      // The mount's read and the ack's: the ack has been handled.
+      await waitFor(() => expect(orderReads).toBe(2))
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+
+      expect(holdingReads).toBe(0)
+    })
+
+    it('says the open orders could not be loaded, and loads them on a retry', async () => {
+      // Without this a failed first read looks exactly like having no
+      // orders, and a trader with one resting cannot reach its cancel.
+      let failing = true
+      server.use(http.get(ORDERS, () => (failing ? HttpResponse.error() : HttpResponse.json({ orders: [restingOrder()] }))))
+      const actor = userEvent.setup()
+      renderPage()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Your open orders could not be loaded.')
+
+      failing = false
+      await actor.click(screen.getByRole('button', { name: 'Try again' }))
+
+      expect(await screen.findByRole('button', { name: /^cancel buy yes/i })).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('shows no open-orders section when the trader has none here', async () => {
+      // The list is scoped to this market: an order on another one belongs
+      // on that market's page, not this one.
+      server.use(http.get(ORDERS, () => HttpResponse.json({ orders: [restingOrder({ market_id: 'other-market' })] })))
+      renderPage()
+      await screen.findByText(baseMarket.question)
+      expect(screen.queryByText('Your open orders')).not.toBeInTheDocument()
+    })
+
+    it('moves filled-so-far from an order frame, with no reload', async () => {
+      // realtime-service.md, "Order updates": a fill reaches the owner on
+      // every socket they have open, with no subscribe of its own.
+      //
+      // The page re-reads the list after a frame too. That read is held
+      // here, so what moves the row is the frame and nothing else.
+      let filled = false
+      const reReadAfterFill = holdUntilReleased()
+      let wsClient: { send(data: string): void } | null = null
+      server.use(
+        http.get(ORDERS, async () => {
+          if (!filled) return HttpResponse.json({ orders: [restingOrder()] })
+          await reReadAfterFill.held
+          return HttpResponse.json({ orders: [restingOrder({ filled_quantity: '12.5000', reserved_credits: '11.2500' })] })
+        }),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      renderPage()
+      await screen.findByText('Your open orders')
+      await waitFor(() => expect(screen.getAllByRole('row')[1]).toHaveTextContent('0.0000'))
+
+      await waitFor(() => expect(wsClient).not.toBeNull())
+      filled = true
+      act(() => wsClient!.send(JSON.stringify({
+        type: 'order',
+        order_id: 'ord-1',
+        market_id: 'mkt-abc',
+        status: 'open',
+        quantity: '50.0000',
+        filled_quantity: '12.5000',
+        fill: { transaction_id: 't1', quantity: '12.5000', total: '-3.7500', state_version: 7 },
+        occurred_at: '2026-10-20T16:00:00Z',
+      })))
+
+      await waitFor(() => expect(screen.getAllByRole('row')[1]).toHaveTextContent('12.5000'))
+      reReadAfterFill.release()
+    })
+
+    it('re-reads the list after an order frame, so what the order holds follows the fill', async () => {
+      // The frame carries no money, and the ledger publishes it after the
+      // commit that wrote the fill (realtime-service.md, "Publishing"), so a
+      // read sent once it has arrived already shows the smaller reservation.
+      let served = [restingOrder()]
+      let wsClient: { send(data: string): void } | null = null
+      server.use(
+        http.get(ORDERS, () => HttpResponse.json({ orders: served })),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+        }),
+      )
+      renderPage()
+      const row = () => screen.getByRole('row', { name: /buy yes/i })
+      await waitFor(() => expect(row()).toHaveTextContent('15.0000 credits'))
+      await waitFor(() => expect(wsClient).not.toBeNull())
+
+      served = [restingOrder({ filled_quantity: '12.5000', average_fill_price: '0.2700', reserved_credits: '11.6250' })]
+      act(() => wsClient!.send(JSON.stringify({
+        type: 'order',
+        order_id: 'ord-1',
+        market_id: 'mkt-abc',
+        status: 'open',
+        quantity: '50.0000',
+        filled_quantity: '12.5000',
+        fill: { transaction_id: 't1', quantity: '12.5000', total: '-3.3750', state_version: 7 },
+        occurred_at: '2026-10-20T16:00:00Z',
+      })))
+
+      await waitFor(() => expect(row()).toHaveTextContent('11.6250 credits'))
+    })
+
+    it('drops the order from the list once a frame says it filled in full', async () => {
+      // The re-read that follows the frame is held, as above, so the frame
+      // is what takes the row away.
+      let filled = false
+      const reReadAfterFill = holdUntilReleased()
+      let wsClient: { send(data: string): void } | null = null
+      server.use(
+        http.get(ORDERS, async () => {
+          if (!filled) return HttpResponse.json({ orders: [restingOrder()] })
+          await reReadAfterFill.held
+          return HttpResponse.json({ orders: [] })
+        }),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      renderPage()
+      await screen.findByText('Your open orders')
+
+      await waitFor(() => expect(wsClient).not.toBeNull())
+      filled = true
+      act(() => wsClient!.send(JSON.stringify({
+        type: 'order',
+        order_id: 'ord-1',
+        market_id: 'mkt-abc',
+        status: 'filled',
+        quantity: '50.0000',
+        filled_quantity: '50.0000',
+        fill: { transaction_id: 't2', quantity: '50.0000', total: '-15.0000', state_version: 8 },
+        occurred_at: '2026-10-20T16:01:00Z',
+      })))
+
+      // The list holds live orders only, so a filled one leaves it — and
+      // with the last one gone, so does the section.
+      await waitFor(() => expect(screen.queryByText('Your open orders')).not.toBeInTheDocument())
+      reReadAfterFill.release()
+    })
+
+    it('gives the trading panel what the sell orders on this market reserve, so it offers only the rest', async () => {
+      // The join is the page's: the holdings come from the portfolio, the
+      // reservations from the open-orders list. A buy reserves no shares, and
+      // an order on another market belongs to that market's page.
+      server.use(
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([{ market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000' }]))),
+        http.get(ORDERS, () => HttpResponse.json({ orders: [
+          restingOrder({ id: 'ord-1', side: 'sell', limit_price: '0.7000', quantity: '1.5000', reserved_credits: null, reserved_shares: '1.5000' }),
+          restingOrder({ id: 'ord-2', side: 'sell', limit_price: '0.8000', quantity: '0.5000', reserved_credits: null, reserved_shares: '0.5000' }),
+          restingOrder({ id: 'ord-3', market_id: 'mkt-other', side: 'sell', reserved_credits: null, reserved_shares: '3.0000' }),
+          restingOrder({ id: 'ord-4' }),
+        ] })),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
+
+      await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 4.0000 of your 6.0000 shares'))
+    })
+
+    it('re-reads the balance and the holdings, not only the orders, after a reconnect', async () => {
+      // realtime-service.md, "Reconnecting": frames published while the
+      // socket was away are gone, so fetch GET /ledger/orders/me and the
+      // balance again. A fill missed in that gap moved credits and shares too.
+      let wsClient: { close(code?: number): void } | null = null
+      let snapshotReads = 0
+      let holdingReads = 0
+      server.use(
+        http.get(SNAPSHOT, () => {
+          snapshotReads += 1
+          return HttpResponse.json({ error: { code: 'market_not_found', message: 'Not found.' } }, { status: 404 })
+        }),
+        http.get(PORTFOLIO, () => {
+          holdingReads += 1
+          return HttpResponse.json(portfolio())
+        }),
+        priceService.addEventListener('connection', ({ client }) => {
+          wsClient = client
+          client.addEventListener('message', event => {
+            const message = JSON.parse(event.data as string)
+            if (message.action === 'subscribe') {
+              client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+            }
+          })
+        }),
+      )
+      const refetchBalance = vi.fn(async () => {})
+      renderPage('mkt-abc', { refetchBalance })
+
+      // The mount's snapshot and the one after the first ack: the ack has
+      // been handled once both are in.
+      await waitFor(() => expect(snapshotReads).toBe(2))
+      await waitFor(() => expect(holdingReads).toBeGreaterThan(0))
+      const balanceReadsBefore = refetchBalance.mock.calls.length
+      const holdingReadsBefore = holdingReads
+
+      act(() => wsClient!.close(1000))
+      // The reconnect's own ack, after the one-second backoff.
+      await waitFor(() => expect(snapshotReads).toBe(3), { timeout: 3000 })
+
+      expect(refetchBalance.mock.calls.length).toBeGreaterThan(balanceReadsBefore)
+      await waitFor(() => expect(holdingReads).toBeGreaterThan(holdingReadsBefore))
+    })
+
+    it('keeps a refused cancel\'s message on screen when the re-read leaves no orders', async () => {
+      // A refused cancel re-reads the list, and when the order was the
+      // market's only one that read comes back empty. The message saying why
+      // the cancel did nothing has to outlive the row it was about.
+      let served = [restingOrder()]
+      server.use(
+        http.get(ORDERS, () => HttpResponse.json({ orders: served })),
+        http.post(`${LEDGER_BASE}/ledger/orders/:id/cancel`, () => {
+          served = []
+          return HttpResponse.json({ error: { code: 'order_already_filled', message: 'too late' } }, { status: 409 })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+
+      await actor.click(await screen.findByRole('button', { name: /^cancel buy yes/i }))
+
+      // The re-read has landed once the row is gone.
+      await waitFor(() => expect(screen.queryByRole('button', { name: /^cancel buy yes/i })).not.toBeInTheDocument())
+      expect(screen.getByRole('alert')).toHaveTextContent('That order filled before the cancel reached it.')
+    })
   })
 })
 

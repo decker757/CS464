@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMyPortfolio } from '../api/ledgerApi'
+import { getMyPortfolio, type Order } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
+import OpenOrdersList from '../components/markets/OpenOrdersList'
 import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
 import BackLink from '../components/ui/BackLink'
+import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
+import { useBalance } from '../context/BalanceContext'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
-import { useMarketPrices } from '../hooks/useMarketPrices'
+import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
+import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
+import { addCredits } from '../utils/formatCredits'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
@@ -34,12 +39,27 @@ function outcomeBannerLabel(status: MarketStatus): string {
   return 'Proposed outcome'
 }
 
+// What the trader's own open sell orders hold back of each outcome, summed:
+// the ledger will not sell those shares a second time
+// (insufficient_shares_held, ledger-service.md), so the panel's sell check
+// stops short of them. A buy reserves credits, and carries null here.
+function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
+  const reserved: Record<string, string> = {}
+  for (const order of orders) {
+    if (order.reserved_shares === null) continue
+    const total = addCredits(reserved[order.outcome_id] ?? '0', order.reserved_shares)
+    if (total !== null) reserved[order.outcome_id] = total
+  }
+  return reserved
+}
+
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
   return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
 }
 
 export default function MarketDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const { refetch: refetchBalance } = useBalance()
   // Tagged with the market id it was loaded for, so moving to another market
   // shows that one loading rather than the last one's market or error.
   const [loaded, setLoaded] = useState<{ id: string; market: PublicMarketDetail | null; failed: boolean } | null>(null)
@@ -53,27 +73,23 @@ export default function MarketDetailPage() {
   // previous title up rather than blanking it for the round trip (#356).
   useDocumentTitle(market?.question)
 
-  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null)
+  // Limit orders are binary-markets-only: anything else is refused
+  // market_not_binary, so the form is hidden rather than offered and refused
+  // (ledger-service.md). The list is read whenever the market could carry
+  // orders of the trader's — including a closed one, whose orders stay
+  // cancellable until the market has a result (ADR 0024).
+  const binaryMarket = market?.outcomes.length === 2
+  const ordersPossible = binaryMarket && market?.status !== 'settled'
+  const { orders, hasError: ordersReadFailed, refetch: refetchOrders, applyFrame } = useMyOrders(!!ordersPossible)
+  const ordersHere = orders?.filter(order => order.market_id === market?.id) ?? []
+  // Only before any list has landed: a re-read that fails later leaves the
+  // last list on screen, and an error over it would say the wrong thing.
+  const ordersUnavailable = orders === null && ordersReadFailed
+
   // [X-3] #36: "a countdown hitting zero is the event that disables" trading,
   // so the controls lock the moment close_time passes, without a refetch.
   const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
   const pastClose = market !== null && !closeTimeStillAhead
-  // Re-evaluates the instant the dispute window closes, rather than only at
-  // whatever render happens to run next — an approved market has no trades
-  // to force one, so without this "Disputes close in 3h" could sit on
-  // screen long after payout ([3.3] #11).
-  const disputeWindowStillOpen = useWindowOpen(market?.dispute_window_ends_at ?? null)
-
-  useEffect(() => {
-    if (!id) return
-    let cancelled = false
-    getMarket(id).then(
-      found => { if (!cancelled) setLoaded({ id, market: found, failed: false }) },
-      () => { if (!cancelled) setLoaded({ id, market: null, failed: true }) },
-    )
-    return () => { cancelled = true }
-  }, [id])
-
   const tradeable = market?.status === 'open' && !pastClose
 
   // What the trader holds of each of this market's outcomes, for the sell
@@ -98,8 +114,11 @@ export default function MarketDetailPage() {
   // with nothing to re-fire the read.
   const latestHeldReadRef = useRef(0)
 
+  // Only for a market that can be traded, whoever asks — the mount, a trade,
+  // an order frame or a socket ack: nothing else on this page uses the
+  // figure, and a closed or settled market has no sell to clamp.
   const refetchHeld = useCallback(() => {
-    if (!id) return
+    if (!id || !tradeable) return
     const requestId = ++latestHeldReadRef.current
     getMyPortfolio().then(
       portfolio => {
@@ -111,13 +130,61 @@ export default function MarketDetailPage() {
       // way BalanceContext keeps the last balance on a failed refetch.
       () => {},
     )
+  }, [id, tradeable])
+
+  // A placement or a cancel moves credits, or what they reserve, and a
+  // placement that filled also changed the holdings the sell clamp reads.
+  // The balance comes back through BalanceContext, as it does after a trade.
+  // Every subscribe ack re-reads all three too, the first one included: a
+  // fill whose frame was published before the socket was listening — while
+  // it was away, or before it first attached — moved every one of them
+  // (realtime-service.md, "Reconnecting": the orders and the balance again).
+  const onOrdersChanged = useCallback(() => {
+    refetchOrders()
+    refetchBalance()
+    refetchHeld()
+  }, [refetchOrders, refetchBalance, refetchHeld])
+
+  // A fill moves credits and shares, and the frame carries neither — only
+  // the filled quantity, which it applies to the row at once. Everything
+  // else is read again: the list, for what the order still holds, the
+  // balance, and the holdings the sell clamp reads. The ledger publishes the
+  // frame after the commit that wrote the fill (realtime-service.md,
+  // "Publishing"), so a read sent now already includes it.
+  const onFrame = useCallback((frame: OrderFrame) => {
+    applyFrame(frame)
+    refetchOrders()
+    refetchBalance()
+    refetchHeld()
+  }, [applyFrame, refetchOrders, refetchBalance, refetchHeld])
+
+  // One socket for the page: price frames keep the prices above current, and
+  // order frames the list below it. Order frames need no subscribe, so they
+  // arrive on this same connection (realtime-service.md, "Order updates").
+  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
+    onOrderFrame: onFrame,
+    onSubscribed: onOrdersChanged,
+  })
+  // Re-evaluates the instant the dispute window closes, rather than only at
+  // whatever render happens to run next — an approved market has no trades
+  // to force one, so without this "Disputes close in 3h" could sit on
+  // screen long after payout ([3.3] #11).
+  const disputeWindowStillOpen = useWindowOpen(market?.dispute_window_ends_at ?? null)
+
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    getMarket(id).then(
+      found => { if (!cancelled) setLoaded({ id, market: found, failed: false }) },
+      () => { if (!cancelled) setLoaded({ id, market: null, failed: true }) },
+    )
+    return () => { cancelled = true }
   }, [id])
 
-  // Only for a market that can be traded: nothing else on this page uses the
-  // figure, and a closed or settled market has no sell to clamp.
+  // On mount, and again whenever the market turns tradeable.
   useEffect(() => {
-    if (tradeable) refetchHeld()
-  }, [tradeable, refetchHeld])
+    refetchHeld()
+  }, [refetchHeld])
 
   // An early close leaves close_time in the future, so "Closed <close_time>"
   // would name a date that has not happened yet.
@@ -211,11 +278,34 @@ export default function MarketDetailPage() {
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
-              <TradingPanel marketId={market.id} outcomes={market.outcomes} heldByOutcome={heldByOutcome} onTraded={refetchHeld} />
+              <TradingPanel
+                marketId={market.id}
+                outcomes={market.outcomes}
+                limitOrdersAllowed={!!binaryMarket}
+                heldByOutcome={heldByOutcome}
+                reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
+                onTraded={refetchHeld}
+                onOrderPlaced={onOrdersChanged}
+              />
             ) : (
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
             )}
           </Card>
+
+          {/* Outlives the form above: a closed market's orders stay
+              cancellable until the market has a result (ADR 0024), so this
+              renders whenever the trader has one here. Mounted even with
+              none, so a refused cancel's message survives the re-read that
+              empties the list; keyed by market, so the message does not
+              follow the trader to the next one. */}
+          {ordersUnavailable ? (
+            <SectionCard title="Your open orders" className="mb-6">
+              <p role="alert" className="mb-3 text-xs text-danger">Your open orders could not be loaded.</p>
+              <Button variant="outline" size="xs" onClick={refetchOrders}>Try again</Button>
+            </SectionCard>
+          ) : (
+            <OpenOrdersList key={market.id} orders={ordersHere} outcomes={market.outcomes} onCancelled={onOrdersChanged} />
+          )}
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />

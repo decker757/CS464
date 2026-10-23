@@ -58,15 +58,35 @@ const HELD_PLENTY = { 'o-yes': '100.0000', 'o-no': '100.0000' }
 
 interface PanelOptions {
   balance?: string | null | undefined
+  // What a trade may spend: `balance` less what resting buy orders reserve.
+  // Defaults to `balance`, an account with no resting orders.
+  available?: string | null | undefined
   heldByOutcome?: Record<string, string> | null
+  reservedSharesByOutcome?: Record<string, string>
   refetch?: () => Promise<void>
   onTraded?: () => void
+  // Off by default so these tests drive the market-order body directly, as
+  // they did before the order-type toggle existed. The limit half has its
+  // own file.
+  limitOrdersAllowed?: boolean
+  onOrderPlaced?: () => void
 }
 
-function panel({ balance = '1000.0000', heldByOutcome = HELD_PLENTY, refetch = vi.fn(async () => {}), onTraded = vi.fn() }: PanelOptions = {}) {
+function panel({
+  balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, reservedSharesByOutcome = {}, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
+  limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
+}: PanelOptions = {}) {
   return (
-    <BalanceContext.Provider value={{ balance, refetch }}>
-      <TradingPanel marketId={MARKET_ID} outcomes={outcomes} heldByOutcome={heldByOutcome} onTraded={onTraded} />
+    <BalanceContext.Provider value={{ balance, available, refetch }}>
+      <TradingPanel
+        marketId={MARKET_ID}
+        outcomes={outcomes}
+        limitOrdersAllowed={limitOrdersAllowed}
+        heldByOutcome={heldByOutcome}
+        reservedSharesByOutcome={reservedSharesByOutcome}
+        onTraded={onTraded}
+        onOrderPlaced={onOrderPlaced}
+      />
     </BalanceContext.Provider>
   )
 }
@@ -637,6 +657,20 @@ describe('TradingPanel', () => {
     expect(tradeCalls).toBe(0)
   })
 
+  it('blocks a buy that fits the balance but not what is available, before any request', async () => {
+    // ADR 0024: a resting buy order's credits stay in `balance` and cannot be
+    // spent, so the check reads `available`. Here the balance would wave the
+    // trade through and the ledger would then refuse it.
+    mockPreview(previewResponse({ quantity: '30.0000', total: '-20.0000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ balance: '1000.0000', available: '10.0000' })
+
+    await typeQuantity(actor, '30')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('You have 10.0000 credits, but this trade needs 20.0000.')
+    expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
+  })
+
   it('allows a buy that costs exactly the balance', async () => {
     // The boundary the check must not round the wrong way: spending every
     // credit you have is a trade the ledger accepts.
@@ -762,6 +796,50 @@ describe('TradingPanel', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent("You don't hold any Yes shares.")
     expect(screen.queryByLabelText('Quantity (shares)')).not.toBeInTheDocument()
+  })
+
+  it('blocks a sell of shares that open sell orders already reserve, before any request', async () => {
+    // The ledger refuses a sell on the position less what the trader's open
+    // sell orders hold back (ledger-service.md's insufficient_shares_held),
+    // so the check here does too, and Max offers only what is left.
+    mockPreview(previewResponse({ side: 'sell', total: '2.5000' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 4.0000 of your 6.0000 shares')
+
+    await typeQuantity(actor, '5')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'You have 4.0000 shares available to sell, but this sell asks for 5.0000. '
+      + 'You hold 6.0000 in all, and 2.0000 of them are reserved by your open sell orders.',
+    )
+    expect(screen.getByRole('button', { name: /^sell yes$/i })).toBeDisabled()
+
+    await actor.clear(screen.getByLabelText('Quantity (shares)'))
+    await actor.click(screen.getByRole('button', { name: /^max$/i }))
+    expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(4)
+  })
+
+  it('offers nothing to sell, not a negative, while the orders list lags a smaller holding', async () => {
+    // A sell order's fill lowers the position and its reservation together,
+    // but they arrive on two reads, and the holdings read can land first.
+    mockPreview(previewResponse({ side: 'sell', quantity: '0.5000', total: '0.2500' }))
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: { 'o-yes': '1.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 1.0000 shares')
+    expect(screen.queryByRole('button', { name: /^max$/i })).not.toBeInTheDocument()
+
+    // The refusal agrees with the line above it: nothing left, never -1.0000.
+    await typeQuantity(actor, '0.5')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'You have 0.0000 shares available to sell, but this sell asks for 0.5000. '
+      + 'You hold 1.0000 in all, and 1.0000 of them are reserved by your open sell orders.',
+    )
   })
 
   it('refuses nothing while the figures the two checks need are missing', async () => {
