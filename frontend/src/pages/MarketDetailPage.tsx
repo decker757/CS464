@@ -42,11 +42,11 @@ function outcomeBannerLabel(status: MarketStatus): string {
 // What the trader's own open sell orders hold back of each outcome, summed:
 // the ledger will not sell those shares a second time
 // (insufficient_shares_held, ledger-service.md), so the panel's sell check
-// stops short of them. A buy reserves credits, never shares.
+// stops short of them. A buy reserves credits, and carries null here.
 function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
   const reserved: Record<string, string> = {}
   for (const order of orders) {
-    if (order.side !== 'sell' || order.reserved_shares === null) continue
+    if (order.reserved_shares === null) continue
     const total = addCredits(reserved[order.outcome_id] ?? '0', order.reserved_shares)
     if (total !== null) reserved[order.outcome_id] = total
   }
