@@ -170,6 +170,9 @@ Everything else belongs in a unit test.
   and `COMPOSE_PROJECT_NAME` so promotion reaches that project's database.
 - Import `test` and `expect` from `./support/fixtures`, never straight from
   `@playwright/test`. That import is what records the pages your test opens.
+- `e2e/seed/` is the demo seed (`npm run seed:demo`, #454), not a test. It
+  uses fixed names and imports `@playwright/test` directly, and is exempt from
+  the two rules above because it seeds a showcase rather than testing a page.
 
 **Every route in `src/App.tsx` must be opened by some test.** The run fails
 otherwise, naming the pages nothing reached ([F-12] #341). A page that
