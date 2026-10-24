@@ -535,12 +535,15 @@ describe('MarketDetailPage', () => {
       )
     }
 
+    // Ten seconds across a minute boundary, the card's tick. A full minute
+    // would also pass on the dispute-window timer's once-a-minute render,
+    // which is not the clock this page's countdown is meant to keep.
     it('counts the close down as time passes rather than freezing at first render', async () => {
-      serveMarket({ close_time: fromNow((3 * 60 + 12) * 60_000 + 30_000) })
+      serveMarket({ close_time: fromNow((3 * 60 + 12) * 60_000 + 5_000) })
       renderPage()
       expect(await screen.findByText('Closes in 3h 12m')).toBeInTheDocument()
 
-      await act(() => vi.advanceTimersByTimeAsync(60_000))
+      await act(() => vi.advanceTimersByTimeAsync(10_000))
 
       expect(screen.getByText('Closes in 3h 11m')).toBeInTheDocument()
     })
