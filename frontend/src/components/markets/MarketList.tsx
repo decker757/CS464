@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { listMarkets, type PublicMarketPage, type PublicMarketSummary } from '../../api/marketApi'
-import type { ClosingWindow } from '../../utils/closingWindow'
+import { closingWindowOf, type ClosingPreset } from '../../utils/closingWindow'
 import { usePagedList } from '../../hooks/usePagedList'
 import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import Button from '../ui/Button'
@@ -13,7 +13,7 @@ interface MarketListProps {
   query: string
   status: StatusFilter | null
   /** null for any closing time (#442). */
-  closingWindow: ClosingWindow | null
+  closing: ClosingPreset | null
 }
 
 const pagedMarketsOptions = {
@@ -22,13 +22,20 @@ const pagedMarketsOptions = {
   idOf: (market: PublicMarketSummary) => market.id,
 }
 
-// One search and one status, from its first page on. A different search or
-// status is a different list: the page gives this a new `key`, so the paging
-// state and the prices start over (usePricesForMarkets says to do exactly that).
-export default function MarketList({ query, status, closingWindow }: MarketListProps) {
+// One search, one status and one closing preset, from its first page on. A
+// different one of any is a different list: the page gives this a new `key`,
+// so the paging state and the prices start over (usePricesForMarkets says to
+// do exactly that).
+export default function MarketList({ query, status, closing }: MarketListProps) {
+  // The preset's window as of the moment this list started, and kept for its
+  // life: every page asks for the same window even if a midnight passes while
+  // the trader pages, and a list started after midnight, by a new search or a
+  // new choice, asks for the new day (#442).
+  const [closingWindow] = useState(() => (closing === null ? null : closingWindowOf(closing, new Date())))
   // Bumped by Try again, and nothing else. usePagedList starts its list over
   // whenever `fetchPage` changes identity, so that is the whole retry: page one
-  // again, under the same search and status, with any failed attempt dropped.
+  // again, under the same search, status and window, with any failed attempt
+  // dropped.
   const [attempt, setAttempt] = useState(0)
   const fetchMarketPage = useCallback(
     (cursor: string | undefined) =>
