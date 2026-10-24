@@ -38,6 +38,18 @@ def _engine_context() -> AbstractContextManager[Context]:
     return localcontext(Context(prec=_PRECISION))
 
 
+def engine_context() -> AbstractContextManager[Context]:
+    """`_engine_context`, for a caller outside the engine whose arithmetic
+    must run at the precision the trades were priced at: the void's cut.
+
+    A wrapper rather than a rename, so the three modules that import the
+    private name are untouched. DECISIONS.md, "The engine's precision context
+    is public in `core/lmsr.py`, and the void's cut calls it rather than a
+    copy".
+    """
+    return _engine_context()
+
+
 def _require_positive_b(b: Decimal) -> None:
     if b <= 0:
         raise ValueError(f"b must be positive, got {b}")
