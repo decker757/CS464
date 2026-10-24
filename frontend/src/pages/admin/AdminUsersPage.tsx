@@ -46,9 +46,13 @@ const STATUS_OPTIONS: FilterOption<boolean>[] = [
 // How far each arrow key moves the selection, as in any radio group.
 const ARROW_STEPS: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
 
-function emptyMessage(query: string, hasPillFilter: boolean): string {
+// Names whatever narrowed the list, so an empty one never blames the search
+// for what a pill did, or claims there are no users at all.
+function emptyMessage(query: string, pillFilterCount: number): string {
+  const filters = pillFilterCount === 1 ? 'this filter' : 'these filters'
+  if (query && pillFilterCount > 0) return `No users match that search with ${filters}.`
   if (query) return 'No users match that search.'
-  if (hasPillFilter) return 'No users match these filters.'
+  if (pillFilterCount > 0) return `No users match ${filters}.`
   return 'No users yet.'
 }
 
@@ -106,6 +110,7 @@ export default function AdminUsersPage() {
     [query, role, isSuspended],
   )
   const { items: users, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchPage, pagedUsersOptions)
+  const pillFilterCount = [role, isSuspended].filter(value => value !== null).length
 
   return (
     <AppLayout width="max-w-[800px]">
@@ -128,7 +133,7 @@ export default function AdminUsersPage() {
       {hasError && <p role="alert" className="text-sm text-danger">Failed to load users. Please try again.</p>}
 
       {!isLoading && !hasError && users.length === 0 && (
-        <p className="text-sm text-muted">{emptyMessage(query, role !== null || isSuspended !== null)}</p>
+        <p className="text-sm text-muted">{emptyMessage(query, pillFilterCount)}</p>
       )}
 
       {!isLoading && !hasError && users.length > 0 && (
