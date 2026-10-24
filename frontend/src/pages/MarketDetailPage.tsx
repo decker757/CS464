@@ -273,10 +273,25 @@ export default function MarketDetailPage() {
               return (
                 <Card key={outcome.id} borderColor={isWinner ? 'border-info/40' : undefined} className="px-6 py-5 text-center">
                   <p className="mb-2 text-[13px] font-semibold tracking-[0.5px] text-muted uppercase">{outcome.label}</p>
-                  <p aria-label={`${outcome.label} price`} className="mb-1 text-[32px] font-extrabold tracking-[-1px] text-smu-navy">
-                    {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
-                  </p>
-                  <p className="text-xs text-subtle">{outcomePrice ? 'implied probability' : 'loading price…'}</p>
+                  {/* Once the result is decided it takes the price's place
+                      (#429): the last trade's price under "Approved outcome:
+                      Yes" read as the market doubting its own answer. The
+                      public read names the winner only once a second
+                      administrator has approved it (market-service.md), so a
+                      pending market keeps its price. Nothing here reads
+                      `prices`, so no price frame can paint over the result. */}
+                  {winningOutcome ? (
+                    <p aria-label={`${outcome.label} result`} className={`mb-1 text-[32px] font-extrabold tracking-[-1px] ${isWinner ? 'text-smu-navy' : 'text-subtle'}`}>
+                      {isWinner ? 'Won' : 'Lost'}
+                    </p>
+                  ) : (
+                    <>
+                      <p aria-label={`${outcome.label} price`} className="mb-1 text-[32px] font-extrabold tracking-[-1px] text-smu-navy">
+                        {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
+                      </p>
+                      <p className="text-xs text-subtle">{outcomePrice ? 'implied probability' : 'loading price…'}</p>
+                    </>
+                  )}
                 </Card>
               )
             })}
