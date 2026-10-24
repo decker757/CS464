@@ -264,16 +264,13 @@ async def test_a_query_narrows_the_list(
     assert [user["username"] for user in response.json()["users"]] == ["michelle_l"]
 
 
-@pytest.mark.parametrize(
-    ("role", "expected"), [("admin", ["admin_one"]), ("trader", ["michelle_l"])]
-)
 async def test_a_role_narrows_the_list(
-    admin_client: AsyncClient, target_user_id: str, role: str, expected: list[str]
+    admin_client: AsyncClient, target_user_id: str
 ) -> None:
     """That `role` reaches the service layer; filtering is tested there."""
-    response = await admin_client.get(USERS, params={"role": role})
+    response = await admin_client.get(USERS, params={"role": "admin"})
 
-    assert [user["username"] for user in response.json()["users"]] == expected
+    assert [user["username"] for user in response.json()["users"]] == ["admin_one"]
 
 
 @pytest.mark.parametrize(

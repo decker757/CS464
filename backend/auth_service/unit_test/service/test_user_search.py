@@ -289,28 +289,37 @@ async def test_the_two_filters_and_the_query_narrow_together(
     ) == ["ihsan_k"]
 
 
+@pytest.mark.parametrize(
+    ("search_filter", "match_columns"),
+    [
+        ({"role": UserRole.ADMIN}, {"role": UserRole.ADMIN}),
+        ({"is_suspended": True}, {"suspended": True}),
+    ],
+    ids=["role", "is_suspended"],
+)
 async def test_a_filtered_list_pages_through_every_match_and_nothing_else(
-    session: AsyncSession,
+    session: AsyncSession, search_filter: dict, match_columns: dict
 ) -> None:
-    """A trader between every pair of admins and at both ends, so a filter
-    applied to the fetched rows rather than in the query would come up short
-    of the page and misreport `has_more`."""
-    await _make(session, "trader_0", "t0@example.com", age=0)
-    await _make(session, "admin_1", "a1@example.com", age=1, role=UserRole.ADMIN)
-    await _make(session, "trader_2", "t2@example.com", age=2)
-    await _make(session, "admin_3", "a3@example.com", age=3, role=UserRole.ADMIN)
-    await _make(session, "trader_4", "t4@example.com", age=4)
-    await _make(session, "admin_5", "a5@example.com", age=5, role=UserRole.ADMIN)
-    await _make(session, "trader_6", "t6@example.com", age=6)
+    """A non-match between every pair of matches and at both ends, so a filter
+    missing from the query, or applied to the fetched rows rather than in it,
+    would show a non-match or come up short of the page and misreport
+    `has_more`."""
+    await _make(session, "other_0", "o0@example.com", age=0)
+    await _make(session, "match_1", "m1@example.com", age=1, **match_columns)
+    await _make(session, "other_2", "o2@example.com", age=2)
+    await _make(session, "match_3", "m3@example.com", age=3, **match_columns)
+    await _make(session, "other_4", "o4@example.com", age=4)
+    await _make(session, "match_5", "m5@example.com", age=5, **match_columns)
+    await _make(session, "other_6", "o6@example.com", age=6)
 
-    first = await user_admin.search_users(session, role=UserRole.ADMIN, limit=2)
+    first = await user_admin.search_users(session, **search_filter, limit=2)
     second = await user_admin.search_users(
-        session, role=UserRole.ADMIN, limit=2, cursor=first.next_cursor
+        session, **search_filter, limit=2, cursor=first.next_cursor
     )
 
-    assert [u.username for u in first.users] == ["admin_5", "admin_3"]
+    assert [u.username for u in first.users] == ["match_5", "match_3"]
     assert first.has_more is True
-    assert [u.username for u in second.users] == ["admin_1"]
+    assert [u.username for u in second.users] == ["match_1"]
     assert second.has_more is False
 
 
