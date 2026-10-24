@@ -29,10 +29,17 @@ test('the browse list bands its markets, and a search collapses the bands', asyn
   await logIn(page, trader)
   await page.goto('/markets')
 
-  // The band exists, states its rule, and the full list is still below it.
+  // A hero at the top, the bands under it, and the full list still below
+  // them. Every band states its own rule (AC 2).
+  await expect(page.getByRole('heading', { name: 'Featured' })).toBeVisible()
+  await expect(page.getByText('Most traded right now')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Trending' })).toBeVisible()
   await expect(page.getByText('Most credits traded')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Browse all' })).toBeVisible()
+
+  // The hero is one market, not a band of them.
+  const featuredBand = page.locator('section', { has: page.getByRole('heading', { name: 'Featured' }) })
+  await expect(featuredBand.getByRole('link')).toHaveCount(1)
 
   // Trending holds real markets, ranked on a figure the ledger maintains as
   // trades commit. Which markets is not this test's business: every run leaves
@@ -59,6 +66,7 @@ test('the browse list bands its markets, and a search collapses the bands', asyn
   await page.getByRole('searchbox', { name: /search markets/i }).fill('bs_hot');
   await page.getByRole('searchbox', { name: /search markets/i }).press('Enter')
 
+  await expect(page.getByRole('heading', { name: 'Featured' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Trending' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Browse all' })).toHaveCount(0)
   // The result is still found: this collapsed the bands, not the results.

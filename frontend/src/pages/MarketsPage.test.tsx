@@ -1371,9 +1371,9 @@ describe('the curated sections above the list', () => {
     expect(screen.getAllByText('Will this close within the day?')).toHaveLength(2)
   })
 
-  // #447 exists so "Trending" is a real figure rather than a confident name on
-  // an arbitrary order, which is what it would be over untraded books.
-  it('bands the most traded market under Trending', async () => {
+  // The busiest market the page has loaded, and the only honest basis for a
+  // featured slot: volume is the one figure that says other people are here.
+  it('features the busiest market, and leaves it out of the bands', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
     )
@@ -1384,7 +1384,43 @@ describe('the curated sections above the list', () => {
     }))
     renderPage()
 
+    const featured = await screen.findByRole('heading', { name: 'Featured' })
+    expect(featured).toBeInTheDocument()
+    expect(screen.getByText('Most traded right now')).toBeInTheDocument()
+    // The only traded market is the hero, so Trending has nothing left and
+    // disappears rather than repeating it directly underneath.
+    expect(screen.queryByRole('heading', { name: 'Trending' })).not.toBeInTheDocument()
+  })
+
+  // #447 exists so "Trending" is a real figure rather than a confident name on
+  // an arbitrary order, which is what it would be over untraded books. A
+  // second traded market is what gives the band something the hero is not.
+  it('bands the next most traded market under Trending', async () => {
+    // b2 in mockMarkets is closed, and a closed market is in no band — so the
+    // runner-up has to be one that can still trade.
+    const second = {
+      id: 'c3',
+      status: 'open',
+      question: 'Will the runner-up be banded?',
+      close_time: '2099-02-05T12:00:00Z',
+      outcomes: outcomesFor('c3', ['Yes', 'No']),
+    }
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0], second], next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '30.0000',
+      prices_7d_ago: null,
+    }))
+    renderPage()
+
     expect(await screen.findByRole('heading', { name: 'Trending' })).toBeInTheDocument()
     expect(screen.getByText('Most credits traded')).toBeInTheDocument()
+    // The hero is a1; the band holds the runner-up, not a second copy of a1.
+    const trending = screen.getByRole('heading', { name: 'Trending' }).closest('section')
+    expect(trending).not.toBeNull()
+    expect(within(trending as HTMLElement).getByText('Will the runner-up be banded?')).toBeInTheDocument()
+    expect(within(trending as HTMLElement).queryByText('Will SMU win SUNIG?')).not.toBeInTheDocument()
   })
 })
