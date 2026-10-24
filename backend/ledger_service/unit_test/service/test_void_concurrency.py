@@ -361,17 +361,19 @@ async def test_two_voids_refund_once_and_answer_alike(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch, audit_reader: AsyncSession
 ) -> None:
     """ADR 0025, "Void against void": one writes, both answer `200` with the
-    same body. A pauses after its lookup under the lock; B's unlocked lookup
-    misses, and B is seen queued, then A is released. Remove the lookup after
-    the book lock: B reaches `post_all` with its record staged and is refused
-    `pending_writes_on_replay`."""
+    same body. A pauses holding the book lock, before its lookup under it;
+    B's unlocked lookup misses, and B is seen queued, then A is released.
+    Remove the lookup after the book lock: B reaches `post_all` with its
+    record staged and is refused `pending_writes_on_replay`."""
     upstream, holder = await _traded_market(session)
     first, second = admin(), admin(username="ihsan_k")
 
     factory = session_factory()
     start = asyncio.Barrier(2)
     session_a, session_b = factory(), factory()
-    pause = Pause(monkeypatch, books(), "find_result", session=session_a, call=2)
+    # Records every lookup and never pauses: B's first answer is checked below.
+    lookups = Pause(monkeypatch, books(), "find_result", session=session_b, call=0)
+    pause = Pause(monkeypatch, books(), "lock_book", session=session_a, call=1)
 
     async def run_a():
         await session_a.connection()
@@ -397,7 +399,7 @@ async def test_two_voids_refund_once_and_answer_alike(
 
     raise_any(outcomes)
     answer_a, answer_b = outcomes
-    assert pause.results_for(session_b)[0] is None, (
+    assert lookups.results_for(session_b)[0] is None, (
         "B's unlocked lookup hit, so this never reached the locked re-check"
     )
     assert figures(answer_a) == figures(answer_b)
