@@ -26,7 +26,7 @@ export default function MarketPreviewCard() {
   return (
     <div className="w-full rounded-2xl border border-t-[3px] border-smu-gold/30 border-t-smu-gold bg-white px-6 pt-6 pb-5 shadow-hero">
       <div className="mb-3.5 flex items-center justify-between">
-        <span className="rounded-full bg-smu-gold/10 px-[9px] py-[3px] text-[10px] font-bold tracking-[0.6px] text-smu-gold uppercase">
+        <span className="rounded-full bg-smu-gold/10 px-[9px] py-[3px] text-[10px] font-bold tracking-[0.6px] text-smu-gold-text uppercase">
           Example
         </span>
         <span className="text-[11px] text-muted">Closes 30 Oct</span>

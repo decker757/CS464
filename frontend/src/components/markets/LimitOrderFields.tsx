@@ -126,7 +126,7 @@ export default function LimitOrderFields({
   return (
     <div>
       {visiblePlaced && (
-        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success">
+        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
           {visiblePlaced}
         </p>
       )}
