@@ -718,6 +718,24 @@ describe('MarketsPage', () => {
       expectChosen('All')
     })
 
+    // An arrow with Alt, Ctrl or Cmd held belongs to the browser or the
+    // screen reader, not to the group: Alt+Left is the browser's Back.
+    it('leaves an arrow with Alt, Ctrl or Cmd held to the browser', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+      const open = screen.getByRole('radio', { name: 'Open' })
+      await actor.click(open)
+
+      await actor.keyboard('{Alt>}{ArrowLeft}{/Alt}')
+      expect(open).toBeChecked()
+      await actor.keyboard('{Control>}{ArrowLeft}{/Control}')
+      expect(open).toBeChecked()
+      await actor.keyboard('{Meta>}{ArrowLeft}{/Meta}')
+      expect(open).toBeChecked()
+    })
+
     // The same pattern's one tab stop: Tab reaches the group at the chosen
     // pill and leaves it in one more press, instead of stopping on all six.
     it('gives the status group one tab stop, on the chosen pill', async () => {
