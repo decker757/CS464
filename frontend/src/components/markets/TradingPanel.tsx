@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { describeInsufficientFunds, describeInsufficientShares, describeTradeError, errorCode, isDefiniteRejection } from '../../api/errors'
 import { postTrade, type TradePreview, type TradeSide } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
@@ -165,12 +166,21 @@ export default function TradingPanel({
   // (ledger-service.md's idempotency section) — throwing the key away on
   // every failure, including these, is how a dropped connection buys twice.
   const idempotencyKeyRef = useRef(crypto.randomUUID())
+  const quantityInputRef = useRef<HTMLInputElement>(null)
 
   const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
   const visibleLastTrade = lastTradeFor === inputKey ? lastTrade : null
 
   const selectedOutcome = outcomes.find(o => o.id === outcomeId)
   const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
+  // Asked of the selected outcome and of a holding that has landed, so the
+  // Sell toggle itself never changes: it stays pressable through a load and
+  // through every outcome toggle, and only the space below it says why there
+  // is nothing to sell (#451). Null is unknown, not none, so it keeps the
+  // quantity field. So does a holding that open sell orders hold back in
+  // full: the trader owns those shares, and the line over the field says
+  // how many of them are free.
+  const holdsNoneToSell = side === 'sell' && heldQuantity !== null && isZeroCredits(heldQuantity)
   const reservedShares = heldQuantity === null ? undefined : sharesReservedOf(heldQuantity, reservedSharesByOutcome[outcomeId])
   const sellableQuantity = heldQuantity === null ? null : sharesLeftToSell(heldQuantity, reservedShares)
   // A quantity the field itself rejects says so under the field already; the
@@ -225,6 +235,15 @@ export default function TradingPanel({
     } finally {
       setSubmitting(false)
     }
+  }
+
+  // Keeps the outcome: the offer is to buy the one the trader was looking at.
+  // The button that was clicked goes with the notice, so focus moves on to
+  // the quantity field rather than dropping to the top of the page; flushSync
+  // renders that field first, so there is something to focus.
+  const handleBuyInstead = () => {
+    flushSync(() => setSide('buy'))
+    quantityInputRef.current?.focus()
   }
 
   const canSubmit = !!preview && !previewLoading && !submitting && !previewError && !refusal
@@ -302,55 +321,74 @@ export default function TradingPanel({
         </p>
       )}
 
-      <div className="mb-1.5 flex items-baseline justify-between">
-        <label htmlFor="trade-quantity" className="block text-[13px] font-semibold text-smu-navy">
-          Quantity (shares)
-        </label>
-        {side === 'sell' && heldQuantity !== null && sellableQuantity !== null && (
-          <span aria-label="shares held" className="text-[13px] text-muted">
-            {describeSharesToSell(heldQuantity, sellableQuantity)}
-            {!isZeroCredits(sellableQuantity) && (
-              <button
-                type="button"
-                onClick={() => setQuantity(sellableQuantity)}
-                className="ml-2 cursor-pointer font-semibold text-info hover:underline"
-              >
-                Max
-              </button>
-            )}
-          </span>
+      {/* Always on the market ticket and empty until there is something to
+          say: a screen reader announces a live region's content changing,
+          and may not announce one that arrives with its content already in
+          it. */}
+      <div role="status">
+        {holdsNoneToSell && (
+          <p className="mb-3 text-sm text-smu-navy">You don't hold any {selectedOutcome?.label ?? ''} shares.</p>
         )}
       </div>
-      <input
-        id="trade-quantity"
-        type="number"
-        min="0"
-        step="0.0001"
-        value={quantity}
-        onChange={e => setQuantity(e.target.value)}
-        placeholder="e.g. 10"
-        className={`${controlClass(!!quantityInputError || !!previewError)} mb-3 h-[46px]`}
-      />
 
-      {quantityInputError && <p role="alert" className="mb-3 text-xs text-danger">{quantityInputError}</p>}
+      {holdsNoneToSell ? (
+        <Button variant="primary" size="block" onClick={handleBuyInstead}>
+          Buy {selectedOutcome?.label ?? ''} instead
+        </Button>
+      ) : (
+        <>
+          <div className="mb-1.5 flex items-baseline justify-between">
+            <label htmlFor="trade-quantity" className="block text-[13px] font-semibold text-smu-navy">
+              Quantity (shares)
+            </label>
+            {side === 'sell' && heldQuantity !== null && sellableQuantity !== null && (
+              <span aria-label="shares held" className="text-[13px] text-muted">
+                {describeSharesToSell(heldQuantity, sellableQuantity)}
+                {!isZeroCredits(sellableQuantity) && (
+                  <button
+                    type="button"
+                    onClick={() => setQuantity(sellableQuantity)}
+                    className="ml-2 cursor-pointer font-semibold text-info hover:underline"
+                  >
+                    Max
+                  </button>
+                )}
+              </span>
+            )}
+          </div>
+          <input
+            ref={quantityInputRef}
+            id="trade-quantity"
+            type="number"
+            min="0"
+            step="0.0001"
+            value={quantity}
+            onChange={e => setQuantity(e.target.value)}
+            placeholder="e.g. 10"
+            className={`${controlClass(!!quantityInputError || !!previewError)} mb-3 h-[46px]`}
+          />
 
-      {!quantityInputError && previewLoading && <p className="mb-3 text-xs text-subtle">Getting a quote…</p>}
+          {quantityInputError && <p role="alert" className="mb-3 text-xs text-danger">{quantityInputError}</p>}
 
-      {!quantityInputError && previewError && <p role="alert" className="mb-3 text-xs text-danger">{previewError}</p>}
+          {!quantityInputError && previewLoading && <p className="mb-3 text-xs text-subtle">Getting a quote…</p>}
 
-      {preview && !previewLoading && (
-        <TradePreviewSummary preview={preview} side={side} outcomeId={outcomeId} outcomeLabel={selectedOutcome?.label ?? ''} />
+          {!quantityInputError && previewError && <p role="alert" className="mb-3 text-xs text-danger">{previewError}</p>}
+
+          {preview && !previewLoading && (
+            <TradePreviewSummary preview={preview} side={side} outcomeId={outcomeId} outcomeLabel={selectedOutcome?.label ?? ''} />
+          )}
+
+          {refusal && <p role="alert" className="mb-3 text-xs text-danger">{refusal}</p>}
+
+          {visibleSubmitError && <p role="alert" className="mb-3 text-xs text-danger">{visibleSubmitError}</p>}
+
+          <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit}>
+            {submitting
+              ? 'Submitting…'
+              : `${side === 'buy' ? 'Buy' : 'Sell'} ${selectedOutcome?.label ?? ''}`}
+          </Button>
+        </>
       )}
-
-      {refusal && <p role="alert" className="mb-3 text-xs text-danger">{refusal}</p>}
-
-      {visibleSubmitError && <p role="alert" className="mb-3 text-xs text-danger">{visibleSubmitError}</p>}
-
-      <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit}>
-        {submitting
-          ? 'Submitting…'
-          : `${side === 'buy' ? 'Buy' : 'Sell'} ${selectedOutcome?.label ?? ''}`}
-      </Button>
       </>
       )}
     </div>
