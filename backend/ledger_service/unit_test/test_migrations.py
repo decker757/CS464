@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from decimal import Decimal
 
 import pytest
 from alembic import command
@@ -126,27 +127,38 @@ def test_the_downgrade_leaves_no_trigger_function_behind(empty_schema) -> None:
     assert left is None
 
 
+def _account(connection, kind: str) -> uuid.UUID:
+    account_id = uuid.uuid4()
+    connection.execute(
+        text("INSERT INTO ledger.accounts (id, kind, owner_id) VALUES (:id, :kind, :owner)"),
+        {"id": account_id, "kind": kind, "owner": uuid.uuid4()},
+    )
+    return account_id
+
+
+def _book(connection) -> tuple[uuid.UUID, uuid.UUID]:
+    """A book and its pool account, as `(market_id, pool_account_id)`."""
+    market_id = uuid.uuid4()
+    pool_account_id = _account(connection, "market_pool")
+    connection.execute(
+        text(
+            "INSERT INTO ledger.market_books (market_id, liquidity_b, seed_subsidy, "
+            "pool_account_id, state_version, state_changed_at, opened_at) "
+            "VALUES (:market, 100, 250, :account, 0, now(), now())"
+        ),
+        {"market": market_id, "account": pool_account_id},
+    )
+    return market_id, pool_account_id
+
+
 def _plant_an_order_with_nothing_paid(connection) -> None:
     """One order with three shares filled and nothing paid for them.
 
     Legal under every CHECK revision 0004 built, which is why 0005 adds one.
     A book and an outcome first, for the composite foreign key.
     """
-    pool_account_id = uuid.uuid4()
-    market_id = uuid.uuid4()
+    market_id, _ = _book(connection)
     outcome_id = uuid.uuid4()
-    connection.execute(
-        text("INSERT INTO ledger.accounts (id, kind, owner_id) VALUES (:id, 'pool', :owner)"),
-        {"id": pool_account_id, "owner": uuid.uuid4()},
-    )
-    connection.execute(
-        text(
-            "INSERT INTO ledger.market_books (market_id, liquidity_b, seed_subsidy, "
-            "pool_account_id, state_version, state_changed_at, opened_at) "
-            "VALUES (:market, 100, 0, :account, 0, now(), now())"
-        ),
-        {"market": market_id, "account": pool_account_id},
-    )
     connection.execute(
         text(
             "INSERT INTO ledger.market_outcomes (market_id, outcome_id, position, q) "
@@ -208,6 +220,72 @@ def test_an_order_whose_fill_rollups_disagree_stops_revision_0005(empty_schema) 
 
     assert not _has_constraint("ck_orders_filled_quantity_iff_filled_value")
     assert _revision() == "0004"
+
+
+def _post(connection, kind: str, *, pool: uuid.UUID, other: uuid.UUID, amount: str) -> None:
+    """One movement of `amount` into the pool from `other`, with both legs."""
+    transaction_id = uuid.uuid4()
+    connection.execute(
+        text(
+            "INSERT INTO ledger.transactions (id, kind, idempotency_key, "
+            "request_fingerprint) VALUES (:id, :kind, :key, 'planted')"
+        ),
+        {"id": transaction_id, "kind": kind, "key": f"planted:{transaction_id}"},
+    )
+    for account_id, leg in ((pool, Decimal(amount)), (other, -Decimal(amount))):
+        connection.execute(
+            text(
+                "INSERT INTO ledger.entries (id, transaction_id, account_id, amount) "
+                "VALUES (:id, :transaction, :account, :amount)"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "transaction": transaction_id,
+                "account": account_id,
+                "amount": leg,
+            },
+        )
+
+
+def _plant_a_traded_book_and_an_untraded_one(connection) -> tuple[uuid.UUID, uuid.UUID]:
+    """Two seeded books, one whose pool also took a buy, a sell and a payout.
+
+    A buy's pool leg is positive and a sell's negative, as the trade path
+    posts them. The seed and the payout are the movements a pool sees that are
+    not trades, one of each sign."""
+    trader = _account(connection, "user")
+    platform = _account(connection, "platform")
+    traded, traded_pool = _book(connection)
+    untraded, untraded_pool = _book(connection)
+    _post(connection, "market_seed", pool=traded_pool, other=platform, amount="250")
+    _post(connection, "market_seed", pool=untraded_pool, other=platform, amount="250")
+    _post(connection, "trade_buy", pool=traded_pool, other=trader, amount="12.3456")
+    _post(connection, "trade_sell", pool=traded_pool, other=trader, amount="-7.8901")
+    _post(connection, "settlement", pool=traded_pool, other=trader, amount="-4.4444")
+    return traded, untraded
+
+
+def test_revision_0006_backfills_credits_traded_from_each_books_trades(empty_schema) -> None:
+    """0006's backfill, which runs nowhere else: CI's database is always empty.
+    A book's figure is its pool's trade legs summed unsigned, and nothing else
+    the pool posted; a book nobody traded is zero. A signed sum would read
+    4.4555, and one over every kind of movement 274.6801. DECISIONS.md,
+    "`credits_traded` is a counter on the book, raised in `write_trade` under
+    the book lock"."""
+    command.upgrade(alembic_config(ALEMBIC_INI, _URL), "0005")
+    traded, untraded = run_in_transaction(_URL, _plant_a_traded_book_and_an_untraded_one)
+
+    assert main() == 0
+
+    figures = run_in_transaction(
+        _URL,
+        lambda connection: dict(
+            connection.execute(
+                text("SELECT market_id, credits_traded FROM ledger.market_books")
+            ).all()
+        ),
+    )
+    assert figures == {traded: Decimal("20.2357"), untraded: Decimal("0.0000")}
 
 
 def test_a_schema_from_before_75_is_refused_and_left_as_it_was(empty_schema, capsys) -> None:
