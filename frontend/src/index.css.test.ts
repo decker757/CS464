@@ -79,6 +79,9 @@ const TEXT_TOKENS = [
 const SURFACE_ONLY = ['smu-gold', 'smu-cream', 'line', 'track', 'surface-muted']
 
 // `Badge`: 11px bold text on a 10% tint of its own tone, on either surface.
+// The same danger and success pairs at the same 10% are also TradingPanel's
+// active Buy/Sell toggle, the trade and placed-order confirmation banners and
+// the demo "Buy YES" pill, so this table measures those too (#380).
 const BADGE_TONES = [
   { tone: 'danger', text: 'danger-strong', tint: 'danger' },
   { tone: 'success', text: 'success-strong', tint: 'success' },
@@ -88,22 +91,19 @@ const BADGE_TONES = [
 ]
 
 // Every other place in the app that puts a tone's own text on a tint of
-// itself, each at the tint it is actually used at and the surfaces it
-// actually sits on. A base tone reaches only 4.1–4.5:1 on its own tint at
-// these strengths, short of AA, which is why each pairs with the darker
-// `-strong` text instead (#380). Unlike `Badge` above, these are not all the
-// same alpha, so each site names its own; most default to both surfaces, but
-// gold-on-its-own-tint is only ever used inside a white `Card`, and on the
-// cream page it is 4.43 — short of the line — so it does not claim cream.
+// itself and that the `Badge` table does not already measure, each at the
+// tint it is actually used at and the surfaces it actually sits on. A base
+// tone reaches only 4.1–4.5:1 on its own tint at these strengths, short of
+// AA, which is why each pairs with the darker `-strong` text instead (#380).
+// Unlike `Badge` above, these are not all the same alpha, so each site names
+// its own; most default to both surfaces, but gold-on-its-own-tint is only
+// ever used inside a white `Card`, and on the cream page it is 4.43 — short
+// of the line — so it does not claim cream.
 const TONE_ON_OWN_TINT = [
   // AuthLayout's login/register error message.
   { site: 'the auth error message', text: 'danger-strong', tint: 'danger', alpha: 0.05 },
-  // TradingPanel's active Buy/Sell toggle and MarketPreviewCard's demo pills.
-  { site: 'the active Sell toggle', text: 'danger-strong', tint: 'danger', alpha: 0.1 },
+  // MarketPreviewCard's demo "Buy NO" pill, the one danger tint at 8%.
   { site: 'the demo "Buy NO" pill', text: 'danger-strong', tint: 'danger', alpha: 0.08 },
-  { site: 'the active Buy toggle', text: 'success-strong', tint: 'success', alpha: 0.1 },
-  { site: 'the demo "Buy YES" pill', text: 'success-strong', tint: 'success', alpha: 0.1 },
-  { site: 'a placed-order or trade confirmation banner', text: 'success-strong', tint: 'success', alpha: 0.1 },
   // LandingFeatures' numbered pill and MarketPreviewCard's "Example" pill:
   // small bold gold text on a gold tint, which needs the darker
   // gold-for-text token rather than the brand gold itself — and both sit
@@ -138,9 +138,9 @@ describe('badge text on its own tint', () => {
   })
 })
 
-// Every other known tone-on-own-tint pair in the app, each at the alpha it is
-// actually used at — not just `Badge`'s fixed 10% (#380). Reading the alpha
-// here, rather than hardcoding today's ratio, is what makes this fail if a
+// Every other known tone-on-own-tint pair in the app that `Badge`'s fixed 10%
+// does not cover, each at the alpha it is actually used at (#380). Reading the
+// alpha here, rather than hardcoding today's ratio, is what makes this fail if a
 // site's tint is ever strengthened past the line, the same way the token
 // table above fails if a token is lightened past it.
 describe('a tone on its own tint, elsewhere in the app', () => {
