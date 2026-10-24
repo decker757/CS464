@@ -34,13 +34,6 @@ export interface MarketPrices {
   retryMarket: (marketId: string) => void
   /** The price socket's connection state, for the list to say so ([X-4] #37). */
   status: ConnectionStatus
-  /**
-   * The markets this page is being pushed prices for.
-   *
-   * Everything else on screen is read on the timer below instead, so a card
-   * can say which of the two it is rather than looking equally live.
-   */
-  liveMarkets: Set<string>
 }
 
 // How often the prices on screen are read again. The socket carries every
@@ -179,22 +172,33 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     },
   })
 
-  // Everything the socket is not carrying, re-read on the timer: the markets
-  // past the ceiling, and the ones whose status says they may still trade so a
-  // missed frame cannot leave a stale price on screen for good. The clock
-  // decides whether a market still trades, not its status column (ADR 0011),
-  // so this asks the same question the cards ask.
-  const tradingIds = markets
+  // What the socket is carrying: followed, and not refused a subscription.
+  const liveMarkets = useMemo(
+    () => new Set(followed.filter(id => !refusedMarkets.has(id))),
+    [followed, refusedMarkets],
+  )
+
+  // The markets the socket is *not* carrying, re-read on the timer: the ones
+  // past the subscription ceiling, and nothing else. A market the relay is
+  // pushing needs no poll — that is the whole point of #444 — and polling it
+  // anyway would cost the ledger an LMSR evaluation per card twice a minute
+  // for a price it has already sent.
+  //
+  // The clock decides whether a market still trades, not its status column
+  // (ADR 0011), so this asks the same question the cards ask: a market that
+  // has stopped cannot get a new price, live or polled.
+  const pollableIds = markets
     .filter(market => !tradingStopped(market.status, market.close_time))
     .map(market => market.id)
+    .filter(id => !liveMarkets.has(id))
     .join(',')
   useEffect(() => {
+    if (!pollableIds) return
     const refresh = setInterval(() => {
-      const ids = tradingIds ? tradingIds.split(',') : []
-      if (ids.length > 0) readSnapshots(applySnapshot, ids)
+      readSnapshots(applySnapshot, pollableIds.split(','))
     }, PRICE_REFRESH_MS)
     return () => clearInterval(refresh)
-  }, [tradingIds, readSnapshots, applySnapshot])
+  }, [pollableIds, readSnapshots, applySnapshot])
 
   // One identity for the life of the hook: it is part of what the hook
   // returns, and a new function on every render would re-run any effect a
@@ -214,11 +218,5 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     )
   }, [applySnapshot])
 
-  // What the socket is actually carrying: followed, and not refused.
-  const liveMarkets = useMemo(
-    () => new Set(followed.filter(id => !refusedMarkets.has(id))),
-    [followed, refusedMarkets],
-  )
-
-  return { snapshotsByMarket, failedMarkets, readAt, retryMarket, status, liveMarkets }
+  return { snapshotsByMarket, failedMarkets, readAt, retryMarket, status }
 }
