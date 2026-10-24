@@ -246,7 +246,7 @@ erDiagram
     }
     transactions {
         uuid id PK
-        varchar kind "signup_grant, market_seed, trade_buy, trade_sell, settlement, settlement_residue"
+        varchar kind "signup_grant, market_seed, trade_buy, trade_sell, settlement, settlement_residue, void_refund, void_residue"
         varchar idempotency_key "unique; derived by the server, never stored as sent"
         varchar request_fingerprint "over the legs, so a reused key naming different money is refused"
         timestamptz occurred_at
@@ -285,9 +285,11 @@ erDiagram
     }
     market_results {
         uuid market_id PK "also the FK to market_books"
-        varchar kind "only settled, for now"
-        uuid outcome_id "the winner, FK with market_id into market_outcomes"
+        varchar kind "settled or voided"
+        uuid outcome_id "the winner, FK with market_id into market_outcomes; null on a void"
         timestamptz recorded_at
+        text reason "a void's, set exactly when voided"
+        uuid voided_by "the administrator who voided, set exactly when voided"
     }
     orders {
         uuid id PK
