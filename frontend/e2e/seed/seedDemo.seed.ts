@@ -5,7 +5,8 @@
 // It runs as a Playwright test only to use the runtime the e2e helpers already
 // run under, and it makes everything through those helpers: the services' own
 // APIs, plus the two SQL steps they already take (promoting the first admin,
-// backdating a dispute window).
+// backdating a dispute window). The second admin is promoted by the first,
+// through the role-change endpoint, as every admin after the first is.
 //
 // One-shot. Its users have fixed names, so a second run against the same
 // database stops at the first registration and changes nothing. A run that
@@ -17,6 +18,7 @@ import {
   AUTH_URL,
   backdateDisputeWindow,
   buy,
+  changeRole,
   closeEarly,
   HOURS_PER_DAY,
   LEDGER_URL,
@@ -87,16 +89,28 @@ async function logInAfterPromotion(username: string): Promise<Session> {
 }
 
 /**
- * Registers, promotes by hand the way the e2e helpers make an admin, and logs
- * in again. Then checks the new token really is an admin's: the SQL step may
- * have reached another compose project than the URLs.
+ * Registers, promotes by hand the way a first admin is made (ADR 0007), and
+ * logs in again. Then checks the new token really is an admin's: the SQL step
+ * may have reached another compose project than the URLs.
  */
-async function registerAdmin(username: string, project: string): Promise<Session> {
+async function registerFirstAdmin(username: string, project: string): Promise<Session> {
   const trader = await registerTraderUnlessSeeded(username)
   promoteToAdmin(trader.username)
   const admin = await logInAfterPromotion(trader.username)
   refuseUnlessAdmin(admin.accessToken, project)
   return admin
+}
+
+/**
+ * Registers, and has an existing admin promote them through the role-change
+ * endpoint, the way every admin after the first is made (root CLAUDE.md, ADR
+ * 0007), so the audit log names who made them one. Then logs in again: the
+ * role rides in the token.
+ */
+async function registerPromotedAdmin(promoter: Session, username: string): Promise<Session> {
+  const trader = await registerTraderUnlessSeeded(username)
+  await changeRole(promoter, trader.id, 'admin', 'Second administrator for the showcase, to approve proposed outcomes.')
+  return logInThroughApi(trader.username)
 }
 
 // Settlement is safe to repeat: a repeat writes nothing and answers the same
@@ -143,11 +157,14 @@ test('seed the demo database', async () => {
   const project = composeProject()
   refuseDevComposeProject(project)
 
-  const creator = await registerAdmin(ADMINS.creator, project)
-  const approver = await registerAdmin(ADMINS.approver, project)
+  const creator = await registerFirstAdmin(ADMINS.creator, project)
+  const approver = await registerPromotedAdmin(creator, ADMINS.approver)
   const traders = new Map<string, Session>()
   for (const username of TRADERS) traders.set(username, await registerTraderUnlessSeeded(username))
-  console.log(`Registered ${ADMINS.creator} and ${ADMINS.approver} (admins) and ${TRADERS.length} traders.`)
+  console.log(
+    `Registered ${ADMINS.creator} (admin, by hand), ${ADMINS.approver} (admin, promoted by ${ADMINS.creator}) ` +
+      `and ${TRADERS.length} traders.`,
+  )
 
   const markets: Market[] = []
   for (const demo of DEMO_MARKETS) {

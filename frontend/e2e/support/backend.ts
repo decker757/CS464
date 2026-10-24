@@ -272,6 +272,16 @@ export async function settleMarket(admin: Session, marketId: string): Promise<vo
   await call('POST', `${LEDGER_URL}/ledger/markets/${marketId}/settlement`, admin.accessToken)
 }
 
+/**
+ * Changes a user's role as an existing administrator ([4.4] #16), through the
+ * auth service: how every administrator after the first is made (ADR 0007),
+ * audited as `user.role_changed`. The role rides in the access token, so it
+ * takes effect at the user's next login.
+ */
+export async function changeRole(admin: Session, userId: string, role: 'admin' | 'trader', reason: string): Promise<void> {
+  await call('PATCH', `${AUTH_URL}/admin/users/${userId}/role`, admin.accessToken, { role, reason })
+}
+
 interface Snapshot {
   state_version: number
   prices: { outcome_id: string; price: string }[]

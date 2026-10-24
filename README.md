@@ -111,8 +111,11 @@ again.
 
 It goes through the services' own APIs, using the end-to-end helpers in
 `frontend/e2e/support/backend.ts`, and takes the same two SQL steps they do,
-through `docker compose exec db`: promoting the first administrators, and
-moving the settled market's dispute window into the past.
+through `docker compose exec db`: promoting the first administrator,
+`admin_rachel`, and moving the settled market's dispute window into the past.
+`admin_rachel` then promotes `admin_kumar` through the role-change endpoint,
+as every administrator after the first is made, so the audit log shows it as
+`user.role_changed`.
 
 **It is one-shot.** Its accounts have fixed names, so a second run stops at
 the first registration and changes nothing. A run that fails partway also
