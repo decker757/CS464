@@ -675,12 +675,11 @@ describe('MarketsPage', () => {
       renderPage()
       await screen.findByText('Will inflation fall below 2%?')
       const filters = within(screen.getByRole('radiogroup', { name: 'Filter by status' }))
-      expect(filters.getByRole('radio', { name: 'All' })).toBeChecked()
+      expect(filters.getAllByRole('radio', { checked: true })).toEqual([filters.getByRole('radio', { name: 'All' })])
 
       await actor.click(filters.getByRole('radio', { name: 'Closed' }))
 
-      expect(filters.getByRole('radio', { name: 'Closed' })).toBeChecked()
-      expect(filters.getByRole('radio', { name: 'All' })).not.toBeChecked()
+      expect(filters.getAllByRole('radio', { checked: true })).toEqual([filters.getByRole('radio', { name: 'Closed' })])
     })
 
     // A radio group's keyboard contract (WAI-ARIA's radio group pattern): the
