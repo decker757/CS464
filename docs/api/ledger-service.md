@@ -7,8 +7,9 @@ from the code and authoritative if this page ever disagrees, at
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 [T-1] #21's cost preview, the trade route that buys ([T-2] #22) and sells
 ([T-3] #23), [T-5] #25's trade history, [3.4] #12's settlement route, [2.2]
-#6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40, and
-[BE][2.4] #63's price history and trade feed.
+#6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40,
+[BE][2.4] #63's price history and trade feed, and [BE][X-1] #432's batch
+snapshot.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -33,6 +34,7 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
+| POST | `/ledger/markets/snapshots` | The current price of many markets at once (writes nothing) |
 | GET | `/ledger/markets/{market_id}/exposure` | What resolving the market would pay out (admin) |
 | GET | `/ledger/markets/{market_id}/price-history` | Every price the market has had, one point per trade |
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
@@ -56,7 +58,9 @@ administrator, and its body is only a reason. `POST .../settlement` takes an
 administrator's token and an empty body: the winner comes from market_service,
 and the holders and amounts come from this service's own positions (ADR 0009's
 second amendment). Every other
-route reads, and no route ever edits or removes an entry. The ledger is
+route reads, `POST /ledger/markets/snapshots` included, which is a POST only
+because its input is a list of ids, and no route ever edits or removes an
+entry. The ledger is
 append-only, enforced by a database trigger rather than by the absence of a
 route.
 
@@ -66,7 +70,8 @@ the same reason: a balance, a history or a portfolio mints a user's starting
 grant on first read (below and [T-4] #24), and the preview and the snapshot
 each open and fund a market's book on that market's first touch (D-008,
 D-037, and [F-9] #112 for the snapshot). All five are once-per-subject,
-idempotent, and invisible to every caller after the first.
+idempotent, and invisible to every caller after the first. The batch snapshot
+is not among them: it opens no book.
 
 ## Authentication
 
@@ -879,6 +884,86 @@ Errors, reusing the preview's codes:
 | 404 | `market_not_found` | No such market — and also a draft or a submitted one, which `market_service`'s public detail endpoint refuses with the same 404. |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. Only a hand-run repair or a half-applied migration produces it. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
+
+## POST /ledger/markets/snapshots
+
+[X-1] #432. The current price of many markets in one request, for a list of
+cards: the browse page's first paint and its refresh. One call replaces a
+snapshot request per card. A POST because its input is a list, not because it
+writes: it writes nothing.
+
+Any valid access token, any role, exactly like the single snapshot above.
+
+```jsonc
+// request
+{ "market_ids": ["9d1c...", "a50a...", "77e0..."] }
+
+// response: "77e0..." has no book here, so it is absent
+{
+  "snapshots": [
+    {
+      "market_id": "9d1c...",
+      "state_version": 42,
+      "prices": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.6236" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.3764" }
+      ],
+      "occurred_at": "2026-09-15T09:12:44.318000+00:00"
+    },
+    {
+      "market_id": "a50a...",
+      "state_version": 0,
+      "prices": [
+        { "outcome_id": "0c33...", "position": 0, "price": "0.5000" },
+        { "outcome_id": "e9d4...", "position": 1, "price": "0.5000" }
+      ],
+      "occurred_at": "2026-10-20T08:00:03.112000+00:00"
+    }
+  ]
+}
+```
+
+**Each item is the single snapshot's body** for that market, field for field,
+so it renders with the same function as the single snapshot and the `price`
+socket frame. Every field above means what it means there.
+
+**At most 200 ids.** 200 is `GET /public/markets`' largest page
+(`docs/api/market-service.md`), so any page of the browse list fits in one
+request. The cap counts ids as sent, repeats included. A 201st is
+`422 invalid_request`, with `error.details` naming `["body", "market_ids"]`:
+split the request. An empty list is a `200` with `"snapshots": []`.
+
+**A market is answered only if this service already holds its book.** An id
+with no book is absent from `snapshots`, not an error: an id that names no
+market, a draft, and a published market nobody has previewed, traded or
+snapshotted all read the same way, because a book is only ever opened for a
+published market. Unlike the single snapshot, **this route opens no book**: it
+writes nothing and never calls market_service, so it costs one indexed read
+however many of its markets are cold. To price a still-trading market the
+batch left out, ask the single snapshot for it, which opens its book once;
+from then on the batch answers it.
+
+A book this service holds but cannot price, which the single snapshot refuses
+with `500 market_book_incomplete`, is absent here too and logged, so one
+damaged market costs only its own card.
+
+**One statement reads every market**, with no lock, so each snapshot's
+`state_version` is the version its `prices` were computed from, as on the
+single route. Each market is answered once, in the order its id first appears
+in `market_ids`. Like the single snapshot, it never checks whether a market is
+still open (ADR 0017): a closed or settled market is answered with its last
+price.
+
+The answer is an object around a list of objects so that fields can be added
+to it, and to each item, without breaking a client that ignores fields it does
+not know.
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 422 | `invalid_request` | The body has no `market_ids`, an id in it is not a UUID, or it holds more than 200 ids. `error.details` names each one. |
 
 ## GET /ledger/markets/{market_id}/exposure
 

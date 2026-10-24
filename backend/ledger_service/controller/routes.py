@@ -22,6 +22,8 @@ amendment. `POST /markets/{market_id}/orders` ([T-6] #26) is the same shape:
 and what it releases is derived from the caller's own order row.
 `POST /admin/orders/{order_id}/cancel` ([T-8] #326) is the same cancel for an
 administrator, of any trader's order, and its body is only the reason.
+`POST /markets/snapshots` ([X-1] #432) is not one of the five: it is a POST
+only because its input is a list of ids, and it writes nothing.
 
 `POST /markets/{market_id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service and the holders
@@ -81,7 +83,9 @@ from model.schemas import (
     PricePointOut,
     SettlementIn,
     SettlementOut,
+    SnapshotListOut,
     SnapshotOut,
+    SnapshotsIn,
     TradeIn,
     TradeOut,
     ValidationErrorOut,
@@ -100,6 +104,7 @@ from service import (
     trading,
 )
 from service.book_prices import PricedOutcome
+from service.snapshot import Snapshot
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -478,6 +483,16 @@ _SNAPSHOT_DESCRIPTION = (
 )
 
 
+def _snapshot_out(result: Snapshot) -> SnapshotOut:
+    """The wire form of one market's snapshot."""
+    return SnapshotOut(
+        market_id=result.market_id,
+        state_version=result.state_version,
+        prices=_prices_out(result.prices),
+        occurred_at=result.occurred_at,
+    )
+
+
 @router.get(
     "/markets/{market_id}/snapshot",
     response_model=SnapshotOut,
@@ -505,12 +520,45 @@ async def market_snapshot(
     result = await snapshot_service.snapshot(
         session, market_id, access_token=access_token, terms_client=terms_client
     )
-    return SnapshotOut(
-        market_id=result.market_id,
-        state_version=result.state_version,
-        prices=_prices_out(result.prices),
-        occurred_at=result.occurred_at,
-    )
+    return _snapshot_out(result)
+
+
+_SNAPSHOTS_DESCRIPTION = (
+    "[X-1] #432. The current price of many markets in one request, for a "
+    "list of cards. A POST because its input is a list; it writes nothing.\n\n"
+    "Any valid access token, any role, like the single snapshot.\n\n"
+    "Each item in `snapshots` is the single snapshot's body for that market. "
+    "Each market is answered once, in the order its id first appears in "
+    "`market_ids`. One statement reads them all, with no lock.\n\n"
+    "**An id with no book here is absent, not an error.** Unlike the single "
+    "snapshot this route opens no book and never calls market_service, so a "
+    "published market nobody has previewed, traded or snapshotted is absent "
+    "too; the single snapshot opens it. A book that cannot be priced is "
+    "absent and logged rather than a 500.\n\n"
+    "**At most 200 ids**, market_service's largest browse page. More is "
+    "`422 invalid_request`. Never checks whether a market is still open "
+    "(ADR 0017)."
+)
+
+
+@router.post(
+    "/markets/snapshots",
+    response_model=SnapshotListOut,
+    summary="The current price of many markets at once",
+    description=_SNAPSHOTS_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        422: _invalid_request(
+            "`invalid_request`: `market_ids` is missing, holds a value that "
+            "is not a UUID, or holds more than 200 ids."
+        ),
+    },
+)
+async def market_snapshots(
+    body: SnapshotsIn, user: CurrentUser, session: DbSession
+) -> SnapshotListOut:
+    results = await snapshot_service.list_snapshots(session, body.market_ids)
+    return SnapshotListOut(snapshots=[_snapshot_out(result) for result in results])
 
 
 _EXPOSURE_DESCRIPTION = (

@@ -10177,3 +10177,170 @@ returns it beside the positions, keyed by `(market_id, outcome_id)`;
 **Reversal trigger.** A portfolio read measured as slow because of this
 subquery, or a sell order that holds back shares by some rule other than its
 unfilled quantity.
+
+---
+
+### D-NEW — The batch snapshot is `POST /ledger/markets/snapshots`, a read with a body
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** The browse list's prices come from one
+`POST /ledger/markets/snapshots` with a body `{"market_ids": [...]}`. It
+answers `{"snapshots": [...]}`, and each item is the single snapshot's body,
+`GET /ledger/markets/{market_id}/snapshot`, for that market. The route writes
+nothing; it is a POST only because its input is a list.
+
+**Why.**
+- *The list does not fit a query string.* At the cap below, 200 ids as
+  repeated `market_ids=<uuid>` parameters are about 9.4 KB of URL. Proxies and
+  servers commonly refuse a request line past 8 KB, and the failure would
+  appear only behind a deployment's proxy, never on loopback.
+- *Nothing on the ledger takes a list yet*, so there is no precedent to
+  follow; the body is the shape #432's contract proposed.
+- *An object around a list, and an object per market,* so a field can be
+  added later without breaking a client: #446's prior price and #447's
+  activity figure are per-market fields that ride on this route rather than a
+  second request per card, and a field for the whole answer fits beside
+  `snapshots`.
+- *Each item is the single snapshot's body*, which is the `price` frame
+  without its `type` (docs/api/realtime-service.md), so the frontend renders
+  all three with one function.
+
+**Rejected.**
+- *`GET` with repeated `market_ids`*: the URL length above, and an encoding
+  every client library spells differently.
+- *An answer keyed by market id* (`{"<id>": {...}}`): it drops `market_id`
+  from the item, so the item stops being the single snapshot's body.
+
+**Reversal trigger.** A second list-taking route on the ledger that chooses a
+different shape, at which point the two are made to agree.
+
+---
+
+### D-NEW — The batch snapshot takes at most 200 ids, and refuses more
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** `market_ids` holds at most 200 ids, counted as sent, duplicates
+included. A 201st is `422 invalid_request`, its `details` naming
+`["body", "market_ids"]`. An empty list is a `200` with no snapshots.
+
+**Why.**
+- *200 is market_service's `max_page_size`*, the largest page
+  `GET /public/markets` serves. Any page of the browse list, at any `limit`
+  that route accepts, fits in one batch, which is #432's "`listMarkets`' page
+  size and the batch cap agree". At the default page size of 50, one batch
+  covers four pages.
+- *Refused, not clamped.* Elsewhere on the ledger an oversized `limit` is
+  clamped, because the caller can see where the page ends. Here a market left
+  out by a clamp would be indistinguishable from a market with no book, and
+  its card would show "—" with nothing saying why.
+- *`invalid_request`, not a new code.* It is a shape refusal, like every other
+  ceiling on a request body here (a quantity's digits, a reason's length), and
+  the client's remedy is the same: send fewer.
+- *The cost at the cap is bounded.* One indexed statement returning one row
+  per outcome of at most 200 markets, with no lock and no call out.
+
+**Rejected.** A cap of 50, the default page: the frontend's refresh re-reads
+every still-trading market on every page it has loaded, and would split its
+request at each page. A setting: the frontend has to know the number, and a
+setting changed on one side only breaks the list.
+
+**Reversal trigger.** market_service's `max_page_size` changing, or the
+browse list asking for more than one page's prices in one call.
+
+---
+
+### D-NEW — The batch snapshot opens no book: a market without one is absent
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** The batch answers only markets that already have a book on this
+service. An id with no book, whether it names no market or a published market
+nobody has previewed, traded or snapshotted, is left out of the answer, not
+an error. It makes no call to market_service and writes nothing. The single
+snapshot stays the only snapshot that opens a book (D-050).
+
+**Why.**
+- *Opening a book is the expensive path, once per market.* It fetches the
+  market's terms from market_service, up to the five-second timeout (D-030),
+  then funds the pool under the handoff's locks, the platform account among
+  them (D-036), and commits. Fifty cold markets in one request would run that
+  fifty times in a row, holding the whole list behind the slowest, and queue
+  every grant and trade on the platform account lock meanwhile.
+- *The single snapshot already serves the paths that need a price for sure.*
+  docs/api/realtime-service.md's "Opening a page" and "Reconnecting" sequences
+  read the single route, and ADR 0010 makes that read the authoritative
+  recovery path. The batch is a list's first paint and its refresh; a card
+  with no price shows "—", which it already does for a failed request.
+- *No id the caller may not read can be answered.* A book is opened only from
+  market_service's public read, which refuses a draft or a submitted market,
+  and publication is one way (ADR 0008). Every market with a book is one any
+  signed-in role may read, so the batch needs no check per id, and #432's
+  "a market the caller may not read is absent" holds by construction.
+- *It never gates on status (ADR 0017),* like the single snapshot: a closed
+  or settled market with a book is answered with its last price.
+
+**Consequence.** A market nobody has opened shows no price on the browse list
+until something opens its book. The frontend may ask the single snapshot for
+a still-trading market the batch left out; that opens its book once, ever,
+and the batch answers it from then on.
+
+**Rejected.** Opening cold books inside the batch, for the cost above. A
+seed price for a market with no book: the ledger cannot name its outcomes
+without asking market_service, which is the cost again.
+
+**Reversal trigger.** A book opened at publication, which would give every
+published market a book and make this rule unobservable.
+
+---
+
+### D-NEW — A book the batch snapshot cannot price is left out and logged
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** A book `book_prices.refuse_unpriceable` refuses (fewer than two
+outcome rows, or a `liquidity_b` the engine cannot use) is left out of the
+batch's answer and logged at warning level, rather than failing the request
+with `500 market_book_incomplete` as the single snapshot does. A book with no
+outcome rows at all never reaches the guard, because the join drops it, and is
+left out without a log line.
+
+**Why.** One damaged book would otherwise blank every card on the page. The
+fault is still reported: the single snapshot refuses that market with
+`market_book_incomplete` when its page opens, and the warning names it in the
+log. The guard is the same one copy the single snapshot and the trade use
+(D-052), so the batch refuses exactly the books they refuse.
+
+**Reversal trigger.** A way for a damaged book to reach the browse list that
+a log line would hide, such as a migration that half-applies to many books.
+
+---
+
+### D-NEW — The batch snapshot reads every market in one statement, and answers in the order asked
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** `service/book_prices.py::list_book_outcomes_for_markets` reads
+every requested market's book joined to its outcomes in one statement, with
+no lock. The answer lists each market once, in the order its id first
+appears in the request; a repeated id is not an error.
+
+**Why.**
+- *One statement for N markets*, so the cost of a page is fixed rather than a
+  query per card, which is the N+1 the route exists to remove.
+- *Each snapshot is consistent with itself*, D-013's rule extended: a
+  market's `state_version`, `b` and `q` come from the same statement, so a
+  client resuming from that `state_version` holds the prices that version
+  priced. All the markets come from that one statement's view of the
+  database, too.
+- *No lock*, D-012's reason: the read decides no write, and a lock would
+  queue a page of cards behind any one trade holding its book.
+- *Request order* makes the answer deterministic, so a client can rely on it
+  and a test can assert it. The frontend keys its prices by market id and does
+  not need it.
+- *Duplicates answered once*, because refusing them would make every caller
+  deduplicate for no gain, and answering twice would hand a client two copies
+  of one market to reconcile.
+
+**Reversal trigger.** None expected.
