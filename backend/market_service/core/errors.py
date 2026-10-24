@@ -244,8 +244,8 @@ class MarketNotOpen(MarketError):
 class MarketNotPendingResolution(MarketError):
     """An approval or rejection arrived for a market with no proposal. [3.2] #10.
 
-    Every state but PENDING_RESOLUTION, APPROVED and SETTLED, including a
-    proposal just rejected by a racing request. Not `MarketAlreadyApproved`:
+    Every state but PENDING_RESOLUTION, APPROVED, SETTLED and VOIDED,
+    including a proposal just rejected by a racing request. Not `MarketAlreadyApproved`:
     this market may still get a proposal. ADR 0016.
     """
 
@@ -335,6 +335,22 @@ class MarketAlreadySettled(MarketError):
     message = (
         "This market has been settled. Its terms and its outcome are final "
         "and can no longer be changed."
+    )
+
+
+class MarketAlreadyVoided(MarketError):
+    """Any write but a repeated void arrived for a market that is VOIDED. [BE] #221.
+
+    The settle step included. Like `MarketAlreadySettled`, the message says
+    nothing about refunds: VOIDED here does not prove the ledger refunded
+    anybody, because the void route can be called directly. ADR 0025.
+    """
+
+    status_code = 409
+    code = "market_already_voided"
+    message = (
+        "This market has been voided. It has no winning outcome, and its "
+        "terms can no longer be changed."
     )
 
 
