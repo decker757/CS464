@@ -72,11 +72,11 @@ interface PanelOptions {
   onOrderPlaced?: () => void
 }
 
-function renderPanel({
+function panel({
   balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, reservedSharesByOutcome = {}, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
   limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
 }: PanelOptions = {}) {
-  return render(
+  return (
     <BalanceContext.Provider value={{ balance, available, refetch }}>
       <TradingPanel
         marketId={MARKET_ID}
@@ -87,8 +87,12 @@ function renderPanel({
         onTraded={onTraded}
         onOrderPlaced={onOrderPlaced}
       />
-    </BalanceContext.Provider>,
+    </BalanceContext.Provider>
   )
+}
+
+function renderPanel(options: PanelOptions = {}) {
+  return render(panel(options))
 }
 
 async function typeQuantity(actor: ReturnType<typeof userEvent.setup>, value: string) {
@@ -731,11 +735,67 @@ describe('TradingPanel', () => {
     expect(submit).toBeDisabled()
     await actor.click(submit)
     expect(tradeCalls).toBe(0)
+  })
 
-    // The holding is per outcome: No is a different position, and this one
-    // holds nothing of it.
-    await actor.click(screen.getByRole('button', { name: /^no$/i }))
-    expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 0.0000 shares')
+  // #451: choosing Sell on an outcome the trader holds none of used to show a
+  // quantity field, a small "You hold 0.0000 shares" and a button that could
+  // never be pressed, and said why only once a quantity was typed.
+  it('says on choosing Sell that the trader holds none of the outcome, and offers to buy it instead', async () => {
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' } })
+    // On the page before its message, which is what lets a screen reader
+    // announce the message when it arrives.
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+
+    await actor.click(screen.getByRole('button', { name: 'No' }))
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    expect(screen.getByRole('status')).toHaveTextContent("You don't hold any No shares.")
+    expect(screen.queryByLabelText('Quantity (shares)')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^sell no$/i })).not.toBeInTheDocument()
+    // Sell stays a control the trader can reach and leave, not a disabled one.
+    expect(screen.getByRole('button', { name: /^sell$/i })).toBeEnabled()
+
+    await actor.click(screen.getByRole('button', { name: 'Buy No instead' }))
+
+    // Still No: the offer is to buy the outcome the trader was looking at.
+    expect(screen.getByRole('button', { name: 'Buy' })).toBePressed()
+    expect(screen.getByRole('button', { name: 'No' })).toBePressed()
+    // The offer's button has gone, so focus moves to what comes next rather
+    // than dropping to the top of the page.
+    expect(screen.getByLabelText('Quantity (shares)')).toHaveFocus()
+  })
+
+  it('keeps the quantity field for an outcome the trader holds, while offering the buy on the one they do not', async () => {
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' } })
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You hold 6.0000 shares')
+    expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+
+    await actor.click(screen.getByRole('button', { name: 'No' }))
+
+    expect(screen.getByRole('status')).toHaveTextContent("You don't hold any No shares.")
+  })
+
+  it('keeps the quantity field while the holding is loading, and offers the buy once it lands as none', async () => {
+    // Null is also a read that failed, so the panel cannot take it for none:
+    // that would stop a trader selling shares they own.
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel({ heldByOutcome: null })
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+
+    rerender(panel({ heldByOutcome: {} }))
+
+    expect(screen.getByRole('status')).toHaveTextContent("You don't hold any Yes shares.")
+    expect(screen.queryByLabelText('Quantity (shares)')).not.toBeInTheDocument()
   })
 
   it('blocks a sell of shares that open sell orders already reserve, before any request', async () => {
@@ -773,6 +833,9 @@ describe('TradingPanel', () => {
 
     expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 1.0000 shares')
     expect(screen.queryByRole('button', { name: /^max$/i })).not.toBeInTheDocument()
+    // Shares held back in full by sell orders are still held (#451): no
+    // "You don't hold any" sentence.
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
 
     // The refusal agrees with the line above it: nothing left, never -1.0000.
     await typeQuantity(actor, '0.5')

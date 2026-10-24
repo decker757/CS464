@@ -5,6 +5,7 @@ import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
 import OpenOrdersList from '../components/markets/OpenOrdersList'
+import PriceHistorySection from '../components/markets/PriceHistorySection'
 import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
 import TradingPanel from '../components/markets/TradingPanel'
@@ -132,6 +133,16 @@ export default function MarketDetailPage() {
     )
   }, [id, tradeable])
 
+  // The price history is read once, so the trader's own trade would leave it
+  // behind: on a fresh market it would go on saying nobody has traded. Each
+  // trade or limit placement here re-reads it (#453). Other traders' trades
+  // are not followed, nor a resting order's later fill (an order frame).
+  const [tradesMade, setTradesMade] = useState(0)
+  const handleTraded = useCallback(() => {
+    refetchHeld()
+    setTradesMade(count => count + 1)
+  }, [refetchHeld])
+
   // A placement or a cancel moves credits, or what they reserve, and a
   // placement that filled also changed the holdings the sell clamp reads.
   // The balance comes back through BalanceContext, as it does after a trade.
@@ -144,6 +155,16 @@ export default function MarketDetailPage() {
     refetchBalance()
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
+
+  // A limit order that fills on arrival is an ordinary buy or sell against
+  // the book (ADR 0024), so it moves the history the way a trade does. The
+  // panel does not say whether it filled, and a re-read that finds nothing
+  // new costs one request. Not in onOrdersChanged: that also runs on every
+  // cancel and every subscribe ack.
+  const handleOrderPlaced = useCallback(() => {
+    onOrdersChanged()
+    setTradesMade(count => count + 1)
+  }, [onOrdersChanged])
 
   // A fill moves credits and shares, and the frame carries neither — only
   // the filled quantity, which it applies to the row at once. Everything
@@ -284,8 +305,8 @@ export default function MarketDetailPage() {
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
                 reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
-                onTraded={refetchHeld}
-                onOrderPlaced={onOrdersChanged}
+                onTraded={handleTraded}
+                onOrderPlaced={handleOrderPlaced}
               />
             ) : (
               <p className="text-sm text-muted">{closedMessage(market.status)}</p>
@@ -306,6 +327,12 @@ export default function MarketDetailPage() {
           ) : (
             <OpenOrdersList key={market.id} orders={ordersHere} outcomes={market.outcomes} onCancelled={onOrdersChanged} />
           )}
+
+          {/* Below the panel and the trader's open orders rather than above
+              them, so the history arriving after first paint never moves the
+              controls a trader is reaching for (#453). Every status: a closed
+              market's history still says how it got there. */}
+          <PriceHistorySection key={tradesMade} marketId={market.id} outcomes={market.outcomes} />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />

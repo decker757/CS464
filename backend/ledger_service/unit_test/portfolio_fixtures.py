@@ -105,6 +105,7 @@ POSITION_FIELDS = {
     "outcome_id",
     "outcome_position",
     "quantity",
+    "reserved_shares",
     "cost_basis",
     "average_entry_price",
     "price",

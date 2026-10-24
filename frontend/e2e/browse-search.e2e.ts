@@ -36,11 +36,26 @@ test('a trader searches the market list and narrows it by status', async ({ page
   await expect(marketCard(page, first.question)).toBeVisible()
   await expect(marketCard(page, second.question)).toBeVisible()
 
-  await page.getByRole('button', { name: 'Open' }).click()
+  await page.getByRole('radio', { name: 'Open', exact: true }).click()
+  await expect(marketCard(page, first.question)).toBeVisible()
+  await expect(marketCard(page, second.question)).toHaveCount(0)
+  // A search and a status: two filters, so Clear all is worth offering (#442).
+  const clearAll = page.getByRole('button', { name: 'Clear all', exact: true })
+  await expect(clearAll).toBeVisible()
+
+  // The arrow keys move the status choice (#442), and each move is a new
+  // request to the real server: the next pill after Open is Closed.
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByRole('radio', { name: 'Closed', exact: true })).toBeFocused()
+  await expect(marketCard(page, second.question)).toBeVisible()
+  await expect(marketCard(page, first.question)).toHaveCount(0)
+  await page.keyboard.press('ArrowLeft')
   await expect(marketCard(page, first.question)).toBeVisible()
   await expect(marketCard(page, second.question)).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Clear status filter' }).click()
   await expect(marketCard(page, first.question)).toBeVisible()
   await expect(marketCard(page, second.question)).toBeVisible()
+  // Only the search is left, and its own chip clears it.
+  await expect(clearAll).toHaveCount(0)
 })
