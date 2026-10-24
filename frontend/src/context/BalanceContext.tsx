@@ -16,9 +16,9 @@ interface BalanceContextType {
   // Re-reads the authoritative balance from the ledger — call this after a
   // trade commits ([B-2] #33's third acceptance criterion). A payout has no
   // caller on the trader's tab, so the provider itself re-reads when the
-  // trader comes back to the tab (#511). A
-  // failed request leaves the last known balance on screen rather than
-  // blanking it, so a rejected trade never looks like it changed anything.
+  // trader comes back to the tab (#511). A failed request leaves the last
+  // known balance on screen rather than blanking it, so a rejected trade
+  // never looks like it changed anything.
   refetch: () => Promise<void>
 }
 
@@ -67,13 +67,14 @@ export function BalanceProvider({ children }: { children: React.ReactNode }) {
     if (user) refetch()
   }, [user, refetch])
 
-  // Re-read whenever the trader comes back to this tab. A payout, a send-back
-  // or a fill is written by somebody else's request, and nothing on the
-  // socket tells this tab about it (#511). Both events, because clicking from
-  // one browser window into another fires `focus` and often no
-  // `visibilitychange`, while switching tabs fires `visibilitychange`. When
-  // both fire, the two reads race like any others: `latestRequestRef` keeps
-  // the newer answer.
+  // Re-read whenever the trader comes back to this tab. A payout, or a fill
+  // while the trader is on another page, is written by somebody else's
+  // request, and nothing tells this tab about it (#511): the socket has no
+  // payout frame, and the market page's order frame refetches only while
+  // that page is open. Both events, because clicking from one browser window
+  // into another fires `focus` and often no `visibilitychange`, while
+  // switching tabs fires `visibilitychange`. When both fire, the two reads
+  // race like any others: `latestRequestRef` keeps the newer answer.
   useEffect(() => {
     if (!user) return
 
