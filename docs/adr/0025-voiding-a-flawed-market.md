@@ -1,16 +1,15 @@
 # ADR 0025: Voiding a flawed market, by any administrator without a stake, refunded at what was paid, ledger first
 
-- **Status:** Proposed. Accepted when both sign-offs below are ticked.
-  - [ ] 1. Ernest, who drafted the design in #221 (revision 2), accepts the
-    changes this record makes to it. Each is listed under "What changed from
-    revision 2", with the code that forced it.
-  - [ ] 2. The team accepts that one administrator can end an approved market
-    without a winner inside its dispute window, overturning a result two
-    administrators agreed ("Who may void").
+- **Status:** Accepted, 2026-10-25, by Ihsan without Ernest's sign-offs.
+  Ernest's review of #416 is still the merge gate, and any line of this
+  record can be reopened there. Both sign-offs this record waited on, and the
+  six questions #416 left open, are decided under "Decisions on the open
+  questions".
 - **Date:** 2026-10-20
 - **Decided by:** Ihsan, who owns #221, on 2026-10-20: rulings A to D
   below, and the earlier ruling in #221's thread that the void gets its own
-  record rather than an amendment to ADR 0019.
+  record rather than an amendment to ADR 0019. On 2026-10-25, also Ihsan: the
+  two sign-offs and the open questions, to keep the void stack moving.
 - **Affects:** [BE] #221, [3.4] #12, [3.3] #11, [3.2] #10, [2.3] #7, [2.1] #5,
   #210, [2.2] #6, [BE][2.4] #63, [T-4] #24, [T-5] #25, [T-6] #26, [T-7] #27,
   [T-8] #28, [L-1] #38, [B-1] #359, ADR 0006, ADR 0007, ADR 0009, ADR 0011,
@@ -758,6 +757,51 @@ re-pinned at 22e8e1e, not a change of mind.
 13. **Revision numbers** are ledger `0007` and market `0003`.
 14. **This is its own record**, not an amendment to ADR 0019, and ADR 0019's
     APPROVED-exit argument lives here, with a pointer there.
+
+## Decisions on the open questions
+
+Decided by Ihsan on 2026-10-25, without Ernest's sign-offs, so that the void
+stack can move. Ernest's review of #416 is still the merge gate, and any of
+these can be reopened there. The numbers are #416's: question 1 was sign-off
+1.
+
+1. **Sign-off 1: the changes from revision 2 are accepted.** Each was forced
+   by code on `dev`, and each cites the line that forced it (above).
+2. **Sign-off 2: one administrator without a stake may void an APPROVED
+   market inside its stored dispute window**, though that overturns a
+   two-administrator approval. Send-back (ADR 0023) already lets one
+   administrator undo an approval. What is new is only that a void is final
+   and moves money, and the stake check, the two audit entries and refunds at
+   cost, which let nobody gain, guard that.
+3. **A repeat recomputes `total_owed` by re-running the lot replay** (step 3
+   of "The ledger goes first"). A repeat happens only after a `503`, so it is
+   rare, and the record stays free of derived totals, as balances are
+   (ADR 0009).
+4. **The reason's ceiling is 5,000 characters**, market_service's. The reason
+   is stored in `market.void_reason`, so the owner of that column sets the
+   limit.
+5. **No UI repeat for either case the screen cannot finish**: a market voided
+   by a direct call to market_service's `/void`, and a refunded but
+   unconfirmed APPROVED market past its window. Both are known edges, each
+   recovered by a direct API call named there, and each has its own reversal
+   trigger: the first time it happens on a real market.
+6. **Both stronger reversal triggers are written in**: a measure for the cap,
+   and a change to anything the void step's five-minute allowance rests on.
+7. **"Rounding favours the pool" cites D-044**, where "The batch is never
+   empty" relies on it.
+8. **The core PR makes the engine's context public in `core/lmsr.py`**, by
+   renaming `_engine_context` or wrapping it, and the cut uses it. It is not
+   copied into the void's module: two copies of the precision that diverged
+   would be a money bug, which passes the shared-package bar of ADR 0012
+   (identical behaviour, and a divergence is a bug). See "Two accounts, and
+   the cap of one more seed".
+9. **A voided market's `credits_traded` is unchanged.** It records trades that
+   happened, its "only ever rises" is documented, and a void writes no trade,
+   so nothing touches it ("What readers show").
+10. **The batch snapshot is one of the void's readers, with no backend
+    change.** A voided card shows "Voided" with no probability and no price
+    change, the rule #429 sets for a resolved market ("What readers show",
+    and the void screen's notes in `docs/api/market-service.md`).
 
 ## Alternatives rejected
 
