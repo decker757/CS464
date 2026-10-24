@@ -35,6 +35,36 @@ export async function getMarketSnapshot(marketId: string): Promise<PriceState> {
   return res.data
 }
 
+// One batched item: the single snapshot's body, field for field, plus how much
+// the market has traded. Only the batch carries `credits_traded` — neither the
+// single snapshot nor the `price` frame does (ledger-service.md) — so it is
+// optional on the type a card renders from all three.
+export interface MarketSnapshot extends PriceState {
+  credits_traded: string
+}
+
+/**
+ * The current prices of many markets in one request ([X-1] #432).
+ *
+ * At most 200 ids — market_service's largest page, so one page of the browse
+ * list always fits. A 201st is a 422 naming `market_ids` rather than a short
+ * answer, so a caller with more than that splits the request.
+ *
+ * A market is absent from the answer rather than erroring when this service
+ * holds no book for it — an unknown id, a draft, and a published market
+ * nobody has previewed or traded all read the same way. **This route opens no
+ * book**, so a cold published market stays absent however often it is asked
+ * for; `getMarketSnapshot` is what opens one, and from then on the batch
+ * answers it. An empty list is a request worth not sending.
+ */
+export async function getMarketSnapshots(marketIds: string[]): Promise<MarketSnapshot[]> {
+  const res = await api.post<{ snapshots: MarketSnapshot[] }>(
+    `${LEDGER_BASE}/ledger/markets/snapshots`,
+    { market_ids: marketIds },
+  )
+  return res.data.snapshots
+}
+
 export interface Balance {
   user_id: string
   account_id: string

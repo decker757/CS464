@@ -1,43 +1,12 @@
-import axios from 'axios'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import { getMarketSnapshot, type OutcomePrice, type PriceState } from '../api/ledgerApi'
+import { usePriceSocket, type ConnectionStatus, type OrderFrame, type PriceSocketOptions } from './usePriceSocket'
 
 export type { OutcomePrice }
-
-// [X-4] #37 AC 6: the UI displays connection state.
-export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'degraded'
-
-const WS_BASE = import.meta.env.VITE_REALTIME_WS_URL ?? 'ws://localhost:8004'
-const MAX_RETRY_MS = 30_000
-
-type MarketPriceState = {
-  marketId: string
-  prices: OutcomePrice[] | null
-  status: ConnectionStatus
-}
-
-/** One `order` frame: a fill of one of the caller's resting orders
- *  (docs/api/realtime-service.md, "Order updates"). */
-export interface OrderFrame {
-  type: 'order'
-  order_id: string
-  market_id: string
-  status: 'open' | 'filled' | 'cancelled' | 'released'
-  quantity: string
-  filled_quantity: string
-  fill: { state_version: number }
-}
+export type { ConnectionStatus, OrderFrame }
 
 interface MarketPriceOptions {
-  /**
-   * Called for each `order` frame this connection receives.
-   *
-   * Order frames need no subscribe: a socket gets the frames of the user its
-   * token names, whatever markets it follows. They ride this connection
-   * rather than one of their own so a page holds a single socket, which is
-   * also what keeps "the" socket unambiguous in a test.
-   */
-  onOrderFrame?: (frame: OrderFrame) => void
+  onOrderFrame?: PriceSocketOptions['onOrderFrame']
   /** Called on every `subscribed` ack, the first one included. Frames
    *  published before it never reached this socket — while a dropped
    *  connection was away, or between the caller's mount read and the first
@@ -46,150 +15,50 @@ interface MarketPriceOptions {
   onSubscribed?: () => void
 }
 
-// Current prices and connection status; retains last known prices during reconnect rather than blanking them.
+// Current prices and connection status for one market; retains last known
+// prices during reconnect rather than blanking them.
+//
+// The socket, the reconnect, the backoff and the version check live in
+// `usePriceSocket`, which follows a set of markets — the browse list follows
+// every card it renders ([X-1] #444). This is that hook with a set of one,
+// plus this page's own reads of the ledger, which go through the socket hook's
+// `applySnapshot` so one high-water mark decides every answer about this book.
 export function useMarketPrices(
   marketId: string | null,
   { onOrderFrame, onSubscribed }: MarketPriceOptions = {},
 ): { prices: OutcomePrice[] | null; status: ConnectionStatus } {
-  const [state, setState] = useState<MarketPriceState | null>(null)
+  // A fresh array each render is fine: the socket hook keys on the ids.
+  const followed = useMemo(() => (marketId ? [marketId] : []), [marketId])
 
-  // Read through refs inside the socket's own callbacks, so a caller passing
-  // a fresh closure each render does not tear the connection down and
-  // rebuild it. The effect below depends on marketId alone, as it did.
-  const onOrderFrameRef = useRef(onOrderFrame)
-  const onSubscribedRef = useRef(onSubscribed)
-  useEffect(() => {
-    onOrderFrameRef.current = onOrderFrame
-    onSubscribedRef.current = onSubscribed
+  // The snapshot comes from the ledger, not the socket, so a realtime service
+  // that is down or refuses the origin must not keep a healthy price off the
+  // page (AC 1, AC 7). Read for each market newly followed, and again on every
+  // ack: that second read covers a trade between the first one and the
+  // subscription, and after a drop it covers everything published while we
+  // were away. The version check inside the socket hook drops the older answer.
+  //
+  // The markets to read come from the socket hook as an argument rather than
+  // from this closure: it holds the callback in a ref and calls it on an ack,
+  // by which time a closure built on an earlier render would still carry that
+  // render's id — null, on a detail page whose market has not loaded yet.
+  const readSnapshots = useCallback((apply: (snapshot: PriceState) => void, ids: string[]) => {
+    for (const id of ids) getMarketSnapshot(id).then(apply, () => {})
+  }, [])
+
+  const { snapshotsByMarket, status } = usePriceSocket(followed, {
+    onOrderFrame,
+    onSubscribed: () => {
+      onSubscribed?.()
+    },
+    onMount: readSnapshots,
+    onAck: readSnapshots,
+    // One request through `api`, so its interceptor refreshes the session
+    // cookie before the socket is retried. The followed market is the one to
+    // ask about, and the socket hook ignores the answer if the page has since
+    // moved to another.
+    onSessionRefresh: followed.length > 0 ? () => getMarketSnapshot(followed[0]) : undefined,
   })
 
-  useEffect(() => {
-    if (!marketId) return
-
-    // Set by the cleanup. Closing the socket ourselves fires onclose too, and
-    // without this flag that close would schedule a reconnect of its own.
-    let cancelled = false
-    let ws: WebSocket | null = null
-    let retryTimer: ReturnType<typeof setTimeout> | undefined
-    let attempt = 0
-    // The highest version on screen. Kept across reconnects, because the prices
-    // are: a late frame from before the drop must not replace newer ones.
-    let version = -1
-
-    // State left by the previous market is not carried over to this one.
-    const showPrices = (prices: OutcomePrice[]) => {
-      setState(prev => {
-        const status = prev?.marketId === marketId ? prev.status : 'connecting'
-        return { marketId, prices, status }
-      })
-    }
-    const showStatus = (status: ConnectionStatus) => {
-      // A request for a market the page has left may still settle, and must
-      // not overwrite the market now on screen.
-      if (cancelled) return
-      setState(prev => {
-        const prices = prev?.marketId === marketId ? prev.prices : null
-        return { marketId, prices, status }
-      })
-    }
-
-    // Snapshot and price frame share a shape, so one function applies both.
-    // Anything for another market, or not newer than what is on screen, is
-    // dropped: a snapshot can be newer than a frame still in flight, and
-    // replicas keep separate counts.
-    const apply = (s: PriceState) => {
-      if (cancelled || s.market_id !== marketId || s.state_version <= version) return
-      version = s.state_version
-      showPrices([...s.prices].sort((a, b) => a.position - b.position))
-    }
-
-    const loadSnapshot = () => getMarketSnapshot(marketId).then(apply)
-
-    const connect = () => {
-      const socket = new WebSocket(`${WS_BASE}/ws/prices`)
-      ws = socket
-
-      socket.onopen = () => {
-        socket.send(JSON.stringify({ action: 'subscribe', market_id: marketId }))
-      }
-
-      socket.onmessage = (event: MessageEvent) => {
-        let msg
-        try { msg = JSON.parse(event.data as string) } catch { return }
-        if (msg.type === 'subscribed') {
-          attempt = 0
-          // Set here rather than when prices arrive: a reconnect where nothing
-          // traded brings a snapshot that `apply` drops as not newer.
-          showStatus('connected')
-          // Fetched again after the ack: from here on every trade arrives on
-          // the socket, and everything earlier is in this snapshot. The
-          // version check drops any overlap.
-          loadSnapshot().catch(() => {})
-          // On every ack, the first included, for the snapshot's reason: the
-          // caller's own mount read can miss a frame published before this.
-          onSubscribedRef.current?.()
-        } else if (msg.type === 'price') {
-          apply(msg as PriceState)
-        } else if (msg.type === 'order') {
-          onOrderFrameRef.current?.(msg as OrderFrame)
-        }
-      }
-
-      socket.onclose = (event: CloseEvent) => {
-        if (cancelled) return
-
-        // Origin refused: retrying cannot help. Mark degraded but keep last
-        // known prices visible (AC 7).
-        if (event.code === 4403) {
-          showStatus('degraded')
-          return
-        }
-
-        // Keep last known prices while reconnecting (AC 7: retain stale prices
-        // during temporary loss rather than blanking the display).
-        showStatus('reconnecting')
-
-        const delay = Math.min(1000 * 2 ** attempt, MAX_RETRY_MS)
-        attempt += 1
-        const reconnect = () => {
-          if (!cancelled) retryTimer = setTimeout(connect, delay)
-        }
-
-        // 4401 / 4408: the access token expired. A browser socket cannot send
-        // a fresh one, so refresh the cookie first — any request through
-        // `api` does that via its interceptor, and the snapshot is one we need
-        // anyway. If even that is refused, the session is over; stop.
-        if (event.code === 4401 || event.code === 4408) {
-          loadSnapshot().then(reconnect, (err: unknown) => {
-            if (axios.isAxiosError(err) && err.response?.status === 401) {
-              showStatus('degraded')
-              return
-            }
-            reconnect()
-          })
-        } else {
-          reconnect()
-        }
-      }
-    }
-
-    // The snapshot comes from the ledger, not the socket, so a realtime service
-    // that is down or refuses us must not keep a healthy price off the page
-    // (AC 1, AC 7). The fetch after `subscribed` is still needed: it covers a
-    // trade that lands between this request and the subscription.
-    loadSnapshot().catch(() => {})
-    connect()
-
-    return () => {
-      cancelled = true
-      clearTimeout(retryTimer)
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ action: 'unsubscribe', market_id: marketId }))
-      }
-      ws?.close()
-    }
-  }, [marketId])
-
-  if (!state || state.marketId !== marketId) return { prices: null, status: 'connecting' }
-  return { prices: state.prices, status: state.status }
+  if (!marketId) return { prices: null, status: 'connecting' }
+  return { prices: snapshotsByMarket.get(marketId)?.prices ?? null, status }
 }
