@@ -44,3 +44,30 @@ test('a trader searches the market list and narrows it by status', async ({ page
   await expect(marketCard(page, first.question)).toBeVisible()
   await expect(marketCard(page, second.question)).toBeVisible()
 })
+
+// #442, through the real market service: FastAPI ignores a query parameter it
+// does not know, so if either side renamed `closes_from` or `closes_before`,
+// the MSW tests on this side and the route tests on that side would both stay
+// green while the preset quietly filtered nothing. The market closes about
+// sixty days out, which no "This month" window can reach from any day or
+// timezone, so only the window reaching the server empties the list. Nothing
+// here asserts a market closing soon: other runs leave those behind.
+test('a trader narrows the market list to what closes this month', async ({ page }) => {
+  const admin = await registerAdmin('bc_admin')
+  const suffix = uniqueName('closing')
+  const later = await publishMarket(admin, `Will ${suffix} resolve in sixty days?`, undefined, { closesInHours: 60 * 24 })
+
+  const trader = await registerTrader('bc_trader')
+  await logIn(page, trader)
+  await page.goto('/markets')
+
+  const search = page.getByRole('searchbox', { name: /search markets/i })
+  await search.fill(suffix)
+  await page.keyboard.press('Enter')
+  await expect(marketCard(page, later.question)).toBeVisible()
+
+  const closing = page.getByRole('radiogroup', { name: 'Filter by closing time', exact: true })
+  await closing.getByRole('radio', { name: 'This month', exact: true }).click()
+  await expect(page.getByText('No markets match these filters.', { exact: true })).toBeVisible()
+  await expect(marketCard(page, later.question)).toHaveCount(0)
+})
