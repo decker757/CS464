@@ -29,12 +29,21 @@ function DisplayBalance() {
   )
 }
 
-function mockBalance(user: User, balance: string) {
+/** The balance route answering for `user` the way the ledger does for an
+ * account with no resting orders, so `available` equals `balance`, and
+ * counting each request. */
+function mockBalance(user: User, balance: string): { requestCount: () => number } {
+  let count = 0
   server.use(
-    http.get(`${LEDGER_BASE}/ledger/balances/me`, () =>
-      HttpResponse.json({ user_id: user.id, account_id: 'acc-1', balance }),
-    ),
+    http.get(`${LEDGER_BASE}/ledger/balances/me`, () => {
+      count += 1
+      return HttpResponse.json({
+        user_id: user.id, account_id: 'acc-1',
+        balance, reserved: '0.0000', available: balance,
+      })
+    }),
   )
+  return { requestCount: () => count }
 }
 
 function renderWithUser(user: User | null | undefined) {
@@ -45,22 +54,6 @@ function renderWithUser(user: User | null | undefined) {
       </BalanceProvider>
     </AuthContext.Provider>,
   )
-}
-
-/** The balance route answering with `available` credits, the way the ledger
- * does for an account with no resting orders, and counting each request. */
-function serveBalance(available: string): { requestCount: () => number } {
-  let count = 0
-  server.use(
-    http.get(`${LEDGER_BASE}/ledger/balances/me`, () => {
-      count += 1
-      return HttpResponse.json({
-        user_id: alice.id, account_id: 'acc-1',
-        balance: available, reserved: '0.0000', available,
-      })
-    }),
-  )
-  return { requestCount: () => count }
 }
 
 /** The real header under the real provider: the figure a trader watches for
@@ -187,12 +180,12 @@ describe('BalanceContext', () => {
   // nothing on the socket tells the trader's tab: coming back to the tab is
   // the only moment the header can learn of it without a reload.
   it('re-reads the balance when the tab becomes visible again, so a payout reaches the header', async () => {
-    serveBalance('1000.0000')
+    mockBalance(alice, '1000.0000')
     render(headerFor(alice))
     expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
 
     // Settled while the trader looked at another tab.
-    serveBalance('1250.0000')
+    mockBalance(alice, '1250.0000')
     changeVisibility('visible')
 
     await waitFor(() =>
@@ -203,11 +196,11 @@ describe('BalanceContext', () => {
   // Clicking from the admin's browser window into the trader's fires `focus`
   // and, with both windows on screen, often no `visibilitychange` at all.
   it('re-reads the balance when the window regains focus', async () => {
-    serveBalance('1000.0000')
+    mockBalance(alice, '1000.0000')
     render(headerFor(alice))
     expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
 
-    serveBalance('1250.0000')
+    mockBalance(alice, '1250.0000')
     fireEvent.focus(window)
 
     await waitFor(() =>
@@ -216,11 +209,11 @@ describe('BalanceContext', () => {
   })
 
   it('does not re-read when the tab is hidden', async () => {
-    serveBalance('1000.0000')
+    mockBalance(alice, '1000.0000')
     render(headerFor(alice))
     expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
 
-    const ledger = serveBalance('1250.0000')
+    const ledger = mockBalance(alice, '1250.0000')
     changeVisibility('hidden')
 
     // Give a request a chance to land before asserting none was sent.
@@ -229,7 +222,7 @@ describe('BalanceContext', () => {
   })
 
   it('requests nothing when the tab comes back with nobody signed in', async () => {
-    const ledger = serveBalance('1000.0000')
+    const ledger = mockBalance(alice, '1000.0000')
     render(headerFor(null))
 
     changeVisibility('visible')
@@ -240,12 +233,12 @@ describe('BalanceContext', () => {
   })
 
   it('stops re-reading once the user signs out', async () => {
-    serveBalance('1000.0000')
+    mockBalance(alice, '1000.0000')
     const { rerender } = render(headerFor(alice))
     expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
 
     rerender(headerFor(null))
-    const ledger = serveBalance('1250.0000')
+    const ledger = mockBalance(alice, '1250.0000')
     changeVisibility('visible')
     fireEvent.focus(window)
 
