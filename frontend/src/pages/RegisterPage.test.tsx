@@ -86,9 +86,21 @@ describe('RegisterPage — client-side validation', () => {
     // Password is the two-hop one — Field clones PasswordInput, which spreads
     // onto TextInput, which spreads onto the input — so it is worth its own
     // assertion rather than being the same path with other words in it.
+    // #480: it also says there is no password reset, where the password is
+    // chosen and read out with it, since a forgotten one cannot be recovered.
     expect(screen.getByLabelText('Password')).toHaveAccessibleDescription(
-      'Must be at least 12 characters.'
+      'Must be at least 12 characters. There is no password reset, so keep your password somewhere safe.'
     )
+  })
+
+  // #480. Names no figure: the auth service does not know credits exist, and
+  // the grant is the ledger's STARTING_CREDITS, which a deployment can change.
+  it('says a new account starts with mock credits, without naming an amount', () => {
+    renderRegisterPage()
+
+    expect(
+      screen.getByText('Join PredictSMU. Your new account starts with mock credits to trade with.')
+    ).toBeInTheDocument()
   })
 
   it('checks a field when it is left, not while it is being typed', async () => {
