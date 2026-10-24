@@ -387,6 +387,18 @@ which #221 already lists as voidable. #221's void keeps the approval columns,
 this one included. Whichever of the two market revisions merges second is
 renumbered and its `down_revision` pointed at the other.
 
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
+> and not built yet. The void uses this window, as above.** `voidable` is
+> `is_in_dispute_window` for an APPROVED market, on the stored
+> `dispute_window_ends_at` and the request's Python clock, exclusive at its
+> edge, exactly as send-back asks it. market_service's `POST /markets/{id}/void`
+> accepts APPROVED while `clock_timestamp()`, read after the row lock, is
+> before `dispute_window_ends_at` plus `SETTLEMENT_GAP`, and the settle step
+> accepts from that instant, so the void step and the settle step never both
+> accept. The void keeps the approval columns and this one. This record's
+> revision `0002` merged first, so #221's is market revision `0003`. The
+> race-table row "send-back against void" holds as written.
+
 ## Alternatives rejected
 
 **Widening `reject-outcome` to accept an APPROVED market.** One endpoint
