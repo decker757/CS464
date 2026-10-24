@@ -22,6 +22,7 @@ from core.errors import (
     MarketTermsUnavailable,
     NotAuthenticated,
     SettlementUnconfirmed,
+    VoidUnconfirmed,
 )
 from core.not_found_cache import NotFoundCache
 
@@ -66,7 +67,9 @@ class MarketTerms:
     `status` must never get a default: it would hand out "open" for a status
     nobody supplied, a silent fail-open on the money gate. Neither does
     `settleable`: `False` hides a broken deploy as a window that never
-    closes, and `True` pays out inside it (ADR 0019).
+    closes, and `True` pays out inside it (ADR 0019). Nor `voidable`: `True`
+    refunds a market whose result is final, and `False` hides a broken deploy
+    as a market that can never be voided (ADR 0025).
     """
 
     market_id: uuid.UUID
@@ -77,6 +80,7 @@ class MarketTerms:
     outcomes: list[OutcomeTerms]
     proposed_outcome_id: uuid.UUID | None
     settleable: bool
+    voidable: bool
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -127,12 +131,12 @@ def _to_uuid(value: object) -> uuid.UUID:
     return uuid.UUID(value)
 
 
-def _to_settleable(value: object) -> bool:
-    """`settleable`, which must be a JSON boolean.
+def _to_flag(value: object) -> bool:
+    """`settleable` or `voidable`, each of which must be a JSON boolean.
 
     Never coerced: `"false"` is truthy, and reading it as true would pay out
-    inside the dispute window. `0` is refused too, since `bool` is the only
-    type the contract sends.
+    inside the dispute window, or refund a market whose result is final. `0`
+    is refused too, since `bool` is the only type the contract sends.
     """
     if not isinstance(value, bool):
         raise TypeError(f"{type(value).__name__} is not a boolean")
@@ -184,11 +188,13 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
             for o in body.get("outcomes", [])
         ]
 
-        # Indexed like `published_at`: the contract always sends both keys,
+        # Indexed like `published_at`: the contract always sends these keys,
         # so a missing one is a broken deploy, not a default. DECISIONS.md,
-        # "`MarketTerms` carries `proposed_outcome_id` and `settleable`".
+        # "`MarketTerms` carries `proposed_outcome_id` and `settleable`", and
+        # "`MarketTerms` carries `voidable`, required".
         proposed_outcome_id = _to_proposed_outcome_id(body["proposed_outcome_id"])
-        settleable = _to_settleable(body["settleable"])
+        settleable = _to_flag(body["settleable"])
+        voidable = _to_flag(body["voidable"])
 
         # The body's own id must match: a proxy answering with another
         # market's body would otherwise open this book with that market's `b`,
@@ -206,6 +212,7 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
             outcomes=outcomes,
             proposed_outcome_id=proposed_outcome_id,
             settleable=settleable,
+            voidable=voidable,
         )
     except (
         ArithmeticError,  # InvalidOperation, from Decimal
@@ -328,3 +335,41 @@ async def mark_settled(
             response.status_code,
         )
         raise SettlementUnconfirmed
+
+
+async def mark_voided(
+    market_id: uuid.UUID,
+    *,
+    reason: str,
+    access_token: str,
+    terms_client: httpx.AsyncClient,
+) -> None:
+    """Tell market_service the refunds committed: `POST /markets/{id}/void`,
+    with `{"reason": ...}`, the reason the ledger recorded.
+
+    Returns `None` on a `200` and raises `VoidUnconfirmed` on anything else,
+    including `httpx.RequestError`. The response body is never read, and the
+    404 cache is neither consulted nor fed, as for `mark_settled`. Logs the
+    failure at ERROR, for `mark_settled`'s reason: the refunds have moved and
+    the market is unmarked until a person repeats the request. ADR 0025,
+    step 8.
+    """
+    try:
+        response = await terms_client.post(
+            f"/markets/{market_id}/void",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"reason": reason},
+        )
+    except httpx.RequestError as exc:
+        _log.error(
+            "void of market %s was not confirmed: %s", market_id, type(exc).__name__
+        )
+        raise VoidUnconfirmed from exc
+
+    if response.status_code != 200:
+        _log.error(
+            "void of market %s was not confirmed: market_service answered %s",
+            market_id,
+            response.status_code,
+        )
+        raise VoidUnconfirmed
