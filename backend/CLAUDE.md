@@ -58,7 +58,9 @@ Tests are named as a sentence stating the behaviour:
 5. Private helpers (`_name`), each above the first function that calls it.
 6. Public functions — the file's API — last, in the order a request uses them.
 
-Reading top to bottom, you never meet a name that has not been defined yet.
+Reading top to bottom, you never meet a name that has not been defined yet,
+with one exception: a private helper that calls one of the file's public
+functions. The public functions still go last, below it (#500).
 Do not scatter helpers between public functions or park them at the end.
 
 ## Functions
