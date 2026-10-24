@@ -469,7 +469,9 @@ async def _queue_in_order(
             await _wait_until_blocked_on_a_lock(holder, late_pid)
         finally:
             # On every path, and before the writers' sessions close: one still
-            # queued on the row would otherwise wait on this lock forever.
+            # queued on the row would otherwise wait on this lock forever. The
+            # barrier is broken too, for a setup that failed before reaching it.
+            barrier.abort()
             early_go.set()
             late_go.set()
             await holder.rollback()
