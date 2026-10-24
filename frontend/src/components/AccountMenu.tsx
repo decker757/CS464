@@ -90,7 +90,9 @@ export default function AccountMenu({ username, email, isLoggingOut, onLogout }:
         <span aria-hidden="true" className="flex h-7 w-7 items-center justify-center rounded-full bg-smu-gold text-xs font-bold text-smu-navy">
           {username.slice(0, 1).toUpperCase()}
         </span>
-        <span>{username}</span>
+        {/* Out of sight on a phone, where the bar has no room for a long
+            name, and still the button's accessible name (#438). */}
+        <span className="sr-only sm:not-sr-only">{username}</span>
         <ChevronDownIcon className={isOpen ? 'rotate-180' : undefined} />
       </button>
       {isOpen && (
