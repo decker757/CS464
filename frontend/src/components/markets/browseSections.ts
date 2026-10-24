@@ -4,6 +4,13 @@ import type { MarketFigures } from '../../hooks/usePricesForMarkets'
 import { compareCredits, subtractCredits } from '../../utils/formatCredits'
 import { tradingStopped } from './marketStatus'
 
+/** The page's single featured market, and why it was chosen. */
+export interface FeaturedMarket {
+  market: PublicMarketSummary
+  /** Stated beside it, so a featured slot is never an unexplained promotion. */
+  rule: string
+}
+
 /** One named band above the full list, and the markets in it. */
 export interface BrowseSection {
   /** Stable key, and what the section is: used for the heading's id too. */
@@ -51,6 +58,38 @@ function weeklyMoveOf(snapshot: PriceState | undefined, figures: MarketFigures |
 }
 
 /**
+ * The one market at the top of the page, or null when nothing earns the slot
+ * ([X-1] #448).
+ *
+ * The busiest market the page has loaded. Volume is the only honest basis
+ * available: it is the one figure that says other people are here, which is
+ * what a featured slot is for. A market nobody has traded is never featured —
+ * promoting an untouched book is how the screen came to read as dead in the
+ * first place — so on a database with no trades there is simply no hero, which
+ * is the same rule every band follows.
+ */
+export function featuredMarketOf(
+  markets: PublicMarketSummary[],
+  marketFigures: Map<string, MarketFigures>,
+  now: Date,
+): FeaturedMarket | null {
+  const busiest = stillTrading(markets, now)
+    .filter(market => {
+      const traded = marketFigures.get(market.id)?.credits_traded
+      return traded !== undefined && compareCredits(traded, '0') > 0
+    })
+    .sort((left, right) => {
+      const leftTraded = marketFigures.get(left.id)?.credits_traded ?? '0'
+      const rightTraded = marketFigures.get(right.id)?.credits_traded ?? '0'
+      return compareCredits(rightTraded, leftTraded)
+    })
+
+  const [market] = busiest
+  if (!market) return null
+  return { market, rule: 'Most traded right now' }
+}
+
+/**
  * The bands above the full browse list ([X-1] #448).
  *
  * A flat grid of fifty equally weighted cards has no entry point: a trader has
@@ -70,8 +109,16 @@ export function browseSectionsOf(
   snapshotsByMarket: Map<string, PriceState>,
   marketFigures: Map<string, MarketFigures>,
   now: Date,
+  /**
+   * The market already shown as the page's hero, left out of every band.
+   *
+   * It is the busiest market, so it would otherwise lead Trending as well and
+   * appear twice above the list — which reads as a broken band rather than as
+   * emphasis. It is still in the full list below, like every banded market.
+   */
+  featuredId?: string,
 ): BrowseSection[] {
-  const tradeable = stillTrading(markets, now)
+  const tradeable = stillTrading(markets, now).filter(market => market.id !== featuredId)
 
   const closingSoon = tradeable
     .filter(market => {
