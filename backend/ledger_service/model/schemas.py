@@ -976,15 +976,34 @@ class SnapshotsIn(BaseModel):
     )
 
 
+class ListedSnapshotOut(SnapshotOut):
+    """One market in the batch snapshot: the single snapshot's body, plus the
+    credits its trades have moved. [X-1] #447.
+
+    DECISIONS.md, "The batch snapshot carries `credits_traded`, and the single
+    snapshot does not": the single snapshot is the `price` frame without its
+    `type`, and the frame does not carry it.
+    """
+
+    credits_traded: Decimal = Field(
+        description=(
+            "Every credit this market's trades have moved, a buy's cost and a "
+            "sell's proceeds alike, a resting order's fills included, as an "
+            "exact decimal string. `0.0000` for a market nobody has traded."
+        ),
+    )
+
+
 class SnapshotListOut(BaseModel):
     """The current price of every requested market that has a book. [X-1] #432.
 
-    Each item is `SnapshotOut`, the single snapshot's body. An object around a
-    list of objects, so a field can be added to the answer or to each market
-    later without breaking a client (#446, #447).
+    Each item is `ListedSnapshotOut`, the single snapshot's body plus
+    `credits_traded`. An object around a list of objects, so a field can be
+    added to the answer or to each market later without breaking a client
+    (#446, #447).
     """
 
-    snapshots: list[SnapshotOut] = Field(
+    snapshots: list[ListedSnapshotOut] = Field(
         description=(
             "In the order each id first appears in `market_ids`. An id with "
             "no book here, or a book that cannot be priced, is absent."
