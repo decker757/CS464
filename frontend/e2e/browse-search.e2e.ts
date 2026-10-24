@@ -48,14 +48,21 @@ test('a trader searches the market list and narrows it by status', async ({ page
 // #442, through the real market service: FastAPI ignores a query parameter it
 // does not know, so if either side renamed `closes_from` or `closes_before`,
 // the MSW tests on this side and the route tests on that side would both stay
-// green while the preset quietly filtered nothing. The market closes about
-// sixty days out, which no "This month" window can reach from any day or
-// timezone, so only the window reaching the server empties the list. Nothing
-// here asserts a market closing soon: other runs leave those behind.
+// green while the preset quietly filtered nothing. Both markets are scheduled
+// to close about sixty days out, which no "This month" window can reach from
+// any day or timezone, so only the window reaching the server hides the
+// first. The second is closed early, so trading stopped now, and the server
+// finds it by that moment rather than by its schedule (market-service.md, "A
+// market closed early is found by when it was closed"): it stays, which a
+// window from the wrong month, or one the server dropped, would not leave.
+// It would only miss within seconds of a month boundary. Nothing here asserts
+// a market still trading that closes soon: other runs leave those behind.
 test('a trader narrows the market list to what closes this month', async ({ page }) => {
   const admin = await registerAdmin('bc_admin')
   const suffix = uniqueName('closing')
   const later = await publishMarket(admin, `Will ${suffix} resolve in sixty days?`, undefined, { closesInHours: 60 * 24 })
+  const stoppedNow = await publishMarket(admin, `Was ${suffix} stopped early?`, undefined, { closesInHours: 60 * 24 })
+  await closeEarly(admin, stoppedNow.id)
 
   const trader = await registerTrader('bc_trader')
   await logIn(page, trader)
@@ -65,9 +72,13 @@ test('a trader narrows the market list to what closes this month', async ({ page
   await search.fill(suffix)
   await page.keyboard.press('Enter')
   await expect(marketCard(page, later.question)).toBeVisible()
+  await expect(marketCard(page, stoppedNow.question)).toBeVisible()
 
   const closing = page.getByRole('radiogroup', { name: 'Filter by closing time', exact: true })
   await closing.getByRole('radio', { name: 'This month', exact: true }).click()
-  await expect(page.getByText('No markets match these filters.', { exact: true })).toBeVisible()
+  // The list remounts on a new preset and shows no cards while it loads, so
+  // the kept market showing is what proves the filtered list has arrived,
+  // and only then is the other one's absence worth reading.
+  await expect(marketCard(page, stoppedNow.question)).toBeVisible()
   await expect(marketCard(page, later.question)).toHaveCount(0)
 })
