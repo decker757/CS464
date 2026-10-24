@@ -42,11 +42,14 @@ class BrowsePosition:
 class OverviewPosition:
     """The last market an overview page showed. [2.1] #210.
 
-    `settled` is its group: settled markets sort after every other. A
-    `close_time` of None sorts after every dated market in the same group.
+    `finished` is its group: settled and voided markets sort after every
+    other. A `close_time` of None sorts after every dated market in the same
+    group. Named `settled` before [BE] #221 added VOIDED, and encoded the same
+    way, so a cursor issued before the rename decodes to the same place.
+    ADR 0025.
     """
 
-    settled: bool
+    finished: bool
     close_time: datetime | None
     market_id: uuid.UUID
 
@@ -114,7 +117,7 @@ def encode_overview_cursor(position: OverviewPosition) -> str:
     else:
         has_close_time, close_time = _TRUE, position.close_time.isoformat()
     return _shared.encode_fields(
-        _flag(position.settled),
+        _flag(position.finished),
         has_close_time,
         close_time,
         str(position.market_id),
@@ -131,10 +134,10 @@ def decode_overview_cursor(cursor: str) -> OverviewPosition:
     if fields is None:
         raise MalformedCursor
 
-    settled, has_close_time, close_time, market_id = fields
+    finished, has_close_time, close_time, market_id = fields
     try:
         return OverviewPosition(
-            settled=_flag_of(settled),
+            finished=_flag_of(finished),
             close_time=_close_time_of(_flag_of(has_close_time), close_time),
             market_id=uuid.UUID(market_id),
         )
