@@ -118,12 +118,16 @@ async function registerPromotedAdmin(promoter: Session, username: string): Promi
 // a network failure, which the first run of this seed met: the backdate's
 // blocking execFileSync outlived uvicorn's keep-alive, and the settlement went
 // out on the connection the ledger had just closed (#423's diagnosis; the
-// root-cause fix belongs to #492).
+// root-cause fix belongs to #492). It also covers `503
+// settlement_unconfirmed`: the winners are paid and only telling
+// market_service failed, and the same doc says to repeat the request.
 async function settle(admin: Session, marketId: string): Promise<void> {
   try {
     await settleMarket(admin, marketId)
   } catch (failure) {
-    if (!(failure instanceof TypeError)) throw failure
+    const isNetworkFailure = failure instanceof TypeError
+    const isUnconfirmed = failure instanceof Error && failure.message.includes('settlement_unconfirmed')
+    if (!isNetworkFailure && !isUnconfirmed) throw failure
     await settleMarket(admin, marketId)
   }
 }
