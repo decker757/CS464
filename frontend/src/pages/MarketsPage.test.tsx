@@ -697,6 +697,10 @@ describe('MarketsPage closing-time presets', () => {
 
   beforeAll(() => {
     vi.stubEnv('TZ', 'America/New_York')
+    // Node rereads TZ when it is set, but only in a process of its own: under
+    // a worker-threads pool the stub would leave every literal below wrong in
+    // a way that depends on the machine's zone. Fail here, by name, instead.
+    expect(new Date(2026, 9, 21).toISOString()).toBe('2026-10-21T04:00:00.000Z')
   })
 
   afterAll(() => {
@@ -795,14 +799,17 @@ describe('MarketsPage closing-time presets', () => {
     expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
   })
 
-  it('moves the choice with the arrow keys, as a radio group does', async () => {
+  it.each([
+    ['ArrowRight', 'ArrowLeft'],
+    ['ArrowDown', 'ArrowUp'],
+  ])('moves the choice forward with %s and back with %s, as a radio group does', async (forward, back) => {
     pinClock('2026-10-22T02:30:00Z')
     const actor = userEvent.setup()
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
 
     await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
-    await actor.keyboard('{ArrowRight}')
+    await actor.keyboard(`{${forward}}`)
 
     expect(closesFilter().getByRole('radio', { name: 'This week' })).toBeChecked()
     expect(closesFilter().getByRole('radio', { name: 'This week' })).toHaveFocus()
@@ -810,14 +817,51 @@ describe('MarketsPage closing-time presets', () => {
       expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-19T04:00:00.000Z', closesBefore: '2026-10-26T04:00:00.000Z' }),
     )
 
-    await actor.keyboard('{ArrowLeft}')
+    await actor.keyboard(`{${back}}`)
 
     expect(closesFilter().getByRole('radio', { name: 'Today' })).toBeChecked()
 
     // Past the first option, the choice wraps round to the last.
-    await actor.keyboard('{ArrowLeft}{ArrowLeft}')
+    await actor.keyboard(`{${back}}{${back}}`)
 
     expect(closesFilter().getByRole('radio', { name: 'This month' })).toBeChecked()
+  })
+
+  // One tab stop for the whole group, at the checked pill: Tab from the pill
+  // before the group lands on it, and the next Tab leaves the group.
+  it('reaches only the checked pill with Tab, as a radio group does', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    screen.getByRole('button', { name: 'Resolved' }).focus()
+    await actor.tab()
+    expect(closesFilter().getByRole('radio', { name: 'Today' })).toHaveFocus()
+    await actor.tab()
+    expect(screen.getByRole('button', { name: 'Clear closing filter' })).toHaveFocus()
+  })
+
+  // The window belongs to the list, not to the click: a list started after
+  // midnight, here by a new search, asks for the new day.
+  it("asks for the new day's window when a search starts a new list after midnight", async () => {
+    pinClock('2026-10-20T03:50:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    await waitFor(() =>
+      expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-19T04:00:00.000Z', closesBefore: '2026-10-20T04:00:00.000Z' }),
+    )
+
+    vi.setSystemTime(new Date('2026-10-20T04:05:00Z'))
+    await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'smu{Enter}')
+
+    await waitFor(() =>
+      expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-20T04:00:00.000Z', closesBefore: '2026-10-21T04:00:00.000Z' }),
+    )
   })
 
   it('clears the closing preset along with everything else on Clear all', async () => {
