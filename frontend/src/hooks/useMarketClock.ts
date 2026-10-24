@@ -27,8 +27,9 @@ interface ClockedMarket {
  * render, rather than up to a tick later (#429).
  *
  * A market that has already stopped reads "Closed" for as long as the tab is
- * open, so there is nothing for a clock to change. The last tick before that
- * turns true is the one that writes "Closed", and it stops the clock itself.
+ * open, so there is nothing for a clock to change. Whichever render first
+ * reads a time past the close — a tick or anything else — writes "Closed" and
+ * stops the clock.
  */
 export function useMarketClock(market: ClockedMarket | null): Date {
   const now = new Date()
