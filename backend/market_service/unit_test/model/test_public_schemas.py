@@ -48,6 +48,7 @@ class _FakePublishedMarket:
         liquidity_b: Decimal | None = Decimal("100.0000"),
         proposed: bool | None = None,
         settleable: bool = False,
+        voidable: bool = False,
     ) -> None:
         now = datetime.now(UTC).replace(tzinfo=None)
 
@@ -107,6 +108,10 @@ class _FakePublishedMarket:
         self.trader_facing_status = displayed_status(self.status, self.close_time)
         # What `get_published` stamps beside it. [3.4] #12.
         self.settleable = settleable
+        # And beside that, with the void's two columns. [BE] #221.
+        self.voidable = voidable
+        self.voided_at = None
+        self.void_reason = None
 
 
 def _detail_json(**kwargs: object) -> dict[str, Any]:
