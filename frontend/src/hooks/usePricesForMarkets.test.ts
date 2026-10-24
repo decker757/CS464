@@ -65,6 +65,23 @@ async function connectAndAck() {
   })
 }
 
+
+// Puts the hook's markets on the polled side of the divide: the socket refuses
+// the subscription, so the timer is what keeps them fresh. The refusal frame
+// names no market, so one arrives per outstanding subscribe.
+async function refuseEverySubscription() {
+  await act(async () => { latestSocket().open() })
+  const outstanding = latestSocket().sent.filter(command => command.action === 'subscribe').length
+  await act(async () => {
+    for (let i = 0; i < outstanding; i += 1) {
+      latestSocket().receive({
+        type: 'error',
+        error: { code: 'too_many_subscriptions', message: 'at its ceiling' },
+      })
+    }
+  })
+}
+
 const subscribedTo = () =>
   latestSocket().sent.filter(c => c.action === 'subscribe').map(c => c.market_id)
 const unsubscribedFrom = () =>
@@ -199,13 +216,28 @@ describe('usePricesForMarkets', () => {
       })
     })
 
-    // Refused, so the page does not claim it is live.
-    await waitFor(() => expect(result.current.liveMarkets.has('m1')).toBe(false))
-
     const before = reads.count
     await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
     await waitFor(() => expect(reads.count).toBeGreaterThan(before))
     await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')?.prices[0].price).toBe('0.7000'))
+  })
+
+  // [X-1] #444: a market the relay is pushing needs no poll, and polling it
+  // anyway costs the ledger an LMSR evaluation per card twice a minute for a
+  // price it has already sent. The thirty-second re-read was the old way a
+  // price arrived; now it serves only what the socket is not carrying.
+  it('stops polling a market the socket is following', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const reads = serveChangingPrices(['0.6000'])
+
+    renderHook(() => usePricesForMarkets(TRADING))
+    await waitFor(() => expect(reads.count).toBe(1))
+    await connectAndAck()
+    const afterSubscribe = reads.count
+
+    await act(async () => { vi.advanceTimersByTime(3 * PRICE_REFRESH_MS) })
+
+    expect(reads.count).toBe(afterSubscribe)
   })
 
   // [X-1] #444 AC 1 and AC 3: a price frame repaints the card it names, and
@@ -318,6 +350,9 @@ describe('usePricesForMarkets', () => {
     expect(singleReads).toBe(1)
   })
 
+  // The timer serves the markets the socket is not carrying — past the
+  // ceiling, or refused. A followed market gets its updates pushed instead,
+  // which is what #444 changed.
   it('reads the prices again on a timer, without a reload', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     serveChangingPrices(['0.6000', '0.7000'])
@@ -325,6 +360,7 @@ describe('usePricesForMarkets', () => {
     const { result } = renderHook(() => usePricesForMarkets(TRADING))
     const priceNow = () => result.current.snapshotsByMarket.get('m1')?.prices[0].price
     await waitFor(() => expect(priceNow()).toBe('0.6000'))
+    await refuseEverySubscription()
     const firstReadAt = result.current.readAt?.getTime() ?? 0
 
     await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
@@ -344,6 +380,7 @@ describe('usePricesForMarkets', () => {
     const { result } = renderHook(() => usePricesForMarkets(TRADING))
     const priceNow = () => result.current.snapshotsByMarket.get('m1')?.prices[0].price
     await waitFor(() => expect(priceNow()).toBe('0.6000'))
+    await refuseEverySubscription()
     const lastGoodRead = result.current.readAt?.getTime()
 
     let failedReads = 0
@@ -378,6 +415,7 @@ describe('usePricesForMarkets', () => {
 
     const { result } = renderHook(() => usePricesForMarkets(TRADING))
     await waitFor(() => expect(reads).toBe(1))
+    await refuseEverySubscription()
 
     await act(async () => { vi.advanceTimersByTime(3 * PRICE_REFRESH_MS) })
 
