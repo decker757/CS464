@@ -8,6 +8,9 @@ import { logIn } from './support/browser'
 // this is the first end-to-end cover of placing a limit order, seeing it
 // rest, watching it fill from an `order` frame, and cancelling it
 // (#347 and #378's reviews both asked for it here).
+//
+// Every market here is fresh, with liquidity_b 100 and nobody else trading
+// on it, so the figures are exact rather than merely present.
 test('a trader rests a limit order, watches another trade fill it, and cancels the remainder', async ({ page }) => {
   const grant = await startingGrant()
   const admin = await registerAdmin('lo_admin')
@@ -22,52 +25,53 @@ test('a trader rests a limit order, watches another trade fill it, and cancels t
 
   // A buy well under the current price (0.5000 on a fresh book) rests
   // instead of filling.
-  await page.getByRole('button', { name: 'Limit' }).click()
+  await page.getByRole('button', { name: 'Limit', exact: true }).click()
   await page.getByRole('button', { name: 'Yes', exact: true }).click()
   await page.getByLabel('Limit price').fill('0.30')
   await page.getByLabel('Quantity (shares)').fill('50')
-  await page.getByRole('button', { name: /place buy order/i }).click()
+  await page.getByRole('button', { name: 'Place buy order', exact: true }).click()
 
-  await expect(page.getByRole('status')).toContainText(/resting until the price reaches it/i)
+  await expect(page.getByText('Buy 50.0000 Yes at 0.3000: resting until the price reaches it.', { exact: true })).toBeVisible()
 
   // The order's own budget — 0.30 × 50 — is reserved, so what is available
   // to spend drops by it while the balance itself does not (ADR 0024).
-  const afterTheReserve = creditsLess(grant, '15.0000')
-  await expect(availableBalance).toHaveText(`${formatRoundedCredits(afterTheReserve)} credits`)
+  await expect(availableBalance).toHaveText(`${formatRoundedCredits(creditsLess(grant, '15.0000'))} credits`)
 
-  const orderRow = page.getByRole('row').filter({ hasText: '30.0%' })
+  // The row is found by the cancel control that names this order, and each
+  // figure by a cell of that row holding exactly that text.
+  const orderRow = page.getByRole('row').filter({
+    has: page.getByRole('button', { name: 'Cancel buy Yes at 0.3000', exact: true }),
+  })
   // Quantity, filled-so-far and what the order holds ([T-6] #26's fourth
   // criterion). Nothing has filled, so the whole budget is still reserved.
-  await expect(orderRow).toContainText('50.0000')
-  await expect(orderRow).toContainText('15.0000 credits')
-  const filledCell = orderRow.getByRole('cell').nth(3)
-  await expect(filledCell).toHaveText('0.0000')
+  await expect(orderRow.getByRole('cell', { name: '50.0000', exact: true })).toBeVisible()
+  await expect(orderRow.getByRole('cell', { name: '0.0000', exact: true })).toBeVisible()
+  await expect(orderRow.getByRole('cell', { name: '15.0000 credits', exact: true })).toBeVisible()
 
-  // Someone else sells the price down past 0.30, which fills part of the
-  // resting order inside that trade's own transaction ([T-7] #27). The frame
-  // that follows has to move the row with no reload.
+  // Someone else buys 120 No, which takes Yes from 0.5000 to about 0.2315,
+  // past the limit. The resting order then fills inside that trade's own
+  // transaction ([T-7] #27), as far as the price can go back up to its
+  // limit: q_yes = 120 - 100·ln(0.7/0.3) = 35.27021…, floored to the tick,
+  // 35.2702 shares. Their cost is 100·(1.2 - ln 0.7 - ln(1 + e^1.2)) =
+  // 9.33924…, rounded up for a buy, 9.3393 credits — which leaves
+  // 15.0000 - 9.3393 = 5.6607 of the budget reserved.
   const other = await registerTrader('lo_other')
   await buy(other, market, 'No', '120.0000')
 
-  // The frame moves filled-so-far off zero with no reload. The exact
-  // quantity is the ledger's own closed-form partial fill, so this asserts
-  // that it moved and that the order is still resting, not a figure that
-  // would pin the LMSR's arithmetic.
-  await expect(filledCell).not.toHaveText('0.0000', { timeout: 20_000 })
-  // Still resting: a partial fill leaves the remainder on the book.
-  await expect(page.getByText('Your open orders')).toBeVisible()
+  // The frame moves filled-so-far with no reload, and the re-read it
+  // prompts brings what the order still holds.
+  await expect(orderRow.getByRole('cell', { name: '35.2702', exact: true })).toBeVisible({ timeout: 20_000 })
+  await expect(orderRow.getByRole('cell', { name: '5.6607 credits', exact: true })).toBeVisible()
+  await expect(page.getByText('Your open orders', { exact: true })).toBeVisible()
 
   // Cancelling releases what the remainder still held, so the order leaves
   // the live list for good.
-  // Named after the order it cancels, so a page with several rows has one
-  // unambiguous control per order rather than a row of identical "Cancel"s.
-  await orderRow.getByRole('button', { name: /cancel buy yes at 30\.0%/i }).click()
-  await expect(page.getByText('Your open orders')).toHaveCount(0)
+  await orderRow.getByRole('button', { name: 'Cancel buy Yes at 0.3000', exact: true }).click()
+  await expect(page.getByText('Your open orders', { exact: true })).toHaveCount(0)
 
-  // The cancel released what the remainder was holding, so nothing of this
-  // trader's is reserved any more and available is their whole balance
-  // again — the shares the partial fill bought having been paid for.
-  await expect(availableBalance).not.toHaveText(`${formatRoundedCredits(afterTheReserve)} credits`)
+  // Nothing of this trader's is reserved any more, so available is their
+  // whole balance again: the grant less the 9.3393 the filled shares cost.
+  await expect(availableBalance).toHaveText(`${formatRoundedCredits(creditsLess(grant, '9.3393'))} credits`)
 })
 
 test('an order filled the rest of the way by another trade leaves the list on its own', async ({ page }) => {
@@ -81,13 +85,13 @@ test('an order filled the rest of the way by another trade leaves the list on it
   // Small enough that one trade can take the whole thing, so the fill that
   // lands is the order's last and its frame reads `filled` rather than
   // `open` (realtime-service.md, "Order updates").
-  await page.getByRole('button', { name: 'Limit' }).click()
+  await page.getByRole('button', { name: 'Limit', exact: true }).click()
   await page.getByRole('button', { name: 'Yes', exact: true }).click()
   await page.getByLabel('Limit price').fill('0.45')
   await page.getByLabel('Quantity (shares)').fill('2')
-  await page.getByRole('button', { name: /place buy order/i }).click()
-  await expect(page.getByRole('status')).toContainText(/resting until the price reaches it/i)
-  await expect(page.getByText('Your open orders')).toBeVisible()
+  await page.getByRole('button', { name: 'Place buy order', exact: true }).click()
+  await expect(page.getByText('Buy 2.0000 Yes at 0.4500: resting until the price reaches it.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Your open orders', { exact: true })).toBeVisible()
 
   // Pushes Yes well below 0.45, which fills all 2 shares inside that trade.
   const other = await registerTrader('lo_full_other')
@@ -96,7 +100,7 @@ test('an order filled the rest of the way by another trade leaves the list on it
   // The list holds live orders only, so the frame that completes the order
   // takes the row — and with it the whole section — off the page, with no
   // reload and no cancel.
-  await expect(page.getByText('Your open orders')).toHaveCount(0, { timeout: 20_000 })
+  await expect(page.getByText('Your open orders', { exact: true })).toHaveCount(0, { timeout: 20_000 })
 })
 
 test('a limit order priced through the market fills on arrival', async ({ page }) => {
@@ -108,14 +112,16 @@ test('a limit order priced through the market fills on arrival', async ({ page }
   await page.goto(`/markets/${market.id}`)
 
   // Above the current price, so the ledger fills it at once rather than
-  // resting it — the marketable-on-arrival path.
-  await page.getByRole('button', { name: 'Limit' }).click()
+  // resting it — the marketable-on-arrival path. Ten Yes on a fresh book
+  // cost 100·ln((e^0.1 + 1)/2) = 5.12497…, rounded up for a buy, 5.1250:
+  // 0.5125 a share.
+  await page.getByRole('button', { name: 'Limit', exact: true }).click()
   await page.getByRole('button', { name: 'Yes', exact: true }).click()
   await page.getByLabel('Limit price').fill('0.90')
   await page.getByLabel('Quantity (shares)').fill('10')
-  await page.getByRole('button', { name: /place buy order/i }).click()
+  await page.getByRole('button', { name: 'Place buy order', exact: true }).click()
 
-  await expect(page.getByRole('status')).toContainText(/filled in full/i)
+  await expect(page.getByText('Buy 10.0000 Yes at 0.9000: filled in full at 0.5125 credits/share.', { exact: true })).toBeVisible()
   // Nothing rests, so there is no open-orders section at all.
-  await expect(page.getByText('Your open orders')).toHaveCount(0)
+  await expect(page.getByText('Your open orders', { exact: true })).toHaveCount(0)
 })

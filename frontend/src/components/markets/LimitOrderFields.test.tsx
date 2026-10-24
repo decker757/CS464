@@ -2,7 +2,6 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
-import { BalanceContext } from '../../context/BalanceContext'
 import { server } from '../../test/server'
 import LimitOrderFields from './LimitOrderFields'
 
@@ -37,24 +36,37 @@ function orderResponse(overrides: Record<string, unknown> = {}, fills: unknown[]
 
 interface FieldsOptions {
   side?: 'buy' | 'sell'
+  outcomeId?: string
+  outcomeLabel?: string
   heldQuantity?: string | null
+  sellableQuantity?: string | null
   onPlaced?: () => void
 }
 
-function renderFields({ side = 'buy', heldQuantity = '100.0000', onPlaced = vi.fn() }: FieldsOptions = {}) {
-  render(
-    <BalanceContext.Provider value={{ balance: '1000.0000', available: '1000.0000', refetch: async () => {} }}>
-      <LimitOrderFields
-        marketId={MARKET_ID}
-        side={side}
-        outcomeId="o-yes"
-        outcomeLabel="Yes"
-        heldQuantity={heldQuantity}
-        onPlaced={onPlaced}
-      />
-    </BalanceContext.Provider>,
+function fieldsFor({
+  side = 'buy', outcomeId = 'o-yes', outcomeLabel = 'Yes', heldQuantity = '100.0000', sellableQuantity = heldQuantity,
+  onPlaced = vi.fn(),
+}: FieldsOptions = {}) {
+  return (
+    <LimitOrderFields
+      marketId={MARKET_ID}
+      side={side}
+      outcomeId={outcomeId}
+      outcomeLabel={outcomeLabel}
+      heldQuantity={heldQuantity}
+      sellableQuantity={sellableQuantity}
+      onPlaced={onPlaced}
+    />
   )
-  return { actor: userEvent.setup(), onPlaced }
+}
+
+function renderFields(options: FieldsOptions = {}) {
+  const onPlaced = options.onPlaced ?? vi.fn()
+  const { rerender } = render(fieldsFor({ ...options, onPlaced }))
+  // The panel above chooses the side and the outcome, so a test changes them
+  // the way the panel does: as new props on the same mounted fields.
+  const rerenderWith = (changes: FieldsOptions) => rerender(fieldsFor({ ...options, onPlaced, ...changes }))
+  return { actor: userEvent.setup(), onPlaced, rerenderWith }
 }
 
 async function fillIn(actor: ReturnType<typeof userEvent.setup>, price: string, quantity: string) {
@@ -89,7 +101,8 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.3', '50')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent(/resting until the price reaches it/i)
+    // The limit in the units it was typed in.
+    expect(await screen.findByRole('status')).toHaveTextContent('Buy 50.0000 Yes at 0.3000: resting until the price reaches it.')
     expect(onPlaced).toHaveBeenCalled()
   })
 
@@ -106,8 +119,10 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.9', '10')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    // The average fill price, not the limit: what it actually cost.
-    expect(await screen.findByRole('status')).toHaveTextContent(/filled in full at 51\.3%/i)
+    // The average fill price, not the limit: what it actually cost. Credits
+    // per share, never a percentage (#247): it can pass 1.0000 on a skewed
+    // book, which a percentage cannot show.
+    expect(await screen.findByRole('status')).toHaveTextContent('filled in full at 0.5125 credits/share.')
   })
 
   it('says how much filled when only part of the order did', async () => {
@@ -157,7 +172,8 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.8', '50')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/must be below 70\.0%/i)
+    // In the units the field takes, not a percentage of them.
+    expect(await screen.findByRole('alert')).toHaveTextContent("a buy's limit must be below 0.7000.")
     // The order in the way may be one of the trader's own, so the list is
     // worth re-reading even though nothing was placed.
     expect(onPlaced).toHaveBeenCalled()
@@ -176,9 +192,47 @@ describe('LimitOrderFields', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/3,970\.1250 short/i)
   })
 
+  it('drops the placed line once the trader turns to the other side', async () => {
+    // The line names a side and an outcome, so on the other side it would
+    // describe an order the ticket is no longer set up for.
+    server.use(http.post(ORDERS, () => HttpResponse.json(orderResponse(), { status: 201 })))
+    const { actor, rerenderWith } = renderFields()
+
+    await fillIn(actor, '0.3', '50')
+    await actor.click(screen.getByRole('button', { name: /place buy order/i }))
+    await screen.findByRole('status')
+
+    rerenderWith({ side: 'sell' })
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('drops a refusal once the trader picks the other outcome', async () => {
+    server.use(http.post(ORDERS, () => HttpResponse.json(
+      { error: { code: 'order_crosses_book', message: 'in the way', details: { side: 'buy', max_limit_price: '0.7000' } } },
+      { status: 409 },
+    )))
+    const { actor, rerenderWith } = renderFields()
+
+    await fillIn(actor, '0.8', '50')
+    await actor.click(screen.getByRole('button', { name: /place buy order/i }))
+    await screen.findByRole('alert')
+
+    rerenderWith({ outcomeId: 'o-no', outcomeLabel: 'No' })
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('shows the holding on a sell, so the trader knows what they can offer', () => {
     renderFields({ side: 'sell', heldQuantity: '42.0000' })
     expect(screen.getByLabelText('shares held')).toHaveTextContent('42.0000')
+  })
+
+  it('shows what is left to sell when open sell orders reserve part of the holding', () => {
+    // A second sell order can only offer what the first does not hold back
+    // (ledger-service.md's insufficient_shares_held).
+    renderFields({ side: 'sell', heldQuantity: '42.0000', sellableQuantity: '30.0000' })
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 30.0000 of your 42.0000 shares')
   })
 
   it('shows no holding figure while that read has not landed', () => {
@@ -207,6 +261,23 @@ describe('LimitOrderFields', () => {
 
     await waitFor(() => expect(keys).toHaveLength(2))
     expect(keys[0]).toBe(keys[1])
+  })
+
+  it.each([
+    ['a 500', 500, 'internal_error'],
+    ['idempotency_key_reused', 409, 'idempotency_key_reused'],
+  ])('re-reads the orders after %s, which may mean the order was placed', async (_name, status, code) => {
+    // A 5xx or a lost reply may have committed the order, and a reused key
+    // means an earlier request with it did: either way the list below may
+    // already hold it.
+    server.use(http.post(ORDERS, () => HttpResponse.json({ error: { code, message: 'no' } }, { status })))
+    const { actor, onPlaced } = renderFields()
+
+    await fillIn(actor, '0.3', '50')
+    await actor.click(screen.getByRole('button', { name: /place buy order/i }))
+
+    await screen.findByRole('alert')
+    expect(onPlaced).toHaveBeenCalled()
   })
 
   it('takes a fresh key after a refusal that definitely placed nothing', async () => {

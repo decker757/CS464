@@ -30,8 +30,7 @@ export interface OrderFrame {
 
 interface MarketPriceOptions {
   /**
-   * Called for each `order` frame this connection receives, and again with
-   * nothing — `onReconnected` — once a dropped connection is back.
+   * Called for each `order` frame this connection receives.
    *
    * Order frames need no subscribe: a socket gets the frames of the user its
    * token names, whatever markets it follows. They ride this connection
@@ -39,15 +38,18 @@ interface MarketPriceOptions {
    * also what keeps "the" socket unambiguous in a test.
    */
   onOrderFrame?: (frame: OrderFrame) => void
-  /** Frames published while the socket was away are gone, so a listener that
-   *  tracks state has to re-read it ([X-4] #37's recovery path). */
-  onReconnected?: () => void
+  /** Called on every `subscribed` ack, the first one included. Frames
+   *  published before it never reached this socket — while a dropped
+   *  connection was away, or between the caller's mount read and the first
+   *  ack — so a listener that tracks state re-reads it here ([X-4] #37's
+   *  recovery path, realtime-service.md "Reconnecting"). */
+  onSubscribed?: () => void
 }
 
 // Current prices and connection status; retains last known prices during reconnect rather than blanking them.
 export function useMarketPrices(
   marketId: string | null,
-  { onOrderFrame, onReconnected }: MarketPriceOptions = {},
+  { onOrderFrame, onSubscribed }: MarketPriceOptions = {},
 ): { prices: OutcomePrice[] | null; status: ConnectionStatus } {
   const [state, setState] = useState<MarketPriceState | null>(null)
 
@@ -55,10 +57,10 @@ export function useMarketPrices(
   // a fresh closure each render does not tear the connection down and
   // rebuild it. The effect below depends on marketId alone, as it did.
   const onOrderFrameRef = useRef(onOrderFrame)
-  const onReconnectedRef = useRef(onReconnected)
+  const onSubscribedRef = useRef(onSubscribed)
   useEffect(() => {
     onOrderFrameRef.current = onOrderFrame
-    onReconnectedRef.current = onReconnected
+    onSubscribedRef.current = onSubscribed
   })
 
   useEffect(() => {
@@ -73,9 +75,6 @@ export function useMarketPrices(
     // The highest version on screen. Kept across reconnects, because the prices
     // are: a late frame from before the drop must not replace newer ones.
     let version = -1
-    // Whether this connection has been acknowledged before, so the first ack
-    // is startup and every later one is a recovery.
-    let hasConnected = false
 
     // State left by the previous market is not carried over to this one.
     const showPrices = (prices: OutcomePrice[]) => {
@@ -126,10 +125,9 @@ export function useMarketPrices(
           // the socket, and everything earlier is in this snapshot. The
           // version check drops any overlap.
           loadSnapshot().catch(() => {})
-          // Only on a reconnect: the caller read its own state when it
-          // mounted, and this would make that a second read of the same thing.
-          if (hasConnected) onReconnectedRef.current?.()
-          hasConnected = true
+          // On every ack, the first included, for the snapshot's reason: the
+          // caller's own mount read can miss a frame published before this.
+          onSubscribedRef.current?.()
         } else if (msg.type === 'price') {
           apply(msg as PriceState)
         } else if (msg.type === 'order') {

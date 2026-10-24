@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getMyOrders, type Order } from '../api/ledgerApi'
+import { compareCredits } from '../utils/formatCredits'
 import type { OrderFrame } from './useMarketPrices'
 
 export interface MyOrders {
@@ -11,7 +12,7 @@ export interface MyOrders {
    *  on screen, and an error over it would say the wrong thing. */
   hasError: boolean
   /** Re-reads the list. Call it after placing or cancelling an order, and
-   *  after a socket reconnect. */
+   *  on every socket ack. Does nothing while the hook is disabled. */
   refetch: () => void
   /** Applies one `order` frame from the realtime socket. Pass this as
    *  `useMarketPrices`'s `onOrderFrame` — this hook owns no connection, so a
@@ -28,9 +29,10 @@ export interface MyOrders {
  *
  * On top of that, an `order` frame moves `filled_quantity` on the row it
  * names, and a frame that completes an order drops it, since the list holds
- * live orders only. A frame carries no reservation figures, so a row's
- * `reserved_credits` is stale between a fill and the next read; a caller
- * that needs that figure exactly — a balance — reads its own route.
+ * live orders only. A frame carries no reservation figures, so the caller
+ * re-reads the list once it has applied one: the frame is published after
+ * the commit that wrote the fill, so that read already shows what the order
+ * still holds.
  */
 export function useMyOrders(enabled: boolean): MyOrders {
   const [orders, setOrders] = useState<Order[] | null>(null)
@@ -40,40 +42,43 @@ export function useMyOrders(enabled: boolean): MyOrders {
   // newer one started is dropped instead of overwriting it — the same guard
   // BalanceContext and MarketDetailPage's holdings read both keep.
   const latestReadRef = useRef(0)
-  // The highest fill version applied per order id. A frame at or below it is
-  // a repeat and is discarded (realtime-service.md, "Order them by
-  // fill.state_version"). Two fills of one order are in one market, so their
-  // versions are ordered.
-  const appliedVersionsRef = useRef(new Map<string, number>())
 
-  // Frames that arrived while a read was in flight. The read answers from
-  // before they were published, so replacing the list with it would undo
-  // them — they are re-applied on top of the snapshot instead (#393's
-  // review). Ordinary frames, arriving with no read outstanding, are applied
-  // straight away and never land here.
+  // Frames that arrived while a read was in flight. The read may have been
+  // answered before they were published, and replacing the list with it
+  // would then undo them, so they are applied again on top of it (#393's
+  // review). It may equally have been answered after them; the reducer's
+  // only-forwards rule is what makes re-applying those harmless. Ordinary
+  // frames, arriving with no read outstanding, are applied straight away and
+  // never land here.
   const framesDuringReadRef = useRef<OrderFrame[]>([])
   const readInFlightRef = useRef(false)
 
-  // The reducer both paths share: the version check, then the row edit.
-  // Returns false for a frame already applied, so a caller knows not to
-  // bother the state.
-  const reduceFrame = useCallback((frame: OrderFrame): boolean => {
-    const applied = appliedVersionsRef.current.get(frame.order_id)
-    if (applied !== undefined && frame.fill.state_version <= applied) return false
-    appliedVersionsRef.current.set(frame.order_id, frame.fill.state_version)
+  // The reducer both paths share. A frame moves `filled_quantity` forwards
+  // only: an order's filled quantity never shrinks, so a frame at or below
+  // the row's figure is a repeat or is older than what the row already
+  // shows, and is discarded. That is the same order realtime-service.md asks
+  // for ("Order them by fill.state_version" — two fills of one order are in
+  // one market, so their versions and their filled quantities rise
+  // together), but unlike a version it can also be compared with a row a
+  // fresh read just delivered, which carries no version at all.
+  const reduceFrame = useCallback((frame: OrderFrame) => {
     setOrders(current => {
       if (current === null) return current
       // A fill that completes the order takes it out of the live list, which
       // is exactly what the next read would show.
       if (frame.status !== 'open') return current.filter(order => order.id !== frame.order_id)
-      return current.map(order =>
-        order.id === frame.order_id ? { ...order, filled_quantity: frame.filled_quantity } : order,
-      )
+      return current.map(order => {
+        if (order.id !== frame.order_id) return order
+        if (compareCredits(frame.filled_quantity, order.filled_quantity) <= 0) return order
+        return { ...order, filled_quantity: frame.filled_quantity }
+      })
     })
-    return true
   }, [])
 
   const refetch = useCallback(() => {
+    // A market that cannot carry orders costs the ledger nothing, whoever
+    // asks for the read.
+    if (!enabled) return
     const requestId = ++latestReadRef.current
     readInFlightRef.current = true
     framesDuringReadRef.current = []
@@ -81,11 +86,10 @@ export function useMyOrders(enabled: boolean): MyOrders {
       result => {
         if (requestId !== latestReadRef.current) return
         readInFlightRef.current = false
-        // A fresh list supersedes every frame applied to the old one.
-        appliedVersionsRef.current = new Map()
         setOrders(result.orders)
         setHasError(false)
-        // Anything published while this was in flight is newer than it.
+        // Anything published while this was in flight may or may not be in
+        // it; the reducer keeps only what moves a row forwards.
         const buffered = framesDuringReadRef.current
         framesDuringReadRef.current = []
         for (const frame of buffered) reduceFrame(frame)
@@ -100,7 +104,7 @@ export function useMyOrders(enabled: boolean): MyOrders {
         setHasError(true)
       },
     )
-  }, [reduceFrame])
+  }, [enabled, reduceFrame])
 
   const applyFrame = useCallback((frame: OrderFrame) => {
     if (readInFlightRef.current) {
@@ -111,9 +115,8 @@ export function useMyOrders(enabled: boolean): MyOrders {
   }, [reduceFrame])
 
   useEffect(() => {
-    if (!enabled) return
     refetch()
-  }, [enabled, refetch])
+  }, [refetch])
 
   return { orders, hasError, refetch, applyFrame }
 }

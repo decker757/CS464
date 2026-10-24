@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { formatCreditsPrecise, isPlainCredits, isZeroCredits, subtractCredits } from '../utils/formatCredits'
-import { formatPrice } from '../utils/formatPrice'
+import { formatLimitPrice } from '../utils/formatPrice'
 
 export interface ApiError {
   error: {
@@ -196,10 +196,10 @@ const ORDER_FIXED_MESSAGES: Record<string, string> = {
  * sell strictly above the highest resting buy. The caller's own orders
  * count, which is the part traders find surprising, so the bound is named.
  */
-export function describeOrderCrossesBook(side: string, bound: string): string {
+function describeOrderCrossesBook(side: string, bound: string): string {
   return side === 'buy'
-    ? `An order is in the way at this price: a buy's limit must be below ${formatPrice(bound)}.`
-    : `An order is in the way at this price: a sell's limit must be above ${formatPrice(bound)}.`
+    ? `An order is in the way at this price: a buy's limit must be below ${formatLimitPrice(bound)}.`
+    : `An order is in the way at this price: a sell's limit must be above ${formatLimitPrice(bound)}.`
 }
 
 /**
@@ -211,7 +211,7 @@ export function describeOrderCrossesBook(side: string, bound: string): string {
  * Second sentence as #411's: where the rest of the balance went, but only
  * when an order is actually holding some of it.
  */
-export function describeOrderShortfall(
+function describeOrderShortfall(
   available: string,
   shortfall: string,
   openOrders?: { balance: string; reserved: string },
@@ -222,10 +222,35 @@ export function describeOrderShortfall(
   return `${refusal} Your balance is ${formatCreditsPrecise(openOrders.balance)}, and ${formatCreditsPrecise(openOrders.reserved)} of it is held by your open buy orders.`
 }
 
+/**
+ * The fields an `invalid_request` names: the last part of each entry's
+ * `loc`, as `limit_price` for `['body', 'limit_price']` (ledger-service.md,
+ * "Errors"). Empty for any other error, or a `details` that is not a list.
+ */
+function invalidFieldsOf(err: unknown): string[] {
+  if (!axios.isAxiosError(err)) return []
+  const details = (err.response?.data as { error?: { details?: unknown } } | undefined)?.error?.details
+  if (!Array.isArray(details)) return []
+  const fields: string[] = []
+  for (const entry of details as Partial<ValidationEntry>[]) {
+    const loc = entry.loc
+    if (Array.isArray(loc) && loc.length > 0) fields.push(String(loc[loc.length - 1]))
+  }
+  return fields
+}
+
 /** What the trader should do about a failed placement or cancel (ledger-service.md). */
 export function describeOrderError(err: unknown): string {
   const code = errorCode(err)
   if (!code) return GENERIC_ERROR
+  // The trade table's sentence for this one is about a quantity, which the
+  // order ticket checks before sending; a limit price it can still get wrong
+  // is the case worth naming, and anything else says no field at all.
+  if (code === 'invalid_request') {
+    return invalidFieldsOf(err).includes('limit_price')
+      ? "That limit price isn't valid."
+      : "Some of this order's details aren't valid."
+  }
   const details = tradeErrorDetails(err)
   if (code === 'order_crosses_book' && typeof details.side === 'string') {
     const bound = details.side === 'buy' ? details.max_limit_price : details.min_limit_price
@@ -241,18 +266,10 @@ export function describeOrderError(err: unknown): string {
       return describeOrderShortfall(available, shortfall, openOrders)
     }
   }
-  if (code === 'insufficient_shares_held') {
-    const held = tradeErrorFigure(details, 'held')
-    const requested = tradeErrorFigure(details, 'requested')
-    // The sell's own reservation reads the same here as on a trade, so this
-    // is #411's sentence rather than a second wording of it.
-    if (held !== undefined && requested !== undefined) {
-      return describeInsufficientShares(held, requested, tradeErrorFigure(details, 'reserved'))
-    }
-  }
-  // Everything a placement shares with a trade — unknown_outcome,
-  // quantity_too_large, market_not_found, invalid_request — reads the same
-  // either way, so the trade table answers for those rather than a second copy.
+  // Everything a placement shares with a trade — insufficient_shares_held,
+  // unknown_outcome, quantity_too_large, market_not_found — reads the same
+  // either way, so the trade table answers for those rather than a second
+  // copy.
   return ORDER_FIXED_MESSAGES[code] ?? describeTradeError(err)
 }
 

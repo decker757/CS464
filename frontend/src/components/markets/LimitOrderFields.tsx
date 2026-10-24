@@ -1,10 +1,9 @@
 import { useRef, useState } from 'react'
 import { describeOrderError, errorCode, isDefiniteRejection } from '../../api/errors'
 import { placeOrder, type Order, type TradeSide } from '../../api/ledgerApi'
-import { useBalance } from '../../context/BalanceContext'
-import { formatCreditsPrecise, isZeroCredits } from '../../utils/formatCredits'
-import { formatPrice } from '../../utils/formatPrice'
-import { limitPriceError, quantityError } from '../../utils/orderInput'
+import { formatAveragePrice, isZeroCredits } from '../../utils/formatCredits'
+import { formatLimitPrice } from '../../utils/formatPrice'
+import { describeSharesToSell, limitPriceError, quantityError } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 
@@ -18,22 +17,37 @@ interface LimitOrderFieldsProps {
   // What the trader holds of this outcome, as the ledger's own decimal
   // string; null while that read has not landed, which shows no figure.
   heldQuantity: string | null
-  // An order was placed, so the open-orders list, the balance and the
-  // holdings are all stale.
+  // The part of that no open sell order holds back, which is all a new sell
+  // order can offer; null exactly when `heldQuantity` is.
+  sellableQuantity: string | null
+  // An order was placed, or may have been, so the open-orders list, the
+  // balance and the holdings are all stale. The page re-reads all three.
   onPlaced: () => void
 }
 
 /** What the placement did, for the line shown after it commits. */
 function placedMessage(order: Order, outcomeLabel: string): string {
   const action = order.side === 'buy' ? 'Buy' : 'Sell'
-  const at = `${action} ${order.quantity} ${outcomeLabel} at ${formatPrice(order.limit_price)}`
+  const at = `${action} ${order.quantity} ${outcomeLabel} at ${formatLimitPrice(order.limit_price)}`
   if (order.status === 'filled') {
-    return `${at}: filled in full at ${formatPrice(order.average_fill_price ?? order.limit_price)}.`
+    // Credits per share, as the trade preview shows its average (#247).
+    return `${at}: filled in full at ${formatAveragePrice(order.average_fill_price ?? order.limit_price)} credits/share.`
   }
   if (!isZeroCredits(order.filled_quantity)) {
     return `${at}: ${order.filled_quantity} filled, the rest is resting.`
   }
   return `${at}: resting until the price reaches it.`
+}
+
+/**
+ * Whether a failed placement may still have placed the order, so the list is
+ * worth re-reading: no answer at all or a 5xx may have committed it, and
+ * `idempotency_key_reused` means an earlier request under this key did
+ * (ledger-service.md). `order_crosses_book` is re-read for its own reason,
+ * at the call: the order in the way may be one of the trader's own.
+ */
+function mayHavePlaced(err: unknown): boolean {
+  return !isDefiniteRejection(err) || errorCode(err) === 'idempotency_key_reused'
 }
 
 /**
@@ -50,14 +64,20 @@ function placedMessage(order: Order, outcomeLabel: string): string {
  * implementation of that rounding could only disagree with it.
  */
 export default function LimitOrderFields({
-  marketId, side, outcomeId, outcomeLabel, heldQuantity, onPlaced,
+  marketId, side, outcomeId, outcomeLabel, heldQuantity, sellableQuantity, onPlaced,
 }: LimitOrderFieldsProps) {
-  const { refetch: refetchBalance } = useBalance()
-
   const [limitPrice, setLimitPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // Each message is kept with the input it was written for, and shown only
+  // while that input is still what the ticket holds — TradingPanel's
+  // `inputKey`, for the same reason. The side and the outcome are chosen in
+  // the panel above and arrive as props, so without this a refusal or a
+  // "placed" line about a buy of Yes would sit under a sell of No.
+  const inputKey = `${side}:${outcomeId}:${limitPrice}:${quantity}`
+  const [submitErrorFor, setSubmitErrorFor] = useState('')
   const [submitError, setSubmitError] = useState('')
+  const [placedFor, setPlacedFor] = useState('')
   const [placed, setPlaced] = useState('')
   // Regenerated only once the server has given a definite answer, exactly as
   // on the trade route: a lost reply or a 5xx may still have placed the
@@ -69,10 +89,13 @@ export default function LimitOrderFields({
   const sizeError = quantityError(quantity)
   const ready = !!limitPrice.trim() && !!quantity.trim() && !priceError && !sizeError
   const canSubmit = ready && !submitting
+  const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
+  const visiblePlaced = placedFor === inputKey ? placed : ''
 
   const submit = async () => {
     if (!canSubmit) return
     setSubmitting(true)
+    setSubmitErrorFor(inputKey)
     setSubmitError('')
     setPlaced('')
     try {
@@ -84,20 +107,17 @@ export default function LimitOrderFields({
         idempotency_key: idempotencyKeyRef.current,
       })
       idempotencyKeyRef.current = crypto.randomUUID()
+      // Keyed to the cleared fields, which is what the line renders against
+      // once this commits.
+      setPlacedFor(`${side}:${outcomeId}::`)
       setPlaced(placedMessage(result.order, outcomeLabel))
       setLimitPrice('')
       setQuantity('')
-      // A placement that filled moved credits, and one that rests reserves
-      // them — either way the balance route's figures changed.
-      refetchBalance()
       onPlaced()
     } catch (err) {
       setSubmitError(describeOrderError(err))
       if (isDefiniteRejection(err)) idempotencyKeyRef.current = crypto.randomUUID()
-      // An order refused for crossing the book was blocked by a resting
-      // order that may be one of the trader's own, so the list below is
-      // worth re-reading.
-      if (errorCode(err) === 'order_crosses_book') onPlaced()
+      if (mayHavePlaced(err) || errorCode(err) === 'order_crosses_book') onPlaced()
     } finally {
       setSubmitting(false)
     }
@@ -105,9 +125,9 @@ export default function LimitOrderFields({
 
   return (
     <div>
-      {placed && (
+      {visiblePlaced && (
         <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
-          {placed}
+          {visiblePlaced}
         </p>
       )}
 
@@ -137,9 +157,9 @@ export default function LimitOrderFields({
         <label htmlFor="limit-quantity" className="block text-[13px] font-semibold text-smu-navy">
           Quantity (shares)
         </label>
-        {side === 'sell' && heldQuantity !== null && (
+        {side === 'sell' && heldQuantity !== null && sellableQuantity !== null && (
           <span aria-label="shares held" className="text-[13px] text-muted">
-            You hold {formatCreditsPrecise(heldQuantity)} shares
+            {describeSharesToSell(heldQuantity, sellableQuantity)}
           </span>
         )}
       </div>
@@ -155,7 +175,7 @@ export default function LimitOrderFields({
       />
       {sizeError && <p role="alert" className="mb-3 text-xs text-danger">{sizeError}</p>}
 
-      {submitError && <p role="alert" className="mt-2 mb-3 text-xs text-danger">{submitError}</p>}
+      {visibleSubmitError && <p role="alert" className="mt-2 mb-3 text-xs text-danger">{visibleSubmitError}</p>}
 
       <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit} className="mt-2">
         {submitting ? 'Placing…' : `Place ${side} order`}

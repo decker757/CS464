@@ -1,3 +1,5 @@
+import { compareCredits, formatCreditsPrecise } from './formatCredits'
+
 /**
  * What is wrong with a share quantity, if anything — checked here so a
  * malformed value never reaches the ledger, which would answer
@@ -43,4 +45,17 @@ export function limitPriceError(raw: string): string | undefined {
   if (!/[1-9]/.test(trimmed)) return 'Must be above 0.'
   if (BigInt(wholePart) >= 1n) return 'Must be below 1.'
   return undefined
+}
+
+/**
+ * The line above a sell's quantity field: the whole position, and — when the
+ * trader's own open sell orders hold some of it back — how much of it is left
+ * to sell. The ledger refuses a sell beyond that rest
+ * (`insufficient_shares_held`, ledger-service.md), so the line names it
+ * rather than a figure the trader cannot use. Used by the market and limit
+ * halves of the order ticket alike.
+ */
+export function describeSharesToSell(held: string, sellable: string): string {
+  if (compareCredits(sellable, held) === 0) return `You hold ${formatCreditsPrecise(held)} shares`
+  return `You can sell ${formatCreditsPrecise(sellable)} of your ${formatCreditsPrecise(held)} shares`
 }

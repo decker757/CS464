@@ -66,6 +66,20 @@ describe('useMyOrders', () => {
     expect(result.current.orders).toBeNull()
   })
 
+  it('reads nothing on a refetch while disabled either', async () => {
+    // The page re-reads on every socket ack, on markets with no limit orders
+    // too; those reads must still cost the ledger nothing.
+    let reads = 0
+    server.use(http.get(ORDERS, () => { reads += 1; return HttpResponse.json({ orders: [order()] }) }))
+    const { result } = renderHook(() => useMyOrders(false))
+
+    act(() => { result.current.refetch() })
+    await act(() => new Promise(resolve => setTimeout(resolve, 10)))
+
+    expect(reads).toBe(0)
+    expect(result.current.orders).toBeNull()
+  })
+
   it('moves filled_quantity on the order a frame names', async () => {
     mockOrders([order()])
     const { result } = renderHook(() => useMyOrders(true))
@@ -132,6 +146,31 @@ describe('useMyOrders', () => {
     await act(async () => { slowRead.release() })
 
     await waitFor(() => expect(result.current.orders?.[0].filled_quantity).toBe('20.0000'))
+  })
+
+  it('does not let a buffered frame take filled_quantity back below a newer read', async () => {
+    // A frame can arrive while a read is in flight that the ledger answered
+    // after a later fill. Re-applying it on top of that read would move the
+    // figure backwards; filled_quantity only ever grows.
+    mockOrders([order()])
+    const { result } = renderHook(() => useMyOrders(true))
+    await waitFor(() => expect(result.current.orders).toHaveLength(1))
+
+    const slowRead = holdUntilReleased()
+    server.use(http.get(ORDERS, async () => {
+      await slowRead.held
+      // Already past the fill the frame below reports, and one more.
+      return HttpResponse.json({ orders: [order({ filled_quantity: '20.0000' })] })
+    }))
+
+    act(() => { result.current.refetch() })
+    act(() => result.current.applyFrame(orderFrame({ filled_quantity: '12.0000', fill: { state_version: 5 } })))
+    await act(async () => { slowRead.release() })
+
+    await waitFor(() => expect(result.current.orders?.[0].filled_quantity).toBe('20.0000'))
+    // Settled, not passing through: nothing is left to apply.
+    await act(() => new Promise(resolve => setTimeout(resolve, 10)))
+    expect(result.current.orders?.[0].filled_quantity).toBe('20.0000')
   })
 
   it('keeps the last list on screen when a re-read fails', async () => {

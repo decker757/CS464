@@ -49,7 +49,8 @@ describe('OpenOrdersList', () => {
 
     const row = screen.getAllByRole('row')[1]
     expect(within(row).getByText('Yes')).toBeInTheDocument()
-    expect(row).toHaveTextContent('30.0%')
+    // The limit in the units the ticket's field takes (0.30), not 30.0%.
+    expect(row).toHaveTextContent('0.3000')
     expect(row).toHaveTextContent('50.0000')
     expect(row).toHaveTextContent('20.5465')
   })
@@ -75,7 +76,7 @@ describe('OpenOrdersList', () => {
     }))
     const { actor, onCancelled } = renderList([order(), order({ id: 'ord-2', limit_price: '0.4000' })])
 
-    await actor.click(screen.getByRole('button', { name: /cancel buy yes at 40\.0%/i }))
+    await actor.click(screen.getByRole('button', { name: 'Cancel buy Yes at 0.4000' }))
 
     await waitFor(() => expect(cancelled).toBe('ord-2'))
     expect(onCancelled).toHaveBeenCalled()
@@ -105,7 +106,10 @@ describe('OpenOrdersList', () => {
 
     await actor.click(screen.getByRole('button', { name: /cancel/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/already cancelled/i)
+    // ledger-service.md: "treat it as done". So it reads as a status line,
+    // not as an alert the trader has to act on.
+    expect(await screen.findByRole('status')).toHaveTextContent('That order was already cancelled.')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('does not send a second cancel while one is in flight', async () => {
