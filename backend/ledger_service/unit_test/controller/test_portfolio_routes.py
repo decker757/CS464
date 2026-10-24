@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.roles import UserRole
 from unit_test.conftest import bearer
 from unit_test.controller.test_sell_routes import _doc, _prose, _section
+from unit_test.placement_fixtures import place
 from unit_test.portfolio_fixtures import (
     ADR_AVERAGE,
     ADR_B,
@@ -53,6 +54,7 @@ _AMOUNTS = (
 )
 _POSITION_AMOUNTS = (
     "quantity",
+    "reserved_shares",
     "cost_basis",
     "average_entry_price",
     "price",
@@ -110,6 +112,8 @@ async def test_the_route_returns_the_figures_as_scale_four_strings(
         "outcome_id": str(upstream.outcomes[0]),
         "outcome_position": 0,
         "quantity": "500.0000",
+        # #410: never null, and at scale 4 although no order was summed.
+        "reserved_shares": "0.0000",
         "cost_basis": str(ADR_BASIS),
         "average_entry_price": str(ADR_AVERAGE),
         "price": str(ADR_PRICE),
@@ -153,6 +157,9 @@ async def test_the_response_is_the_service_result(
                 "outcome_id": str(p.outcome_id),
                 "outcome_position": p.outcome_position,
                 "quantity": str(p.quantity),
+                "reserved_shares": str(
+                    result.reserved_shares[(p.market_id, p.outcome_id)]
+                ),
                 "cost_basis": str(p.cost_basis),
                 "average_entry_price": str(p.average_entry_price),
                 "price": str(p.price),
@@ -205,6 +212,31 @@ async def test_a_settled_row_sends_null_figures_and_its_payout_at_scale_four(
         assert _SCALE_FOUR.match(unsettled_row[key]), f"{key} = {unsettled_row[key]!r}"
 
 
+async def test_a_live_sell_orders_reserved_shares_cross_the_wire_beside_the_whole_quantity(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """#410: `quantity` stays the whole position and `reserved_shares` is the
+    part a resting sell holds back, so the route cannot pass by sending
+    either figure in the other's place, or by sending a constant."""
+    upstream = await market_at(session)
+    user_id, _ = await funded(session)
+    await hold(session, upstream, user_id=user_id)
+    await place(
+        session,
+        upstream,
+        user_id=user_id,
+        side="sell",
+        limit_price=Decimal("0.9000"),
+        quantity=Decimal("5.0000"),
+    )
+
+    response = await client.get(PATH, headers=bearer(user_id, UserRole.TRADER))
+
+    assert response.status_code == 200, response.text
+    [position] = response.json()["positions"]
+    assert (position["quantity"], position["reserved_shares"]) == ("54.3333", "5.0000")
+
+
 async def test_each_caller_reads_only_their_own_portfolio(
     client: AsyncClient, session: AsyncSession
 ) -> None:
@@ -246,3 +278,22 @@ def test_the_docs_name_the_pnl_figures_and_the_identity_they_reconcile_to() -> N
     for key in ("starting_credits", "realized_pnl", "unrealized_pnl", "total_pnl"):
         assert f"`{key}`" in section, f"the section never mentions `{key}`"
     assert "net_worth - starting_credits" in section
+
+
+def test_the_docs_say_quantity_is_the_whole_position_and_what_a_sell_can_take() -> None:
+    """#410's fourth criterion: the frontend's sell clamp codes against this
+    page, so one paragraph has to say plainly that `quantity` is the whole
+    position and that what a sell can take is `quantity - reserved_shares`."""
+    section = _section(_doc(), _HEADING)
+
+    says_it = [
+        p
+        for p in _prose(section)
+        if "`reserved_shares`" in p
+        and "whole position" in p
+        and "`quantity - reserved_shares`" in p
+    ]
+    assert says_it, (
+        "no paragraph says `quantity` is the whole position and that a sell "
+        "can take only `quantity - reserved_shares`"
+    )

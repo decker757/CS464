@@ -24,9 +24,10 @@ import MarketExposurePage from './pages/admin/MarketExposurePage'
 import ProposalsPage from './pages/admin/ProposalsPage'
 import ProposeOutcomePage from './pages/admin/ProposeOutcomePage'
 
-// recharts roughly doubles the main bundle, and only this one admin page
-// uses it, so it is its own chunk, downloaded on visiting this route rather
-// than on every page load.
+// recharts roughly doubles the main bundle, so it is its own chunk,
+// downloaded on visiting this route rather than on every page load. The
+// market page's chart is lazy the same way (PriceHistorySection, #453), and
+// src/main.test.ts fails if a static import ever pulls recharts into the entry.
 const MarketPriceHistoryPage = lazy(() => import('./pages/admin/MarketPriceHistoryPage'))
 
 /**
