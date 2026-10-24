@@ -86,8 +86,7 @@ export async function selectTab(page: Page, name: RegExp): Promise<void> {
   await answered
 }
 
-/** A signed-in screen, and the `<h1>` that says it has drawn its content
- * rather than its loading state (#438). */
+/** A screen, and the `<h1>` that says it has been drawn (#438). */
 export interface Screen {
   path: string
   heading: string
@@ -104,6 +103,10 @@ export async function overflowingScreens(page: Page, screens: Screen[], viewport
   for (const screen of screens) {
     await page.goto(screen.path)
     await expect(page.getByRole('heading', { level: 1, name: screen.heading, exact: true })).toBeVisible()
+    // On half these screens the heading is drawn in the same pass as a
+    // "Loading …" line, before the list or table that might be too wide, so
+    // the measurement waits for every such line to go.
+    await expect(page.getByText(/^Loading\b/)).toHaveCount(0)
     const { scrollWidth, clientWidth } = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
