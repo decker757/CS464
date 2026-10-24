@@ -84,6 +84,24 @@ def _question_contains(query: str) -> ColumnElement[bool]:
     return Market.question.ilike(f"%{escaped}%", escape=_LIKE_ESCAPE)
 
 
+def _closes_within(
+    closes_from: datetime | None, closes_before: datetime | None
+) -> list[ColumnElement[bool]]:
+    """`closes_from <= close_time < closes_before`, each end only if given. #442.
+
+    Half-open, so consecutive windows never share a market. `close_time`, not
+    when trading stopped: it is the time a card shows. A NULL `close_time`
+    compares as unknown, so it matches no window. DECISIONS.md, "The browse
+    narrows by a half-open window on `close_time`".
+    """
+    conditions: list[ColumnElement[bool]] = []
+    if closes_from is not None:
+        conditions.append(Market.close_time >= closes_from)
+    if closes_before is not None:
+        conditions.append(Market.close_time < closes_before)
+    return conditions
+
+
 def _stopped_but_unswept(now: datetime) -> ColumnElement[bool]:
     """OPEN in the column but past its close time: the gap ADR 0011 is about."""
     return and_(Market.status == MarketStatus.OPEN, not_(open_for_trading(now)))
@@ -242,6 +260,8 @@ async def browse(
     limit: int,
     query: str | None = None,
     status: MarketStatus | None = None,
+    closes_from: datetime | None = None,
+    closes_before: datetime | None = None,
     now: datetime | None = None,
     cursor: str | None = None,
 ) -> MarketPage:
@@ -250,7 +270,9 @@ async def browse(
     With no `status`, every published market: still-trading first by soonest
     close, then the rest by most recently stopped (D-022, #105). `query` is a
     case-insensitive search over the question and composes with `status`.
-    Nothing found is an empty page, never an error. At most `limit` markets;
+    `closes_from` and `closes_before` narrow to a half-open window on
+    `close_time` and compose with both (#442); the caller refuses an empty
+    one. Nothing found is an empty page, never an error. At most `limit` markets;
     `next_cursor` is None on the last page. Every later page groups and
     compares as of the first page's clock, which the cursor carries. Raises
     `MalformedCursor` for a cursor this service did not issue. `now` is the
@@ -289,6 +311,10 @@ async def browse(
     search = (query or "").strip()
     if search:
         stmt = stmt.where(_question_contains(search))
+
+    # A WHERE that leaves the order alone, so the keyset below pages the
+    # filtered rows exactly as it pages all of them.
+    stmt = stmt.where(*_closes_within(closes_from, closes_before))
 
     if after is not None:
         stmt = stmt.where(_after(after, still_trading))
