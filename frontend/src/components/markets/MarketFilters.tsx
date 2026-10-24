@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent } from 'react'
+import { useRef, useState, type KeyboardEvent } from 'react'
 import FilterPill from '../ui/FilterPill'
 import SearchForm from '../ui/SearchForm'
 import { closingLabel, type ClosingPreset } from '../../utils/closingWindow'
@@ -63,6 +63,10 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
 
 export default function MarketFilters({ query, status, onQueryChange, onStatusChange, closing, onClosingChange }: MarketFiltersProps) {
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([])
+  // A new key remounts the search box, which empties anything typed in it.
+  // Clear all needs that: with no search applied, the cleared query is the same
+  // empty string as before, so SearchForm has no change to follow.
+  const [searchBoxKey, setSearchBoxKey] = useState(0)
   const appliedFilterCount = [query !== '', status !== null, closing !== null].filter(Boolean).length
   const hasActiveFilters = appliedFilterCount > 0
   // One filter is cleared by its own chip, so "Clear all" is for more than one
@@ -90,6 +94,7 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
   }
 
   function handleClearAll() {
+    setSearchBoxKey(key => key + 1)
     onQueryChange('')
     onStatusChange(null)
     onClosingChange(null)
@@ -98,6 +103,7 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
   return (
     <div className="mb-6 space-y-4">
       <SearchForm
+        key={searchBoxKey}
         id="market-search"
         label="Search markets"
         placeholder="Search markets by question"
