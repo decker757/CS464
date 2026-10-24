@@ -103,6 +103,10 @@ are traded and then taken one stage further each: closed, pending resolution,
 approved, and settled with its winners paid. The seed prints every market's
 final prices when it finishes.
 
+The four liveliest open markets, the Yes/No ones that end furthest from 50/50
+and the five-way one, close soonest, so the browse list, which shows the
+soonest-closing market first, opens on them.
+
 The trades go in eight rounds, twenty seconds apart, so each market's price
 history has a shape. That is why it takes minutes: a trade's time is the
 ledger's own clock, and no API backdates one. The open markets close three
