@@ -9,7 +9,7 @@ Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
 [3.4] #12 (the `settled` status, `settleable` and the ledger's settle step), [BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
 [FE][3.1] #52.
 [BE] #221's void (the `voided` status, `voidable` and the ledger's void step)
-is proposed by ADR 0025 and not built yet; every part of this page it changes
+is decided by ADR 0025 and not built yet; every part of this page it changes
 says so where it does.
 
 A successful submission, publication, early close, outcome proposal, approval,
@@ -39,7 +39,7 @@ end is stored at approval:
 [ADR 0023](../adr/0023-sending-an-approved-outcome-back.md).
 Why a flawed market is voided by the ledger first, by any administrator who
 has not traded it, and why the reason is kept on the market:
-[ADR 0025](../adr/0025-voiding-a-flawed-market.md) (Proposed).
+[ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 
 ## Endpoints
 
@@ -53,7 +53,7 @@ has not traded it, and why the reason is kept on the market:
 | POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
 | POST | `/markets/{id}/send-back-outcome` | Send an approved result back to `closed` during its dispute window, with a reason |
 | POST | `/markets/{id}/settle` | Mark an approved market settled — **the ledger's call only** |
-| POST | `/markets/{id}/void` | Mark a market voided — **the ledger's call only** (proposed, ADR 0025) |
+| POST | `/markets/{id}/void` | Mark a market voided — **the ledger's call only** (ADR 0025, not built yet) |
 | GET | `/markets` | List my own markets |
 | GET | `/markets/overview` | Every market I can see, a page at a time, by status, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
@@ -78,12 +78,12 @@ audit entry names who acted. Those five answer another administrator's draft or
 submitted market with a `409`, not a `404`: the id is confirmed to exist, and
 nothing in it is shown. ADR 0016.
 
-**Proposed, ADR 0025: not built yet.** `POST /markets/{id}/void` is a sixth
+**ADR 0025: not built yet.** `POST /markets/{id}/void` is a sixth
 exception: the ledger calls it with any administrator's token, and it answers
 another administrator's draft or submitted market with
 `409 market_not_voidable`.
 
-## The eight statuses (seven built, and `voided` proposed)
+## The eight statuses (seven built, and `voided` not built yet)
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
@@ -94,7 +94,7 @@ another administrator's draft or submitted market with
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 | `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
 | `settled` | `POST /markets/{id}/settle`, which the ledger calls after its payouts commit ([3.4] #12); the status alone does not prove the ledger paid ([ADR 0019](../adr/0019-settlement-across-services.md)) | yes, with the winning outcome |
-| `voided` | (proposed, ADR 0025; not built yet) `POST /markets/{id}/void`, which the ledger calls after its refunds commit ([BE] #221) | yes, with the reason and no winning outcome |
+| `voided` | (ADR 0025, not built yet) `POST /markets/{id}/void`, which the ledger calls after its refunds commit ([BE] #221) | yes, with the reason and no winning outcome |
 
 The path is `draft → submitted → open → closed → pending_resolution →
 approved → settled` and nothing skips a step. Every save on a market past `submitted` is
@@ -108,7 +108,7 @@ dispute window. There is no unpublish and no reopen. `settled` is final: every w
 the settle itself is a `409 market_already_settled`, and the message says the
 market is settled and nothing about payouts. A repeated settle answers `200`.
 
-**Proposed, ADR 0025: not built yet. An eighth status, `voided`.** Set by
+**ADR 0025: not built yet. An eighth status, `voided`.** Set by
 `POST /markets/{id}/void`, which the ledger calls after its refunds commit
 ([BE] #221). Traders see it, with the reason and no winning outcome. It is
 reached from `closed`, `pending_resolution`, or `approved` while the dispute
@@ -1045,7 +1045,7 @@ request once the edge has passed completes it. An approved market with no
 **A refused settle writes nothing.** The market keeps its status and no audit
 entry is appended.
 
-**Proposed, ADR 0025: not built yet.** A `voided` market is
+**ADR 0025: not built yet.** A `voided` market is
 `409 market_already_voided`, after the `settled` check and before the clock is
 read. Today it would be `market_not_approved`.
 
@@ -1068,7 +1068,7 @@ is the trace of a direct call.
 
 ## POST /markets/{id}/void — [BE] #221
 
-**Proposed, ADR 0025: not built yet. Only the ledger calls this.** Clients
+**ADR 0025: not built yet. Only the ledger calls this.** Clients
 void a market with `POST /ledger/markets/{id}/void`, which refunds every
 holder, commits, and then calls this route with the administrator's token and
 the recorded reason as its last step. A direct call marks the market `voided`
@@ -1240,7 +1240,7 @@ GET /markets/overview?status=closed&limit=50
 - **`creator_id`** is on every row, so the caller can tell their own by
   comparing it with their own id.
 
-**Proposed, ADR 0025: not built yet. What a void adds here.**
+**ADR 0025: not built yet. What a void adds here.**
 
 - `?status=` accepts `voided`, and `counts` gains a `voided` key, `0` when
   there are none. The status table below accepts all eight.
@@ -1254,7 +1254,7 @@ GET /markets/overview?status=closed&limit=50
 
 | Query parameter | Rule |
 | --- | --- |
-| `status` | one of the statuses above (seven built, and `voided` proposed); anything else is a `422` |
+| `status` | one of the statuses above (seven built, and `voided` not built yet); anything else is a `422` |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
@@ -1415,7 +1415,7 @@ the first group explicitly.
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
-**Proposed, ADR 0025: not built yet.** `status` accepts `voided` too, and a
+**ADR 0025: not built yet.** `status` accepts `voided` too, and a
 voided market is in the second group of the order above, by when it stopped
 trading, like any other market that has stopped. The closing window below
 finds it by that same moment: a void starts from CLOSED or later and leaves
@@ -1600,7 +1600,7 @@ browser's clock can be wrong. Hiding a control once the time has passed is
 fine, but the server still decides send-back on its own clock, and
 settlement is `settleable`'s job.
 
-**Proposed, ADR 0025: not built yet. Three more keys, always present.**
+**ADR 0025: not built yet. Three more keys, always present.**
 
 ```json
 {
@@ -1708,8 +1708,8 @@ it still reads `code` and `message`:
 | 409 | `dispute_window_open` | a settle arrived for an approved market that is not yet `settleable` |
 | 409 | `dispute_window_closed` | a send-back arrived for an approved market whose dispute window has ended |
 | 409 | `proposal_superseded` | an approval, rejection or send-back quoted a `proposal_id` that is no longer the proposal on the market |
-| 409 | `market_already_voided` | (proposed, ADR 0025) anything but a read or a repeated void arrived for a voided market, the settle step included |
-| 409 | `market_not_voidable` | (proposed, ADR 0025) the ledger's void step arrived for a market that cannot be voided |
+| 409 | `market_already_voided` | (ADR 0025, not built yet) anything but a read or a repeated void arrived for a voided market, the settle step included |
+| 409 | `market_not_voidable` | (ADR 0025, not built yet) the ledger's void step arrived for a market that cannot be voided |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | `proposal_incomplete` | outcome proposal refused; see `details` |
 | 422 | `close_incomplete` | early close refused; see `details` |
@@ -1930,7 +1930,7 @@ reject control on the approval screen.
 
 ## Notes for the void screen — [BE] #221
 
-**Proposed, ADR 0025: not built yet.** For the [FE] sub-issue of #221. The
+**ADR 0025: not built yet.** For the [FE] sub-issue of #221. The
 backend routes are `POST /ledger/markets/{id}/void` (the only one to call)
 and this page's reads.
 
@@ -1959,12 +1959,21 @@ and this page's reads.
    - `500 void_replay_mismatch`: "This market's records do not add up, so it
      cannot be voided. Nothing was refunded." Retrying will not help; it needs
      a developer.
-5. **The market page** shows a "Voided" banner with `void_reason` and
+5. **"Finish" lives only in the session that got the `503`.** Build no other
+   repeat. A market voided by a direct call to `POST /markets/{id}/void`, and
+   a refunded but unconfirmed `approved` market past its window, have no
+   control on this screen: each is finished by a direct API call, named in
+   ADR 0025's "Known edges, accepted".
+6. **The market page** shows a "Voided" banner with `void_reason` and
    `voided_at`, and no winning outcome, for `status: "voided"`.
-6. **The portfolio** shows `result: "refunded"` rows as "Refunded", with
+7. **A browse card** for a `voided` market shows "Voided" with no probability
+   and no price change, though the ledger's batch snapshot still carries its
+   `prices` and `prices_7d_ago`. It is the rule #429 sets for a resolved
+   market.
+8. **The portfolio** shows `result: "refunded"` rows as "Refunded", with
    `payout` as the amount. **The history** shows `void_refund` rows as
    "Refund", with `amount`, `quantity` and the outcome.
-7. Open limit orders on a voided market are released: they leave the orders
+9. Open limit orders on a voided market are released: they leave the orders
    list, and the reservation goes.
-8. One Playwright test: an administrator voids a market, and a trader sees the
-   refund in their portfolio and history.
+10. One Playwright test: an administrator voids a market, and a trader sees
+    the refund in their portfolio and history.

@@ -10,7 +10,7 @@ Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 #6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40,
 [BE][2.4] #63's price history and trade feed, and [BE][X-1] #432's batch
 snapshot with #447's activity figure.
-The void route ([BE] #221) is proposed by ADR 0025 and not built yet; every
+The void route ([BE] #221) is decided by ADR 0025 and not built yet; every
 part of this page that it changes says so where it does.
 
 Why balances are derived rather than stored and why a read can write:
@@ -24,8 +24,7 @@ afterwards: [ADR 0019](../adr/0019-settlement-across-services.md).
 Why the leaderboard is a snapshot the ledger refreshes, and how it learns
 usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md).
 Why a flawed market is voided on the ledger first, and why a refund follows
-what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md)
-(Proposed).
+what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 
 ## Endpoints
 
@@ -45,7 +44,7 @@ what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md)
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
-| POST | `/ledger/markets/{market_id}/void` | Void a flawed market and refund every holder (admin; proposed, ADR 0025) |
+| POST | `/ledger/markets/{market_id}/void` | Void a flawed market and refund every holder (admin; ADR 0025, not built yet) |
 | POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024) |
 | GET | `/ledger/orders/me` | My live limit orders (ADR 0024) |
 | POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024) |
@@ -70,7 +69,7 @@ entry. The ledger is
 append-only, enforced by a database trigger rather than by the absence of a
 route.
 
-**Proposed, ADR 0025: not built yet. A sixth write route.**
+**ADR 0025: not built yet. A sixth write route.**
 `POST .../void` takes an administrator's token and a body of one field,
 `reason`. Which market may be voided comes from market_service; the holders
 and the amounts come from this service's own trades and positions. It takes
@@ -277,7 +276,7 @@ the number of winning shares paid out, at one credit each, so `amount` equals
 `quantity`. `side` and `average_price` are `null` there: a payout is not a
 trade, and its price is always one.
 
-**Proposed, ADR 0025: not built yet. `void_refund` rows.** A void writes one
+**ADR 0025: not built yet. `void_refund` rows.** A void writes one
 `void_refund` row for each position it refunds: `amount` is the refund,
 positive, and `market_id`, `outcome_id` and `quantity` (the shares refunded)
 are set, as on a `settlement` row. `side` and `average_price` are `null`: a
@@ -411,7 +410,7 @@ On every other row, `result` and `payout` are `null`. Every row carries all the
 keys, so branch on `result`, not on which keys are present. **`price`, `value`
 and `unrealized_pnl` can be `null`.** Guard them before formatting.
 
-**Proposed, ADR 0025: not built yet. A voided market's rows show the refund.**
+**ADR 0025: not built yet. A voided market's rows show the refund.**
 Once this service has voided a market (`POST /ledger/markets/{id}/void`,
 below), each of its rows carries `result: "refunded"`, and `payout` is what
 the void refunded for that position, read from its `void_refund` entry. It is
@@ -1046,6 +1045,12 @@ in `market_ids`. Like the single snapshot, it never checks whether a market is
 still open (ADR 0017): a closed or settled market is answered with its last
 price.
 
+**ADR 0025: not built yet. A voided market is answered the same way**, with
+its last `prices`, its `prices_7d_ago` and its `credits_traded`. A void writes
+no trade, so `credits_traded` keeps every trade it refunded and still never
+falls. A card shows a voided market as "Voided", with no probability and no
+change ("Notes for the void screen" in `market-service.md`).
+
 The answer is an object around a list of objects so that fields can be added
 to it, and to each item, without breaking a client that ignores fields it does
 not know.
@@ -1192,7 +1197,7 @@ That is the first example's market, settled for its second outcome. Branch on
 audit entry (DECISIONS.md, "A settled market's exposure reads its result, and
 reports no payouts against the drained pool").
 
-**Proposed, ADR 0025: not built yet. A voided market reads the same way.**
+**ADR 0025: not built yet. A voided market reads the same way.**
 `result` is `"voided"` and `winning_outcome_id` is `null`. `pool`, every
 `payout_if_wins` and every `residue_if_wins` are `null`, and the flag is
 `false`: a void empties the pool as settlement does. What it refunded is in
@@ -1668,7 +1673,7 @@ order leave `GET /ledger/orders/me`.
 - **Price history and the trade feed:** one point and one row per fill.
 - **Trade route:** `book_state_version`, and the two refusals that now count
   reservations (above).
-- **A void** (proposed, ADR 0025) releases every open order on its market,
+- **A void** (ADR 0025, not built yet) releases every open order on its market,
   as a settlement does, and refunds every fill like any other trade.
 
 ## POST /ledger/markets/{market_id}/settlement
@@ -1801,7 +1806,7 @@ touched comes after the book was opened, as a preview's first request would
 open it. That happens once per market, and it is the only write such a
 refusal leaves.
 
-**Proposed, ADR 0025: not built yet. A voided market is
+**ADR 0025: not built yet. A voided market is
 `409 market_already_voided`.** At the lookup step, before the status check,
 and again under the book lock: a market this service has voided is refused
 with nothing written, never treated as a settlement to replay. At the status
@@ -1810,7 +1815,7 @@ gets the same code. Today a voided status would be `market_not_approved`.
 
 ## POST /ledger/markets/{market_id}/void
 
-**Proposed, ADR 0025: not built yet.** [BE] #221. End a flawed market with no
+**ADR 0025: not built yet.** [BE] #221. End a flawed market with no
 winner, refund every share still held at what it cost, then tell
 market_service that the market is voided. Administrators only, and not one
 who has traded the market.
@@ -2089,7 +2094,7 @@ reported beside the points:
 | `winning_outcome_id` | `null` until the market is settled. Then the outcome that paid. |
 | `result_recorded_at` | `null` until the market is settled. Then the settlement's `recorded_at`, the same instant the settlement route reports. |
 
-**Proposed, ADR 0025: not built yet. A voided market** ends its points at the
+**ADR 0025: not built yet. A voided market** ends its points at the
 last trade too, since a void moves no price. `result` is `"voided"`,
 `winning_outcome_id` is `null`, and `result_recorded_at` is the void's
 `recorded_at`.
@@ -2317,7 +2322,7 @@ placement's own. `order_not_found`, `order_already_filled`,
 above. `cancellation_incomplete` (422, new in [T-8] #326) is the
 administrator's cancel's own, documented there too.
 
-**Proposed, ADR 0025: not built yet.** `admin_has_a_stake` (403),
+**ADR 0025: not built yet.** `admin_has_a_stake` (403),
 `market_already_settled` and `market_not_voidable` (409), `void_incomplete`
 (422), `void_replay_mismatch` (500) and `void_unconfirmed` (503) are the void
 route's own, documented in its section above. `market_already_voided` (409)
