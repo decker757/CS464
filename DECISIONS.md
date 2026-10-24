@@ -10113,3 +10113,44 @@ response and the reservation sums together and lets the contract state the
 bound; or a read of this route measured as slow, whose fix is that cap rather
 than paging. Either way this entry is revisited, and paging comes back, if at
 all, beside the cap.
+
+### D-NEW — The browse narrows by a half-open window on `close_time`
+
+**Date:** 2026-10-24 · **Ticket:** #442 · **Status:** active
+
+**Decision.** `GET /public/markets` takes two optional query parameters,
+`closes_from` and `closes_before`, each a time with an offset. A market
+matches when `closes_from <= close_time < closes_before`; either end may be
+sent alone. Both together must leave the window non-empty: `closes_before`
+at or before `closes_from` is a `422` naming both. A time with no offset is a
+`422`. A market with no `close_time` matches no window. The order, the groups
+and the cursor are unchanged, and the window composes with `status` and `q`.
+
+**Why.** Half-open, so consecutive windows ("today", then "tomorrow") never
+share a market and a client builds each from midnight to midnight without
+subtracting a microsecond. The names say which edge is in: *from* includes
+its instant, *before* does not. The window reads `close_time` because that is
+the time the card shows a trader under "Closes"; a market closed early
+([2.3] #7) keeps its scheduled `close_time` and is found by it, and
+`status=open` is how a trader leaves the stopped ones out. An empty window is
+refused rather than answered with `[]`, which a client cannot tell from
+"nothing closes then". A naive time is a different instant in every timezone,
+so it is refused rather than read as UTC, as the ledger's price history does.
+No close time is not "closes some time after any start": publish refuses a
+market without one, so only a direct write leaves one, and SQL's comparison
+with NULL already excludes it.
+
+**Rejected.** *`closes_after`/`closes_before`*: "after" reads as exclusive,
+and an inclusive start under that name is a trap. *Presets on the server*
+(`closes=today`): "today" depends on the trader's timezone, which the server
+does not know. *Filtering on when trading stopped* (`LEAST(close_time,
+closed_at)`, the stopped group's sort key): it answers "what stopped this
+week", not "what closes this week", and the card does not show it.
+
+**Notes.** The cursor does not record the window, as it does not record `q`
+or `status`: send the same window with `cursor`. The filter does not change
+the order, so a keyset over the filtered rows pages exactly as one over all
+of them. No index: the browse already reads every visible market to order
+it, and `ix_markets_due_close` is partial on `status = 'open'` for the sweep.
+An index on `close_time` earns its place when the browse is measured slow,
+and it would serve the order before it served this filter.
