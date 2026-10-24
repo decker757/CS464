@@ -6,6 +6,7 @@ import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import Button from '../ui/Button'
 import LoadMoreControl from '../ui/LoadMoreControl'
 import MarketCard from './MarketCard'
+import PriceFeedStatus from './PriceFeedStatus'
 import type { StatusFilter } from './MarketFilters'
 
 interface MarketListProps {
@@ -54,7 +55,7 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
   const { items: markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchMarketPage, pagedMarketsOptions)
   // `markets` keeps its identity until the list itself changes, so the prices
   // are fetched then and not on every render.
-  const { snapshotsByMarket, failedMarkets, readAt, retryMarket } = usePricesForMarkets(markets)
+  const { snapshotsByMarket, failedMarkets, readAt, retryMarket, status: priceStatus } = usePricesForMarkets(markets)
   const isFiltered = query !== '' || status !== null || closingWindow !== null
 
   return (
@@ -79,11 +80,16 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
           {/* The prices refresh on their own; this says when the last one
               landed, so a refresh that is failing shows as a time going stale
               rather than as a number that looks current. */}
-          {readAt && (
-            <p className="mb-3 text-right text-xs text-subtle">
-              Prices updated {readAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}
-            </p>
-          )}
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            {/* The feed's own trouble, when it has any ([X-1] #444 AC 5). A
+                frozen list that looks live is the state this prevents. */}
+            <PriceFeedStatus status={priceStatus} />
+            {readAt && (
+              <p className="ml-auto text-right text-xs text-subtle">
+                Prices updated {readAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}
+              </p>
+            )}
+          </div>
 
           <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
             {markets.map(market => (
