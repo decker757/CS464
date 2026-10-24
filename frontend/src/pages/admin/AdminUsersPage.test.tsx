@@ -177,8 +177,10 @@ describe('AdminUsersPage', () => {
     await actor.click(roles.getByRole('radio', { name: 'Admins only' }))
     await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only' }))
 
+    // carol is on screen from the search-only response already, so finding
+    // her does not prove the third request has arrived: wait for it.
     expect(await screen.findByText('carol')).toBeInTheDocument()
-    expect(sent.at(-1)).toEqual({ q: 'car', role: 'admin', is_suspended: 'true', cursor: null })
+    await waitFor(() => expect(sent.at(-1)).toEqual({ q: 'car', role: 'admin', is_suspended: 'true', cursor: null }))
     expect(roles.getByRole('radio', { name: 'Admins only' })).toBeChecked()
     expect(roles.getByRole('radio', { name: 'Any role' })).not.toBeChecked()
   })
