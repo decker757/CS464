@@ -375,6 +375,7 @@ async def reject_market_outcome(
         409: {
             "description": (
                 "`market_already_settled` — it has been settled. "
+                "`market_already_voided` — it has been voided. "
                 "`market_pending_resolution` — its outcome is proposed but not "
                 "yet approved; review it instead. `market_not_approved` — no "
                 "outcome is approved. `dispute_window_closed` — the window has "
@@ -423,9 +424,10 @@ async def send_back_market_outcome(
         404: {"description": "No such market."},
         409: {
             "description": (
-                "`market_not_approved` — the market's outcome has not been "
-                "approved. `dispute_window_open` — it is approved, but not "
-                "yet settleable."
+                "`market_already_voided` — the market has been voided, so it "
+                "will never be settled. `market_not_approved` — the market's "
+                "outcome has not been approved. `dispute_window_open` — it is "
+                "approved, but not yet settleable."
             )
         },
     },
@@ -489,7 +491,7 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
             )
         },
         403: {"description": "`not_an_administrator` — a trader."},
-        422: {"description": "`status` is not one of the seven, or `limit` is below 1."},
+        422: {"description": "`status` is not one of the eight, or `limit` is below 1."},
     },
 )
 async def market_overview(

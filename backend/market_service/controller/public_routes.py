@@ -137,8 +137,8 @@ def _refuse_if_window_empty(
         "and there is nothing to distinguish them from if those are "
         "missing.\n\n"
         "`status` narrows to one of `open`, `closed`, `pending_resolution`, "
-        "`approved` or `settled`; `status=open` is the narrower query a "
-        "trader gets by choosing the first group explicitly. `draft` and "
+        "`approved`, `settled` or `voided`; `status=open` is the narrower "
+        "query a trader gets by choosing the first group explicitly. `draft` and "
         "`submitted` are never visible here and are not accepted values. `q` "
         "searches the question, case-insensitively, and composes with "
         "`status`.\n\n"
@@ -249,7 +249,10 @@ async def browse_markets(
         "writes it (ADR 0011).\n\n"
         "`settleable` ([3.4] #12) is true from five minutes after the dispute "
         "window ends and stays true once the market is `settled`; false for "
-        "every other status."
+        "every other status, `voided` included.\n\n"
+        "A `voided` market ([BE] #221) has no winning outcome: "
+        "`proposed_outcome_id` is null, even on one voided after its outcome "
+        "was approved."
     ),
     responses={404: {"description": "No such market, or it is a draft or submitted."}},
 )
