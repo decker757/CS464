@@ -1,0 +1,126 @@
+# [5.4] #440. The same stack with two of every stateless service behind one
+# nginx, so that "horizontally scalable" is something this repository has run
+# rather than something its architecture merely permits.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#     up -d --build --wait
+#
+# docs/horizontal-scaling.md has the commands in full, what came back from a
+# real run, and the one line in this file that is a correctness rule rather
+# than a convenience: the migrate steps do not scale.
+
+# Its own compose project, so this file cannot scale, restart or tear down a
+# `cs464` stack somebody is using. Containers, network and database volume are
+# all separate, which also means it starts against an empty database and runs
+# its own migrations.
+name: cs464scale
+
+services:
+  # Nothing in here publishes a host port except the proxy: two replicas cannot
+  # share one. `!reset` empties the base file's list — a plain `ports:` here
+  # would be appended to it, not replace it. Reach this project's database with
+  # `docker compose ... exec -T db psql -U cs464 -d cs464`.
+  db:
+    ports: !reset null
+
+  redis:
+    ports: !reset null
+
+  # ADR 0020: the migrate step runs once per deploy, never once per replica. It
+  # takes no lock, so two copies racing it are not coordinated: the one that
+  # loses fails on a duplicate object or on Alembic's one-version-row check,
+  # and compose starts an app only after its own step exited 0 — so the replica
+  # whose step lost does not start at all.
+  #
+  # One is therefore the number in this file that must not change, and it is
+  # written out rather than left to the default for exactly that reason. The
+  # base file's `depends_on: service_completed_successfully` is untouched here,
+  # and it gates every replica of the app rather than the first one.
+  auth-migrate:
+    deploy:
+      replicas: 1
+
+  market-migrate:
+    deploy:
+      replicas: 1
+
+  ledger-migrate:
+    deploy:
+      replicas: 1
+
+  # Sessions ride in signed cookies and tokens rather than in any process's
+  # memory (ADR 0002), so a second copy of each of these needs no sticky
+  # routing, no shared session store and no coordination.
+  auth:
+    ports: !reset null
+    deploy:
+      replicas: 2
+
+  # Both replicas sweep for markets past their closing time. That is safe
+  # rather than tolerated: the sweep only writes down a close the clock has
+  # already made, and the trade path derives the answer instead of reading the
+  # status column. ADR 0011.
+  market:
+    ports: !reset null
+    deploy:
+      replicas: 2
+
+  # Both replicas also refresh the leaderboard, because `deploy.replicas` gives
+  # every replica the same environment and there is no way to set
+  # LEADERBOARD_REFRESH_ENABLED=false on exactly one of them. Also safe rather
+  # than tolerated: a refresh takes a transaction-level advisory lock and
+  # writes nothing if a generation at least as new exists (ADR 0021), so the
+  # second refresher does duplicate work and never a duplicate generation.
+  ledger:
+    ports: !reset null
+    deploy:
+      replicas: 2
+
+  # Owns no schema and no table, so it has no migrate step and nothing to
+  # prove here. Replicated anyway: leaving exactly one service unreplicated
+  # would be arbitrary.
+  audit:
+    ports: !reset null
+    deploy:
+      replicas: 2
+
+  # The one that could genuinely have failed. It holds sockets and owns no
+  # data, and a trade's price frame reaches every replica through Redis pub/sub
+  # (ADR 0010) rather than through the replica that happens to hold the
+  # subscriber. docs/horizontal-scaling.md has the run that checks it.
+  realtime:
+    ports: !reset null
+    deploy:
+      replicas: 2
+
+  # nginx rather than Traefik, which the ticket left to whichever is less work:
+  # with one listener per service there is no service discovery to configure,
+  # so this is a dozen lines of nginx.conf against a label on every service.
+  proxy:
+    image: nginx:1.29-alpine
+    # Every replica healthy before nginx starts, because nginx resolves each
+    # upstream name once at startup: a replica that was not in DNS yet would
+    # never receive a request. deploy/nginx.conf says so where it matters.
+    depends_on:
+      auth:
+        condition: service_healthy
+      market:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+      realtime:
+        condition: service_healthy
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    # 18000-18004 rather than 8000-8004, which a `cs464` stack holds: this file
+    # exists to run beside one. Inside the proxy the ports are the familiar
+    # ones, so only the first number differs from the dev stack.
+    ports:
+      - "18000:8000"
+      - "18001:8001"
+      - "18002:8002"
+      - "18003:8003"
+      - "18004:8004"
+    restart: unless-stopped

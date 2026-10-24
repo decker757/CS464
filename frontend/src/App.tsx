@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import ErrorBoundary from './components/ErrorBoundary'
 import GuestOnly from './components/GuestOnly'
 import ProtectedRoute from './components/ProtectedRoute'
+import ScrollRestoration from './components/ScrollRestoration'
 import { AuthProvider } from './context/AuthContext'
 import { BalanceProvider } from './context/BalanceContext'
 import LandingPage from './pages/LandingPage'
@@ -23,9 +24,10 @@ import MarketExposurePage from './pages/admin/MarketExposurePage'
 import ProposalsPage from './pages/admin/ProposalsPage'
 import ProposeOutcomePage from './pages/admin/ProposeOutcomePage'
 
-// recharts roughly doubles the main bundle, and only this one admin page
-// uses it, so it is its own chunk, downloaded on visiting this route rather
-// than on every page load.
+// recharts roughly doubles the main bundle, so it is its own chunk,
+// downloaded on visiting this route rather than on every page load. The
+// market page's chart is lazy the same way (PriceHistorySection, #453), and
+// src/main.test.ts fails if a static import ever pulls recharts into the entry.
 const MarketPriceHistoryPage = lazy(() => import('./pages/admin/MarketPriceHistoryPage'))
 
 /**
@@ -49,6 +51,10 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
+      {/* Inside the router and outside the routes: it reads the history entry
+          the router is on, and must outlive the page it is putting back where
+          the trader left it ([X-1] #431). */}
+      <ScrollRestoration />
       <AppFrame>
         <Routes>
           <Route path="/" element={<GuestOnly><LandingPage /></GuestOnly>} />

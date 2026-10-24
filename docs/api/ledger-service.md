@@ -7,8 +7,9 @@ from the code and authoritative if this page ever disagrees, at
 Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 [T-1] #21's cost preview, the trade route that buys ([T-2] #22) and sells
 ([T-3] #23), [T-5] #25's trade history, [3.4] #12's settlement route, [2.2]
-#6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40, and
-[BE][2.4] #63's price history and trade feed.
+#6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40,
+[BE][2.4] #63's price history and trade feed, and [BE][X-1] #432's batch
+snapshot with #447's activity figure.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -33,6 +34,7 @@ usernames: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credenti
 | GET | `/ledger/users/{user_id}/entries` | Any user's history (admin) |
 | GET | `/ledger/markets/{market_id}/preview` | What a trade would cost |
 | GET | `/ledger/markets/{market_id}/snapshot` | The market's authoritative current price |
+| POST | `/ledger/markets/snapshots` | The current price of many markets at once (writes nothing) |
 | GET | `/ledger/markets/{market_id}/exposure` | What resolving the market would pay out (admin) |
 | GET | `/ledger/markets/{market_id}/price-history` | Every price the market has had, one point per trade |
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
@@ -56,7 +58,9 @@ administrator, and its body is only a reason. `POST .../settlement` takes an
 administrator's token and an empty body: the winner comes from market_service,
 and the holders and amounts come from this service's own positions (ADR 0009's
 second amendment). Every other
-route reads, and no route ever edits or removes an entry. The ledger is
+route reads, `POST /ledger/markets/snapshots` included, which is a POST only
+because its input is a list of ids, and no route ever edits or removes an
+entry. The ledger is
 append-only, enforced by a database trigger rather than by the absence of a
 route.
 
@@ -66,7 +70,8 @@ the same reason: a balance, a history or a portfolio mints a user's starting
 grant on first read (below and [T-4] #24), and the preview and the snapshot
 each open and fund a market's book on that market's first touch (D-008,
 D-037, and [F-9] #112 for the snapshot). All five are once-per-subject,
-idempotent, and invisible to every caller after the first.
+idempotent, and invisible to every caller after the first. The batch snapshot
+is not among them: it opens no book.
 
 ## Authentication
 
@@ -129,7 +134,8 @@ placing or cancelling an order. Net worth on the portfolio and the leaderboard
 still counts `balance`, reserved credits included. The admin route
 `GET /ledger/users/{user_id}/balance` returns the same two fields, both
 `"0.0000"` for an id with no account. `GET /ledger/portfolio/me` gains no
-`reserved` figure: the balance carries it.
+`reserved` credits figure: the balance carries it. Its rows carry
+`reserved_shares`, the shares a live sell order holds back (#410).
 
 **The first call for a user also mints their starting credits.** [B-1] #32. A
 user with no entries has not been granted yet, so the first read writes the
@@ -316,6 +322,7 @@ else's; there is no admin variant.
       "outcome_id": "c03d...",
       "outcome_position": 0,
       "quantity": "10.0000",
+      "reserved_shares": "0.0000",
       "cost_basis": "6.1310",
       "average_entry_price": "0.6131",
       "price": null,
@@ -330,6 +337,7 @@ else's; there is no admin variant.
       "outcome_id": "4f2a...",
       "outcome_position": 0,
       "quantity": "500.0000",
+      "reserved_shares": "120.0000",
       "cost_basis": "431.3569",
       "average_entry_price": "0.8627",
       "price": "0.9933",
@@ -381,6 +389,24 @@ On every other row, `result` and `payout` are `null`. Every row carries all the
 keys, so branch on `result`, not on which keys are present. **`price`, `value`
 and `unrealized_pnl` can be `null`.** Guard them before formatting.
 
+**`quantity` is the whole position; `reserved_shares` is the part of it that
+cannot be sold.** #410. `quantity` counts every share held, including the ones
+a resting sell order is waiting to sell, because those are still the caller's
+until a fill takes them. `reserved_shares` is what the caller's live sell
+orders of that outcome still hold back: the sum of their
+`quantity - filled_quantity`, which is the order object's own
+`reserved_shares` summed per outcome. A sell, instant or a new sell order, can
+take `quantity - reserved_shares`, and the trade route refuses anything more
+with `insufficient_shares_held`, whose `details` carry the same `reserved`. So a
+sell control's maximum is `quantity - reserved_shares`, never the whole
+position. The figure is a decimal string at scale 4, `"0.0000"` where no live
+sell order holds any, and never null. A settled row always reports
+`"0.0000"`, because no order on a market with a result is live. It is derived
+from the order rows on every read, in the same statement as everything else,
+and never stored. The rest of the row is unchanged by it: `value`,
+`cost_basis` and `average_entry_price` count the whole `quantity`, since a
+resting sell has not sold anything yet (ADR 0018's 2026-10-17 amendment).
+
 `unrealized_pnl` is `value - cost_basis`. `average_entry_price` is
 `cost_basis / quantity`, `ROUND_HALF_UP` at scale 4, and is display only, the
 same rule the preview's `average_price` follows.
@@ -415,9 +441,11 @@ setting.** Changing that setting never rewrites an entry (ADR 0009), so a user
 granted under the old value keeps reporting what they were actually given, and
 their P&L does not move when the deployment is reconfigured.
 
-**The balance, every position and every settlement record are read together,
-in one statement, with no lock.** So a trade committing mid-read cannot show
-its debit without its shares, or its shares without its debit. A settlement
+**The balance, every position, every settlement record and every live sell
+order are read together, in one statement, with no lock.** So a trade
+committing mid-read cannot show its debit without its shares, or its shares
+without its debit, and a fill cannot show its position on one side of the read
+and its order's reservation on the other. A settlement
 committing mid-read cannot put its payout in `balance` while its shares are
 still valued. The read makes no call to market_service. Valuation needs only
 `q`, `b` and the holding, and a settled row needs only this service's own
@@ -856,6 +884,127 @@ Errors, reusing the preview's codes:
 | 404 | `market_not_found` | No such market — and also a draft or a submitted one, which `market_service`'s public detail endpoint refuses with the same 404. |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. Only a hand-run repair or a half-applied migration produces it. A server fault; not worth retrying. |
 | 503 | `market_terms_unavailable` | `market_service` could not be reached on a market's first touch. Worth retrying. |
+
+## POST /ledger/markets/snapshots
+
+[X-1] #432. The current price of many markets in one request, for a list of
+cards: the browse page's first paint and its refresh, with how much each market
+has traded ([X-1] #447). One call replaces a snapshot request per card. A POST
+because its input is a list, not because it writes: it writes nothing.
+
+Any valid access token, any role, exactly like the single snapshot above.
+
+```jsonc
+// request
+{ "market_ids": ["9d1c...", "a50a...", "77e0..."] }
+
+// response: "77e0..." has no book here, so it is absent
+{
+  "snapshots": [
+    {
+      "market_id": "9d1c...",
+      "state_version": 42,
+      "prices": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.6236" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.3764" }
+      ],
+      "occurred_at": "2026-09-15T09:12:44.318000+00:00",
+      "prices_7d_ago": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.5200" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.4800" }
+      ],
+      "credits_traded": "1287.4410"
+    },
+    {
+      "market_id": "a50a...",
+      "state_version": 0,
+      "prices": [
+        { "outcome_id": "0c33...", "position": 0, "price": "0.5000" },
+        { "outcome_id": "e9d4...", "position": 1, "price": "0.5000" }
+      ],
+      "occurred_at": "2026-10-20T08:00:03.112000+00:00",
+      "prices_7d_ago": null,
+      "credits_traded": "0.0000"
+    }
+  ]
+}
+```
+
+**Each item is the single snapshot's body** for that market, field for field,
+**plus `prices_7d_ago` and `credits_traded`**, so it renders with the same
+function as the single snapshot and the `price` socket frame. Every other
+field means what it means there. Neither of those carries the two extra
+fields.
+
+**`prices_7d_ago`** ([X-1] #446) is each outcome's price as it stood seven
+days before the request, in the shape and order of `prices`: the price after
+the market's last trade at or before that moment. A card's change is `price`
+minus its `prices_7d_ago` entry with the same `outcome_id`. The window is
+seven days, fixed, and the moment is the ledger's clock at the request.
+
+- **Null when the market has no trade that old**: never traded, or traded
+  only within the last seven days. A book that was open then stood at its seed
+  price, which nobody chose, so no change is measured from it. Show no delta.
+- **Equal to `prices` when the market has not traded since**: a real change
+  of zero over the window, not missing data.
+- Null too, and logged, when the ledger cannot rebuild the price: a market
+  whose trades skip or reorder a `state_version` (price history answers it
+  with `500 price_history_inconsistent`), or whose book has lost an outcome
+  row a trade was made on. Its `prices` are unaffected, and so is every other
+  market in the answer.
+
+**`credits_traded`** ([X-1] #447) **is how much the market has traded**:
+every credit its trades have moved, a buy's cost and a sell's proceeds each
+counted as a positive amount, a resting order's fills included, whether on
+arrival or in another trade's cascade. A settlement payout is not a trade and
+does not count. It is an exact decimal string at scale 4, like every amount
+here, and only ever rises. A market whose book nobody has traded is answered
+with `"0.0000"`, never left out: absent means only that this service holds no
+book for it, as below. To tell how many trades a market has had, read
+`state_version`, which rises by one per trade and per fill.
+
+**At most 200 ids.** 200 is `GET /public/markets`' largest page
+(`docs/api/market-service.md`), so any page of the browse list fits in one
+request. The cap counts ids as sent, repeats included. A 201st is
+`422 invalid_request`, with `error.details` naming `["body", "market_ids"]`:
+split the request. An empty list is a `200` with `"snapshots": []`.
+
+**A market is answered only if this service already holds its book.** An id
+with no book is absent from `snapshots`, not an error: an id that names no
+market, a draft, and a published market nobody has previewed, traded or
+snapshotted all read the same way, because a book is only ever opened for a
+published market. Unlike the single snapshot, **this route opens no book**: it
+writes nothing and never calls market_service, so it costs two indexed reads
+however many of its markets are cold. To price a still-trading market the
+batch left out, ask the single snapshot for it, which opens its book once;
+from then on the batch answers it.
+
+A book this service holds but cannot price, which the single snapshot refuses
+with `500 market_book_incomplete`, is absent here too and logged, so one
+damaged market costs only its own card. A book that can be priced but whose
+trades cannot be replayed keeps its card and loses only `prices_7d_ago`
+(above).
+
+**One statement reads every market's book**, with no lock, so each
+snapshot's `state_version` is the version its `prices` were computed from, as
+on the single route, and its `credits_traded` is the figure at that same
+version. **One more reads their trades** up to seven days ago, for
+`prices_7d_ago`; however many markets are asked about, the route sends those
+two. Each market is answered once, in the order its id first appears
+in `market_ids`. Like the single snapshot, it never checks whether a market is
+still open (ADR 0017): a closed or settled market is answered with its last
+price.
+
+The answer is an object around a list of objects so that fields can be added
+to it, and to each item, without breaking a client that ignores fields it does
+not know.
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 422 | `invalid_request` | The body has no `market_ids`, an id in it is not a UUID, or it holds more than 200 ids. `error.details` names each one. |
 
 ## GET /ledger/markets/{market_id}/exposure
 
@@ -1455,8 +1604,10 @@ order leave `GET /ledger/orders/me`.
 - **Balance:** `reserved` and `available` (above).
 - **History:** each fill is a `trade_buy` or `trade_sell` row with its own
   `average_price`. Placing and cancelling write none.
-- **Portfolio and leaderboard:** unchanged. Reserved credits are still in
-  `balance`, and reserved shares are still positions, valued as today.
+- **Portfolio and leaderboard:** valued as before. Reserved credits are still
+  in `balance`, and reserved shares are still positions, valued as today. Each
+  portfolio row also says how many of its shares are reserved,
+  `reserved_shares` (#410).
 - **Price history and the trade feed:** one point and one row per fill.
 - **Trade route:** `book_state_version`, and the two refusals that now count
   reservations (above).

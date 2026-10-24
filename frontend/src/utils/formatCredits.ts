@@ -12,6 +12,18 @@
 // a value matches at all.
 const PLAIN_SIGNED_DECIMAL = /^(-?)(\d+)(?:\.(\d+))?$/
 
+const ONLY_ZEROS = /^0*$/
+
+// Credits are computed at four decimal places because that is the scale the
+// pricing engine works in (ledger-service.md), and shown at two, because that
+// is how an amount of money is read. Nobody holds ten-thousandths of a credit,
+// and a screen of figures ending ".0000" is mostly zeroes (#443). The four
+// places survive where they are the point rather than the noise: a table of
+// movements or positions, beside an average price that cannot be rounded to
+// the cent (#247).
+const DISPLAY_SCALE = 2
+const EXACT_SCALE = 4
+
 /** Whether a value is a plain signed decimal, and so safe to format or
  * compare. A caller that would rather drop such a value than show "—" for
  * it — picking the worst of several figures, say — asks with this first. */
@@ -34,7 +46,7 @@ export function unsignedCredits(value: string): string {
 export function isZeroCredits(value: string): boolean {
   const { digits } = splitSign(value)
   const [wholeRaw, fractionRaw = ''] = digits.split('.')
-  return /^0*$/.test(wholeRaw) && /^0*$/.test(fractionRaw)
+  return ONLY_ZEROS.test(wholeRaw) && ONLY_ZEROS.test(fractionRaw)
 }
 
 /** Whether a decimal string is below zero — "-0.0000" is not. A residue the
@@ -81,7 +93,8 @@ export function compareCredits(left: string, right: string): number {
 
 /**
  * `left` minus `right`, as a decimal string — the one piece of arithmetic in
- * this file, and exact.
+ * this file (`addCredits` below is this, with the sign of `right` turned),
+ * and exact.
  *
  * A buy's profit is what it pays if it wins minus what the server charged
  * for it (#357), and both arrive as decimal strings. BigInt subtracts the
@@ -109,6 +122,16 @@ export function subtractCredits(left: string, right: string): string | null {
   return `${sign}${whole}.${padded.slice(padded.length - scaled.fractionDigits)}`
 }
 
+/**
+ * `left` plus `right`, exactly: `left` less the negative of `right`, so the
+ * digits are worked the one way `subtractCredits` works them. For a total of
+ * several orders' reservations. Null on the same terms.
+ */
+export function addCredits(left: string, right: string): string | null {
+  const { digits, isNegative } = splitSign(right)
+  return subtractCredits(left, isNegative ? digits : `-${digits}`)
+}
+
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
 // say it is never a gain on a book nobody else has traded, and the same is
 // true of a signed amount that happens to land on exactly zero. Only colour
@@ -119,34 +142,106 @@ export function signedAmountColor(value: string): string {
   return 'text-success'
 }
 
-// Credits are whole numbers in practice, so display reads the integer part
-// directly off the string instead of parsing it as a float and rounding.
-// BigInt is exact over that integer part — no float involved — and
-// toLocaleString adds the thousands separators and the minus sign.
-export function formatCredits(balance: string): string {
-  if (!isPlainCredits(balance)) return '—'
-
-  const integerPart = balance.split('.')[0] || '0'
-  return BigInt(integerPart).toLocaleString('en-US')
+interface RoundedCredits {
+  isNegative: boolean
+  /** The whole credits, digits only — no thousands separators yet. */
+  whole: string
+  /** Exactly `scale` digits, padded or rounded to get there. */
+  fraction: string
+  isZero: boolean
 }
 
-// For a value where the decimal places matter — a trade's exact cost, a
-// position's cost basis or P&L — rather than a balance read as a whole
-// number. Keeps exactly 4 decimal places, padding or truncating the string
-// as written rather than rounding a parsed float. BigInt is exact over the
-// whole-number part, same as formatCredits; the four decimal digits are
-// joined on afterwards since BigInt has no fractional part to keep.
-export function formatCreditsPrecise(value: string, { showSign = false } = {}): string {
-  if (!isPlainCredits(value)) return '—'
+// A decimal string rounded to `scale` places, half away from zero, on its own
+// digits. The digits that are kept are read as one BigInt and the first digit
+// dropped decides whether to add one to it, so the carry in 9.999 → 10.00 is
+// integer arithmetic and never a float — a credit total off by a float
+// epsilon is a bug report about money.
+//
+// Half away from zero is the ledger's own ROUND_HALF_UP (ledger-service.md),
+// so the browser rounds a figure the same way the service that computed it
+// does. Truncating instead is what #443 was: a balance of 9,993.8938 read as
+// 9,993 in the navbar, 0.89 credits short of the same figure on the page.
+function roundCredits(value: string, scale: number): RoundedCredits | null {
+  const parts = PLAIN_SIGNED_DECIMAL.exec(value)
+  if (!parts) return null
 
-  const { digits, isNegative } = splitSign(value)
-  const [wholeRaw, fractionRaw = ''] = digits.split('.')
-  const integerPart = BigInt(wholeRaw || '0').toLocaleString('en-US')
-  const fractionPart = (fractionRaw + '0000').slice(0, 4)
-  let sign = ''
-  if (isNegative) sign = '-'
-  else if (showSign && !isZeroCredits(value)) sign = '+'
-  return `${sign}${integerPart}.${fractionPart}`
+  const [, sign, wholeDigits, fractionDigits = ''] = parts
+  const kept = fractionDigits.slice(0, scale).padEnd(scale, '0')
+  // The sign is held aside, so rounding this magnitude up rounds away from zero.
+  const roundsUp = (fractionDigits[scale] ?? '0') >= '5'
+  const units = BigInt(wholeDigits + kept) + (roundsUp ? 1n : 0n)
+
+  // One digit more than the fraction keeps, so an amount below one credit
+  // still has a whole part: 7 units at scale 2 is "0.07", not ".07".
+  const digits = units.toString().padStart(scale + 1, '0')
+  return {
+    isNegative: sign === '-',
+    whole: digits.slice(0, digits.length - scale),
+    fraction: digits.slice(digits.length - scale),
+    isZero: units === 0n,
+  }
+}
+
+// A sign goes on the rounded figure, not on the value behind it: a P&L of
+// -0.0001 is shown as "0" and must read flat rather than as "-0", and zero is
+// neither a gain nor a loss either way. `showSign` is for a figure whose
+// direction is the point, like P&L.
+function signOf({ isNegative, isZero }: RoundedCredits, showSign: boolean): string {
+  if (isZero) return ''
+  if (isNegative) return '-'
+  return showSign ? '+' : ''
+}
+
+/**
+ * A credits figure as a reader of money reads it: thousands separated, two
+ * decimal places, and no decimal part at all when the amount comes to a whole
+ * number of credits.
+ *
+ * The one helper for every figure shown on its own — the navbar readout and
+ * the portfolio's cards — so those two cannot disagree about the same balance
+ * the way they did in #443. A table of movements or positions shows the
+ * ledger's own four places through `formatCreditsPrecise` instead.
+ */
+export function formatCredits(value: string, { showSign = false } = {}): string {
+  const rounded = roundCredits(value, DISPLAY_SCALE)
+  if (!rounded) return '—'
+
+  const wholePart = BigInt(rounded.whole).toLocaleString('en-US')
+  const fractionPart = ONLY_ZEROS.test(rounded.fraction) ? '' : `.${rounded.fraction}`
+  return signOf(rounded, showSign) + wholePart + fractionPart
+}
+
+/**
+ * `value` rounded to the scale `formatCredits` shows, as a decimal string —
+ * for a caller that colours a figure as well as printing it, so the colour
+ * reads off the number on screen and not a digit nobody can see: an
+ * unrealized P&L of -0.0001 shows as "0" and must come out neutral.
+ *
+ * A credits value and not a formatted figure: no separators and no plus sign,
+ * the same contract `subtractCredits` has. Anything the formatters would show
+ * "—" for comes back unchanged, so a caller colouring it is no worse off than
+ * before.
+ */
+export function roundedCredits(value: string): string {
+  const rounded = roundCredits(value, DISPLAY_SCALE)
+  if (!rounded) return value
+
+  return `${rounded.isNegative ? '-' : ''}${rounded.whole}.${rounded.fraction}`
+}
+
+/**
+ * The same figure at the ledger's own four decimal places, always written in
+ * full: a trade's exact amount, a position's cost basis, an average price.
+ *
+ * A column of these is where the working is checked, which is why it keeps
+ * every place the ledger sent and why it never drops a trailing zero: a
+ * ragged column is harder to read down than a zero is to ignore.
+ */
+export function formatCreditsPrecise(value: string, { showSign = false } = {}): string {
+  const rounded = roundCredits(value, EXACT_SCALE)
+  if (!rounded) return '—'
+
+  return `${signOf(rounded, showSign)}${BigInt(rounded.whole).toLocaleString('en-US')}.${rounded.fraction}`
 }
 
 // `average_price` / `average_entry_price`: credits per share, not a

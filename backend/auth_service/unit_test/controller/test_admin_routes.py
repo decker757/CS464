@@ -24,6 +24,17 @@ def _suspension_url(user_id: str) -> str:
 SUSPEND = {"suspended": True, "reason": "Second account of bob_1, same device."}
 
 
+async def _suspend_by_hand(session, username: str) -> None:
+    """Suspend an account straight in the table, without the suspension route."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    await session.execute(
+        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = :username"),
+        {"username": username},
+    )
+    await session.commit()
+
+
 # --- the happy path -------------------------------------------------------
 async def test_a_promotion_returns_200_and_the_updated_user(
     admin_client: AsyncClient, target_user_id: str
@@ -139,12 +150,7 @@ async def test_a_suspended_administrator_gets_403(
     admin_client: AsyncClient, target_user_id: str, session
 ) -> None:
     """Suspension is checked before the role, and reports as itself."""
-    from sqlalchemy import text  # noqa: PLC0415
-
-    await session.execute(
-        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = 'admin_one'")
-    )
-    await session.commit()
+    await _suspend_by_hand(session, "admin_one")
 
     response = await admin_client.patch(_url(target_user_id), json={"role": "admin"})
 
@@ -264,6 +270,44 @@ async def test_a_query_narrows_the_list(
     assert [user["username"] for user in response.json()["users"]] == ["michelle_l"]
 
 
+async def test_a_role_narrows_the_list(
+    admin_client: AsyncClient, target_user_id: str
+) -> None:
+    """That `role` reaches the service layer; filtering is tested there."""
+    response = await admin_client.get(USERS, params={"role": "admin"})
+
+    assert [user["username"] for user in response.json()["users"]] == ["admin_one"]
+
+
+@pytest.mark.parametrize(
+    ("is_suspended", "expected"), [("true", ["michelle_l"]), ("false", ["admin_one"])]
+)
+async def test_a_suspension_state_narrows_the_list(
+    admin_client: AsyncClient,
+    target_user_id: str,
+    session,
+    is_suspended: str,
+    expected: list[str],
+) -> None:
+    """That `is_suspended` reaches the service layer; filtering is tested there."""
+    await _suspend_by_hand(session, "michelle_l")
+
+    response = await admin_client.get(USERS, params={"is_suspended": is_suspended})
+
+    assert [user["username"] for user in response.json()["users"]] == expected
+
+
+async def test_an_unknown_role_filter_is_422_naming_the_parameter(
+    admin_client: AsyncClient,
+) -> None:
+    """The vocabulary is closed, so `super_admin` is a caller error, not an
+    empty list that reads as "nobody holds it". ADR 0007."""
+    response = await admin_client.get(USERS, params={"role": "super_admin"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "role"]
+
+
 async def test_the_list_carries_the_id_the_ledger_takes(
     admin_client: AsyncClient, target_user_id: str
 ) -> None:
@@ -356,12 +400,7 @@ async def test_a_suspended_user_is_named(
     admin_client: AsyncClient, target_user_id: str, session
 ) -> None:
     """The trader an administrator is most likely investigating."""
-    from sqlalchemy import text  # noqa: PLC0415
-
-    await session.execute(
-        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = 'michelle_l'")
-    )
-    await session.commit()
+    await _suspend_by_hand(session, "michelle_l")
     me = await admin_client.get("/auth/me")
 
     response = await admin_client.post(

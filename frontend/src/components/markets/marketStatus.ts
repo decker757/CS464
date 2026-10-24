@@ -23,12 +23,41 @@ export const STATUS_CONFIG: Record<KnownMarketStatus, { label: string; tone: Ton
   settled:            { label: 'Settled',   tone: 'neutral' },
 }
 
-// The label and tone for any status string. A status the frontend does not
-// know yet (a new one from the backend) is shown as its own name rather than
-// crashing the page.
-export function statusDisplay(status: string): { label: string; tone: Tone } {
-  if (Object.hasOwn(STATUS_CONFIG, status)) return STATUS_CONFIG[status as KnownMarketStatus]
-  return { label: status.replaceAll('_', ' '), tone: 'neutral' }
+/** Whose words a status is shown in: an administrator's, or a trader's. */
+export type StatusAudience = 'admin' | 'trader'
+
+// What a trader is shown instead, where the status's own name is a step of an
+// internal state machine ([X-1] #431). `pending_resolution` and `approved`
+// both mean "the result is being decided": an outcome has been proposed, a
+// second administrator has to agree with it (ADR 0016), and even an approved
+// one goes back to CLOSED if it is sent back inside its dispute window
+// (ADR 0023). Neither is final and only `settled` is, so the trader's words
+// say what a trader is waiting for and never mention who decides it.
+//
+// Still one label per status, rather than the single "Resolving" pill #431
+// offers: `?status=` on GET /public/markets takes exactly one status
+// (market-service.md), so a pill standing for two of them cannot be asked
+// for in one request, and an approved market would end up matching no pill
+// at all. Collapsing them needs a filter that accepts a group, which is a
+// backend ticket.
+//
+// The administrator's screens keep STATUS_CONFIG's precise words, which is
+// what the default audience is: AdminMarketsPage's own test reads the
+// "Pending" tab by that name.
+const TRADER_LABELS: Partial<Record<KnownMarketStatus, string>> = {
+  pending_resolution: 'Resolving',
+  approved: 'Awaiting payout',
+  settled: 'Resolved',
+}
+
+// The label and tone for any status string, in `audience`'s words. A status
+// the frontend does not know yet (a new one from the backend) is shown as its
+// own name rather than crashing the page.
+export function statusDisplay(status: string, audience: StatusAudience = 'admin'): { label: string; tone: Tone } {
+  if (!Object.hasOwn(STATUS_CONFIG, status)) return { label: status.replaceAll('_', ' '), tone: 'neutral' }
+  const forAdmins = STATUS_CONFIG[status as KnownMarketStatus]
+  if (audience === 'admin') return forAdmins
+  return { label: TRADER_LABELS[status as KnownMarketStatus] ?? forAdmins.label, tone: forAdmins.tone }
 }
 
 // Trading has stopped once the status leaves "open" OR the close time passes.

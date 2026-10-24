@@ -15,6 +15,10 @@ type LoginErrors = Partial<Record<LoginField, string>>
 
 const LOGIN_FIELDS: readonly LoginField[] = ['identifier', 'password']
 
+// #480. Under the password field, where somebody who has forgotten theirs is
+// looking. RegisterPage says the same sentence after its length rule.
+const PASSWORD_RESET_NOTE = 'There is no password reset, so keep your password somewhere safe.'
+
 function validateLogin(form: authApi.Credentials): LoginErrors {
   const errors: LoginErrors = {}
   if (!form.identifier.trim()) errors.identifier = 'Enter your username or email.'
@@ -77,7 +81,7 @@ export default function LoginPage() {
           <TextInput id="identifier" name="identifier" type="text" autoComplete="username" value={form.identifier} onChange={handleChange} placeholder="e.g. michelletan or you@example.com" invalid={!!errors.identifier} />
         </Field>
 
-        <Field id="password" label="Password" error={errors.password}>
+        <Field id="password" label="Password" error={errors.password} hint={PASSWORD_RESET_NOTE}>
           <PasswordInput id="password" name="password" autoComplete="current-password" value={form.password} onChange={handleChange} placeholder="Your password" invalid={!!errors.password} />
         </Field>
 
