@@ -73,6 +73,14 @@ async function publishAndConfirm(actor: UserEvent) {
   await actor.click(within(screen.getByRole('dialog', { name: 'Publish market' })).getByRole('button', { name: 'Confirm Publish' }))
 }
 
+/** Gives a request a click may have started time to reach MSW, so a count of
+ * zero afterwards means none was sent, not that none had arrived yet. */
+async function letRequestsLand() {
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 50))
+  })
+}
+
 /** Counts the publish requests, answering each with `answer`. */
 function countPublishes(answer: () => Response = () => HttpResponse.json({ status: 'open' })): () => number {
   let publishes = 0
@@ -751,6 +759,7 @@ describe('CreateMarketPage', () => {
 
       const dialog = screen.getByRole('dialog', { name: 'Publish market' })
       expect(within(dialog).getByRole('heading', { name: 'Publish this market?' })).toBeInTheDocument()
+      await letRequestsLand()
       expect(publishes()).toBe(0)
 
       await actor.click(within(dialog).getByRole('button', { name: 'Confirm Publish' }))
@@ -765,6 +774,7 @@ describe('CreateMarketPage', () => {
 
       await actor.click(await screen.findByRole('button', { name: 'Publish Market' }))
       await actor.click(within(screen.getByRole('dialog', { name: 'Publish market' })).getByRole('button', { name: 'Cancel' }))
+      await letRequestsLand()
 
       expect(publishDialog()).not.toBeInTheDocument()
       expect(publishes()).toBe(0)
