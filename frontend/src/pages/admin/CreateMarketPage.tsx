@@ -781,9 +781,10 @@ export default function CreateMarketPage() {
         )}
       </div>
 
-      {/* Outside the block above, which a draft_incomplete refusal unmounts:
-          the hook closes the dialog on every answer, so the form behind it
-          can be read (#512). */}
+      {/* Outside the block above, so the dialog shows exactly when
+          showPublishModal says so: a hook that forgot to close it stays
+          visible, rather than reappearing when a draft_incomplete refusal
+          unmounts that block and a resubmission mounts it again (#512). */}
       {showPublishModal && (
         <PublishConfirmModal isSubmitting={publishing} onCancel={closePublishModal} onConfirm={handlePublish} />
       )}
