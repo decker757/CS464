@@ -68,6 +68,10 @@ function MainNavigation({ children }: { children: React.ReactNode }) {
     if (event.target instanceof Element && event.target.closest('a')) setIsOpen(false)
   }
 
+  // Below `xl` the list shows only while open; `xl:flex` shows it from there
+  // on whatever this says.
+  const linksDisplayBelowXl = isOpen ? 'flex' : 'hidden'
+
   return (
     <nav ref={navRef} aria-label="Main" className="flex flex-1 items-center" onBlur={handleBlur}>
       <button
@@ -84,7 +88,7 @@ function MainNavigation({ children }: { children: React.ReactNode }) {
       <div
         id={NAV_LINKS_ID}
         onClick={handleLinkClick}
-        className={`${isOpen ? 'flex' : 'hidden'} absolute inset-x-0 top-full z-20 flex-col items-start gap-4 border-t border-white/10 bg-smu-navy px-4 py-5 shadow-float sm:px-8 xl:static xl:flex xl:flex-1 xl:flex-row xl:items-center xl:border-0 xl:p-0 xl:shadow-none`}
+        className={`${linksDisplayBelowXl} absolute inset-x-0 top-full z-20 flex-col items-start gap-4 border-t border-white/10 bg-smu-navy px-4 py-5 shadow-float sm:px-8 xl:static xl:flex xl:flex-1 xl:flex-row xl:items-center xl:border-0 xl:p-0 xl:shadow-none`}
       >
         {children}
       </div>
