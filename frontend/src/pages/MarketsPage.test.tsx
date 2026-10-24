@@ -36,6 +36,11 @@ function snapshotFor(marketId: string, prices: string[]) {
     state_version: 3,
     prices: prices.map((price, position) => ({ outcome_id: `${marketId}-${position}`, position, price })),
     occurred_at: '2026-09-15T09:12:44.318000+00:00',
+    // The two the batch route carries and the single snapshot does not
+    // (ledger-service.md). Untraded by default, with no week-old price to
+    // compare, so a test only lands in a curated band when it says so.
+    credits_traded: '0.0000',
+    prices_7d_ago: null,
   }
 }
 
@@ -1278,5 +1283,144 @@ describe('the trader\'s own position on a card', () => {
     const card = within(cardFor('Will SMU win SUNIG?'))
     await waitFor(() => expect(card.getByLabelText('Yes price')).toBeInTheDocument())
     expect(card.queryByText('You hold')).not.toBeInTheDocument()
+  })
+})
+
+// [X-1] #448: a flat grid of fifty equally weighted cards has no entry point,
+// so the list gains a few short curated bands above it. Each states its rule,
+// an empty one disappears, and a filtered view collapses back to one list.
+describe('the curated sections above the list', () => {
+  // Closing within the day puts a market in "Closing soon"; a1's close_time in
+  // mockMarkets is years out, so a band needs its own market.
+  const closingSoon = {
+    id: 'soon',
+    status: 'open',
+    question: 'Will this close within the day?',
+    close_time: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+    outcomes: outcomesFor('soon', ['Yes', 'No']),
+  }
+
+  // AC 1: the list has named sections rather than one undifferentiated grid,
+  // with the full browse list still reachable below them. AC 2: the heading
+  // states the rule.
+  it('bands a market closing within the day, and names the rule', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [closingSoon], next_cursor: null })),
+    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Closing soon' })).toBeInTheDocument()
+    expect(screen.getByText(/trading stops within/i)).toBeInTheDocument()
+    // The full list is still there, under its own heading.
+    expect(screen.getByRole('heading', { name: 'Browse all' })).toBeInTheDocument()
+  })
+
+  // AC 3: a section with nothing in it disappears rather than rendering an
+  // empty row. On a young database most will be empty, which is the normal
+  // case here and not an edge case.
+  it('shows no section at all for a page with nothing to band', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
+    )
+    // Untraded, so nothing is trending and nothing has moved; a1 closes years
+    // out, so nothing is closing soon either.
+    serveSnapshots(id => ({ ...snapshotFor(id, ['0.5000', '0.5000']), state_version: 0, credits_traded: '0.0000', prices_7d_ago: null }))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    expect(screen.queryByRole('heading', { name: 'Closing soon' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Trending' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Biggest movers' })).not.toBeInTheDocument()
+    // And no "All markets" heading either: without a band above it, the list
+    // is not given a heading it never had.
+    expect(screen.queryByRole('heading', { name: 'Browse all' })).not.toBeInTheDocument()
+  })
+
+  // AC 4: filtering or searching collapses back to a single plain result list;
+  // sections are for the unfiltered view only. A band would otherwise be
+  // answering a question the trader did not ask.
+  it('drops the sections once the trader searches', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [closingSoon], next_cursor: null })),
+    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByRole('heading', { name: 'Closing soon' })
+
+    await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'close{Enter}')
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Closing soon' })).not.toBeInTheDocument())
+    // The market itself is still listed — this collapsed the bands, not the
+    // results.
+    expect(screen.getByText('Will this close within the day?')).toBeInTheDocument()
+  })
+
+  // AC 5: a market appearing in a section does not vanish from the list. A
+  // band is a shortcut into the list, not a partition of it.
+  it('keeps a banded market in the list below as well', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [closingSoon], next_cursor: null })),
+    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
+    renderPage()
+    await screen.findByRole('heading', { name: 'Closing soon' })
+
+    // Once in the band, once in the full list.
+    expect(screen.getAllByText('Will this close within the day?')).toHaveLength(2)
+  })
+
+  // The busiest market the page has loaded, and the only honest basis for a
+  // featured slot: volume is the one figure that says other people are here.
+  it('features the busiest market, and leaves it out of the bands', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '0.0000',
+      prices_7d_ago: null,
+    }))
+    renderPage()
+
+    const featured = await screen.findByRole('heading', { name: 'Featured' })
+    expect(featured).toBeInTheDocument()
+    expect(screen.getByText('Most traded right now')).toBeInTheDocument()
+    // The only traded market is the hero, so Trending has nothing left and
+    // disappears rather than repeating it directly underneath.
+    expect(screen.queryByRole('heading', { name: 'Trending' })).not.toBeInTheDocument()
+  })
+
+  // #447 exists so "Trending" is a real figure rather than a confident name on
+  // an arbitrary order, which is what it would be over untraded books. A
+  // second traded market is what gives the band something the hero is not.
+  it('bands the next most traded market under Trending', async () => {
+    // b2 in mockMarkets is closed, and a closed market is in no band — so the
+    // runner-up has to be one that can still trade.
+    const second = {
+      id: 'c3',
+      status: 'open',
+      question: 'Will the runner-up be banded?',
+      close_time: '2099-02-05T12:00:00Z',
+      outcomes: outcomesFor('c3', ['Yes', 'No']),
+    }
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0], second], next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '30.0000',
+      prices_7d_ago: null,
+    }))
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Trending' })).toBeInTheDocument()
+    expect(screen.getByText('Most credits traded')).toBeInTheDocument()
+    // The hero is a1; the band holds the runner-up, not a second copy of a1.
+    const trending = screen.getByRole('heading', { name: 'Trending' }).closest('section')
+    expect(trending).not.toBeNull()
+    expect(within(trending as HTMLElement).getByText('Will the runner-up be banded?')).toBeInTheDocument()
+    expect(within(trending as HTMLElement).queryByText('Will SMU win SUNIG?')).not.toBeInTheDocument()
   })
 })
