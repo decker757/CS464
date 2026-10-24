@@ -1,7 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import AppNavbar from '../components/AppNavbar'
 import { server } from '../test/server'
 import { AuthContext, type User } from './AuthContext'
 import { BalanceProvider, useBalance } from './BalanceContext'
@@ -45,7 +47,47 @@ function renderWithUser(user: User | null | undefined) {
   )
 }
 
+/** The balance route answering with `available` credits, the way the ledger
+ * does for an account with no resting orders, and counting each request. */
+function serveBalance(available: string): { requestCount: () => number } {
+  let count = 0
+  server.use(
+    http.get(`${LEDGER_BASE}/ledger/balances/me`, () => {
+      count += 1
+      return HttpResponse.json({
+        user_id: alice.id, account_id: 'acc-1',
+        balance: available, reserved: '0.0000', available,
+      })
+    }),
+  )
+  return { requestCount: () => count }
+}
+
+/** The real header under the real provider: the figure a trader watches for
+ * a payout is the navbar's, so that is what these tests read. */
+function headerFor(user: User | null) {
+  return (
+    <AuthContext.Provider value={{ user, login: () => {}, logout: async () => {} }}>
+      <BalanceProvider>
+        <MemoryRouter>
+          <AppNavbar />
+        </MemoryRouter>
+      </BalanceProvider>
+    </AuthContext.Provider>
+  )
+}
+
+/** The browser reporting the tab as shown or hidden, then announcing it. */
+function changeVisibility(state: DocumentVisibilityState) {
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue(state)
+  fireEvent(document, new Event('visibilitychange'))
+}
+
 describe('BalanceContext', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('fetches the balance when a user is signed in', async () => {
     mockBalance(alice, '1000.0000')
     renderWithUser(alice)
@@ -139,5 +181,75 @@ describe('BalanceContext', () => {
     // Never alice's 1000 at any point during the switch, even before bob's fetch lands.
     expect(screen.queryByText('1000.0000')).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('500.0000')).toBeInTheDocument())
+  })
+
+  // [B-2] #511. A payout is written by the administrator's request, and
+  // nothing on the socket tells the trader's tab: coming back to the tab is
+  // the only moment the header can learn of it without a reload.
+  it('re-reads the balance when the tab becomes visible again, so a payout reaches the header', async () => {
+    serveBalance('1000.0000')
+    render(headerFor(alice))
+    expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
+
+    // Settled while the trader looked at another tab.
+    serveBalance('1250.0000')
+    changeVisibility('visible')
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('available balance')).toHaveTextContent('1,250 credits'),
+    )
+  })
+
+  // Clicking from the admin's browser window into the trader's fires `focus`
+  // and, with both windows on screen, often no `visibilitychange` at all.
+  it('re-reads the balance when the window regains focus', async () => {
+    serveBalance('1000.0000')
+    render(headerFor(alice))
+    expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
+
+    serveBalance('1250.0000')
+    fireEvent.focus(window)
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('available balance')).toHaveTextContent('1,250 credits'),
+    )
+  })
+
+  it('does not re-read when the tab is hidden', async () => {
+    serveBalance('1000.0000')
+    render(headerFor(alice))
+    expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
+
+    const ledger = serveBalance('1250.0000')
+    changeVisibility('hidden')
+
+    // Give a request a chance to land before asserting none was sent.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(ledger.requestCount()).toBe(0)
+  })
+
+  it('requests nothing when the tab comes back with nobody signed in', async () => {
+    const ledger = serveBalance('1000.0000')
+    render(headerFor(null))
+
+    changeVisibility('visible')
+    fireEvent.focus(window)
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(ledger.requestCount()).toBe(0)
+  })
+
+  it('stops re-reading once the user signs out', async () => {
+    serveBalance('1000.0000')
+    const { rerender } = render(headerFor(alice))
+    expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
+
+    rerender(headerFor(null))
+    const ledger = serveBalance('1250.0000')
+    changeVisibility('visible')
+    fireEvent.focus(window)
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(ledger.requestCount()).toBe(0)
   })
 })
