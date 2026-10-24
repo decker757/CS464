@@ -1775,6 +1775,39 @@ async def test_voiding_twice_answers_the_same_market_both_times(
     assert second.json() == first.json()
 
 
+@pytest.mark.parametrize(
+    ("length", "expected"), [(5000, 200), (5001, 422)], ids=["at_the_ceiling", "past_it"]
+)
+async def test_the_void_reason_is_capped_at_the_columns_ceiling(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    length: int,
+    expected: int,
+) -> None:
+    """ADR 0025, question 3: the reason is stored in `market.void_reason`, "so
+    the owner of that column sets the limit", 5,000 characters, the ceiling
+    the ledger already applies before it writes. A direct call cannot store a
+    longer one. Both edges, so it fails with the ceiling missing or moved by
+    one; a refused void leaves the market closed."""
+    market = await closed_market(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+    market_id = market.id
+
+    response = await client.post(
+        f"/markets/{market_id}/void",
+        json=_void(reason="x" * length),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == expected
+    async with get_session_factory()() as fresh:
+        status = await fresh.scalar(select(Market.status).where(Market.id == market_id))
+    assert status == ("voided" if expected == 200 else "closed")
+
+
 async def test_a_trader_cannot_void(
     client: AsyncClient,
     session: AsyncSession,

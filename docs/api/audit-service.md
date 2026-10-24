@@ -224,7 +224,9 @@ the status the market left (`closed`, `pending_resolution` or `approved`),
 and `cleared_proposal`. From `pending_resolution` that is the proposal the
 void cleared, in the same eight keys as `market.outcome_approved`, copied
 before the clear, so this entry is the only place it still exists; from any
-other status it is `null`, and a voided approval stays on the market. Its
+other status it is `null`, and a voided approval stays on the market. So
+the cleared proposal's id is at `context.cleared_proposal.proposal_id`, not
+at `context.proposal_id` as on the decisions' entries. Its
 `occurred_at` is the database time the void step read after locking the
 market. The ledger's own `market.voided` entry, written with the refunds,
 comes before it in a normal void; a `market.marked_voided` with no

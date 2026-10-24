@@ -360,15 +360,20 @@ class MarketVoidRequest(BaseModel):
     """The body of POST /markets/{id}/void, which only the ledger sends. [BE] #221
 
     The reason the ledger recorded with the refunds, forwarded as it stored
-    it. Not checked here, not even for length: the ledger checked it before
-    the money moved, and a stricter rule here would refuse every retry of a
-    void whose refunds have already committed. ADR 0025.
+    it. No floor here: the ledger checked it before the money moved, and a
+    stricter rule would refuse every retry of a void whose refunds have
+    already committed. The ceiling is the column's, which this service owns;
+    the ledger applies the same 5,000 before it writes, so it never refuses a
+    forwarded reason, and it stops a direct call storing a megabyte on every
+    trader's view. ADR 0025, question 3.
     """
 
     reason: str = Field(
+        max_length=MAX_PROSE_LENGTH,
         description=(
             "The reason the ledger recorded for the void, stored on the market "
-            "as sent and shown to traders. Checked by the ledger, not here."
+            "as sent and shown to traders. At most 5,000 characters; the "
+            "ledger checks everything else."
         ),
         examples=["The match was abandoned after ten overs; there is no result."],
     )

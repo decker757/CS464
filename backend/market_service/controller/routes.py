@@ -457,8 +457,9 @@ async def settle_market(
         "Accepts a `closed` or `pending_resolution` market, and an "
         "`approved` one until five minutes after its dispute window ends, "
         "judged on the database's clock after the market is locked. Any "
-        "administrator's token is accepted. `reason` is stored as sent and "
-        "not checked here: the ledger checked it before the refunds.\n\n"
+        "administrator's token is accepted. `reason` is stored as sent, at "
+        "most 5,000 characters and not otherwise checked here: the ledger "
+        "checked it before the refunds.\n\n"
         "A pending proposal is cleared; an approval is kept, though no "
         "winner is shown. `closed_at` is unchanged. A market already "
         "`voided` is answered `200` with the same market and nothing "
@@ -480,6 +481,7 @@ async def settle_market(
                 "its dispute window, or approved with no window end."
             )
         },
+        422: {"description": "`reason` is missing or longer than 5,000 characters."},
     },
 )
 async def void_market(
