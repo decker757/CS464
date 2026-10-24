@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Link, MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -57,10 +57,32 @@ function renderPage() {
           <Route path="/admin/markets/new" element={<CreateMarketPage />} />
           <Route path="/admin/markets/:id/edit" element={<CreateMarketPage />} />
           <Route path="/markets" element={<p>markets list</p>} />
+          <Route path="/admin/markets" element={<p>admin markets list</p>} />
         </Routes>
       </MemoryRouter>
     </WithProviders>,
   )
+}
+
+const publishDialog = () => screen.queryByRole('dialog', { name: 'Publish market' })
+
+/** Presses Publish Market and confirms the dialog it opens (#512): every
+ * publish on this form now goes through both. */
+async function publishAndConfirm(actor: UserEvent) {
+  await actor.click(await screen.findByRole('button', { name: 'Publish Market' }))
+  await actor.click(within(screen.getByRole('dialog', { name: 'Publish market' })).getByRole('button', { name: 'Confirm Publish' }))
+}
+
+/** Counts the publish requests, answering each with `answer`. */
+function countPublishes(answer: () => Response = () => HttpResponse.json({ status: 'open' })): () => number {
+  let publishes = 0
+  server.use(
+    http.post(`${MARKET_BASE}/markets/:id/publish`, () => {
+      publishes++
+      return answer()
+    }),
+  )
+  return () => publishes
 }
 
 // --- the same page on /admin/markets/:id/edit (#348) ------------------------
@@ -139,6 +161,7 @@ function renderEditPage() {
         <Routes>
           <Route path="/admin/markets/:id/edit" element={<CreateMarketPage />} />
           <Route path="/markets" element={<p>markets list</p>} />
+          <Route path="/admin/markets" element={<p>admin markets list</p>} />
         </Routes>
       </MemoryRouter>
     </WithProviders>,
@@ -364,7 +387,7 @@ describe('CreateMarketPage', () => {
     expect(screen.queryByRole('button', { name: /submit for review/i })).not.toBeInTheDocument()
   })
 
-  it('navigates to /markets after publish succeeds', async () => {
+  it('lands on the admin markets list after a confirmed publish', async () => {
     server.use(
       http.post(`${MARKET_BASE}/markets`, async ({ request }) => {
         const body = await request.json() as { status: string }
@@ -380,8 +403,8 @@ describe('CreateMarketPage', () => {
     const actor = userEvent.setup({ delay: null })
     renderPage()
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
-    await actor.click(await screen.findByRole('button', { name: /publish market/i }))
-    expect(await screen.findByText('markets list')).toBeInTheDocument()
+    await publishAndConfirm(actor)
+    expect(await screen.findByText('admin markets list')).toBeInTheDocument()
   })
 
   it('shows an error and re-enables the button when publish fails', async () => {
@@ -398,7 +421,7 @@ describe('CreateMarketPage', () => {
     const actor = userEvent.setup({ delay: null })
     renderPage()
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
-    await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+    await publishAndConfirm(actor)
     // The wording comes from usePublishMarket now, so this screen and the
     // markets list's row say the same thing about the same failure (#348).
     expect(await screen.findByRole('alert')).toHaveTextContent(/publishing this market failed/i)
@@ -568,7 +591,7 @@ describe('CreateMarketPage', () => {
     const actor = userEvent.setup({ delay: null })
     renderPage()
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
-    await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+    await publishAndConfirm(actor)
     const closeTimeField = (await screen.findByLabelText('Closes at *')).parentElement!
     expect(within(closeTimeField).getByText('The close time has already passed.')).toBeInTheDocument()
   })
@@ -596,7 +619,7 @@ describe('CreateMarketPage', () => {
     const actor = userEvent.setup({ delay: null })
     renderPage()
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
-    await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+    await publishAndConfirm(actor)
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(/submit the market again/i)
     expect(alert).not.toHaveTextContent(/try again/i)
@@ -711,9 +734,41 @@ describe('CreateMarketPage', () => {
       const actor = userEvent.setup()
       renderEditPage()
 
-      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await publishAndConfirm(actor)
 
-      expect(await screen.findByText('markets list')).toBeInTheDocument()
+      expect(await screen.findByText('admin markets list')).toBeInTheDocument()
+    })
+
+    // #512. Publication is one way (ADR 0008), and the markets list's row
+    // already asked first; this button published on the first click.
+    it('asks first, in the words the markets list uses, and sends no publish until it is confirmed', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      const publishes = countPublishes()
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: 'Publish Market' }))
+
+      const dialog = screen.getByRole('dialog', { name: 'Publish market' })
+      expect(within(dialog).getByRole('heading', { name: 'Publish this market?' })).toBeInTheDocument()
+      expect(publishes()).toBe(0)
+
+      await actor.click(within(dialog).getByRole('button', { name: 'Confirm Publish' }))
+      await waitFor(() => expect(publishes()).toBe(1))
+    })
+
+    it('sends nothing when the dialog is cancelled, and leaves Publish on the form', async () => {
+      serveStoredMarket({ status: 'submitted' })
+      const publishes = countPublishes()
+      const actor = userEvent.setup()
+      renderEditPage()
+
+      await actor.click(await screen.findByRole('button', { name: 'Publish Market' }))
+      await actor.click(within(screen.getByRole('dialog', { name: 'Publish market' })).getByRole('button', { name: 'Cancel' }))
+
+      expect(publishDialog()).not.toBeInTheDocument()
+      expect(publishes()).toBe(0)
+      expect(screen.getByRole('button', { name: 'Publish Market' })).toBeEnabled()
     })
 
     it('locks the form and says why for a market that is already published', async () => {
@@ -771,12 +826,14 @@ describe('CreateMarketPage', () => {
       const actor = userEvent.setup()
       renderEditPage()
 
-      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await publishAndConfirm(actor)
 
       expect(await screen.findByText(/already live for traders/i)).toBeInTheDocument()
       expect(screen.queryByText(/please try again/i)).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /publish market/i })).not.toBeInTheDocument()
+      // The message is painted behind the dialog's overlay, so it has to go (#512).
+      expect(publishDialog()).not.toBeInTheDocument()
     })
 
     it('says so when the market cannot be loaded', async () => {
@@ -835,12 +892,14 @@ describe('CreateMarketPage', () => {
       const actor = userEvent.setup()
       renderEditPage()
 
-      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await publishAndConfirm(actor)
 
       await screen.findByText(STALE_CLOSE.message)
       const closeTime = screen.getByLabelText('Closes at *')
       expect(within(closeTime.parentElement!).getByText(STALE_CLOSE.message)).toBeInTheDocument()
       expect(closeTime).toBeEnabled()
+      // Closed, or it would sit over the fields it has just reopened (#512).
+      expect(publishDialog()).not.toBeInTheDocument()
       // The banner the loaded market came with said read-only, and it is not any more.
       expect(screen.queryByText(/read-only/i)).not.toBeInTheDocument()
       // Publishing the stored terms again can only be refused again.
@@ -865,7 +924,7 @@ describe('CreateMarketPage', () => {
       const actor = userEvent.setup()
       renderEditPage()
 
-      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await publishAndConfirm(actor)
       await screen.findByText(STALE_CLOSE.message)
       fireEvent.change(screen.getByLabelText('Closes at *'), { target: { value: '2027-01-16T10:00' } })
       await actor.click(screen.getByRole('button', { name: /resubmit for review/i }))
@@ -894,7 +953,7 @@ describe('CreateMarketPage', () => {
       const actor = userEvent.setup()
       renderEditPage()
 
-      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await publishAndConfirm(actor)
       await screen.findByText(STALE_CLOSE.message)
       fireEvent.change(screen.getByLabelText('Closes at *'), { target: { value: '2027-01-16T10:00' } })
       await actor.click(screen.getByRole('button', { name: /resubmit for review/i }))
@@ -919,6 +978,7 @@ describe('CreateMarketPage', () => {
       await act(() => vi.advanceTimersByTimeAsync(3100))
 
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: /publish market/i })) })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Confirm Publish' })) })
       await act(() => vi.advanceTimersByTimeAsync(100))
       fireEvent.change(screen.getByLabelText('Question *'), { target: { value: 'Typed while correcting?' } })
       await act(() => vi.advanceTimersByTimeAsync(6200))
@@ -938,7 +998,7 @@ describe('CreateMarketPage', () => {
       const actor = userEvent.setup()
       renderEditPage()
 
-      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await publishAndConfirm(actor)
 
       await screen.findByText(/already live for traders/i)
       expect(screen.getByLabelText('Question *')).toBeDisabled()
@@ -960,7 +1020,7 @@ describe('CreateMarketPage', () => {
       const actor = userEvent.setup()
       renderEditPage()
 
-      await actor.click(await screen.findByRole('button', { name: /publish market/i }))
+      await publishAndConfirm(actor)
       await screen.findByText(STALE_CLOSE.message)
       fireEvent.change(screen.getByLabelText('Closes at *'), { target: { value: '2027-01-16T10:00' } })
       await actor.click(screen.getByRole('button', { name: /resubmit for review/i }))
