@@ -524,11 +524,16 @@ async def market_snapshot(
     return _snapshot_out(result)
 
 
-def _listed_snapshot_out(result: ListedSnapshot) -> ListedSnapshotOut:
-    """One market in the batch: the single snapshot's body, plus its
-    `credits_traded`."""
+def _listed_snapshot_out(listed: ListedSnapshot) -> ListedSnapshotOut:
+    """The wire form of one market in the batch: the single snapshot's body,
+    plus its prices a week ago and its `credits_traded`."""
+    prices_7d_ago = None
+    if listed.prices_7d_ago is not None:
+        prices_7d_ago = _prices_out(listed.prices_7d_ago)
     return ListedSnapshotOut(
-        **_snapshot_out(result).model_dump(), credits_traded=result.credits_traded
+        **_snapshot_out(listed).model_dump(),
+        prices_7d_ago=prices_7d_ago,
+        credits_traded=listed.credits_traded,
     )
 
 
@@ -537,11 +542,14 @@ _SNAPSHOTS_DESCRIPTION = (
     "list of cards. A POST because its input is a list; it writes nothing.\n\n"
     "Any valid access token, any role, like the single snapshot.\n\n"
     "Each item in `snapshots` is the single snapshot's body for that market, "
-    "plus `credits_traded`: every credit its trades have moved, buys and "
-    "sells alike, a resting order's fills included, as a decimal string, and "
-    "`0.0000` for a market nobody has traded. "
+    "plus `prices_7d_ago` ([X-1] #446): each outcome's price after the last "
+    "trade at or before seven days ago, or null when the market has no trade "
+    "that old; and `credits_traded` ([X-1] #447): every credit its trades have "
+    "moved, buys and sells alike, a resting order's fills included, as a "
+    "decimal string, and `0.0000` for a market nobody has traded. "
     "Each market is answered once, in the order its id first appears in "
-    "`market_ids`. One statement reads them all, with no lock.\n\n"
+    "`market_ids`. One statement reads every book and one more their trades, "
+    "with no lock.\n\n"
     "**An id with no book here is absent, not an error.** Unlike the single "
     "snapshot this route opens no book and never calls market_service, so a "
     "published market nobody has previewed, traded or snapshotted is absent "
@@ -569,7 +577,11 @@ _SNAPSHOTS_DESCRIPTION = (
 async def market_snapshots(
     body: SnapshotsIn, user: CurrentUser, session: DbSession
 ) -> SnapshotListOut:
-    results = await snapshot_service.list_snapshots(session, body.market_ids)
+    # Python's clock, which stamped the trades, read once here. DECISIONS.md,
+    # "A card's price change is measured from the last trade at or before
+    # seven days ago, and a market with none has no change".
+    now = datetime.now(UTC)
+    results = await snapshot_service.list_snapshots(session, body.market_ids, now=now)
     return SnapshotListOut(
         snapshots=[_listed_snapshot_out(result) for result in results]
     )

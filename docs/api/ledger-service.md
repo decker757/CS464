@@ -909,6 +909,10 @@ Any valid access token, any role, exactly like the single snapshot above.
         { "outcome_id": "b7e1...", "position": 1, "price": "0.3764" }
       ],
       "occurred_at": "2026-09-15T09:12:44.318000+00:00",
+      "prices_7d_ago": [
+        { "outcome_id": "4f2a...", "position": 0, "price": "0.5200" },
+        { "outcome_id": "b7e1...", "position": 1, "price": "0.4800" }
+      ],
       "credits_traded": "1287.4410"
     },
     {
@@ -919,26 +923,45 @@ Any valid access token, any role, exactly like the single snapshot above.
         { "outcome_id": "e9d4...", "position": 1, "price": "0.5000" }
       ],
       "occurred_at": "2026-10-20T08:00:03.112000+00:00",
+      "prices_7d_ago": null,
       "credits_traded": "0.0000"
     }
   ]
 }
 ```
 
-**Each item is the single snapshot's body plus `credits_traded`.** Every
-other field is the single snapshot's, field for field, and means what it means
-there, so an item renders with the same function as the single snapshot and the
-`price` socket frame. Neither of those carries `credits_traded`.
+**Each item is the single snapshot's body** for that market, field for field,
+**plus `prices_7d_ago` and `credits_traded`**, so it renders with the same
+function as the single snapshot and the `price` socket frame. Every other
+field means what it means there. Neither of those carries the two extra
+fields.
 
-**`credits_traded` is how much the market has traded**: every credit its
-trades have moved, a buy's cost and a sell's proceeds each counted as a
-positive amount, a resting order's fills included, whether on arrival or in
-another trade's cascade. A settlement payout is not a trade and does not count.
-It is an exact decimal string at scale 4, like every amount here, and only
-ever rises. A market whose book nobody has traded is answered with `"0.0000"`,
-never left out: absent means only that this service holds no book for it, as
-below. To tell how many trades a market has had, read `state_version`, which
-rises by one per trade and per fill.
+**`prices_7d_ago`** ([X-1] #446) is each outcome's price as it stood seven
+days before the request, in the shape and order of `prices`: the price after
+the market's last trade at or before that moment. A card's change is `price`
+minus its `prices_7d_ago` entry with the same `outcome_id`. The window is
+seven days, fixed, and the moment is the ledger's clock at the request.
+
+- **Null when the market has no trade that old**: never traded, or traded
+  only within the last seven days. A book that was open then stood at its seed
+  price, which nobody chose, so no change is measured from it. Show no delta.
+- **Equal to `prices` when the market has not traded since**: a real change
+  of zero over the window, not missing data.
+- Null too, and logged, when the ledger cannot rebuild the price: a market
+  whose trades skip or reorder a `state_version` (price history answers it
+  with `500 price_history_inconsistent`), or whose book has lost an outcome
+  row a trade was made on. Its `prices` are unaffected, and so is every other
+  market in the answer.
+
+**`credits_traded`** ([X-1] #447) **is how much the market has traded**:
+every credit its trades have moved, a buy's cost and a sell's proceeds each
+counted as a positive amount, a resting order's fills included, whether on
+arrival or in another trade's cascade. A settlement payout is not a trade and
+does not count. It is an exact decimal string at scale 4, like every amount
+here, and only ever rises. A market whose book nobody has traded is answered
+with `"0.0000"`, never left out: absent means only that this service holds no
+book for it, as below. To tell how many trades a market has had, read
+`state_version`, which rises by one per trade and per fill.
 
 **At most 200 ids.** 200 is `GET /public/markets`' largest page
 (`docs/api/market-service.md`), so any page of the browse list fits in one
@@ -951,20 +974,24 @@ with no book is absent from `snapshots`, not an error: an id that names no
 market, a draft, and a published market nobody has previewed, traded or
 snapshotted all read the same way, because a book is only ever opened for a
 published market. Unlike the single snapshot, **this route opens no book**: it
-writes nothing and never calls market_service, so it costs one indexed read
+writes nothing and never calls market_service, so it costs two indexed reads
 however many of its markets are cold. To price a still-trading market the
 batch left out, ask the single snapshot for it, which opens its book once;
 from then on the batch answers it.
 
 A book this service holds but cannot price, which the single snapshot refuses
 with `500 market_book_incomplete`, is absent here too and logged, so one
-damaged market costs only its own card.
+damaged market costs only its own card. A book that can be priced but whose
+trades cannot be replayed keeps its card and loses only `prices_7d_ago`
+(above).
 
-**One statement reads every market**, with no lock, so each snapshot's
-`state_version` is the version its `prices` were computed from, as on the
-single route, and its `credits_traded` is the figure at that same version.
-Each market is answered once, in the order its id first appears in
-`market_ids`. Like the single snapshot, it never checks whether a market is
+**One statement reads every market's book**, with no lock, so each
+snapshot's `state_version` is the version its `prices` were computed from, as
+on the single route, and its `credits_traded` is the figure at that same
+version. **One more reads their trades** up to seven days ago, for
+`prices_7d_ago`; however many markets are asked about, the route sends those
+two. Each market is answered once, in the order its id first appears
+in `market_ids`. Like the single snapshot, it never checks whether a market is
 still open (ADR 0017): a closed or settled market is answered with its last
 price.
 

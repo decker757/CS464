@@ -9,11 +9,15 @@ answered, and in what order, is `test_snapshot_batch.py`'s.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from controller import routes
 from unit_test.book_fixtures import Upstream, warm
+from unit_test.price_history_fixtures import WIRE_PRICES, entry_times, traded
 
 _PATH = "/ledger/markets/snapshots"
 
@@ -102,7 +106,7 @@ async def test_an_empty_list_is_answered_with_no_snapshots(
 # =========================================================================
 # The wire
 # =========================================================================
-async def test_each_item_is_the_single_snapshots_body_plus_credits_traded(
+async def test_each_item_is_the_single_snapshots_body_plus_the_batchs_own_fields(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
     """docs/api/ledger-service.md: the answer is `{"snapshots": [...]}`, and
@@ -110,7 +114,8 @@ async def test_each_item_is_the_single_snapshots_body_plus_credits_traded(
     field, so one render function serves the batch, the single read and the
     socket frame. Plus `credits_traded`, a decimal string, which the single
     snapshot does not carry (DECISIONS.md, "The batch snapshot carries
-    `credits_traded`, and the single snapshot does not")."""
+    `credits_traded`, and the single snapshot does not"), and
+    `prices_7d_ago`, null for a market with no trade that old."""
     market = Upstream()
     await warm(session, market)
     single = await client.get(
@@ -123,4 +128,42 @@ async def test_each_item_is_the_single_snapshots_body_plus_credits_traded(
 
     body = response.json()
     assert set(body) == {"snapshots"}
-    assert body["snapshots"][0] == {**single.json(), "credits_traded": "0.0000"}
+    assert body["snapshots"][0] == {
+        **single.json(),
+        "credits_traded": "0.0000",
+        "prices_7d_ago": None,
+    }
+
+
+async def test_the_prices_a_week_ago_are_read_against_the_clock_at_the_request(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC1: the item carries the prices the market had seven days before the
+    request, as strings in the shape of `prices`. The clock is pinned a week
+    after the second of three trades, so the answer is that trade's prices
+    and the item's own `prices` are the third's."""
+    scenario = await traded(session)
+    times = await entry_times(session, [scenario.b_buy.transaction_id])
+    pinned = times[scenario.b_buy.transaction_id] + timedelta(days=7)
+
+    class _PinnedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            return pinned
+
+    monkeypatch.setattr(routes, "datetime", _PinnedClock)
+
+    response = await client.post(
+        _PATH, json={"market_ids": [str(scenario.market_id)]}, headers=trader_headers
+    )
+
+    assert response.status_code == 200, response.json()
+    [item] = response.json()["snapshots"]
+    outcomes = [str(outcome_id) for outcome_id in scenario.upstream.outcomes]
+    assert item["prices_7d_ago"] == [
+        {"outcome_id": outcomes[0], "position": 0, "price": WIRE_PRICES[2][0]},
+        {"outcome_id": outcomes[1], "position": 1, "price": WIRE_PRICES[2][1]},
+    ]

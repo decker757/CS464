@@ -130,6 +130,14 @@ function promoteToAdmin(username: string): void {
   runSql(`UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
 }
 
+/** Suspends an account ([4.2] #14), as an administrator through the auth service. */
+export async function suspend(admin: Session, userId: string): Promise<void> {
+  await call('PATCH', `${AUTH_URL}/admin/users/${userId}/suspension`, admin.accessToken, {
+    suspended: true,
+    reason: 'Suspended by the end-to-end test.',
+  })
+}
+
 interface MarketOut {
   id: string
   question: string

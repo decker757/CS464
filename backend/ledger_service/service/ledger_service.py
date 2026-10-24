@@ -288,12 +288,12 @@ async def _history_of_account(
     )
 
 
-def pool_trade_query(pool_account_id: uuid.UUID) -> Select[_TradeRow]:
-    """The pool's trade entries and their transactions, unordered and uncut.
+def trade_entries_query() -> Select[_TradeRow]:
+    """Trade entries on any account and their transactions, unordered and
+    uncut. The caller names the accounts.
 
     The kind filter is in the WHERE, so a caller's LIMIT still fills with
-    trades when the pool's newest entries are the residue and the payouts. The
-    caller adds the order, the keyset condition and the limit.
+    trades when a pool's newest entries are the residue and the payouts.
     """
     return (
         select(
@@ -305,11 +305,14 @@ def pool_trade_query(pool_account_id: uuid.UUID) -> Select[_TradeRow]:
             Transaction.context,
         )
         .join(Transaction, Transaction.id == Entry.transaction_id)
-        .where(
-            Entry.account_id == pool_account_id,
-            Transaction.kind.in_(list(_TRADE_SIDE_OF_KIND)),
-        )
+        .where(Transaction.kind.in_(list(_TRADE_SIDE_OF_KIND)))
     )
+
+
+def pool_trade_query(pool_account_id: uuid.UUID) -> Select[_TradeRow]:
+    """The pool's trade entries and their transactions, unordered and uncut.
+    The caller adds the order, the keyset condition and the limit."""
+    return trade_entries_query().where(Entry.account_id == pool_account_id)
 
 
 def _trade_page_query(

@@ -977,14 +977,22 @@ class SnapshotsIn(BaseModel):
 
 
 class ListedSnapshotOut(SnapshotOut):
-    """One market in the batch snapshot: the single snapshot's body, plus the
-    credits its trades have moved. [X-1] #447.
+    """One market in the batch snapshot: the single snapshot's body, plus what
+    a card shows beside it: its prices a week ago ([X-1] #446) and the credits
+    its trades have moved ([X-1] #447).
 
     DECISIONS.md, "The batch snapshot carries `credits_traded`, and the single
     snapshot does not": the single snapshot is the `price` frame without its
     `type`, and the frame does not carry it.
     """
 
+    prices_7d_ago: list[OutcomePriceOut] | None = Field(
+        description=(
+            "Each outcome's price seven days before this read: the price "
+            "after the last trade at or before then, in the shape of `prices`. "
+            "Null when the market has no trade that old."
+        ),
+    )
     credits_traded: Decimal = Field(
         description=(
             "Every credit this market's trades have moved, a buy's cost and a "
@@ -997,8 +1005,8 @@ class ListedSnapshotOut(SnapshotOut):
 class SnapshotListOut(BaseModel):
     """The current price of every requested market that has a book. [X-1] #432.
 
-    Each item is `ListedSnapshotOut`, the single snapshot's body plus
-    `credits_traded`. An object around a list of objects, so a field can be
+    Each item is `ListedSnapshotOut`, the single snapshot's body plus the
+    batch's own fields. An object around a list of objects, so a field can be
     added to the answer or to each market later without breaking a client
     (#446, #447).
     """
