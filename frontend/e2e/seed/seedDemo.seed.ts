@@ -8,7 +8,8 @@
 // backdating a dispute window).
 //
 // One-shot. Its users have fixed names, so a second run against the same
-// database stops at the first registration and changes nothing.
+// database stops at the first registration and changes nothing. A run that
+// stops partway leaves those names taken, so it needs a fresh database too.
 import { execFileSync } from 'node:child_process'
 import { test } from '@playwright/test'
 import {
@@ -17,12 +18,15 @@ import {
   backdateDisputeWindow,
   buy,
   closeEarly,
+  HOURS_PER_DAY,
   LEDGER_URL,
+  logInThroughApi,
   MARKET_URL,
+  promoteToAdmin,
   proposeOutcome,
   publishMarket,
-  registerNamedAdmin,
   registerNamedTrader,
+  REPO_ROOT,
   settleMarket,
   snapshot,
   type Market,
@@ -30,9 +34,8 @@ import {
 } from '../support/backend'
 import { ADMINS, DEMO_MARKETS, TRADERS, type DemoMarket, type DemoTrade } from './demoMarkets'
 import { refuseUnlessLocal } from './localTarget'
+import { refuseUnlessAdmin } from './promotion'
 import { inRounds } from './rounds'
-
-const HOURS_PER_DAY = 24
 
 // Long enough apart that the price chart has a shape on its time axis; short
 // enough that the whole seed takes a few minutes. A trade cannot be backdated
@@ -45,25 +48,63 @@ function dockerEndpoint(): string {
   return execFileSync('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], { encoding: 'utf8' }).trim()
 }
 
-async function registerFirstAdmin(username: string): Promise<Session> {
+/** The compose project `docker compose exec db` reaches from the repository root. Reads no secret: nothing is interpolated. */
+function composeProject(): string {
+  const config = execFileSync('docker', ['compose', 'config', '--no-interpolate', '--format', 'json'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  })
+  return JSON.parse(config).name
+}
+
+async function registerTraderUnlessSeeded(username: string): Promise<Session> {
   try {
-    return await registerNamedAdmin(username)
+    return await registerNamedTrader(username)
   } catch (refusal) {
-    if (refusal instanceof Error && refusal.message.includes(' answered 409')) {
+    // The auth service's `409 duplicate_user`, carried in the helper's message.
+    if (refusal instanceof Error && refusal.message.includes('duplicate_user')) {
       throw new Error(
-        `${username} already exists, so this database has been seeded before. The seed is one-shot: ` +
-          'start from an empty database to seed again.',
+        `${username} already exists, so this database has been seeded before, or an earlier run stopped ` +
+          'partway. The seed is one-shot: start from an empty database to seed again.',
       )
     }
     throw refusal
   }
 }
 
+// A blocking execFileSync (the promotion's `docker compose exec`) can outlive
+// uvicorn's keep-alive, so the next request goes out on a connection the
+// server has just closed and fails with ECONNRESET (#423's diagnosis; the
+// root-cause fix belongs to #492). Logging in again is harmless, so one retry
+// on a network failure keeps that from burning a one-shot seed.
+async function logInAfterPromotion(username: string): Promise<Session> {
+  try {
+    return await logInThroughApi(username)
+  } catch (failure) {
+    if (!(failure instanceof TypeError)) throw failure
+    return logInThroughApi(username)
+  }
+}
+
+/**
+ * Registers, promotes by hand the way the e2e helpers make an admin, and logs
+ * in again. Then checks the new token really is an admin's: the SQL step may
+ * have reached another compose project than the URLs.
+ */
+async function registerAdmin(username: string): Promise<Session> {
+  const trader = await registerTraderUnlessSeeded(username)
+  promoteToAdmin(trader.username)
+  const admin = await logInAfterPromotion(trader.username)
+  refuseUnlessAdmin(admin.accessToken, composeProject())
+  return admin
+}
+
 // Settlement is safe to repeat: a repeat writes nothing and answers the same
 // 200 (ledger-service.md, "A repeat writes nothing here"). So one retry covers
-// a network failure, which the first run of this seed met: the backdate takes
-// a few seconds, and the ledger closed the idle keep-alive connection just as
-// the settlement was sent on it.
+// a network failure, which the first run of this seed met: the backdate's
+// blocking execFileSync outlived uvicorn's keep-alive, and the settlement went
+// out on the connection the ledger had just closed (#423's diagnosis; the
+// root-cause fix belongs to #492).
 async function settle(admin: Session, marketId: string): Promise<void> {
   try {
     await settleMarket(admin, marketId)
@@ -100,10 +141,10 @@ test('seed the demo database', async () => {
   test.setTimeout(30 * 60 * 1000)
   refuseUnlessLocal({ serviceUrls: [AUTH_URL, MARKET_URL, LEDGER_URL], dockerEndpoint: dockerEndpoint() })
 
-  const creator = await registerFirstAdmin(ADMINS.creator)
-  const approver = await registerNamedAdmin(ADMINS.approver)
+  const creator = await registerAdmin(ADMINS.creator)
+  const approver = await registerAdmin(ADMINS.approver)
   const traders = new Map<string, Session>()
-  for (const username of TRADERS) traders.set(username, await registerNamedTrader(username))
+  for (const username of TRADERS) traders.set(username, await registerTraderUnlessSeeded(username))
   console.log(`Registered ${ADMINS.creator} and ${ADMINS.approver} (admins) and ${TRADERS.length} traders.`)
 
   const markets: Market[] = []

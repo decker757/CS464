@@ -9,13 +9,10 @@
 
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]']
 
-// The compose service names the seed calls, for a run from a container on the
-// compose network. They resolve only there.
-const COMPOSE_SERVICES = ['auth', 'market', 'ledger']
-
-// A Docker engine on this machine: a Unix socket, or Docker Desktop's named
-// pipe on Windows. Anything else (tcp://, ssh://) may be another machine.
-const LOCAL_DOCKER_SCHEMES = ['unix:', 'npipe:']
+// A Docker engine on this machine: a Unix socket, or a named pipe on this
+// machine's own `//./` (Docker Desktop on Windows). Anything else (tcp://,
+// ssh://, a pipe on another host) may be another machine.
+const LOCAL_DOCKER_PREFIXES = ['unix://', 'npipe:////./']
 
 export interface SeedTarget {
   serviceUrls: string[]
@@ -29,12 +26,11 @@ function isLocalServiceUrl(url: string): boolean {
   } catch {
     return false
   }
-  return LOCAL_HOSTS.includes(hostname) || COMPOSE_SERVICES.includes(hostname)
+  return LOCAL_HOSTS.includes(hostname)
 }
 
 function isLocalDockerEndpoint(endpoint: string): boolean {
-  const scheme = endpoint.slice(0, endpoint.indexOf(':') + 1)
-  return LOCAL_DOCKER_SCHEMES.includes(scheme)
+  return LOCAL_DOCKER_PREFIXES.some(prefix => endpoint.startsWith(prefix))
 }
 
 /** Throws, naming every address that is not on this machine, unless all of them are. */
