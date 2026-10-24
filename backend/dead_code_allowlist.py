@@ -20,3 +20,7 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
+
+# [BE] #221's void: stack PR 10's route, `POST /ledger/markets/{id}/void`, is
+# its caller. Remove this line in that PR. ADR 0025.
+void_market
