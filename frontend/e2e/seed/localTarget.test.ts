@@ -14,12 +14,6 @@ describe('refuseUnlessLocal', () => {
     expect(() => refuseUnlessLocal({ serviceUrls: LOCAL_URLS, dockerEndpoint: 'unix:///var/run/docker.sock' })).not.toThrow()
   })
 
-  it('accepts the compose service names, for a run inside the compose network', () => {
-    const insideCompose = ['http://auth:8000', 'http://market:8000', 'http://ledger:8000']
-
-    expect(() => refuseUnlessLocal({ serviceUrls: insideCompose, dockerEndpoint: DOCKER_DESKTOP })).not.toThrow()
-  })
-
   it('refuses a service URL on another host, and names it', () => {
     const oneRemote = ['http://localhost:8000', 'https://market.gembet.example', 'http://localhost:8003']
 
@@ -43,9 +37,21 @@ describe('refuseUnlessLocal', () => {
     expect(() => refuseUnlessLocal({ serviceUrls: unreadable, dockerEndpoint: DOCKER_DESKTOP })).toThrow('http://localhost:80o0')
   })
 
-  it('refuses a Docker engine on another machine, where the SQL steps would run', () => {
-    expect(() => refuseUnlessLocal({ serviceUrls: LOCAL_URLS, dockerEndpoint: 'ssh://deploy@gembet.example' })).toThrow(
-      'ssh://deploy@gembet.example',
-    )
+  // tcp:// is refused even to localhost: failing closed costs one unusual setup.
+  // A named pipe counts only on this machine's own `//./` prefix.
+  it.each(['ssh://deploy@gembet.example', 'tcp://localhost:2375', 'npipe://buildbox/pipe/docker_engine'])(
+    'refuses the Docker engine %s, where the SQL steps would run',
+    endpoint => {
+      expect(() => refuseUnlessLocal({ serviceUrls: LOCAL_URLS, dockerEndpoint: endpoint })).toThrow(endpoint)
+    },
+  )
+
+  it('names every address it refuses in one error, not only the first', () => {
+    const twoRemote = ['https://auth.gembet.example', 'http://localhost:8001', 'https://ledger.gembet.example']
+    const target = { serviceUrls: twoRemote, dockerEndpoint: 'ssh://deploy@gembet.example' }
+
+    expect(() => refuseUnlessLocal(target)).toThrow('https://auth.gembet.example')
+    expect(() => refuseUnlessLocal(target)).toThrow('https://ledger.gembet.example')
+    expect(() => refuseUnlessLocal(target)).toThrow('ssh://deploy@gembet.example')
   })
 })
