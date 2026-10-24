@@ -412,6 +412,26 @@ describe('MarketDetailPage', () => {
     expect(screen.getByRole('link', { name: 'MAS statistics' })).toHaveAttribute('href', 'https://www.mas.gov.sg/statistics')
   })
 
+  // #429's review: with the header reading "Closed", About this market said
+  // "Closes 5 Jan 2099" under it for a market an admin had closed early — an
+  // early close leaves close_time in the future. Once trading has stopped the
+  // date is the schedule the market was published with, not a close still to
+  // come. Stopped is the clock rule (ADR 0011), so the third case is still
+  // `open` in the status column, inside the sweep window.
+  it.each([
+    { name: 'an open market', status: 'open', closeTime: '2099-01-05T12:00:00Z', label: 'Closes', date: /5 Jan 2099/ },
+    { name: 'a market an admin closed early', status: 'closed', closeTime: '2099-01-05T12:00:00Z', label: 'Scheduled to close', date: /5 Jan 2099/ },
+    { name: 'a market the clock has closed and the sweep has not', status: 'open', closeTime: '2025-08-09T12:00:00Z', label: 'Scheduled to close', date: /9 Aug 2025/ },
+  ])('labels the close date under About as "$label" for $name', async ({ status, closeTime, label, date }) => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status, close_time: closeTime })),
+    )
+    renderPage()
+    await screen.findByText(baseMarket.question)
+
+    expect(screen.getByText(label, { exact: true }).nextElementSibling).toHaveTextContent(date)
+  })
+
   it('shows an error when the API fails', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.error()),
