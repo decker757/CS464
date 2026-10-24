@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { registerAdmin, submitMarket, uniqueName } from './support/backend'
-import { logIn, marketCard } from './support/browser'
+import { loadUntilShown, logIn } from './support/browser'
 
 // #381. Publishing re-runs every submission rule against the clock (ADR 0008),
 // so a market that sat submitted past its own close time is refused with
@@ -41,7 +41,8 @@ test('an admin corrects a close time that passed while the market sat submitted,
   // VM clock can drift from the host's after a sleep.
   await expect.poll(() => Date.now(), { timeout: 15_000 }).toBeGreaterThan(closedBy + 1000)
 
-  await page.getByRole('button', { name: /publish market/i }).click()
+  await page.getByRole('button', { name: 'Publish Market', exact: true }).click()
+  await page.getByRole('button', { name: 'Confirm Publish', exact: true }).click()
 
   // The real service's reason, under the field it names, which is now editable.
   await expect(page.getByText('Close time must be in the future.')).toBeVisible()
@@ -52,12 +53,13 @@ test('an admin corrects a close time that passed while the market sat submitted,
   await page.getByRole('button', { name: /resubmit for review/i }).click()
 
   await expect(page.getByLabel('Closes at *')).toBeDisabled()
-  await page.getByRole('button', { name: /publish market/i }).click()
+  await page.getByRole('button', { name: 'Publish Market', exact: true }).click()
+  await page.getByRole('button', { name: 'Confirm Publish', exact: true }).click()
 
-  // Publishing sends the admin to the trader list, and the market is on it:
-  // the only proof that market_service took the correction and wrote OPEN.
-  await expect(page).toHaveURL(/\/markets$/)
-  await page.getByRole('searchbox', { name: /search markets/i }).fill(question)
-  await page.keyboard.press('Enter')
-  await expect(marketCard(page, question)).toBeVisible()
+  // Publishing sends the admin to the admin markets list (#512), and the
+  // market is on it as open: the only proof that market_service took the
+  // correction and wrote OPEN.
+  await expect(page).toHaveURL(/\/admin\/markets$/)
+  const card = await loadUntilShown(page, question)
+  await expect(card.getByText('Open', { exact: true })).toBeVisible()
 })
