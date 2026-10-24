@@ -81,6 +81,9 @@ _APPROVAL_COLUMNS = (
 
 _ONE_MICROSECOND = timedelta(microseconds=1)
 
+# How long the race helper waits for both writers to connect and meet.
+_BARRIER_TIMEOUT_SECONDS = 10
+
 # "The `/void` step accepts five minutes more than the flag" (ADR 0025), named
 # here rather than imported, as conftest.py does for settlement's gap.
 _SETTLEMENT_GAP = timedelta(minutes=5)
@@ -127,13 +130,15 @@ async def _outcome(write: Awaitable[Market]) -> str:
 
 
 # --- the transition -------------------------------------------------------------
-async def test_a_closed_market_is_voided_with_the_clock_read_after_the_lock(
+async def test_a_closed_market_is_voided_with_its_time_and_reason(
     session: AsyncSession,
 ) -> None:
     """ADR 0025: "What a void writes. `status = VOIDED`, `voided_at` from the
     clock read after the lock, and `void_reason` as forwarded." Read from a
-    second session, so this fails without the commit; the injected clock
-    stands in for the one read after the lock."""
+    second session, so this fails without the commit. The clock is injected
+    here; that it is Postgres's, read after the lock, is pinned by the
+    route's `test_the_void_step_is_judged_on_the_database_clock`, and that a
+    repeat reads none by `test_a_repeat_reads_no_clock`."""
     market = await closed_market(session, _actor())
     market_id = market.id
     voided_at = market.closed_at + timedelta(minutes=10)
@@ -204,8 +209,8 @@ async def test_an_approved_market_is_voided_until_five_minutes_after_its_window(
     pinned, `/void` accepts until `E + 5 min` and refuses from it."
 
     Two markets with one stored end each, so neither attempt sees the
-    other's write. Fails with `<=`, with the gap dropped (the early case is
-    past `E`), or with the edge read from the setting rather than the row.
+    other's write. Fails with `<=`, or with the gap dropped (the early case
+    is past `E`).
     """
     late = await approved_market(session, _actor())
     late_id, late_end = late.id, late.dispute_window_ends_at
@@ -462,7 +467,10 @@ async def _queue_in_order(
             await holder.execute(
                 select(Market.id).where(Market.id == market_id).with_for_update()
             )
-            await barrier.wait()
+            # Bounded, so a writer that failed before reaching the barrier
+            # fails the test instead of hanging the suite.
+            async with asyncio.timeout(_BARRIER_TIMEOUT_SECONDS):
+                await barrier.wait()
             early_go.set()
             await _wait_until_blocked_on_a_lock(holder, early_pid)
             late_go.set()
