@@ -157,7 +157,7 @@ describe('AdminUsersPage', () => {
     await screen.findByText('alice')
 
     const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin', is_suspended: true })])
-    await actor.click(within(screen.getByRole('radiogroup', { name: group })).getByRole('radio', { name: pill, exact: true }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: group })).getByRole('radio', { name: pill }))
 
     expect(await screen.findByText('carol')).toBeInTheDocument()
     expect(screen.queryByText('alice')).not.toBeInTheDocument()
@@ -174,13 +174,13 @@ describe('AdminUsersPage', () => {
     await actor.type(screen.getByLabelText(/search by username or email/i), 'car')
     await actor.click(screen.getByRole('button', { name: /search/i }))
     const roles = within(screen.getByRole('radiogroup', { name: 'Filter by role' }))
-    await actor.click(roles.getByRole('radio', { name: 'Admins only', exact: true }))
-    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only', exact: true }))
+    await actor.click(roles.getByRole('radio', { name: 'Admins only' }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only' }))
 
     expect(await screen.findByText('carol')).toBeInTheDocument()
     expect(sent.at(-1)).toEqual({ q: 'car', role: 'admin', is_suspended: 'true', cursor: null })
-    expect(roles.getByRole('radio', { name: 'Admins only', exact: true })).toBeChecked()
-    expect(roles.getByRole('radio', { name: 'Any role', exact: true })).not.toBeChecked()
+    expect(roles.getByRole('radio', { name: 'Admins only' })).toBeChecked()
+    expect(roles.getByRole('radio', { name: 'Any role' })).not.toBeChecked()
   })
 
   it('goes back to every role when Any role is chosen again', async () => {
@@ -195,9 +195,9 @@ describe('AdminUsersPage', () => {
         : [adminUser({ id: 't1', username: 'alice' }), adminUser({ id: 'a1', username: 'carol', role: 'admin' })],
     )
     const roles = within(screen.getByRole('radiogroup', { name: 'Filter by role' }))
-    await actor.click(roles.getByRole('radio', { name: 'Admins only', exact: true }))
+    await actor.click(roles.getByRole('radio', { name: 'Admins only' }))
     await screen.findByText('carol')
-    await actor.click(roles.getByRole('radio', { name: 'Any role', exact: true }))
+    await actor.click(roles.getByRole('radio', { name: 'Any role' }))
 
     expect(await screen.findByText('alice')).toBeInTheDocument()
     expect(sent.at(-1)).toEqual({ q: null, role: null, is_suspended: null, cursor: null })
@@ -213,18 +213,18 @@ describe('AdminUsersPage', () => {
       sentParams.role === 'admin' ? [adminUser({ id: 'a1', username: 'carol', role: 'admin' })] : [adminUser({ id: 't1', username: 'alice' })],
     )
     const roles = within(screen.getByRole('radiogroup', { name: 'Filter by role' }))
-    roles.getByRole('radio', { name: 'Any role', exact: true }).focus()
+    roles.getByRole('radio', { name: 'Any role' }).focus()
     await actor.keyboard('{ArrowRight}')
 
     expect(await screen.findByText('carol')).toBeInTheDocument()
-    expect(roles.getByRole('radio', { name: 'Admins only', exact: true })).toBeChecked()
-    expect(roles.getByRole('radio', { name: 'Admins only', exact: true })).toHaveFocus()
+    expect(roles.getByRole('radio', { name: 'Admins only' })).toBeChecked()
+    expect(roles.getByRole('radio', { name: 'Admins only' })).toHaveFocus()
     expect(sent.at(-1)).toEqual({ q: null, role: 'admin', is_suspended: null, cursor: null })
 
     await actor.keyboard('{ArrowLeft}')
 
     expect(await screen.findByText('alice')).toBeInTheDocument()
-    expect(roles.getByRole('radio', { name: 'Any role', exact: true })).toBeChecked()
+    expect(roles.getByRole('radio', { name: 'Any role' })).toBeChecked()
     expect(sent.at(-1)).toEqual({ q: null, role: null, is_suspended: null, cursor: null })
   })
 
@@ -236,9 +236,9 @@ describe('AdminUsersPage', () => {
 
     screen.getByRole('button', { name: /search/i }).focus()
     await actor.tab()
-    expect(screen.getByRole('radio', { name: 'Any role', exact: true })).toHaveFocus()
+    expect(screen.getByRole('radio', { name: 'Any role' })).toHaveFocus()
     await actor.tab()
-    expect(screen.getByRole('radio', { name: 'Any status', exact: true })).toHaveFocus()
+    expect(screen.getByRole('radio', { name: 'Any status' })).toHaveFocus()
   })
 
   it('starts the list again from page one when a filter changes', async () => {
@@ -257,7 +257,7 @@ describe('AdminUsersPage', () => {
     await screen.findByText('bob')
 
     const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin' })])
-    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by role' })).getByRole('radio', { name: 'Admins only', exact: true }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by role' })).getByRole('radio', { name: 'Admins only' }))
 
     expect(await screen.findByText('carol')).toBeInTheDocument()
     expect(screen.queryByText('alice')).not.toBeInTheDocument()
@@ -272,7 +272,7 @@ describe('AdminUsersPage', () => {
     await screen.findByText('alice')
 
     mockUsers([])
-    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only', exact: true }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only' }))
 
     expect(await screen.findByText('No users match these filters.')).toBeInTheDocument()
     expect(screen.queryByText(/no users yet/i)).not.toBeInTheDocument()
