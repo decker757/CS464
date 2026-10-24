@@ -47,7 +47,13 @@ from core.errors import (
     ValidationProblem,
 )
 from core.settling import is_before_settlement_opens, is_in_dispute_window
-from model.entities import Market, MarketOutcome, MarketStatus, ResolutionSource
+from model.entities import (
+    AWAITING_OUTCOME_STATUSES,
+    Market,
+    MarketOutcome,
+    MarketStatus,
+    ResolutionSource,
+)
 from model.schemas import (
     MarketCloseRequest,
     MarketDraftRequest,
@@ -104,10 +110,6 @@ _FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
     MarketStatus.CLOSED: MarketClosed,
     **_RESOLUTION_STATUS_ERRORS,
 }
-
-# The statuses the void step accepts with no clock: stopped trading, and no
-# outcome decided yet. APPROVED is accepted only until its edge. ADR 0025.
-_VOIDABLE_BEFORE_A_DECISION = (MarketStatus.CLOSED, MarketStatus.PENDING_RESOLUTION)
 
 # Same code and `details` as a refused submission; only the sentence differs.
 # ADR 0008.
@@ -792,7 +794,7 @@ def _refuse_if_not_voidable(market: Market, *, now: datetime) -> None:
     """
     if market.status is MarketStatus.SETTLED:
         raise MarketAlreadySettled
-    if market.status in _VOIDABLE_BEFORE_A_DECISION:
+    if market.status in AWAITING_OUTCOME_STATUSES:
         return
     if market.status is not MarketStatus.APPROVED:
         raise MarketNotVoidable
