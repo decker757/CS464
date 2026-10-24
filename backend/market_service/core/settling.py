@@ -31,6 +31,18 @@ def is_in_dispute_window(*, ends_at: datetime | None, now: datetime) -> bool:
     return as_utc(now) < as_utc(ends_at)
 
 
+def is_before_settlement_opens(*, ends_at: datetime | None, now: datetime) -> bool:
+    """Is `now` before `ends_at + SETTLEMENT_GAP`? The void step's edge. [BE] #221.
+
+    The exact complement of `is_settleable`'s edge for an approved market, so
+    the void step and the settle step never both accept. False with no
+    `ends_at`, failing closed as both its neighbours do. ADR 0025.
+    """
+    if ends_at is None:
+        return False
+    return as_utc(now) < as_utc(ends_at) + SETTLEMENT_GAP
+
+
 def is_settleable(
     *,
     approved: bool,

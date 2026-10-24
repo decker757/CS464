@@ -354,6 +354,24 @@ class MarketAlreadyVoided(MarketError):
     )
 
 
+class MarketNotVoidable(MarketError):
+    """The ledger's void step arrived for a market that cannot be voided. [BE] #221.
+
+    DRAFT, SUBMITTED or OPEN by the stored status, an OPEN market past its
+    close time included, or APPROVED from five minutes after its dispute
+    window ended, or with no stored end. 409: the market is in the wrong
+    state. ADR 0025.
+    """
+
+    status_code = 409
+    code = "market_not_voidable"
+    message = (
+        "This market cannot be voided. Only a market that has stopped trading "
+        "and is not settled can be, and an approved one only until shortly "
+        "after its dispute window ends."
+    )
+
+
 class SecondAdministratorRequired(MarketError):
     """The administrator who proposed an outcome tried to approve or reject it. [3.2] #10.
 
