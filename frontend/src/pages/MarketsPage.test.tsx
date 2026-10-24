@@ -1082,6 +1082,8 @@ describe('MarketsPage closing-time presets', () => {
     expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(windowsSent.at(-1)).toEqual({ closesFrom: null, closesBefore: null })
     expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
+  })
+})
 
 // [X-1] #444 AC 5: the degraded and reconnecting states the detail page shows
 // apply to the list too. Both keep the last known price on screen, so without
