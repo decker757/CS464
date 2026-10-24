@@ -1295,9 +1295,11 @@ _SETTLEMENT_DESCRIPTION = (
         404: {"description": "`market_not_found`: no such market."},
         409: {
             "description": (
-                "`market_not_approved`: nothing is recorded here and the "
-                "market is in a status other than `approved` or `settled`. "
-                "`dispute_window_open`: approved, but not yet `settleable`."
+                "`market_already_voided`: the market has been voided, here "
+                "or by market_service. `market_not_approved`: nothing is "
+                "recorded here and the market is in a status other than "
+                "`approved` or `settled`. `dispute_window_open`: approved, but "
+                "not yet `settleable`."
             )
         },
         422: _invalid_request(
