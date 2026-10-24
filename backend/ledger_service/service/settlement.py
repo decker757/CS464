@@ -5,13 +5,16 @@ One request, in this order, and the order is the design (ADR 0019 as amended
 
 1. The public detail, through `market_status.read_terms`, holding no
    connection. A failure refuses here, even for a market already paid.
-2. The record, looked up without a lock. A hit is a replay: the figures are
-   rebuilt from the entries, the session rolls back, and market_service is
-   told again. Whatever status step 1 reported.
+2. The record, looked up without a lock. A settled hit is a replay: the
+   figures are rebuilt from the entries, the session rolls back, and
+   market_service is told again, whatever status step 1 reported. A voided
+   hit is `409 market_already_voided` (ADR 0025).
 3. Only with no record, the status: `approved` and `settleable`, or `settled`.
-   A refusal writes nothing and opens no book.
+   `voided` is `409 market_already_voided`. A refusal writes nothing and opens
+   no book.
 4. `books.ensure_open`, `books.lock_book`, and the record again, under the
-   lock. A hit is a replay, and its rollback releases the lock.
+   lock. A hit is answered as in step 2, and either rollback releases the
+   lock.
 5. The winner, against the book's own outcomes. Then the clock, read after
    the lock.
 6. One payout per winner in `user_id` order, then the residue. The record (an
@@ -32,7 +35,12 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.errors import DisputeWindowOpen, MarketNotApproved, MarketTermsUnavailable
+from core.errors import (
+    DisputeWindowOpen,
+    MarketAlreadyVoided,
+    MarketNotApproved,
+    MarketTermsUnavailable,
+)
 from core.pricing import QUANTUM
 from model.audit import AdminAction
 from model.entities import (
@@ -55,9 +63,11 @@ from service.posting import Leg, Movement
 ZERO = Decimal(0)
 
 # Restated rather than imported, as `market_status._OPEN` is (see
-# `books.MIN_OUTCOMES`): the two statuses a settlement may proceed against.
+# `books.MIN_OUTCOMES`): the two statuses a settlement may proceed against,
+# and the one it refuses by name (ADR 0025).
 _APPROVED = "approved"
 _SETTLED = "settled"
+_VOIDED = "voided"
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,16 @@ def _result_of(
         total_paid=total_paid.quantize(QUANTUM),
         residue=residue.quantize(QUANTUM),
     )
+
+
+async def _refuse_if_voided(session: AsyncSession, record: MarketResult) -> None:
+    """Unless `record` is a settlement, roll back, which releases the book lock
+    when a locked lookup found it, and raise `MarketAlreadyVoided`. A voided
+    record is never replayed: it names no winner. ADR 0025, "Settlement learns
+    the record's kind"."""
+    if record.kind == ResultKind.VOIDED:
+        await session.rollback()
+        raise MarketAlreadyVoided
 
 
 async def _replay(
@@ -172,7 +192,10 @@ async def _replay(
 def _refuse_if_not_settleable(terms: MarketTerms) -> None:
     """Raise unless market_service reports `approved` and `settleable`, or
     `settled`. Asked only when the ledger holds no record: a recorded
-    settlement replays whatever the status says (ADR 0019, 2026-10-10)."""
+    settlement replays whatever the status says (ADR 0019, 2026-10-10).
+    `voided` is refused by name, ahead of `MarketNotApproved` (ADR 0025)."""
+    if terms.status == _VOIDED:
+        raise MarketAlreadyVoided
     if terms.status == _APPROVED and not terms.settleable:
         raise DisputeWindowOpen
     if terms.status not in (_APPROVED, _SETTLED):
@@ -275,10 +298,11 @@ async def pay_out(
 
     `access_token` is the administrator's own, forwarded to both calls.
     Commits once, through `posting.post_all`, after `books.ensure_open`'s own
-    commit on a cold book. Raises `MarketNotApproved`, `DisputeWindowOpen`,
-    `MarketTermsUnavailable`, what `market_status.read_terms` raises, and
-    `SettlementUnconfirmed` after the payouts have committed. **Call this with
-    nothing pending on the session.** `now` is injectable for tests.
+    commit on a cold book. Raises `MarketAlreadyVoided`, `MarketNotApproved`,
+    `DisputeWindowOpen`, `MarketTermsUnavailable`, what
+    `market_status.read_terms` raises, and `SettlementUnconfirmed` after the
+    payouts have committed. **Call this with nothing pending on the
+    session.** `now` is injectable for tests.
     """
     # 1. The read, before any statement.
     terms = await market_status.read_terms(
@@ -289,6 +313,7 @@ async def pay_out(
     # deletes, so it can only short-circuit; a miss is trusted for nothing.
     record = await books.find_result(session, market_id)
     if record is not None:
+        await _refuse_if_voided(session, record)
         return await _replay(
             session,
             market_id,
@@ -308,6 +333,7 @@ async def pay_out(
     book = await books.lock_book(session, market_id)
     record = await books.find_result(session, market_id)
     if record is not None:
+        await _refuse_if_voided(session, record)
         return await _replay(
             session,
             market_id,
