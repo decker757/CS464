@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { listMarkets, type PublicMarketPage, type PublicMarketSummary } from '../../api/marketApi'
 import { closingWindowOf, type ClosingPreset } from '../../utils/closingWindow'
 import { usePagedList } from '../../hooks/usePagedList'
+import { useMyPositions } from '../../hooks/useMyPositions'
 import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import Button from '../ui/Button'
 import LoadMoreControl from '../ui/LoadMoreControl'
@@ -56,6 +57,8 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
   // `markets` keeps its identity until the list itself changes, so the prices
   // are fetched then and not on every render.
   const { snapshotsByMarket, failedMarkets, readAt, retryMarket, status: priceStatus } = usePricesForMarkets(markets)
+  // One portfolio read for the page, not one per card ([X-1] #450).
+  const { positionsByMarket } = useMyPositions()
   const isFiltered = query !== '' || status !== null || closingWindow !== null
 
   return (
@@ -99,6 +102,7 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
                 snapshot={snapshotsByMarket.get(market.id)}
                 priceReadFailed={failedMarkets.has(market.id)}
                 onRetryPrice={() => retryMarket(market.id)}
+                positions={positionsByMarket.get(market.id)}
               />
             ))}
           </div>
