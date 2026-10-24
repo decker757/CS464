@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { MarketSnapshot } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
-import { browseSectionsOf } from './browseSections'
+import { browseSectionsOf, featuredMarketOf } from './browseSections'
 
 const NOW = new Date('2026-10-25T12:00:00Z')
 // Well past the Closing soon window, so a market using it lands in a band on
@@ -192,5 +192,62 @@ describe('browseSectionsOf', () => {
 
     expect(sectionNamed(sections, 'closing_soon')?.markets).toHaveLength(1)
     expect(markets).toHaveLength(1)
+  })
+})
+
+describe('featuredMarketOf', () => {
+  // #448: one featured market at the top. Volume is the only honest basis —
+  // the one figure that says other people are here, which is what the slot is
+  // for.
+  it('features the busiest market the page has loaded', () => {
+    const markets = [market('quiet', FAR_OFF), market('busy', FAR_OFF)]
+    const reads = readsOf(
+      snapshot('quiet', { traded: '30.0000' }),
+      snapshot('busy', { traded: '1200.0000' }),
+    )
+
+    expect(featuredMarketOf(markets, reads.figures, NOW)?.market.id).toBe('busy')
+  })
+
+  // Promoting an untouched book is how the screen came to read as dead in the
+  // first place. On a database with no trades there is simply no hero, the
+  // same rule every band follows.
+  it('features nothing when no market has been traded', () => {
+    const markets = [market('untouched', FAR_OFF)]
+    const reads = readsOf(snapshot('untouched', { traded: '0.0000' }))
+
+    expect(featuredMarketOf(markets, reads.figures, NOW)).toBeNull()
+  })
+
+  // A hero nobody can trade is worse than no hero. The clock decides, not the
+  // status column (ADR 0011).
+  it('features nothing the clock has closed, whatever its status says', () => {
+    const markets = [market('stopped', '2026-10-25T06:00:00Z')]
+    const reads = readsOf(snapshot('stopped', { traded: '900.0000' }))
+
+    expect(featuredMarketOf(markets, reads.figures, NOW)).toBeNull()
+  })
+
+  // It states why it was chosen, so a featured slot is never an unexplained
+  // promotion.
+  it('says why the market was featured', () => {
+    const markets = [market('busy', FAR_OFF)]
+    const reads = readsOf(snapshot('busy', { traded: '1200.0000' }))
+
+    expect(featuredMarketOf(markets, reads.figures, NOW)?.rule).toBeTruthy()
+  })
+
+  // The hero would otherwise lead Trending as well and sit above the list
+  // twice, which reads as a broken band rather than as emphasis.
+  it('is left out of the bands when passed as the featured market', () => {
+    const markets = [market('busy', FAR_OFF), market('next', FAR_OFF)]
+    const reads = readsOf(
+      snapshot('busy', { traded: '1200.0000' }),
+      snapshot('next', { traded: '30.0000' }),
+    )
+
+    const sections = browseSectionsOf(markets, reads.snapshots, reads.figures, NOW, 'busy')
+
+    expect(sectionNamed(sections, 'trending')?.markets.map(m => m.id)).toEqual(['next'])
   })
 })
