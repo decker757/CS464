@@ -260,6 +260,22 @@ class MarketNotApproved(LedgerError):
     message = "This market has no approved outcome to settle."
 
 
+class MarketAlreadyVoided(LedgerError):
+    """A settlement asked for a market that has been voided. [BE] #221,
+    ADR 0025.
+
+    Raised when this ledger holds a voided record for the market, at either
+    of settlement's lookups, and when market_service reports `voided` with
+    nothing recorded here. Spelled as market_service spells it for every
+    write on a voided market. 409: the request is well formed and the
+    market's state refuses it, for good.
+    """
+
+    status_code = 409
+    code = "market_already_voided"
+    message = "This market has been voided, so it has no outcome to settle."
+
+
 class DisputeWindowOpen(LedgerError):
     """A settlement asked for an approved market that is not yet `settleable`.
     [3.4] #12, ADR 0019.
