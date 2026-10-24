@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { listUsers, type AdminUser, type AdminUserPage, type User } from '../../api/authApi'
 import AppLayout from '../../components/layout/AppLayout'
@@ -43,26 +43,47 @@ const STATUS_OPTIONS: FilterOption<boolean>[] = [
   { value: true, label: 'Suspended only' },
 ]
 
+// How far each arrow key moves the selection, as in any radio group.
+const ARROW_STEPS: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
+
 function emptyMessage(query: string, hasPillFilter: boolean): string {
   if (query) return 'No users match that search.'
   if (hasPillFilter) return 'No users match these filters.'
   return 'No users yet.'
 }
 
-// The toggle-button group MarketFilters uses for a market's status.
+// A single-select pill group, so a radio group: one choice is always checked,
+// Tab reaches only that one, and the arrow keys move it. Not MarketFilters'
+// `aria-pressed` buttons, which announce a multi-select (#442).
 function FilterGroup<Value>({ label, options, selected, onSelect }: FilterGroupProps<Value>) {
+  const selectedIndex = options.findIndex(option => option.value === selected)
+
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const step = ARROW_STEPS[event.key]
+    if (step === undefined) return
+    event.preventDefault()
+    const nextIndex = (selectedIndex + step + options.length) % options.length
+    onSelect(options[nextIndex].value)
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIndex].focus()
+  }
+
   return (
-    <div role="group" aria-label={label} className="flex flex-wrap gap-2">
-      {options.map(option => (
-        <FilterPill
-          key={option.label}
-          active={selected === option.value}
-          aria-pressed={selected === option.value}
-          onClick={() => onSelect(option.value)}
-        >
-          {option.label}
-        </FilterPill>
-      ))}
+    <div role="radiogroup" aria-label={label} onKeyDown={handleKeyDown} className="flex flex-wrap gap-2">
+      {options.map(option => {
+        const isChecked = selected === option.value
+        return (
+          <FilterPill
+            key={option.label}
+            role="radio"
+            active={isChecked}
+            aria-checked={isChecked}
+            tabIndex={isChecked ? 0 : -1}
+            onClick={() => onSelect(option.value)}
+          >
+            {option.label}
+          </FilterPill>
+        )
+      })}
     </div>
   )
 }
