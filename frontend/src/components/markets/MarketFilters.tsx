@@ -68,7 +68,12 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
   // keys for free but not FilterPill's look, so the pattern is written here:
   // the arrows move the choice and the focus together, and only the chosen
   // pill is in the tab order. preventDefault keeps the arrows from scrolling.
+  // An arrow with Alt, Ctrl or Cmd held is the browser's or the screen
+  // reader's (Alt+Left is Back), so the group leaves it alone.
   function handleStatusKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return
+    }
     const targetIndex = arrowTargetIndex(event.key, index, FILTER_OPTIONS.length)
     if (targetIndex === null) {
       return
