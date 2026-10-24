@@ -10,7 +10,7 @@ import { boxOf, logIn, overflowingScreens, type Screen } from './support/browser
 const PHONE = { width: 390, height: 844 }
 const DESKTOP = { width: 1440, height: 900 }
 
-test('no trader screen scrolls sideways on a phone or on a desktop', async ({ page }) => {
+test('no guest or trader screen scrolls sideways on a phone or on a desktop', async ({ page }) => {
   const admin = await registerAdmin('frame_owner')
   const trader = await registerTrader('frame_trader')
   const market = await publishMarket(admin, `Does the frame fit ${uniqueName('phone')}?`)
@@ -24,6 +24,16 @@ test('no trader screen scrolls sideways on a phone or on a desktop', async ({ pa
     { path: '/history', heading: 'Trade History' },
     { path: '/leaderboard', heading: 'Leaderboard' },
   ]
+
+  // The guest pages share the bar's frame, and its padding is narrower on a
+  // phone now, so they are measured too, before signing in.
+  const guestScreens: Screen[] = [
+    { path: '/', heading: 'Trade on what you think happens next.' },
+    { path: '/login', heading: 'Log in to your account' },
+    { path: '/register', heading: 'Create your account' },
+  ]
+  expect(await overflowingScreens(page, guestScreens, PHONE)).toEqual([])
+  expect(await overflowingScreens(page, guestScreens, DESKTOP)).toEqual([])
 
   await logIn(page, trader)
 
@@ -73,6 +83,9 @@ test('on a phone the navigation sits behind a menu button, and on a desktop it i
   const menuButton = banner.getByRole('button', { name: 'Menu', exact: true })
   const usersLink = banner.getByRole('link', { name: 'Users', exact: true })
 
+  // Visible first, or "hidden" would also pass on a page that had not drawn
+  // the bar at all.
+  await expect(menuButton).toBeVisible()
   await expect(usersLink).toBeHidden()
   await menuButton.click()
   await expect(menuButton).toHaveAttribute('aria-expanded', 'true')
