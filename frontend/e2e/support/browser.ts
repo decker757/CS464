@@ -85,3 +85,38 @@ export async function selectTab(page: Page, name: RegExp): Promise<void> {
   await page.getByRole('tab', { name }).click()
   await answered
 }
+
+/** A signed-in screen, and the `<h1>` that says it has drawn its content
+ * rather than its loading state (#438). */
+export interface Screen {
+  path: string
+  heading: string
+}
+
+/**
+ * Opens each screen at one viewport size and returns the ones the page
+ * scrolls sideways on, with how wide the document came out, so a failure
+ * names every offender at once rather than only the first (#438).
+ */
+export async function overflowingScreens(page: Page, screens: Screen[], viewport: { width: number; height: number }): Promise<string[]> {
+  await page.setViewportSize(viewport)
+  const overflowing: string[] = []
+  for (const screen of screens) {
+    await page.goto(screen.path)
+    await expect(page.getByRole('heading', { level: 1, name: screen.heading, exact: true })).toBeVisible()
+    const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }))
+    if (scrollWidth > clientWidth) overflowing.push(`${screen.path} at ${viewport.width}px is ${scrollWidth}px wide`)
+  }
+  return overflowing
+}
+
+/** Where an element is drawn. One that is not drawn at all fails here,
+ * rather than as a comparison against nothing. */
+export async function boxOf(element: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
+  const box = await element.boundingBox()
+  if (box === null) throw new Error('the element is not on screen')
+  return box
+}
