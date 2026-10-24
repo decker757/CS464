@@ -157,14 +157,14 @@ describe('AdminUsersPage', () => {
     await screen.findByText('alice')
 
     const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin', is_suspended: true })])
-    await actor.click(within(screen.getByRole('group', { name: group })).getByRole('button', { name: pill }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: group })).getByRole('radio', { name: pill, exact: true }))
 
     expect(await screen.findByText('carol')).toBeInTheDocument()
     expect(screen.queryByText('alice')).not.toBeInTheDocument()
     expect(sent.at(-1)).toEqual({ q: null, cursor: null, ...expected })
   })
 
-  it('combines both filters with the search, and shows the chosen pill as pressed', async () => {
+  it('combines both filters with the search, and shows the chosen pill as checked', async () => {
     mockUsers([adminUser({ id: 't1', username: 'alice' })])
     const actor = userEvent.setup()
     renderPage()
@@ -173,14 +173,14 @@ describe('AdminUsersPage', () => {
     const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin', is_suspended: true })])
     await actor.type(screen.getByLabelText(/search by username or email/i), 'car')
     await actor.click(screen.getByRole('button', { name: /search/i }))
-    const roles = within(screen.getByRole('group', { name: 'Filter by role' }))
-    await actor.click(roles.getByRole('button', { name: 'Admins only' }))
-    await actor.click(within(screen.getByRole('group', { name: 'Filter by status' })).getByRole('button', { name: 'Suspended only' }))
+    const roles = within(screen.getByRole('radiogroup', { name: 'Filter by role' }))
+    await actor.click(roles.getByRole('radio', { name: 'Admins only', exact: true }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only', exact: true }))
 
     expect(await screen.findByText('carol')).toBeInTheDocument()
     expect(sent.at(-1)).toEqual({ q: 'car', role: 'admin', is_suspended: 'true', cursor: null })
-    expect(roles.getByRole('button', { name: 'Admins only' })).toHaveAttribute('aria-pressed', 'true')
-    expect(roles.getByRole('button', { name: 'Any role' })).toHaveAttribute('aria-pressed', 'false')
+    expect(roles.getByRole('radio', { name: 'Admins only', exact: true })).toBeChecked()
+    expect(roles.getByRole('radio', { name: 'Any role', exact: true })).not.toBeChecked()
   })
 
   it('goes back to every role when Any role is chosen again', async () => {
@@ -194,13 +194,51 @@ describe('AdminUsersPage', () => {
         ? [adminUser({ id: 'a1', username: 'carol', role: 'admin' })]
         : [adminUser({ id: 't1', username: 'alice' }), adminUser({ id: 'a1', username: 'carol', role: 'admin' })],
     )
-    const roles = within(screen.getByRole('group', { name: 'Filter by role' }))
-    await actor.click(roles.getByRole('button', { name: 'Admins only' }))
+    const roles = within(screen.getByRole('radiogroup', { name: 'Filter by role' }))
+    await actor.click(roles.getByRole('radio', { name: 'Admins only', exact: true }))
     await screen.findByText('carol')
-    await actor.click(roles.getByRole('button', { name: 'Any role' }))
+    await actor.click(roles.getByRole('radio', { name: 'Any role', exact: true }))
 
     expect(await screen.findByText('alice')).toBeInTheDocument()
     expect(sent.at(-1)).toEqual({ q: null, role: null, is_suspended: null, cursor: null })
+  })
+
+  it('moves the role with the arrow keys, as a radio group does', async () => {
+    mockUsers([adminUser({ id: 't1', username: 'alice' })])
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('alice')
+
+    const sent = recordRequests(sentParams =>
+      sentParams.role === 'admin' ? [adminUser({ id: 'a1', username: 'carol', role: 'admin' })] : [adminUser({ id: 't1', username: 'alice' })],
+    )
+    const roles = within(screen.getByRole('radiogroup', { name: 'Filter by role' }))
+    roles.getByRole('radio', { name: 'Any role', exact: true }).focus()
+    await actor.keyboard('{ArrowRight}')
+
+    expect(await screen.findByText('carol')).toBeInTheDocument()
+    expect(roles.getByRole('radio', { name: 'Admins only', exact: true })).toBeChecked()
+    expect(roles.getByRole('radio', { name: 'Admins only', exact: true })).toHaveFocus()
+    expect(sent.at(-1)).toEqual({ q: null, role: 'admin', is_suspended: null, cursor: null })
+
+    await actor.keyboard('{ArrowLeft}')
+
+    expect(await screen.findByText('alice')).toBeInTheDocument()
+    expect(roles.getByRole('radio', { name: 'Any role', exact: true })).toBeChecked()
+    expect(sent.at(-1)).toEqual({ q: null, role: null, is_suspended: null, cursor: null })
+  })
+
+  it('reaches only the checked pill of a group with Tab, as a radio group does', async () => {
+    mockUsers([adminUser({ id: 't1', username: 'alice' })])
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('alice')
+
+    screen.getByRole('button', { name: /search/i }).focus()
+    await actor.tab()
+    expect(screen.getByRole('radio', { name: 'Any role', exact: true })).toHaveFocus()
+    await actor.tab()
+    expect(screen.getByRole('radio', { name: 'Any status', exact: true })).toHaveFocus()
   })
 
   it('starts the list again from page one when a filter changes', async () => {
@@ -219,7 +257,7 @@ describe('AdminUsersPage', () => {
     await screen.findByText('bob')
 
     const sent = recordRequests(() => [adminUser({ id: 'a1', username: 'carol', role: 'admin' })])
-    await actor.click(within(screen.getByRole('group', { name: 'Filter by role' })).getByRole('button', { name: 'Admins only' }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by role' })).getByRole('radio', { name: 'Admins only', exact: true }))
 
     expect(await screen.findByText('carol')).toBeInTheDocument()
     expect(screen.queryByText('alice')).not.toBeInTheDocument()
@@ -234,7 +272,7 @@ describe('AdminUsersPage', () => {
     await screen.findByText('alice')
 
     mockUsers([])
-    await actor.click(within(screen.getByRole('group', { name: 'Filter by status' })).getByRole('button', { name: 'Suspended only' }))
+    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only', exact: true }))
 
     expect(await screen.findByText('No users match these filters.')).toBeInTheDocument()
     expect(screen.queryByText(/no users yet/i)).not.toBeInTheDocument()
