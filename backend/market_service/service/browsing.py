@@ -51,7 +51,7 @@ from model.entities import (
     displayed_status,
 )
 from service.closing import open_for_trading, was_open_for_trading_at
-from service.settling import settleable
+from service.settling import settleable, voidable
 
 # The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
 # doubling is Python's, not SQL's.
@@ -361,7 +361,8 @@ async def get_published(
     invisibility would go with no test failing. The derived status goes on an
     unmapped attribute, never on `status`; see `TRADER_FACING_STATUS`. D-027.
     `settleable` goes beside it, against the same `now`, for the same reason:
-    a computed field would re-run on a clock it cannot see. [3.4] #12.
+    a computed field would re-run on a clock it cannot see. [3.4] #12. So
+    does `voidable`, from the stored status. [BE] #221.
     """
     now = now or datetime.now(UTC)
 
@@ -378,6 +379,7 @@ async def get_published(
     market.settleable = settleable(
         market.status, market.dispute_window_ends_at, now=now
     )
+    market.voidable = voidable(market.status, market.dispute_window_ends_at, now=now)
     return market
 
 
@@ -606,6 +608,7 @@ async def overview(
             close_time=row.close_time,
             settleable=settleable(row.status, row.dispute_window_ends_at, now=now),
             dispute_window_ends_at=row.dispute_window_ends_at,
+            voidable=voidable(row.status, row.dispute_window_ends_at, now=now),
         )
         for row in shown
     ]
