@@ -25,7 +25,11 @@ test('an approved market shows its result where the price was, not the last trad
   await approveOutcome(approver, market.id, proposed.proposal_id)
 
   await logIn(page, trader)
-  const snapshotRead = page.waitForResponse(response => response.url().endsWith(`/ledger/markets/${market.id}/snapshot`))
+  // The detail page's own read: logIn lands on /markets, where this market's
+  // card fetches the same snapshot URL.
+  const snapshotRead = page.waitForResponse(
+    response => response.url().endsWith(`/ledger/markets/${market.id}/snapshot`) && new URL(page.url()).pathname === `/markets/${market.id}`,
+  )
   await page.goto(`/markets/${market.id}`)
 
   await expect(page.getByLabel('Yes result', { exact: true })).toHaveText('Won')
