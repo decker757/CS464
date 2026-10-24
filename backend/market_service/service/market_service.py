@@ -1,6 +1,7 @@
 """A market's lifecycle: save, submit, publish, close early, propose, approve,
-reject, send back, settle.
-[1.1] #1, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.3] #11, [3.4] #12.
+reject, send back, settle, void.
+[1.1] #1, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.3] #11, [3.4] #12,
+[BE] #221.
 
 The automatic close is in `service/closing.py`, and what each audit entry
 carries is in `service/market_audit.py`. Every function takes the caller as an
@@ -36,6 +37,7 @@ from core.errors import (
     MarketNotOpen,
     MarketNotPendingResolution,
     MarketNotSubmitted,
+    MarketNotVoidable,
     MarketPendingResolution,
     ProposalIncomplete,
     ProposalSuperseded,
@@ -44,11 +46,12 @@ from core.errors import (
     SendBackIncomplete,
     ValidationProblem,
 )
-from core.settling import is_in_dispute_window
+from core.settling import is_before_settlement_opens, is_in_dispute_window
 from model.entities import Market, MarketOutcome, MarketStatus, ResolutionSource
 from model.schemas import (
     MarketCloseRequest,
     MarketDraftRequest,
+    MarketVoidRequest,
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
@@ -101,6 +104,10 @@ _FROZEN_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
     MarketStatus.CLOSED: MarketClosed,
     **_RESOLUTION_STATUS_ERRORS,
 }
+
+# The statuses the void step accepts with no clock: stopped trading, and no
+# outcome decided yet. APPROVED is accepted only until its edge. ADR 0025.
+_VOIDABLE_BEFORE_A_DECISION = (MarketStatus.CLOSED, MarketStatus.PENDING_RESOLUTION)
 
 # Same code and `details` as a refused submission; only the sentence differs.
 # ADR 0008.
@@ -770,6 +777,87 @@ async def settle(
     # ADR 0019's amendment.
     await session.flush()
     await market_audit.record_marked_settled(session, actor, market, now)
+    await session.commit()
+
+    return market
+
+
+def _refuse_if_not_voidable(market: Market, *, now: datetime) -> None:
+    """Raise unless the void step may void this locked market at `now`. ADR 0025.
+
+    SETTLED is `MarketAlreadySettled`. CLOSED and PENDING_RESOLUTION pass.
+    APPROVED passes while `now` is before the stored window end plus the
+    gap, the instant the settle step starts accepting. Anything else is
+    `MarketNotVoidable`. VOIDED never reaches this.
+    """
+    if market.status is MarketStatus.SETTLED:
+        raise MarketAlreadySettled
+    if market.status in _VOIDABLE_BEFORE_A_DECISION:
+        return
+    if market.status is not MarketStatus.APPROVED:
+        raise MarketNotVoidable
+    if not is_before_settlement_opens(ends_at=market.dispute_window_ends_at, now=now):
+        raise MarketNotVoidable
+
+
+async def void(
+    session: AsyncSession,
+    actor: Actor,
+    market_id: uuid.UUID,
+    request: MarketVoidRequest,
+    *,
+    now: datetime | None = None,
+) -> Market:
+    """Move a market to VOIDED, and commit. [BE] #221.
+
+    ADR 0025: the ledger's last step, after its refunds commit. Any
+    administrator may call it. Locks the market row. A market already VOIDED
+    is returned unwritten and unlogged, before the clock is read. Raises
+    `MarketAlreadySettled`, or `MarketNotVoidable` for any status but CLOSED,
+    PENDING_RESOLUTION and an APPROVED market until five minutes after its
+    window ends. Stores the reason as sent, unchecked. Clears a pending
+    proposal and keeps an approval. Refunds nobody.
+    """
+    # Locked: the ledger's retry racing its first attempt must log one flip,
+    # and settle, send-back and the decisions decide from this status.
+    # ADR 0015.
+    market = await get_any(session, market_id, for_update=True)
+
+    # Before the clock: a repeat writes nothing to stamp, and it is how the
+    # ledger finishes a void whose last step failed. Do not answer it
+    # `market_already_voided`. ADR 0025.
+    if market.status is MarketStatus.VOIDED:
+        return market
+
+    # Postgres's clock after the lock, as the settle step reads it, so the
+    # two edges meet exactly and never overlap. ADR 0025.
+    now = now or await _database_now(session)
+
+    _refuse_if_not_voidable(market, now=now)
+
+    from_status = market.status
+    cleared_proposal: dict[str, object] | None = None
+    if from_status is MarketStatus.PENDING_RESOLUTION:
+        # Before the clear: afterwards the log is the only copy. ADR 0016.
+        cleared_proposal = market_audit.decision_snapshot(market)
+        _clear_proposal(market)
+
+    market.status = MarketStatus.VOIDED
+    market.voided_at = now
+    # As sent: the ledger checked it, and a retry must not be refused. ADR 0025.
+    market.void_reason = request.reason
+
+    # One write with its audit entry, so a direct call is observed. ADR 0006.
+    await session.flush()
+    await market_audit.record_marked_voided(
+        session,
+        actor,
+        market,
+        request.reason,
+        from_status=from_status,
+        cleared_proposal=cleared_proposal,
+        now=now,
+    )
     await session.commit()
 
     return market
