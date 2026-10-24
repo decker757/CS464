@@ -87,18 +87,24 @@ def _question_contains(query: str) -> ColumnElement[bool]:
 def _closes_within(
     closes_from: datetime | None, closes_before: datetime | None
 ) -> list[ColumnElement[bool]]:
-    """`closes_from <= close_time < closes_before`, each end only if given. #442.
+    """`closes_from <= stopped_at < closes_before`, each end only if given. #442.
 
-    Half-open, so consecutive windows never share a market. `close_time`, not
-    when trading stopped: it is the time a card shows. A NULL `close_time`
-    compares as unknown, so it matches no window. DECISIONS.md, "The browse
-    narrows by a half-open window on `close_time`".
+    Half-open, so consecutive windows never share a market. `stopped_at` is
+    `_stopped_at()`: when trading stopped, or for a market still trading,
+    its `close_time`, since Postgres's LEAST skips the NULL `closed_at`. It is
+    the stopped group's sort key, so the window agrees with the order
+    (DECISIONS.md, "Stopped markets sort by when trading stopped"), and a
+    market closed early is found by when it was closed, not by the schedule
+    it no longer keeps (ADR 0011, ADR 0014). With neither column set it is
+    NULL, which compares as unknown and matches no window. DECISIONS.md, "The
+    browse narrows by a half-open window on when trading stops".
     """
+    stopped_at = _stopped_at()
     conditions: list[ColumnElement[bool]] = []
     if closes_from is not None:
-        conditions.append(Market.close_time >= closes_from)
+        conditions.append(stopped_at >= closes_from)
     if closes_before is not None:
-        conditions.append(Market.close_time < closes_before)
+        conditions.append(stopped_at < closes_before)
     return conditions
 
 
@@ -270,9 +276,9 @@ async def browse(
     With no `status`, every published market: still-trading first by soonest
     close, then the rest by most recently stopped (D-022, #105). `query` is a
     case-insensitive search over the question and composes with `status`.
-    `closes_from` and `closes_before` narrow to a half-open window on
-    `close_time` and compose with both (#442); the caller refuses an empty
-    one. Nothing found is an empty page, never an error. At most `limit` markets;
+    `closes_from` and `closes_before` narrow to a half-open window on when
+    trading stopped or stops, and compose with both (#442); the caller
+    refuses an empty one. Nothing found is an empty page, never an error. At most `limit` markets;
     `next_cursor` is None on the last page. Every later page groups and
     compares as of the first page's clock, which the cursor carries. Raises
     `MalformedCursor` for a cursor this service did not issue. `now` is the
