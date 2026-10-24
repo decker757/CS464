@@ -64,6 +64,27 @@ test('coming back from a market returns the browse list to where it was', async 
   await page.goBack()
 
   await expect(marketCard(page, questions[0])).toBeVisible()
+  // Every card's prices in again, exactly as before the scroll and for the
+  // same reason: the list mounts afresh on the way back and re-reads them, so
+  // every card is a line shorter until its snapshot lands, and a check made
+  // while they are still growing reads a position the page has not finished
+  // choosing (#502).
+  //
+  // The page itself is not the problem: `ScrollRestoration` re-asks for its
+  // offset frame by frame as the cards arrive, for up to RESTORE_WINDOW_MS.
+  // What was missing is this wait, so the assertion below measures a settled
+  // list — which is what the criterion is about.
+  //
+  // The flake was not reproduced locally, and #502 allows for that: 20 runs
+  // of the unfixed spec passed, as did 20 under four workers, 20 under eight
+  // busy cores, and runs with the batch snapshot delayed. It failed twice in
+  // CI on branches that touch no frontend file, which points at the runner
+  // being slow enough to push the regrowth past this check — the one
+  // condition a laptop with a warm local ledger does not reach.
+  for (const question of questions) {
+    await expect(marketCard(page, question).getByText(/no trades yet/i)).toBeVisible()
+  }
+
   // The card the trader was looking at is on screen again, and the list is
   // nowhere near the top — where every Back used to land, a screen and a half
   // above this card. The offset rather than the exact pixel: the restore puts
