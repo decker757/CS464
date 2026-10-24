@@ -29,6 +29,7 @@ from model.schemas import (
     MarketOverviewRowOut,
     MarketSaveResponse,
     MarketSummaryOut,
+    MarketVoidRequest,
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
@@ -439,6 +440,57 @@ async def settle_market(
     # after the row lock, never the request's. DECISIONS.md, "The settle
     # step's window check reads `clock_timestamp()` after the row lock".
     market = await market_service.settle(session, actor, market_id)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/void",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Mark a market voided (the ledger's last step)",
+    description=(
+        "[BE] #221. **Called by the ledger's void route only.** Clients void "
+        "a market with `POST /ledger/markets/{id}/void`, which refunds every "
+        "holder and then calls this with the administrator's token and the "
+        "recorded reason. A direct call marks the market voided and "
+        "**refunds nobody**.\n\n"
+        "Accepts a `closed` or `pending_resolution` market, and an "
+        "`approved` one until five minutes after its dispute window ends, "
+        "judged on the database's clock after the market is locked. Any "
+        "administrator's token is accepted. `reason` is stored as sent and "
+        "not checked here: the ledger checked it before the refunds.\n\n"
+        "A pending proposal is cleared; an approval is kept, though no "
+        "winner is shown. `closed_at` is unchanged. A market already "
+        "`voided` is answered `200` with the same market and nothing "
+        "written, so the ledger can repeat a request whose last step "
+        "failed.\n\n"
+        "The flip appends a `market.marked_voided` entry to the audit log "
+        "([4.3] #15) in the same transaction. A repeat appends nothing. One "
+        "with no `market.voided` from the ledger before it is the trace of a "
+        "direct call (ADR 0025)."
+    ),
+    responses={
+        403: {"description": "`not_an_administrator` — a trader."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_already_settled` — the market has been settled. "
+                "`market_not_voidable` — it is a draft, submitted or open by "
+                "its stored status, or approved and past five minutes after "
+                "its dispute window, or approved with no window end."
+            )
+        },
+    },
+)
+async def void_market(
+    market_id: uuid.UUID,
+    payload: MarketVoidRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    # No `now` from here: the edge is judged on Postgres's clock, read after
+    # the row lock, never the request's. ADR 0025.
+    market = await market_service.void(session, actor, market_id, payload)
     return MarketOut.model_validate(market)
 
 
