@@ -59,9 +59,11 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
 
 export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([])
-  const hasActiveFilters = query !== '' || status !== null
-  // One filter is cleared by its own chip, so "Clear all" is for two (#442).
-  const showClearAll = query !== '' && status !== null
+  const appliedFilterCount = [query !== '', status !== null].filter(Boolean).length
+  const hasActiveFilters = appliedFilterCount > 0
+  // One filter is cleared by its own chip, so "Clear all" is for more than one
+  // filter (#442).
+  const showClearAll = appliedFilterCount > 1
 
   // Choosing a status replaces the last one, so the pills are a radio group
   // rather than toggle buttons (#442). Native radios would bring the arrow
