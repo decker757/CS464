@@ -1,16 +1,14 @@
 import { useState } from 'react'
-import FilterPill from '../ui/FilterPill'
+import RadioPillGroup, { type RadioPillOption } from '../ui/RadioPillGroup'
 import SearchForm from '../ui/SearchForm'
+import { closingLabel, type ClosingPreset } from '../../utils/closingWindow'
+import ClosingFilter from './ClosingFilter'
 import { statusDisplay } from './marketStatus'
 
 // The statuses GET /public/markets accepts, in the order market-service.md
 // lists them; draft and submitted are never listed to a trader.
 const STATUS_FILTERS = ['open', 'closed', 'pending_resolution', 'approved', 'settled'] as const
 export type StatusFilter = (typeof STATUS_FILTERS)[number]
-
-// null stands for "All", alongside every real status, so the pill list and
-// its label are drawn from one place instead of "All" being copied in by hand.
-const FILTER_OPTIONS: (StatusFilter | null)[] = [null, ...STATUS_FILTERS]
 
 // The trader's words, not the lifecycle's: "Pending" and "Approved" are
 // steps of a state machine that exists for a rule a trader knows nothing
@@ -21,12 +19,21 @@ function filterLabel(status: StatusFilter | null): string {
   return status === null ? 'All' : statusDisplay(status, 'trader').label
 }
 
+// null stands for "All", alongside every real status, so the pill list and
+// its label are drawn from one place instead of "All" being copied in by hand.
+const FILTER_OPTIONS: RadioPillOption<StatusFilter | null>[] = [null, ...STATUS_FILTERS].map(status => ({
+  value: status,
+  label: filterLabel(status),
+}))
+
 interface MarketFiltersProps {
   /** The search that is applied to the list, not what is half typed in the box. */
   query: string
   status: StatusFilter | null
   onQueryChange: (query: string) => void
   onStatusChange: (status: StatusFilter | null) => void
+  closing: ClosingPreset | null
+  onClosingChange: (closing: ClosingPreset | null) => void
 }
 
 // `pointer-coarse:` on the size, like FilterPill: the chip a finger clears has
@@ -44,21 +51,22 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
   )
 }
 
-export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
+export default function MarketFilters({ query, status, onQueryChange, onStatusChange, closing, onClosingChange }: MarketFiltersProps) {
   // A new key remounts the search box, which empties anything typed in it.
-  // Clearing needs that: with no search applied, the cleared query is the same
+  // Clear all needs that: with no search applied, the cleared query is the same
   // empty string as before, so SearchForm has no change to follow.
   const [searchBoxKey, setSearchBoxKey] = useState(0)
-  const hasActiveFilters = query !== '' || status !== null
-
-  function handleClearQuery() {
-    setSearchBoxKey(key => key + 1)
-    onQueryChange('')
-  }
+  const appliedFilterCount = [query !== '', status !== null, closing !== null].filter(Boolean).length
+  const hasActiveFilters = appliedFilterCount > 0
+  // One filter is cleared by its own chip, so "Clear all" is for more than one
+  // filter (#442).
+  const showClearAll = appliedFilterCount > 1
 
   function handleClearAll() {
-    handleClearQuery()
+    setSearchBoxKey(key => key + 1)
+    onQueryChange('')
     onStatusChange(null)
+    onClosingChange(null)
   }
 
   return (
@@ -72,30 +80,28 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
         onSearch={onQueryChange}
       />
 
-      <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
-        {FILTER_OPTIONS.map(option => (
-          <FilterPill
-            key={option ?? 'all'}
-            active={status === option}
-            aria-pressed={status === option}
-            onClick={() => onStatusChange(option)}
-          >
-            {filterLabel(option)}
-          </FilterPill>
-        ))}
-      </div>
+      {/* Choosing a status replaces the last one, so the pills are a radio
+          group rather than toggle buttons (#442). */}
+      <RadioPillGroup label="Filter by status" options={FILTER_OPTIONS} selected={status} onSelect={onStatusChange} />
+
+      <ClosingFilter closing={closing} onClosingChange={onClosingChange} />
 
       {hasActiveFilters && (
         <div role="group" aria-label="Active filters" className="flex flex-wrap items-center gap-2">
           {query !== '' && (
-            <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={handleClearQuery} />
+            <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={() => onQueryChange('')} />
           )}
           {status !== null && (
             <ActiveFilterChip label={`Status: ${filterLabel(status)}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
           )}
-          <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
-            Clear all
-          </button>
+          {closing !== null && (
+            <ActiveFilterChip label={`Closes: ${closingLabel(closing)}`} clearLabel="Clear closing filter" onClear={() => onClosingChange(null)} />
+          )}
+          {showClearAll && (
+            <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
+              Clear all
+            </button>
+          )}
         </div>
       )}
     </div>

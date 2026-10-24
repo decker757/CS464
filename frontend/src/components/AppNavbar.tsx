@@ -92,7 +92,9 @@ export default function AppNavbar() {
                   above — a separate list, other people's markets, other
                   people's accounts — so they are fenced off rather than
                   sitting in the same run of links. */}
-              <span aria-hidden="true" className="h-5 w-px bg-white/25" />
+              {/* A rule across the dropped-down menu, and a bar between
+                  links in the row (#438). */}
+              <span aria-hidden="true" className="h-px w-full bg-white/25 xl:h-5 xl:w-px" />
               <NavLink to="/admin/markets" end className={navLinkClass}>
                 All Markets
               </NavLink>
@@ -114,7 +116,7 @@ export default function AppNavbar() {
           the navigation: the balance stays on screen because it is the figure
           a trader checks most, and the menu holds the two things that are
           about the account rather than about where to go. */}
-      <div className="flex items-center gap-4 rounded-full border border-white/10 bg-white/5 py-1 pr-1 pl-4">
+      <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pr-1 pl-3 sm:gap-4 sm:pl-4">
         {available !== undefined && <BalanceReadout available={available} />}
         <AccountMenu username={user.username} email={user.email} isLoggingOut={loggingOut} onLogout={handleLogout} />
       </div>

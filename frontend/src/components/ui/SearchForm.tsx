@@ -15,8 +15,8 @@ interface SearchFormProps {
  * user search and the market filters. When `query` changes, the box shows it,
  * so after a submit the box holds the trimmed search. Adjusted during render,
  * React's documented alternative to an effect for resetting state when a prop
- * changes. A caller that clears the search gives the box a new `key` instead,
- * which also empties text typed and never submitted (MarketFilters). */
+ * changes, so clearing an applied search also empties text typed over it and
+ * never submitted. */
 export default function SearchForm({ id, label, placeholder, query, onSearch }: SearchFormProps) {
   const [draft, setDraft] = useState(query)
   const [lastQuery, setLastQuery] = useState(query)

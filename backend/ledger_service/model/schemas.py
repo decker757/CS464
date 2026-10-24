@@ -3,14 +3,16 @@
 These generate the OpenAPI schema at /docs, which is the contract Michelle's
 balance display codes against for [B-2] #33.
 
-Four request models, for the four routes that write: `TradeIn` for [T-2]
+Five request models, for the five routes that write: `TradeIn` for [T-2]
 #22's `POST /ledger/markets/{market_id}/trades`, `OrderIn` for [T-6] #26's
 `POST /ledger/markets/{market_id}/orders`, `CancelIn` for [T-8] #28's
-`POST /ledger/orders/{order_id}/cancel`, and `SettlementIn` for [3.4] #12's
-`POST /ledger/markets/{market_id}/settlement`. None carries an account, an
+`POST /ledger/orders/{order_id}/cancel`, `AdminCancelIn` for [T-8] #326's
+`POST /ledger/admin/orders/{order_id}/cancel`, and `SettlementIn` for [3.4]
+#12's `POST /ledger/markets/{market_id}/settlement`. None carries an account, an
 amount or a leg — `extra="forbid"` refuses a body naming one — which is the
 answer ADR 0009's amendments give to how a caller authenticates to a write
-path.
+path. `SnapshotsIn` is the body of a route that only reads, [X-1] #432's
+`POST /ledger/markets/snapshots`, a POST because its input is a list.
 
 **Amounts are strings, and that is the one deliberate departure from the market
 service**, whose `MarketOut` serialises `liquidity_b` as a JSON number. That was
@@ -40,6 +42,11 @@ from model.entities import Entry, ResultKind, TransactionKind
 
 # `as_utc` stamps a naive value UTC on the way out.
 UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
+
+# The most ids one batch snapshot read accepts: market_service's
+# `max_page_size`, so any page of the browse list fits one request.
+# DECISIONS.md, "The batch snapshot takes at most 200 ids, and refuses more".
+MAX_SNAPSHOT_IDS = 200
 
 
 class BalanceOut(BaseModel):
@@ -97,7 +104,7 @@ class PositionResult(StrEnum):
 
 
 class PortfolioPositionOut(BaseModel):
-    """One outcome the caller still holds. [T-4] #24, [3.4] #12
+    """One outcome the caller still holds. [T-4] #24, [3.4] #12, #410
 
     On a market the ledger has not settled, `value` is what selling the whole
     position now would credit — never `quantity * price` (ADR 0018) — and
@@ -114,7 +121,16 @@ class PortfolioPositionOut(BaseModel):
         ge=0, description="The outcome's order within its market."
     )
 
-    quantity: Decimal
+    quantity: Decimal = Field(
+        description="The whole position, reserved shares included."
+    )
+    reserved_shares: Decimal = Field(
+        description=(
+            "The shares of this outcome the caller's live sell orders still "
+            "hold back. A sell can take quantity - reserved_shares. "
+            "`0.0000` where no live sell order holds any, never null."
+        )
+    )
     cost_basis: Decimal = Field(
         description="What this position cost to build, at average cost."
     )
@@ -154,7 +170,7 @@ class PortfolioPositionOut(BaseModel):
         description="This market's book version this row was valued at."
     )
 
-    @field_serializer("quantity", "cost_basis", "average_entry_price")
+    @field_serializer("quantity", "reserved_shares", "cost_basis", "average_entry_price")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
 
@@ -942,6 +958,65 @@ class SnapshotOut(BaseModel):
         only asserted the offset was present, which is true of both.
         """
         return value.isoformat()
+
+
+class SnapshotsIn(BaseModel):
+    """The markets a batch snapshot read asks about. [X-1] #432.
+
+    Over the cap is `422 invalid_request` rather than clamped: a market a
+    clamp left out would read as a market with no book.
+    """
+
+    market_ids: list[uuid.UUID] = Field(
+        max_length=MAX_SNAPSHOT_IDS,
+        description=(
+            "At most 200, counted as sent. A repeated id is answered once, "
+            "and an empty list is answered with no snapshots."
+        ),
+    )
+
+
+class ListedSnapshotOut(SnapshotOut):
+    """One market in the batch snapshot: the single snapshot's body, plus what
+    a card shows beside it: its prices a week ago ([X-1] #446) and the credits
+    its trades have moved ([X-1] #447).
+
+    DECISIONS.md, "The batch snapshot carries `credits_traded`, and the single
+    snapshot does not": the single snapshot is the `price` frame without its
+    `type`, and the frame does not carry it.
+    """
+
+    prices_7d_ago: list[OutcomePriceOut] | None = Field(
+        description=(
+            "Each outcome's price seven days before this read: the price "
+            "after the last trade at or before then, in the shape of `prices`. "
+            "Null when the market has no trade that old."
+        ),
+    )
+    credits_traded: Decimal = Field(
+        description=(
+            "Every credit this market's trades have moved, a buy's cost and a "
+            "sell's proceeds alike, a resting order's fills included, as an "
+            "exact decimal string. `0.0000` for a market nobody has traded."
+        ),
+    )
+
+
+class SnapshotListOut(BaseModel):
+    """The current price of every requested market that has a book. [X-1] #432.
+
+    Each item is `ListedSnapshotOut`, the single snapshot's body plus the
+    batch's own fields. An object around a list of objects, so a field can be
+    added to the answer or to each market later without breaking a client
+    (#446, #447).
+    """
+
+    snapshots: list[ListedSnapshotOut] = Field(
+        description=(
+            "In the order each id first appears in `market_ids`. An id with "
+            "no book here, or a book that cannot be priced, is absent."
+        ),
+    )
 
 
 class PricePointOut(BaseModel):

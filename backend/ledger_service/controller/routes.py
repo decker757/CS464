@@ -22,6 +22,8 @@ amendment. `POST /markets/{market_id}/orders` ([T-6] #26) is the same shape:
 and what it releases is derived from the caller's own order row.
 `POST /admin/orders/{order_id}/cancel` ([T-8] #326) is the same cancel for an
 administrator, of any trader's order, and its body is only the reason.
+`POST /markets/snapshots` ([X-1] #432) is not one of the five: it is a POST
+only because its input is a list of ids, and it writes nothing.
 
 `POST /markets/{market_id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service and the holders
@@ -68,6 +70,7 @@ from model.schemas import (
     LeaderboardPageOut,
     LedgerEntryListResponse,
     LedgerEntryOut,
+    ListedSnapshotOut,
     MarketTradeListResponse,
     OrderIn,
     OrderListOut,
@@ -81,7 +84,9 @@ from model.schemas import (
     PricePointOut,
     SettlementIn,
     SettlementOut,
+    SnapshotListOut,
     SnapshotOut,
+    SnapshotsIn,
     TradeIn,
     TradeOut,
     ValidationErrorOut,
@@ -100,6 +105,7 @@ from service import (
     trading,
 )
 from service.book_prices import PricedOutcome
+from service.snapshot import ListedSnapshot, Snapshot
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -274,6 +280,10 @@ _PORTFOLIO_DESCRIPTION = (
     "banked, `unrealized_pnl` is the sum of the rows' own, and `total_pnl` "
     "is both — which is `net_worth - starting_credits`, exactly. Nothing is "
     "stored: every figure is derived from the entries on each read.\n\n"
+    "#410. `quantity` is the whole position. `reserved_shares` is the part "
+    "of it the caller's live sell orders hold back, derived from the orders "
+    "in the same statement, and `0.0000` where there is none. A sell can "
+    "take `quantity - reserved_shares`.\n\n"
     "Only positions with quantity > 0 are shown, ordered by `market_id` "
     "then `outcome_position`; there is no admin variant."
 )
@@ -314,6 +324,7 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
                 outcome_id=p.outcome_id,
                 outcome_position=p.outcome_position,
                 quantity=p.quantity,
+                reserved_shares=result.reserved_shares[(p.market_id, p.outcome_id)],
                 cost_basis=p.cost_basis,
                 average_entry_price=p.average_entry_price,
                 price=p.price,
@@ -473,6 +484,16 @@ _SNAPSHOT_DESCRIPTION = (
 )
 
 
+def _snapshot_out(result: Snapshot) -> SnapshotOut:
+    """The wire form of one market's snapshot."""
+    return SnapshotOut(
+        market_id=result.market_id,
+        state_version=result.state_version,
+        prices=_prices_out(result.prices),
+        occurred_at=result.occurred_at,
+    )
+
+
 @router.get(
     "/markets/{market_id}/snapshot",
     response_model=SnapshotOut,
@@ -500,11 +521,69 @@ async def market_snapshot(
     result = await snapshot_service.snapshot(
         session, market_id, access_token=access_token, terms_client=terms_client
     )
-    return SnapshotOut(
-        market_id=result.market_id,
-        state_version=result.state_version,
-        prices=_prices_out(result.prices),
-        occurred_at=result.occurred_at,
+    return _snapshot_out(result)
+
+
+def _listed_snapshot_out(listed: ListedSnapshot) -> ListedSnapshotOut:
+    """The wire form of one market in the batch: the single snapshot's body,
+    plus its prices a week ago and its `credits_traded`."""
+    prices_7d_ago = None
+    if listed.prices_7d_ago is not None:
+        prices_7d_ago = _prices_out(listed.prices_7d_ago)
+    return ListedSnapshotOut(
+        **_snapshot_out(listed).model_dump(),
+        prices_7d_ago=prices_7d_ago,
+        credits_traded=listed.credits_traded,
+    )
+
+
+_SNAPSHOTS_DESCRIPTION = (
+    "[X-1] #432. The current price of many markets in one request, for a "
+    "list of cards. A POST because its input is a list; it writes nothing.\n\n"
+    "Any valid access token, any role, like the single snapshot.\n\n"
+    "Each item in `snapshots` is the single snapshot's body for that market, "
+    "plus `prices_7d_ago` ([X-1] #446): each outcome's price after the last "
+    "trade at or before seven days ago, or null when the market has no trade "
+    "that old; and `credits_traded` ([X-1] #447): every credit its trades have "
+    "moved, buys and sells alike, a resting order's fills included, as a "
+    "decimal string, and `0.0000` for a market nobody has traded. "
+    "Each market is answered once, in the order its id first appears in "
+    "`market_ids`. One statement reads every book and one more their trades, "
+    "with no lock.\n\n"
+    "**An id with no book here is absent, not an error.** Unlike the single "
+    "snapshot this route opens no book and never calls market_service, so a "
+    "published market nobody has previewed, traded or snapshotted is absent "
+    "too; the single snapshot opens it. A book that cannot be priced is "
+    "absent and logged rather than a 500.\n\n"
+    "**At most 200 ids**, market_service's largest browse page. More is "
+    "`422 invalid_request`. Never checks whether a market is still open "
+    "(ADR 0017)."
+)
+
+
+@router.post(
+    "/markets/snapshots",
+    response_model=SnapshotListOut,
+    summary="The current price of many markets at once",
+    description=_SNAPSHOTS_DESCRIPTION,
+    responses={
+        401: {"description": "Missing, malformed or expired access token."},
+        422: _invalid_request(
+            "`invalid_request`: `market_ids` is missing, holds a value that "
+            "is not a UUID, or holds more than 200 ids."
+        ),
+    },
+)
+async def market_snapshots(
+    body: SnapshotsIn, user: CurrentUser, session: DbSession
+) -> SnapshotListOut:
+    # Python's clock, which stamped the trades, read once here. DECISIONS.md,
+    # "A card's price change is measured from the last trade at or before
+    # seven days ago, and a market with none has no change".
+    now = datetime.now(UTC)
+    results = await snapshot_service.list_snapshots(session, body.market_ids, now=now)
+    return SnapshotListOut(
+        snapshots=[_listed_snapshot_out(result) for result in results]
     )
 
 

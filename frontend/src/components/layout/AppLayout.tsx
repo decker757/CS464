@@ -11,7 +11,7 @@ export default function AppLayout({ width, children }: AppLayoutProps) {
   return (
     <div className="min-h-screen bg-smu-cream">
       <AppNavbar />
-      <main className={`mx-auto px-8 py-12 ${width}`}>{children}</main>
+      <main className={`mx-auto px-4 py-8 sm:px-8 sm:py-12 ${width}`}>{children}</main>
     </div>
   )
 }
