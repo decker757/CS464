@@ -260,6 +260,9 @@ async def test_a_void_committed_while_a_settlement_queues_is_refused_under_the_l
             await book_lock_waiters(1, "the settlement never queued on the book lock", tasks)
         finally:
             outcomes = await finish(tasks, release, staged)
+        # Before either session closes, so only the refusal's own rollback
+        # can have released the lock.
+        lock_released = await book_lock_is_free(upstream.market_id)
     finally:
         await voiding.close()
         await settling.close()
@@ -273,7 +276,7 @@ async def test_a_void_committed_while_a_settlement_queues_is_refused_under_the_l
     ), "the settlement wrote beside the void"
     assert await settled_entries(audit_reader, actor.id) == []
     assert upstream.posts == 0
-    assert await book_lock_is_free(upstream.market_id)
+    assert lock_released, "the refusal under the book lock left it held"
 
 
 async def _winners(session: AsyncSession, upstream: SettleUpstream) -> list[uuid.UUID]:
