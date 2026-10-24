@@ -114,6 +114,7 @@ class SettleUpstream:
             "published_at": "2026-09-01T09:00:00Z",
             "proposed_outcome_id": str(self.outcomes[WINNER]),
             "settleable": settleable,
+            "voidable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)

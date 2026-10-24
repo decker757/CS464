@@ -123,6 +123,7 @@ class _Market:
                     "published_at": "2026-09-01T09:00:00Z",
                     "proposed_outcome_id": None,
                     "settleable": False,
+                    "voidable": False,
                     "outcomes": [
                         {"id": str(o), "position": i, "label": f"Outcome {i}"}
                         for i, o in enumerate(self.outcomes)
@@ -190,6 +191,7 @@ class _Terms:
                 status=self.status,
                 proposed_outcome_id=None,
                 settleable=False,
+                voidable=False,
             )
 
         monkeypatch.setattr(market_terms, "fetch", fake)

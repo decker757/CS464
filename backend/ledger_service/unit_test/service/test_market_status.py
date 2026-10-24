@@ -100,6 +100,7 @@ class _Upstream:
             "published_at": published_at,
             "proposed_outcome_id": None,
             "settleable": False,
+            "voidable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)
@@ -483,6 +484,21 @@ async def test_a_body_without_settleable_is_unavailable_at_the_gate(
     """
     upstream = _Upstream()
     del upstream.body["settleable"]
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _gate(session, upstream)
+
+
+async def test_a_body_without_voidable_is_unavailable_at_the_gate(
+    session: AsyncSession,
+) -> None:
+    """ADR 0025, ruling D: the trade path reads no void field, and still
+    refuses a body missing `voidable`, which is why market_service deploys it
+    first. The status is "open", so the missing key is the only thing that
+    can refuse it.
+    """
+    upstream = _Upstream()
+    del upstream.body["voidable"]
 
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _gate(session, upstream)

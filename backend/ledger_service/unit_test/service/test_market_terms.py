@@ -53,6 +53,7 @@ def _terms_body(**overrides: object) -> dict[str, object]:
         "published_at": "2026-09-01T09:00:00Z",
         "proposed_outcome_id": None,
         "settleable": False,
+        "voidable": False,
         "outcomes": [
             {"id": str(_YES), "position": 0, "label": "Yes"},
             {"id": str(_NO), "position": 1, "label": "No"},
@@ -554,6 +555,7 @@ def test_market_terms_without_a_status_cannot_be_built() -> None:
             outcomes=[],
             proposed_outcome_id=None,
             settleable=False,
+            voidable=False,
         )
 
 
@@ -568,6 +570,7 @@ def _without(field: str) -> dict[str, object]:
         "outcomes": [],
         "proposed_outcome_id": None,
         "settleable": False,
+        "voidable": False,
     }
     del fields[field]
     return fields
@@ -619,6 +622,53 @@ async def test_a_malformed_settlement_field_is_unavailable(
     else can be what refuses it. A 503 on every pull, the trade path's
     included (ADR 0017's amendment).
     """
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _terms().fetch(
+            _MARKET_ID,
+            access_token=_token(),
+            terms_client=terms_client_over(_responds(body=body)),
+        )
+
+
+# --- [BE] #221: `voidable`, parsed as strictly as `settleable` ------------
+@pytest.mark.parametrize("voidable", [True, False])
+async def test_voidable_is_carried_through(voidable: bool) -> None:
+    """DECISIONS.md, "`MarketTerms` carries `voidable`, required, and
+    market_service deploys it first". The client carries the flag and decides
+    nothing on it: the void reads it (ADR 0025)."""
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        terms_client=terms_client_over(_responds(body=_terms_body(voidable=voidable))),
+    )
+
+    assert terms.voidable is voidable
+
+
+def test_market_terms_without_voidable_cannot_be_built() -> None:
+    """ADR 0025, ruling D: `voidable` has no default. True would refund a
+    market whose result is final; false hides a broken deploy as a market
+    that can never be voided."""
+    with pytest.raises(TypeError, match=r"missing .*'voidable'"):
+        _terms().MarketTerms(**_without("voidable"))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            {k: v for k, v in _terms_body().items() if k != "voidable"}, id="absent"
+        ),
+        # Truthy: coerced, it would refund a market whose result is final.
+        pytest.param(_terms_body(voidable="false"), id="the string false"),
+        # `bool` subclasses `int`, so `isinstance(v, int)` would take this.
+        pytest.param(_terms_body(voidable=0), id="the number 0"),
+        pytest.param(_terms_body(voidable=None), id="null"),
+    ],
+)
+async def test_a_malformed_voidable_is_unavailable(body: object) -> None:
+    """Each body differs from a valid one in `voidable` alone, so nothing else
+    can refuse it. A 503 on every pull (ADR 0025, ruling D)."""
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
             _MARKET_ID,
@@ -961,3 +1011,109 @@ async def test_a_fetch_failure_logs_nothing_at_error(
             )
 
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+# --- [BE] #221: mark_voided, the void's last step ---------------------------
+_REASON = "The match was abandoned after ten overs; there is no result."
+
+
+async def _mark_voided(
+    transport: httpx.MockTransport,
+    *,
+    access_token: str | None = None,
+    reason: str = _REASON,
+) -> None:
+    return await _terms().mark_voided(
+        _MARKET_ID,
+        reason=reason,
+        access_token=access_token if access_token is not None else _token(),
+        terms_client=terms_client_over(transport),
+    )
+
+
+async def test_mark_voided_posts_the_reason_to_void_with_the_token() -> None:
+    """`docs/api/market-service.md`, `POST /markets/{id}/void`: the body is
+    `{"reason": ...}`, stored as sent, and the administrator's token is
+    forwarded (ADR 0025, step 8)."""
+    token = _token()
+    seen: list[httpx.Request] = []
+
+    result = await _mark_voided(_responds(record=seen), access_token=token)
+
+    assert result is None
+    assert len(seen) == 1
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == f"/markets/{_MARKET_ID}/void"
+    assert json.loads(seen[0].content) == {"reason": _REASON}
+    assert seen[0].headers["Authorization"] == f"Bearer {token}"
+
+
+async def test_mark_voided_does_not_read_the_body_of_a_200() -> None:
+    """The status code is the whole answer, as for `mark_settled`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    assert await _mark_voided(httpx.MockTransport(handler)) is None
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        pytest.param(_answers(401, "invalid_token"), id="401"),
+        pytest.param(_answers(404, "market_not_found"), id="404"),
+        pytest.param(_answers(409, "market_not_voidable"), id="409 not voidable"),
+        pytest.param(_answers(409, "market_already_settled"), id="409 settled"),
+        pytest.param(_answers(500, "internal_error"), id="500"),
+        # "Anything but a `200`": a success that is not one confirms nothing.
+        pytest.param(_answers(204), id="204"),
+        pytest.param(_raises(httpx.ConnectError("nope")), id="connect error"),
+        pytest.param(_raises(httpx.ReadTimeout("slow")), id="read timeout"),
+    ],
+)
+async def test_every_answer_but_200_is_void_unconfirmed(
+    transport: httpx.MockTransport,
+) -> None:
+    """ADR 0025, step 8: the refunds have committed, so every failure has the
+    one remedy, repeat the request. A 409 or a 404 mapped as `fetch` maps
+    them would say nothing happened."""
+    with pytest.raises(_errors().VoidUnconfirmed):
+        await _mark_voided(transport)
+
+
+async def test_void_unconfirmed_is_a_503_named_void_unconfirmed() -> None:
+    """The code a client acts on, from the void's contract."""
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _mark_voided(_answers(409, "market_not_voidable"))
+
+    assert isinstance(raised.value, _errors().VoidUnconfirmed)
+    assert raised.value.status_code == 503
+    assert raised.value.code == "void_unconfirmed"
+
+
+@pytest.mark.parametrize(
+    ("transport", "cause"),
+    [
+        pytest.param(_answers(409, "market_not_voidable"), "409", id="a status code"),
+        pytest.param(
+            _raises(httpx.ConnectError("nope")), "ConnectError", id="an exception"
+        ),
+    ],
+)
+async def test_a_mark_voided_failure_is_logged_at_error_naming_the_cause(
+    caplog: pytest.LogCaptureFixture, transport: httpx.MockTransport, cause: str
+) -> None:
+    """Refunds have moved and the market is not marked until a person repeats
+    the request: logged at ERROR, as `mark_settled`'s failure is."""
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(_errors().VoidUnconfirmed):
+            await _mark_voided(transport)
+
+    errors = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+    ]
+    assert any(
+        str(_MARKET_ID) in message and cause in message for message in errors
+    ), f"no ERROR record names {_MARKET_ID} and {cause}: {caplog.records}"
