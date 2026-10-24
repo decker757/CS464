@@ -32,6 +32,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     event,
@@ -86,8 +87,9 @@ class TransactionKind(StrEnum):
     """Why credits moved.
 
     SIGNUP_GRANT is the oldest member. TRADE_BUY and TRADE_SELL arrived with
-    [T-2] #22 and [T-3] #23, and SETTLEMENT and SETTLEMENT_RESIDUE with [3.4]
-    #12. Each is a Python-only addition for the same reason as `AccountKind`.
+    [T-2] #22 and [T-3] #23, SETTLEMENT and SETTLEMENT_RESIDUE with [3.4] #12,
+    and VOID_REFUND and VOID_RESIDUE with [BE] #221. Each is a Python-only
+    addition for the same reason as `AccountKind`.
     """
 
     SIGNUP_GRANT = "signup_grant"
@@ -114,17 +116,27 @@ class TransactionKind(StrEnum):
     # holds after the holders are paid. [3.4] #12, ADR 0019.
     SETTLEMENT_RESIDUE = "settlement_residue"
 
+    # MARKET_POOL -> USER, posted once per position a void refunds more than
+    # zero: what its shares still held cost. [BE] #221, ADR 0025.
+    VOID_REFUND = "void_refund"
+
+    # Between MARKET_POOL and PLATFORM, posted once per voided market unless
+    # it is exactly zero, so the pool ends at zero. [BE] #221, ADR 0025.
+    VOID_RESIDUE = "void_residue"
+
 
 class ResultKind(StrEnum):
     """How a market ended. [3.4] #12, D-NEW "`ledger.market_results` is one
     record per finished market, with a `kind`".
 
-    Only SETTLED exists. A second member is [BE] #221's, and arrives with its
-    own columns and CHECK clauses. Non-native like the rest, so the column is a
-    plain varchar with no CHECK on its values.
+    SETTLED names a winner. VOIDED ([BE] #221, ADR 0025) names none, and
+    carries the reason and the administrator instead; the CHECK clauses on
+    `MarketResult` bind each column to its kind. Non-native like the rest, so
+    the column is a plain varchar with no CHECK on its values.
     """
 
     SETTLED = "settled"
+    VOIDED = "voided"
 
 
 class OrderStatus(StrEnum):
@@ -603,12 +615,16 @@ class MarketResult(Base):
     different winner or otherwise. The trade latch and the settlement both read
     a row of this table under the book lock and never filter on `kind`.
 
-    `outcome_id` is nullable so a later kind that names no winner needs no
-    ALTER ([BE] #221). The paired CHECK is what binds the two columns, and the
+    `outcome_id` is nullable because a void names no winner ([BE] #221). The
+    paired CHECK is what binds the two columns, and the
     composite key is what makes a winner one of this market's own outcomes:
     Postgres skips a composite key when any column is null, which is why
     `market_id` also has the plain foreign key. Neither key has an ON DELETE,
     for the reason `Entry.transaction_id` has none.
+
+    `reason` and `voided_by` are a void's, each set exactly when `kind =
+    'voided'` by its own CHECK (ADR 0025). `voided_by` is the administrator's
+    token `sub`, and cannot be an FK: auth's users are another schema.
 
     Not append-only at the database, on purpose: D-NEW "`ledger.market_results`
     carries no append-only trigger".
@@ -628,6 +644,11 @@ class MarketResult(Base):
     # No default, like `MarketBook.opened_at`: the settlement supplies it.
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    # Trimmed, as the void's route accepted it. ADR 0025.
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    voided_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
     __table_args__ = (
         ForeignKeyConstraint(
             ["market_id", "outcome_id"],
@@ -637,6 +658,14 @@ class MarketResult(Base):
         CheckConstraint(
             "(kind = 'settled') = (outcome_id IS NOT NULL)",
             name="ck_market_results_outcome_iff_settled",
+        ),
+        CheckConstraint(
+            "(kind = 'voided') = (reason IS NOT NULL)",
+            name="ck_market_results_reason_iff_voided",
+        ),
+        CheckConstraint(
+            "(kind = 'voided') = (voided_by IS NOT NULL)",
+            name="ck_market_results_voided_by_iff_voided",
         ),
     )
 
