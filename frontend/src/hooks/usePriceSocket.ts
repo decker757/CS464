@@ -311,6 +311,13 @@ export function usePriceSocket(
       }
       socket?.close()
       socketRef.current = null
+      // StrictMode mounts, unmounts and remounts, and the second mount starts
+      // from empty state — so the record of what has been read has to start
+      // over with it, or a market read only on the cancelled first mount is
+      // never read again and its card waits for a price for good (#104
+      // amendment D). The app runs in StrictMode, so this is every page load
+      // in development.
+      readRef.current = new Set()
     }
   }, [])
 

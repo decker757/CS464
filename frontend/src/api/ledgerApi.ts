@@ -43,14 +43,12 @@ export interface MarketSnapshot extends PriceState {
   credits_traded: string
 }
 
-// The largest number of ids `POST /ledger/markets/snapshots` accepts, which is
-// market_service's largest page, so any one page of the browse list fits in a
-// single request. A 201st id is a 422 naming `market_ids` rather than a short
-// answer, so a caller with more ids than this splits them.
-export const SNAPSHOT_BATCH_LIMIT = 200
-
 /**
  * The current prices of many markets in one request ([X-1] #432).
+ *
+ * At most 200 ids — market_service's largest page, so one page of the browse
+ * list always fits. A 201st is a 422 naming `market_ids` rather than a short
+ * answer, so a caller with more than that splits the request.
  *
  * A market is absent from the answer rather than erroring when this service
  * holds no book for it — an unknown id, a draft, and a published market
