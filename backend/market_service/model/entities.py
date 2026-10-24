@@ -171,7 +171,8 @@ class AdminMarketCard:
     lacks (D-019). `status` is the derived value with no raw one beside it.
     `settleable` is derived against the same `now`. [3.4] #12.
     `dispute_window_ends_at` is the stored column, passed through for the
-    countdown. [3.3] #11, ADR 0023.
+    countdown. [3.3] #11, ADR 0023. `voidable` is derived against the same
+    `now`, from the stored status. [BE] #221, ADR 0025.
     """
 
     id: uuid.UUID
@@ -181,6 +182,7 @@ class AdminMarketCard:
     close_time: datetime | None
     settleable: bool
     dispute_window_ends_at: datetime | None
+    voidable: bool
 
 
 @dataclass(frozen=True)
@@ -359,6 +361,19 @@ class Market(Base):
     dispute_window_ends_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # --- the void. [BE] #221 -------------------------------------------------
+    #
+    # Null unless VOIDED, and set together: the clock read after the row lock,
+    # and the reason as the ledger forwards it. The one reason kept on the
+    # row rather than only in the audit log, because traders must see why
+    # they were refunded and this service cannot read the log. No
+    # `voided_by`: the audit entries name the administrator. No CHECK, as for
+    # `dispute_window_ends_at`. ADR 0025.
+    voided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    void_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     outcomes: Mapped[list[MarketOutcome]] = relationship(
         back_populates="market",

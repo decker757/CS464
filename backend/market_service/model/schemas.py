@@ -453,6 +453,12 @@ class MarketOut(_UtcTimestamps):
     approved_by_username: str | None
     approved_at: datetime | None
 
+    # --- the void. [BE] #221 -------------------------------------------------
+    # Both null unless `voided`. Required keys, as on the public detail.
+    # ADR 0025.
+    voided_at: datetime | None
+    void_reason: str | None
+
     # --- derived, read-only -------------------------------------------------
     # [1.2] #2. The q = 0 prices from core/opening_prices.py, derived on every
     # read so they cannot drift from `b` and the outcome count.
@@ -596,6 +602,16 @@ class PublicMarketOut(_UtcTimestamps):
     # field cannot read as "no window". ADR 0023.
     dispute_window_ends_at: datetime | None
 
+    # [BE] #221. Stamped by `get_published` like `settleable`, from the stored
+    # status, and required with no default for the same reason: the ledger
+    # refunds on it, and a missing flag must not read as true. ADR 0025.
+    voidable: bool
+
+    # [BE] #221. Both null unless `voided`. The reason is the only
+    # explanation a trader gets of their refund. ADR 0025.
+    voided_at: datetime | None
+    void_reason: str | None
+
     @model_validator(mode="after")
     def _hide_an_undecided_proposal(self) -> PublicMarketOut:
         """Hide a proposed winner until it is decided. D-026.
@@ -651,6 +667,8 @@ class MarketOverviewRowOut(_UtcTimestamps):
     settleable: bool
     # [3.3] #11. The stored column, for the countdown, as on the public detail.
     dispute_window_ends_at: datetime | None
+    # [BE] #221. The public detail's flag, against the same instant. ADR 0025.
+    voidable: bool
 
 
 class MarketOverviewResponse(BaseModel):
