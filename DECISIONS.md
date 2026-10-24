@@ -10666,7 +10666,10 @@ and a second copy of the guard.
 **Notes.** Decided by Ihsan on 2026-10-20 (ruling B of ADR 0025). The
 function's name is the core PR's. The extraction is behaviour-free for the
 price history, so it can sit in the void's core PR with the price history's
-tests unchanged and green.
+tests unchanged and green. Since #446, `list_prices_at` reaches the check
+through `price_history_of` too, and it logs a failure and leaves out only that
+card's `prices_7d_ago` rather than answering `500`. The extraction keeps that
+mapping, as it keeps the price history's.
 
 ---
 
@@ -10742,7 +10745,8 @@ every retry after the money moved.
 acts on one trader's account, and its reason is logged only. A void's reason
 is shown to every trader in the market.
 
-**Notes.** A ruling of the PR that wrote ADR 0025, not of #221's thread.
+**Notes.** A ruling of the PR that wrote ADR 0025, not of #221's thread. The
+5,000 ceiling was confirmed by Ihsan on 2026-10-25 (ADR 0025, question 3).
 
 ---
 
@@ -10773,9 +10777,10 @@ one, so a replay gives the same figure.
 - *A fraction rather than `total_owed`*: a ratio needs a scale, and two
   amounts at scale 4 need none.
 
-**Notes.** A ruling of the PR that wrote ADR 0025, and an open question for
-Ernest: a repeat pays for the replay again, which only the speed test will
-price.
+**Notes.** A ruling of the PR that wrote ADR 0025. A repeat pays for the
+replay again, which only the speed test will price. Accepted by Ihsan on
+2026-10-25 (ADR 0025, "Decisions on the open questions", question 2): a repeat
+happens only after a `503`, and the record stays free of derived totals.
 
 ---
 
@@ -11060,3 +11065,85 @@ index: the browse already reads every visible market to order it, and
 `ix_markets_due_close` is partial on `status = 'open'` for the sweep. An
 index on the stopped-at expression earns its place when the browse is
 measured slow, and it would serve the order before it served this filter.
+
+---
+
+### D-NEW — The engine's precision context is public in `core/lmsr.py`, and the void's cut calls it rather than a copy
+
+**Date:** 2026-10-25 · **Ticket:** #221 · **Status:** active
+
+**Decision.** The void's core PR makes the context `core/lmsr.py`'s
+`_engine_context` builds public, by renaming it or by adding a public wrapper,
+and the void's cut runs inside it. The void's module holds no copy of the
+precision or of the context.
+
+**Why.** ADR 0025 specifies the cut, `r × (P + S) / R`, multiplied first and
+then divided, at the pricing engine's precision, so that two builders cut the
+same refund to the same tick. Two copies of that precision that drifted apart
+would cut refunds differently from the engine that priced the trades, which is
+a money bug. That passes the bar ADR 0012 sets for sharing code: every caller
+needs identical behaviour, and a divergence would be a bug rather than a
+design choice.
+
+**Rejected.** *A copy of the context in the void's module*: the divergence
+above, for a saving of one import.
+
+**Notes.** Decided by Ihsan on 2026-10-25 (ADR 0025, "Decisions on the open
+questions", question 7). `core/pricing.py`, `core/limit_orders.py` and
+`core/price_history.py` already import the private name, so a rename touches
+all three. Under "A refactor never shares a PR with a behaviour change" a
+rename lands as its own refactor PR below the core PR; a public wrapper does
+not need one. The core PR chooses.
+
+---
+
+### D-NEW — A voided market's `credits_traded` is left as it is
+
+**Date:** 2026-10-25 · **Ticket:** #221 · **Status:** active
+
+**Decision.** A void does not change the book's `credits_traded`. The batch
+snapshot answers a voided market with its last `prices`, its `prices_7d_ago`
+and its `credits_traded`, as it answers a settled one. No backend code changes
+for it.
+
+**Why.**
+- *It records trades that happened.* A void refunds what the shares still held
+  cost; it does not undo the trades, and every sale stands.
+- *"Only ever rises" is documented.* `docs/api/ledger-service.md` promises it,
+  and "`credits_traded` is a counter on the book, raised in `write_trade` under
+  the book lock" makes it true by construction. A void writes no trade, so
+  nothing touches it.
+- *A settlement payout does not count either* ("A market's activity is the
+  credits it has traded, buys and sells alike"). A refund is the same kind of
+  movement: money that is not a trade.
+
+**Rejected.** *Unwinding it by the refunds*: it would fall, against the
+contract, and the void would have to write the book row it otherwise leaves
+alone.
+
+**Notes.** Decided by Ihsan on 2026-10-25 (ADR 0025, "Decisions on the open
+questions"). Found when #474 merged, after ADR 0025 was written.
+
+---
+
+### D-NEW — A voided card shows "Voided", with no probability and no price change
+
+**Date:** 2026-10-25 · **Ticket:** #221 · **Status:** active
+
+**Decision.** On the browse list, a card for a `voided` market shows
+"Voided" where a trading market shows its probability, and shows no price
+change, though the batch snapshot still carries `prices` and `prices_7d_ago`
+for it.
+
+**Why.** A voided market has no answer, so its last probability and its
+change describe nothing a trader can act on. It is the rule #429 sets for a
+resolved market: a market past PENDING_RESOLUTION does not present a
+tradeable-looking probability.
+
+**Rejected.** *Leaving out a voided market's prices from the batch*: a
+backend change for what is a display rule, and the single snapshot and the
+price history would still answer them.
+
+**Notes.** Decided by Ihsan on 2026-10-25 (ADR 0025, "Decisions on the open
+questions"). For the [FE] sub-issue of #221; listed in the void screen's notes
+in `docs/api/market-service.md`.
