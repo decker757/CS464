@@ -12,6 +12,7 @@ import MarketsPage from './MarketsPage'
 
 const MARKET_BASE = 'http://localhost:8001'
 const SNAPSHOT = 'http://localhost:8003/ledger/markets/:id/snapshot'
+const SNAPSHOT_BATCH = 'http://localhost:8003/ledger/markets/snapshots'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
@@ -34,6 +35,32 @@ function snapshotFor(marketId: string, prices: string[]) {
     prices: prices.map((price, position) => ({ outcome_id: `${marketId}-${position}`, position, price })),
     occurred_at: '2026-09-15T09:12:44.318000+00:00',
   }
+}
+
+
+// The browse list reads its whole page in one request ([X-1] #432) and keeps
+// the single snapshot for a retry and for a market the batch left out. A test
+// says what one market's snapshot is, and this serves it on both routes, so
+// each test still reads as "this market is priced like so".
+//
+// `snapshotOf` returns the snapshot body for an id, or null for a market the
+// ledger holds no book for — absent from the batch's answer, which is how the
+// route reports exactly that.
+function serveSnapshots(snapshotOf: (marketId: string) => object | null) {
+  server.use(
+    http.post(SNAPSHOT_BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      const snapshots = ids.map(snapshotOf).filter(snapshot => snapshot !== null)
+      return HttpResponse.json({ snapshots })
+    }),
+    http.get(SNAPSHOT, ({ params }) => {
+      const snapshot = snapshotOf(String(params.id))
+      if (!snapshot) {
+        return HttpResponse.json({ error: { code: 'market_not_found', message: 'No book.' } }, { status: 404 })
+      }
+      return HttpResponse.json(snapshot)
+    }),
+  )
 }
 
 // The card holding this question: the whole panel, not the link inside it, so
@@ -77,9 +104,7 @@ describe('MarketsPage', () => {
   // Every card asks the ledger for its prices; tests about other things get a
   // plain answer rather than an unhandled request.
   beforeEach(() => {
-    server.use(
-      http.get(SNAPSHOT, ({ params }) => HttpResponse.json(snapshotFor(String(params.id), ['0.5000', '0.5000']))),
-    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
   })
 
   it('shows a card for each market returned by the API', async () => {
@@ -191,11 +216,9 @@ describe('MarketsPage', () => {
   it("shows each card's YES/NO prices from that market's snapshot", async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
-      http.get(SNAPSHOT, ({ params }) =>
-        params.id === 'a1'
-          ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
-          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000'])),
-      ),
+    )
+    serveSnapshots(id =>
+      id === 'a1' ? snapshotFor('a1', ['0.1235', '0.8765']) : snapshotFor('b2', ['0.7000', '0.3000']),
     )
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
@@ -215,13 +238,13 @@ describe('MarketsPage', () => {
   it('shows a dash for a price that cannot be loaded, and still shows the market', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
-      http.get(SNAPSHOT, ({ params }) =>
-        params.id === 'a1'
-          ? HttpResponse.json(
-              { error: { code: 'market_terms_unavailable', message: 'Try again.' } },
-              { status: 503 },
-            )
-          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000'])),
+    )
+    server.use(
+      http.post(SNAPSHOT_BATCH, () => HttpResponse.json({ snapshots: [snapshotFor('b2', ['0.7000', '0.3000'])] })),
+      // a1 is absent from the batch, so the card asks for it directly — and
+      // the ledger cannot price that book either.
+      http.get(SNAPSHOT, () =>
+        HttpResponse.json({ error: { code: 'market_terms_unavailable', message: 'Try again.' } }, { status: 503 }),
       ),
     )
     renderPage()
@@ -251,6 +274,11 @@ describe('MarketsPage', () => {
     let failing = true
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })),
+    )
+    server.use(
+      http.post(SNAPSHOT_BATCH, () =>
+        failing ? HttpResponse.error() : HttpResponse.json({ snapshots: [snapshotFor('b2', ['0.7000', '0.3000'])] }),
+      ),
       http.get(SNAPSHOT, () =>
         failing ? HttpResponse.error() : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000'])),
       ),
@@ -276,8 +304,8 @@ describe('MarketsPage', () => {
   it('invites the first trade on a market nobody has traded, rather than showing its seed price', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('a1', ['0.5000', '0.5000']), state_version: 0 })),
     )
+    serveSnapshots(() => ({ ...snapshotFor('a1', ['0.5000', '0.5000']), state_version: 0 }))
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
     const card = cardFor('Will SMU win SUNIG?')
@@ -297,8 +325,8 @@ describe('MarketsPage', () => {
   it('does not invite a trade on a market that closed untraded', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('b2', ['0.5000', '0.5000']), state_version: 0 })),
     )
+    serveSnapshots(() => ({ ...snapshotFor('b2', ['0.5000', '0.5000']), state_version: 0 }))
     renderPage()
     await screen.findByText('Will inflation fall below 2%?')
     const card = cardFor('Will inflation fall below 2%?')
@@ -314,8 +342,8 @@ describe('MarketsPage', () => {
     const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('a1', ['0.6200', '0.3800']), occurred_at: threeHoursAgo })),
     )
+    serveSnapshots(() => ({ ...snapshotFor('a1', ['0.6200', '0.3800']), occurred_at: threeHoursAgo }))
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
     const card = cardFor('Will SMU win SUNIG?')
@@ -334,8 +362,8 @@ describe('MarketsPage', () => {
     }
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json(snapshotFor('d4', ['0.5000', '0.3000', '0.2000']))),
     )
+    serveSnapshots(() => snapshotFor('d4', ['0.5000', '0.3000', '0.2000']))
     renderPage()
     await screen.findByText('Who wins the NBA Finals?')
     const card = cardFor('Who wins the NBA Finals?')
@@ -356,16 +384,16 @@ describe('MarketsPage', () => {
     }
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({
-        market_id: 'e5',
-        state_version: 3,
-        prices: [
-          { outcome_id: 'e5-1', position: 1, price: '0.3000' },
-          { outcome_id: 'e5-0', position: 0, price: '0.7000' },
-        ],
-        occurred_at: '2026-09-15T09:12:44.318000+00:00',
-      })),
     )
+    serveSnapshots(() => ({
+      market_id: 'e5',
+      state_version: 3,
+      prices: [
+        { outcome_id: 'e5-1', position: 1, price: '0.3000' },
+        { outcome_id: 'e5-0', position: 0, price: '0.7000' },
+      ],
+      occurred_at: '2026-09-15T09:12:44.318000+00:00',
+    }))
     renderPage()
     await screen.findByText('Lakers or Celtics?')
     const card = cardFor('Lakers or Celtics?')
@@ -472,11 +500,14 @@ describe('MarketsPage', () => {
     const snapshotRequests: string[] = []
     mockTwoPages(() => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null }))
     server.use(
-      http.get(SNAPSHOT, ({ params }) => {
-        snapshotRequests.push(String(params.id))
-        return params.id === 'a1'
-          ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
-          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000']))
+    )
+    server.use(
+      // The ids the page asked about, however many requests they arrived in:
+      // the point is which markets are read, not how the read is shaped.
+      http.post(SNAPSHOT_BATCH, async ({ request }) => {
+        const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+        snapshotRequests.push(...ids)
+        return HttpResponse.json({ snapshots: ids.map(id => snapshotFor(id, id === 'a1' ? ['0.1235', '0.8765'] : ['0.7000', '0.3000'])) })
       }),
     )
     const actor = userEvent.setup()
@@ -777,9 +808,15 @@ describe('MarketsPage', () => {
       let snapshotRequests = 0
       server.use(
         http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
-        http.get(SNAPSHOT, ({ params }) => {
+        http.post(SNAPSHOT_BATCH, async ({ request }) => {
+          const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
           snapshotRequests += 1
-          return HttpResponse.json(snapshotFor(String(params.id), snapshotRequests === 1 ? ['0.1200', '0.8800'] : ['0.7000', '0.3000']))
+          const prices = snapshotRequests === 1 ? ['0.1200', '0.8800'] : ['0.7000', '0.3000']
+          // A later read reports a higher `state_version`: the version is what
+          // decides whether an answer is newer (realtime-service.md).
+          return HttpResponse.json({
+            snapshots: ids.map(id => ({ ...snapshotFor(id, prices), state_version: snapshotRequests })),
+          })
         }),
       )
       renderPage()
