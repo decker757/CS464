@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Query
+from fastapi.exceptions import RequestValidationError
+from pydantic import AwareDatetime
 
 from controller.dependencies import CurrentUser, DbSession, PageCursor, PageLimit
 from core.paging import page_size_of
@@ -29,6 +32,54 @@ router = APIRouter(prefix="/public/markets", tags=["public markets"])
 # `MarketStatus`, which would accept every member, and not a hand-written
 # Literal, which would be a second copy of `_visible`'s set.
 PublicStatusFilter = PublicMarketStatus
+
+# The closing window's two ends. #442. With an offset, because a time without
+# one is a different instant in every timezone. DECISIONS.md, "The browse
+# narrows by a half-open window on `close_time`".
+ClosesFrom = Annotated[
+    AwareDatetime | None,
+    Query(
+        description=(
+            "ISO-8601 time with an offset (`Z` or `+08:00`; send `+` as "
+            "`%2B`). Markets whose `close_time` is at or after it."
+        ),
+    ),
+]
+ClosesBefore = Annotated[
+    AwareDatetime | None,
+    Query(
+        description=(
+            "ISO-8601 time with an offset. Markets whose `close_time` is "
+            "strictly before it."
+        ),
+    ),
+]
+
+
+def _refuse_if_window_empty(
+    closes_from: datetime | None, closes_before: datetime | None
+) -> None:
+    """Raise `RequestValidationError` for a window holding no instant, so
+    FastAPI answers it as the `422` every other bad parameter gets, with an
+    item for each end. The twin of the ledger's `_refuse_if_window_reversed`,
+    whose window is closed at both ends and so may be a single instant."""
+    if closes_from is None or closes_before is None or closes_from < closes_before:
+        return
+
+    raise RequestValidationError(
+        [
+            {
+                "type": "value_error",
+                "loc": ("query", parameter),
+                "msg": "`closes_before` must be later than `closes_from`.",
+                "input": value,
+            }
+            for parameter, value in (
+                ("closes_from", closes_from),
+                ("closes_before", closes_before),
+            )
+        ]
+    )
 
 
 @router.get(
@@ -52,6 +103,12 @@ PublicStatusFilter = PublicMarketStatus
         "`submitted` are never visible here and are not accepted values. `q` "
         "searches the question, case-insensitively, and composes with "
         "`status`.\n\n"
+        "`closes_from` and `closes_before` narrow to markets whose "
+        "`close_time` is at or after the first and strictly before the "
+        "second, so consecutive windows never share a market. Either may be "
+        "sent alone; both compose with `status` and `q`. Each is a time with "
+        "an offset. The window reads `close_time` even for a market closed "
+        "early, and a market with no `close_time` matches no window.\n\n"
         "A market past its `close_time` is reported `closed` even before the "
         "background sweep writes it down (ADR 0011), so `status=open` never "
         "includes one and `status=closed` does. In the default view it is "
@@ -63,7 +120,8 @@ PublicStatusFilter = PublicMarketStatus
         "(#214). A market has two or more, with any labels; do not assume "
         "`Yes` and `No`.\n\n"
         "Paged by keyset ([X-1] #104). Send `next_cursor` back as `cursor`, "
-        "with the same `q`, `status` and `limit`, to continue; null means "
+        "with the same `q`, `status`, closing window and `limit`, to "
+        "continue; null means "
         "there is nothing after this page. `limit` defaults to the server's "
         "page size (50) and a value above its maximum (200) is clamped. Pages "
         "read in turn never repeat a market: the split into trading and "
@@ -75,7 +133,9 @@ PublicStatusFilter = PublicMarketStatus
         422: {
             "description": (
                 "`status` is not one of the values above, `q` is longer "
-                "than a question may be or contains a NUL character, or "
+                "than a question may be or contains a NUL character, "
+                "`closes_from` or `closes_before` is not a time with an "
+                "offset, `closes_before` is not later than `closes_from`, or "
                 "`limit` is below 1."
             )
         },
@@ -105,9 +165,13 @@ async def browse_markets(
             "every published market with the ones still trading first."
         ),
     ),
+    closes_from: ClosesFrom = None,
+    closes_before: ClosesBefore = None,
     limit: PageLimit = None,
     cursor: PageCursor = None,
 ) -> PublicMarketListResponse:
+    _refuse_if_window_empty(closes_from, closes_before)
+
     # One clock for the request, so filtering and the displayed status agree.
     # D-025, D-027.
     now = datetime.now(UTC)
@@ -117,6 +181,8 @@ async def browse_markets(
         limit=page_size_of(limit),
         query=q,
         status=MarketStatus(status) if status else None,
+        closes_from=closes_from,
+        closes_before=closes_before,
         now=now,
         cursor=cursor,
     )
