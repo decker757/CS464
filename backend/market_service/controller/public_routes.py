@@ -252,7 +252,13 @@ async def browse_markets(
         "every other status, `voided` included.\n\n"
         "A `voided` market ([BE] #221) has no winning outcome: "
         "`proposed_outcome_id` is null, even on one voided after its outcome "
-        "was approved."
+        "was approved. `voided_at` and `void_reason` say when and why, and "
+        "are null on every other market; show the reason to traders.\n\n"
+        "`voidable` ([BE] #221) is true on a `closed` or `pending_resolution` "
+        "market, on an `approved` one while its dispute window is open, and "
+        "on a `voided` one; false for every other status. It reads the stored "
+        "status, so a market past its `close_time` that the sweep has not yet "
+        "closed reads `closed` here and is not yet voidable."
     ),
     responses={404: {"description": "No such market, or it is a draft or submitted."}},
 )
