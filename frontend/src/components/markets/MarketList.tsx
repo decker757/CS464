@@ -6,8 +6,9 @@ import { useMyPositions } from '../../hooks/useMyPositions'
 import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import Button from '../ui/Button'
 import LoadMoreControl from '../ui/LoadMoreControl'
-import MarketCard from './MarketCard'
+import MarketCardGrid from './MarketCardGrid'
 import PriceFeedStatus from './PriceFeedStatus'
+import { browseSectionsOf } from './browseSections'
 import type { StatusFilter } from './MarketFilters'
 
 interface MarketListProps {
@@ -56,10 +57,19 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
   const { items: markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchMarketPage, pagedMarketsOptions)
   // `markets` keeps its identity until the list itself changes, so the prices
   // are fetched then and not on every render.
-  const { snapshotsByMarket, failedMarkets, readAt, retryMarket, status: priceStatus } = usePricesForMarkets(markets)
+  const { snapshotsByMarket, failedMarkets, readAt, retryMarket, status: priceStatus, marketFigures } = usePricesForMarkets(markets)
   // One portfolio read for the page, not one per card ([X-1] #450).
   const { positionsByMarket } = useMyPositions()
   const isFiltered = query !== '' || status !== null || closingWindow !== null
+  // The bands, for the unfiltered view only: a search or a filter collapses
+  // back to a single plain result list, where a band would be answering a
+  // question the trader did not ask (#448 AC 4).
+  //
+  // Computed from the markets already loaded and the prices already read, so
+  // a band costs no request of its own. That also means a band only ever
+  // describes the pages fetched so far, which is the honest reading of
+  // "trending" on a list the trader is still paging through.
+  const sections = isFiltered ? [] : browseSectionsOf(markets, snapshotsByMarket, marketFigures, new Date())
 
   return (
     <>
@@ -94,18 +104,39 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
             )}
           </div>
 
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
-            {markets.map(market => (
-              <MarketCard
-                key={market.id}
-                market={market}
-                snapshot={snapshotsByMarket.get(market.id)}
-                priceReadFailed={failedMarkets.has(market.id)}
-                onRetryPrice={() => retryMarket(market.id)}
-                positions={positionsByMarket.get(market.id)}
+          {/* The curated bands, above the full list and only when nothing is
+              filtered (#448 AC 4). Each market in a band is still in the list
+              below: a band is a shortcut into the list, not a partition of
+              it (AC 5). */}
+          {sections.map(section => (
+            <section key={section.id} aria-labelledby={`section-${section.id}`} className="mb-8">
+              <div className="mb-3">
+                <h2 id={`section-${section.id}`} className="text-base font-bold text-smu-navy">{section.title}</h2>
+                {/* The rule, so "why is this here" is never a mystery (AC 2). */}
+                <p className="text-xs text-subtle">{section.rule}</p>
+              </div>
+              <MarketCardGrid
+                markets={section.markets}
+                snapshotsByMarket={snapshotsByMarket}
+                failedMarkets={failedMarkets}
+                positionsByMarket={positionsByMarket}
+                onRetryPrice={retryMarket}
               />
-            ))}
-          </div>
+            </section>
+          ))}
+
+          {/* The full list keeps its own heading only when a band sits above
+              it, so an unsectioned page is not given a heading it never had. */}
+          {sections.length > 0 && (
+            <h2 className="mb-3 text-base font-bold text-smu-navy">All markets</h2>
+          )}
+          <MarketCardGrid
+            markets={markets}
+            snapshotsByMarket={snapshotsByMarket}
+            failedMarkets={failedMarkets}
+            positionsByMarket={positionsByMarket}
+            onRetryPrice={retryMarket}
+          />
 
           {hasMore && (
             <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="markets" onLoadMore={loadMore} />
