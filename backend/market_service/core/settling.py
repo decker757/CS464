@@ -1,4 +1,5 @@
-"""When a decided market may be settled, stated once. [3.4] #12, ADR 0019.
+"""When a decided market may be settled, or voided, stated once. [3.4] #12,
+[BE] #221, ADR 0019, ADR 0025.
 
 In `core/` so `service/` can stamp the answer onto every projection. Takes
 `bool`s rather than a `MarketStatus` because `core/` may not import `model/`,
@@ -50,3 +51,26 @@ def is_settleable(
     if not approved or ends_at is None:
         return False
     return as_utc(now) >= as_utc(ends_at) + SETTLEMENT_GAP
+
+
+def is_voidable(
+    *,
+    awaiting_outcome: bool,
+    approved: bool,
+    voided: bool,
+    ends_at: datetime | None,
+    now: datetime,
+) -> bool:
+    """May this market be voided, as of `now`? [BE] #221.
+
+    A market that stopped trading and awaits its outcome (CLOSED or
+    PENDING_RESOLUTION) always may, and so may a voided one, for a void a
+    direct call marked and nobody refunded. An approved one only inside its
+    dispute window: send-back's own question, exclusive at its edge and
+    false with no `ends_at`. Nothing else may. ADR 0025.
+    """
+    if awaiting_outcome or voided:
+        return True
+    if approved:
+        return is_in_dispute_window(ends_at=ends_at, now=now)
+    return False
