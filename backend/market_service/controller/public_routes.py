@@ -35,13 +35,14 @@ PublicStatusFilter = PublicMarketStatus
 
 # The closing window's two ends. #442. With an offset, because a time without
 # one is a different instant in every timezone. DECISIONS.md, "The browse
-# narrows by a half-open window on `close_time`".
+# narrows by a half-open window on when trading stops".
 ClosesFrom = Annotated[
     AwareDatetime | None,
     Query(
         description=(
             "ISO-8601 time with an offset (`Z` or `+08:00`; send `+` as "
-            "`%2B`). Markets whose `close_time` is at or after it."
+            "`%2B`). Markets that stopped trading, or will stop, at or "
+            "after it."
         ),
     ),
 ]
@@ -49,8 +50,8 @@ ClosesBefore = Annotated[
     AwareDatetime | None,
     Query(
         description=(
-            "ISO-8601 time with an offset. Markets whose `close_time` is "
-            "strictly before it."
+            "ISO-8601 time with an offset. Markets that stopped trading, or "
+            "will stop, strictly before it."
         ),
     ),
 ]
@@ -103,12 +104,14 @@ def _refuse_if_window_empty(
         "`submitted` are never visible here and are not accepted values. `q` "
         "searches the question, case-insensitively, and composes with "
         "`status`.\n\n"
-        "`closes_from` and `closes_before` narrow to markets whose "
-        "`close_time` is at or after the first and strictly before the "
-        "second, so consecutive windows never share a market. Either may be "
-        "sent alone; both compose with `status` and `q`. Each is a time with "
-        "an offset. The window reads `close_time` even for a market closed "
-        "early, and a market with no `close_time` matches no window.\n\n"
+        "`closes_from` and `closes_before` narrow to markets that stopped "
+        "trading, or will stop, at or after the first and strictly before "
+        "the second, so consecutive windows never share a market. That is "
+        "the same moment the stopped markets sort by: `close_time` for a "
+        "market still trading or closed by the clock, and the moment of the "
+        "close for one closed early. Either may be sent alone; both compose "
+        "with `status` and `q`. Each is a time with an offset. A market with "
+        "no `close_time` that has not been closed matches no window.\n\n"
         "A market past its `close_time` is reported `closed` even before the "
         "background sweep writes it down (ADR 0011), so `status=open` never "
         "includes one and `status=closed` does. In the default view it is "
