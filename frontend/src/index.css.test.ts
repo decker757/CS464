@@ -55,8 +55,7 @@ const SURFACES: Record<string, Colour> = {
 }
 
 // Every token the app puts text in. Each is held to AA on both surfaces, so a
-// token that moves to a new screen is already safe there. `success-strong` and
-// `danger-strong` are Badge-only today and are held to the same line anyway.
+// token that moves to a new screen is already safe there.
 const TEXT_TOKENS = [
   'smu-navy',
   'smu-gold-text',
@@ -80,8 +79,8 @@ const SURFACE_ONLY = ['smu-gold', 'smu-cream', 'line', 'track', 'surface-muted']
 
 // `Badge`: 11px bold text on a 10% tint of its own tone, on either surface.
 // The same danger and success pairs at the same 10% are also TradingPanel's
-// active Buy/Sell toggle, the trade and placed-order confirmation banners and
-// the demo "Buy YES" pill, so this table measures those too (#380).
+// active Buy/Sell toggle and the trade and placed-order confirmation
+// banners, so this table measures those too (#380).
 const BADGE_TONES = [
   { tone: 'danger', text: 'danger-strong', tint: 'danger' },
   { tone: 'success', text: 'success-strong', tint: 'success' },
@@ -102,8 +101,6 @@ const BADGE_TONES = [
 const TONE_ON_OWN_TINT = [
   // AuthLayout's login/register error message.
   { site: 'the auth error message', text: 'danger-strong', tint: 'danger', alpha: 0.05 },
-  // MarketPreviewCard's demo "Buy NO" pill, the one danger tint at 8%.
-  { site: 'the demo "Buy NO" pill', text: 'danger-strong', tint: 'danger', alpha: 0.08 },
   // LandingFeatures' numbered pill and MarketPreviewCard's "Example" pill:
   // small bold gold text on a gold tint, which needs the darker
   // gold-for-text token rather than the brand gold itself — and both sit
