@@ -16,6 +16,7 @@ is defined.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +28,9 @@ from unit_test.trade_fixtures import Upstream, buy, fund, warm
 
 
 async def _credits_traded(session: AsyncSession, market_id: uuid.UUID) -> Decimal:
-    (listed,) = await snapshot.list_snapshots(session, [market_id])
+    (listed,) = await snapshot.list_snapshots(
+        session, [market_id], now=datetime.now(UTC)
+    )
     return listed.credits_traded
 
 
@@ -36,7 +39,9 @@ async def test_an_untraded_book_is_answered_with_zero(session: AsyncSession) -> 
     upstream = Upstream()
     await warm(session, upstream)
 
-    listed = await snapshot.list_snapshots(session, [upstream.market_id])
+    listed = await snapshot.list_snapshots(
+        session, [upstream.market_id], now=datetime.now(UTC)
+    )
 
     assert [(item.market_id, item.credits_traded) for item in listed] == [
         (upstream.market_id, Decimal("0.0000"))
