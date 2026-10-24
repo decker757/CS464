@@ -154,6 +154,7 @@ would let a stale audit schema abort a working admin action.
 | `market.outcome_sent_back` | market_service | [3.3] #11 |
 | `market.settled` | ledger_service | [3.4] #12 |
 | `market.marked_settled` | market_service | [3.4] #12 |
+| `market.marked_voided` | market_service | [BE] #221 |
 | `user.suspended` | auth_service | [4.2] #14 |
 | `user.unsuspended` | auth_service | [4.2] #14 |
 | `order.cancelled_by_admin` | ledger_service | [T-8] #326 |
@@ -213,6 +214,22 @@ step's window check read. The ledger's own `market.settled` entry, written
 with the payouts, comes before it in a normal settlement; a
 `market.marked_settled` with no `market.settled` before it for the same market
 is the trace of a direct call that paid nobody (ADR 0019's amendment).
+
+`market.marked_voided` is written by market_service's
+`POST /markets/{id}/void` when it marks a market `voided`, and never on a
+repeat against a market already voided. It is under the administrator whose
+token the request carried, never a name from the body, with the void's
+`reason` as the ledger forwarded it, and a two-key `context`: `from_status`,
+the status the market left (`closed`, `pending_resolution` or `approved`),
+and `cleared_proposal`. From `pending_resolution` that is the proposal the
+void cleared, in the same eight keys as `market.outcome_approved`, copied
+before the clear, so this entry is the only place it still exists; from any
+other status it is `null`, and a voided approval stays on the market. Its
+`occurred_at` is the database time the void step read after locking the
+market. The ledger's own `market.voided` entry, written with the refunds,
+comes before it in a normal void; a `market.marked_voided` with no
+`market.voided` before it for the same market is the trace of a direct call
+that refunded nobody (ADR 0025).
 
 `user.suspended` and `user.unsuspended` are written by auth's
 `PATCH /admin/users/{user_id}/suspension`, in the same transaction as the
