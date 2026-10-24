@@ -116,7 +116,8 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
   const windowOpen = status === 'approved' && disputeWindowStillOpen
 
   // Below md the controls go under the question rather than beside it: a
-  // published market carries up to five of them, wider than a phone (#438).
+  // published market's three buttons and badge are too wide for a phone to
+  // fit next to anything (#438).
   return (
     <Card className="flex flex-col gap-3 px-6 py-4 md:flex-row md:items-center md:justify-between md:gap-4">
       <div className="min-w-0">
