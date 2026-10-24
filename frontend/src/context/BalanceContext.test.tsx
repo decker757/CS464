@@ -208,6 +208,28 @@ describe('BalanceContext', () => {
     )
   })
 
+  // The ledger failing as the trader comes back must not blank or zero the
+  // header: the re-read goes through `refetch`, which keeps the last figure.
+  it('keeps the last known balance when a re-read on return fails', async () => {
+    mockBalance(alice, '1000.0000')
+    render(headerFor(alice))
+    expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
+
+    let failedCount = 0
+    server.use(
+      http.get(`${LEDGER_BASE}/ledger/balances/me`, () => {
+        failedCount += 1
+        return HttpResponse.json({ detail: 'internal_error' }, { status: 500 })
+      }),
+    )
+    fireEvent.focus(window)
+
+    await waitFor(() => expect(failedCount).toBe(1))
+    // Give the failed answer a chance to land before asserting what it left.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(screen.getByLabelText('available balance')).toHaveTextContent('1,000 credits')
+  })
+
   it('does not re-read when the tab is hidden', async () => {
     mockBalance(alice, '1000.0000')
     render(headerFor(alice))
