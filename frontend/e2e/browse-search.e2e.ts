@@ -36,7 +36,7 @@ test('a trader searches the market list and narrows it by status', async ({ page
   await expect(marketCard(page, first.question)).toBeVisible()
   await expect(marketCard(page, second.question)).toBeVisible()
 
-  await page.getByRole('button', { name: 'Open' }).click()
+  await page.getByRole('radio', { name: 'Open', exact: true }).click()
   await expect(marketCard(page, first.question)).toBeVisible()
   await expect(marketCard(page, second.question)).toHaveCount(0)
 
