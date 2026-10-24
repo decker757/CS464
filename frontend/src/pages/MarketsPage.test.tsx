@@ -1,10 +1,11 @@
 import { StrictMode } from 'react'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
+import { FakeSocket, latestSocket } from '../test/fakeSocket'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { WithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
@@ -1081,5 +1082,61 @@ describe('MarketsPage closing-time presets', () => {
     expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(windowsSent.at(-1)).toEqual({ closesFrom: null, closesBefore: null })
     expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
+
+// [X-1] #444 AC 5: the degraded and reconnecting states the detail page shows
+// apply to the list too. Both keep the last known price on screen, so without
+// this the list would look exactly as authoritative as a live one.
+describe('the price feed in trouble', () => {
+  beforeEach(() => {
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
+    )
+  })
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('says the feed is reconnecting, and keeps the prices it has', async () => {
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() =>
+      expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
+    )
+
+    // 1006 is an abnormal close: worth retrying, so the feed is reconnecting.
+    await act(async () => { latestSocket().serverClose(1006) })
+
+    expect(await screen.findByRole('status')).toHaveTextContent(/reconnecting to live prices/i)
+    expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%')
+  })
+
+  it('says live prices are unavailable when the socket is refused outright', async () => {
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() =>
+      expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
+    )
+
+    // 4403 is the socket's own origin check refusing the handshake: retrying
+    // cannot help, so this is not "reconnecting" (realtime-service.md).
+    await act(async () => { latestSocket().serverClose(4403) })
+
+    expect(await screen.findByRole('status')).toHaveTextContent(/live prices unavailable/i)
+  })
+
+  // A working feed is the normal case, and a badge for it would be noise on
+  // every page load.
+  it('says nothing while the feed is healthy', async () => {
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() =>
+      expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
+    )
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 })
