@@ -833,6 +833,9 @@ describe('TradingPanel', () => {
 
     expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 1.0000 shares')
     expect(screen.queryByRole('button', { name: /^max$/i })).not.toBeInTheDocument()
+    // Shares held back in full by sell orders are still held (#451): no
+    // "You don't hold any" sentence.
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
 
     // The refusal agrees with the line above it: nothing left, never -1.0000.
     await typeQuantity(actor, '0.5')
