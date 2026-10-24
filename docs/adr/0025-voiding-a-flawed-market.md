@@ -100,8 +100,10 @@ made (ADR 0016). Two things narrow it:
 A retry that only finishes an already-recorded void moves no money, so it is
 not stake-checked. A direct call to market_service's `/void` is not checked
 either: market_service cannot see trades (ADR 0003, and ADR 0023's "A 'has
-traded' check"), and that call moves no money. It is the direct-call gap,
-below.
+traded' check"). The call itself moves no money, but it rules out every
+ending but a refund: a VOIDED market can no longer be settled, so the only
+ending left is the ledger's void. It is the direct-call gap, below, and a
+known edge.
 
 **If every administrator has a stake, nobody can void the market.** On a team
 this size, with administrators trading and ranked like anyone else, a busy
@@ -493,9 +495,12 @@ in the batch. That is settlement's cost, carried over.
   name the administrator. No CHECK, for ADR 0023's reason: no database rule
   here reads a status string.
 - **`POST /markets/{id}/void`, documented as the ledger's call only.** It
-  takes `{"reason": "..."}` and does **not** re-check the reason. The ledger
-  already did, and a stricter check here would fail the same way on every
-  retry after the money moved. It locks the market row (`get_any`: any
+  takes `{"reason": "..."}` and checks only its ceiling, 5,000 characters
+  (`MAX_PROSE_LENGTH`), as the owner of `void_reason` (question 3 below). It
+  does **not** re-check the floor. The ledger already did, and a stricter
+  check here would fail the same way on every retry after the money moved.
+  The ceiling never refuses a forwarded reason, because the ledger refuses one
+  over 5,000 first. It locks the market row (`get_any`: any
   administrator may void), then:
   1. VOIDED: `200`, nothing written, before the clock is read.
   2. SETTLED: `409 market_already_settled`.
@@ -769,6 +774,19 @@ flip.
   ledger's row, is not stake-checked, and forwards and answers the recorded
   reason. From `E + 5 min` it is the first edge in this list, fixed by
   hand. It is a reversal trigger too.
+- An administrator who holds a stake can still end an APPROVED market inside
+  its window by calling market_service's `POST /markets/{id}/void` directly:
+  market_service cannot check stakes (ADR 0003). From then on settlement is
+  refused in both services, and the only ending left is the ledger's void, run
+  by an administrator without a stake, which refunds every holder at cost, the
+  one with the stake included. That gets round the stake check, whose purpose
+  is that an administrator "who bet on the losing side could void inside the
+  dispute window and get their stake back" ("Who may void"). It still needs a
+  second administrator to finish it, and it leaves a `market.marked_voided`
+  with no `market.voided` before it in the log. Accepted because
+  administrators are a small, audited, flat tier (ADR 0007), the trace is in
+  the log, and closing it needs service-to-service authentication on that
+  route. Decided by Ihsan on 2026-10-25. It is a reversal trigger too.
 
 ## What changed from revision 2
 
@@ -1059,3 +1077,10 @@ Each must fail with the line it guards removed.
 > has to be finished past its window on a real market**, by the direct ledger
 > call under "Known edges, accepted". One such market is the evidence that
 > the void screen needs a "Finish" that outlives the session.
+>
+> **It is revisited the first time a `market.marked_voided` names a caller who
+> held a stake in that market, or the first time one has no ledger void before
+> it.** Either is the direct-call gap used. The fix it names: market_service
+> accepts `/void` only from the ledger's service credential, the way auth
+> accepts ADR 0021's, and the ledger forwards the acting administrator for
+> the audit entry.
