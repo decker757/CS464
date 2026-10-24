@@ -12,14 +12,15 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | --- | --- | --- |
 | Authentication | [A-1]–[A-3] #29–#31, UI #46–#48 | shipped, both sides |
 | Market creation | [1.1]–[1.3] #1–#3, [1.4] #4, UI #45, #354 | shipped |
-| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped, including the trade feed's username lookup |
+| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56, #418, #434 | shipped; the trade log and a user's history name people rather than ids |
 | Resolution | [3.1]–[3.4] #9–#12, UI #52, #87, #216, #59 | shipped through settlement, with the settled-market payout screen and the dispute-window countdown |
-| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60 | shipped, including the suspend/unsuspend control |
-| Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss |
-| Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53 | shipped |
-| Limit orders | [T-6]–[T-8] #26–#28 | the backend is shipped — place, cancel, the cascade that fills resting orders inside a trade, order frames on the socket, and an administrator's cancel; the UI, #61, is open |
-| Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209 | shipped |
+| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, including the suspend/unsuspend control and a users list that filters by role and by status |
+| Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, the portfolio shows profit and loss in one money vocabulary, and each position says how many of its shares a live sell order holds back (the trading panel reading that figure, #494, is open) |
+| Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53, #430, #451, #453 | shipped, including the price chart on the market page and a sell with nothing held that offers the buy instead |
+| Limit orders | [T-6]–[T-8] #26–#28, UI #61 | shipped, both sides: place, cancel, the cascade that fills resting orders inside a trade, order frames on the socket, an administrator's cancel, and the order form with the open-orders list |
+| Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209, #431, #442, #445 | shipped, with status and closing-time filters and a scroll position that survives Back. The ledger also serves a batch snapshot with each market's seven-day price change and activity (#432, #446, #447); the browse list does not use it yet |
 | Leaderboard | [L-1] #38, [L-2] #39, [L-3] #40, UI #58 | shipped, the table and the caller's own ranking |
+| Layout and accessibility | #380, #437, #438, #452 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
@@ -64,15 +65,20 @@ WebSocket. Its contract is
 [`docs/api/realtime-service.md`](docs/api/realtime-service.md).
 
 Creating a market needs an administrator, and registration never grants one.
-Register normally, then promote by hand and log in again:
+The first administrator is made by hand: register normally, promote, and log
+in again:
 
 ```bash
 docker compose exec db psql -U cs464 -d cs464 \
   -c "UPDATE auth.users SET role = 'admin' WHERE lower(username) = 'your_username';"
 ```
 
+Every administrator after that is promoted by an existing one through
+`PATCH /admin/users/{user_id}/role`, which writes an audit entry, and also has
+to log in again: authority rides in the access token (ADR 0003, ADR 0007).
+
 Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
-`.env` and point `TEST_DATABASE_URL` at the same port. Same for Redis on 6379
+`.env` and point every `<SERVICE>_TEST_DATABASE_URL` at the same port. Same for Redis on 6379
 and `REDIS_PORT`.
 
 ### Two of everything, behind a load balancer
@@ -115,6 +121,16 @@ instead of on deploy. The pure unit layers need no database:
 Each service reads its own `<SERVICE>_TEST_DATABASE_URL` from the root `.env`,
 so a suite always connects as its own restricted role rather than as the
 superuser. That is what makes the cross-schema denial tests mean something.
+
+The frontend has unit tests that need nothing running, and a Playwright suite
+that drives the real frontend against the real stack:
+
+```bash
+cd frontend && npm ci
+npm run test:run              # unit tests
+docker compose up -d --build --wait   # from the repo root, then:
+npm run e2e                   # end to end
+```
 
 ## Architecture
 
