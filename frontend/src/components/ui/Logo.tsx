@@ -4,8 +4,10 @@ interface LogoProps {
   iconSize?: number
   /** Text colour and size, e.g. `text-white text-xl`. */
   className?: string
-  /** Classes for the name beside the icon: the signed-in bar hides it from
-   * sight on a phone, and keeps it for a screen reader (#438). */
+  /** Classes for the name beside the icon. The signed-in bar hides it from
+   * sight on a phone (#438); a screen reader is not relying on it there,
+   * because the home link's `aria-label` replaces the logo's own text as the
+   * link's name. */
   wordmarkClassName?: string
 }
 
