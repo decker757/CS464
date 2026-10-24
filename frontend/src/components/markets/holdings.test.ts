@@ -14,6 +14,7 @@ function position(outcomeId: string, quantity: string, overrides: Partial<Positi
     outcome_id: outcomeId,
     outcome_position: 0,
     quantity,
+    reserved_shares: '0.0000',
     cost_basis: '10.0000',
     average_entry_price: '0.5000',
     price: '0.6000',
