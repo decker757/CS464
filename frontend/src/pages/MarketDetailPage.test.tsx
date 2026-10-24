@@ -261,7 +261,7 @@ describe('MarketDetailPage', () => {
     renderPage()
     await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
 
-    expect(await screen.findByText(/you hold 0\.0000 shares/i)).toBeInTheDocument()
+    expect(await screen.findByText("You don't hold any Yes shares.")).toBeInTheDocument()
 
     await actor.click(screen.getByRole('button', { name: 'No' }))
 
