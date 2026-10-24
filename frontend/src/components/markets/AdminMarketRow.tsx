@@ -14,6 +14,7 @@ import { useSettleMarket } from '../../hooks/useSettleMarket'
 import { useWindowOpen } from '../../hooks/useWindowOpen'
 import { disputeWindowLine } from '../../utils/formatCountdown'
 import { toApprovedResult } from '../../utils/proposals'
+import PublishConfirmModal from './PublishConfirmModal'
 import StatusBadge from './StatusBadge'
 import { formatCloseTime, tradingStopped } from './marketStatus'
 
@@ -218,16 +219,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
       )}
 
       {showPublishModal && (
-        <ConfirmModal
-          ariaLabel="Publish market"
-          title="Publish this market?"
-          description="Traders can see it and trade in it immediately. There is no unpublish, and the terms cannot be edited afterwards."
-          isSubmitting={publishing}
-          confirmLabel="Confirm Publish"
-          confirmingLabel="Publishing…"
-          onCancel={closePublishModal}
-          onConfirm={handlePublish}
-        />
+        <PublishConfirmModal isSubmitting={publishing} onCancel={closePublishModal} onConfirm={handlePublish} />
       )}
 
       {showSettleModal && (
