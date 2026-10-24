@@ -10180,6 +10180,295 @@ unfilled quantity.
 
 ---
 
+### D-NEW — The batch snapshot is `POST /ledger/markets/snapshots`, a read with a body
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** The browse list's prices come from one
+`POST /ledger/markets/snapshots` with a body `{"market_ids": [...]}`. It
+answers `{"snapshots": [...]}`, and each item is the single snapshot's body,
+`GET /ledger/markets/{market_id}/snapshot`, for that market. The route writes
+nothing; it is a POST only because its input is a list.
+
+**Why.**
+- *The list does not fit a query string.* At the cap below, 200 ids as
+  repeated `market_ids=<uuid>` parameters are about 9.4 KB of URL. Proxies and
+  servers commonly refuse a request line past 8 KB, and the failure would
+  appear only behind a deployment's proxy, never on loopback.
+- *Nothing on the ledger takes a list yet*, so there is no precedent to
+  follow; the body is the shape #432's contract proposed.
+- *An object around a list, and an object per market,* so a field can be
+  added later without breaking a client: #446's prior price and #447's
+  activity figure are per-market fields that ride on this route rather than a
+  second request per card, and a field for the whole answer fits beside
+  `snapshots`.
+- *Each item is the single snapshot's body*, which is the `price` frame
+  without its `type` (docs/api/realtime-service.md), so the frontend renders
+  all three with one function.
+
+**Rejected.**
+- *`GET` with repeated `market_ids`*: the URL length above, and an encoding
+  every client library spells differently.
+- *An answer keyed by market id* (`{"<id>": {...}}`): it drops `market_id`
+  from the item, so the item stops being the single snapshot's body.
+
+**Reversal trigger.** A second list-taking route on the ledger that chooses a
+different shape, at which point the two are made to agree.
+
+**Amended 2026-10-21.** [X-1] #447 adds `credits_traded` to each item, so an
+item is the single snapshot's body plus that one field, not exactly it. Every
+field the single snapshot has is still in the item and means the same, so one
+function still renders the single snapshot, the `price` frame and an item.
+DECISIONS.md, "The batch snapshot carries `credits_traded`, and the single
+snapshot does not", says why.
+
+---
+
+### D-NEW — The batch snapshot takes at most 200 ids, and refuses more
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** `market_ids` holds at most 200 ids, counted as sent, duplicates
+included. A 201st is `422 invalid_request`, its `details` naming
+`["body", "market_ids"]`. An empty list is a `200` with no snapshots.
+
+**Why.**
+- *200 is market_service's `max_page_size`*, the largest page
+  `GET /public/markets` serves. Any page of the browse list, at any `limit`
+  that route accepts, fits in one batch, which is #432's "`listMarkets`' page
+  size and the batch cap agree". At the default page size of 50, one batch
+  covers four pages.
+- *Refused, not clamped.* Elsewhere on the ledger an oversized `limit` is
+  clamped, because the caller can see where the page ends. Here a market left
+  out by a clamp would be indistinguishable from a market with no book, and
+  its card would show "—" with nothing saying why.
+- *`invalid_request`, not a new code.* It is a shape refusal, like every other
+  ceiling on a request body here (a quantity's digits, a reason's length), and
+  the client's remedy is the same: send fewer.
+- *The cost at the cap is bounded.* One indexed statement returning one row
+  per outcome of at most 200 markets, with no lock and no call out.
+
+**Rejected.** A cap of 50, the default page: the frontend's refresh re-reads
+every still-trading market on every page it has loaded, and would split its
+request at each page. A setting: the frontend has to know the number, and a
+setting changed on one side only breaks the list.
+
+**Reversal trigger.** market_service's `max_page_size` changing, or the
+browse list asking for more than one page's prices in one call.
+
+---
+
+### D-NEW — The batch snapshot opens no book: a market without one is absent
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** The batch answers only markets that already have a book on this
+service. An id with no book, whether it names no market or a published market
+nobody has previewed, traded or snapshotted, is left out of the answer, not
+an error. It makes no call to market_service and writes nothing. The single
+snapshot stays the only snapshot that opens a book (D-050).
+
+**Why.**
+- *Opening a book is the expensive path, once per market.* It fetches the
+  market's terms from market_service, up to the five-second timeout (D-030),
+  then funds the pool under the handoff's locks, the platform account among
+  them (D-036), and commits. Fifty cold markets in one request would run that
+  fifty times in a row, holding the whole list behind the slowest, and queue
+  every grant and trade on the platform account lock meanwhile.
+- *The single snapshot already serves the paths that need a price for sure.*
+  docs/api/realtime-service.md's "Opening a page" and "Reconnecting" sequences
+  read the single route, and ADR 0010 makes that read the authoritative
+  recovery path. The batch is a list's first paint and its refresh; a card
+  with no price shows "—", which it already does for a failed request.
+- *No id the caller may not read can be answered.* A book is opened only from
+  market_service's public read, which refuses a draft or a submitted market,
+  and publication is one way (ADR 0008). Every market with a book is one any
+  signed-in role may read, so the batch needs no check per id, and #432's
+  "a market the caller may not read is absent" holds by construction.
+- *It never gates on status (ADR 0017),* like the single snapshot: a closed
+  or settled market with a book is answered with its last price.
+
+**Consequence.** A market nobody has opened shows no price on the browse list
+until something opens its book. The frontend may ask the single snapshot for
+a still-trading market the batch left out; that opens its book once, ever,
+and the batch answers it from then on.
+
+**Rejected.** Opening cold books inside the batch, for the cost above. A
+seed price for a market with no book: the ledger cannot name its outcomes
+without asking market_service, which is the cost again.
+
+**Reversal trigger.** A book opened at publication, which would give every
+published market a book and make this rule unobservable.
+
+---
+
+### D-NEW — A book the batch snapshot cannot price is left out and logged
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** A book `book_prices.refuse_unpriceable` refuses (fewer than two
+outcome rows, or a `liquidity_b` the engine cannot use) is left out of the
+batch's answer and logged at warning level, rather than failing the request
+with `500 market_book_incomplete` as the single snapshot does. A book with no
+outcome rows at all never reaches the guard, because the join drops it, and is
+left out without a log line.
+
+**Why.** One damaged book would otherwise blank every card on the page. The
+fault is still reported: the single snapshot refuses that market with
+`market_book_incomplete` when its page opens, and the warning names it in the
+log. The guard is the same one copy the single snapshot and the trade use
+(D-052), so the batch refuses exactly the books they refuse.
+
+**Reversal trigger.** A way for a damaged book to reach the browse list that
+a log line would hide, such as a migration that half-applies to many books.
+
+---
+
+### D-NEW — The batch snapshot reads every market in one statement, and answers in the order asked
+
+**Date:** 2026-10-21 · **Ticket:** #432 · **Status:** active
+
+**Decision.** `service/book_prices.py::list_book_outcomes_for_markets` reads
+every requested market's book joined to its outcomes in one statement, with
+no lock. The answer lists each market once, in the order its id first
+appears in the request; a repeated id is not an error.
+
+**Why.**
+- *One statement for N markets*, so the cost of a page is fixed rather than a
+  query per card, which is the N+1 the route exists to remove.
+- *Each snapshot is consistent with itself*, D-013's rule extended: a
+  market's `state_version`, `b` and `q` come from the same statement, so a
+  client resuming from that `state_version` holds the prices that version
+  priced. All the markets come from that one statement's view of the
+  database, too.
+- *No lock*, D-012's reason: the read decides no write, and a lock would
+  queue a page of cards behind any one trade holding its book.
+- *Request order* makes the answer deterministic, so a client can rely on it
+  and a test can assert it. The frontend keys its prices by market id and does
+  not need it.
+- *Duplicates answered once*, because refusing them would make every caller
+  deduplicate for no gain, and answering twice would hand a client two copies
+  of one market to reconcile.
+
+**Reversal trigger.** None expected.
+
+---
+
+### D-NEW — A market's activity is the credits it has traded, buys and sells alike
+
+**Date:** 2026-10-21 · **Ticket:** #447 · **Status:** active
+
+**Decision.** A market's activity figure is `credits_traded`: the credits
+every trade in it has moved, a buy's cost and a sell's proceeds each counted
+as a positive amount. A resting order's fill is a trade (ADR 0024) and counts,
+on arrival and in a cascade alike. Nothing else the pool posts is a trade, so
+the seed, a settlement payout and the settlement residue do not count. Put
+exactly: the sum of the absolute amounts of the pool account's legs in
+`trade_buy` and `trade_sell` transactions, which is the sum of each trade's
+`TradeCost.magnitude`.
+
+**Why.**
+- *A trade count is already on the wire.* `state_version` rises by one per
+  trade and per fill, and nothing else moves it (D-011), so a count would be a
+  second copy of a field every snapshot carries. #445 already reads it as
+  "has anything happened". What the list lacks is the magnitude.
+- *Credits rather than shares.* A share priced at 0.02 and one at 0.98 are not
+  the same amount of activity, and outcomes of different markets are not
+  comparable share for share. Credits are one unit across every market, which
+  is what a list sorted or curated by activity compares.
+- *Unsigned, both sides.* Selling is as much activity as buying. A signed sum
+  is the pool's net take from trading, which falls when traders sell back and
+  says nothing about how busy a market is.
+- *Named for what it is.* "Volume" was #447's own ambiguity; `credits_traded`
+  says the unit and that both sides count.
+
+**Rejected.** Shares traded and a trade count, for the reasons above. Two
+figures: the second would be a field nothing reads.
+
+**Notes.** #221's draft void refunds with `void_refund` movements and writes
+no trade, so a voided market would keep the credits it traded: the trades
+happened.
+
+**Reversal trigger.** The browse list asking for recent activity, such as the
+last 24 hours. A lifetime figure cannot answer it; that is an aggregate over
+the pool's trade entries by time, beside this field or instead of it.
+
+---
+
+### D-NEW — `credits_traded` is a counter on the book, raised in `write_trade` under the book lock
+
+**Date:** 2026-10-21 · **Ticket:** #447 · **Status:** active
+
+**Decision.** `ledger.market_books.credits_traded`, `numeric(18, 4)`, zero
+when the book opens. `service/trading.py::write_trade` raises it by the
+trade's magnitude on the line after `state_version`, so the trade, a fill on
+arrival and a cascade's fill each raise it, under the book lock, in the
+transaction that posts their entries. Ledger revision 0006 adds the column and
+backfills every existing book from its pool's trade legs.
+
+**Why.**
+- *Close to free on the trade path.* `write_trade` already changes the book
+  row under its lock, so the figure is one more column in an UPDATE the trade
+  already issues: no statement, no lock and no read is added.
+- *Constant on the read path.* The batch reads it from the row it already
+  reads, in its one statement, so a page of 200 markets costs what it cost
+  before, and the figure and `state_version` come from one snapshot (D-013).
+  An aggregate would sum every trade entry of up to 200 pools on every
+  refresh of every open browse page, a cost that grows with each market's
+  history.
+- *Correct under concurrency for the reason `state_version` is.* Every writer
+  holds the book row, so two trades raise it one after the other. The same
+  rollup shape as an order's `filled_value` ("An order's `filled_value` is
+  what its fills moved, signed positive on either side").
+- *An exact backfill.* Every trade posts exactly one pool leg, of exactly its
+  magnitude, so summing those legs reproduces the counter to the tick.
+- *Not a balance.* ADR 0009 derives balances because money decisions read
+  them. No decision reads this figure; it is a display statistic, like
+  `state_version`.
+
+**Rejected.** *An aggregate per read*: the read cost above, on the list's
+hottest request, to avoid one column on a row the trade already writes.
+
+**Consequence.** A path that posted a trade movement without `write_trade`
+would leave the figure short. None does: the trade and both fill paths call
+it, and it is where `state_version` is raised, which a missed trade would
+break visibly.
+
+**Reversal trigger.** A trade path that does not go through `write_trade`.
+
+---
+
+### D-NEW — The batch snapshot carries `credits_traded`, and the single snapshot does not
+
+**Date:** 2026-10-21 · **Ticket:** #447 · **Status:** active
+
+**Decision.** Each item of `POST /ledger/markets/snapshots` is the single
+snapshot's body plus `credits_traded`, a decimal string at scale 4.
+`GET /ledger/markets/{market_id}/snapshot` and the `price` frame are
+unchanged. A market whose book has never traded is answered with
+`"credits_traded": "0.0000"`, never left out for it. A market with no book is
+still absent ("The batch snapshot opens no book: a market without one is
+absent"), so absent keeps meaning only "no book here".
+
+**Why.**
+- *The single snapshot is the `price` frame without its `type`,* byte for
+  byte: [F-9] #112's criterion, and docs/api/realtime-service.md's "Identical
+  on purpose". On the snapshot alone the figure would be a field the frames
+  that follow it never update. On the frame too, it would change
+  realtime_service's `extra="forbid"` schema for a field no subscriber reads:
+  the browse list re-reads the batch rather than subscribing, and the detail
+  page does not show activity.
+- *A superset keeps the one render function.* The item still has every field
+  the single snapshot has, meaning the same thing, which is what "Each item
+  is the single snapshot's body" was for.
+- *Zero, not absent,* is #447's criterion: an untraded market is the case the
+  figure exists to tell apart from a busy one.
+
+**Reversal trigger.** A page that subscribes to the socket wanting the figure
+live, which would put it on the frame, and then on the single snapshot with it.
+
+---
+
 ### D-NEW — The browse narrows by a half-open window on when trading stops
 
 **Date:** 2026-10-24 · **Ticket:** #442 · **Status:** active
