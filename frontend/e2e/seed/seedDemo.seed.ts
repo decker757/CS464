@@ -33,7 +33,7 @@ import {
   type Session,
 } from '../support/backend'
 import { ADMINS, DEMO_MARKETS, TRADERS, type DemoMarket, type DemoTrade } from './demoMarkets'
-import { refuseUnlessLocal } from './localTarget'
+import { refuseDevComposeProject, refuseUnlessLocal } from './localTarget'
 import { refuseUnlessAdmin } from './promotion'
 import { inRounds } from './rounds'
 
@@ -91,11 +91,11 @@ async function logInAfterPromotion(username: string): Promise<Session> {
  * in again. Then checks the new token really is an admin's: the SQL step may
  * have reached another compose project than the URLs.
  */
-async function registerAdmin(username: string): Promise<Session> {
+async function registerAdmin(username: string, project: string): Promise<Session> {
   const trader = await registerTraderUnlessSeeded(username)
   promoteToAdmin(trader.username)
   const admin = await logInAfterPromotion(trader.username)
-  refuseUnlessAdmin(admin.accessToken, composeProject())
+  refuseUnlessAdmin(admin.accessToken, project)
   return admin
 }
 
@@ -140,9 +140,11 @@ function priceLine(demo: DemoMarket, market: Market, prices: { outcome_id: strin
 test('seed the demo database', async () => {
   test.setTimeout(30 * 60 * 1000)
   refuseUnlessLocal({ serviceUrls: [AUTH_URL, MARKET_URL, LEDGER_URL], dockerEndpoint: dockerEndpoint() })
+  const project = composeProject()
+  refuseDevComposeProject(project)
 
-  const creator = await registerAdmin(ADMINS.creator)
-  const approver = await registerAdmin(ADMINS.approver)
+  const creator = await registerAdmin(ADMINS.creator, project)
+  const approver = await registerAdmin(ADMINS.approver, project)
   const traders = new Map<string, Session>()
   for (const username of TRADERS) traders.set(username, await registerTraderUnlessSeeded(username))
   console.log(`Registered ${ADMINS.creator} and ${ADMINS.approver} (admins) and ${TRADERS.length} traders.`)

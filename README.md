@@ -88,7 +88,10 @@ COMPOSE_PROJECT_NAME=cs464-demo npm run seed:demo                # about three m
 ```
 
 The seed needs the same `COMPOSE_PROJECT_NAME` as the `up`, or its SQL steps
-reach another project's database; it checks, and stops if they did.
+reach another project's database; it checks, and stops if they did. It also
+refuses to start when that project is `cs464`, your dev stack, which is what
+compose picks when the variable is unset: nothing it writes there could be
+taken out again without wiping your dev data.
 
 It makes two administrators, `admin_rachel` and `admin_kumar`, eight traders
 (`wei_ling`, `arjun_k`, `marcus_tan`, `priya_s`, `jun_hao`, `sarah_lim`,

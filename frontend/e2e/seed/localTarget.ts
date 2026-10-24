@@ -49,3 +49,22 @@ export function refuseUnlessLocal(target: SeedTarget): void {
     )
   }
 }
+
+// docker-compose.yml's own `name:`, which compose uses when
+// COMPOSE_PROJECT_NAME is unset: the everyday dev stack.
+const DEV_COMPOSE_PROJECT = 'cs464'
+
+/**
+ * Throws unless the SQL steps reach a compose project other than the everyday
+ * dev stack. Ledger entries are never deleted, so a seed that landed there
+ * could only be undone by `docker compose down -v`, wiping every dev record
+ * with it (#454's review).
+ */
+export function refuseDevComposeProject(composeProject: string): void {
+  if (composeProject !== DEV_COMPOSE_PROJECT) return
+  throw new Error(
+    `Refusing to seed: the compose project is "${DEV_COMPOSE_PROJECT}", your everyday dev stack, and the seed ` +
+      'cannot be undone there without wiping it. Seed a project of its own, as README.md does: ' +
+      'COMPOSE_PROJECT_NAME=cs464-demo on both the `docker compose up` and the `npm run seed:demo`.',
+  )
+}
