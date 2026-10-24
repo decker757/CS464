@@ -936,6 +936,24 @@ describe('MarketsPage closing-time presets', () => {
     expect(closesFilter().getByRole('radio', { name: 'This month' })).toBeChecked()
   })
 
+  // An arrow with Alt, Ctrl or Cmd held belongs to the browser or the screen
+  // reader, not to the group: Alt+Left is the browser's Back.
+  it('leaves an arrow with Alt, Ctrl or Cmd held to the browser', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    const thisWeek = closesFilter().getByRole('radio', { name: 'This week' })
+    await actor.click(thisWeek)
+
+    await actor.keyboard('{Alt>}{ArrowLeft}{/Alt}')
+    expect(thisWeek).toBeChecked()
+    await actor.keyboard('{Control>}{ArrowLeft}{/Control}')
+    expect(thisWeek).toBeChecked()
+    await actor.keyboard('{Meta>}{ArrowLeft}{/Meta}')
+    expect(thisWeek).toBeChecked()
+  })
+
   // One tab stop for the whole group, at the checked pill: Tab from the pill
   // before the group lands on it, and the next Tab leaves the group.
   it('reaches only the checked pill with Tab, as a radio group does', async () => {
@@ -971,6 +989,29 @@ describe('MarketsPage closing-time presets', () => {
     await waitFor(() =>
       expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-20T04:00:00.000Z', closesBefore: '2026-10-21T04:00:00.000Z' }),
     )
+  })
+
+  // #442 AC 1 for the third filter: a preset alone is cleared by its own
+  // chip, and Clear all appears once a search or a status joins it.
+  it('offers Clear all only when the preset is one of two filters', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    const clearAll = () => screen.queryByRole('button', { name: 'Clear all' })
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    expect(screen.getByRole('button', { name: 'Clear closing filter' })).toBeInTheDocument()
+    expect(clearAll()).not.toBeInTheDocument()
+
+    await actor.click(screen.getByRole('radio', { name: 'Closed' }))
+    expect(clearAll()).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: 'Clear status filter' }))
+    expect(clearAll()).not.toBeInTheDocument()
+
+    await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'smu{Enter}')
+    expect(clearAll()).toBeInTheDocument()
   })
 
   it('clears the closing preset along with everything else on Clear all', async () => {
