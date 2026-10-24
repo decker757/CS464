@@ -134,7 +134,8 @@ placing or cancelling an order. Net worth on the portfolio and the leaderboard
 still counts `balance`, reserved credits included. The admin route
 `GET /ledger/users/{user_id}/balance` returns the same two fields, both
 `"0.0000"` for an id with no account. `GET /ledger/portfolio/me` gains no
-`reserved` figure: the balance carries it.
+`reserved` credits figure: the balance carries it. Its rows carry
+`reserved_shares`, the shares a live sell order holds back (#410).
 
 **The first call for a user also mints their starting credits.** [B-1] #32. A
 user with no entries has not been granted yet, so the first read writes the
@@ -321,6 +322,7 @@ else's; there is no admin variant.
       "outcome_id": "c03d...",
       "outcome_position": 0,
       "quantity": "10.0000",
+      "reserved_shares": "0.0000",
       "cost_basis": "6.1310",
       "average_entry_price": "0.6131",
       "price": null,
@@ -335,6 +337,7 @@ else's; there is no admin variant.
       "outcome_id": "4f2a...",
       "outcome_position": 0,
       "quantity": "500.0000",
+      "reserved_shares": "120.0000",
       "cost_basis": "431.3569",
       "average_entry_price": "0.8627",
       "price": "0.9933",
@@ -386,6 +389,24 @@ On every other row, `result` and `payout` are `null`. Every row carries all the
 keys, so branch on `result`, not on which keys are present. **`price`, `value`
 and `unrealized_pnl` can be `null`.** Guard them before formatting.
 
+**`quantity` is the whole position; `reserved_shares` is the part of it that
+cannot be sold.** #410. `quantity` counts every share held, including the ones
+a resting sell order is waiting to sell, because those are still the caller's
+until a fill takes them. `reserved_shares` is what the caller's live sell
+orders of that outcome still hold back: the sum of their
+`quantity - filled_quantity`, which is the order object's own
+`reserved_shares` summed per outcome. A sell, instant or a new sell order, can
+take `quantity - reserved_shares`, and the trade route refuses anything more
+with `insufficient_shares_held`, whose `details` carry the same `reserved`. So a
+sell control's maximum is `quantity - reserved_shares`, never the whole
+position. The figure is a decimal string at scale 4, `"0.0000"` where no live
+sell order holds any, and never null. A settled row always reports
+`"0.0000"`, because no order on a market with a result is live. It is derived
+from the order rows on every read, in the same statement as everything else,
+and never stored. The rest of the row is unchanged by it: `value`,
+`cost_basis` and `average_entry_price` count the whole `quantity`, since a
+resting sell has not sold anything yet (ADR 0018's 2026-10-17 amendment).
+
 `unrealized_pnl` is `value - cost_basis`. `average_entry_price` is
 `cost_basis / quantity`, `ROUND_HALF_UP` at scale 4, and is display only, the
 same rule the preview's `average_price` follows.
@@ -420,9 +441,11 @@ setting.** Changing that setting never rewrites an entry (ADR 0009), so a user
 granted under the old value keeps reporting what they were actually given, and
 their P&L does not move when the deployment is reconfigured.
 
-**The balance, every position and every settlement record are read together,
-in one statement, with no lock.** So a trade committing mid-read cannot show
-its debit without its shares, or its shares without its debit. A settlement
+**The balance, every position, every settlement record and every live sell
+order are read together, in one statement, with no lock.** So a trade
+committing mid-read cannot show its debit without its shares, or its shares
+without its debit, and a fill cannot show its position on one side of the read
+and its order's reservation on the other. A settlement
 committing mid-read cannot put its payout in `balance` while its shares are
 still valued. The read makes no call to market_service. Valuation needs only
 `q`, `b` and the holding, and a settled row needs only this service's own
@@ -1540,8 +1563,10 @@ order leave `GET /ledger/orders/me`.
 - **Balance:** `reserved` and `available` (above).
 - **History:** each fill is a `trade_buy` or `trade_sell` row with its own
   `average_price`. Placing and cancelling write none.
-- **Portfolio and leaderboard:** unchanged. Reserved credits are still in
-  `balance`, and reserved shares are still positions, valued as today.
+- **Portfolio and leaderboard:** valued as before. Reserved credits are still
+  in `balance`, and reserved shares are still positions, valued as today. Each
+  portfolio row also says how many of its shares are reserved,
+  `reserved_shares` (#410).
 - **Price history and the trade feed:** one point and one row per fill.
 - **Trade route:** `book_state_version`, and the two refusals that now count
   reservations (above).

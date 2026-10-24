@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { registerTrader, startingGrant } from './support/backend'
 import { logIn } from './support/browser'
-import { formatWholeCredits } from './support/credits'
+import { formatRoundedCredits } from './support/credits'
 
 // [B-2] #33, through the real ledger: GET /ledger/balances/me mints the
 // starting grant on its first read and the navbar's own call to it, not an
@@ -12,5 +12,5 @@ test("a freshly registered trader's starting balance shows in the navbar", async
 
   await logIn(page, trader)
 
-  await expect(page.getByLabel('available balance')).toHaveText(`${formatWholeCredits(grant)} credits`)
+  await expect(page.getByLabel('available balance')).toHaveText(`${formatRoundedCredits(grant)} credits`)
 })

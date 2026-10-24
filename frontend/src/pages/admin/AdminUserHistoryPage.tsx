@@ -106,7 +106,9 @@ export default function AdminUserHistoryPage() {
     <AppLayout width="max-w-[1100px]">
       <BackLink to="/admin/users" label="Users" className="mb-4 block" />
       <div className="mb-2 flex items-center gap-3">
-        <PageTitle>{username ? `${username}'s History` : `History for ${userId}`}</PageTitle>
+        {/* A username is one unbroken word, often longer than a phone is
+            wide at this size, so it may break anywhere (#438). */}
+        <PageTitle className="min-w-0 wrap-anywhere">{username ? `${username}'s History` : `History for ${userId}`}</PageTitle>
         {currentUser?.is_suspended && <Badge tone="danger">Suspended</Badge>}
       </div>
       {currentUser && <p className="mb-2 text-sm text-subtle">{currentUser.email}</p>}

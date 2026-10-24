@@ -13,6 +13,10 @@ import { PASSWORD_HINT, RegisterErrors, USERNAME_HINT, validateRegister } from '
 
 const REGISTER_FIELDS = ['username', 'email', 'password'] as const
 
+// #480. Said where the password is chosen, because nothing can recover a
+// forgotten one. LoginPage says the same sentence under its password field.
+const PASSWORD_FIELD_HINT = `${PASSWORD_HINT} There is no password reset, so keep your password somewhere safe.`
+
 /** After a refused submit, put the cursor on the first field to fix, so the
  * reason is read out and nobody has to hunt back up the form for it. Each
  * input's id is its field name, which is also what the label points at. */
@@ -75,7 +79,7 @@ export default function RegisterPage() {
     <AuthLayout
       eyebrow="Get Started"
       title="Create your account"
-      subtitle="Join PredictSMU and start trading with mock credits."
+      subtitle="Join PredictSMU. Your new account starts with mock credits to trade with."
       error={serverError}
       footer={<>Already have an account? <AuthFooterLink to="/login">Log in</AuthFooterLink></>}
     >
@@ -88,7 +92,7 @@ export default function RegisterPage() {
           <TextInput id="email" name="email" type="email" autoComplete="email" value={form.email} onChange={handleChange} onBlur={handleBlur} placeholder="you@example.com" invalid={!!errors.email} />
         </Field>
 
-        <Field id="password" label="Password" error={errors.password} hint={PASSWORD_HINT}>
+        <Field id="password" label="Password" error={errors.password} hint={PASSWORD_FIELD_HINT}>
           <PasswordInput id="password" name="password" autoComplete="new-password" value={form.password} onChange={handleChange} onBlur={handleBlur} placeholder="Enter at least 12 characters" invalid={!!errors.password} />
         </Field>
 

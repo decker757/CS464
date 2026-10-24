@@ -59,7 +59,7 @@ export default function AuthLayout({ eyebrow, title, subtitle, notice, error, fo
           )}
 
           {error && (
-            <div role="alert" className={`${MESSAGE_CLASS} border-danger/25 bg-danger/5 text-danger`}>
+            <div role="alert" className={`${MESSAGE_CLASS} border-danger/25 bg-danger/5 text-danger-strong`}>
               {error}
             </div>
           )}

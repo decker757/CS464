@@ -104,7 +104,7 @@ class PositionResult(StrEnum):
 
 
 class PortfolioPositionOut(BaseModel):
-    """One outcome the caller still holds. [T-4] #24, [3.4] #12
+    """One outcome the caller still holds. [T-4] #24, [3.4] #12, #410
 
     On a market the ledger has not settled, `value` is what selling the whole
     position now would credit — never `quantity * price` (ADR 0018) — and
@@ -121,7 +121,16 @@ class PortfolioPositionOut(BaseModel):
         ge=0, description="The outcome's order within its market."
     )
 
-    quantity: Decimal
+    quantity: Decimal = Field(
+        description="The whole position, reserved shares included."
+    )
+    reserved_shares: Decimal = Field(
+        description=(
+            "The shares of this outcome the caller's live sell orders still "
+            "hold back. A sell can take quantity - reserved_shares. "
+            "`0.0000` where no live sell order holds any, never null."
+        )
+    )
     cost_basis: Decimal = Field(
         description="What this position cost to build, at average cost."
     )
@@ -161,7 +170,7 @@ class PortfolioPositionOut(BaseModel):
         description="This market's book version this row was valued at."
     )
 
-    @field_serializer("quantity", "cost_basis", "average_entry_price")
+    @field_serializer("quantity", "reserved_shares", "cost_basis", "average_entry_price")
     def _as_string(self, value: Decimal) -> str:
         return str(value)
 
