@@ -76,26 +76,35 @@ and `REDIS_PORT`.
 
 ### A demo database
 
-For a showcase, seed an empty database with markets worth looking at (#454):
+For a showcase, seed a database of its own with markets worth looking at
+(#454). Give the demo its own compose project, so it gets its own empty
+volume and your dev data is left alone:
 
 ```bash
-docker compose up -d --build --wait     # from the repo root, on an empty database
-cd frontend && npm ci                   # once
-npm run seed:demo                       # about three minutes
+docker compose stop                                              # your dev stack; keeps its data
+COMPOSE_PROJECT_NAME=cs464-demo docker compose up -d --build --wait
+cd frontend && npm ci                                            # once
+COMPOSE_PROJECT_NAME=cs464-demo npm run seed:demo                # about three minutes
 ```
+
+The seed needs the same `COMPOSE_PROJECT_NAME` as the `up`, or its SQL steps
+reach another project's database; it checks, and stops if they did.
 
 It makes two administrators, `admin_rachel` and `admin_kumar`, eight traders
 (`wei_ling`, `arjun_k`, `marcus_tan`, `priya_s`, `jun_hao`, `sarah_lim`,
 `daniel_ng`, `aisyah_r`) and thirteen SMU markets. Every account's password is
 `PASSWORD` in `frontend/e2e/support/backend.ts`. Nine markets stay open: seven
-traded until their prices sit well apart, from about 13% to 90% Yes, and two
-left untraded. The other four are traded and then taken one stage further
-each: closed, pending resolution, approved, and settled with its winners paid.
-The seed prints every market's final prices when it finishes.
+traded until their prices sit well apart (the six Yes/No ones between about
+13% and 90% Yes, and a five-way one), and two left untraded. The other four
+are traded and then taken one stage further each: closed, pending resolution,
+approved, and settled with its winners paid. The seed prints every market's
+final prices when it finishes.
 
 The trades go in eight rounds, twenty seconds apart, so each market's price
 history has a shape. That is why it takes minutes: a trade's time is the
-ledger's own clock, and no API backdates one.
+ledger's own clock, and no API backdates one. The open markets close three
+weeks or more after seeding; if you seeded long before the showcase, seed
+again.
 
 It goes through the services' own APIs, using the end-to-end helpers in
 `frontend/e2e/support/backend.ts`, and takes the same two SQL steps they do,
@@ -103,16 +112,19 @@ through `docker compose exec db`: promoting the first administrators, and
 moving the settled market's dispute window into the past.
 
 **It is one-shot.** Its accounts have fixed names, so a second run stops at
-the first registration and changes nothing. Seeding again means starting from
-an empty database, which on this stack is `docker compose down -v` and
-destroys all local data.
+the first registration and changes nothing. A run that fails partway also
+needs a fresh database. Seeding again means
+`COMPOSE_PROJECT_NAME=cs464-demo docker compose down -v`, which destroys that
+project's data and only that project's.
+
+**Don't run `npm run e2e` against the demo stack afterwards.** Its tests add
+their own markets and users, which then sit beside the demo's.
 
 **It only runs against this machine.** It refuses to start unless every
 service URL (`VITE_API_URL`, `VITE_MARKET_API_URL`, `VITE_LEDGER_API_URL`,
-defaulting to the ports above) is `localhost`, `127.0.0.1`, `[::1]` or a
-compose service name, and the Docker engine its SQL steps reach is a local
-socket or pipe. There is no override. For a stack on other ports or under
-another compose project, set those three variables and `COMPOSE_PROJECT_NAME`.
+defaulting to the ports above) is `localhost`, `127.0.0.1` or `[::1]`, and the
+Docker engine its SQL steps reach is a local socket or pipe. There is no
+override.
 
 ### Two of everything, behind a load balancer
 
