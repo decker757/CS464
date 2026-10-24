@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
@@ -203,40 +203,46 @@ describe('AdminUsersPage', () => {
     expect(sent.at(-1)).toEqual({ q: null, role: null, is_suspended: null, cursor: null })
   })
 
-  it('moves the role with the arrow keys, as a radio group does', async () => {
+  // WAI-ARIA's radio group pattern: the arrows move the choice and the focus
+  // together, Right and Down forward, Left and Up back, wrapping at either end.
+  it('moves the role with the arrow keys and wraps at either end', async () => {
     mockUsers([adminUser({ id: 't1', username: 'alice' })])
     const actor = userEvent.setup()
     renderPage()
     await screen.findByText('alice')
 
-    const sent = recordRequests(sentParams =>
-      sentParams.role === 'admin' ? [adminUser({ id: 'a1', username: 'carol', role: 'admin' })] : [adminUser({ id: 't1', username: 'alice' })],
-    )
+    const sent = recordRequests(() => [adminUser({ id: 't1', username: 'alice' })])
     const roles = within(screen.getByRole('radiogroup', { name: 'Filter by role' }))
-    roles.getByRole('radio', { name: 'Any role' }).focus()
-    await actor.keyboard('{ArrowRight}')
-
-    expect(await screen.findByText('carol')).toBeInTheDocument()
-    expect(roles.getByRole('radio', { name: 'Admins only' })).toBeChecked()
-    expect(roles.getByRole('radio', { name: 'Admins only' })).toHaveFocus()
-    expect(sent.at(-1)).toEqual({ q: null, role: 'admin', is_suspended: null, cursor: null })
+    function expectChosen(name: string) {
+      expect(roles.getByRole('radio', { name })).toHaveFocus()
+      expect(roles.getByRole('radio', { name })).toBeChecked()
+    }
+    await actor.click(roles.getByRole('radio', { name: 'Any role' }))
 
     await actor.keyboard('{ArrowLeft}')
-
-    expect(await screen.findByText('alice')).toBeInTheDocument()
-    expect(roles.getByRole('radio', { name: 'Any role' })).toBeChecked()
-    expect(sent.at(-1)).toEqual({ q: null, role: null, is_suspended: null, cursor: null })
+    expectChosen('Traders only')
+    await waitFor(() => expect(sent.at(-1)?.role).toBe('trader'))
+    await actor.keyboard('{ArrowRight}')
+    expectChosen('Any role')
+    await waitFor(() => expect(sent.at(-1)?.role).toBe(null))
+    await actor.keyboard('{ArrowDown}')
+    expectChosen('Admins only')
+    await waitFor(() => expect(sent.at(-1)?.role).toBe('admin'))
+    await actor.keyboard('{ArrowUp}')
+    expectChosen('Any role')
+    await waitFor(() => expect(sent.at(-1)?.role).toBe(null))
   })
 
-  it('reaches only the checked pill of a group with Tab, as a radio group does', async () => {
+  it('reaches each group at its checked pill with Tab, as a radio group does', async () => {
     mockUsers([adminUser({ id: 't1', username: 'alice' })])
     const actor = userEvent.setup()
     renderPage()
     await screen.findByText('alice')
 
+    await actor.click(screen.getByRole('radio', { name: 'Admins only' }))
     screen.getByRole('button', { name: /search/i }).focus()
     await actor.tab()
-    expect(screen.getByRole('radio', { name: 'Any role' })).toHaveFocus()
+    expect(screen.getByRole('radio', { name: 'Admins only' })).toHaveFocus()
     await actor.tab()
     expect(screen.getByRole('radio', { name: 'Any status' })).toHaveFocus()
   })
@@ -265,16 +271,27 @@ describe('AdminUsersPage', () => {
     expect(sent.at(-1)).toEqual({ q: null, role: 'admin', is_suspended: null, cursor: null })
   })
 
-  it('says no users match the filters, not that there are no users, when a filter finds nobody', async () => {
+  it.each([
+    ['', ['Suspended only'], 'No users match this filter.'],
+    ['', ['Admins only', 'Suspended only'], 'No users match these filters.'],
+    ['carol', ['Suspended only'], 'No users match that search with this filter.'],
+    ['carol', ['Admins only', 'Suspended only'], 'No users match that search with these filters.'],
+  ])('with search "%s" and %j matching nobody, says "%s"', async (search, pills, expected) => {
     mockUsers([adminUser()])
     const actor = userEvent.setup()
     renderPage()
     await screen.findByText('alice')
 
     mockUsers([])
-    await actor.click(within(screen.getByRole('radiogroup', { name: 'Filter by status' })).getByRole('radio', { name: 'Suspended only' }))
+    if (search) {
+      await actor.type(screen.getByLabelText(/search by username or email/i), search)
+      await actor.click(screen.getByRole('button', { name: /search/i }))
+    }
+    for (const pill of pills) {
+      await actor.click(screen.getByRole('radio', { name: pill }))
+    }
 
-    expect(await screen.findByText('No users match these filters.')).toBeInTheDocument()
+    expect(await screen.findByText(expected)).toBeInTheDocument()
     expect(screen.queryByText(/no users yet/i)).not.toBeInTheDocument()
   })
 
