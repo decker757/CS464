@@ -521,12 +521,14 @@ async def market_snapshot(
 
 def _listed_snapshot_out(listed: ListedSnapshot) -> ListedSnapshotOut:
     """The wire form of one market in the batch: the single snapshot's body,
-    plus its prices a week ago."""
+    plus its prices a week ago and its `credits_traded`."""
     prices_7d_ago = None
     if listed.prices_7d_ago is not None:
         prices_7d_ago = _prices_out(listed.prices_7d_ago)
     return ListedSnapshotOut(
-        **_snapshot_out(listed).model_dump(), prices_7d_ago=prices_7d_ago
+        **_snapshot_out(listed).model_dump(),
+        prices_7d_ago=prices_7d_ago,
+        credits_traded=listed.credits_traded,
     )
 
 
@@ -537,9 +539,12 @@ _SNAPSHOTS_DESCRIPTION = (
     "Each item in `snapshots` is the single snapshot's body for that market, "
     "plus `prices_7d_ago` ([X-1] #446): each outcome's price after the last "
     "trade at or before seven days ago, or null when the market has no trade "
-    "that old. Each market is answered once, in the order its id first "
-    "appears in `market_ids`. One statement reads every book and one more "
-    "their trades, with no lock.\n\n"
+    "that old; and `credits_traded` ([X-1] #447): every credit its trades have "
+    "moved, buys and sells alike, a resting order's fills included, as a "
+    "decimal string, and `0.0000` for a market nobody has traded. "
+    "Each market is answered once, in the order its id first appears in "
+    "`market_ids`. One statement reads every book and one more their trades, "
+    "with no lock.\n\n"
     "**An id with no book here is absent, not an error.** Unlike the single "
     "snapshot this route opens no book and never calls market_service, so a "
     "published market nobody has previewed, traded or snapshotted is absent "

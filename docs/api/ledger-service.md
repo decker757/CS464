@@ -9,7 +9,7 @@ Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 ([T-3] #23), [T-5] #25's trade history, [3.4] #12's settlement route, [2.2]
 #6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40,
 [BE][2.4] #63's price history and trade feed, and [BE][X-1] #432's batch
-snapshot.
+snapshot with #447's activity figure.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -865,9 +865,9 @@ Errors, reusing the preview's codes:
 ## POST /ledger/markets/snapshots
 
 [X-1] #432. The current price of many markets in one request, for a list of
-cards: the browse page's first paint and its refresh. One call replaces a
-snapshot request per card. A POST because its input is a list, not because it
-writes: it writes nothing.
+cards: the browse page's first paint and its refresh, with how much each market
+has traded ([X-1] #447). One call replaces a snapshot request per card. A POST
+because its input is a list, not because it writes: it writes nothing.
 
 Any valid access token, any role, exactly like the single snapshot above.
 
@@ -889,7 +889,8 @@ Any valid access token, any role, exactly like the single snapshot above.
       "prices_7d_ago": [
         { "outcome_id": "4f2a...", "position": 0, "price": "0.5200" },
         { "outcome_id": "b7e1...", "position": 1, "price": "0.4800" }
-      ]
+      ],
+      "credits_traded": "1287.4410"
     },
     {
       "market_id": "a50a...",
@@ -899,16 +900,18 @@ Any valid access token, any role, exactly like the single snapshot above.
         { "outcome_id": "e9d4...", "position": 1, "price": "0.5000" }
       ],
       "occurred_at": "2026-10-20T08:00:03.112000+00:00",
-      "prices_7d_ago": null
+      "prices_7d_ago": null,
+      "credits_traded": "0.0000"
     }
   ]
 }
 ```
 
 **Each item is the single snapshot's body** for that market, field for field,
-**plus `prices_7d_ago`**, so it renders with the same function as the single
-snapshot and the `price` socket frame. Every other field means what it means
-there.
+**plus `prices_7d_ago` and `credits_traded`**, so it renders with the same
+function as the single snapshot and the `price` socket frame. Every other
+field means what it means there. Neither of those carries the two extra
+fields.
 
 **`prices_7d_ago`** ([X-1] #446) is each outcome's price as it stood seven
 days before the request, in the shape and order of `prices`: the price after
@@ -927,7 +930,15 @@ seven days, fixed, and the moment is the ledger's clock at the request.
   row a trade was made on. Its `prices` are unaffected, and so is every other
   market in the answer.
 
-The single snapshot and the `price` frame do not carry it.
+**`credits_traded`** ([X-1] #447) **is how much the market has traded**:
+every credit its trades have moved, a buy's cost and a sell's proceeds each
+counted as a positive amount, a resting order's fills included, whether on
+arrival or in another trade's cascade. A settlement payout is not a trade and
+does not count. It is an exact decimal string at scale 4, like every amount
+here, and only ever rises. A market whose book nobody has traded is answered
+with `"0.0000"`, never left out: absent means only that this service holds no
+book for it, as below. To tell how many trades a market has had, read
+`state_version`, which rises by one per trade and per fill.
 
 **At most 200 ids.** 200 is `GET /public/markets`' largest page
 (`docs/api/market-service.md`), so any page of the browse list fits in one
@@ -953,7 +964,8 @@ trades cannot be replayed keeps its card and loses only `prices_7d_ago`
 
 **One statement reads every market's book**, with no lock, so each
 snapshot's `state_version` is the version its `prices` were computed from, as
-on the single route. **One more reads their trades** up to seven days ago, for
+on the single route, and its `credits_traded` is the figure at that same
+version. **One more reads their trades** up to seven days ago, for
 `prices_7d_ago`; however many markets are asked about, the route sends those
 two. Each market is answered once, in the order its id first appears
 in `market_ids`. Like the single snapshot, it never checks whether a market is

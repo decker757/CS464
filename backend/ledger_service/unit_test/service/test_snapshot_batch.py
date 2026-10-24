@@ -46,13 +46,18 @@ async def _move(
     *,
     state_version: int,
     state_changed_at: datetime,
+    credits_traded: Decimal,
 ) -> None:
-    """Stand in for a trade's write to the book's counter and clock."""
+    """Stand in for a trade's write to the book's counters and clock."""
     book = entities().MarketBook
     await session.execute(
         update(book)
         .where(book.market_id == upstream.market_id)
-        .values(state_version=state_version, state_changed_at=state_changed_at)
+        .values(
+            state_version=state_version,
+            state_changed_at=state_changed_at,
+            credits_traded=credits_traded,
+        )
     )
     await session.commit()
 
@@ -82,8 +87,20 @@ async def test_each_market_is_answered_with_its_own_book(
     await warm(session, second, q=[Decimal("10"), Decimal("40"), Decimal("25")])
     first_moved = datetime(2026, 10, 1, 9, 30, tzinfo=UTC)
     second_moved = datetime(2026, 10, 2, 14, 5, tzinfo=UTC)
-    await _move(session, first, state_version=7, state_changed_at=first_moved)
-    await _move(session, second, state_version=3, state_changed_at=second_moved)
+    await _move(
+        session,
+        first,
+        state_version=7,
+        state_changed_at=first_moved,
+        credits_traded=Decimal("12.3456"),
+    )
+    await _move(
+        session,
+        second,
+        state_version=3,
+        state_changed_at=second_moved,
+        credits_traded=Decimal("7.8901"),
+    )
 
     result = await _snapshot_service().list_snapshots(
         session, [first.market_id, second.market_id], now=_NOW
@@ -96,6 +113,7 @@ async def test_each_market_is_answered_with_its_own_book(
     first_snapshot, second_snapshot = result
 
     assert first_snapshot.state_version == 7
+    assert first_snapshot.credits_traded == Decimal("12.3456")
     assert first_snapshot.occurred_at == first_moved
     assert _priced(first_snapshot) == [
         (first.outcomes[0], 0, Decimal("0.7216")),
@@ -103,6 +121,7 @@ async def test_each_market_is_answered_with_its_own_book(
     ]
 
     assert second_snapshot.state_version == 3
+    assert second_snapshot.credits_traded == Decimal("7.8901")
     assert second_snapshot.occurred_at == second_moved
     assert _priced(second_snapshot) == [
         (second.outcomes[0], 0, Decimal("0.2848")),

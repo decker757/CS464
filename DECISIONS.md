@@ -10152,11 +10152,15 @@ nothing; it is a POST only because its input is a list.
 different shape, at which point the two are made to agree.
 
 **Amended 2026-10-21.** Each item is now the single snapshot's body **plus
-`prices_7d_ago`** ([X-1] #446), a field only the batch carries ("The batch
-snapshot carries each outcome's price a week ago, not the change, and the
-single snapshot does not"). The point of the bullet above still holds: every
-field the single snapshot has means the same in the item, so the frontend
-renders all three with one function and reads the extra field beside it.
+`prices_7d_ago`** ([X-1] #446) **and `credits_traded`** ([X-1] #447), two
+fields only the batch carries, so an item is no longer exactly that body.
+"The batch snapshot carries each outcome's price a week ago, not the change,
+and the single snapshot does not" and "The batch snapshot carries
+`credits_traded`, and the single snapshot does not" say why. The point of the
+bullet above still holds: every field the single snapshot has is still in the
+item and means the same, so one function still renders the single snapshot,
+the `price` frame and an item, and the frontend reads the extra fields beside
+it.
 
 ---
 
@@ -10287,6 +10291,121 @@ appears in the request; a repeated id is not an error.
   of one market to reconcile.
 
 **Reversal trigger.** None expected.
+
+---
+
+### D-NEW — A market's activity is the credits it has traded, buys and sells alike
+
+**Date:** 2026-10-21 · **Ticket:** #447 · **Status:** active
+
+**Decision.** A market's activity figure is `credits_traded`: the credits
+every trade in it has moved, a buy's cost and a sell's proceeds each counted
+as a positive amount. A resting order's fill is a trade (ADR 0024) and counts,
+on arrival and in a cascade alike. Nothing else the pool posts is a trade, so
+the seed, a settlement payout and the settlement residue do not count. Put
+exactly: the sum of the absolute amounts of the pool account's legs in
+`trade_buy` and `trade_sell` transactions, which is the sum of each trade's
+`TradeCost.magnitude`.
+
+**Why.**
+- *A trade count is already on the wire.* `state_version` rises by one per
+  trade and per fill, and nothing else moves it (D-011), so a count would be a
+  second copy of a field every snapshot carries. #445 already reads it as
+  "has anything happened". What the list lacks is the magnitude.
+- *Credits rather than shares.* A share priced at 0.02 and one at 0.98 are not
+  the same amount of activity, and outcomes of different markets are not
+  comparable share for share. Credits are one unit across every market, which
+  is what a list sorted or curated by activity compares.
+- *Unsigned, both sides.* Selling is as much activity as buying. A signed sum
+  is the pool's net take from trading, which falls when traders sell back and
+  says nothing about how busy a market is.
+- *Named for what it is.* "Volume" was #447's own ambiguity; `credits_traded`
+  says the unit and that both sides count.
+
+**Rejected.** Shares traded and a trade count, for the reasons above. Two
+figures: the second would be a field nothing reads.
+
+**Notes.** #221's draft void refunds with `void_refund` movements and writes
+no trade, so a voided market would keep the credits it traded: the trades
+happened.
+
+**Reversal trigger.** The browse list asking for recent activity, such as the
+last 24 hours. A lifetime figure cannot answer it; that is an aggregate over
+the pool's trade entries by time, beside this field or instead of it.
+
+---
+
+### D-NEW — `credits_traded` is a counter on the book, raised in `write_trade` under the book lock
+
+**Date:** 2026-10-21 · **Ticket:** #447 · **Status:** active
+
+**Decision.** `ledger.market_books.credits_traded`, `numeric(18, 4)`, zero
+when the book opens. `service/trading.py::write_trade` raises it by the
+trade's magnitude on the line after `state_version`, so the trade, a fill on
+arrival and a cascade's fill each raise it, under the book lock, in the
+transaction that posts their entries. Ledger revision 0006 adds the column and
+backfills every existing book from its pool's trade legs.
+
+**Why.**
+- *Close to free on the trade path.* `write_trade` already changes the book
+  row under its lock, so the figure is one more column in an UPDATE the trade
+  already issues: no statement, no lock and no read is added.
+- *Constant on the read path.* The batch reads it from the row it already
+  reads, in its one statement, so a page of 200 markets costs what it cost
+  before, and the figure and `state_version` come from one snapshot (D-013).
+  An aggregate would sum every trade entry of up to 200 pools on every
+  refresh of every open browse page, a cost that grows with each market's
+  history.
+- *Correct under concurrency for the reason `state_version` is.* Every writer
+  holds the book row, so two trades raise it one after the other. The same
+  rollup shape as an order's `filled_value` ("An order's `filled_value` is
+  what its fills moved, signed positive on either side").
+- *An exact backfill.* Every trade posts exactly one pool leg, of exactly its
+  magnitude, so summing those legs reproduces the counter to the tick.
+- *Not a balance.* ADR 0009 derives balances because money decisions read
+  them. No decision reads this figure; it is a display statistic, like
+  `state_version`.
+
+**Rejected.** *An aggregate per read*: the read cost above, on the list's
+hottest request, to avoid one column on a row the trade already writes.
+
+**Consequence.** A path that posted a trade movement without `write_trade`
+would leave the figure short. None does: the trade and both fill paths call
+it, and it is where `state_version` is raised, which a missed trade would
+break visibly.
+
+**Reversal trigger.** A trade path that does not go through `write_trade`.
+
+---
+
+### D-NEW — The batch snapshot carries `credits_traded`, and the single snapshot does not
+
+**Date:** 2026-10-21 · **Ticket:** #447 · **Status:** active
+
+**Decision.** Each item of `POST /ledger/markets/snapshots` is the single
+snapshot's body plus `credits_traded`, a decimal string at scale 4.
+`GET /ledger/markets/{market_id}/snapshot` and the `price` frame are
+unchanged. A market whose book has never traded is answered with
+`"credits_traded": "0.0000"`, never left out for it. A market with no book is
+still absent ("The batch snapshot opens no book: a market without one is
+absent"), so absent keeps meaning only "no book here".
+
+**Why.**
+- *The single snapshot is the `price` frame without its `type`,* byte for
+  byte: [F-9] #112's criterion, and docs/api/realtime-service.md's "Identical
+  on purpose". On the snapshot alone the figure would be a field the frames
+  that follow it never update. On the frame too, it would change
+  realtime_service's `extra="forbid"` schema for a field no subscriber reads:
+  the browse list re-reads the batch rather than subscribing, and the detail
+  page does not show activity.
+- *A superset keeps the one render function.* The item still has every field
+  the single snapshot has, meaning the same thing, which is what "Each item
+  is the single snapshot's body" was for.
+- *Zero, not absent,* is #447's criterion: an untraded market is the case the
+  figure exists to tell apart from a busy one.
+
+**Reversal trigger.** A page that subscribes to the socket wanting the figure
+live, which would put it on the frame, and then on the single snapshot with it.
 
 ---
 

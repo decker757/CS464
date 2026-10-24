@@ -5,9 +5,9 @@ What a client fetches on opening a page and on every reconnect
 book first, through `service/book_prices.py`. It never gates on status: a
 closed market still has a price to render, and the reconnect needs one.
 
-`list_snapshots` is the same price for a list of cards ([X-1] #432), and
-opens no book. Beside each price it carries the market's prices a week ago
-([X-1] #446).
+`list_snapshots` is the same price for a list of cards ([X-1] #432), with
+the credits each market has traded ([X-1] #447), and opens no book. Beside
+each price it carries the market's prices a week ago ([X-1] #446).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import httpx
 from sqlalchemy.engine import Row
@@ -48,9 +49,11 @@ class Snapshot:
 class ListedSnapshot(Snapshot):
     """A market's price as the batch snapshot answers it, with each outcome's
     price seven days before the read, or None when the market had no trade by
-    then."""
+    then, and the credits its trades have moved. DECISIONS.md, "The batch
+    snapshot carries `credits_traded`, and the single snapshot does not"."""
 
     prices_7d_ago: list[PricedOutcome] | None
+    credits_traded: Decimal
 
 
 def _snapshot_of(market_id: uuid.UUID, rows: Sequence[Row]) -> Snapshot:
@@ -88,8 +91,8 @@ async def list_snapshots(
     session: AsyncSession, market_ids: Sequence[uuid.UUID], *, now: datetime
 ) -> list[ListedSnapshot]:
     """The current price of each market in `market_ids` that has a book here,
-    once each, in the order its id first appears, with its prices seven days
-    before `now`. [X-1] #432, #446.
+    and the credits it has traded, once each, in the order its id first
+    appears, with its prices seven days before `now`. [X-1] #432, #446, #447.
 
     One statement reads every book and one more their trades, with no lock.
     Opens no book, asks market_service nothing and writes nothing: an id with
@@ -124,9 +127,13 @@ async def list_snapshots(
     )
     listed = []
     for market_id, rows in priceable.items():
-        snapshot = _snapshot_of(market_id, rows)
+        single = _snapshot_of(market_id, rows)
         listed.append(
-            ListedSnapshot(**vars(snapshot), prices_7d_ago=prices_then.get(market_id))
+            ListedSnapshot(
+                **vars(single),
+                prices_7d_ago=prices_then.get(market_id),
+                credits_traded=rows[0].credits_traded,
+            )
         )
     return listed
 
