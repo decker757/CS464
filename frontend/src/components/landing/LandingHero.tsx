@@ -17,12 +17,9 @@ const EXAMPLE_NET_WORTH = '1580'
  * A small card overlapping one edge of the preview. Pass its side and its
  * overlap in `className`.
  *
- * The cards used to be pinned absolutely to the preview's corners, behind it,
- * and the preview hid most of their text at every width: "…redits" was all a
- * visitor saw of the standings (#435). They now stack above and below the
- * preview in the flow, so nothing can slide under it, and sit in front of it,
- * so the few pixels they share land on the preview's padding and not on either
- * card's text.
+ * The cards stack above and below the preview in the flow, so nothing can
+ * slide under it, and sit in front of it, so the few pixels they share land on
+ * the preview's padding and not on either card's text (#435).
  */
 function FloatingCard({ className, children }: { className: string; children: React.ReactNode }) {
   return (

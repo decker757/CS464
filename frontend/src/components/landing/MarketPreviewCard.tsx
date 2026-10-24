@@ -7,10 +7,8 @@ import { selectableClass } from '../ui/selectableClass'
 //
 // It is also a picture of the market page, and never more than it: each
 // side's price over "implied probability", then the trading panel's outcome
-// toggle and its one unpriced buy button. It used to draw a seven-day trend, a
-// bar per side and a priced button per side, none of which the market page had
-// when #435 removed them. The card may show less than the page; something
-// reaches the card only after it reaches the page.
+// toggle and its one unpriced buy button (#435). The card may show less than
+// the page; something reaches the card only after it reaches the page.
 //
 // The made-up prices are decimal strings, the way the API sends a real one, so
 // the card shows them through the app's own formatter instead of inventing a
