@@ -267,6 +267,20 @@ async def settled_market(
     return upstream
 
 
+def voided_row(market_id: uuid.UUID):
+    """The `ledger.market_results` row a void records (ADR 0025), unsaved: no
+    outcome, a reason and the administrator. A settlement test stages it to
+    stand for a void without the void's money."""
+    return entities().MarketResult(
+        market_id=market_id,
+        kind=entities().ResultKind.VOIDED,
+        outcome_id=None,
+        reason="The event was cancelled; there is no result.",
+        voided_by=uuid.uuid4(),
+        recorded_at=datetime.now(UTC),
+    )
+
+
 # --- reading back -----------------------------------------------------------
 def payout_key(market_id: uuid.UUID, user_id: uuid.UUID) -> str:
     return f"settlement:{market_id}:{user_id}"

@@ -51,6 +51,7 @@ from unit_test.settlement_fixtures import (
     settle,
     settled_entries,
     transaction_by_key,
+    voided_row,
     warm,
 )
 from unit_test.trade_fixtures import (
@@ -551,7 +552,7 @@ async def test_a_market_settled_upstream_with_no_record_is_paid_in_full(
 # =========================================================================
 # Refusals
 # =========================================================================
-@pytest.mark.parametrize("status", ["open", "approved_not_settleable"])
+@pytest.mark.parametrize("status", ["open", "approved_not_settleable", "voided"])
 async def test_a_status_refusal_opens_no_book(session: AsyncSession, status: str) -> None:
     """#12: "A settlement refused on a market's status opens no book."
 
@@ -559,11 +560,18 @@ async def test_a_status_refusal_opens_no_book(session: AsyncSession, status: str
     lookup cannot hit on a market with no book, so nothing earlier refuses.
     `books.ensure_open` ahead of the check would commit a book and a seed, and
     make a second GET.
+
+    `voided` is ADR 0025's: a market market_service reports voided, with
+    nothing recorded here, is `409 market_already_voided`, ahead of
+    `market_not_approved`, which it would otherwise get.
     """
     ents = entities()
     if status == "open":
         upstream = SettleUpstream(status="open", settleable=False)
         refusal = errors().MarketNotApproved
+    elif status == "voided":
+        upstream = SettleUpstream(status="voided", settleable=False)
+        refusal = errors().MarketAlreadyVoided
     else:
         upstream = SettleUpstream(status="approved", settleable=False)
         refusal = errors().DisputeWindowOpen
@@ -585,6 +593,33 @@ async def test_a_status_refusal_opens_no_book(session: AsyncSession, status: str
         )
     assert upstream.gets == 1
     assert upstream.posts == 0
+
+
+async def test_a_market_this_ledger_has_voided_is_refused_and_nothing_is_written(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """ADR 0025, "Settlement learns the record's kind": a voided row is
+    `409 market_already_voided` at the unlocked lookup, never replayed as a
+    settlement, and nothing is written or called.
+
+    market_service still reports `approved` and `settleable`, so only the
+    row can refuse. Without the kind branch the lookup replays the row, and
+    `_replay`'s assertion that a record names its winner answers a bare 500.
+    """
+    upstream = SettleUpstream()
+    await seed(session, upstream)
+    session.add(voided_row(upstream.market_id))
+    await session.commit()
+    actor = admin()
+    before = await committed_counts(upstream.market_id)
+
+    with pytest.raises(errors().MarketAlreadyVoided):
+        await settle(session, upstream, actor=actor)
+
+    assert await committed_counts(upstream.market_id) == before
+    assert await settled_entries(audit_reader, actor.id) == []
+    assert upstream.posts == 0
+    assert await book_lock_is_free(upstream.market_id)
 
 
 @pytest.mark.parametrize("settleable", [False, True])
