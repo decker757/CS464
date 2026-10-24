@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from 'react'
+import { useRef, type KeyboardEvent } from 'react'
 import FilterPill from '../ui/FilterPill'
 import SearchForm from '../ui/SearchForm'
 import { statusDisplay } from './marketStatus'
@@ -58,12 +58,10 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
 }
 
 export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
-  // A new key remounts the search box, which empties anything typed in it.
-  // Clearing needs that: with no search applied, the cleared query is the same
-  // empty string as before, so SearchForm has no change to follow.
-  const [searchBoxKey, setSearchBoxKey] = useState(0)
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([])
   const hasActiveFilters = query !== '' || status !== null
+  // One filter is cleared by its own chip, so "Clear all" is for two (#442).
+  const showClearAll = query !== '' && status !== null
 
   // Choosing a status replaces the last one, so the pills are a radio group
   // rather than toggle buttons (#442). Native radios would bring the arrow
@@ -80,20 +78,14 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
     pillRefs.current[targetIndex]?.focus()
   }
 
-  function handleClearQuery() {
-    setSearchBoxKey(key => key + 1)
-    onQueryChange('')
-  }
-
   function handleClearAll() {
-    handleClearQuery()
+    onQueryChange('')
     onStatusChange(null)
   }
 
   return (
     <div className="mb-6 space-y-4">
       <SearchForm
-        key={searchBoxKey}
         id="market-search"
         label="Search markets"
         placeholder="Search markets by question"
@@ -123,14 +115,16 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
       {hasActiveFilters && (
         <div role="group" aria-label="Active filters" className="flex flex-wrap items-center gap-2">
           {query !== '' && (
-            <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={handleClearQuery} />
+            <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={() => onQueryChange('')} />
           )}
           {status !== null && (
             <ActiveFilterChip label={`Status: ${filterLabel(status)}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
           )}
-          <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
-            Clear all
-          </button>
+          {showClearAll && (
+            <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
+              Clear all
+            </button>
+          )}
         </div>
       )}
     </div>
