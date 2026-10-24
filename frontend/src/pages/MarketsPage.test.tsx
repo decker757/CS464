@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { WithProviders } from '../test/renderWithProviders'
@@ -645,6 +645,23 @@ describe('MarketsPage', () => {
       expect(screen.getByRole('searchbox', { name: /search markets/i })).toHaveValue('')
     })
 
+    // With the status and the closing preset as the two filters, no search is
+    // applied, so clearing leaves the query the empty string it already was.
+    // The typed text must still go.
+    it('empties a typed search on Clear all when the status and the closing preset are the two filters', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+
+      await actor.click(screen.getByRole('radio', { name: 'Closed' }))
+      await actor.click(screen.getByRole('radio', { name: 'Today' }))
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'inflation')
+      await actor.click(screen.getByRole('button', { name: 'Clear all' }))
+
+      expect(screen.getByRole('searchbox', { name: /search markets/i })).toHaveValue('')
+    })
+
     // #442 AC 1: with one filter applied, its own chip already clears it, so a
     // "Clear all" beside it would be a second control doing the same thing.
     it('offers Clear all only when there are two filters to clear', async () => {
@@ -748,8 +765,9 @@ describe('MarketsPage', () => {
       screen.getByRole('button', { name: 'Search' }).focus()
       await actor.tab()
       expect(screen.getByRole('radio', { name: 'Closed' })).toHaveFocus()
+      // The closing-time group (#442) comes next, at its own checked pill.
       await actor.tab()
-      expect(screen.getByRole('button', { name: 'Clear status filter' })).toHaveFocus()
+      expect(screen.getByRole('radio', { name: 'Any time' })).toHaveFocus()
     })
 
     // A different status is a different list (MarketList's own comment): the
@@ -793,5 +811,238 @@ describe('MarketsPage', () => {
       await waitFor(() => expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument())
       expect(cursorsSeen.at(-1)).toBeNull()
     })
+  })
+})
+
+// #442: "A trader can narrow the list by when markets close." The window is
+// worked out in the trader's own timezone, so the suite pins one with a DST
+// change in it, and pins the clock to the instant each case is about. Only
+// `Date` is faked, so userEvent's and MSW's own timers still run.
+describe('MarketsPage closing-time presets', () => {
+  const windowsSent: { closesFrom: string | null; closesBefore: string | null }[] = []
+
+  beforeAll(() => {
+    vi.stubEnv('TZ', 'America/New_York')
+    // Setting TZ at run time is relied on only under the forks pool
+    // (vite.config.ts). If the zone did not take, every literal below is wrong
+    // in a way that depends on the machine's own zone: fail here instead.
+    expect(new Date(2026, 9, 21).toISOString()).toBe('2026-10-21T04:00:00.000Z')
+  })
+
+  afterAll(() => {
+    vi.unstubAllEnvs()
+  })
+
+  beforeEach(() => {
+    windowsSent.length = 0
+    server.use(
+      http.get(SNAPSHOT, ({ params }) => HttpResponse.json(snapshotFor(String(params.id), ['0.5000', '0.5000']))),
+      http.get(`${MARKET_BASE}/public/markets`, ({ request }) => {
+        const params = new URL(request.url).searchParams
+        const closesFrom = params.get('closes_from')
+        windowsSent.push({ closesFrom, closesBefore: params.get('closes_before') })
+        return HttpResponse.json({ markets: closesFrom ? [] : mockMarkets, next_cursor: null })
+      }),
+    )
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function pinClock(instant: string) {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(instant))
+  }
+
+  const closesFilter = () => within(screen.getByRole('radiogroup', { name: /filter by closing time/i }))
+
+  // 22:30 on Wednesday 21 October in New York is already the 22nd in UTC, so
+  // a window built from UTC days asks for the wrong day.
+  it('asks for the markets closing today, from local midnight to the next', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+
+    expect(await screen.findByText(/no markets match these filters/i)).toBeInTheDocument()
+    expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-21T04:00:00.000Z', closesBefore: '2026-10-22T04:00:00.000Z' })
+    expect(closesFilter().getByRole('radio', { name: 'Today' })).toBeChecked()
+    expect(within(screen.getByRole('group', { name: /active filters/i })).getByText('Closes: Today ×')).toBeInTheDocument()
+  })
+
+  // Sunday 1 November 2026 is the day New York leaves summer time: the week
+  // began on Monday at UTC-4 and ends at the next Monday at UTC-5, so a week
+  // is not seven times 24 hours, and a Sunday still belongs to the week
+  // before it.
+  it('asks for this week as Monday to Monday in local time, even on a Sunday across a clock change', async () => {
+    pinClock('2026-11-01T17:00:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'This week' }))
+
+    await waitFor(() =>
+      expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-26T04:00:00.000Z', closesBefore: '2026-11-02T05:00:00.000Z' }),
+    )
+  })
+
+  it('asks for this month, from its first day to the first day of the next, across a new year', async () => {
+    pinClock('2026-12-15T15:00:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'This month' }))
+
+    await waitFor(() =>
+      expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-12-01T05:00:00.000Z', closesBefore: '2027-01-01T05:00:00.000Z' }),
+    )
+  })
+
+  // #442 point 2 is about single-select pills marked up as multi-select; these
+  // are single-select and say so, as radios.
+  it('holds one preset at a time, and its chip clears it back to Any time', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    await actor.click(closesFilter().getByRole('radio', { name: 'This week' }))
+
+    expect(closesFilter().getByRole('radio', { name: 'This week' })).toBeChecked()
+    expect(closesFilter().getByRole('radio', { name: 'Today' })).not.toBeChecked()
+
+    await actor.click(screen.getByRole('button', { name: 'Clear closing filter' }))
+
+    expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(windowsSent.at(-1)).toEqual({ closesFrom: null, closesBefore: null })
+    expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
+  })
+
+  it.each([
+    ['ArrowRight', 'ArrowLeft'],
+    ['ArrowDown', 'ArrowUp'],
+  ])('moves the choice forward with %s and back with %s, as a radio group does', async (forward, back) => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    await actor.keyboard(`{${forward}}`)
+
+    expect(closesFilter().getByRole('radio', { name: 'This week' })).toBeChecked()
+    expect(closesFilter().getByRole('radio', { name: 'This week' })).toHaveFocus()
+    await waitFor(() =>
+      expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-19T04:00:00.000Z', closesBefore: '2026-10-26T04:00:00.000Z' }),
+    )
+
+    await actor.keyboard(`{${back}}`)
+
+    expect(closesFilter().getByRole('radio', { name: 'Today' })).toBeChecked()
+
+    // Past the first option, the choice wraps round to the last.
+    await actor.keyboard(`{${back}}{${back}}`)
+
+    expect(closesFilter().getByRole('radio', { name: 'This month' })).toBeChecked()
+  })
+
+  // An arrow with Alt, Ctrl or Cmd held belongs to the browser or the screen
+  // reader, not to the group: Alt+Left is the browser's Back.
+  it('leaves an arrow with Alt, Ctrl or Cmd held to the browser', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    const thisWeek = closesFilter().getByRole('radio', { name: 'This week' })
+    await actor.click(thisWeek)
+
+    await actor.keyboard('{Alt>}{ArrowLeft}{/Alt}')
+    expect(thisWeek).toBeChecked()
+    await actor.keyboard('{Control>}{ArrowLeft}{/Control}')
+    expect(thisWeek).toBeChecked()
+    await actor.keyboard('{Meta>}{ArrowLeft}{/Meta}')
+    expect(thisWeek).toBeChecked()
+  })
+
+  // One tab stop for the whole group, at the checked pill: Tab from the pill
+  // before the group lands on it, and the next Tab leaves the group.
+  it('reaches only the checked pill with Tab, as a radio group does', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    screen.getByRole('radio', { name: 'Resolved' }).focus()
+    await actor.tab()
+    expect(closesFilter().getByRole('radio', { name: 'Today' })).toHaveFocus()
+    await actor.tab()
+    expect(screen.getByRole('button', { name: 'Clear closing filter' })).toHaveFocus()
+  })
+
+  // The window belongs to the list, not to the click: a list started after
+  // midnight, here by a new search, asks for the new day.
+  it("asks for the new day's window when a search starts a new list after midnight", async () => {
+    pinClock('2026-10-20T03:50:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    await waitFor(() =>
+      expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-19T04:00:00.000Z', closesBefore: '2026-10-20T04:00:00.000Z' }),
+    )
+
+    vi.setSystemTime(new Date('2026-10-20T04:05:00Z'))
+    await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'smu{Enter}')
+
+    await waitFor(() =>
+      expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-20T04:00:00.000Z', closesBefore: '2026-10-21T04:00:00.000Z' }),
+    )
+  })
+
+  // #442 AC 1 for the third filter: a preset alone is cleared by its own
+  // chip, and Clear all appears once a search or a status joins it.
+  it('offers Clear all only when the preset is one of two filters', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    const clearAll = () => screen.queryByRole('button', { name: 'Clear all' })
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    expect(screen.getByRole('button', { name: 'Clear closing filter' })).toBeInTheDocument()
+    expect(clearAll()).not.toBeInTheDocument()
+
+    await actor.click(screen.getByRole('radio', { name: 'Closed' }))
+    expect(clearAll()).toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: 'Clear status filter' }))
+    expect(clearAll()).not.toBeInTheDocument()
+
+    await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'smu{Enter}')
+    expect(clearAll()).toBeInTheDocument()
+  })
+
+  it('clears the closing preset along with everything else on Clear all', async () => {
+    pinClock('2026-10-22T02:30:00Z')
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    await actor.click(closesFilter().getByRole('radio', { name: 'Today' }))
+    await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'smu{Enter}')
+    await actor.click(screen.getByRole('button', { name: 'Clear all' }))
+
+    expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
+    expect(windowsSent.at(-1)).toEqual({ closesFrom: null, closesBefore: null })
+    expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
   })
 })

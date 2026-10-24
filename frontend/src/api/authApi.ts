@@ -52,9 +52,16 @@ export interface AdminUserPage {
  * One page of accounts an administrator can search by username or email
  * fragment ([4.1] #13, auth-service.md). Blank or omitted `q` lists
  * everybody, newest registration first — the screen opens on a list rather
- * than an empty state waiting to be typed into.
+ * than an empty state waiting to be typed into. `role` and `is_suspended`
+ * narrow it further (#479); an omitted one filters nothing. A cursor carries
+ * a position, not the filters, so send all three again with it.
  */
-export async function listUsers(params?: { q?: string; cursor?: string }): Promise<AdminUserPage> {
+export async function listUsers(params?: {
+  q?: string
+  role?: User['role']
+  is_suspended?: boolean
+  cursor?: string
+}): Promise<AdminUserPage> {
   const res = await api.get<AdminUserPage>('/admin/users', { params })
   return res.data
 }

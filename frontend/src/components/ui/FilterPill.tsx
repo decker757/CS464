@@ -1,16 +1,17 @@
 import { selectableClass } from './selectableClass'
 
 // ComponentProps rather than ButtonHTMLAttributes so it carries `ref`, which
-// MarketFilters needs to move focus between its pills with the arrow keys.
+// RadioPillGroup needs to move focus between its pills with the arrow keys.
 interface FilterPillProps extends React.ComponentProps<'button'> {
   active: boolean
 }
 
-/** The rounded pill button shared by a status tab (AdminMarketsPage), a
- * status filter (MarketFilters) and a time range (PriceHistoryChart) — same
- * shape, same selected/unselected colours. They differ in ARIA role (a
- * tablist's tabs, a radio group's radios, and toggle buttons with
- * `aria-pressed`), so that stays with the caller via `...props`.
+/** The rounded pill button shared by a status tab (AdminMarketsPage), the
+ * filters drawn by RadioPillGroup (MarketFilters' status, the admin users
+ * page's role and status) and a time range (PriceHistoryChart) — same shape,
+ * same selected/unselected colours. They differ in ARIA role (a tablist's
+ * tabs, a radio group's radios, and toggle buttons with `aria-pressed`), so
+ * that stays with the caller via `...props`.
  *
  * `pointer-coarse:` grows the pill to the 44px a finger needs, and only on a
  * device driven by one: six pills sit in one wrapping row on the browse page's

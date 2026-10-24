@@ -1404,18 +1404,58 @@ three to be *in* the response. There is nothing to distinguish an open market
 from otherwise. `status=open` is the narrower query a trader gets by choosing
 the first group explicitly.
 
-`status` and `q` narrow this and compose with each other.
+`status`, `q` and the closing window narrow this and compose with each other.
 
 | Query parameter | Rule |
 | --- | --- |
 | `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
+| `closes_from` | a time with an offset (`Z` or `+08:00`): markets that stopped trading, or will stop, at or after it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC |
+| `closes_before` | a time with an offset: markets that stopped trading, or will stop, strictly before it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC, or a value at or before `closes_from` |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
 **Proposed, ADR 0025: not built yet.** `status` accepts `voided` too, and a
 voided market is in the second group of the order above, by when it stopped
-trading, like any other market that has stopped.
+trading, like any other market that has stopped. The closing window below
+finds it by that same moment: a void starts from CLOSED or later and leaves
+`closed_at` alone.
+
+#### The closing window — #442
+
+`closes_from` and `closes_before` ask "what stops trading between these two
+instants". The moment they test is when trading stopped, or for a market
+still trading, its `close_time`: the same moment the stopped markets sort by
+above. The window is half-open — `closes_from <= that moment <
+closes_before` — so two windows that meet, such as today and tomorrow, never
+share a market: build each from one midnight to the next and send both as
+they are. Either end may be sent alone. Sending both with `closes_before` at
+or before `closes_from` is a `422` naming both, because a window holding no
+instant is a mistake in the client rather than a question with an empty
+answer.
+
+The server has no idea of the trader's day or week, so it takes instants and
+not presets: compute "today" in the browser, in the trader's own timezone,
+and send it with its offset (`toISOString()` gives `Z`). In a query string a
+`+` must be sent as `%2B`, or it arrives as a space and the time is refused.
+
+```
+GET /public/markets?status=open&closes_from=2026-10-23T16:00:00Z&closes_before=2026-10-24T16:00:00Z
+```
+
+- **A market closed early is found by when it was closed**, not by the
+  `close_time` it keeps ([2.3] #7, ADR 0011, ADR 0014). Its card reads
+  "Closed", so listing it under the week its schedule named would show a
+  trader a market that did nothing that week. A market the clock closed, and
+  every market still trading, is found by its `close_time`. Add
+  `status=open` to leave every stopped market out.
+- **A market with no `close_time` that has not been closed matches no
+  window.** Publication refuses one, so it can only be a row written by hand.
+- **The order is unchanged.** The window only removes markets, so the groups
+  and their order are the ones above.
+- **The window reads each market as it is now**, like `status`. A market
+  closed early while you page is tested against the moment of its close from
+  then on, so it can leave or join the window between two pages.
 
 `draft` and `submitted` are never returned, whether asked for by `status` or
 not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
@@ -1423,9 +1463,9 @@ not — [1.1] #1's visibility rule holds here exactly as it does on `/markets`.
 #### Paging
 
 The list is paged by keyset ([X-1] #104). Send the previous response's
-`next_cursor` back as `cursor`, with the same `q`, `status` and `limit`, for
-the next page. `next_cursor: null` means there is nothing after this page,
-including when the page is empty. The cursor is opaque: do not build or edit
+`next_cursor` back as `cursor`, with the same `q`, `status`, closing window
+and `limit`, for the next page. `next_cursor: null` means there is nothing
+after this page, including when the page is empty. The cursor is opaque: do not build or edit
 one.
 
 Pages read in turn never repeat a market, and never skip one that was there
@@ -1446,9 +1486,9 @@ throughout, even while markets are published and closed between reads:
   after the point you have reached, and not at all if it sorts before it.
   Start again without a cursor to see everything as of now.
 
-The cursor does not record `q` or `status`. Changing either and sending an
-old cursor is not an error, but it continues from a position in the old list;
-start again without a cursor instead.
+The cursor does not record `q`, `status` or the closing window. Changing any
+of them and sending an old cursor is not an error, but it continues from a
+position in the old list; start again without a cursor instead.
 
 #### Response
 
@@ -1498,7 +1538,7 @@ carries no prices.
 | --- | --- | --- |
 | 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
-| 422 | — | `status` is not an accepted value, `q` is too long or holds a NUL, or `limit` is below 1 |
+| 422 | — | `status` is not an accepted value, `q` is too long or holds a NUL, `closes_from` or `closes_before` has no offset or no instant between year 1 and 9999 in UTC (such as `9999-12-31T23:00:00-05:00`), `closes_before` is not later than `closes_from`, or `limit` is below 1 |
 
 ### GET /public/markets/{id}
 
