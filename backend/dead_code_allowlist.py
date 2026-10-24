@@ -22,7 +22,8 @@ upgrade
 downgrade
 
 # [BE] #221's void, built in a stack: stack PR 9's `service/voiding.py` is
-# their caller. Remove these three lines in that PR. ADR 0025.
+# their caller. Remove these four lines in that PR. ADR 0025.
 lot_replay_of
 refuse_if_replay_disagrees
 cut_of
+mark_voided
