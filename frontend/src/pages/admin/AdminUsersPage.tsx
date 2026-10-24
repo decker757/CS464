@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { listUsers, type AdminUser, type AdminUserPage, type User } from '../../api/authApi'
 import AppLayout from '../../components/layout/AppLayout'
 import Card from '../../components/ui/Card'
-import FilterPill from '../../components/ui/FilterPill'
 import LoadMoreControl from '../../components/ui/LoadMoreControl'
 import PageTitle from '../../components/ui/PageTitle'
+import RadioPillGroup, { type RadioPillOption } from '../../components/ui/RadioPillGroup'
 import SearchForm from '../../components/ui/SearchForm'
 import { usePagedList } from '../../hooks/usePagedList'
 
@@ -15,21 +15,9 @@ const pagedUsersOptions = {
   idOf: (user: AdminUser) => user.id,
 }
 
-interface FilterOption<Value> {
-  value: Value | null
-  label: string
-}
-
-interface FilterGroupProps<Value> {
-  label: string
-  options: FilterOption<Value>[]
-  selected: Value | null
-  onSelect: (value: Value | null) => void
-}
-
 // null stands for "any", as in MarketFilters, so the pills and what the
 // request leaves out are drawn from one place.
-const ROLE_OPTIONS: FilterOption<User['role']>[] = [
+const ROLE_OPTIONS: RadioPillOption<User['role'] | null>[] = [
   { value: null, label: 'Any role' },
   { value: 'admin', label: 'Admins only' },
   { value: 'trader', label: 'Traders only' },
@@ -37,7 +25,7 @@ const ROLE_OPTIONS: FilterOption<User['role']>[] = [
 
 // "Suspended only" rather than "Suspended", which is already the word on a
 // suspended user's row.
-const STATUS_OPTIONS: FilterOption<boolean>[] = [
+const STATUS_OPTIONS: RadioPillOption<boolean | null>[] = [
   { value: null, label: 'Any status' },
   { value: false, label: 'Active only' },
   { value: true, label: 'Suspended only' },
@@ -51,61 +39,6 @@ function emptyMessage(query: string, pillFilterCount: number): string {
   if (query) return 'No users match that search.'
   if (pillFilterCount > 0) return `No users match ${filters}.`
   return 'No users yet.'
-}
-
-// The arrow keys of WAI-ARIA's radio group pattern: Right and Down choose the
-// next option, Left and Up the previous one, wrapping at either end. Any other
-// key is not the group's, so the answer is null. A copy of MarketFilters'
-// (#486), until the two move into one shared pill group.
-function arrowTargetIndex(key: string, index: number, count: number): number | null {
-  if (key === 'ArrowRight' || key === 'ArrowDown') {
-    return (index + 1) % count
-  }
-  if (key === 'ArrowLeft' || key === 'ArrowUp') {
-    return (index - 1 + count) % count
-  }
-  return null
-}
-
-// A single-select pill group, so a radio group: one choice is always checked,
-// Tab reaches only that one, and the arrow keys move the choice and the focus
-// together. preventDefault keeps the arrows from scrolling.
-function FilterGroup<Value>({ label, options, selected, onSelect }: FilterGroupProps<Value>) {
-  const pillRefs = useRef<(HTMLButtonElement | null)[]>([])
-
-  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    const targetIndex = arrowTargetIndex(event.key, index, options.length)
-    if (targetIndex === null) {
-      return
-    }
-    event.preventDefault()
-    onSelect(options[targetIndex].value)
-    pillRefs.current[targetIndex]?.focus()
-  }
-
-  return (
-    <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-2">
-      {options.map((option, index) => {
-        const isChecked = selected === option.value
-        return (
-          <FilterPill
-            key={option.label}
-            ref={element => {
-              pillRefs.current[index] = element
-            }}
-            role="radio"
-            active={isChecked}
-            aria-checked={isChecked}
-            tabIndex={isChecked ? 0 : -1}
-            onClick={() => onSelect(option.value)}
-            onKeyDown={event => handleKeyDown(event, index)}
-          >
-            {option.label}
-          </FilterPill>
-        )
-      })}
-    </div>
-  )
 }
 
 // [FE][4.1] #57. A fragment of a username or an email, matched server-side
@@ -140,8 +73,8 @@ export default function AdminUsersPage() {
           query={query}
           onSearch={setQuery}
         />
-        <FilterGroup label="Filter by role" options={ROLE_OPTIONS} selected={role} onSelect={setRole} />
-        <FilterGroup label="Filter by status" options={STATUS_OPTIONS} selected={isSuspended} onSelect={setIsSuspended} />
+        <RadioPillGroup label="Filter by role" options={ROLE_OPTIONS} selected={role} onSelect={setRole} />
+        <RadioPillGroup label="Filter by status" options={STATUS_OPTIONS} selected={isSuspended} onSelect={setIsSuspended} />
       </div>
 
       {isLoading && <p className="text-sm text-muted">Loading users…</p>}
