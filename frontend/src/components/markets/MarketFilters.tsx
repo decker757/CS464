@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import RadioPillGroup, { type RadioPillOption } from '../ui/RadioPillGroup'
 import SearchForm from '../ui/SearchForm'
+import { closingLabel, type ClosingPreset } from '../../utils/closingWindow'
+import ClosingFilter from './ClosingFilter'
 import { statusDisplay } from './marketStatus'
 
 // The statuses GET /public/markets accepts, in the order market-service.md
@@ -29,6 +32,8 @@ interface MarketFiltersProps {
   status: StatusFilter | null
   onQueryChange: (query: string) => void
   onStatusChange: (status: StatusFilter | null) => void
+  closing: ClosingPreset | null
+  onClosingChange: (closing: ClosingPreset | null) => void
 }
 
 // `pointer-coarse:` on the size, like FilterPill: the chip a finger clears has
@@ -46,21 +51,28 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
   )
 }
 
-export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
-  const appliedFilterCount = [query !== '', status !== null].filter(Boolean).length
+export default function MarketFilters({ query, status, onQueryChange, onStatusChange, closing, onClosingChange }: MarketFiltersProps) {
+  // A new key remounts the search box, which empties anything typed in it.
+  // Clear all needs that: with no search applied, the cleared query is the same
+  // empty string as before, so SearchForm has no change to follow.
+  const [searchBoxKey, setSearchBoxKey] = useState(0)
+  const appliedFilterCount = [query !== '', status !== null, closing !== null].filter(Boolean).length
   const hasActiveFilters = appliedFilterCount > 0
   // One filter is cleared by its own chip, so "Clear all" is for more than one
   // filter (#442).
   const showClearAll = appliedFilterCount > 1
 
   function handleClearAll() {
+    setSearchBoxKey(key => key + 1)
     onQueryChange('')
     onStatusChange(null)
+    onClosingChange(null)
   }
 
   return (
     <div className="mb-6 space-y-4">
       <SearchForm
+        key={searchBoxKey}
         id="market-search"
         label="Search markets"
         placeholder="Search markets by question"
@@ -72,6 +84,8 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
           group rather than toggle buttons (#442). */}
       <RadioPillGroup label="Filter by status" options={FILTER_OPTIONS} selected={status} onSelect={onStatusChange} />
 
+      <ClosingFilter closing={closing} onClosingChange={onClosingChange} />
+
       {hasActiveFilters && (
         <div role="group" aria-label="Active filters" className="flex flex-wrap items-center gap-2">
           {query !== '' && (
@@ -79,6 +93,9 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
           )}
           {status !== null && (
             <ActiveFilterChip label={`Status: ${filterLabel(status)}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
+          )}
+          {closing !== null && (
+            <ActiveFilterChip label={`Closes: ${closingLabel(closing)}`} clearLabel="Clear closing filter" onClear={() => onClosingChange(null)} />
           )}
           {showClearAll && (
             <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">

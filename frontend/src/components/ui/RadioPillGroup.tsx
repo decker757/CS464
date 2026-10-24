@@ -9,6 +9,12 @@ export interface RadioPillOption<Value> {
 interface RadioPillGroupProps<Value> {
   /** The group's accessible name, such as "Filter by status". */
   label: string
+  /**
+   * A short word shown before the pills, such as "Closing". It is for the eye
+   * only: the group's name is still `label`, so a screen reader hears that
+   * once rather than both.
+   */
+  caption?: string
   options: RadioPillOption<Value>[]
   selected: Value
   onSelect: (value: Value) => void
@@ -36,7 +42,7 @@ function arrowTargetIndex(key: string, index: number, count: number): number | n
  * Ctrl or Cmd held is the browser's or the screen reader's (Alt+Left is
  * Back), so the group leaves it alone.
  */
-export default function RadioPillGroup<Value>({ label, options, selected, onSelect }: RadioPillGroupProps<Value>) {
+export default function RadioPillGroup<Value>({ label, caption, options, selected, onSelect }: RadioPillGroupProps<Value>) {
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([])
 
   function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -53,7 +59,12 @@ export default function RadioPillGroup<Value>({ label, options, selected, onSele
   }
 
   return (
-    <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-2">
+    <div role="radiogroup" aria-label={label} className="flex flex-wrap items-center gap-2">
+      {caption && (
+        <span aria-hidden="true" className="text-xs font-semibold text-muted">
+          {caption}
+        </span>
+      )}
       {options.map((option, index) => {
         const isChecked = selected === option.value
         return (
