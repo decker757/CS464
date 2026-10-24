@@ -28,6 +28,7 @@ from unit_test.conftest import (
     published_market,
     settleable_edge,
     settled_market,
+    voided_market,
 )
 from service import market_service
 
@@ -488,6 +489,28 @@ async def test_the_browse_accepts_a_settled_filter(
     assert response.status_code == 200
     assert [m["id"] for m in response.json()["markets"]] == [str(settled_id)]
     assert response.json()["markets"][0]["status"] == "settled"
+
+
+# --- [BE] #221: voided ---------------------------------------------------------
+async def test_the_browse_accepts_a_voided_filter(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """ADR 0025: `voided` is "an accepted value of the trader browse's
+    `status` filter, as `settled` is".
+
+    The literal string, so it fails while `PublicMarketStatus` lacks it. The
+    settled decoy fails a filter that matches every finished market.
+    """
+    await settled_market(session, actor())
+    voided_id = (await voided_market(session, actor())).id
+
+    response = await client.get(
+        _LIST, params={"status": "voided"}, headers=trader_headers
+    )
+
+    assert response.status_code == 200
+    assert [m["id"] for m in response.json()["markets"]] == [str(voided_id)]
+    assert response.json()["markets"][0]["status"] == "voided"
 
 
 async def test_settleable_on_the_wire_follows_the_routes_clock(

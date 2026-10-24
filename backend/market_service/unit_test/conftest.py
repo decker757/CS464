@@ -559,6 +559,24 @@ async def settled_market(session, creator: Actor, **overrides: object) -> Market
     return await market_service.get(session, creator.id, market_id)
 
 
+async def voided_market(session, creator: Actor, **overrides: object) -> Market:
+    """The same market, approved with its window still open, then marked VOIDED.
+    [BE] #221, ADR 0025.
+
+    Voided from APPROVED, so its proposal and approval are kept, as a void
+    keeps them, and a decision or a send-back can quote its `proposal_id`.
+    The status is written directly, because no route voids yet. Overrides
+    are `proposed_market`'s. Returns the market reloaded from the database.
+    """
+    market_id = (await approved_market(session, creator, **overrides)).id
+    await session.execute(
+        update(Market).where(Market.id == market_id).values(status=MarketStatus.VOIDED)
+    )
+    await session.commit()
+    session.expire_all()
+    return await market_service.get(session, creator.id, market_id)
+
+
 async def proposed_before_ids(session, actor: Actor) -> Market:
     """A pending proposal with no `proposal_id`, as one made before ids existed.
 

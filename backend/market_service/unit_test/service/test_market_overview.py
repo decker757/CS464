@@ -36,6 +36,7 @@ from unit_test.conftest import (
     proposed_market,
     published_market_closing_at,
     settled_market,
+    voided_market,
 )
 
 # More than any test here creates, so a test about order or counts reads one page.
@@ -175,6 +176,7 @@ async def population(session: AsyncSession, hour_long_window: None) -> _Populati
         "pending": (await proposed_market(session, caller)).id,
         "approved": (await approved_market(session, caller)).id,
         "settled": (await settled_market(session, caller)).id,
+        "voided": (await voided_market(session, caller)).id,
     }
     return _Population(caller=caller, now=now, ids=ids)
 
