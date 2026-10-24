@@ -1299,8 +1299,8 @@ the first group explicitly.
 | --- | --- |
 | `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
-| `closes_from` | a time with an offset (`Z` or `+08:00`): markets that stopped trading, or will stop, at or after it. No offset is a `422` |
-| `closes_before` | a time with an offset: markets that stopped trading, or will stop, strictly before it. No offset is a `422`, and so is a value at or before `closes_from` |
+| `closes_from` | a time with an offset (`Z` or `+08:00`): markets that stopped trading, or will stop, at or after it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC |
+| `closes_before` | a time with an offset: markets that stopped trading, or will stop, strictly before it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC, or a value at or before `closes_from` |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
@@ -1421,7 +1421,7 @@ carries no prices.
 | --- | --- | --- |
 | 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
-| 422 | — | `status` is not an accepted value, `q` is too long or holds a NUL, `closes_from` or `closes_before` has no offset, `closes_before` is not later than `closes_from`, or `limit` is below 1 |
+| 422 | — | `status` is not an accepted value, `q` is too long or holds a NUL, `closes_from` or `closes_before` has no offset or no instant between year 1 and 9999 in UTC (such as `9999-12-31T23:00:00-05:00`), `closes_before` is not later than `closes_from`, or `limit` is below 1 |
 
 ### GET /public/markets/{id}
 

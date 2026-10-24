@@ -612,3 +612,41 @@ async def test_an_empty_closing_window_is_422_naming_both_ends(
         ["query", "closes_from"],
         ["query", "closes_before"],
     ]
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [
+        # Year 1 at UTC+1 is an instant in year 0 in UTC.
+        ("closes_from", "0001-01-01T00:30:00+01:00"),
+        # The last hour of year 9999 at UTC-5 is an instant in year 10000.
+        ("closes_before", "9999-12-31T23:00:00-05:00"),
+    ],
+)
+async def test_a_closing_window_end_with_no_instant_in_utc_is_422(
+    client: AsyncClient, trader_headers: dict[str, str], parameter: str, value: str
+) -> None:
+    """#490: a time whose UTC instant is outside year 1 to 9999 cannot be sent
+    to Postgres; asyncpg overflows converting it, which was a 500."""
+    response = await client.get(
+        _LIST, params={parameter: value}, headers=trader_headers
+    )
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [
+        ["query", parameter]
+    ]
+
+
+async def test_the_last_instant_in_utc_is_still_a_closing_window_end(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """#490's guard refuses only what cannot be encoded: the last microsecond
+    of year 9999 in UTC is a real bound and still answers."""
+    response = await client.get(
+        _LIST,
+        params={"closes_before": "9999-12-31T23:59:59.999999+00:00"},
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 200
