@@ -356,6 +356,24 @@ class OutcomeSendBackRequest(BaseModel):
     )
 
 
+class MarketVoidRequest(BaseModel):
+    """The body of POST /markets/{id}/void, which only the ledger sends. [BE] #221
+
+    The reason the ledger recorded with the refunds, forwarded as it stored
+    it. Not checked here, not even for length: the ledger checked it before
+    the money moved, and a stricter rule here would refuse every retry of a
+    void whose refunds have already committed. ADR 0025.
+    """
+
+    reason: str = Field(
+        description=(
+            "The reason the ledger recorded for the void, stored on the market "
+            "as sent and shown to traders. Checked by the ledger, not here."
+        ),
+        examples=["The match was abandoned after ten overs; there is no result."],
+    )
+
+
 class OutcomeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
