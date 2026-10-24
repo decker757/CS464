@@ -9,7 +9,7 @@ import DetailItem from '../../components/ui/DetailItem'
 import PageTitle from '../../components/ui/PageTitle'
 import SectionCard from '../../components/ui/SectionCard'
 import { useMarketDetail } from '../../hooks/useMarketDetail'
-import { compareCredits, formatCreditsPrecise, isNegativeCredits, isPlainCredits, unsignedCredits } from '../../utils/formatCredits'
+import { compareCredits, formatCreditsPrecise, isNegativeCredits, isPlainCredits, signedAmountColor, unsignedCredits } from '../../utils/formatCredits'
 
 interface WorstCase {
   outcomeId: string
@@ -51,6 +51,16 @@ function worstCaseSentence(worstCase: WorstCase, label: string): string {
     return `If ${label} wins, the platform tops up ${formatCreditsPrecise(unsignedCredits(worstCase.residue))}.`
   }
   return `If ${label} wins, the pool keeps ${formatCreditsPrecise(worstCase.residue)}.`
+}
+
+/** The worst case's colour is the residue column's own `signedAmountColor`
+ * (#418), so the same residue is the same colour in the line and in the cell
+ * below it: red short, green over, neutral at zero. The weight is this line's
+ * alone, and a shortfall keeps it because it is the figure an admin resolving
+ * the market has to act on. */
+function worstCaseClassName(worstCase: WorstCase): string {
+  const color = signedAmountColor(worstCase.residue)
+  return worstCase.isShort ? `font-semibold ${color}` : color
 }
 
 // [2.2] #55. Not scoped to the market's creator: knowing payout size before
@@ -136,7 +146,7 @@ export default function MarketExposurePage() {
                     </DetailItem>
                     {worstCase && (
                       <DetailItem label="Worst case">
-                        <p className={worstCase.isShort ? 'font-semibold text-danger' : 'text-smu-navy'}>
+                        <p className={worstCaseClassName(worstCase)}>
                           {worstCaseSentence(worstCase, worstCaseLabel)}
                         </p>
                       </DetailItem>

@@ -22,7 +22,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18 | containers and CI shipped; the deploy pipeline [5.3] #19 and the load test [5.4] #20 are open |
+| Deployment | [5.1] #17, [5.2] #18, [5.4] #440 | containers, CI and the replicated stack shipped; the deploy pipeline [5.3] #19 and the load test [5.4] #20 are open |
 
 ## Running it
 
@@ -73,6 +73,23 @@ docker compose exec db psql -U cs464 -d cs464 \
 Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
 `.env` and point `TEST_DATABASE_URL` at the same port. Same for Redis on 6379
 and `REDIS_PORT`.
+
+### Two of everything, behind a load balancer
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+  up -d --build --wait
+```
+
+Two replicas of each stateless service behind one nginx on ports 18000-18004,
+as its own `cs464scale` compose project, so it runs beside the stack above
+rather than instead of it. The three `*-migrate` steps stay one container each,
+which is the only thing in that file that is a rule rather than a preference:
+ADR 0020's step runs once per deploy, never once per replica.
+
+[`docs/horizontal-scaling.md`](docs/horizontal-scaling.md) has the whole run —
+what was executed, which replica answered which request, and what [5.3] #19's
+pipeline has to get right.
 
 ## Tests
 
@@ -136,9 +153,12 @@ frontend/                 React, Vite and Tailwind; the Playwright end-to-end
                           suite lives in frontend/e2e/
 sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/           0002 only: a login role, and 02-schemas.sql re-run
+deploy/                   nginx.conf for the replicated stack below
 docs/adr/                 decisions and why they were made
 docs/api/                 endpoint contracts for the frontend
 docs/architecture.md      the three diagrams above, each citing its ADR
+docs/horizontal-scaling.md  two of every service behind a proxy, and the run
+                          that showed it works
 scripts/                  weekly sprint digest to Telegram
 .github/workflows/        CI, one path-filtered workflow per area
 ```

@@ -60,20 +60,19 @@ async def reserved_of(session: AsyncSession, user_id: uuid.UUID) -> Decimal:
     return (await session.execute(reserved_query_of(user_id))).scalar_one()
 
 
-async def reserved_shares_of(
-    session: AsyncSession,
+def reserved_shares_query_of(
     user_id: uuid.UUID,
     *,
-    market_id: uuid.UUID,
-    outcome_id: uuid.UUID,
-) -> Decimal:
+    market_id: uuid.UUID | ColumnElement[uuid.UUID],
+    outcome_id: uuid.UUID | ColumnElement[uuid.UUID],
+) -> Select[tuple[Decimal]]:
     """The shares of one outcome this user's live sell orders still hold back:
     the sum of `quantity - filled_quantity` over them, zero when there are none.
 
-    Takes no lock: every caller holds the market's book row, which every
-    writer of an order or a position takes first.
+    The market and outcome are values, or columns of an enclosing statement
+    that takes this as a correlated subquery.
     """
-    stmt = select(
+    return select(
         func.coalesce(func.sum(Order.quantity - Order.filled_quantity), ZERO)
     ).where(
         Order.user_id == user_id,
@@ -82,4 +81,19 @@ async def reserved_shares_of(
         Order.side == Side.SELL,
         order_is_live(),
     )
+
+
+async def reserved_shares_of(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+) -> Decimal:
+    """What this user's live sell orders of one outcome reserve, read now.
+
+    Takes no lock: every caller holds the market's book row, which every
+    writer of an order or a position takes first.
+    """
+    stmt = reserved_shares_query_of(user_id, market_id=market_id, outcome_id=outcome_id)
     return (await session.execute(stmt)).scalar_one()

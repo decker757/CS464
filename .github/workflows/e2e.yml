@@ -53,6 +53,18 @@ jobs:
 
           template = open(".env.example").read()
           filled = re.sub(r"^(\w+)=$", lambda blank: f"{blank.group(1)}={secrets.token_urlsafe(48)}", template, flags=re.M)
+          # #373. Deliberately not .env.example's 1000. The specs work their
+          # expected credits out from the grant the ledger reports
+          # (e2e/support/backend.ts::startingGrant), so a figure that only
+          # holds at the default has to fail here rather than on somebody's
+          # own stack. An awkward value, not a round one: at 1000 a spec that
+          # typed "1,000.0000" would pass, and four of the checks this run
+          # makes would also pass by accident at 10000, where "9,997.4687"
+          # contains "997.4687". Raising it is free; lowering it below
+          # LARGEST_SPEND stops the run in global setup.
+          filled, swapped = re.subn(r"^STARTING_CREDITS=.*$", "STARTING_CREDITS=1234.5678", filled, flags=re.M)
+          if swapped != 1:
+              raise SystemExit("STARTING_CREDITS is no longer a line in .env.example: this run would prove nothing about #373")
           open(".env", "w").write(filled)
           EOF
 

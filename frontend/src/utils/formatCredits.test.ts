@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isNegativeCredits, isPlainCredits, isZeroCredits, signedAmountColor, subtractCredits, unsignedCredits } from './formatCredits'
+import { compareCredits, formatAveragePrice, formatCredits, formatCreditsPrecise, isNegativeCredits, isPlainCredits, isZeroCredits, roundedCredits, signedAmountColor, subtractCredits, unsignedCredits } from './formatCredits'
 
 describe('formatCredits', () => {
-  it('drops the decimal part', () => {
+  it('writes a whole number of credits with no decimal part', () => {
     expect(formatCredits('1000.0000')).toBe('1,000')
   })
 
@@ -24,18 +24,71 @@ describe('formatCredits', () => {
     expect(formatCredits('-1000.0000')).toBe('-1,000')
   })
 
-  it('does not round a fractional part up', () => {
-    // Credits are whole numbers in practice (ledger-service.md); display
-    // truncates rather than rounds, so 999.9999 reads as 999, not 1,000.
-    expect(formatCredits('999.9999')).toBe('999')
-  })
-
   it('handles a value with no decimal point', () => {
     expect(formatCredits('500')).toBe('500')
   })
 
   it('shows a dash for anything that is not a plain decimal', () => {
     expect(formatCredits('1E-4')).toBe('—')
+  })
+
+  it('keeps the cents of a balance that has them, rather than dropping them', () => {
+    // #443, watched live through a trade: this read the integer part off the
+    // string and truncated, so a balance of 9,993.8938 came out as 9,993 in
+    // the navbar while the portfolio showed 9,993.8938 — the same screen, two
+    // figures, 0.89 credits apart.
+    expect(formatCredits('9993.8938')).toBe('9,993.89')
+  })
+
+  it.each([
+    ['1.2449', '1.24', 'below the half'],
+    ['1.2450', '1.25', 'exactly the half, which goes up'],
+    ['1.2451', '1.25', 'above the half'],
+    ['-1.2450', '-1.25', 'exactly the half on a negative, which goes away from zero'],
+    ['9.9950', '10', 'a carry the whole way across the decimal point'],
+    ['999.9999', '1,000', 'a carry that adds a thousands separator'],
+  ])('rounds %s to %s (%s)', (value, expected) => {
+    // The boundary itself, both sides of it and the carry. Truncation passes
+    // the first of these and fails every other one, which is what #443 was.
+    // Half away from zero is the ledger's own ROUND_HALF_UP
+    // (ledger-service.md), so a figure is rounded here the way the service
+    // that computed it rounds.
+    expect(formatCredits(value)).toBe(expected)
+  })
+
+  it('shows an amount under a cent as a plain zero, with no sign and no minus', () => {
+    // A fresh position's unrealized P&L is dust at the fourth decimal place
+    // (ADR 0018: it is valued at liquidation), and "-0.00" is not a figure
+    // anybody should read. The direction survives in the colour, which the
+    // portfolio takes from `roundedCredits` for exactly this reason.
+    expect(formatCredits('-0.0001')).toBe('0')
+    expect(formatCredits('-0.0001', { showSign: true })).toBe('0')
+    expect(formatCredits('0.0049', { showSign: true })).toBe('0')
+  })
+
+  it('adds a plus sign to a positive figure only when showSign is set', () => {
+    // P&L is the only figure whose direction is the point, so it is the only
+    // one that asks for the sign. [B-1] #376
+    expect(formatCredits('3.8690')).toBe('3.87')
+    expect(formatCredits('3.8690', { showSign: true })).toBe('+3.87')
+    expect(formatCredits('-3.8690', { showSign: true })).toBe('-3.87')
+  })
+})
+
+describe('roundedCredits', () => {
+  it('rounds to the scale formatCredits shows, so a colour can be read off the figure on screen', () => {
+    // #443: a portfolio card colours itself from this rather than from the
+    // value behind it. A P&L of -0.0001 shows as "0", and that has to read
+    // flat rather than red — which it does, because isZeroCredits reads
+    // "-0.00" as zero. A loss that survives the rounding still reads as one.
+    expect(roundedCredits('-0.0001')).toBe('-0.00')
+    expect(signedAmountColor(roundedCredits('-0.0001'))).toBe('text-muted')
+    expect(roundedCredits('-0.5000')).toBe('-0.50')
+    expect(signedAmountColor(roundedCredits('-0.5000'))).toBe('text-danger')
+  })
+
+  it('gives back anything unreadable unchanged, so a caller colouring it is no worse off', () => {
+    expect(roundedCredits('1E-4')).toBe('1E-4')
   })
 })
 
@@ -48,8 +101,12 @@ describe('formatCreditsPrecise', () => {
     expect(formatCreditsPrecise('5.1')).toBe('5.1000')
   })
 
-  it('does not round a fifth decimal place; it truncates', () => {
-    expect(formatCreditsPrecise('5.12349')).toBe('5.1234')
+  it('rounds a fifth decimal place rather than dropping it', () => {
+    // The ledger sends four places, so this is the formatter being correct
+    // rather than a case anybody meets. Both formatters round the same way
+    // and on the same code, which is the point of #443: one rule, not one
+    // per figure.
+    expect(formatCreditsPrecise('5.12349')).toBe('5.1235')
   })
 
   it('shows the minus sign on a negative value whether or not showSign is set', () => {
@@ -80,9 +137,16 @@ describe('formatAveragePrice', () => {
   it.each([
     ['0.5', '0.5000'],
     ['2', '2.0000'],
-    ['1.23456', '1.2345'],
+    ['1.23456', '1.2346'],
   ])('formats %s as %s', (input, expected) => {
     expect(formatAveragePrice(input)).toBe(expected)
+  })
+
+  it('keeps all four places, and is not rounded to the cent with the cards', () => {
+    // #247 and ledger-service.md: this is credits per share, so the digits
+    // after the second are most of the number. #443 rounded the figures that
+    // are read at a glance to the cent and deliberately left this one alone.
+    expect(formatAveragePrice('0.5063')).toBe('0.5063')
   })
 })
 

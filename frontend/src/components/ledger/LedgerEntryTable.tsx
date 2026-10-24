@@ -19,7 +19,21 @@ function EntryDescription({ row }: { row: EntryRow }) {
 
 /** One page's worth of ledger rows: date, activity, quantity, average price,
  * signed amount and the running balance. Used by a trader's own history and
- * an administrator's read of someone else's. */
+ * an administrator's read of someone else's.
+ *
+ * Each figure keeps the four decimal places the ledger sent, unlike the
+ * glanceable figures in the navbar and on the portfolio's cards, which are
+ * rounded to the cent (#443). This is the column a reader checks the
+ * arithmetic down — `balance_after` minus `amount` is the row below it
+ * exactly (ledger-service.md) — and it sits beside an average price that is
+ * credits per share and cannot be rounded to the cent (#247).
+ *
+ * The unit is named once, in the header of each money column, rather than
+ * after every figure: "balance after" is the same quantity as the navbar's
+ * "credits" and the portfolio's old "cash" card, and nothing on screen said
+ * so (#443). Quantity and average price are left as they are, because the
+ * market's own trade log has those two columns and not these.
+ */
 export default function LedgerEntryTable({ rows }: { rows: EntryRow[] }) {
   return (
     <div className="overflow-x-auto rounded-2xl border border-smu-gold/15 bg-white shadow-card">
@@ -30,8 +44,8 @@ export default function LedgerEntryTable({ rows }: { rows: EntryRow[] }) {
             <HeaderCell>Activity</HeaderCell>
             <HeaderCell align="right">Quantity</HeaderCell>
             <HeaderCell align="right">Avg. price</HeaderCell>
-            <HeaderCell align="right">Amount</HeaderCell>
-            <HeaderCell align="right">Balance after</HeaderCell>
+            <HeaderCell align="right">Amount (credits)</HeaderCell>
+            <HeaderCell align="right">Balance after (credits)</HeaderCell>
           </TableHeaderRow>
         </thead>
         <tbody>

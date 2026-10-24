@@ -5,7 +5,14 @@ import { useAuth } from './AuthContext'
 interface BalanceContextType {
   // undefined: not yet loaded. null: load failed. A string: the ledger's own
   // decimal balance, formatted with formatCredits by the caller.
+  //
+  // `balance` is every credit on the account, including those a resting buy
+  // order reserves. `available` is what a new trade or order may actually
+  // spend — `balance` less those reservations (ADR 0024). Show `available`
+  // wherever the figure means "what you can spend"; `balance` is for net
+  // worth and for the history's running total.
   balance: string | null | undefined
+  available: string | null | undefined
   // Re-reads the authoritative balance from the ledger — call this after a
   // trade or payout commits ([B-2] #33's third acceptance criterion). A
   // failed request leaves the last known balance on screen rather than
@@ -18,6 +25,7 @@ export const BalanceContext = createContext<BalanceContextType | null>(null)
 export function BalanceProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
   const [balance, setBalance] = useState<string | null | undefined>(undefined)
+  const [available, setAvailable] = useState<string | null | undefined>(undefined)
   // Whose balance `balance` belongs to, so a user switching to another on the
   // same browser session — without an intervening null, if `login` is called
   // directly — never shows the previous user's figure while the new fetch is
@@ -37,17 +45,20 @@ export function BalanceProvider({ children }: { children: React.ReactNode }) {
       .then(result => {
         if (requestId !== latestRequestRef.current) return
         setBalance(result.balance)
+        setAvailable(result.available)
       })
       // Keep whatever was last shown; only drop to null if nothing has loaded yet.
       .catch(() => {
         if (requestId !== latestRequestRef.current) return
         setBalance(current => (current === undefined ? null : current))
+        setAvailable(current => (current === undefined ? null : current))
       })
   }, [])
 
   if ((user?.id ?? null) !== owner) {
     setOwner(user?.id ?? null)
     setBalance(undefined)
+    setAvailable(undefined)
   }
 
   useEffect(() => {
@@ -55,7 +66,7 @@ export function BalanceProvider({ children }: { children: React.ReactNode }) {
   }, [user, refetch])
 
   return (
-    <BalanceContext.Provider value={{ balance, refetch }}>
+    <BalanceContext.Provider value={{ balance, available, refetch }}>
       {children}
     </BalanceContext.Provider>
   )

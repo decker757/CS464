@@ -38,3 +38,40 @@ test('an admin sees a trade in the price history and the trade log', async ({ pa
   await expect(dateCell).not.toContainText('Invalid Date')
   await expect(dateCell).toHaveText(/\d{1,2}\/\d{1,2}\/\d{4}/)
 })
+
+// [FE][T-5] #453. The same route, read from the market page with a trader's
+// cookie. ledger-service.md opens it to any role, and only the real ledger can
+// show that a trader is answered rather than refused as on an admin route; the
+// lines also prove the chart's own chunk loaded from the built bundle.
+test('a trader sees the price history on the market page', async ({ page }) => {
+  const admin = await registerAdmin('phm_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('pricechart')} resolve yes?`)
+  const trader = await registerTrader('phm_trader')
+  // The book's opening and this trade: two points, so there is a line to draw.
+  await buy(trader, market, 'Yes', '5')
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  // Waited on first, for the same reason as above.
+  await expect(page.locator('.recharts-line-curve')).toHaveCount(market.outcomes.length)
+  await expect(page.getByText('Failed to load price history.')).toHaveCount(0)
+})
+
+// [FE][T-5] #453. A trader with the app open across a deploy asks for a chart
+// chunk the server no longer has. Only a real browser loading the built bundle
+// can fail that download; the market page must still trade.
+test('a chart chunk that fails to download leaves the market page trading', async ({ page }) => {
+  const admin = await registerAdmin('phf_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('chartfail')} resolve yes?`)
+  const trader = await registerTrader('phf_trader')
+  // Two points, so the page asks for the chart rather than saying no trades.
+  await buy(trader, market, 'Yes', '5')
+
+  await page.route('**/PriceHistoryChart-*.js', route => route.abort())
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  await expect(page.getByText('Price history unavailable. Reload the page to try again.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Buy Yes', exact: true })).toBeVisible()
+})
