@@ -34,10 +34,11 @@ interface TradingPanelProps {
   // where guessing zero here would stop a trader selling shares they own
   // because one request went missing.
   heldByOutcome: Record<string, string> | null
-  // What the trader's own open sell orders on this market hold back of each
-  // outcome; an outcome that is not a key has nothing held back. The ledger
-  // will not sell those shares a second time, so the check below and the
-  // Max button both stop at the rest.
+  // What the trader's own live sell orders on this market hold back of each
+  // outcome, as the portfolio reports it per position (#410); an outcome that
+  // is not a key has nothing held back. The ledger will not sell those shares
+  // a second time, so the check below and the Max button both stop at the
+  // rest.
   reservedSharesByOutcome: Record<string, string>
   // A trade committed, so the holding above is out of date — the page re-reads
   // it. The balance comes back through BalanceContext's own refetch.
@@ -98,11 +99,15 @@ interface TradeToCheck {
   reservedShares: string | undefined
 }
 
-/** What the trader's open sell orders hold back of a holding, never more
- *  than the holding itself. A sell order's fill lowers both, but they arrive
- *  on two reads, and a holdings read that lands before the orders list
- *  catches up would otherwise leave a negative to sell — in the line above
- *  the field and in the refusal under it alike. */
+/** What the trader's own live sell orders hold back of a holding, never more
+ *  than the holding itself.
+ *
+ *  Both figures now come from the same portfolio row, derived in the one
+ *  statement that reads the position (#410), so `reserved` above `quantity`
+ *  would be the ledger contradicting itself rather than the two reads
+ *  disagreeing as they once could. The clamp stays because it is a comparison
+ *  against a figure already in hand, and the alternative is a negative in the
+ *  line above the field and in the refusal under it alike. */
 function sharesReservedOf(held: string, reserved: string | undefined): string | undefined {
   if (reserved === undefined) return undefined
   return compareCredits(reserved, held) > 0 ? held : reserved
