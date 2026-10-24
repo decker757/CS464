@@ -538,7 +538,7 @@ async def _closing_at(session: AsyncSession, close_time: datetime) -> str:
     return str(market.id)
 
 
-async def test_the_closing_window_is_two_query_parameters(
+async def test_the_closing_window_narrows_the_list_from_the_query_string(
     client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
 ) -> None:
     """#442: the wiring only; the edges and the rules are `test_browsing.py`'s.

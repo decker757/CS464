@@ -1105,16 +1105,19 @@ async def test_a_closing_window_composes_with_a_status_filter_and_a_search(
     session: AsyncSession,
 ) -> None:
     """#442's DoD: "composes with `status` and `q`". Each decoy misses exactly
-    one of the three, so dropping any one of them lets its decoy in."""
-    start = datetime.now(UTC) + timedelta(days=2)
-    end = start + timedelta(days=3)
-    inside = start + timedelta(days=1)
+    one of the three, so dropping any one of them lets its decoy in. The
+    window spans now, so the market closed by hand just now is inside it and
+    only the status filter keeps it out."""
+    now = datetime.now(UTC)
+    start = now - timedelta(days=1)
+    end = now + timedelta(days=5)
+    inside = now + timedelta(days=2)
     question = "Will Singapore core inflation be below 2% in December 2026?"
 
     wanted_id = await _closing_at(session, inside, question=question)
     # Outside the window.
-    await _closing_at(session, end + timedelta(days=1), question=question)
-    # Not open: closed by hand, its `close_time` still inside the window.
+    await _closing_at(session, end + timedelta(days=5), question=question)
+    # Not open: closed by hand now, inside the window.
     stopped_id = await _closing_at(session, inside, question=question)
     await market_service.close_early(session, actor(), stopped_id, close_request())
     # Another question.
@@ -1133,38 +1136,77 @@ async def test_a_closing_window_composes_with_a_status_filter_and_a_search(
     assert _ids(listed) == [wanted_id]
 
 
+async def test_a_market_closed_early_is_found_by_when_it_stopped(
+    session: AsyncSession,
+) -> None:
+    """#442: "This week" means what stopped or stops this week. A stopped
+    card shows "Closed", not its scheduled close, so a market an administrator
+    closed early weeks ago must not answer for the week its schedule named.
+    The window reads the stopped group's own sort key. DECISIONS.md, "Stopped
+    markets sort by when trading stopped"; ADR 0014.
+    """
+    now = datetime.now(UTC)
+    start = now - timedelta(days=1)
+    end = now + timedelta(days=1)
+
+    # Scheduled well after the window, closed by hand inside it.
+    stopped_inside_id = await _closing_at(session, now + timedelta(days=30))
+    await market_service.close_early(
+        session,
+        actor(),
+        stopped_inside_id,
+        close_request(),
+        now=now - timedelta(hours=1),
+    )
+    # Scheduled inside the window, closed by hand three weeks before it.
+    stopped_before_id = await _closing_at(session, now + timedelta(hours=12))
+    await market_service.close_early(
+        session,
+        actor(),
+        stopped_before_id,
+        close_request(),
+        now=now - timedelta(days=21),
+    )
+
+    listed = await _browse(session, closes_from=start, closes_before=end)
+
+    assert _ids(listed) == [stopped_inside_id]
+
+
 async def test_a_closing_window_pages_through_every_match_and_nothing_else(
     session: AsyncSession,
 ) -> None:
     """#442: "keyset pagination still works with it applied".
 
-    The window reads `close_time`, while the stopped group sorts by when
-    trading stopped, so markets closed early inside the window sort among
-    the stopped ones, with decoys between them. One market per page puts a
-    cursor on every boundary: between two matches, on each side of a decoy,
-    and across the two groups.
+    The window reads the key each group sorts by, so its matches are a run in
+    each group and the decoys sit at the run's ends: one trading market
+    closing after the window, one stopped market that stopped before it. The
+    window spans now, so both groups hold matches, and a stopped one closed
+    early is found by when it was closed. One market per page puts a cursor
+    between every two matches, across the trading decoy and across the two
+    groups.
     """
     now = datetime.now(UTC)
-    start = now + timedelta(days=2)
-    end = now + timedelta(days=5)
+    start = now - timedelta(days=3)
+    end = now + timedelta(days=3)
 
-    async def closed_early(close_time: datetime, ago: timedelta) -> uuid.UUID:
-        market_id = await _closing_at(session, close_time)
-        await market_service.close_early(
-            session, actor(), market_id, close_request(), now=now - ago
-        )
-        return market_id
+    # Created first: the sweep inside `closed_market` closes every due market.
+    await closed_market(session, actor(), overdue_by=timedelta(days=4))
 
-    # The trading group, by `close_time`: a decoy either side of two matches.
-    await _closing_at(session, now + timedelta(days=1))
-    trading_first = await _closing_at(session, start + timedelta(hours=1))
-    trading_second = await _closing_at(session, start + timedelta(days=1))
-    await _closing_at(session, end + timedelta(days=1))
-    # The stopped group, most recently closed first: decoys between matches.
-    stopped_first = await closed_early(start + timedelta(days=1), timedelta(hours=1))
-    await closed_early(end + timedelta(days=5), timedelta(hours=2))
-    stopped_second = await closed_early(start + timedelta(days=2), timedelta(hours=3))
-    await closed_early(now + timedelta(days=1), timedelta(hours=4))
+    trading_first = await _closing_at(session, now + timedelta(hours=1))
+    trading_second = await _closing_at(session, now + timedelta(days=1))
+    await _closing_at(session, now + timedelta(days=5))
+    stopped_first = await _closing_at(session, now + timedelta(days=30))
+    await market_service.close_early(
+        session,
+        actor(),
+        stopped_first,
+        close_request(),
+        now=now - timedelta(hours=1),
+    )
+    stopped_second = (
+        await overdue_market(session, actor(), overdue_by=timedelta(days=1))
+    ).id
 
     walked = await _walk(session, limit=1, closes_from=start, closes_before=end)
 
@@ -1176,20 +1218,23 @@ async def test_a_closing_window_pages_through_every_match_and_nothing_else(
     ]
 
 
+@pytest.mark.parametrize("end", ["closes_from", "closes_before"])
 async def test_a_market_with_no_close_time_matches_no_closing_window(
-    session: AsyncSession,
+    session: AsyncSession, end: str
 ) -> None:
-    """#442's ruling: no close time is not "closes some time after any start".
+    """#442's ruling: a market with neither a close time nor a close is not
+    "closes some time after any start", nor "before any end".
 
-    Publish refuses a market without one, so it is cleared afterwards: the
-    row a direct write could leave.
+    Publish refuses a market without a close time, so it is cleared
+    afterwards: the row a direct write could leave.
     """
-    start = datetime.now(UTC) + timedelta(days=1)
-    dated_id = await _closing_at(session, start + timedelta(days=10))
-    undated_id = await _closing_at(session, start + timedelta(days=10))
+    now = datetime.now(UTC)
+    dated_id = await _closing_at(session, now + timedelta(days=10))
+    undated_id = await _closing_at(session, now + timedelta(days=10))
     await session.execute(
         update(Market).where(Market.id == undated_id).values(close_time=None)
     )
     await session.commit()
+    bounds = {"closes_from": now, "closes_before": now + timedelta(days=20)}
 
-    assert _ids(await _browse(session, closes_from=start)) == [dated_id]
+    assert _ids(await _browse(session, **{end: bounds[end]})) == [dated_id]
