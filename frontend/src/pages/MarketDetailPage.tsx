@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMyPortfolio, type Order } from '../api/ledgerApi'
+import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import PriceFeedStatus from '../components/markets/PriceFeedStatus'
@@ -20,7 +20,6 @@ import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
-import { addCredits } from '../utils/formatCredits'
 import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
@@ -41,18 +40,12 @@ function outcomeBannerLabel(status: MarketStatus): string {
   return 'Proposed outcome'
 }
 
-// What the trader's own open sell orders hold back of each outcome, summed:
-// the ledger will not sell those shares a second time
-// (insufficient_shares_held, ledger-service.md), so the panel's sell check
-// stops short of them. A buy reserves credits, and carries null here.
-function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
-  const reserved: Record<string, string> = {}
-  for (const order of orders) {
-    if (order.reserved_shares === null) continue
-    const total = addCredits(reserved[order.outcome_id] ?? '0', order.reserved_shares)
-    if (total !== null) reserved[order.outcome_id] = total
-  }
-  return reserved
+/** One outcome's holding as the trading panel needs it: the whole position,
+ *  and the part of it the trader's own live sell orders hold back. Both come
+ *  from the same portfolio row, so they cannot disagree (#410). */
+interface HeldPosition {
+  quantity: string
+  reserved: string
 }
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
@@ -95,16 +88,24 @@ export default function MarketDetailPage() {
   const tradeable = market?.status === 'open' && !pastClose
 
   // What the trader holds of each of this market's outcomes, for the sell
-  // clamp ([T-2] #357). The portfolio route carries every market's positions
-  // and names no questions or labels (ledger-service.md), so picking out this
-  // market's is the page's own join.
+  // clamp ([T-2] #357): the whole position, and the part of it their own live
+  // sell orders hold back. Both come off the one portfolio read that already
+  // carries them (#410), so the two can never disagree. The route carries
+  // every market's positions and names no questions or labels
+  // (ledger-service.md), so picking out this market's is the page's own join.
   //
   // Tagged with the market it was read for, like `loaded` above: outcome ids
   // differ between markets, so an untagged map would read as "holds nothing"
   // on the next market until its own read landed, and clamp every sell on
   // that. Null says the holdings are unknown, which clamps nothing at all.
-  const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, string> } | null>(null)
-  const heldByOutcome = held !== null && held.id === id ? held.byOutcome : null
+  const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, HeldPosition> } | null>(null)
+  const heldHere = held !== null && held.id === id ? held.byOutcome : null
+  const heldByOutcome = heldHere === null ? null : Object.fromEntries(
+    Object.entries(heldHere).map(([outcomeId, position]) => [outcomeId, position.quantity]),
+  )
+  const reservedByOutcome = Object.fromEntries(
+    Object.entries(heldHere ?? {}).map(([outcomeId, position]) => [outcomeId, position.reserved]),
+  )
 
   // The most recent read's own number, so an answer that arrives after a
   // newer one is dropped instead of overwriting it. BalanceContext keeps the
@@ -126,7 +127,13 @@ export default function MarketDetailPage() {
       portfolio => {
         if (requestId !== latestHeldReadRef.current) return
         const mine = portfolio.positions.filter(position => position.market_id === id)
-        setHeld({ id, byOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])) })
+        const byOutcome = Object.fromEntries(
+          mine.map(position => [
+            position.outcome_id,
+            { quantity: position.quantity, reserved: position.reserved_shares },
+          ]),
+        )
+        setHeld({ id, byOutcome })
       },
       // Leave the last known holdings up rather than blanking them, the same
       // way BalanceContext keeps the last balance on a failed refetch.
@@ -297,7 +304,7 @@ export default function MarketDetailPage() {
                 outcomes={market.outcomes}
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
-                reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
+                reservedSharesByOutcome={reservedByOutcome}
                 onTraded={handleTraded}
                 onOrderPlaced={handleOrderPlaced}
               />
