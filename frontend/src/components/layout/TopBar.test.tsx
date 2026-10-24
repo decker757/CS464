@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Link, MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
@@ -120,6 +120,22 @@ describe('TopBar — the navigation menu on a small screen', () => {
     // panel left behind would cover the page the keyboard has moved on to.
     expect(screen.getByRole('button', { name: 'Account' })).toHaveFocus()
     expect(menuButton).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('stays open when focus leaves for nowhere, as a click does in a browser that does not focus links', async () => {
+    // Safari moves focus to nothing on a mousedown over a link, and the click
+    // follows. Closing on that blur would hide the link between the two, so
+    // the click lands on nothing. Only a blur with somewhere to go may close
+    // it; a click on the page is the click-elsewhere listener's to judge.
+    const actor = userEvent.setup()
+    const menuButton = renderTopBarWithNavigation()
+    menuButton.focus()
+    await actor.keyboard('{Enter}')
+    expect(menuButton).toHaveAttribute('aria-expanded', 'true')
+
+    act(() => menuButton.blur())
+
+    expect(menuButton).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('closes when a link is chosen', async () => {
