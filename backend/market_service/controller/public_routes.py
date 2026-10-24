@@ -57,6 +57,46 @@ ClosesBefore = Annotated[
 ]
 
 
+def _has_utc_instant(moment: datetime) -> bool:
+    """Does `moment` name an instant inside year 1 to 9999 in UTC? #490.
+
+    asyncpg converts every bound to UTC before it sends it, and a time near
+    either end of `datetime`'s range can fall outside it there: the last hour
+    of year 9999 at UTC-5, or year 1 at UTC+1. Only that is refused; every
+    instant a `datetime` can hold in UTC still passes.
+    """
+    try:
+        moment.astimezone(UTC)
+    except OverflowError:
+        return False
+    return True
+
+
+def _refuse_if_window_unencodable(
+    closes_from: datetime | None, closes_before: datetime | None
+) -> None:
+    """Raise `RequestValidationError` for an end with no instant in UTC, in
+    the shape `_refuse_if_window_empty` uses, rather than letting asyncpg's
+    overflow become a 500. #490. Kept here, not in `shared/`: this is the one
+    caller that sends such a bound to Postgres (ADR 0012); the ledger's price
+    history compares its bounds in Python."""
+    problems = [
+        {
+            "type": "value_error",
+            "loc": ("query", parameter),
+            "msg": f"`{parameter}` has no instant between year 1 and 9999 in UTC.",
+            "input": value,
+        }
+        for parameter, value in (
+            ("closes_from", closes_from),
+            ("closes_before", closes_before),
+        )
+        if value is not None and not _has_utc_instant(value)
+    ]
+    if problems:
+        raise RequestValidationError(problems)
+
+
 def _refuse_if_window_empty(
     closes_from: datetime | None, closes_before: datetime | None
 ) -> None:
@@ -138,7 +178,8 @@ def _refuse_if_window_empty(
                 "`status` is not one of the values above, `q` is longer "
                 "than a question may be or contains a NUL character, "
                 "`closes_from` or `closes_before` is not a time with an "
-                "offset, `closes_before` is not later than `closes_from`, or "
+                "offset or has no instant between year 1 and 9999 in UTC, "
+                "`closes_before` is not later than `closes_from`, or "
                 "`limit` is below 1."
             )
         },
@@ -173,6 +214,7 @@ async def browse_markets(
     limit: PageLimit = None,
     cursor: PageCursor = None,
 ) -> PublicMarketListResponse:
+    _refuse_if_window_unencodable(closes_from, closes_before)
     _refuse_if_window_empty(closes_from, closes_before)
 
     # One clock for the request, so filtering and the displayed status agree.
