@@ -6,9 +6,10 @@ import { useMyPositions } from '../../hooks/useMyPositions'
 import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import Button from '../ui/Button'
 import LoadMoreControl from '../ui/LoadMoreControl'
+import MarketBand from './MarketBand'
 import MarketCardGrid from './MarketCardGrid'
 import PriceFeedStatus from './PriceFeedStatus'
-import { browseSectionsOf } from './browseSections'
+import { browseSectionsOf, featuredMarketOf } from './browseSections'
 import type { StatusFilter } from './MarketFilters'
 
 interface MarketListProps {
@@ -61,15 +62,24 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
   // One portfolio read for the page, not one per card ([X-1] #450).
   const { positionsByMarket } = useMyPositions()
   const isFiltered = query !== '' || status !== null || closingWindow !== null
-  // The bands, for the unfiltered view only: a search or a filter collapses
-  // back to a single plain result list, where a band would be answering a
-  // question the trader did not ask (#448 AC 4).
+  // The hero and the bands, for the unfiltered view only: a search or a filter
+  // collapses back to a single plain result list, where a band would be
+  // answering a question the trader did not ask (#448 AC 4).
   //
-  // Computed from the markets already loaded and the prices already read, so
-  // a band costs no request of its own. That also means a band only ever
-  // describes the pages fetched so far, which is the honest reading of
-  // "trending" on a list the trader is still paging through.
-  const sections = isFiltered ? [] : browseSectionsOf(markets, snapshotsByMarket, marketFigures, new Date())
+  // Computed from the markets already loaded and the prices already read, so a
+  // band costs no request of its own. That also means a band describes the
+  // pages fetched so far, which is the honest reading of "trending" on a list
+  // the trader is still paging through.
+  //
+  // The bands are given the hero to leave out: it is the busiest market, so it
+  // would otherwise lead Trending as well and sit above the list twice.
+  const featured = isFiltered ? null : featuredMarketOf(markets, marketFigures, new Date())
+  const sections = isFiltered
+    ? []
+    : browseSectionsOf(markets, snapshotsByMarket, marketFigures, new Date(), featured?.market.id)
+  const hasBandsAbove = featured !== null || sections.length > 0
+  // Everything every band hands its cards, which differs only by market.
+  const cardProps = { snapshotsByMarket, failedMarkets, positionsByMarket, onRetryPrice: retryMarket }
 
   return (
     <>
@@ -104,43 +114,42 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
             )}
           </div>
 
+          {/* One featured market at the top, when a market has earned it:
+              the busiest the page has loaded. Rendered through the same card
+              as everything else, in a band of one, so a featured market is
+              emphasis rather than a second design to maintain. */}
+          {featured && (
+            <MarketBand
+              id="featured"
+              title="Featured"
+              rule={featured.rule}
+              markets={[featured.market]}
+              {...cardProps}
+            />
+          )}
+
           {/* The curated bands, above the full list and only when nothing is
               filtered (#448 AC 4). Each market in a band is still in the list
               below: a band is a shortcut into the list, not a partition of
               it (AC 5). */}
           {sections.map(section => (
-            <section key={section.id} aria-labelledby={`section-${section.id}`} className="mb-8">
-              <div className="mb-3">
-                <h2 id={`section-${section.id}`} className="text-base font-bold text-smu-navy">{section.title}</h2>
-                {/* The rule, so "why is this here" is never a mystery (AC 2). */}
-                <p className="text-xs text-subtle">{section.rule}</p>
-              </div>
-              <MarketCardGrid
-                markets={section.markets}
-                snapshotsByMarket={snapshotsByMarket}
-                failedMarkets={failedMarkets}
-                positionsByMarket={positionsByMarket}
-                onRetryPrice={retryMarket}
-              />
-            </section>
+            <MarketBand
+              key={section.id}
+              id={section.id}
+              title={section.title}
+              rule={section.rule}
+              markets={section.markets}
+              {...cardProps}
+            />
           ))}
 
-          {/* The full list, under its own heading only when a band sits above
-              it: an unsectioned page is not given a heading it never had. The
-              heading also names the region, so the list is addressable apart
-              from the bands above it. */}
-          <section aria-labelledby={sections.length > 0 ? 'section-all' : undefined}>
-            {sections.length > 0 && (
-              <h2 id="section-all" className="mb-3 text-base font-bold text-smu-navy">Browse all</h2>
-            )}
-            <MarketCardGrid
-              markets={markets}
-              snapshotsByMarket={snapshotsByMarket}
-              failedMarkets={failedMarkets}
-              positionsByMarket={positionsByMarket}
-              onRetryPrice={retryMarket}
-            />
-          </section>
+          {/* The full list. It takes a heading only when something sits above
+              it: an unsectioned page is not given a heading it never had. */}
+          {hasBandsAbove ? (
+            <MarketBand id="all" title="Browse all" markets={markets} {...cardProps} />
+          ) : (
+            <MarketCardGrid markets={markets} {...cardProps} />
+          )}
 
           {hasMore && (
             <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="markets" onLoadMore={loadMore} />
