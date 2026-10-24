@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { registerAdmin, saveDraft, submitMarket, uniqueName } from './support/backend'
-import { loadUntilShown, logIn, marketCard, selectTab } from './support/browser'
+import { logIn, marketCard, selectTab } from './support/browser'
 
 // #348. Every other test publishes over the API (`support/backend.ts`'s
 // `publishMarket`), so no browser had ever carried a market from the create
@@ -84,12 +84,14 @@ test('an admin publishes a market submitted in the form, after reloading the pag
   await page.getByRole('button', { name: 'Publish Market', exact: true }).click()
   await page.getByRole('button', { name: 'Confirm Publish', exact: true }).click()
 
-  // Publishing sends the admin to the admin markets list (#512), and the
-  // market is on it as open: the only proof that market_service wrote OPEN,
+  // Publishing sends the admin to the admin markets list (#512). The market
+  // is on the trader list: the only proof that market_service wrote OPEN,
   // rather than a button merely stopping complaining.
   await expect(page).toHaveURL(/\/admin\/markets$/)
-  const card = await loadUntilShown(page, question)
-  await expect(card.getByText('Open', { exact: true })).toBeVisible()
+  await page.goto('/markets')
+  await page.getByRole('searchbox', { name: /search markets/i }).fill(question)
+  await page.keyboard.press('Enter')
+  await expect(marketCard(page, question)).toBeVisible()
 })
 
 test('an admin publishes a submitted market from the markets list, which offers no draft control', async ({ page }) => {

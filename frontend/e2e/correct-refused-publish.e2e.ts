@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { registerAdmin, submitMarket, uniqueName } from './support/backend'
-import { loadUntilShown, logIn } from './support/browser'
+import { logIn, marketCard } from './support/browser'
 
 // #381. Publishing re-runs every submission rule against the clock (ADR 0008),
 // so a market that sat submitted past its own close time is refused with
@@ -56,10 +56,12 @@ test('an admin corrects a close time that passed while the market sat submitted,
   await page.getByRole('button', { name: 'Publish Market', exact: true }).click()
   await page.getByRole('button', { name: 'Confirm Publish', exact: true }).click()
 
-  // Publishing sends the admin to the admin markets list (#512), and the
-  // market is on it as open: the only proof that market_service took the
+  // Publishing sends the admin to the admin markets list (#512). The market
+  // is on the trader list: the only proof that market_service took the
   // correction and wrote OPEN.
   await expect(page).toHaveURL(/\/admin\/markets$/)
-  const card = await loadUntilShown(page, question)
-  await expect(card.getByText('Open', { exact: true })).toBeVisible()
+  await page.goto('/markets')
+  await page.getByRole('searchbox', { name: /search markets/i }).fill(question)
+  await page.keyboard.press('Enter')
+  await expect(marketCard(page, question)).toBeVisible()
 })
