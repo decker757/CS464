@@ -234,6 +234,12 @@ half's to `void_replay_mismatch`. The void does not raise `state_version`, so
 the price history's reversal trigger ("Any event other than a trade starts
 bumping `state_version`, for example a void") has not fired.
 
+Since #446 the price history's replay, `price_history_of`, has a second
+caller: `list_prices_at`, the batch snapshot's prices a week ago. It does not
+answer `500`. It logs the failure and leaves out only that card's
+`prices_7d_ago`. The extracted check keeps that: it raises as the check does
+today, and each caller keeps its own mapping.
+
 **Why not order by `context.state_version` in SQL**, as revision 2 did. It was
 there because entry stamps could disagree with lock order (#187). #187 is
 fixed: `post_all` stamps under the account locks, one tick past the newest
@@ -318,7 +324,10 @@ trades. With `S` the book's `seed_subsidy`:
   from cutting the same refund to different ticks: `3 × (1/3)` and
   `3 × 1 / 3` differ at any finite precision, 50 included. Fixing the
   precision as well makes the result deterministic, whatever context the
-  caller happens to run in.
+  caller happens to run in. The core PR makes that context public in
+  `core/lmsr.py`, by renaming `_engine_context` or wrapping it, and the cut
+  calls it. The void's module holds no copy of the precision: two copies that
+  diverged would be a money bug.
 
 "A refund above zero" is judged **after** the cut. A refund the cut floors to
 `0.0000` writes no transaction, is not counted in `positions_refunded`, and
@@ -343,7 +352,11 @@ zero. Either way the pool ends at exactly `0.0000`.
 
 **The batch is never empty.** The pool never holds less than the seed: LMSR's
 cost is path-independent and increasing in every `q`, and rounding favours
-the pool, so every buy less every sale is at least `C(q_now) − C(0) ≥ 0`. So
+the pool, so every buy less every sale is at least `C(q_now) − C(0) ≥ 0`.
+The rounding is DECISIONS.md's D-044, "A cost exactly on a tick can round one
+tick against the trader, or toward them on a sell": buys round up and sales
+down, and its one exception, a sale paid a tick it did not earn on a book
+skewed by roughly `120·b`, can take at most that tick from the pool. So
 if no refund is above zero, the residue is the whole pool, at least one tick,
 and is posted. `post_all` refuses an empty batch as `500 malformed_batch`
 (`service/posting.py:317-327`). The void asserts that it has at least one
@@ -627,6 +640,13 @@ needs skew near the gap or a deliberate direct call, both already accepted.
   nulls every payout figure for any kind, so it needs none. The portfolio
   does, because it maps a kind to a `result` and a payout.
 - **The trade feed** lists trade kinds only, so a void adds no row.
+- **The batch snapshot needs no code.** A voided market keeps its last
+  `prices`, its `prices_7d_ago` and its `credits_traded`, as a settled one
+  does: the void moves no price and writes no trade. `credits_traded` is left
+  as it is. It records trades that happened, its "only ever rises" is
+  documented, and nothing in a void touches it. The card is the client's: a
+  voided card shows "Voided" with no probability and no price change, the
+  rule #429 sets for a resolved market.
 - **The leaderboard needs no change.** It values holders through
   `valuation_of` (`service/leaderboard.py:125-135`, ADR 0021), so a voided
   market's rows add nothing to net worth and the refund is in the balance.
@@ -723,6 +743,25 @@ flip.
 - A voided position's `payout` is a refund, not one credit per share. A
   client that reads `payout` as "what the winning shares paid" must branch on
   `result` first, which the contract already asks.
+- A market an administrator voided by calling market_service's `/void`
+  directly reads `voided`, and the void screen hides its control for
+  `voided`, so the UI cannot refund it. There is no UI repeat for it. The
+  recovery is a direct call, `POST /ledger/markets/{market_id}/void` with the
+  token of an administrator who has not traded the market and a body of
+  `{"reason": "..."}`, 10 to 5,000 characters once trimmed. VOIDED is
+  voidable and the ledger has no row, so this is a first void: it is
+  stake-checked, it refunds, and its last step answers `200` without writing,
+  so market_service keeps the `void_reason` the direct call stored. It is a
+  reversal trigger too.
+- A refunded but unconfirmed APPROVED market past its window, after a
+  `503 void_unconfirmed`, reads `voidable: false`, so the screen's "Finish"
+  exists only in the session that got the `503`. There is no other UI repeat.
+  Until `E + 5 min` the recovery is a direct call, the same
+  `POST /ledger/markets/{market_id}/void`, with any administrator's token and
+  any reason of 10 to 5,000 characters once trimmed: a repeat finds the
+  ledger's row, is not stake-checked, and forwards and answers the recorded
+  reason. From `E + 5 min` it is the first edge above. It is a reversal
+  trigger too.
 
 ## What changed from revision 2
 
@@ -762,46 +801,47 @@ re-pinned at 22e8e1e, not a change of mind.
 
 Decided by Ihsan on 2026-10-25, without Ernest's sign-offs, so that the void
 stack can move. Ernest's review of #416 is still the merge gate, and any of
-these can be reopened there. The numbers are #416's: question 1 was sign-off
-1.
+these can be reopened there. The labels are #416's, where question 1 was
+sign-off 1.
 
-1. **Sign-off 1: the changes from revision 2 are accepted.** Each was forced
-   by code on `dev`, and each cites the line that forced it (above).
-2. **Sign-off 2: one administrator without a stake may void an APPROVED
-   market inside its stored dispute window**, though that overturns a
-   two-administrator approval. Send-back (ADR 0023) already lets one
-   administrator undo an approval. What is new is only that a void is final
-   and moves money, and the stake check, the two audit entries and refunds at
-   cost, which let nobody gain, guard that.
-3. **A repeat recomputes `total_owed` by re-running the lot replay** (step 3
-   of "The ledger goes first"). A repeat happens only after a `503`, so it is
-   rare, and the record stays free of derived totals, as balances are
-   (ADR 0009).
-4. **The reason's ceiling is 5,000 characters**, market_service's. The reason
-   is stored in `market.void_reason`, so the owner of that column sets the
-   limit.
-5. **No UI repeat for either case the screen cannot finish**: a market voided
-   by a direct call to market_service's `/void`, and a refunded but
-   unconfirmed APPROVED market past its window. Both are known edges, each
-   recovered by a direct API call named there, and each has its own reversal
-   trigger: the first time it happens on a real market.
-6. **Both stronger reversal triggers are written in**: a measure for the cap,
-   and a change to anything the void step's five-minute allowance rests on.
-7. **"Rounding favours the pool" cites D-044**, where "The batch is never
-   empty" relies on it.
-8. **The core PR makes the engine's context public in `core/lmsr.py`**, by
-   renaming `_engine_context` or wrapping it, and the cut uses it. It is not
-   copied into the void's module: two copies of the precision that diverged
-   would be a money bug, which passes the shared-package bar of ADR 0012
-   (identical behaviour, and a divergence is a bug). See "Two accounts, and
-   the cap of one more seed".
-9. **A voided market's `credits_traded` is unchanged.** It records trades that
-   happened, its "only ever rises" is documented, and a void writes no trade,
-   so nothing touches it ("What readers show").
-10. **The batch snapshot is one of the void's readers, with no backend
-    change.** A voided card shows "Voided" with no probability and no price
-    change, the rule #429 sets for a resolved market ("What readers show",
-    and the void screen's notes in `docs/api/market-service.md`).
+- **Sign-off 1: the changes from revision 2 are accepted.** Each was forced
+  by code on `dev`, and each cites the line that forced it (above).
+- **Sign-off 2: one administrator without a stake may void an APPROVED
+  market inside its stored dispute window**, though that overturns a
+  two-administrator approval. Send-back (ADR 0023) already lets one
+  administrator undo an approval. What is new is only that a void is final
+  and moves money, and the stake check, the audit entries and refunds at
+  cost, which let nobody gain, guard that.
+- **Question 2: a repeat recomputes `total_owed` by re-running the lot
+  replay** (step 3 of "The ledger goes first"). A repeat happens only after a
+  `503`, so it is rare, and the record stays free of derived totals, as
+  balances are (ADR 0009).
+- **Question 3: the reason's ceiling is 5,000 characters**, market_service's.
+  The reason is stored in `market.void_reason`, so the owner of that column
+  sets the limit.
+- **Question 4: no UI repeat for either case the screen cannot finish**: a
+  market voided by a direct call to market_service's `/void`, and a refunded
+  but unconfirmed APPROVED market past its window. Both are known edges, each
+  recovered by a direct API call named there, and each has its own reversal
+  trigger: the first time it happens on a real market.
+- **Question 5: both stronger reversal triggers are written in**: a measure
+  for the cap, and a change to anything the void step's five-minute
+  allowance rests on.
+- **Question 6: "rounding favours the pool" cites D-044**, where "The batch
+  is never empty" relies on it.
+- **Question 7: the core PR makes the engine's context public in
+  `core/lmsr.py`**, by renaming `_engine_context` or wrapping it, and the cut
+  uses it. It is not copied into the void's module: two copies of the
+  precision that diverged would be a money bug, which passes the
+  shared-package bar of ADR 0012 (identical behaviour, and a divergence is a
+  bug). See "Two accounts, and the cap of one more seed".
+- **New: a voided market's `credits_traded` is unchanged.** It records trades
+  that happened, its "only ever rises" is documented, and a void writes no
+  trade, so nothing touches it ("What readers show").
+- **New: the batch snapshot is one of the void's readers, with no backend
+  change.** A voided card shows "Voided" with no probability and no price
+  change, the rule #429 sets for a resolved market ("What readers show", and
+  the void screen's notes in `docs/api/market-service.md`).
 
 ## Alternatives rejected
 
@@ -968,8 +1008,15 @@ Each must fail with the line it guards removed.
 >
 > **It is revisited if the cap is measured to cut honest holders.** The cap is
 > one seed because the two-account scheme needed a ceiling and honest
-> shortfalls are rare. A real market cut by it is the evidence to size it
-> again.
+> shortfalls are rare. The measure: the first void whose response has
+> `refunds_cut: true` is reviewed by hand against its replay, and if the cut
+> reached a holder who never sold, the cap is reopened.
+>
+> **It is revisited when anything the void step's five-minute allowance rests
+> on changes**: `SETTLEMENT_GAP`, what `DISPUTE_WINDOW_SECONDS` means, or the
+> window's edge, exclusive and read as `clock_timestamp()` after the row lock.
+> Any of them reopens the allowance, and the table in "The void step accepts
+> five minutes more than the flag" with it.
 >
 > **It is revisited when anything other than a trade or a fill raises
 > `state_version`**, or when the pool's feed stops ordering by
@@ -994,3 +1041,13 @@ Each must fail with the line it guards removed.
 > past the window. The ledger then holds a void and market_service a
 > settlement, for good. One such market is the evidence that market_service's
 > `/settle` has to ask the ledger for its record before it writes.
+>
+> **It is revisited the first time a market voided by a direct call to
+> market_service's `/void` has to be refunded on a real market**, by the
+> direct ledger call under "Known edges, accepted". One such market is the
+> evidence that the void screen needs a repeat for `voided`.
+>
+> **It is revisited the first time a refunded but unconfirmed APPROVED market
+> has to be finished past its window on a real market**, by the direct ledger
+> call under "Known edges, accepted". One such market is the evidence that
+> the void screen needs a "Finish" that outlives the session.
