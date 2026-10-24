@@ -224,6 +224,24 @@ class SettlementUnconfirmed(LedgerError):
     )
 
 
+class VoidUnconfirmed(LedgerError):
+    """The refunds committed and market_service was not told. [BE] #221,
+    ADR 0025.
+
+    `SettlementUnconfirmed`'s twin, for the void's last step, and for the same
+    reason every failure means the same thing: the refunds stand and the
+    market does not read `voided` yet, and the administrator repeats the
+    request, which writes nothing in the ledger. 503, as that one is.
+    """
+
+    status_code = 503
+    code = "void_unconfirmed"
+    message = (
+        "Every holder was refunded, but the market could not be marked voided. "
+        "Repeat the request."
+    )
+
+
 class MarketClosed(LedgerError):
     """This market is not open for trading. [F-8] #109, ADR 0017.
 
