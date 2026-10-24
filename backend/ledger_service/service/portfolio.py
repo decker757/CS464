@@ -13,7 +13,10 @@ The valuation itself, settled branch included, is `service/valuation.py`'s,
 shared with the leaderboard refresh, and so is the profit and loss
 arithmetic. What this file adds for #359 is the one thing neither of them
 can see: the grant this user was actually given, read as a second anchor
-column so the statement count does not move.
+column so the statement count does not move. And for #410, what each held
+outcome's live sell orders hold back, read as one more column of the same
+statement, so a fill committing mid-read cannot show the position on one side
+of it and the reservation on the other.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from sqlalchemy import Select, func, literal, select, true
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.pricing import QUANTUM
 from model.entities import (
     Account,
     AccountKind,
@@ -34,7 +38,7 @@ from model.entities import (
     Position,
     Transaction,
 )
-from service import grants, valuation
+from service import grants, reservations, valuation
 
 ZERO = Decimal(0)
 
@@ -53,6 +57,9 @@ class Portfolio:
     unrealized_pnl: Decimal
     total_pnl: Decimal
     positions: list[valuation.PortfolioPosition]
+    # Keyed `(market_id, outcome_id)`, one entry per outcome of every held
+    # market: the shares the user's live sell orders hold back (#410).
+    reserved_shares: dict[tuple[uuid.UUID, uuid.UUID], Decimal]
 
 
 def _sum_of_user_entries(user_id: uuid.UUID) -> Select:
@@ -78,6 +85,8 @@ async def _read(
     `STARTING_CREDITS`: the setting can change and never rewrites an entry
     (ADR 0009). `held_markets` keeps the markets with a position of
     `quantity > 0`. The joins from there are `valuation.held_outcomes_query`'s.
+    Each outcome row also carries `reserved_shares`, a subquery over the
+    caller's live sell orders of that outcome, correlated to the outcome.
     """
     balance = _sum_of_user_entries(user_id).scalar_subquery()
     starting_credits = (
@@ -104,8 +113,15 @@ async def _read(
         .select_from(anchor)
         .outerjoin(held_markets, true())
     )
-    stmt = valuation.held_outcomes_query(anchored, held_markets, holder_id=user_id).order_by(
-        MarketOutcome.market_id, MarketOutcome.position
+    reserved_shares = reservations.reserved_shares_query_of(
+        user_id,
+        market_id=MarketOutcome.market_id,
+        outcome_id=MarketOutcome.outcome_id,
+    ).scalar_subquery()
+    stmt = (
+        valuation.held_outcomes_query(anchored, held_markets, holder_id=user_id)
+        .add_columns(reserved_shares.label("reserved_shares"))
+        .order_by(MarketOutcome.market_id, MarketOutcome.position)
     )
 
     # Never empty: the anchor selects from nothing, so it is always one row,
@@ -114,10 +130,25 @@ async def _read(
     return rows[0].balance, rows[0].starting_credits, rows
 
 
+def _reserved_shares_of(rows: list[Row]) -> dict[tuple[uuid.UUID, uuid.UUID], Decimal]:
+    """Each outcome's `reserved_shares` from `_read`'s rows, keyed
+    `(market_id, outcome_id)`, at scale 4.
+
+    The anchor row, joined to no market, is skipped. The quantize is for an
+    outcome no order matched, where `coalesce` answers a bare `0`.
+    """
+    reserved: dict[tuple[uuid.UUID, uuid.UUID], Decimal] = {}
+    for row in rows:
+        if row.market_id is None:
+            continue
+        reserved[(row.market_id, row.outcome_id)] = row.reserved_shares.quantize(QUANTUM)
+    return reserved
+
+
 async def portfolio_of_user(session: AsyncSession, user_id: uuid.UUID) -> Portfolio:
     """This user's balance, every position they still hold valued at
-    liquidation (ADR 0018), and what both come to against their grant.
-    [T-4] #24, [B-1] #359
+    liquidation (ADR 0018), what both come to against their grant, and the
+    shares their live sell orders hold back. [T-4] #24, [B-1] #359, #410
 
     Mints the user's starting grant first, exactly as the balance route does,
     which may post and commit. The read that follows takes no lock and makes
@@ -142,4 +173,5 @@ async def portfolio_of_user(session: AsyncSession, user_id: uuid.UUID) -> Portfo
         unrealized_pnl=pnl.unrealized_pnl,
         total_pnl=pnl.total_pnl,
         positions=totals.positions,
+        reserved_shares=_reserved_shares_of(rows),
     )

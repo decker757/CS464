@@ -274,6 +274,10 @@ _PORTFOLIO_DESCRIPTION = (
     "banked, `unrealized_pnl` is the sum of the rows' own, and `total_pnl` "
     "is both — which is `net_worth - starting_credits`, exactly. Nothing is "
     "stored: every figure is derived from the entries on each read.\n\n"
+    "#410. `quantity` is the whole position. `reserved_shares` is the part "
+    "of it the caller's live sell orders hold back, derived from the orders "
+    "in the same statement, and `0.0000` where there is none. A sell can "
+    "take `quantity - reserved_shares`.\n\n"
     "Only positions with quantity > 0 are shown, ordered by `market_id` "
     "then `outcome_position`; there is no admin variant."
 )
@@ -314,6 +318,7 @@ async def my_portfolio(user: CurrentUser, session: DbSession) -> PortfolioOut:
                 outcome_id=p.outcome_id,
                 outcome_position=p.outcome_position,
                 quantity=p.quantity,
+                reserved_shares=result.reserved_shares[(p.market_id, p.outcome_id)],
                 cost_basis=p.cost_basis,
                 average_entry_price=p.average_entry_price,
                 price=p.price,
