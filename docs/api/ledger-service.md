@@ -1047,9 +1047,10 @@ price.
 
 **ADR 0025: not built yet. A voided market is answered the same way**, with
 its last `prices`, its `prices_7d_ago` and its `credits_traded`. A void writes
-no trade, so `credits_traded` keeps every trade it refunded and still never
-falls. A card shows a voided market as "Voided", with no probability and no
-change ("Notes for the void screen" in `market-service.md`).
+no trade, so `credits_traded` still counts every trade, refunded or not,
+and never falls. A card shows a voided market as "Voided", with no
+probability and no change ("Notes for the void screen" in
+`market-service.md`).
 
 The answer is an object around a list of objects so that fields can be added
 to it, and to each item, without breaking a client that ignores fields it does

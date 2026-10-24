@@ -11136,9 +11136,10 @@ change, though the batch snapshot still carries `prices` and `prices_7d_ago`
 for it.
 
 **Why.** A voided market has no answer, so its last probability and its
-change describe nothing a trader can act on. It is the rule #429 sets for a
-resolved market: a market past PENDING_RESOLUTION does not present a
-tradeable-looking probability.
+change describe nothing a trader can act on. #429 (open) asks the same of
+a resolved market's detail page: "A market past PENDING_RESOLUTION does not
+present a tradeable-looking probability." This entry decides the voided card
+only; a settled card still shows its probability today.
 
 **Rejected.** *Leaving out a voided market's prices from the batch*: a
 backend change for what is a display rule, and the single snapshot and the

@@ -1963,13 +1963,19 @@ and this page's reads.
    repeat. A market voided by a direct call to `POST /markets/{id}/void`, and
    a refunded but unconfirmed `approved` market past its window, have no
    control on this screen: each is finished by a direct API call, named in
-   ADR 0025's "Known edges, accepted".
+   ADR 0025's "Known edges, accepted", the second only until five minutes
+   after its window's end, and by hand after that. Before the window's end,
+   or on a `closed` or `pending_resolution` market, a refunded but
+   unconfirmed void still reads `voidable: true`, so after a reload the
+   ordinary "Void market" control acts as the repeat. That is harmless: a
+   repeat answers `200`.
 6. **The market page** shows a "Voided" banner with `void_reason` and
    `voided_at`, and no winning outcome, for `status: "voided"`.
 7. **A browse card** for a `voided` market shows "Voided" with no probability
    and no price change, though the ledger's batch snapshot still carries its
-   `prices` and `prices_7d_ago`. It is the rule #429 sets for a resolved
-   market.
+   `prices` and `prices_7d_ago`. It applies to the card what #429 (open)
+   asks of a resolved market's detail page; a settled card is not changed by
+   this note.
 8. **The portfolio** shows `result: "refunded"` rows as "Refunded", with
    `payout` as the amount. **The history** shows `void_refund` rows as
    "Refund", with `amount`, `quantity` and the outcome.

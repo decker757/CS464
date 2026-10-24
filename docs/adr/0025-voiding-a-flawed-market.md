@@ -284,13 +284,16 @@ what those shares cost, and the refund pays back exactly the shares kept. Any
 gain left after a void comes from other traders moving the price, which is a
 real profit the sale already took. A trader's own trades in other outcomes can
 break the equality only against them: buying one outcome makes the others
-cheaper, so it only lowers what a later sale gets. Rounding only ever costs
-the trader: buys round up, sales round down, and a partly-sold lot is refunded
-rounded down. A fill is priced through `trade_cost_of` with the same rounding
-as an instant trade (`core/limit_orders.py:198`), so the argument covers
-fills. An independent review fuzzed the rule through the real `lmsr.py` and
-`pricing.py`, about 280,000 trades, 2, 3 and 5 outcomes, `b` from 0.1 to
-100: the best a lone trader got from a void was 0.0000.
+cheaper, so it only lowers what a later sale gets. Rounding costs the
+trader, except in D-044's one case: buys round up, sales round down, and a
+partly-sold lot is refunded rounded down, but a sale, or a refund priced as
+one through `trade_cost_of`, on a book skewed by roughly `120·b` can be paid
+a whole tick for proceeds a hair under one. A fill is priced through
+`trade_cost_of` with the same rounding as an instant trade
+(`core/limit_orders.py:198`), so the argument covers fills. An independent
+review fuzzed the rule through the real `lmsr.py` and `pricing.py`, about
+280,000 trades, 2, 3 and 5 outcomes, `b` from 0.1 to 100: the best a lone
+trader got from a void was 0.0000.
 
 A held position whose refund rounds down to 0.0000 writes no transaction.
 
@@ -353,14 +356,17 @@ zero. Either way the pool ends at exactly `0.0000`.
 **The batch is never empty.** The pool never holds less than the seed: LMSR's
 cost is path-independent and increasing in every `q`, and rounding favours
 the pool, so every buy less every sale is at least `C(q_now) − C(0) ≥ 0`.
-The rounding is DECISIONS.md's D-044, "A cost exactly on a tick can round one
-tick against the trader, or toward them on a sell": buys round up and sales
-down, and its one exception, a sale paid a tick it did not earn on a book
-skewed by roughly `120·b`, can take at most that tick from the pool. So
-if no refund is above zero, the residue is the whole pool, at least one tick,
-and is posted. `post_all` refuses an empty batch as `500 malformed_batch`
-(`service/posting.py:317-327`). The void asserts that it has at least one
-movement before it calls `post_all`, and that guard stays as the backstop.
+The rounding is D-039's ("`quantize_cost` takes an unsigned magnitude; the
+caller applies the sign"), buys up and sales down, and DECISIONS.md's D-044,
+"A cost exactly on a tick can round one tick against the trader, or toward
+them on a sell", is its one exception: a sale on a book skewed by roughly
+`120·b` paid a whole tick for proceeds a hair under one. That overpays by the
+engine's last-digit residue against the true value, not by a tick, and the
+pool moves in whole ticks, so the bound holds. So if no refund is above zero,
+the residue is the whole pool, at least one tick, and is posted. `post_all`
+refuses an empty batch as `500 malformed_batch` (`service/posting.py:317-327`).
+The void asserts that it has at least one movement before it calls
+`post_all`, and that guard stays as the backstop.
 
 ### The ledger goes first, in settlement's order
 
@@ -646,7 +652,8 @@ needs skew near the gap or a deliberate direct call, both already accepted.
   as it is. It records trades that happened, its "only ever rises" is
   documented, and nothing in a void touches it. The card is the client's: a
   voided card shows "Voided" with no probability and no price change, the
-  rule #429 sets for a resolved market.
+  rule #429's third criterion asks of a resolved market's detail page,
+  applied to the card.
 - **The leaderboard needs no change.** It values holders through
   `valuation_of` (`service/leaderboard.py:125-135`, ADR 0021), so a voided
   market's rows add nothing to net worth and the refund is in the balance.
@@ -760,8 +767,8 @@ flip.
   `POST /ledger/markets/{market_id}/void`, with any administrator's token and
   any reason of 10 to 5,000 characters once trimmed: a repeat finds the
   ledger's row, is not stake-checked, and forwards and answers the recorded
-  reason. From `E + 5 min` it is the first edge above. It is a reversal
-  trigger too.
+  reason. From `E + 5 min` it is the first edge in this list, fixed by
+  hand. It is a reversal trigger too.
 
 ## What changed from revision 2
 
@@ -822,8 +829,9 @@ sign-off 1.
 - **Question 4: no UI repeat for either case the screen cannot finish**: a
   market voided by a direct call to market_service's `/void`, and a refunded
   but unconfirmed APPROVED market past its window. Both are known edges, each
-  recovered by a direct API call named there, and each has its own reversal
-  trigger: the first time it happens on a real market.
+  recovered by a direct API call named there (the second only until five
+  minutes after its window's end, and by hand after that), and each has its
+  own reversal trigger: the first time it happens on a real market.
 - **Question 5: both stronger reversal triggers are written in**: a measure
   for the cap, and a change to anything the void step's five-minute
   allowance rests on.
@@ -840,8 +848,8 @@ sign-off 1.
   trade, so nothing touches it ("What readers show").
 - **New: the batch snapshot is one of the void's readers, with no backend
   change.** A voided card shows "Voided" with no probability and no price
-  change, the rule #429 sets for a resolved market ("What readers show", and
-  the void screen's notes in `docs/api/market-service.md`).
+  change, the rule #429 asks of a resolved market's detail page ("What
+  readers show", and the void screen's notes in `docs/api/market-service.md`).
 
 ## Alternatives rejected
 
