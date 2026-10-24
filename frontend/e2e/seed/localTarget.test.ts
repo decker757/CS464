@@ -37,9 +37,10 @@ describe('refuseUnlessLocal', () => {
   })
 
   it('refuses a service URL it cannot read, rather than letting it through', () => {
-    const unreadable = ['localhost:8000', 'http://localhost:8001', 'http://localhost:8003']
+    // A typo in the port: `new URL` throws on it, so there is no host to check.
+    const unreadable = ['http://localhost:80o0', 'http://localhost:8001', 'http://localhost:8003']
 
-    expect(() => refuseUnlessLocal({ serviceUrls: unreadable, dockerEndpoint: DOCKER_DESKTOP })).toThrow('localhost:8000')
+    expect(() => refuseUnlessLocal({ serviceUrls: unreadable, dockerEndpoint: DOCKER_DESKTOP })).toThrow('http://localhost:80o0')
   })
 
   it('refuses a Docker engine on another machine, where the SQL steps would run', () => {
