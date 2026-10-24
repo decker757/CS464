@@ -24,6 +24,17 @@ def _suspension_url(user_id: str) -> str:
 SUSPEND = {"suspended": True, "reason": "Second account of bob_1, same device."}
 
 
+async def _suspend_by_hand(session, username: str) -> None:
+    """Suspend an account straight in the table, without the suspension route."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    await session.execute(
+        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = :username"),
+        {"username": username},
+    )
+    await session.commit()
+
+
 # --- the happy path -------------------------------------------------------
 async def test_a_promotion_returns_200_and_the_updated_user(
     admin_client: AsyncClient, target_user_id: str
@@ -139,12 +150,7 @@ async def test_a_suspended_administrator_gets_403(
     admin_client: AsyncClient, target_user_id: str, session
 ) -> None:
     """Suspension is checked before the role, and reports as itself."""
-    from sqlalchemy import text  # noqa: PLC0415
-
-    await session.execute(
-        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = 'admin_one'")
-    )
-    await session.commit()
+    await _suspend_by_hand(session, "admin_one")
 
     response = await admin_client.patch(_url(target_user_id), json={"role": "admin"})
 
@@ -284,12 +290,7 @@ async def test_a_suspension_state_narrows_the_list(
     expected: list[str],
 ) -> None:
     """That `is_suspended` reaches the service layer; filtering is tested there."""
-    from sqlalchemy import text  # noqa: PLC0415
-
-    await session.execute(
-        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = 'michelle_l'")
-    )
-    await session.commit()
+    await _suspend_by_hand(session, "michelle_l")
 
     response = await admin_client.get(USERS, params={"is_suspended": is_suspended})
 
@@ -399,12 +400,7 @@ async def test_a_suspended_user_is_named(
     admin_client: AsyncClient, target_user_id: str, session
 ) -> None:
     """The trader an administrator is most likely investigating."""
-    from sqlalchemy import text  # noqa: PLC0415
-
-    await session.execute(
-        text("UPDATE auth.users SET is_suspended = true WHERE lower(username) = 'michelle_l'")
-    )
-    await session.commit()
+    await _suspend_by_hand(session, "michelle_l")
     me = await admin_client.get("/auth/me")
 
     response = await admin_client.post(
