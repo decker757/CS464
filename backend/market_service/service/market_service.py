@@ -665,11 +665,12 @@ async def send_back_outcome(
 
     [3.3] #11, ADR 0023. Any administrator, the proposer and approver
     included. Locks the market row, then raises in this order:
-    `MarketAlreadySettled`, `MarketPendingResolution`, `MarketNotApproved`,
-    `DisputeWindowClosed` (from the stored end, on Postgres's clock read after
-    the lock), `ProposalSuperseded`, `SendBackIncomplete`. Clears the proposal,
-    the approval and the window's end; `closed_at` is untouched. The audit
-    entry is the only record of what was sent back, by whom and why.
+    `MarketAlreadySettled`, `MarketAlreadyVoided`, `MarketPendingResolution`,
+    `MarketNotApproved`, `DisputeWindowClosed` (from the stored end, on
+    Postgres's clock read after the lock), `ProposalSuperseded`,
+    `SendBackIncomplete`. Clears the proposal, the approval and the window's
+    end; `closed_at` is untouched. The audit entry is the only record of what
+    was sent back, by whom and why.
     """
     # Locked: settle and a second send-back decide from this status. ADR 0015.
     market = await get_any(session, market_id, for_update=True)
@@ -677,6 +678,10 @@ async def send_back_outcome(
     # Before the clock, as `settle` does: a refusal writes nothing to stamp.
     if market.status is MarketStatus.SETTLED:
         raise MarketAlreadySettled
+    # By hand, like SETTLED: this check is not one of the status tables.
+    # ADR 0025.
+    if market.status is MarketStatus.VOIDED:
+        raise MarketAlreadyVoided
     if market.status is MarketStatus.PENDING_RESOLUTION:
         raise MarketPendingResolution
     if market.status is not MarketStatus.APPROVED:
@@ -728,9 +733,10 @@ async def settle(
 
     ADR 0019, step 5: the ledger's last step, after its payouts commit. Any
     administrator may call it. Locks the market row. A market already SETTLED
-    is returned unwritten and unlogged. Raises `MarketNotApproved` for any
-    other status short of APPROVED, and `DisputeWindowOpen` before the market
-    is settleable. Pays nobody.
+    is returned unwritten and unlogged. Raises `MarketAlreadyVoided` for a
+    VOIDED market, `MarketNotApproved` for any other status short of
+    APPROVED, and `DisputeWindowOpen` before the market is settleable. Pays
+    nobody.
     """
     # Locked: the ledger's retry racing its first attempt must log one flip.
     # ADR 0015.
@@ -743,6 +749,10 @@ async def settle(
     # last step. DECISIONS.md, "The settle step checks in a fixed order".
     if market.status is MarketStatus.SETTLED:
         return market
+    # After SETTLED's answer and before the clock, and never folded into
+    # `market_not_approved`: a voided market is final. ADR 0025.
+    if market.status is MarketStatus.VOIDED:
+        raise MarketAlreadyVoided
     if market.status is not MarketStatus.APPROVED:
         raise MarketNotApproved
 
