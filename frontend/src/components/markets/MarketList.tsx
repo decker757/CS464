@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { listMarkets, type PublicMarketPage, type PublicMarketSummary } from '../../api/marketApi'
+import type { ClosingWindow } from '../../utils/closingWindow'
 import { usePagedList } from '../../hooks/usePagedList'
 import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import Button from '../ui/Button'
@@ -11,6 +12,8 @@ interface MarketListProps {
   /** Empty for no search. */
   query: string
   status: StatusFilter | null
+  /** null for any closing time (#442). */
+  closingWindow: ClosingWindow | null
 }
 
 const pagedMarketsOptions = {
@@ -22,23 +25,30 @@ const pagedMarketsOptions = {
 // One search and one status, from its first page on. A different search or
 // status is a different list: the page gives this a new `key`, so the paging
 // state and the prices start over (usePricesForMarkets says to do exactly that).
-export default function MarketList({ query, status }: MarketListProps) {
+export default function MarketList({ query, status, closingWindow }: MarketListProps) {
   // Bumped by Try again, and nothing else. usePagedList starts its list over
   // whenever `fetchPage` changes identity, so that is the whole retry: page one
   // again, under the same search and status, with any failed attempt dropped.
   const [attempt, setAttempt] = useState(0)
   const fetchMarketPage = useCallback(
-    (cursor: string | undefined) => listMarkets({ cursor, q: query || undefined, status: status ?? undefined }),
+    (cursor: string | undefined) =>
+      listMarkets({
+        cursor,
+        q: query || undefined,
+        status: status ?? undefined,
+        closes_from: closingWindow?.closesFrom,
+        closes_before: closingWindow?.closesBefore,
+      }),
     // `attempt` is not read in there, and is the point: a new identity for
     // this function is what asks usePagedList for page one again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [query, status, attempt],
+    [query, status, closingWindow, attempt],
   )
   const { items: markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchMarketPage, pagedMarketsOptions)
   // `markets` keeps its identity until the list itself changes, so the prices
   // are fetched then and not on every render.
   const { snapshotsByMarket, failedMarkets, readAt, retryMarket } = usePricesForMarkets(markets)
-  const isFiltered = query !== '' || status !== null
+  const isFiltered = query !== '' || status !== null || closingWindow !== null
 
   return (
     <>

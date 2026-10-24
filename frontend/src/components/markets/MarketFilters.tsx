@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import FilterPill from '../ui/FilterPill'
 import SearchForm from '../ui/SearchForm'
+import { closingLabel, type ClosingPreset } from '../../utils/closingWindow'
+import ClosingFilter from './ClosingFilter'
 import { statusDisplay } from './marketStatus'
 
 // The statuses GET /public/markets accepts, in the order market-service.md
@@ -27,6 +29,8 @@ interface MarketFiltersProps {
   status: StatusFilter | null
   onQueryChange: (query: string) => void
   onStatusChange: (status: StatusFilter | null) => void
+  closing: ClosingPreset | null
+  onClosingChange: (closing: ClosingPreset | null) => void
 }
 
 // `pointer-coarse:` on the size, like FilterPill: the chip a finger clears has
@@ -44,12 +48,12 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
   )
 }
 
-export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
+export default function MarketFilters({ query, status, onQueryChange, onStatusChange, closing, onClosingChange }: MarketFiltersProps) {
   // A new key remounts the search box, which empties anything typed in it.
   // Clearing needs that: with no search applied, the cleared query is the same
   // empty string as before, so SearchForm has no change to follow.
   const [searchBoxKey, setSearchBoxKey] = useState(0)
-  const hasActiveFilters = query !== '' || status !== null
+  const hasActiveFilters = query !== '' || status !== null || closing !== null
 
   function handleClearQuery() {
     setSearchBoxKey(key => key + 1)
@@ -59,6 +63,7 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
   function handleClearAll() {
     handleClearQuery()
     onStatusChange(null)
+    onClosingChange(null)
   }
 
   return (
@@ -85,6 +90,8 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
         ))}
       </div>
 
+      <ClosingFilter closing={closing} onClosingChange={onClosingChange} />
+
       {hasActiveFilters && (
         <div role="group" aria-label="Active filters" className="flex flex-wrap items-center gap-2">
           {query !== '' && (
@@ -92,6 +99,9 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
           )}
           {status !== null && (
             <ActiveFilterChip label={`Status: ${filterLabel(status)}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
+          )}
+          {closing !== null && (
+            <ActiveFilterChip label={`Closes: ${closingLabel(closing)}`} clearLabel="Clear closing filter" onClear={() => onClosingChange(null)} />
           )}
           <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
             Clear all
