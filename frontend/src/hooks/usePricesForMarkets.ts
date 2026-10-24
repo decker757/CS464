@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { getMarketSnapshot, type OutcomePrice } from '../api/ledgerApi'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { getMarketSnapshot, type PriceState } from '../api/ledgerApi'
 import type { PublicMarketSummary } from '../api/marketApi'
 import { tradingStopped } from '../components/markets/marketStatus'
 
@@ -7,10 +7,33 @@ import { tradingStopped } from '../components/markets/marketStatus'
 type PricedMarket = Pick<PublicMarketSummary, 'id' | 'status' | 'close_time'>
 
 export interface MarketPrices {
-  /** By market id. A market is absent until its snapshot arrives. */
-  pricesByMarket: Map<string, OutcomePrice[]>
+  /**
+   * The whole snapshot, by market id. A market is absent until its own
+   * snapshot arrives.
+   *
+   * The whole answer and not just `prices`: `state_version` is the only thing
+   * that tells an untraded book from a contested one, since both quote the
+   * same seed price, and `occurred_at` is when the book last moved (#445).
+   * Keeping them costs nothing — they are on the wire either way.
+   */
+  snapshotsByMarket: Map<string, PriceState>
+  /**
+   * The markets whose last snapshot read failed, from the moment it fails
+   * until a later read of the same market answers.
+   *
+   * A market absent from `snapshotsByMarket` used to mean two things at once
+   * — its read is still out, or its read failed — and a card showed the same
+   * dash for both, so a trader could not tell whether to wait or to reload
+   * ([X-1] #431). This is the difference. A market that can still trade is
+   * read again on the refresh below, so a failure there clears itself within
+   * a tick; one that has stopped trading is never read again by itself, and
+   * `retryMarket` is the only way back.
+   */
+  failedMarkets: Set<string>
   /** When the most recent snapshot landed; null until the first one does. */
   readAt: Date | null
+  /** Reads one market's snapshot again, for a card's Retry control (#431). */
+  retryMarket: (marketId: string) => void
 }
 
 // How often the prices on screen are read again. A browse list left open was
@@ -20,10 +43,19 @@ export interface MarketPrices {
 // re-reads the same snapshot route it already uses.
 export const PRICE_REFRESH_MS = 30_000
 
-// The current prices of every market in a list, by market id, for the browse
-// page's cards ([X-1] #126). A market is missing from the map until its
-// snapshot arrives, and stays missing if the request fails, so its card shows
-// "—" either way.
+// `ids` without `id`. The set is state, so it is replaced rather than edited:
+// React compares it by identity.
+function withoutId(ids: Set<string>, id: string): Set<string> {
+  const remaining = new Set(ids)
+  remaining.delete(id)
+  return remaining
+}
+
+// The current price snapshot of every market in a list, by market id, for the
+// browse page's cards ([X-1] #126). A market is missing from the map until its
+// snapshot arrives, and stays missing if the request fails — which of the two
+// it is comes from `failedMarkets`, so the card can say so and offer to read
+// it again (#431).
 //
 // One snapshot request per market, all at once: #126's Option A. Each lands on
 // its own, so a market whose book the ledger is opening for the first time
@@ -36,7 +68,8 @@ export const PRICE_REFRESH_MS = 30_000
 // has stopped trading cannot get a new price, so re-reading it would only cost
 // the ledger an LMSR evaluation per card per tick.
 export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
-  const [pricesByMarket, setPricesByMarket] = useState<Map<string, OutcomePrice[]>>(new Map())
+  const [snapshotsByMarket, setSnapshotsByMarket] = useState<Map<string, PriceState>>(new Map())
+  const [failedMarkets, setFailedMarkets] = useState<Set<string>>(new Set())
   const [readAt, setReadAt] = useState<Date | null>(null)
   // A market counts as answered when its request settles, not when it is sent:
   // a request the cleanup cancelled must be sent again, and StrictMode cancels
@@ -46,6 +79,10 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
   // if that fetch failed). The set is private: remount the hook, for example
   // with a `key` on the list, which also clears the prices.
   const answeredIds = useRef(new Set<string>())
+  // The current effect run's `read`, for `retryMarket` to call. It closes over
+  // that run's in-flight set and its cancellation, which a retry has to
+  // respect exactly as the refresh does.
+  const readAgain = useRef<(marketId: string) => void>(() => {})
 
   useEffect(() => {
     // Set by the cleanup, so a list the page has replaced cannot write into it.
@@ -70,21 +107,27 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
           inFlightIds.delete(marketId)
           if (cancelled) return
           answeredIds.current.add(marketId)
-          setPricesByMarket(previous => new Map(previous).set(marketId, snapshot.prices))
+          setSnapshotsByMarket(previous => new Map(previous).set(marketId, snapshot))
+          // A read that answered clears an earlier failure, so a card stops
+          // offering to retry something that has just arrived.
+          setFailedMarkets(previous => (previous.has(marketId) ? withoutId(previous, marketId) : previous))
           // Only a read that answered moves this. A failing refresh has to show
           // as a time going stale, which is the whole reason the screen says it.
           setReadAt(new Date())
         },
         // A failure is an answer too: the card keeps the last price it had, or
-        // shows "—" if it never had one, rather than being asked about again
-        // before the next refresh.
+        // says the price could not be read if it never had one, rather than
+        // being asked about again before the next refresh.
         () => {
           inFlightIds.delete(marketId)
           if (cancelled) return
           answeredIds.current.add(marketId)
+          setFailedMarkets(previous => new Set(previous).add(marketId))
         },
       )
     }
+
+    readAgain.current = read
 
     for (const market of markets) {
       if (!answeredIds.current.has(market.id)) read(market.id)
@@ -104,5 +147,15 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     }
   }, [markets])
 
-  return { pricesByMarket, readAt }
+  // One identity for the life of the hook: it is part of what the hook
+  // returns, and a new function on every render would re-run any effect a
+  // caller keyed on it.
+  const retryMarket = useCallback((marketId: string) => {
+    // Back to "still on its way" while this read is out: if it fails too the
+    // failure goes back on, and if it lands the success path clears it.
+    setFailedMarkets(previous => withoutId(previous, marketId))
+    readAgain.current(marketId)
+  }, [])
+
+  return { snapshotsByMarket, failedMarkets, readAt, retryMarket }
 }

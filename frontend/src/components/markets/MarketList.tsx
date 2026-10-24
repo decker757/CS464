@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { listMarkets, type PublicMarketPage, type PublicMarketSummary } from '../../api/marketApi'
+import { closingWindowOf, type ClosingPreset } from '../../utils/closingWindow'
 import { usePagedList } from '../../hooks/usePagedList'
 import { usePricesForMarkets } from '../../hooks/usePricesForMarkets'
 import Button from '../ui/Button'
@@ -11,6 +12,8 @@ interface MarketListProps {
   /** Empty for no search. */
   query: string
   status: StatusFilter | null
+  /** null for any closing time (#442). */
+  closing: ClosingPreset | null
 }
 
 const pagedMarketsOptions = {
@@ -19,26 +22,40 @@ const pagedMarketsOptions = {
   idOf: (market: PublicMarketSummary) => market.id,
 }
 
-// One search and one status, from its first page on. A different search or
-// status is a different list: the page gives this a new `key`, so the paging
-// state and the prices start over (usePricesForMarkets says to do exactly that).
-export default function MarketList({ query, status }: MarketListProps) {
+// One search, one status and one closing preset, from its first page on. A
+// different one of any is a different list: the page gives this a new `key`,
+// so the paging state and the prices start over (usePricesForMarkets says to
+// do exactly that).
+export default function MarketList({ query, status, closing }: MarketListProps) {
+  // The preset's window as of the moment this list started, and kept for its
+  // life: every page asks for the same window even if a midnight passes while
+  // the trader pages, and a list started after midnight, by a new search or a
+  // new choice, asks for the new day (#442).
+  const [closingWindow] = useState(() => (closing === null ? null : closingWindowOf(closing, new Date())))
   // Bumped by Try again, and nothing else. usePagedList starts its list over
   // whenever `fetchPage` changes identity, so that is the whole retry: page one
-  // again, under the same search and status, with any failed attempt dropped.
+  // again, under the same search, status and window, with any failed attempt
+  // dropped.
   const [attempt, setAttempt] = useState(0)
   const fetchMarketPage = useCallback(
-    (cursor: string | undefined) => listMarkets({ cursor, q: query || undefined, status: status ?? undefined }),
+    (cursor: string | undefined) =>
+      listMarkets({
+        cursor,
+        q: query || undefined,
+        status: status ?? undefined,
+        closes_from: closingWindow?.closesFrom,
+        closes_before: closingWindow?.closesBefore,
+      }),
     // `attempt` is not read in there, and is the point: a new identity for
     // this function is what asks usePagedList for page one again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [query, status, attempt],
+    [query, status, closingWindow, attempt],
   )
   const { items: markets, hasMore, isLoading, hasError, isLoadingMore, loadMoreFailed, loadMore } = usePagedList(fetchMarketPage, pagedMarketsOptions)
   // `markets` keeps its identity until the list itself changes, so the prices
   // are fetched then and not on every render.
-  const { pricesByMarket, readAt } = usePricesForMarkets(markets)
-  const isFiltered = query !== '' || status !== null
+  const { snapshotsByMarket, failedMarkets, readAt, retryMarket } = usePricesForMarkets(markets)
+  const isFiltered = query !== '' || status !== null || closingWindow !== null
 
   return (
     <>
@@ -69,7 +86,15 @@ export default function MarketList({ query, status }: MarketListProps) {
           )}
 
           <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
-            {markets.map((market) => <MarketCard key={market.id} market={market} prices={pricesByMarket.get(market.id)} />)}
+            {markets.map(market => (
+              <MarketCard
+                key={market.id}
+                market={market}
+                snapshot={snapshotsByMarket.get(market.id)}
+                priceReadFailed={failedMarkets.has(market.id)}
+                onRetryPrice={() => retryMarket(market.id)}
+              />
+            ))}
           </div>
 
           {hasMore && (

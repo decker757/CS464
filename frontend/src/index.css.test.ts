@@ -48,14 +48,14 @@ function tintOver(colour: Colour, surface: Colour, alpha: number): Colour {
 }
 
 const tokens = readColourTokens()
+const WHITE: Colour = [1, 1, 1]
 const SURFACES: Record<string, Colour> = {
-  'a white card': [1, 1, 1],
+  'a white card': WHITE,
   'the cream page': tokens['smu-cream'],
 }
 
 // Every token the app puts text in. Each is held to AA on both surfaces, so a
-// token that moves to a new screen is already safe there. `success-strong` and
-// `danger-strong` are Badge-only today and are held to the same line anyway.
+// token that moves to a new screen is already safe there.
 const TEXT_TOKENS = [
   'smu-navy',
   'smu-gold-text',
@@ -78,12 +78,34 @@ const TEXT_TOKENS = [
 const SURFACE_ONLY = ['smu-gold', 'smu-cream', 'line', 'track', 'surface-muted']
 
 // `Badge`: 11px bold text on a 10% tint of its own tone, on either surface.
+// The same danger and success pairs at the same 10% are also TradingPanel's
+// active Buy/Sell toggle and the trade and placed-order confirmation
+// banners, so this table measures those too (#380).
 const BADGE_TONES = [
   { tone: 'danger', text: 'danger-strong', tint: 'danger' },
   { tone: 'success', text: 'success-strong', tint: 'success' },
   { tone: 'neutral', text: 'secondary', tint: 'muted' },
   { tone: 'warning', text: 'warning-strong', tint: 'warning' },
   { tone: 'info', text: 'info-strong', tint: 'info' },
+]
+
+// Every other place in the app that puts a tone's own text on a tint of
+// itself and that the `Badge` table does not already measure, each at the
+// tint it is actually used at and the surfaces it actually sits on. A base
+// tone reaches only 4.1–4.5:1 on its own tint at these strengths, short of
+// AA, which is why each pairs with the darker `-strong` text instead (#380).
+// Unlike `Badge` above, these are not all the same alpha, so each site names
+// its own; most default to both surfaces, but gold-on-its-own-tint is only
+// ever used inside a white `Card`, and on the cream page it is 4.43 — short
+// of the line — so it does not claim cream.
+const TONE_ON_OWN_TINT = [
+  // AuthLayout's login/register error message.
+  { site: 'the auth error message', text: 'danger-strong', tint: 'danger', alpha: 0.05 },
+  // LandingFeatures' numbered pill and MarketPreviewCard's "Example" pill:
+  // small bold gold text on a gold tint, which needs the darker
+  // gold-for-text token rather than the brand gold itself — and both sit
+  // inside a white Card, never straight on cream.
+  { site: 'small gold text on a gold tint', text: 'smu-gold-text', tint: 'smu-gold', alpha: 0.1, surfaces: ['a white card'] },
 ]
 
 // Without this, a token added later is simply absent from the lists above and
@@ -110,6 +132,40 @@ describe('badge text on its own tint', () => {
   )('$tone over its tint on $surface', ({ text, tint, surface }) => {
     const background = tintOver(tokens[tint], SURFACES[surface], 0.1)
     expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})
+
+// Every other known tone-on-own-tint pair in the app that `Badge`'s fixed 10%
+// does not cover, each at the alpha it is actually used at (#380). Reading the
+// alpha here, rather than hardcoding today's ratio, is what makes this fail if a
+// site's tint is ever strengthened past the line, the same way the token
+// table above fails if a token is lightened past it.
+describe('a tone on its own tint, elsewhere in the app', () => {
+  it.each(
+    TONE_ON_OWN_TINT.flatMap((site) =>
+      (site.surfaces ?? Object.keys(SURFACES)).map((surface) => ({ ...site, surface })),
+    ),
+  )('$site, on $surface', ({ text, tint, alpha, surface }) => {
+    const background = tintOver(tokens[tint], SURFACES[surface], alpha)
+    expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})
+
+// `buttonClass.ts` disables a button by replacing its variant with a neutral
+// plate rather than dimming it, so that it stops reading as a working button
+// [#452]. That only holds if the label on the plate is still readable:
+// "disabled" must not mean "illegible".
+describe('a disabled button', () => {
+  it('reads secondary text on the light plate', () => {
+    expect(contrastRatio(tokens['secondary'], tokens['track'])).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+
+  // The on-navy variants have no light plate to use, so there the plate is a
+  // 10% white wash over the navy and the label is white at 60%.
+  it('reads a dimmed white on the wash over navy', () => {
+    const plate = tintOver(WHITE, tokens['smu-navy'], 0.1)
+    const label = tintOver(WHITE, plate, 0.6)
+    expect(contrastRatio(label, plate)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
   })
 })
 

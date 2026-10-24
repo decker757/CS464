@@ -173,6 +173,19 @@ describe('useMarketPrices', () => {
     expect(result.current.status).toBe('connected')
   })
 
+  it('asks the caller to re-read its own state on the first ack too, not only after a reconnect', () => {
+    // A fill that lands between the caller's mount read and this ack has its
+    // frame published before the socket was listening, so only a read after
+    // the ack can show it — the same gap the snapshot above is fetched again
+    // to close.
+    const onSubscribed = vi.fn()
+    renderHook(() => useMarketPrices('m1', { onSubscribed }))
+
+    subscribe(latest())
+
+    expect(onSubscribed).toHaveBeenCalledTimes(1)
+  })
+
   // AC 5: the snapshot and the socket race after a reconnect, and the newer one wins.
   it('a frame that arrives before the reconnect snapshot resolves is not undone by it', async () => {
     let holdSnapshots = false

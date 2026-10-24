@@ -52,11 +52,42 @@ export interface AdminUserPage {
  * One page of accounts an administrator can search by username or email
  * fragment ([4.1] #13, auth-service.md). Blank or omitted `q` lists
  * everybody, newest registration first — the screen opens on a list rather
- * than an empty state waiting to be typed into.
+ * than an empty state waiting to be typed into. `role` and `is_suspended`
+ * narrow it further (#479); an omitted one filters nothing. A cursor carries
+ * a position, not the filters, so send all three again with it.
  */
-export async function listUsers(params?: { q?: string; cursor?: string }): Promise<AdminUserPage> {
+export async function listUsers(params?: {
+  q?: string
+  role?: User['role']
+  is_suspended?: boolean
+  cursor?: string
+}): Promise<AdminUserPage> {
   const res = await api.get<AdminUserPage>('/admin/users', { params })
   return res.data
+}
+
+/** One account as a trade table names it: exactly `id` and `username`
+ * (auth-service.md). No email, no role and no `is_suspended` — those stay on
+ * `GET /admin/users`, which `AdminUser` above describes. */
+export interface UserName {
+  id: string
+  username: string
+}
+
+/**
+ * The usernames for a page of user ids, in one request ([2.4] #273,
+ * auth-service.md). The ledger's trade feed carries a `user_id` and no
+ * username, because the ledger holds no user table (ADR 0003), so the
+ * administrator's browser joins the names in here.
+ *
+ * Send between 1 and 200 ids — one trades page's worth, which is what the
+ * ledger clamps a page at. An id that names no user is left out rather than
+ * refused, a duplicate is answered once, and no order is promised, so the
+ * answer is keyed by `id` (useUsernames does that).
+ */
+export async function lookupUsernames(userIds: string[]): Promise<UserName[]> {
+  const res = await api.post<{ users: UserName[] }>('/admin/users/lookup', { user_ids: userIds })
+  return res.data.users
 }
 
 export interface SuspensionResult {

@@ -49,7 +49,10 @@ describe('usePricesForMarkets', () => {
 
     const { result } = renderHook(() => usePricesForMarkets(TRADING), { wrapper: StrictMode })
 
-    await waitFor(() => expect(result.current.pricesByMarket.get('m1')).toEqual([{ outcome_id: 'o1', position: 0, price: '0.6000' }]))
+    // The whole snapshot, not only its prices: a card needs state_version to
+    // tell an untraded book from a priced one, and occurred_at to say when it
+    // last moved (#445).
+    await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')).toEqual(snapshotPriced('0.6000')))
   })
 
   // [X-1] #364 AC 1: a list left open showed the prices it loaded with, for
@@ -59,7 +62,7 @@ describe('usePricesForMarkets', () => {
     serveChangingPrices(['0.6000', '0.7000'])
 
     const { result } = renderHook(() => usePricesForMarkets(TRADING))
-    const priceNow = () => result.current.pricesByMarket.get('m1')?.[0].price
+    const priceNow = () => result.current.snapshotsByMarket.get('m1')?.prices[0].price
     await waitFor(() => expect(priceNow()).toBe('0.6000'))
     const firstReadAt = result.current.readAt?.getTime() ?? 0
 
@@ -78,7 +81,7 @@ describe('usePricesForMarkets', () => {
     serveChangingPrices(['0.6000'])
 
     const { result } = renderHook(() => usePricesForMarkets(TRADING))
-    const priceNow = () => result.current.pricesByMarket.get('m1')?.[0].price
+    const priceNow = () => result.current.snapshotsByMarket.get('m1')?.prices[0].price
     await waitFor(() => expect(priceNow()).toBe('0.6000'))
     const lastGoodRead = result.current.readAt?.getTime()
 
@@ -120,9 +123,49 @@ describe('usePricesForMarkets', () => {
 
     // And the market is readable again once the ledger has answered.
     release()
-    await waitFor(() => expect(result.current.pricesByMarket.get('m1')).toHaveLength(1))
+    await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')?.prices).toHaveLength(1))
     await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
     await waitFor(() => expect(reads).toBe(2))
+  })
+
+  // [X-1] #431 AC 1: a card showed the same dash for a read still out and a
+  // read that failed, so the hook has to say which. A market that has stopped
+  // trading is never read again on the timer, so the retry is the only way
+  // back to a price for exactly the cards that need one.
+  it('reports a market whose read failed, and reads it again when retried', async () => {
+    let failing = true
+    server.use(http.get(SNAPSHOT, () =>
+      failing ? HttpResponse.error() : HttpResponse.json(snapshotPriced('0.6000')),
+    ))
+
+    const { result } = renderHook(() => usePricesForMarkets(PAST_ITS_CLOSE))
+    await waitFor(() => expect(result.current.failedMarkets.has('m1')).toBe(true))
+    expect(result.current.snapshotsByMarket.has('m1')).toBe(false)
+
+    failing = false
+    act(() => result.current.retryMarket('m1'))
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')).toEqual(snapshotPriced('0.6000')))
+    // And the card stops offering to retry something that has just answered.
+    expect(result.current.failedMarkets.has('m1')).toBe(false)
+  })
+
+  // A retry that fails too has to leave the card where it was, saying so and
+  // still offering the way back, rather than waiting for a price for good.
+  it('puts the failure back when the retry fails as well', async () => {
+    let reads = 0
+    server.use(http.get(SNAPSHOT, () => {
+      reads += 1
+      return HttpResponse.error()
+    }))
+
+    const { result } = renderHook(() => usePricesForMarkets(PAST_ITS_CLOSE))
+    await waitFor(() => expect(result.current.failedMarkets.has('m1')).toBe(true))
+
+    act(() => result.current.retryMarket('m1'))
+
+    await waitFor(() => expect(reads).toBe(2))
+    await waitFor(() => expect(result.current.failedMarkets.has('m1')).toBe(true))
   })
 
   // A market that can no longer trade can no longer get a new price, and each
@@ -132,7 +175,7 @@ describe('usePricesForMarkets', () => {
     const reads = serveChangingPrices(['0.6000'])
 
     const { result } = renderHook(() => usePricesForMarkets(PAST_ITS_CLOSE))
-    await waitFor(() => expect(result.current.pricesByMarket.get('m1')).toHaveLength(1))
+    await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')?.prices).toHaveLength(1))
 
     await act(async () => { vi.advanceTimersByTime(3 * PRICE_REFRESH_MS) })
 

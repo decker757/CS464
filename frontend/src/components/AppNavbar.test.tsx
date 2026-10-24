@@ -41,7 +41,12 @@ function renderInApp() {
     http.get('http://localhost:8000/auth/me', () => HttpResponse.json(trader)),
     http.post('http://localhost:8000/auth/logout', () => HttpResponse.json({ message: 'Logged out.' })),
     http.get('http://localhost:8003/ledger/balances/me', () =>
-      HttpResponse.json({ user_id: trader.id, account_id: 'acc-1', balance: '1000.0000' }),
+      HttpResponse.json({
+        user_id: trader.id, account_id: 'acc-1',
+        // `available` is what the navbar shows: the two differ whenever a
+        // resting buy order holds credits (ADR 0024).
+        balance: '1000.0000', reserved: '0.0000', available: '1000.0000',
+      }),
     ),
   )
   render(
@@ -64,6 +69,12 @@ function renderInApp() {
       </BalanceProvider>
     </AuthProvider>,
   )
+}
+
+/** Opens the account cluster's menu, which is where Log Out lives (#437).
+ * The button carries the username, so that is its accessible name. */
+async function openAccountMenu(actor: ReturnType<typeof userEvent.setup>, username: string) {
+  await actor.click(screen.getByRole('button', { name: username }))
 }
 
 describe('AppNavbar', () => {
@@ -116,18 +127,53 @@ describe('AppNavbar', () => {
     expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
   })
 
+  it('shows what is available to spend, not the balance a resting order has reserved part of', () => {
+    // ADR 0024: a resting buy order's credits stay in `balance` but cannot
+    // be spent, so the figure under "available balance" has to be
+    // `available`. Showing `balance` here would overstate it by exactly what
+    // the trader's own orders hold.
+    render(
+      <WithProviders user={trader} balance="1000.0000" available="985.0000">
+        <MemoryRouter>
+          <AppNavbar />
+        </MemoryRouter>
+      </WithProviders>,
+    )
+
+    expect(screen.getByLabelText('available balance')).toHaveTextContent('985 credits')
+  })
+
   it('shows the real balance fetched through BalanceProvider, not just a stubbed one', async () => {
     renderInApp()
-    expect(await screen.findByText('1,000 credits')).toBeInTheDocument()
+    // The figure and its unit are two nodes now, so this reads the readout by
+    // its label rather than looking for one text node holding both.
+    expect(await screen.findByLabelText('available balance')).toHaveTextContent('1,000 credits')
+  })
+
+  it('does not offer the balance as somewhere to go', () => {
+    // It used to carry the active link's exact two classes, and the username
+    // an inactive link's, so the row read as seven navigation items of which
+    // two did nothing when clicked (#437). Neither is in the navigation
+    // landmark any more, and neither is a link.
+    renderNavbar(trader, '1000.0000')
+    const navigation = screen.getByRole('navigation')
+
+    expect(within(navigation).queryByLabelText('available balance')).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('alice')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /credits/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'alice' })).not.toBeInTheDocument()
   })
 })
 
+// Log Out sits in the account menu rather than in the bar, which is why each
+// of these opens the menu first (#437).
 describe('AppNavbar — logging out', () => {
   it('ends the session', async () => {
     const actor = userEvent.setup()
     renderInApp()
     await screen.findByText('alice')
 
+    await openAccountMenu(actor, 'alice')
     await actor.click(screen.getByRole('button', { name: /log out/i }))
 
     // `logout` clears `user`, which unmounts this navbar (it lives under
@@ -145,6 +191,7 @@ describe('AppNavbar — logging out', () => {
     server.use(http.post('http://localhost:8000/auth/logout', () => HttpResponse.error()))
     await screen.findByText('alice')
 
+    await openAccountMenu(actor, 'alice')
     await actor.click(screen.getByRole('button', { name: /log out/i }))
 
     // Logging out is the one action a user has to be able to trust, and the
@@ -167,6 +214,7 @@ describe('AppNavbar — logging out', () => {
     )
     await screen.findByText('alice')
 
+    await openAccountMenu(actor, 'alice')
     await actor.click(screen.getByRole('button', { name: /log out/i }))
 
     // A second click during the round trip would send a second POST and a
@@ -190,8 +238,10 @@ describe('AppNavbar — finding your way around', () => {
     for (const user of [trader, admin]) {
       renderNavbar(user)
       const links = within(screen.getByRole('navigation')).getAllByRole('link')
-      // links[0] is the wordmark, which is the one link that is not a nav item.
-      expect(links[1]).toHaveAccessibleName('Markets')
+      // The landmark holds the navigation and nothing else, so the first link
+      // in it is the first nav item: the wordmark and the account cluster are
+      // outside it (#437).
+      expect(links[0]).toHaveAccessibleName('Markets')
       cleanup()
     }
   })

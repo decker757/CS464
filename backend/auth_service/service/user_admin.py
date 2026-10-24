@@ -57,8 +57,11 @@ def _contains(column: InstrumentedAttribute[str], needle: str) -> ColumnElement[
     return column.ilike(f"%{needle.translate(_LIKE_WILDCARDS)}%", escape="\\")
 
 
-def _ordered_query(query: str | None) -> Select[tuple[User]]:
-    """Build the search query: username or email, newest first, ties by id.
+def _ordered_query(
+    query: str | None, *, role: UserRole | None, is_suspended: bool | None
+) -> Select[tuple[User]]:
+    """Build the search query: username or email, narrowed to a role and a
+    suspension state when given, newest first, ties by id.
 
     `raiseload` on the sessions: `lazy="selectin"` would otherwise fetch every
     refresh token of every listed account. Not `noload`, which would pass off
@@ -71,6 +74,12 @@ def _ordered_query(query: str | None) -> Select[tuple[User]]:
         stmt = stmt.where(
             or_(_contains(User.username, needle), _contains(User.email, needle))
         )
+
+    if role is not None:
+        stmt = stmt.where(User.role == role)
+
+    if is_suspended is not None:
+        stmt = stmt.where(User.is_suspended.is_(is_suspended))
 
     return stmt.order_by(User.created_at.desc(), User.id.desc())
 
@@ -131,17 +140,21 @@ async def search_users(
     session: AsyncSession,
     *,
     query: str | None = None,
+    role: UserRole | None = None,
+    is_suspended: bool | None = None,
     limit: int,
     cursor: str | None = None,
 ) -> UserPage:
-    """Return one page of accounts, newest first, narrowed to `query`. [4.1] #13
+    """Return one page of accounts, newest first, narrowed to `query`, `role`
+    and `is_suspended`. [4.1] #13, #479
 
-    Raises MalformedCursor. A blank `query` lists everybody. Not audited: it
-    decides nothing (ADR 0006). Fetches `limit + 1` rows so `has_more` is exact
-    without a COUNT. The substring match is a sequential scan, accepted at this
-    scale; the upgrade is a pg_trgm GIN index.
+    Raises MalformedCursor. A blank `query` lists everybody, and a None filter
+    filters nothing. Not audited: it decides nothing (ADR 0006). Fetches
+    `limit + 1` rows so `has_more` is exact without a COUNT. The substring
+    match is a sequential scan, accepted at this scale; the upgrade is a
+    pg_trgm GIN index.
     """
-    stmt = _ordered_query(query)
+    stmt = _ordered_query(query, role=role, is_suspended=is_suspended)
 
     if cursor is not None:
         # Decoded before the query, so a bad value is a 400 rather than a

@@ -105,10 +105,6 @@ _KEY_PREFIX = "order"
 _FILL_KINDS = (TransactionKind.TRADE_BUY, TransactionKind.TRADE_SELL)
 
 
-def order_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
-    return f"{_KEY_PREFIX}:{user_id}:{market_id}:{client_key}"
-
-
 @dataclass(frozen=True)
 class OrderView:
     """One order as it stands now: the contract's order object."""
@@ -149,47 +145,6 @@ class Placement:
     book_state_version: int
 
 
-def order_view_of(order: Order, *, outcome_position: int, live: bool) -> OrderView:
-    """The order object, with `released` and the reservations derived from
-    `live`: an order that is not live holds nothing.
-
-    `live` is `reservations.order_is_live()` as read, or, for an order this
-    request wrote, whether it is still open: the latch has just said its
-    market has no result.
-    """
-    status = order.status.value
-    if order.status is OrderStatus.OPEN and not live:
-        status = "released"
-
-    nothing = Decimal("0.0000")
-    reserved_credits = reserved_shares = None
-    if order.side is Side.BUY:
-        reserved_credits = order.budget - order.filled_value if live else nothing
-    else:
-        reserved_shares = order.quantity - order.filled_quantity if live else nothing
-
-    average = None
-    if order.filled_quantity > 0:
-        average = per_share(order.filled_value, order.filled_quantity)
-
-    return OrderView(
-        id=order.id,
-        market_id=order.market_id,
-        outcome_id=order.outcome_id,
-        outcome_position=outcome_position,
-        side=order.side,
-        limit_price=order.limit_price,
-        quantity=order.quantity,
-        filled_quantity=order.filled_quantity,
-        average_fill_price=average,
-        reserved_credits=reserved_credits,
-        reserved_shares=reserved_shares,
-        status=status,
-        created_at=order.created_at,
-        cancelled_at=order.cancelled_at,
-    )
-
-
 def _fill_of(transaction: Transaction) -> Fill:
     context = transaction.context or {}
     return Fill(
@@ -198,33 +153,6 @@ def _fill_of(transaction: Transaction) -> Fill:
         total=Decimal(str(context["total"])),
         state_version=int(context["state_version"]),
     )
-
-
-def views_query() -> Select[tuple[Order, int, bool]]:
-    """Each order with its outcome's position and whether it is live."""
-    return select(
-        Order, MarketOutcome.position, reservations.order_is_live().label("live")
-    ).join(
-        MarketOutcome,
-        (MarketOutcome.market_id == Order.market_id)
-        & (MarketOutcome.outcome_id == Order.outcome_id),
-    )
-
-
-async def _fills_of(session: AsyncSession, order: Order) -> list[Fill]:
-    """The fills the placement request made: this order's, at or below the
-    `book_state_version` it stored. Every later fill, from anyone's cascade,
-    has a higher version."""
-    stmt = (
-        select(Transaction)
-        .where(
-            Transaction.kind.in_(_FILL_KINDS),
-            Transaction.context["order_id"].astext == str(order.id),
-            Transaction.context["state_version"].as_integer() <= order.book_state_version,
-        )
-        .order_by(Transaction.context["state_version"].as_integer())
-    )
-    return [_fill_of(transaction) for transaction in (await session.execute(stmt)).scalars()]
 
 
 def _matches(
@@ -243,6 +171,22 @@ def _matches(
         and order.limit_price == limit_price
         and order.quantity == quantity
     )
+
+
+async def _fills_of(session: AsyncSession, order: Order) -> list[Fill]:
+    """The fills the placement request made: this order's, at or below the
+    `book_state_version` it stored. Every later fill, from anyone's cascade,
+    has a higher version."""
+    stmt = (
+        select(Transaction)
+        .where(
+            Transaction.kind.in_(_FILL_KINDS),
+            Transaction.context["order_id"].astext == str(order.id),
+            Transaction.context["state_version"].as_integer() <= order.book_state_version,
+        )
+        .order_by(Transaction.context["state_version"].as_integer())
+    )
+    return [_fill_of(transaction) for transaction in (await session.execute(stmt)).scalars()]
 
 
 async def _replay_if_present(
@@ -468,6 +412,62 @@ async def _commit_fill(
         ),
         fills=[_fill_of(transactions[0])],
         book_state_version=order.book_state_version,
+    )
+
+
+def order_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
+    return f"{_KEY_PREFIX}:{user_id}:{market_id}:{client_key}"
+
+
+def views_query() -> Select[tuple[Order, int, bool]]:
+    """Each order with its outcome's position and whether it is live."""
+    return select(
+        Order, MarketOutcome.position, reservations.order_is_live().label("live")
+    ).join(
+        MarketOutcome,
+        (MarketOutcome.market_id == Order.market_id)
+        & (MarketOutcome.outcome_id == Order.outcome_id),
+    )
+
+
+def order_view_of(order: Order, *, outcome_position: int, live: bool) -> OrderView:
+    """The order object, with `released` and the reservations derived from
+    `live`: an order that is not live holds nothing.
+
+    `live` is `reservations.order_is_live()` as read, or, for an order this
+    request wrote, whether it is still open: the latch has just said its
+    market has no result.
+    """
+    status = order.status.value
+    if order.status is OrderStatus.OPEN and not live:
+        status = "released"
+
+    nothing = Decimal("0.0000")
+    reserved_credits = reserved_shares = None
+    if order.side is Side.BUY:
+        reserved_credits = order.budget - order.filled_value if live else nothing
+    else:
+        reserved_shares = order.quantity - order.filled_quantity if live else nothing
+
+    average = None
+    if order.filled_quantity > 0:
+        average = per_share(order.filled_value, order.filled_quantity)
+
+    return OrderView(
+        id=order.id,
+        market_id=order.market_id,
+        outcome_id=order.outcome_id,
+        outcome_position=outcome_position,
+        side=order.side,
+        limit_price=order.limit_price,
+        quantity=order.quantity,
+        filled_quantity=order.filled_quantity,
+        average_fill_price=average,
+        reserved_credits=reserved_credits,
+        reserved_shares=reserved_shares,
+        status=status,
+        created_at=order.created_at,
+        cancelled_at=order.cancelled_at,
     )
 
 

@@ -84,6 +84,16 @@ function mockSuspension(userId: string, handler: () => Response | Promise<Respon
   server.use(http.patch(`${AUTH_BASE}/admin/users/${userId}/suspension`, handler))
 }
 
+/** Names the ids the page asks about, leaving out any id `usernames` has no
+ * entry for, the way auth leaves an id that names no user out of the answer. */
+function mockLookup(usernames: Record<string, string>) {
+  server.use(http.post(`${AUTH_BASE}/admin/users/lookup`, async ({ request }) => {
+    const { user_ids } = (await request.json()) as { user_ids: string[] }
+    const named = user_ids.filter(id => id in usernames).map(id => ({ id, username: usernames[id] }))
+    return HttpResponse.json({ users: named })
+  }))
+}
+
 function renderPage(userId = 'trader-1', state?: Record<string, unknown>) {
   return render(
     <WithProviders user={admin}>
@@ -124,9 +134,27 @@ describe('AdminUserHistoryPage', () => {
     expect(screen.getByText('alice@smu.edu.sg')).toBeInTheDocument()
   })
 
-  it('falls back to the user id when there is no linked user, as after a page reload', async () => {
+  it('names the user from auth when there is no linked user, as after a page reload', async () => {
+    // [2.4] #434: the admin arrives from the user list, where they were
+    // looking at usernames, and a reload drops the router state that carried
+    // one. The heading reads the name from auth instead of naming nobody,
+    // and the id stays on screen for support to quote.
     mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
     mockEntries('trader-1', [])
+    mockLookup({ 'trader-1': 'alice' })
+    renderPage('trader-1')
+
+    expect(await screen.findByRole('heading', { name: /alice/i })).toBeInTheDocument()
+    expect(screen.getByText('trader-1')).toBeInTheDocument()
+  })
+
+  it('falls back to the user id when nothing names the user', async () => {
+    // The lookup answers without them — an id that names no user is left out
+    // rather than refused (auth-service.md) — and a failed lookup reads the
+    // same way: the heading still says whose history this is, by id.
+    mockBalance('trader-1', { user_id: 'trader-1', account_id: 'acc-1', balance: '997.4687' })
+    mockEntries('trader-1', [])
+    mockLookup({})
     renderPage('trader-1')
 
     expect(await screen.findByRole('heading', { name: /trader-1/i })).toBeInTheDocument()

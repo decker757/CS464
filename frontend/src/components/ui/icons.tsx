@@ -52,3 +52,21 @@ export function ChevronLeftIcon({ size = 14, className }: IconProps) {
     </svg>
   )
 }
+
+export function ChevronDownIcon({ size = 14, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={className}>
+      <polyline points="2,5 7,10 12,5" />
+    </svg>
+  )
+}
+
+export function MenuIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden className={className}>
+      <line x1="2" y1="4.5" x2="16" y2="4.5" />
+      <line x1="2" y1="9" x2="16" y2="9" />
+      <line x1="2" y1="13.5" x2="16" y2="13.5" />
+    </svg>
+  )
+}

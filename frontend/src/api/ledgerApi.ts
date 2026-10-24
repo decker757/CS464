@@ -15,8 +15,18 @@ export interface OutcomePrice {
 // docs/api/realtime-service.md
 export interface PriceState {
   market_id: string
+  // The book's counter, incremented under the lock on every trade, with a
+  // CHECK (state_version >= 0) on the column. **Zero means nobody has ever
+  // traded this market**, and its prices are the untouched LMSR seed — a
+  // uniform 50/50 on a binary book, which is an opening price and not an
+  // opinion anybody holds (#445).
   state_version: number
   prices: OutcomePrice[]
+  // The book's `state_changed_at`: when the trade that last moved `q` took
+  // its price. On a market nobody has traded this is `opened_at` instead —
+  // opening the book was the last state change there has been (D-029,
+  // ledger-service.md) — so it is only a "last traded" time when
+  // `state_version` is above zero.
   occurred_at: string
 }
 
@@ -30,7 +40,15 @@ export interface Balance {
   account_id: string
   // A decimal string, not a JSON number (ledger-service.md). Format with
   // formatCredits; never parseFloat it.
+  //
+  // `balance` is the sum of every entry, resting buy orders' reserved
+  // credits included. `reserved` is what those orders could still spend and
+  // `available` is `balance - reserved` — what a new trade or buy order may
+  // actually spend (ADR 0024). Spend checks read `available`, never
+  // `balance`; net worth still reads `balance`.
   balance: string
+  reserved: string
+  available: string
 }
 
 /**
@@ -394,5 +412,117 @@ export interface LeaderboardPage {
  * (ledger-service.md). */
 export async function getLeaderboard(params?: { cursor?: string; limit?: number }): Promise<LeaderboardPage> {
   const res = await api.get<LeaderboardPage>(`${LEDGER_BASE}/ledger/leaderboard`, { params })
+  return res.data
+}
+
+// A limit order's state, the same shape on all three order routes
+// (ledger-service.md, "Limit orders"; ADR 0024).
+export interface Order {
+  id: string
+  market_id: string
+  outcome_id: string
+  // 0 or 1. The ledger holds no labels — take them from market_service, the
+  // way the portfolio does.
+  outcome_position: number
+  side: TradeSide
+  // The price on this order's own outcome. A buy fills at or below it, a
+  // sell at or above.
+  limit_price: string
+  quantity: string
+  filled_quantity: string
+  // What the fills averaged per share; null until the first fill.
+  average_fill_price: string | null
+  // A buy only: what the order can still spend. Null on a sell, "0.0000"
+  // once the order is no longer live.
+  reserved_credits: string | null
+  // A sell only: the shares it still holds back. Null on a buy.
+  reserved_shares: string | null
+  // `released` means the market got a result and the remainder was freed; it
+  // is derived on every read, not a stored value.
+  status: 'open' | 'filled' | 'cancelled' | 'released'
+  created_at: string
+  cancelled_at: string | null
+}
+
+export interface OrderRequest {
+  outcome_id: string
+  side: TradeSide
+  limit_price: string
+  quantity: string
+  idempotency_key: string
+}
+
+/** One fill a placement made on arrival: a trade in the caller's history. */
+export interface OrderFill {
+  transaction_id: string
+  quantity: string
+  // Signed the way the trade route signs it: negative on a buy.
+  total: string
+  state_version: number
+}
+
+export interface OrderResult {
+  order: Order
+  // What this request filled, empty when the order only rested. A retry with
+  // the same key replays the first request's fills, not any a later trade's
+  // cascade added (ledger-service.md).
+  fills: OrderFill[]
+  book_state_version: number
+}
+
+/**
+ * Places a limit order ([T-6] #26). There is deliberately no `state_version`:
+ * the limit price is the protection, and a quote check would refuse an order
+ * for the very price move it was placed to catch (ADR 0024).
+ *
+ * Marketable on arrival means it fills at once, in part or whole, and
+ * `fills` says what it filled; otherwise it rests. A buy's whole budget
+ * (`limit_price × quantity`, rounded up to the tick) must fit in the
+ * balance route's `available`, even when it would fill for less.
+ *
+ * `idempotency_key` must be regenerated only once the server has given a
+ * definite answer, exactly as on `postTrade` — reusing it is what makes a
+ * retry after a lost reply safe.
+ */
+export async function placeOrder(marketId: string, data: OrderRequest): Promise<OrderResult> {
+  const res = await api.post<OrderResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/orders`, data)
+  return res.data
+}
+
+/**
+ * Every live order of the signed-in trader, newest first ([T-6] #26): those
+ * still `open` on a market with no result, closed markets included. Filled,
+ * cancelled and released orders are not listed.
+ *
+ * Unpaged on purpose, so replace the whole list with each response rather
+ * than merging into it (DECISIONS.md, "`GET /ledger/orders/me` returns every
+ * live order, unpaged"). It is also the snapshot for order frames: read it
+ * when the page opens and again after every socket reconnect.
+ */
+export async function getMyOrders(): Promise<{ orders: Order[] }> {
+  const res = await api.get<{ orders: Order[] }>(`${LEDGER_BASE}/ledger/orders/me`)
+  return res.data
+}
+
+export interface CancelOrderResult {
+  // status "cancelled". `filled_quantity` is whatever filled first: a cancel
+  // releases only the remainder, and fills already made stay.
+  order: Order
+  // Whichever the order reserved; the other is null.
+  released_credits: string | null
+  released_shares: string | null
+}
+
+/**
+ * Cancels one of the caller's own live orders ([T-8] #28). No market gate: a
+ * closed market's orders stay cancellable, and a suspended account can still
+ * cancel while its token is valid.
+ *
+ * A cancel and a fill never both win — both take the market's book lock — so
+ * the loser gets `order_already_filled`, and a retried cancel gets
+ * `order_already_cancelled`, which means it is already done.
+ */
+export async function cancelOrder(orderId: string): Promise<CancelOrderResult> {
+  const res = await api.post<CancelOrderResult>(`${LEDGER_BASE}/ledger/orders/${orderId}/cancel`)
   return res.data
 }

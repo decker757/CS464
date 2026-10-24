@@ -4,6 +4,9 @@ import NoticePanel from './layout/NoticePanel'
 import { buttonClass } from './ui/buttonClass'
 
 interface ErrorBoundaryProps {
+  /** Shown in place of the children that failed. Without one, the page's
+   * recovery panel, for the boundary that wraps every route. */
+  fallback?: React.ReactNode
   children: React.ReactNode
 }
 
@@ -12,6 +15,9 @@ interface FaultBoundaryProps {
   locationKey: string
   /** The address that failed, which "Reload the page" loads again. */
   address: string
+  /** ErrorBoundary's own `fallback`, passed through: rendered in place of the
+   * recovery panel, which then never shows. */
+  fallback?: React.ReactNode
   children: React.ReactNode
 }
 
@@ -46,6 +52,7 @@ class FaultBoundary extends Component<FaultBoundaryProps, FaultBoundaryState> {
 
   render() {
     if (!this.state.hasFailed) return this.props.children
+    if (this.props.fallback !== undefined) return this.props.fallback
 
     // The page that threw took its own navbar down with it, since every page
     // draws its own frame. The panel draws it again, which is why this has
@@ -69,16 +76,17 @@ class FaultBoundary extends Component<FaultBoundaryProps, FaultBoundaryState> {
 
 /**
  * Turns a render error anywhere below it into a recovery panel inside the app
- * frame, instead of an empty white page ([FE] #355).
+ * frame, instead of an empty white page ([FE] #355). Given a `fallback`, it
+ * guards one part of a page instead, and the rest of the page stays (#453).
  */
-export default function ErrorBoundary({ children }: ErrorBoundaryProps) {
+export default function ErrorBoundary({ fallback, children }: ErrorBoundaryProps) {
   const location = useLocation()
   // No hash: a link to the address already showing plus a fragment only
   // scrolls, and loads nothing.
   const address = `${location.pathname}${location.search}`
 
   return (
-    <FaultBoundary locationKey={location.key} address={address}>
+    <FaultBoundary locationKey={location.key} address={address} fallback={fallback}>
       {children}
     </FaultBoundary>
   )

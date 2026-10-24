@@ -6,6 +6,7 @@
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
+import { isBelow } from './credits'
 
 // The same variables the app is built with, and the same defaults.
 const AUTH_URL = process.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -65,6 +66,44 @@ export async function registerTrader(label: string): Promise<Session> {
   return { id: body.user.id, username: body.user.username, accessToken: body.tokens.access_token }
 }
 
+// The most any one trader in the suite spends: tp_other's 200 Yes shares in
+// trading-panel.e2e.ts, on an untouched market at b = 100. A bigger buy
+// anywhere raises it.
+const LARGEST_SPEND = '143.3781'
+
+let grantRead: Promise<string> | undefined
+
+/**
+ * What the ledger grants a new trader (ADR 0009), whatever STARTING_CREDITS
+ * the stack was started with: `starting_credits` from the portfolio, which is
+ * the grant actually minted (ledger-service.md). Read off a trader of its own,
+ * never the one under test, so a test of the first read minting the grant
+ * still makes that first read itself. Once per worker, unless the read
+ * fails: a failure is not kept, so the next test reads again.
+ */
+export function startingGrant(): Promise<string> {
+  if (!grantRead) {
+    grantRead = readStartingGrant()
+    grantRead.catch(() => {
+      grantRead = undefined
+    })
+  }
+  return grantRead
+}
+
+async function readStartingGrant(): Promise<string> {
+  const probe = await registerTrader('grant_probe')
+  const portfolio = await call<{ starting_credits: string }>('GET', `${LEDGER_URL}/ledger/portfolio/me`, probe.accessToken)
+  const grant = portfolio.starting_credits
+  if (isBelow(grant, LARGEST_SPEND)) {
+    throw new Error(
+      `STARTING_CREDITS is too small for the end-to-end suite: the ledger grants ${grant} credits, and ` +
+        `one trader in the suite spends ${LARGEST_SPEND}. Set it to at least that and recreate the ledger.`,
+    )
+  }
+  return grant
+}
+
 /**
  * Registers, then promotes by hand in the database, the way every first
  * admin is made (ADR 0007), then logs in again: the role rides in the token.
@@ -89,6 +128,14 @@ function promoteToAdmin(username: string): void {
   // Interpolated into SQL below, and only ever a name uniqueName() made.
   if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
   runSql(`UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
+}
+
+/** Suspends an account ([4.2] #14), as an administrator through the auth service. */
+export async function suspend(admin: Session, userId: string): Promise<void> {
+  await call('PATCH', `${AUTH_URL}/admin/users/${userId}/suspension`, admin.accessToken, {
+    suspended: true,
+    reason: 'Suspended by the end-to-end test.',
+  })
 }
 
 interface MarketOut {
@@ -203,16 +250,33 @@ export async function snapshot(session: Session, marketId: string): Promise<Snap
   return call<Snapshot>('GET', `${LEDGER_URL}/ledger/markets/${marketId}/snapshot`, session.accessToken)
 }
 
+// A buy the grant cannot cover means LARGEST_SPEND above is out of date, not
+// that the ledger is wrong — and `insufficient_funds` on its own points at the
+// balance rather than at the configuration, which is the failure #373 is
+// about, one layer along. Every other refusal is passed through untouched:
+// close-market.e2e.ts matches `market_closed` on this message.
+export function withGuardHint(refusal: unknown, quantity: string): unknown {
+  if (!(refusal instanceof Error) || !refusal.message.includes('insufficient_funds')) return refusal
+  return new Error(
+    `${refusal.message}\nThis buy of ${quantity} shares costs more than the ledger grants a trader. ` +
+      `Raise LARGEST_SPEND in e2e/support/backend.ts to what it costs, and STARTING_CREDITS to at least that.`,
+  )
+}
+
 /** Buys `quantity` shares of one outcome at the current quote. */
 export async function buy(trader: Session, market: Market, outcomeLabel: string, quantity: string): Promise<void> {
   const outcome = market.outcomes.find(candidate => candidate.label === outcomeLabel)
   if (!outcome) throw new Error(`no outcome ${outcomeLabel} on ${market.question}`)
   const { state_version } = await snapshot(trader, market.id)
-  await call('POST', `${LEDGER_URL}/ledger/markets/${market.id}/trades`, trader.accessToken, {
-    outcome_id: outcome.id,
-    side: 'buy',
-    quantity,
-    state_version,
-    idempotency_key: randomUUID(),
-  })
+  try {
+    await call('POST', `${LEDGER_URL}/ledger/markets/${market.id}/trades`, trader.accessToken, {
+      outcome_id: outcome.id,
+      side: 'buy',
+      quantity,
+      state_version,
+      idempotency_key: randomUUID(),
+    })
+  } catch (refusal) {
+    throw withGuardHint(refusal, quantity)
+  }
 }

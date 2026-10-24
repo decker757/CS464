@@ -23,8 +23,13 @@ backend/*/migrations/     auth, market and ledger: each schema's own Alembic
                           history, applied by that service's migrate.py [F-5]
 sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/         0002 only: a login role, and 02-schemas.sql re-run
+deploy/                 nginx.conf for docker-compose.scale.yml, nothing else
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
+docs/horizontal-scaling.md  two of every service behind a proxy [5.4] #440
+docs/architecture.md    three mermaid diagrams — the services and their
+                        schemas, a trade across three services, the ERDs —
+                        each naming the ADR it was drawn from
 DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
                         cited from code comments by number (D-001 to D-052)
                         or, after those, by title (D-NEW "<title>")
@@ -57,6 +62,17 @@ cp .env.example .env          # fill in every blank; compose refuses to start ot
 docker compose up --build     # auth :8000, market :8001, audit :8002,
                               # ledger :8003, realtime :8004; auth-migrate,
                               # market-migrate and ledger-migrate run first
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+  up -d --build --wait        # [5.4] #440: two of every stateless service
+                              # behind one nginx, on 18000-18004, as its own
+                              # `cs464scale` project so it runs beside the
+                              # stack above. The three migrate steps stay at
+                              # one container each — ADR 0020, and the only
+                              # line in that file that is a rule. The run, and
+                              # what #19 needs from it: docs/horizontal-scaling.md
 ```
 
 ```bash

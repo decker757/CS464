@@ -26,11 +26,23 @@ export interface PublicMarketPage {
   nextCursor: string | null
 }
 
+/** The browse list's filters and paging, named as GET /public/markets names them. */
+interface ListMarketsParams {
+  status?: string
+  q?: string
+  /** A time with an offset: markets closing at or after it (#442). */
+  closes_from?: string
+  /** A time with an offset: markets closing strictly before it (#442). */
+  closes_before?: string
+  cursor?: string
+  limit?: number
+}
+
 /**
  * One page of the browse list, in the server's order: trading first, then most
  * recently stopped (market-service.md, GET /public/markets). Keep that order.
  */
-export async function listMarkets(params?: { status?: string; q?: string; cursor?: string; limit?: number }): Promise<PublicMarketPage> {
+export async function listMarkets(params?: ListMarketsParams): Promise<PublicMarketPage> {
   const res = await api.get<PublicMarketListResponse>(`${MARKET_BASE}/public/markets`, { params })
   // `?? null`: a backend older than #104 sends no next_cursor at all.
   return { markets: res.data.markets, nextCursor: res.data.next_cursor ?? null }

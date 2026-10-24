@@ -29,6 +29,9 @@ from shared.testing import (
 # The conftest has pointed DATABASE_URL at the test database by now.
 _URL = os.environ["DATABASE_URL"]
 
+# [5.4] #440. The override that runs two of each app behind a proxy.
+_SCALE_COMPOSE = "docker-compose.scale.yml"
+
 
 def _empty_the_schema() -> None:
     run_in_transaction(_URL, lambda connection: drop_own_tables(connection, SCHEMA))
@@ -126,3 +129,18 @@ def test_compose_starts_auth_only_after_its_migration_succeeds() -> None:
     assert "://auth_svc:" in migration["environment"]["DATABASE_URL"]
     assert migration["restart"] == "no"
     assert "JWT_SECRET" not in migration["environment"]
+
+
+def test_the_scale_override_replicates_auth_and_not_its_migration() -> None:
+    """The step runs once per deploy, never once per replica: it takes no lock,
+    and the replica whose step lost the race does not start. ADR 0020,
+    [5.4] #440, docs/horizontal-scaling.md."""
+    app = compose_service("auth", compose_file=_SCALE_COMPOSE)
+    migration = compose_service("auth-migrate", compose_file=_SCALE_COMPOSE)
+
+    assert app["deploy"]["replicas"] >= 2
+    assert migration["deploy"]["replicas"] == 1
+    # Nothing in the override touches the gate asserted above, which it could
+    # only loosen: `depends_on` merges, so an entry here can add a condition
+    # and `!reset` can remove the lot.
+    assert "depends_on" not in app
