@@ -645,6 +645,23 @@ describe('MarketsPage', () => {
       expect(screen.getByRole('searchbox', { name: /search markets/i })).toHaveValue('')
     })
 
+    // With the status and the closing preset as the two filters, no search is
+    // applied, so clearing leaves the query the empty string it already was.
+    // The typed text must still go.
+    it('empties a typed search on Clear all when the status and the closing preset are the two filters', async () => {
+      mockSearchableMarkets()
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will inflation fall below 2%?')
+
+      await actor.click(screen.getByRole('radio', { name: 'Closed' }))
+      await actor.click(screen.getByRole('radio', { name: 'Today' }))
+      await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'inflation')
+      await actor.click(screen.getByRole('button', { name: 'Clear all' }))
+
+      expect(screen.getByRole('searchbox', { name: /search markets/i })).toHaveValue('')
+    })
+
     // #442 AC 1: with one filter applied, its own chip already clears it, so a
     // "Clear all" beside it would be a second control doing the same thing.
     it('offers Clear all only when there are two filters to clear', async () => {
