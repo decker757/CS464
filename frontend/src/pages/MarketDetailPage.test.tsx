@@ -238,7 +238,7 @@ describe('MarketDetailPage', () => {
     renderPage()
     await screen.findByText(baseMarket.question)
     expect(screen.getAllByText('Closed')).toHaveLength(2)
-    expect(screen.queryByText(/^Closes/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Closes /)).not.toBeInTheDocument()
   })
 
   it('shows the trading panel for open markets', async () => {
