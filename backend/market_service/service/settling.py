@@ -13,10 +13,7 @@ from datetime import datetime, timedelta
 
 from core.config import get_settings
 from core.settling import is_settleable, is_voidable
-from model.entities import MarketStatus
-
-# Stopped trading, and no outcome decided yet: a void may end either. ADR 0025.
-_AWAITING_OUTCOME = (MarketStatus.CLOSED, MarketStatus.PENDING_RESOLUTION)
+from model.entities import AWAITING_OUTCOME_STATUSES, MarketStatus
 
 
 def dispute_window_ends_at(approved_at: datetime) -> datetime:
@@ -59,7 +56,7 @@ def voidable(
     too and the two must agree. Do not pass the displayed status. ADR 0025.
     """
     return is_voidable(
-        awaiting_outcome=status in _AWAITING_OUTCOME,
+        awaiting_outcome=status in AWAITING_OUTCOME_STATUSES,
         approved=status is MarketStatus.APPROVED,
         voided=status is MarketStatus.VOIDED,
         ends_at=dispute_window_ends_at,

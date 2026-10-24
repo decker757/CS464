@@ -130,6 +130,14 @@ DECIDED_STATUSES: tuple[MarketStatus, ...] = (
 )
 
 
+# The statuses in which trading has stopped and no outcome is decided yet:
+# a void may end either whatever the clock says. ADR 0025.
+AWAITING_OUTCOME_STATUSES: tuple[MarketStatus, ...] = (
+    MarketStatus.CLOSED,
+    MarketStatus.PENDING_RESOLUTION,
+)
+
+
 # The unmapped attribute `get_published` stamps the derived status onto. Do not
 # "simplify" this to `market.status = ...`: that marks the row dirty, a later
 # commit would write the derived CLOSED into the column, and this derivation
