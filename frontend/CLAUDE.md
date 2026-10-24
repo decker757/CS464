@@ -103,6 +103,13 @@ If a helper is used by two files, it moves to `src/utils/` (pure) or
   message text. Pages call that function; they do not parse axios errors.
 - Money arrives as decimal **strings**. Never `parseFloat` a balance or cost
   to do arithmetic with it; display it through one formatting helper.
+- **`available`, not `balance`, is what a trader can spend.** A resting buy
+  order's credits stay in `balance` and are subtracted in `available`
+  (ADR 0024), so every "what you can spend" figure and every pre-send
+  affordability check reads `available` — the navbar's label and the trading
+  panel's refusal both did read `balance`, and both overstated it by exactly
+  what the trader's own orders held. `balance` is for net worth and the
+  history's running total. #61.
 - An average price (`average_price`, `average_entry_price`) is credits per
   share, not a probability — it can reach `1.0000` and pass it on a skewed
   book (ledger-service.md) — so it is always shown through

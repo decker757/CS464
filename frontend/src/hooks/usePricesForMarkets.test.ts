@@ -128,6 +128,46 @@ describe('usePricesForMarkets', () => {
     await waitFor(() => expect(reads).toBe(2))
   })
 
+  // [X-1] #431 AC 1: a card showed the same dash for a read still out and a
+  // read that failed, so the hook has to say which. A market that has stopped
+  // trading is never read again on the timer, so the retry is the only way
+  // back to a price for exactly the cards that need one.
+  it('reports a market whose read failed, and reads it again when retried', async () => {
+    let failing = true
+    server.use(http.get(SNAPSHOT, () =>
+      failing ? HttpResponse.error() : HttpResponse.json(snapshotPriced('0.6000')),
+    ))
+
+    const { result } = renderHook(() => usePricesForMarkets(PAST_ITS_CLOSE))
+    await waitFor(() => expect(result.current.failedMarkets.has('m1')).toBe(true))
+    expect(result.current.snapshotsByMarket.has('m1')).toBe(false)
+
+    failing = false
+    act(() => result.current.retryMarket('m1'))
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')).toEqual(snapshotPriced('0.6000')))
+    // And the card stops offering to retry something that has just answered.
+    expect(result.current.failedMarkets.has('m1')).toBe(false)
+  })
+
+  // A retry that fails too has to leave the card where it was, saying so and
+  // still offering the way back, rather than waiting for a price for good.
+  it('puts the failure back when the retry fails as well', async () => {
+    let reads = 0
+    server.use(http.get(SNAPSHOT, () => {
+      reads += 1
+      return HttpResponse.error()
+    }))
+
+    const { result } = renderHook(() => usePricesForMarkets(PAST_ITS_CLOSE))
+    await waitFor(() => expect(result.current.failedMarkets.has('m1')).toBe(true))
+
+    act(() => result.current.retryMarket('m1'))
+
+    await waitFor(() => expect(reads).toBe(2))
+    await waitFor(() => expect(result.current.failedMarkets.has('m1')).toBe(true))
+  })
+
   // A market that can no longer trade can no longer get a new price, and each
   // read costs the ledger an LMSR evaluation.
   it('stops reading a market whose close time has passed, whatever its status says', async () => {

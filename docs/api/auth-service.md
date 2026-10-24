@@ -186,6 +186,8 @@ code or the status here changes the ledger's answer.
 | Query | Default | Notes |
 | --- | --- | --- |
 | `q` | — | Part of a username or an email. Omit to list everybody. |
+| `role` | — | `trader` or `admin`. Omit for both. Anything else is a `422` (FastAPI's `{"detail": [...]}` shape, not an `error.code`). |
+| `is_suspended` | — | `true` or `false`. Omit for both. |
 | `limit` | 50 | Clamped at 200. Asking for more is not an error. |
 | `cursor` | — | The `next_cursor` from the previous page, unmodified. |
 
@@ -233,6 +235,14 @@ const entries = await fetch(
 beside each entry. **No balance appears here**, on this or any other route:
 this service does not know that credits exist.
 
+**`role` and `is_suspended` narrow the list** (#479), so "who are my admins"
+and "who is suspended" are one request each rather than a read of every page.
+They combine with `q` and with each other: every condition given must hold.
+`role=admin` includes suspended administrators, and `is_suspended=true`
+includes administrators, so both together answer "which administrators cannot
+log in". An unknown `role` is a `422` rather than an empty list, which would
+read as "nobody holds it".
+
 `is_suspended` is readable here and written by
 `PATCH /admin/users/{user_id}/suspension` below. It appears here and in the
 suspension route's response only — on register, login and `/auth/me` it could
@@ -247,7 +257,9 @@ down, so the last row of page 1 comes back at the top of page 2 and the one
 behind it is never seen — and somebody paging a user list to find the account
 they are investigating is exactly the reader who would not notice.
 
-Send `q` again with the cursor: a cursor carries a position, not a filter.
+Send `q`, `role` and `is_suspended` again with the cursor: a cursor carries a
+position, not a filter. The filters only leave rows out of one fixed order, so
+the same cursor continues a filtered list through every match and nothing else.
 A cursor this service did not issue is a `400 malformed_cursor`; echo the value
 back rather than constructing one.
 
@@ -493,7 +505,7 @@ The same envelope the market service uses, so one parser covers both:
 | 409 | `last_administrator` | the demotion or suspension would leave no administrator who can log in; see above |
 | 409 | `duplicate_user` | username or email already registered; see `details` |
 | 422 | `suspension_incomplete` | the suspension's `reason` is blank or under 10 characters once trimmed; see `details` |
-| 422 | — | FastAPI's own body-validation error, a different shape |
+| 422 | — | FastAPI's own request-validation error, a different shape |
 
 Two failure shapes exist and they do not look alike. Ours carries the envelope
 above. A malformed body — a short password, a bad email, a username with a

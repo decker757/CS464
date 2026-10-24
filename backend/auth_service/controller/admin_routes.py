@@ -15,6 +15,7 @@ from fastapi import APIRouter, Query
 
 from controller.dependencies import CurrentActor, CurrentAdmin, DbSession
 from core.config import get_settings
+from core.roles import UserRole
 from model.schemas import (
     AdminUserLookupIn,
     AdminUserLookupOut,
@@ -42,13 +43,17 @@ router = APIRouter(prefix="/admin", tags=["admin"])
         "`q` matches a fragment of either the username or the email, "
         "case-insensitively, because somebody chasing an anomaly has part of a "
         "name rather than the whole of one. Omit it to list everybody.\n\n"
+        "`role` and `is_suspended` narrow the list to administrators or "
+        "traders, and to suspended or active accounts. Every condition given "
+        "must hold, `q` included. An unknown `role` is a 422.\n\n"
         "The ledger lives on another service and another port: take `id` from "
         "here to `GET /ledger/users/{user_id}/entries` for the transaction "
         "history, and `GET /ledger/users/{user_id}/balance` for the balance. "
         "This service does not know that credits exist (ADR 0003).\n\n"
         "Paged by keyset rather than offset, so accounts registered while you "
         "read do not shift the pages under you. Send back `next_cursor` "
-        "unmodified to continue; a null one means you have reached the end.\n\n"
+        "unmodified to continue, with the same `q`, `role` and `is_suspended`; "
+        "a null one means you have reached the end.\n\n"
         "Reading is not an audited action. The log records decisions — "
         "promotions, suspensions — and an entry per search would bury them."
     ),
@@ -72,6 +77,14 @@ async def list_users(
             examples=["ernest"],
         ),
     ] = None,
+    role: Annotated[
+        UserRole | None,
+        Query(description="Only accounts holding this role. Omit for both."),
+    ] = None,
+    is_suspended: Annotated[
+        bool | None,
+        Query(description="Only suspended accounts, or only active ones. Omit for both."),
+    ] = None,
     cursor: Annotated[
         str | None,
         Query(description="The `next_cursor` from the previous page."),
@@ -93,7 +106,12 @@ async def list_users(
     page_size = min(limit or settings.default_page_size, settings.max_page_size)
 
     page = await user_admin.search_users(
-        session, query=q, limit=page_size, cursor=cursor
+        session,
+        query=q,
+        role=role,
+        is_suspended=is_suspended,
+        limit=page_size,
+        cursor=cursor,
     )
 
     return UserListResponse(

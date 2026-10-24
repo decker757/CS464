@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
+import { useCloseOnClickElsewhere } from '../hooks/useCloseOnClickElsewhere'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import Button from './ui/Button'
 import { ChevronDownIcon } from './ui/icons'
@@ -63,18 +64,8 @@ export default function AccountMenu({ username, email, isLoggingOut, onLogout }:
   const [isOpen, setIsOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!isOpen) return
-    // The ref wraps the button as well as the panel, so a click on the button
-    // is not "elsewhere": it closes through the button's own toggle instead of
-    // being closed here and reopened by the click that follows.
-    const closeOnClickElsewhere = (event: MouseEvent) => {
-      const menu = menuRef.current
-      if (menu && event.target instanceof Node && !menu.contains(event.target)) setIsOpen(false)
-    }
-    document.addEventListener('mousedown', closeOnClickElsewhere)
-    return () => document.removeEventListener('mousedown', closeOnClickElsewhere)
-  }, [isOpen])
+  // The ref wraps the button as well as the panel (see the hook).
+  useCloseOnClickElsewhere(menuRef, isOpen, () => setIsOpen(false))
 
   return (
     <div ref={menuRef} className="relative">
@@ -90,7 +81,9 @@ export default function AccountMenu({ username, email, isLoggingOut, onLogout }:
         <span aria-hidden="true" className="flex h-7 w-7 items-center justify-center rounded-full bg-smu-gold text-xs font-bold text-smu-navy">
           {username.slice(0, 1).toUpperCase()}
         </span>
-        <span>{username}</span>
+        {/* Out of sight on a phone, where the bar has no room for a long
+            name, and still the button's accessible name (#438). */}
+        <span className="sr-only sm:not-sr-only">{username}</span>
         <ChevronDownIcon className={isOpen ? 'rotate-180' : undefined} />
       </button>
       {isOpen && (
