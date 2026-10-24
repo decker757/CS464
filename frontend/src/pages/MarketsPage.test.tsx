@@ -697,9 +697,9 @@ describe('MarketsPage closing-time presets', () => {
 
   beforeAll(() => {
     vi.stubEnv('TZ', 'America/New_York')
-    // Node rereads TZ when it is set, but only in a process of its own: under
-    // a worker-threads pool the stub would leave every literal below wrong in
-    // a way that depends on the machine's zone. Fail here, by name, instead.
+    // Setting TZ at run time is relied on only under the forks pool
+    // (vite.config.ts). If the zone did not take, every literal below is wrong
+    // in a way that depends on the machine's own zone: fail here instead.
     expect(new Date(2026, 9, 21).toISOString()).toBe('2026-10-21T04:00:00.000Z')
   })
 
