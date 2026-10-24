@@ -1,7 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
-import { creditsLess, creditsPlus, formatPreciseCredits, formatWholeCredits } from './support/credits'
+import { creditsLess, creditsPlus, formatPreciseCredits, formatRoundedCredits } from './support/credits'
 
 // [FE][T-2/T-3] #49, through the real ledger: the preview and trade routes,
 // against a real book. Exactly what unit tests against MSW mocks can't
@@ -38,9 +38,11 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: /^buy yes$/i }).click()
 
   await expect(page.getByText('Bought 10 Yes for 8.8592 credits.', { exact: true })).toBeVisible()
-  // The navbar shows whole credits, the fraction dropped.
+  // The navbar shows the balance rounded to the cent, so this is the grant
+  // less what the trade actually cost rather than the whole credits of it:
+  // the fraction used to be dropped, which is #443.
   const afterTheBuy = creditsLess(grant, '8.8592')
-  await expect(balance).toHaveText(`${formatWholeCredits(afterTheBuy)} credits`)
+  await expect(balance).toHaveText(`${formatRoundedCredits(afterTheBuy)} credits`)
 
   await page.getByRole('button', { name: /^sell$/i }).click()
   await page.getByLabel('Quantity (shares)').fill('4')
@@ -48,7 +50,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
   await page.getByRole('button', { name: /^sell yes$/i }).click()
 
   await expect(page.getByText('Sold 4 Yes for 3.5557 credits.', { exact: true })).toBeVisible()
-  const afterTheSell = `${formatWholeCredits(creditsPlus(afterTheBuy, '3.5557'))} credits`
+  const afterTheSell = `${formatRoundedCredits(creditsPlus(afterTheBuy, '3.5557'))} credits`
   await expect(balance).toHaveText(afterTheSell)
 
   // The clamp reads the position the ledger reports after that sell, so this
@@ -96,5 +98,48 @@ test('a buy the trader cannot afford is refused before the request', async ({ pa
   await expect(page.getByText(refusal, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /^buy yes$/i })).toBeDisabled()
   // Nothing was sent: the balance is still the untouched starting grant.
-  await expect(page.getByLabel('available balance')).toHaveText(`${formatWholeCredits(grant)} credits`)
+  await expect(page.getByLabel('available balance')).toHaveText(`${formatRoundedCredits(grant)} credits`)
+})
+
+// [FE][T-2] #451, through the real ledger: whether the trader holds any of an
+// outcome is read from the portfolio the ledger returns, and an outcome never
+// traded is simply absent from it. The unit tests fake that reply; this is
+// the check that the real one leads to the sentence, and that the sentence
+// gives way to the quantity field once the ledger reports a holding.
+test('selling an outcome the trader holds none of offers to buy it instead', async ({ page }) => {
+  const admin = await registerAdmin('tn_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('none')} happen?`)
+  const trader = await registerTrader('tn_trader')
+  // Some Yes and no No, so the empty holding sits beside one that is not.
+  await buy(trader, market, 'Yes', '2')
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  const buyToggle = page.getByRole('button', { name: 'Buy', exact: true })
+  const noToggle = page.getByRole('button', { name: 'No', exact: true })
+  const quantity = page.getByLabel('Quantity (shares)')
+  // The panel's own live region, so the sentence is both in the panel and
+  // announced.
+  const holdsNone = page.getByRole('status').filter({ hasText: "You don't hold any No shares." })
+
+  await page.getByRole('button', { name: 'Sell', exact: true }).click()
+  await noToggle.click()
+
+  await expect(holdsNone).toBeVisible()
+  await expect(quantity).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Buy No instead' }).click()
+  await expect(buyToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(quantity).toBeFocused()
+
+  await quantity.fill('1')
+  await expect(page.getByLabel('trade preview')).toBeVisible()
+  await page.getByRole('button', { name: /^buy no$/i }).click()
+  await expect(page.getByText(/^Bought 1 No for /)).toBeVisible()
+
+  await page.getByRole('button', { name: 'Sell', exact: true }).click()
+  await expect(page.getByLabel('shares held')).toContainText('You hold 1.0000 shares')
+  await expect(holdsNone).toHaveCount(0)
 })

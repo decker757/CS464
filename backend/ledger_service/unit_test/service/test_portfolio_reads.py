@@ -22,6 +22,9 @@ Each structural test names the change that turns it red:
   the positions query and a second `entries` statement appears; read a book
   per market through `book_prices` and a second `market_books` one does; read
   a settled market's record on its own and a second `market_results` one does.
+  #410's reserved shares are read there too: read them per position through
+  `reservations.reserved_shares_of` and an `orders` statement of their own
+  appears.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import drop_outcome_row, set_b, set_q
+from unit_test.placement_fixtures import place
 from unit_test.portfolio_fixtures import (
     ADR_B,
     funded,
@@ -218,6 +222,37 @@ async def test_after_the_grant_the_balance_and_positions_are_one_statement(
         assert found == entries, (
             f"`{table}` is not read in the balance's statement:\n{statements}"
         )
+
+
+async def test_the_reserved_shares_are_read_in_the_balances_statement(
+    session: AsyncSession,
+) -> None:
+    """#410: what a live sell order holds back is derived from `ledger.orders`
+    on every read, in the same snapshot as the positions. Read separately, a
+    fill committing in between could show the position before it and the
+    reservation after it, and offer the seller shares the fill already took.
+    """
+    upstream, user_id = await _holder(session)
+    await place(
+        session,
+        upstream,
+        user_id=user_id,
+        side="sell",
+        limit_price=Decimal("0.9000"),
+        quantity=Decimal("5.0000"),
+    )
+    schema = _schema()
+
+    with capture_sql() as statements:
+        result = await read_portfolio(session, user_id)
+
+    key = (upstream.market_id, upstream.outcomes[0])
+    assert str(result.reserved_shares[key]) == "5.0000"
+    entries = _mentioning(statements, f"{schema}.entries")
+    assert len(entries) == 1, f"the balance was read {len(entries)} times:\n{entries}"
+    assert _mentioning(statements, f"{schema}.orders") == entries, (
+        f"`orders` is not read in the balance's statement:\n{statements}"
+    )
 
 
 # =========================================================================

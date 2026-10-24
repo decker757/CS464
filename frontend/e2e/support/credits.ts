@@ -52,12 +52,29 @@ export function isBelow(amount: string, floor: string): boolean {
   return unitsOf(amount) < unitsOf(floor)
 }
 
-/** As the navbar shows a balance: whole credits, the fraction dropped rather than rounded. `1,234`. */
-export function formatWholeCredits(amount: string): string {
-  return groupThousands(wholePartOf(unitsOf(amount)))
+/**
+ * As the navbar's readout and the portfolio's cards show an amount: rounded
+ * to the cent, half away from zero, and with no decimal part at all when it
+ * comes to a whole number of credits. `1,234.57`, and `1,234` for `1234.0000`.
+ *
+ * Half away from zero is the ledger's own ROUND_HALF_UP, which is the rule
+ * the app's own formatter follows (#443). Worked out here in ten-thousandths
+ * rather than borrowed from `src/utils/formatCredits.ts`, for this module's
+ * own reason: an expectation computed by the code under test cannot catch
+ * that code being wrong.
+ */
+export function formatRoundedCredits(amount: string): string {
+  const units = unitsOf(amount)
+  // Ten-thousandths to hundredths: the kept hundredths, plus one if the
+  // ten-thousandths left over reach half of one of them.
+  const perCent = UNITS_PER_CREDIT / 100n
+  const cents = units / perCent + (units % perCent >= perCent / 2n ? 1n : 0n)
+  const whole = groupThousands(cents / 100n)
+  if (cents % 100n === 0n) return whole
+  return `${whole}.${(cents % 100n).toString().padStart(2, '0')}`
 }
 
-/** As the portfolio, history and leaderboard show an amount: four places. `1,234.5678`. */
+/** As the portfolio's position rows, the history and the leaderboard show an amount: four places. `1,234.5678`. */
 export function formatPreciseCredits(amount: string): string {
   const units = unitsOf(amount)
   return `${groupThousands(wholePartOf(units))}.${fractionOf(units)}`

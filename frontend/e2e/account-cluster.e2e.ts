@@ -14,7 +14,9 @@ test('a trader sees the balance without a click, and signs out from the account 
   // The figure a trader checks most often, on screen with nothing to open.
   // A figure and its unit, not a particular total: what the starting grant is
   // worth is `balance.e2e.ts`'s question, and STARTING_CREDITS is a setting.
-  await expect(page.getByLabel('available balance')).toHaveText(/^[\d,]+ credits$/)
+  // The cents are optional because a whole number of credits is shown without
+  // them (#443), which is what a grant usually is.
+  await expect(page.getByLabel('available balance')).toHaveText(/^[\d,]+(\.\d{2})? credits$/)
   // And not offered as somewhere to go: it used to carry the active
   // navigation link's exact styling.
   await expect(page.getByRole('banner').getByRole('link', { name: /credits/ })).toHaveCount(0)

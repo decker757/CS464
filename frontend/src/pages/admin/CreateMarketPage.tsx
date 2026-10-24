@@ -570,7 +570,7 @@ export default function CreateMarketPage() {
             const initialPrice = k >= 0 ? lastSave?.market.outcomes[k]?.initial_price : undefined
             return (
               <div key={outcome.id} className="flex items-start gap-2">
-                <div className="flex-1">
+                <div className="min-w-0 flex-1">
                   <Field id={`outcome-${i}`} label={`Outcome ${i + 1}`} hint={outcomeHint}>
                     <TextInput
                       id={`outcome-${i}`}
@@ -600,7 +600,7 @@ export default function CreateMarketPage() {
       </SectionCard>
 
       <SectionCard title="Timeline" className="mb-5">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-4 sm:grid-cols-2">
           <Field id="close-time" label="Closes at *" hint={closeTimeHint}>
             <TextInput
               id="close-time"
@@ -650,7 +650,7 @@ export default function CreateMarketPage() {
                         stay compact. Every row still needs a name of its own
                         in the accessibility tree, which is what aria-label
                         gives it (WCAG 3.3.2). */}
-                    <div className="flex-[2]">
+                    <div className="min-w-0 flex-[2]">
                       <Field id={`src-url-${i}`} label={i === 0 ? 'URL' : ' '} hint={urlHint}>
                         <TextInput
                           id={`src-url-${i}`}
@@ -663,7 +663,7 @@ export default function CreateMarketPage() {
                         />
                       </Field>
                     </div>
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <Field id={`src-label-${i}`} label={i === 0 ? 'Label (optional)' : ' '}>
                         <TextInput
                           id={`src-label-${i}`}
@@ -690,7 +690,7 @@ export default function CreateMarketPage() {
       </SectionCard>
 
       <SectionCard title="Pricing" className="mb-5">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-4 sm:grid-cols-2">
           <Field id="seed-subsidy" label="Seed subsidy (credits) *" hint={seedSubsidyHint}>
             <TextInput
               id="seed-subsidy"

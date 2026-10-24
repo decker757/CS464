@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, type KeyboardEvent } from 'react'
 import FilterPill from '../ui/FilterPill'
 import SearchForm from '../ui/SearchForm'
 import { statusDisplay } from './marketStatus'
@@ -19,6 +19,19 @@ const FILTER_OPTIONS: (StatusFilter | null)[] = [null, ...STATUS_FILTERS]
 // why the administrator's list keeps its own words.
 function filterLabel(status: StatusFilter | null): string {
   return status === null ? 'All' : statusDisplay(status, 'trader').label
+}
+
+// The arrow keys of WAI-ARIA's radio group pattern: Right and Down choose the
+// next option, Left and Up the previous one, wrapping at either end. Any other
+// key is not the group's, so the answer is null.
+function arrowTargetIndex(key: string, index: number, count: number): number | null {
+  if (key === 'ArrowRight' || key === 'ArrowDown') {
+    return (index + 1) % count
+  }
+  if (key === 'ArrowLeft' || key === 'ArrowUp') {
+    return (index - 1 + count) % count
+  }
+  return null
 }
 
 interface MarketFiltersProps {
@@ -45,26 +58,41 @@ function ActiveFilterChip({ label, clearLabel, onClear }: { label: string; clear
 }
 
 export default function MarketFilters({ query, status, onQueryChange, onStatusChange }: MarketFiltersProps) {
-  // A new key remounts the search box, which empties anything typed in it.
-  // Clearing needs that: with no search applied, the cleared query is the same
-  // empty string as before, so SearchForm has no change to follow.
-  const [searchBoxKey, setSearchBoxKey] = useState(0)
-  const hasActiveFilters = query !== '' || status !== null
+  const pillRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const appliedFilterCount = [query !== '', status !== null].filter(Boolean).length
+  const hasActiveFilters = appliedFilterCount > 0
+  // One filter is cleared by its own chip, so "Clear all" is for more than one
+  // filter (#442).
+  const showClearAll = appliedFilterCount > 1
 
-  function handleClearQuery() {
-    setSearchBoxKey(key => key + 1)
-    onQueryChange('')
+  // Choosing a status replaces the last one, so the pills are a radio group
+  // rather than toggle buttons (#442). Native radios would bring the arrow
+  // keys for free but not FilterPill's look, so the pattern is written here:
+  // the arrows move the choice and the focus together, and only the chosen
+  // pill is in the tab order. preventDefault keeps the arrows from scrolling.
+  // An arrow with Alt, Ctrl or Cmd held is the browser's or the screen
+  // reader's (Alt+Left is Back), so the group leaves it alone.
+  function handleStatusKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return
+    }
+    const targetIndex = arrowTargetIndex(event.key, index, FILTER_OPTIONS.length)
+    if (targetIndex === null) {
+      return
+    }
+    event.preventDefault()
+    onStatusChange(FILTER_OPTIONS[targetIndex])
+    pillRefs.current[targetIndex]?.focus()
   }
 
   function handleClearAll() {
-    handleClearQuery()
+    onQueryChange('')
     onStatusChange(null)
   }
 
   return (
     <div className="mb-6 space-y-4">
       <SearchForm
-        key={searchBoxKey}
         id="market-search"
         label="Search markets"
         placeholder="Search markets by question"
@@ -72,13 +100,19 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
         onSearch={onQueryChange}
       />
 
-      <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
-        {FILTER_OPTIONS.map(option => (
+      <div role="radiogroup" aria-label="Filter by status" className="flex flex-wrap gap-2">
+        {FILTER_OPTIONS.map((option, index) => (
           <FilterPill
             key={option ?? 'all'}
+            ref={element => {
+              pillRefs.current[index] = element
+            }}
             active={status === option}
-            aria-pressed={status === option}
+            role="radio"
+            aria-checked={status === option}
+            tabIndex={status === option ? 0 : -1}
             onClick={() => onStatusChange(option)}
+            onKeyDown={event => handleStatusKeyDown(event, index)}
           >
             {filterLabel(option)}
           </FilterPill>
@@ -88,14 +122,16 @@ export default function MarketFilters({ query, status, onQueryChange, onStatusCh
       {hasActiveFilters && (
         <div role="group" aria-label="Active filters" className="flex flex-wrap items-center gap-2">
           {query !== '' && (
-            <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={handleClearQuery} />
+            <ActiveFilterChip label={`Search: ${query}`} clearLabel="Clear search" onClear={() => onQueryChange('')} />
           )}
           {status !== null && (
             <ActiveFilterChip label={`Status: ${filterLabel(status)}`} clearLabel="Clear status filter" onClear={() => onStatusChange(null)} />
           )}
-          <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
-            Clear all
-          </button>
+          {showClearAll && (
+            <button type="button" onClick={handleClearAll} className="cursor-pointer text-xs font-semibold text-muted underline hover:text-smu-navy pointer-coarse:min-h-11 pointer-coarse:px-2">
+              Clear all
+            </button>
+          )}
         </div>
       )}
     </div>
