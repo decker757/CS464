@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { refuseUnlessLocal } from './localTarget'
+import { refuseDevComposeProject, refuseUnlessLocal } from './localTarget'
 
 // #454: "Nothing in it can run against a non-local database by accident." The
 // seed writes through the three service URLs and runs its two SQL steps
@@ -53,5 +53,18 @@ describe('refuseUnlessLocal', () => {
     expect(() => refuseUnlessLocal(target)).toThrow('https://auth.gembet.example')
     expect(() => refuseUnlessLocal(target)).toThrow('https://ledger.gembet.example')
     expect(() => refuseUnlessLocal(target)).toThrow('ssh://deploy@gembet.example')
+  })
+})
+
+// #454's review: a stack on this machine is not yet the demo's. Without
+// COMPOSE_PROJECT_NAME, compose picks docker-compose.yml's `cs464`, the dev
+// stack, whose ledger entries the seed could never take back out.
+describe('refuseDevComposeProject', () => {
+  it('refuses the everyday dev stack, and says how to name another project', () => {
+    expect(() => refuseDevComposeProject('cs464')).toThrow('COMPOSE_PROJECT_NAME=cs464-demo')
+  })
+
+  it("accepts the demo's own project", () => {
+    expect(() => refuseDevComposeProject('cs464-demo')).not.toThrow()
   })
 })
