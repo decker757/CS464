@@ -263,7 +263,7 @@ only by the suite.
 > token stays open for a background settlement and for any later background
 > path.
 
-> **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
 > and not built yet. A sixth write route, and it takes no money.**
 > `POST /ledger/markets/{market_id}/void` voids a flawed market: no winner,
 > and every share still held is refunded at what it cost. It is the sixth

@@ -4854,7 +4854,7 @@ under neither filter. `count_by_status` has a production caller again, so its
 dead-code allowlist entry goes. When #227 lands, `_is_settled` returns
 `Market.status == MarketStatus.SETTLED`.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* The cursor's
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The cursor's
 first field, the `settled` flag in market_service's `core/paging.py`
 (`OverviewPosition.settled`), is renamed `finished`, and group 1 becomes a
 settled or a voided market. The encoding does not change, `"1"` or `"0"`, so a
@@ -5005,7 +5005,7 @@ window, since the read is remote, and it would cost a second call.
 **Reversal trigger.** Any further transition out of APPROVED, or send-back
 allowed past `window_ends_at`.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* The reversal
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
 trigger fires: [BE] #221's void moves APPROVED to VOIDED, a further transition
 out of APPROVED. The read is still safe, for a different reason on each side.
 On the ledger, settlement and the void both write the one
@@ -5256,7 +5256,7 @@ Switched on in #227: `_is_settled` is now
 
 **Reversal trigger.** A second terminal status.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* The reversal
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
 trigger fires: VOIDED is a second terminal status. Voided markets sink with
 settled ones, in one finished group, and the order within it is unchanged. The
 counts gain a zero-filled `voided` key and still sum to what the caller can
@@ -5287,7 +5287,7 @@ comment refuses it, because each status owes its own error.
 
 **Reversal trigger.** None. These are the fixes the new member needs.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* VOIDED joins
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* VOIDED joins
 `PublicMarketStatus`, `MarketStatus`, `_FROZEN_STATUS_ERRORS`,
 `_RESOLUTION_STATUS_ERRORS` and `_proposal_to_decide`'s state check, each
 answering `409 market_already_voided`, after the refactor that composes the
@@ -5523,7 +5523,7 @@ SETTLED market `200` rather than `409 market_already_settled`, as ADR 0019's
 step 5 requires. See "The settle step checks in a fixed order, and SETTLED
 answers before the clock is read" below. Every other write path is unchanged.*
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* This entry's
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* This entry's
 reversal trigger fires: VOIDED is a second terminal status. A refactor PR
 composes or derives `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS` and
 the decision state check, with no behaviour change, and VOIDED is then added
@@ -5846,7 +5846,7 @@ market already settled an end in the future. Answering SETTLED first means
 such a market is still `200`. See "`dispute_window_ends_at` is
 stored at approval, and market revision 0002 backfills 24 hours" below.*
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* One step joins
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* One step joins
 the order, between 3 and 4: VOIDED is `409 market_already_voided`, before the
 clock is read. The reversal trigger does not fire. VOIDED is never settleable,
 and the route keeps its one caller. The ledger accepts only a `200` from this
@@ -5937,7 +5937,7 @@ test can exercise the plain foreign key or the CHECK's non-settled half;
 CHECK is what constrains it. `recorded_at` has no default, like
 `market_books.opened_at`: the settlement supplies it.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* What the Notes
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* What the Notes
 left to #221 is decided, for ledger revision `0007`: `ResultKind.VOIDED`, and
 `reason` (text) and `voided_by` (uuid), both nullable, each set exactly when
 `kind = 'voided'` by a hand-written CHECK. The existing CHECK already admits a
@@ -6572,7 +6572,7 @@ both fields fresh.
 - The trade route's `503` row in `docs/api/ledger-service.md` needs no edit.
   A malformed body was already a 503 there, and still is.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* `voidable:
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* `voidable:
 bool` joins them, required with no default and parsed the same way. See
 "`MarketTerms` carries `voidable`, required, and market_service deploys it
 first" below.
@@ -6722,7 +6722,7 @@ A repeat always calls `/settle`.
 
 **Notes.** This amends ADR 0019's steps 1 and 3 (amendment of 2026-10-10).
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* Both lookups,
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* Both lookups,
 step 2's and step 4's, branch on the row's `kind`. A `settled` row is a
 replay, as above. A `voided` row is `409 market_already_voided`, and nothing
 is written. Step 3 answers a `voided` status with the same code, ahead of
@@ -6771,7 +6771,7 @@ the record.
 **Reversal trigger.** A settlement that pays something other than
 market_service's winner, such as [BE] #221's void.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* The reversal
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
 trigger does not fire. The void is not a settlement and pays no winner: it is
 its own route, writes its own record kind, and never reaches this check.
 
@@ -7254,7 +7254,7 @@ settlement (ADR 0010).
 status. The frontend already hides the trade control on any market that is
 not open, and a trade on a settled market is `409 market_closed`.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* A void
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* A void
 publishes none either, for the same reasons: it writes neither `q` nor any
 position, and its consumer has not asked for one. It releases a market's
 resting orders without an `order` frame, as settlement does.
@@ -7323,7 +7323,7 @@ here. A settled row keeps `state_version`, the frozen book's last version. A
 position sold to zero is still left out, settled or not. A holder of both
 outcomes sees two rows, one `paid_out` and one `worthless`.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* A voided
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* A voided
 market's rows are not settled rows. Their `result` is `refunded`, and their
 `payout` is what the position's `void_refund` transaction paid, read through a
 left join on its derived key and coalesced to `0.0000`. This entry's reason
@@ -7368,7 +7368,7 @@ position. The page needs that guard, and the type its nullable fields, before
 this stack merges into `dev`, whether or not [FE][3.4] #216's settled
 rendering is ready by then.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* `result` gains
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* `result` gains
 `refunded`, on a voided market's rows, with the refund as `payout`. "Null
 until the market is settled" now reads: null until the ledger records a result
 for the market, settled or voided.
@@ -8047,7 +8047,7 @@ check is owed by whichever of #6 and #258 lands second".
 **Reversal trigger.** Settlement resetting `q`, or leaving the pool funded.
 Then the figures mean something again after settlement.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* The Notes' owed
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The Notes' owed
 line is written: `docs/api/ledger-service.md` says a voided market reads
 `result: "voided"`, a null `winning_outcome_id` and the null figures. No code
 changes.
@@ -8655,7 +8655,7 @@ contract change, which "A settlement publishes no realtime frame" leaves to its
 consumer. Once a client can receive the result live, a point for it no longer
 disagrees with what a live chart shows.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* A void adds no
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* A void adds no
 point either: it moves no price. It arrives here as `result: "voided"`, a null
 `winning_outcome_id` and the void's `recorded_at`, with no code change.
 
@@ -8874,7 +8874,7 @@ one it got.
 `state_version`, for example a void ([BE] #221). Then the run has legitimate
 gaps, and the replay has to be told which events move `q` and which do not.
 
-*Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* The reversal
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
 trigger has not fired. A void writes no trade and does not raise
 `state_version`. A limit-order fill raises it, but a fill is a `trade_buy` or
 `trade_sell` on the pool's feed, so the run still has no legitimate gap. The

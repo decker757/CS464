@@ -189,7 +189,7 @@ would then be unable to start, test or fail without the other.
 > paid. In this order it replays and retries step 5. The rest of the
 > amendment above is unchanged.
 
-> **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
 > and not built yet. A recorded result replays only if it is a settlement.**
 > Steps 2 and 4 of the 2026-10-10 amendment look for any
 > `ledger.market_results` row and replay it. Once a void can write one, a
@@ -353,7 +353,7 @@ for good, for a result that was sent back.
 > run past the window's end, so reading the status before the lock stays safe.
 > ADR 0023.
 
-> **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
 > and not built yet. The trigger is tripped by the void, and the read is still
 > safe.** [BE] #221's void moves APPROVED to VOIDED, a further transition out
 > of APPROVED. The argument changes shape; the conclusion does not.
@@ -489,7 +489,7 @@ data this service owns, so it still makes no call to market_service.
 > their own. A revision then drops `kind` and restores `NOT NULL` on
 > `outcome_id`.
 
-> **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
 > and not built yet. What this amendment left to #221 is decided.** Ledger
 > revision `0007` adds `voided` to `kind`, and `reason` and `voided_by` to the
 > row, each set exactly when `kind = 'voided'` by a hand-written CHECK. A
@@ -814,7 +814,7 @@ record shape of its own.
 
 > *Amended 2026-10-09: see the amendment under "The result is a record".*
 
-> *Amended 2026-10-20: designed in [ADR 0025](0025-voiding-a-flawed-market.md), Proposed.*
+> *Amended 2026-10-20: designed in [ADR 0025](0025-voiding-a-flawed-market.md), Accepted.*
 
 **The leaderboard sees settlement for free.** [L-1] #38 reads the portfolio's
 `net_worth`, which now counts a settled market once. [L-3] #40's "recalculated

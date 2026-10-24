@@ -387,7 +387,7 @@ which #221 already lists as voidable. #221's void keeps the approval columns,
 this one included. Whichever of the two market revisions merges second is
 renumbered and its `down_revision` pointed at the other.
 
-> **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
 > and not built yet. The void uses this window, as above.** `voidable` is
 > `is_in_dispute_window` for an APPROVED market, on the stored
 > `dispute_window_ends_at` and the request's Python clock, exclusive at its

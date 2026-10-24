@@ -484,7 +484,7 @@ without it.
 **[BE] #221's refund must decide how it meets the reservation floor if it
 debits a USER account.**
 
-> **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
 > and not built yet. Answered: it debits none.** A void's refunds credit USER
 > accounts from the market's pool, and its residue moves between the pool and
 > PLATFORM. `_refuse_overdrafts` reads only the USER accounts a batch debits
