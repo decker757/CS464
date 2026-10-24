@@ -26,6 +26,7 @@ from core.errors import (
     MarketAlreadyApproved,
     MarketAlreadyOpen,
     MarketAlreadySettled,
+    MarketAlreadyVoided,
     MarketClosed,
     MarketError,
     MarketNotApproved,
@@ -75,11 +76,12 @@ from service.validation import (
 
 # Statuses in which a decision on a proposal comes too late, and the error each
 # one gives; see `_proposal_to_decide`. Not derived from `DECIDED_STATUSES`,
-# which says whose winner is shown: the two lists agree today, but they answer
-# different questions.
+# which says whose winner is shown: VOIDED is here and not there, because a
+# voided market has no winner to show. ADR 0025.
 _PAST_DECISION_STATUS_ERRORS: dict[MarketStatus, type[MarketError]] = {
     MarketStatus.APPROVED: MarketAlreadyApproved,
     MarketStatus.SETTLED: MarketAlreadySettled,
+    MarketStatus.VOIDED: MarketAlreadyVoided,
 }
 
 # Statuses in which an outcome is already named. Its own table because it is
@@ -119,7 +121,7 @@ def _refuse_if_frozen(market: Market) -> None:
 
 
 def _refuse_if_resolving(market: Market) -> None:
-    """Raise if an outcome is already proposed for this market, approved or settled.
+    """Raise if this market's outcome is proposed, approved or settled, or it is voided.
 
     `close_early` and `propose_outcome` call this before their other state
     gates, which would otherwise answer `market_closed` or `market_not_closed`:
