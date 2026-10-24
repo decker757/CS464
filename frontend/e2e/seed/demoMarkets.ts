@@ -8,6 +8,11 @@
 // Every open market closes three weeks or more after seeding, so a seed run a
 // week or two before the showcase is still open on the day. Names are SMU's
 // where they are certain, and generic ("the campus green") where they are not.
+//
+// The browse list puts the markets still trading first, soonest close first
+// (market_service's `_browse_order`). So the four `headline` markets, the
+// Yes/No ones that end furthest from 50/50 and the five-way one, close before
+// every other open market, and are the first screen a visitor sees.
 
 export const ADMINS = { creator: 'admin_rachel', approver: 'admin_kumar' }
 
@@ -31,7 +36,7 @@ interface DemoMarketBase {
 /** Where the seed leaves a market, and what it needs to get it there. */
 export type DemoMarket = DemoMarketBase &
   (
-    | { endsAs: 'open' }
+    | { endsAs: 'open'; headline?: true }
     | { endsAs: 'closed'; closeReason: string }
     | { endsAs: 'pending_resolution' | 'approved' | 'settled'; closeReason: string; winner: string; evidenceNote: string }
   )
@@ -61,11 +66,12 @@ export const DEMO_MARKETS: DemoMarket[] = [
       trade('aisyah_r', 'No', 10),
     ],
     endsAs: 'open',
+    headline: true,
   },
   {
     question: "Will more than half of SMU's undergraduates vote in next year's student council election?",
     outcomes: YES_NO,
-    closesInDays: 35,
+    closesInDays: 24,
     resolutionCriteria:
       'Resolves YES if the turnout the student council publishes for its next general election is above 50% of eligible undergraduates.',
     resolutionSource: { url: 'https://www.smu.edu.sg', label: 'SMU student council' },
@@ -78,6 +84,7 @@ export const DEMO_MARKETS: DemoMarket[] = [
       trade('jun_hao', 'No', 55),
     ],
     endsAs: 'open',
+    headline: true,
   },
   {
     question: "Will SMU's team reach the international rounds of the 2027 Jessup Moot Court Competition?",
@@ -98,7 +105,7 @@ export const DEMO_MARKETS: DemoMarket[] = [
   {
     question: 'Will Li Ka Shing Library stay open 24 hours a day through the whole Term 1 final exam period?',
     outcomes: YES_NO,
-    closesInDays: 28,
+    closesInDays: 21,
     resolutionCriteria:
       'Resolves YES if the SMU Libraries opening hours show Li Ka Shing Library open around the clock on every day of the Term 1 final exam period.',
     resolutionSource: { url: 'https://library.smu.edu.sg', label: 'SMU Libraries opening hours' },
@@ -112,11 +119,12 @@ export const DEMO_MARKETS: DemoMarket[] = [
       trade('wei_ling', 'Yes', 30),
     ],
     endsAs: 'open',
+    headline: true,
   },
   {
     question: 'Will the CS464 project showcase still be running at 6pm on the day?',
     outcomes: YES_NO,
-    closesInDays: 21,
+    closesInDays: 35,
     resolutionCriteria: 'Resolves YES if any team is still presenting at 6pm Singapore time on the day of the CS464 showcase.',
     resolutionSource: { url: 'https://www.smu.edu.sg', label: 'CS464 course page' },
     trades: [
@@ -132,7 +140,7 @@ export const DEMO_MARKETS: DemoMarket[] = [
   {
     question: "Which school will top the medal table at next year's inter-school games?",
     outcomes: ['Business', 'Computing', 'Law', 'Economics', 'Another school'],
-    closesInDays: 45,
+    closesInDays: 26,
     resolutionCriteria:
       'Resolves to the school with the most gold medals on the final inter-school games medal table, with total medals breaking a tie. Any school not named resolves as Another school.',
     resolutionSource: { url: 'https://www.smu.edu.sg', label: 'SMU student life' },
@@ -146,6 +154,7 @@ export const DEMO_MARKETS: DemoMarket[] = [
       trade('marcus_tan', 'Economics', 5),
     ],
     endsAs: 'open',
+    headline: true,
   },
   {
     question: 'Will SMU announce a tuition fee increase for the 2027/28 undergraduate intake?',
