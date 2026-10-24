@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useCloseOnClickElsewhere } from '../../hooks/useCloseOnClickElsewhere'
 import { useHomePath } from '../../hooks/useHomePath'
 import Logo from '../ui/Logo'
 import { MenuIcon } from '../ui/icons'
@@ -45,17 +46,12 @@ function MainNavigation({ children }: { children: React.ReactNode }) {
       // Focus may be on a link that is about to be hidden.
       buttonRef.current?.focus()
     }
-    const closeOnClickElsewhere = (event: MouseEvent) => {
-      const nav = navRef.current
-      if (nav && event.target instanceof Node && !nav.contains(event.target)) setIsOpen(false)
-    }
     document.addEventListener('keydown', closeOnEscape)
-    document.addEventListener('mousedown', closeOnClickElsewhere)
-    return () => {
-      document.removeEventListener('keydown', closeOnEscape)
-      document.removeEventListener('mousedown', closeOnClickElsewhere)
-    }
+    return () => document.removeEventListener('keydown', closeOnEscape)
   }, [isOpen])
+
+  // The nav holds the button as well as the links (see the hook).
+  useCloseOnClickElsewhere(navRef, isOpen, () => setIsOpen(false))
 
   // Only when focus lands somewhere else. A blur to nowhere is a click on
   // the page, which the listener above already judges by where it landed;
