@@ -810,9 +810,14 @@ describe('MarketsPage closing-time presets', () => {
       expect(windowsSent.at(-1)).toEqual({ closesFrom: '2026-10-19T04:00:00.000Z', closesBefore: '2026-10-26T04:00:00.000Z' }),
     )
 
+    await actor.keyboard('{ArrowLeft}')
+
+    expect(closesFilter().getByRole('radio', { name: 'Today' })).toBeChecked()
+
+    // Past the first option, the choice wraps round to the last.
     await actor.keyboard('{ArrowLeft}{ArrowLeft}')
 
-    expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
+    expect(closesFilter().getByRole('radio', { name: 'This month' })).toBeChecked()
   })
 
   it('clears the closing preset along with everything else on Clear all', async () => {
