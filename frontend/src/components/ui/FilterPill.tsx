@@ -1,6 +1,8 @@
 import { selectableClass } from './selectableClass'
 
-interface FilterPillProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+// ComponentProps rather than ButtonHTMLAttributes so it carries `ref`, which
+// MarketFilters needs to move focus between its pills with the arrow keys.
+interface FilterPillProps extends React.ComponentProps<'button'> {
   active: boolean
 }
 

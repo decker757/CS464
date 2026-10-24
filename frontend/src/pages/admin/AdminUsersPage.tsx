@@ -1,4 +1,4 @@
-import { useCallback, useState, type KeyboardEvent } from 'react'
+import { useCallback, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { listUsers, type AdminUser, type AdminUserPage, type User } from '../../api/authApi'
 import AppLayout from '../../components/layout/AppLayout'
@@ -43,9 +43,6 @@ const STATUS_OPTIONS: FilterOption<boolean>[] = [
   { value: true, label: 'Suspended only' },
 ]
 
-// How far each arrow key moves the selection, as in any radio group.
-const ARROW_STEPS: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
-
 // Names whatever narrowed the list, so an empty one never blames the search
 // for what a pill did, or claims there are no users at all.
 function emptyMessage(query: string, pillFilterCount: number): string {
@@ -56,33 +53,52 @@ function emptyMessage(query: string, pillFilterCount: number): string {
   return 'No users yet.'
 }
 
-// A single-select pill group, so a radio group: one choice is always checked,
-// Tab reaches only that one, and the arrow keys move it. Not MarketFilters'
-// `aria-pressed` buttons, which announce a multi-select (#442).
-function FilterGroup<Value>({ label, options, selected, onSelect }: FilterGroupProps<Value>) {
-  const selectedIndex = options.findIndex(option => option.value === selected)
+// The arrow keys of WAI-ARIA's radio group pattern: Right and Down choose the
+// next option, Left and Up the previous one, wrapping at either end. Any other
+// key is not the group's, so the answer is null. A copy of MarketFilters'
+// (#486), until the two move into one shared pill group.
+function arrowTargetIndex(key: string, index: number, count: number): number | null {
+  if (key === 'ArrowRight' || key === 'ArrowDown') {
+    return (index + 1) % count
+  }
+  if (key === 'ArrowLeft' || key === 'ArrowUp') {
+    return (index - 1 + count) % count
+  }
+  return null
+}
 
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const step = ARROW_STEPS[event.key]
-    if (step === undefined) return
+// A single-select pill group, so a radio group: one choice is always checked,
+// Tab reaches only that one, and the arrow keys move the choice and the focus
+// together. preventDefault keeps the arrows from scrolling.
+function FilterGroup<Value>({ label, options, selected, onSelect }: FilterGroupProps<Value>) {
+  const pillRefs = useRef<(HTMLButtonElement | null)[]>([])
+
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const targetIndex = arrowTargetIndex(event.key, index, options.length)
+    if (targetIndex === null) {
+      return
+    }
     event.preventDefault()
-    const nextIndex = (selectedIndex + step + options.length) % options.length
-    onSelect(options[nextIndex].value)
-    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIndex].focus()
+    onSelect(options[targetIndex].value)
+    pillRefs.current[targetIndex]?.focus()
   }
 
   return (
-    <div role="radiogroup" aria-label={label} onKeyDown={handleKeyDown} className="flex flex-wrap gap-2">
-      {options.map(option => {
+    <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-2">
+      {options.map((option, index) => {
         const isChecked = selected === option.value
         return (
           <FilterPill
             key={option.label}
+            ref={element => {
+              pillRefs.current[index] = element
+            }}
             role="radio"
             active={isChecked}
             aria-checked={isChecked}
             tabIndex={isChecked ? 0 : -1}
             onClick={() => onSelect(option.value)}
+            onKeyDown={event => handleKeyDown(event, index)}
           >
             {option.label}
           </FilterPill>
