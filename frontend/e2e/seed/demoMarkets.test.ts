@@ -41,7 +41,10 @@ describe('the open demo markets', () => {
 
   it('make the headlines the Yes/No markets furthest from 50/50, and the five-way market', () => {
     const yesNo = openMarkets.filter(market => market.outcomes.length === 2)
-    const leastLivelyHeadline = Math.min(...yesNo.filter(market => market.headline).map(distanceFromEven))
+    const yesNoHeadlines = yesNo.filter(market => market.headline)
+    // Math.min of nothing is Infinity, which beats every other market.
+    expect(yesNoHeadlines).toHaveLength(3)
+    const leastLivelyHeadline = Math.min(...yesNoHeadlines.map(distanceFromEven))
     const liveliestOther = Math.max(...yesNo.filter(market => !market.headline).map(distanceFromEven))
     expect(leastLivelyHeadline).toBeGreaterThan(liveliestOther)
 
