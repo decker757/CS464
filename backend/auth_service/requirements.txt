@@ -15,4 +15,4 @@ alembic==1.20.0
 
 # Password hashing and tokens
 argon2-cffi==25.1.0
-PyJWT==2.14.0
+PyJWT==2.15.0
