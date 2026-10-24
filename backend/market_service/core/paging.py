@@ -44,9 +44,8 @@ class OverviewPosition:
 
     `finished` is its group: settled and voided markets sort after every
     other. A `close_time` of None sorts after every dated market in the same
-    group. Named `settled` before [BE] #221 added VOIDED, and encoded the same
-    way, so a cursor issued before the rename decodes to the same place.
-    ADR 0025.
+    group. Do not change the flag's encoding: cursors issued while it was
+    called `settled` must still decode to the same place. ADR 0025.
     """
 
     finished: bool
