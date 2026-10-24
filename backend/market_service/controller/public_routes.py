@@ -72,6 +72,16 @@ def _has_utc_instant(moment: datetime) -> bool:
     return True
 
 
+def _window_problem(parameter: str, value: datetime, message: str) -> dict:
+    """One closing-window end's item in a `422`, shaped like FastAPI's own."""
+    return {
+        "type": "value_error",
+        "loc": ("query", parameter),
+        "msg": message,
+        "input": value,
+    }
+
+
 def _refuse_if_window_unencodable(
     closes_from: datetime | None, closes_before: datetime | None
 ) -> None:
@@ -80,19 +90,14 @@ def _refuse_if_window_unencodable(
     overflow become a 500. #490. Kept here, not in `shared/`: this is the one
     caller that sends such a bound to Postgres (ADR 0012); the ledger's price
     history compares its bounds in Python."""
-    problems = [
-        {
-            "type": "value_error",
-            "loc": ("query", parameter),
-            "msg": f"`{parameter}` has no instant between year 1 and 9999 in UTC.",
-            "input": value,
-        }
-        for parameter, value in (
-            ("closes_from", closes_from),
-            ("closes_before", closes_before),
-        )
-        if value is not None and not _has_utc_instant(value)
-    ]
+    problems = []
+    for parameter, value in (
+        ("closes_from", closes_from),
+        ("closes_before", closes_before),
+    ):
+        if value is not None and not _has_utc_instant(value):
+            message = f"`{parameter}` has no instant between year 1 and 9999 in UTC."
+            problems.append(_window_problem(parameter, value, message))
     if problems:
         raise RequestValidationError(problems)
 
@@ -107,18 +112,11 @@ def _refuse_if_window_empty(
     if closes_from is None or closes_before is None or closes_from < closes_before:
         return
 
+    message = "`closes_before` must be later than `closes_from`."
     raise RequestValidationError(
         [
-            {
-                "type": "value_error",
-                "loc": ("query", parameter),
-                "msg": "`closes_before` must be later than `closes_from`.",
-                "input": value,
-            }
-            for parameter, value in (
-                ("closes_from", closes_from),
-                ("closes_before", closes_before),
-            )
+            _window_problem("closes_from", closes_from, message),
+            _window_problem("closes_before", closes_before, message),
         ]
     )
 

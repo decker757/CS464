@@ -7,12 +7,6 @@ import type { AllowedRoute } from './support/routeCoverage'
 // the page does not need a browser, next to the path. An entry whose route
 // does get visited fails the run too, so this list cannot quietly rot.
 
-export const ALLOWED_ROUTES: AllowedRoute[] = [
-  {
-    path: '/',
-    reason:
-      'The landing page is guests-only navigation: a heading and the links to ' +
-      '/login and /register, both of which are covered. It owns no data and ' +
-      'calls no service, so a browser adds nothing a unit test does not cover.',
-  },
-]
+// Empty since #438: the landing page, the one entry this list held, is now
+// opened by responsive-frame.e2e.ts to measure its width on a phone.
+export const ALLOWED_ROUTES: AllowedRoute[] = []

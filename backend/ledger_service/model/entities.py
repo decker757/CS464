@@ -437,6 +437,17 @@ class MarketBook(Base):
         BigInteger, nullable=False, default=0, server_default=text("0")
     )
 
+    # Every trade's credits, buys and sells alike, raised beside
+    # `state_version` under this row's lock. A statistic no decision reads, so
+    # stored rather than derived like a balance. DECISIONS.md, "`credits_traded`
+    # is a counter on the book, raised in `write_trade` under the book lock".
+    credits_traded: Mapped[Decimal] = mapped_column(
+        Numeric(AMOUNT_PRECISION, AMOUNT_SCALE),
+        nullable=False,
+        default=Decimal(0),
+        server_default=text("0"),
+    )
+
     # D-029: equal to `opened_at` at creation, and equal only then. For a
     # market nobody has traded, the book's creation *is* its last state
     # change, so any other value here would invent a moment that did not

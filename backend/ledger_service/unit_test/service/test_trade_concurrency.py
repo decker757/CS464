@@ -456,10 +456,12 @@ async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
     session: AsyncSession,
 ) -> None:
     """Four traders retrying on `quote_stale` all fill, each priced against
-    the `q` the one before left.
+    the `q` the one before left, and `credits_traded` is what all four paid
+    (#447's DoD: the counter stays correct under parallel trades).
 
     Remove `.with_for_update()` from the trade's `market_books` read and this
-    fails on the pool balance: two parties would pay the same first cost.
+    fails: `credits_traded` keeps only the last of the writes that raced, and
+    two parties would pay the same first cost.
     """
     upstream = Upstream()
     users = [uuid.uuid4() for _ in range(4)]
@@ -496,6 +498,8 @@ async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
     assert all(r is not None for r in results)
 
     expected = _sequential_totals(len(users))
+    traded = (await book_row(session, upstream.market_id)).credits_traded
+    assert traded == -sum(expected)
     assert sorted(r.total for r in results) == sorted(expected), (
         "the fills were not priced one after another; two of them saw the "
         "same q and were charged the same price"

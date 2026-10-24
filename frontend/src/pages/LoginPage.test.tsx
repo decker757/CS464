@@ -88,6 +88,19 @@ describe('LoginPage — an expired session', () => {
   })
 })
 
+describe('LoginPage — a forgotten password', () => {
+  // #480. There is no reset flow, so a visitor who has forgotten their
+  // password is told so at the field they are stuck on, and a screen reader
+  // reads it whenever that field takes focus.
+  it('says on the password field that there is no password reset', () => {
+    renderLoginPage()
+
+    expect(screen.getByLabelText('Password')).toHaveAccessibleDescription(
+      'There is no password reset, so keep your password somewhere safe.'
+    )
+  })
+})
+
 describe('LoginPage — client-side validation', () => {
   it('shows exactly 2 field errors when both fields are empty', async () => {
     const user = userEvent.setup()
