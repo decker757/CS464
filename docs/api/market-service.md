@@ -1082,7 +1082,7 @@ and **refunds nobody**. The frontend must never call it.
 
 | Field | Rule |
 | --- | --- |
-| `reason` | required. Stored as sent. **Not re-checked here**: the ledger has already checked it, and a stricter check here would refuse every retry after the refunds committed. |
+| `reason` | required, at most 5,000 characters (`MAX_PROSE_LENGTH`, as every reason this service stores). Stored as sent. **Otherwise not re-checked here**, and no 10-character floor: the ledger has already checked it, and a stricter check here would refuse every retry after the refunds committed. The ceiling never refuses a forwarded reason, because the ledger refuses one over 5,000 first. |
 
 ### Response
 
@@ -1108,6 +1108,7 @@ Checked in this order, and the first that applies answers.
 | --- | --- | --- |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
 | 403 | `not_an_administrator` | a trader |
+| 422 | — | FastAPI's own body-validation error, a different shape: `reason` missing or over 5,000 characters, or a malformed id. A reason the ledger forwards is never over |
 | 404 | `market_not_found` | no such market |
 | 409 | `market_already_settled` | it has been settled |
 | 409 | `market_not_voidable` | `draft`, `submitted` or `open` by its stored status, including one past its `close_time` that the sweep has not yet closed; or `approved` from five minutes after its dispute window ended, or with no `dispute_window_ends_at` |

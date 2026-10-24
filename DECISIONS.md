@@ -10732,14 +10732,16 @@ that: market_service's `voidable` PR sits below the ledger client's.
 characters in the schema (`422 invalid_request`) and at least 10 once trimmed
 in the service (`422 void_incomplete`), checked before any read. It stores the
 trimmed reason on the result row and forwards it to market_service, which
-stores it as sent and does not re-check it.
+stores it as sent and checks only the same 5,000 ceiling, which a forwarded
+reason always meets.
 
 **Why.** The reason lands in `market.void_reason`, so its ceiling is
 market_service's for every reason it stores, not the 500 the administrator's
 order cancel copies from auth. The floor is close-early's and rejection's.
 `*_incomplete` is the name every reason refusal in this repository has.
-market_service does not re-check, because a stricter check there would fail
-every retry after the money moved.
+market_service checks only the ceiling, as the owner of the column, and not
+the floor, because a stricter check there would fail every retry after the
+money moved.
 
 **Rejected.** *500 characters, as the administrator's cancel*: that cancel
 acts on one trader's account, and its reason is logged only. A void's reason
