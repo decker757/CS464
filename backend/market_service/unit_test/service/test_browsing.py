@@ -1048,3 +1048,148 @@ async def test_a_settled_market_is_listed_and_filterable_as_settled(
     assert listed[settled_id].status is MarketStatus.SETTLED
     assert listed[approved_id].status is MarketStatus.APPROVED
     assert _ids(filtered) == [settled_id]
+
+
+# --- #442: narrowing the list by when markets close -------------------------
+async def _closing_at(
+    session: AsyncSession, close_time: datetime, **overrides: object
+) -> uuid.UUID:
+    """A published market closing at `close_time`, which must be in the future."""
+    market = await published_market(
+        session,
+        actor(),
+        close_time=close_time,
+        resolution_time=close_time + timedelta(days=15),
+        **overrides,
+    )
+    return market.id
+
+
+async def test_a_closing_window_includes_its_start_and_excludes_its_end(
+    session: AsyncSession,
+) -> None:
+    """#442: "A trader can narrow the list by when markets close."
+
+    Half-open, so "today" and "tomorrow" never share a market. One market on
+    each edge and one either side of the window: `>` for `>=` drops the first
+    edge, `<=` for `<` lets the second in, and dropping either bound lets its
+    outside market in.
+    """
+    start = datetime.now(UTC) + timedelta(days=2)
+    end = start + timedelta(days=3)
+    await _closing_at(session, start - timedelta(hours=1))
+    at_start_id = await _closing_at(session, start)
+    inside_id = await _closing_at(session, start + timedelta(days=1))
+    await _closing_at(session, end)
+    await _closing_at(session, end + timedelta(hours=1))
+
+    listed = await _browse(session, closes_from=start, closes_before=end)
+
+    assert _ids(listed) == [at_start_id, inside_id]
+
+
+async def test_each_end_of_a_closing_window_applies_on_its_own(
+    session: AsyncSession,
+) -> None:
+    """#442's parameters are each optional: a window open at one end narrows
+    by the other alone, rather than being ignored until both are sent."""
+    split = datetime.now(UTC) + timedelta(days=5)
+    earlier_id = await _closing_at(session, split - timedelta(days=1))
+    later_id = await _closing_at(session, split + timedelta(days=1))
+
+    assert _ids(await _browse(session, closes_before=split)) == [earlier_id]
+    assert _ids(await _browse(session, closes_from=split)) == [later_id]
+
+
+async def test_a_closing_window_composes_with_a_status_filter_and_a_search(
+    session: AsyncSession,
+) -> None:
+    """#442's DoD: "composes with `status` and `q`". Each decoy misses exactly
+    one of the three, so dropping any one of them lets its decoy in."""
+    start = datetime.now(UTC) + timedelta(days=2)
+    end = start + timedelta(days=3)
+    inside = start + timedelta(days=1)
+    question = "Will Singapore core inflation be below 2% in December 2026?"
+
+    wanted_id = await _closing_at(session, inside, question=question)
+    # Outside the window.
+    await _closing_at(session, end + timedelta(days=1), question=question)
+    # Not open: closed by hand, its `close_time` still inside the window.
+    stopped_id = await _closing_at(session, inside, question=question)
+    await market_service.close_early(session, actor(), stopped_id, close_request())
+    # Another question.
+    await _closing_at(
+        session, inside, question="Will the MRT Cross Island Line open in 2027?"
+    )
+
+    listed = await _browse(
+        session,
+        status=MarketStatus.OPEN,
+        query="inflation",
+        closes_from=start,
+        closes_before=end,
+    )
+
+    assert _ids(listed) == [wanted_id]
+
+
+async def test_a_closing_window_pages_through_every_match_and_nothing_else(
+    session: AsyncSession,
+) -> None:
+    """#442: "keyset pagination still works with it applied".
+
+    The window reads `close_time`, while the stopped group sorts by when
+    trading stopped, so markets closed early inside the window sort among
+    the stopped ones, with decoys between them. One market per page puts a
+    cursor on every boundary: between two matches, on each side of a decoy,
+    and across the two groups.
+    """
+    now = datetime.now(UTC)
+    start = now + timedelta(days=2)
+    end = now + timedelta(days=5)
+
+    async def closed_early(close_time: datetime, ago: timedelta) -> uuid.UUID:
+        market_id = await _closing_at(session, close_time)
+        await market_service.close_early(
+            session, actor(), market_id, close_request(), now=now - ago
+        )
+        return market_id
+
+    # The trading group, by `close_time`: a decoy either side of two matches.
+    await _closing_at(session, now + timedelta(days=1))
+    trading_first = await _closing_at(session, start + timedelta(hours=1))
+    trading_second = await _closing_at(session, start + timedelta(days=1))
+    await _closing_at(session, end + timedelta(days=1))
+    # The stopped group, most recently closed first: decoys between matches.
+    stopped_first = await closed_early(start + timedelta(days=1), timedelta(hours=1))
+    await closed_early(end + timedelta(days=5), timedelta(hours=2))
+    stopped_second = await closed_early(start + timedelta(days=2), timedelta(hours=3))
+    await closed_early(now + timedelta(days=1), timedelta(hours=4))
+
+    walked = await _walk(session, limit=1, closes_from=start, closes_before=end)
+
+    assert _ids(walked) == [
+        trading_first,
+        trading_second,
+        stopped_first,
+        stopped_second,
+    ]
+
+
+async def test_a_market_with_no_close_time_matches_no_closing_window(
+    session: AsyncSession,
+) -> None:
+    """#442's ruling: no close time is not "closes some time after any start".
+
+    Publish refuses a market without one, so it is cleared afterwards: the
+    row a direct write could leave.
+    """
+    start = datetime.now(UTC) + timedelta(days=1)
+    dated_id = await _closing_at(session, start + timedelta(days=10))
+    undated_id = await _closing_at(session, start + timedelta(days=10))
+    await session.execute(
+        update(Market).where(Market.id == undated_id).values(close_time=None)
+    )
+    await session.commit()
+
+    assert _ids(await _browse(session, closes_from=start)) == [dated_id]

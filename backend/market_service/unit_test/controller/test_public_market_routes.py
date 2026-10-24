@@ -527,3 +527,88 @@ async def test_settleable_on_the_wire_follows_the_routes_clock(
 
     assert at_the_edge["settleable"] is True
     assert just_before["settleable"] is False
+
+
+# --- #442: the closing window ---------------------------------------------
+async def _closing_at(session: AsyncSession, close_time: datetime) -> str:
+    """The id of a published market closing at `close_time`, as the wire has it."""
+    market = await _published(
+        session, close_time=close_time, resolution_time=close_time + timedelta(days=15)
+    )
+    return str(market.id)
+
+
+async def test_the_closing_window_is_two_query_parameters(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """#442: the wiring only; the edges and the rules are `test_browsing.py`'s.
+    A decoy either side, so a parameter the route drops lets its decoy in."""
+    start = datetime.now(UTC) + timedelta(days=2)
+    end = start + timedelta(days=3)
+    await _closing_at(session, start - timedelta(days=1))
+    inside = await _closing_at(session, start + timedelta(days=1))
+    await _closing_at(session, end + timedelta(days=1))
+
+    payload = (
+        await client.get(
+            _LIST,
+            params={"closes_from": start.isoformat(), "closes_before": end.isoformat()},
+            headers=trader_headers,
+        )
+    ).json()
+
+    assert [m["id"] for m in payload["markets"]] == [inside]
+
+
+async def test_one_end_of_the_closing_window_is_enough(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """#442: each parameter is optional on its own, and the emptiness check
+    only compares the two when both are sent."""
+    split = datetime.now(UTC) + timedelta(days=5)
+    earlier = await _closing_at(session, split - timedelta(days=1))
+    await _closing_at(session, split + timedelta(days=1))
+
+    response = await client.get(
+        _LIST, params={"closes_before": split.isoformat()}, headers=trader_headers
+    )
+
+    assert response.status_code == 200
+    assert [m["id"] for m in response.json()["markets"]] == [earlier]
+
+
+@pytest.mark.parametrize("parameter", ["closes_from", "closes_before"])
+async def test_a_closing_window_end_without_an_offset_is_422(
+    client: AsyncClient, trader_headers: dict[str, str], parameter: str
+) -> None:
+    """#442: a time with no offset means a different instant in every
+    timezone, so it is refused rather than read as UTC."""
+    response = await client.get(
+        _LIST, params={parameter: "2027-01-01T00:00:00"}, headers=trader_headers
+    )
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [
+        ["query", parameter]
+    ]
+
+
+async def test_an_empty_closing_window_is_422_naming_both_ends(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """#442: the window is half-open, so equal ends hold no instant at all.
+    Refused rather than answered with an empty list the trader cannot tell
+    from "nothing closes then". Equal is the edge: `<` for `<=` lets it by."""
+    instant = "2027-01-01T00:00:00+00:00"
+
+    response = await client.get(
+        _LIST,
+        params={"closes_from": instant, "closes_before": instant},
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [
+        ["query", "closes_from"],
+        ["query", "closes_before"],
+    ]
