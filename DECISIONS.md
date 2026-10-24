@@ -5938,7 +5938,7 @@ CHECK is what constrains it. `recorded_at` has no default, like
 `market_books.opened_at`: the settlement supplies it.
 
 *Amended 2026-10-20. Proposed by ADR 0025, and not built yet.* What the Notes
-left to #221 is decided, for ledger revision `0006`: `ResultKind.VOIDED`, and
+left to #221 is decided, for ledger revision `0007`: `ResultKind.VOIDED`, and
 `reason` (text) and `voided_by` (uuid), both nullable, each set exactly when
 `kind = 'voided'` by a hand-written CHECK. The existing CHECK already admits a
 voided row with no outcome. Readers still never filter on `kind`, with one

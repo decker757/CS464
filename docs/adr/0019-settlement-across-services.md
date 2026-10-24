@@ -491,7 +491,7 @@ data this service owns, so it still makes no call to market_service.
 
 > **Amended 2026-10-20. Proposed by [ADR 0025](0025-voiding-a-flawed-market.md),
 > and not built yet. What this amendment left to #221 is decided.** Ledger
-> revision `0006` adds `voided` to `kind`, and `reason` and `voided_by` to the
+> revision `0007` adds `voided` to `kind`, and `reason` and `voided_by` to the
 > row, each set exactly when `kind = 'voided'` by a hand-written CHECK. A
 > settlement on a voided market is `409 market_already_voided`. The second
 > exit from APPROVED, and why reading the status before the lock survives it,

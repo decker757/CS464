@@ -683,7 +683,7 @@ void's), `market_already_voided` (409, settlement's, on a voided market),
 
 **Models and revisions.**
 
-- Ledger revision `0006`: `ResultKind.VOIDED`; `reason` (text) and
+- Ledger revision `0007`: `ResultKind.VOIDED`; `reason` (text) and
   `voided_by` (uuid) on `market_results`, both nullable, each set exactly when
   `kind = 'voided'` by a hand-written CHECK. The existing
   `ck_market_results_outcome_iff_settled` already admits a voided row with no
@@ -755,7 +755,7 @@ re-pinned at 22e8e1e, not a change of mind.
 10. **History** needs a `void_refund` branch in `trade_fields_of`.
 11. **`MarketTerms`** requires `voidable`, so market_service deploys first.
 12. **`post_all` refuses an empty batch.** The void never builds one.
-13. **Revision numbers** are ledger `0006` and market `0003`.
+13. **Revision numbers** are ledger `0007` and market `0003`.
 14. **This is its own record**, not an amendment to ADR 0019, and ADR 0019's
     APPROVED-exit argument lives here, with a pointer there.
 
