@@ -186,7 +186,7 @@ code or the status here changes the ledger's answer.
 | Query | Default | Notes |
 | --- | --- | --- |
 | `q` | — | Part of a username or an email. Omit to list everybody. |
-| `role` | — | `trader` or `admin`. Omit for both. Anything else is a `422`. |
+| `role` | — | `trader` or `admin`. Omit for both. Anything else is a `422` (FastAPI's `{"detail": [...]}` shape, not an `error.code`). |
 | `is_suspended` | — | `true` or `false`. Omit for both. |
 | `limit` | 50 | Clamped at 200. Asking for more is not an error. |
 | `cursor` | — | The `next_cursor` from the previous page, unmodified. |
@@ -505,7 +505,7 @@ The same envelope the market service uses, so one parser covers both:
 | 409 | `last_administrator` | the demotion or suspension would leave no administrator who can log in; see above |
 | 409 | `duplicate_user` | username or email already registered; see `details` |
 | 422 | `suspension_incomplete` | the suspension's `reason` is blank or under 10 characters once trimmed; see `details` |
-| 422 | — | FastAPI's own body-validation error, a different shape |
+| 422 | — | FastAPI's own request-validation error, a different shape |
 
 Two failure shapes exist and they do not look alike. Ours carries the envelope
 above. A malformed body — a short password, a bad email, a username with a
