@@ -74,6 +74,46 @@ Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
 `.env` and point `TEST_DATABASE_URL` at the same port. Same for Redis on 6379
 and `REDIS_PORT`.
 
+### A demo database
+
+For a showcase, seed an empty database with markets worth looking at (#454):
+
+```bash
+docker compose up -d --build --wait     # from the repo root, on an empty database
+cd frontend && npm ci                   # once
+npm run seed:demo                       # about three minutes
+```
+
+It makes two administrators, `admin_rachel` and `admin_kumar`, eight traders
+(`wei_ling`, `arjun_k`, `marcus_tan`, `priya_s`, `jun_hao`, `sarah_lim`,
+`daniel_ng`, `aisyah_r`) and thirteen SMU markets. Every account's password is
+`PASSWORD` in `frontend/e2e/support/backend.ts`. Nine markets stay open: seven
+traded until their prices sit well apart, from about 13% to 90% Yes, and two
+left untraded. The other four are traded and then taken one stage further
+each: closed, pending resolution, approved, and settled with its winners paid.
+The seed prints every market's final prices when it finishes.
+
+The trades go in eight rounds, twenty seconds apart, so each market's price
+history has a shape. That is why it takes minutes: a trade's time is the
+ledger's own clock, and no API backdates one.
+
+It goes through the services' own APIs, using the end-to-end helpers in
+`frontend/e2e/support/backend.ts`, and takes the same two SQL steps they do,
+through `docker compose exec db`: promoting the first administrators, and
+moving the settled market's dispute window into the past.
+
+**It is one-shot.** Its accounts have fixed names, so a second run stops at
+the first registration and changes nothing. Seeding again means starting from
+an empty database, which on this stack is `docker compose down -v` and
+destroys all local data.
+
+**It only runs against this machine.** It refuses to start unless every
+service URL (`VITE_API_URL`, `VITE_MARKET_API_URL`, `VITE_LEDGER_API_URL`,
+defaulting to the ports above) is `localhost`, `127.0.0.1`, `[::1]` or a
+compose service name, and the Docker engine its SQL steps reach is a local
+socket or pipe. There is no override. For a stack on other ports or under
+another compose project, set those three variables and `COMPOSE_PROJECT_NAME`.
+
 ### Two of everything, behind a load balancer
 
 ```bash
