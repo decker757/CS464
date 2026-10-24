@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getMarketSnapshot, getMarketSnapshots, type PriceState } from '../api/ledgerApi'
+import { getMarketSnapshot, getMarketSnapshots, type OutcomePrice, type PriceState } from '../api/ledgerApi'
 import type { PublicMarketSummary } from '../api/marketApi'
 import { tradingStopped } from '../components/markets/marketStatus'
 import { usePriceSocket, type ConnectionStatus } from './usePriceSocket'
@@ -34,6 +34,23 @@ export interface MarketPrices {
   retryMarket: (marketId: string) => void
   /** The price socket's connection state, for the list to say so ([X-4] #37). */
   status: ConnectionStatus
+  /**
+   * The two figures only the batch snapshot carries, by market id: how much
+   * the market has traded, and its prices a week ago ([X-1] #446, #447).
+   *
+   * Kept apart from `snapshotsByMarket` because a `price` frame carries
+   * neither (ledger-service.md) and replaces the entry it lands on — so a
+   * trade would blank them. They also age differently: a price changes per
+   * trade, while these describe the market's history and only move when the
+   * batch is read again.
+   */
+  marketFigures: Map<string, MarketFigures>
+}
+
+/** What the batch snapshot says about a market beyond its current price. */
+export interface MarketFigures {
+  credits_traded: string
+  prices_7d_ago: OutcomePrice[] | null
 }
 
 // How often the prices on screen are read again. The socket carries every
@@ -80,6 +97,8 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
   // the timer instead, so the page degrades past the ceiling rather than
   // showing a frozen price that looks as live as the rest.
   const [refusedMarkets, setRefusedMarkets] = useState<Set<string>>(new Set())
+  // The batch-only figures, which no price frame can carry or clobber.
+  const [marketFigures, setMarketFigures] = useState<Map<string, MarketFigures>>(new Map())
 
   // The ids to follow. When the page holds more cards than the socket may
   // watch, the markets a trader just asked for by pressing "Load more" are the
@@ -134,6 +153,16 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
       snapshots => {
         settle()
         for (const snapshot of snapshots) apply(snapshot)
+        setMarketFigures(previous => {
+          const next = new Map(previous)
+          for (const snapshot of snapshots) {
+            next.set(snapshot.market_id, {
+              credits_traded: snapshot.credits_traded,
+              prices_7d_ago: snapshot.prices_7d_ago,
+            })
+          }
+          return next
+        })
         setReadAt(new Date())
         // Only the markets this answer actually carried are cleared: the batch
         // opens no book, so a cold market is absent rather than refused, and
@@ -218,5 +247,5 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     )
   }, [applySnapshot])
 
-  return { snapshotsByMarket, failedMarkets, readAt, retryMarket, status }
+  return { snapshotsByMarket, failedMarkets, readAt, retryMarket, status, marketFigures }
 }
