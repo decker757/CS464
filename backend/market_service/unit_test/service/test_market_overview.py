@@ -570,6 +570,39 @@ async def test_settled_markets_sort_last_and_a_cursor_crosses_into_their_group(
     assert _ids(walked) == [approved, still_open, first_settled, second_settled]
 
 
+# --- [BE] #221: voided markets sink with the settled ones --------------------
+async def test_voided_markets_sort_last_among_the_settled_ones_by_close_time(
+    session: AsyncSession,
+) -> None:
+    """ADR 0025: the overview "sinks voided markets with settled ones to the
+    end of its unfiltered view", "in the same order among themselves".
+
+    The finished markets are made first, so their close times precede the
+    rest and, without the group, they would lead. The voided one is made
+    between the two settled ones, so it sorts between them by close time.
+    One market a page, so the cursor is cut between the groups and inside the
+    finished one. Fails with VOIDED left out of the finished group (it leads),
+    or put in a group of its own after the settled one (it trails).
+    """
+    caller = actor()
+    now = _injected_now()
+    first_settled = (await settled_market(session, caller)).id
+    voided = (await voided_market(session, caller)).id
+    second_settled = (await settled_market(session, caller)).id
+    approved = (await approved_market(session, caller)).id
+    still_open = await _open_until(session, caller, now + timedelta(days=1))
+
+    walked = await _walk(session, caller, limit=1, now=now)
+
+    assert _ids(walked) == [
+        approved,
+        still_open,
+        first_settled,
+        voided,
+        second_settled,
+    ]
+
+
 # --- #210: the page and the counts read one snapshot ----------------------
 async def test_the_page_and_the_counts_read_one_snapshot(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
