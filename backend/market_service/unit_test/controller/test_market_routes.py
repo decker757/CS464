@@ -20,6 +20,7 @@ from model.entities import Market, MarketOutcome
 from service import market_service, settling
 from service.audit import Actor
 from unit_test.conftest import (
+    VOID_REASON,
     approved_market,
     closed_market,
     database_now,
@@ -1567,6 +1568,24 @@ async def test_saving_a_voided_market_is_409_and_leaves_it_as_it_was(
     assert await _stored_status_and_outcome_ids(market_id) == before
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "market_already_voided"
+
+
+async def test_reading_a_voided_market_carries_its_reason_and_time(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """ADR 0025: `MarketOut` carries `voided_at` and `void_reason`, the admin
+    market page's read. Fails with either field missing from `MarketOut`."""
+    creator = Actor(id=admin_id, username="ernest_t", role="admin")
+    market = await voided_market(session, creator)
+    market_id, stored_at = market.id, market.voided_at
+
+    shown = (await client.get(f"/markets/{market_id}", headers=admin_headers)).json()
+
+    assert shown["void_reason"] == VOID_REASON
+    assert datetime.fromisoformat(shown["voided_at"]) == stored_at
 
 
 # --- [3.4] #12: settling, the ledger's last step ------------------------------

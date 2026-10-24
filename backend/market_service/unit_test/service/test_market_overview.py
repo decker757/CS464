@@ -658,6 +658,28 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
         assert row.settleable is (row.id in decided), row
 
 
+async def test_each_rows_voidable_follows_the_public_details_rule(
+    session: AsyncSession, population: _Population
+) -> None:
+    """ADR 0025: "The public detail and every overview row carry `voidable`",
+    judged on the stored status against the page's clock.
+
+    Through `MarketOverviewRowOut`, so it fails with the flag missing from the
+    card or the schema. The injected clock is past the approved row's window
+    (`hour_long_window`), so it fails if the window is not read; `past_close`
+    reads `closed` and is stored OPEN, so it fails if the derived status is.
+    """
+    ids = population.ids
+    voidable = {ids["swept_closed"], ids["pending"], ids["voided"]}
+
+    rows, _ = await _overview(session, population.caller, now=population.now)
+
+    shown = [MarketOverviewRowOut.model_validate(row) for row in rows]
+    assert shown, "the population must be listed for this to mean anything"
+    for row in shown:
+        assert row.voidable is (row.id in voidable), row
+
+
 async def test_a_settled_rows_settleable_stays_true_even_with_no_window_end(
     session: AsyncSession,
 ) -> None:

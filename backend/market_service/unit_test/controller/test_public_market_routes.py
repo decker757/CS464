@@ -20,6 +20,7 @@ from core.config import get_settings
 from model.entities import Market, MarketStatus
 from unit_test.conftest import (
     SOURCE_URL,
+    VOID_REASON,
     actor,
     approved_market,
     closed_market,
@@ -511,6 +512,28 @@ async def test_the_browse_accepts_a_voided_filter(
     assert response.status_code == 200
     assert [m["id"] for m in response.json()["markets"]] == [str(voided_id)]
     assert response.json()["markets"][0]["status"] == "voided"
+
+
+async def test_the_detail_carries_a_voided_markets_reason_and_time(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """ADR 0025: "The public detail and `MarketOut` carry `voided_at` and
+    `void_reason`, required keys with nullable values"; traders must see why
+    they were refunded. A closed market beside it reads both null.
+
+    Fails with either field missing from `PublicMarketOut`.
+    """
+    voided = await voided_market(session, actor())
+    voided_id, stored_at = voided.id, voided.voided_at
+    closed_id = (await closed_market(session, actor())).id
+
+    shown = (await client.get(_detail(voided_id), headers=trader_headers)).json()
+    other = (await client.get(_detail(closed_id), headers=trader_headers)).json()
+
+    assert shown["void_reason"] == VOID_REASON
+    assert datetime.fromisoformat(shown["voided_at"]) == stored_at
+    assert other["void_reason"] is None
+    assert other["voided_at"] is None
 
 
 async def test_settleable_on_the_wire_follows_the_routes_clock(
