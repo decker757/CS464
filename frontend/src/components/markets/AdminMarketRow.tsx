@@ -115,8 +115,10 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
   const disputeWindowStillOpen = useWindowOpen(market.dispute_window_ends_at)
   const windowOpen = status === 'approved' && disputeWindowStillOpen
 
+  // Below md the controls go under the question rather than beside it: a
+  // published market carries up to five of them, wider than a phone (#438).
   return (
-    <Card className="flex items-center justify-between gap-4 px-6 py-4">
+    <Card className="flex flex-col gap-3 px-6 py-4 md:flex-row md:items-center md:justify-between md:gap-4">
       <div className="min-w-0">
         <p className="truncate text-[15px] font-semibold text-smu-navy">
           {market.question ?? <span className="italic text-subtle">Untitled market</span>}
@@ -146,7 +148,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
           <RowError message={publishError} onReload={publishSuperseded ? () => window.location.reload() : undefined} />
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 md:shrink-0 md:flex-nowrap">
         {/* Both are the creator's: market_service scopes `GET /markets/{id}`
             and `publish` to the caller and answers 404 for anybody else's
             market, so offering either to another administrator would offer a
