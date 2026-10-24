@@ -1313,7 +1313,7 @@ describe('the curated sections above the list', () => {
     expect(await screen.findByRole('heading', { name: 'Closing soon' })).toBeInTheDocument()
     expect(screen.getByText(/trading stops within/i)).toBeInTheDocument()
     // The full list is still there, under its own heading.
-    expect(screen.getByRole('heading', { name: 'All markets' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Browse all' })).toBeInTheDocument()
   })
 
   // AC 3: a section with nothing in it disappears rather than rendering an
@@ -1334,7 +1334,7 @@ describe('the curated sections above the list', () => {
     expect(screen.queryByRole('heading', { name: 'Biggest movers' })).not.toBeInTheDocument()
     // And no "All markets" heading either: without a band above it, the list
     // is not given a heading it never had.
-    expect(screen.queryByRole('heading', { name: 'All markets' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Browse all' })).not.toBeInTheDocument()
   })
 
   // AC 4: filtering or searching collapses back to a single plain result list;

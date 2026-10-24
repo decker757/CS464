@@ -125,18 +125,22 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
             </section>
           ))}
 
-          {/* The full list keeps its own heading only when a band sits above
-              it, so an unsectioned page is not given a heading it never had. */}
-          {sections.length > 0 && (
-            <h2 className="mb-3 text-base font-bold text-smu-navy">All markets</h2>
-          )}
-          <MarketCardGrid
-            markets={markets}
-            snapshotsByMarket={snapshotsByMarket}
-            failedMarkets={failedMarkets}
-            positionsByMarket={positionsByMarket}
-            onRetryPrice={retryMarket}
-          />
+          {/* The full list, under its own heading only when a band sits above
+              it: an unsectioned page is not given a heading it never had. The
+              heading also names the region, so the list is addressable apart
+              from the bands above it. */}
+          <section aria-labelledby={sections.length > 0 ? 'section-all' : undefined}>
+            {sections.length > 0 && (
+              <h2 id="section-all" className="mb-3 text-base font-bold text-smu-navy">Browse all</h2>
+            )}
+            <MarketCardGrid
+              markets={markets}
+              snapshotsByMarket={snapshotsByMarket}
+              failedMarkets={failedMarkets}
+              positionsByMarket={positionsByMarket}
+              onRetryPrice={retryMarket}
+            />
+          </section>
 
           {hasMore && (
             <LoadMoreControl isLoadingMore={isLoadingMore} hasFailed={loadMoreFailed} noun="markets" onLoadMore={loadMore} />
