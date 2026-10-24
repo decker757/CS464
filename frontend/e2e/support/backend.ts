@@ -15,7 +15,9 @@ export const AUTH_URL = process.env.VITE_API_URL ?? 'http://localhost:8000'
 export const MARKET_URL = process.env.VITE_MARKET_API_URL ?? 'http://localhost:8001'
 export const LEDGER_URL = process.env.VITE_LEDGER_API_URL ?? 'http://localhost:8003'
 
-const REPO_ROOT = path.resolve(import.meta.dirname, '../../..')
+// Exported for the demo seed (#454), which asks compose which project its SQL
+// step reaches.
+export const REPO_ROOT = path.resolve(import.meta.dirname, '../../..')
 
 export const PASSWORD = 'correct-horse-battery-staple'
 
@@ -53,7 +55,7 @@ interface AuthResponse {
   tokens: { access_token: string }
 }
 
-async function logInThroughApi(username: string): Promise<Session> {
+export async function logInThroughApi(username: string): Promise<Session> {
   const body = await call<AuthResponse>('POST', `${AUTH_URL}/auth/login`, null, { identifier: username, password: PASSWORD })
   return { id: body.user.id, username: body.user.username, accessToken: body.tokens.access_token }
 }
@@ -115,12 +117,7 @@ async function readStartingGrant(): Promise<string> {
  * admin is made (ADR 0007), then logs in again: the role rides in the token.
  */
 export async function registerAdmin(label: string): Promise<Session> {
-  return registerNamedAdmin(uniqueName(label))
-}
-
-/** `registerAdmin` for exactly `username`, with no per-run suffix: the demo seed's fixed names (#454). */
-export async function registerNamedAdmin(username: string): Promise<Session> {
-  const trader = await registerNamedTrader(username)
+  const trader = await registerTrader(label)
   promoteToAdmin(trader.username)
   return logInThroughApi(trader.username)
 }
@@ -135,7 +132,7 @@ function runSql(sql: string, failure: string): void {
   if (!output.includes('UPDATE 1')) throw new Error(`${failure}: ${output}`)
 }
 
-function promoteToAdmin(username: string): void {
+export function promoteToAdmin(username: string): void {
   // Interpolated into SQL below, and only ever a name uniqueName() made or one
   // of the demo seed's fixed names.
   if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
@@ -148,7 +145,7 @@ interface MarketOut {
   outcomes: { id: string; label: string }[]
 }
 
-const HOURS_PER_DAY = 24
+export const HOURS_PER_DAY = 24
 const THIRTY_DAYS_IN_HOURS = 30 * HOURS_PER_DAY
 
 function hoursFromNow(hours: number): string {
