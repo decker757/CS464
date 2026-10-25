@@ -484,6 +484,17 @@ without it.
 **[BE] #221's refund must decide how it meets the reservation floor if it
 debits a USER account.**
 
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
+> and not built yet. Answered: it debits none.** A void's refunds credit USER
+> accounts from the market's pool, and its residue moves between the pool and
+> PLATFORM. `_refuse_overdrafts` reads only the USER accounts a batch debits
+> (`_debited_users_of`, `service/posting.py:149-157`), so the reservation floor
+> is never consulted. Every order on the voided market stops being live in the
+> void's commit, because liveness asks only whether a `market_results` row
+> exists, of any kind. A fill is a trade on the pool's feed, so the void's
+> replay refunds it like any other buy, and a self-fill is a sale off the
+> owner's newest lot.
+
 **Tests owed.** Each is a criterion the code PRs are reviewed against.
 
 - The "big trade crosses 3 resting orders" scenario, asserting the final

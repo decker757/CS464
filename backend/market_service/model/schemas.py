@@ -356,6 +356,29 @@ class OutcomeSendBackRequest(BaseModel):
     )
 
 
+class MarketVoidRequest(BaseModel):
+    """The body of POST /markets/{id}/void, which only the ledger sends. [BE] #221
+
+    The reason the ledger recorded with the refunds, forwarded as it stored
+    it. No floor here: the ledger checked it before the money moved, and a
+    stricter rule would refuse every retry of a void whose refunds have
+    already committed. The ceiling is the column's, which this service owns;
+    the ledger applies the same 5,000 before it writes, so it never refuses a
+    forwarded reason, and it stops a direct call storing a megabyte on every
+    trader's view. ADR 0025, question 3.
+    """
+
+    reason: str = Field(
+        max_length=MAX_PROSE_LENGTH,
+        description=(
+            "The reason the ledger recorded for the void, stored on the market "
+            "as sent and shown to traders. At most 5,000 characters; the "
+            "ledger checks everything else."
+        ),
+        examples=["The match was abandoned after ten overs; there is no result."],
+    )
+
+
 class OutcomeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -452,6 +475,12 @@ class MarketOut(_UtcTimestamps):
     approved_by_id: uuid.UUID | None
     approved_by_username: str | None
     approved_at: datetime | None
+
+    # --- the void. [BE] #221 -------------------------------------------------
+    # Both null unless `voided`. Required keys, as on the public detail.
+    # ADR 0025.
+    voided_at: datetime | None
+    void_reason: str | None
 
     # --- derived, read-only -------------------------------------------------
     # [1.2] #2. The q = 0 prices from core/opening_prices.py, derived on every
@@ -596,6 +625,16 @@ class PublicMarketOut(_UtcTimestamps):
     # field cannot read as "no window". ADR 0023.
     dispute_window_ends_at: datetime | None
 
+    # [BE] #221. Stamped by `get_published` like `settleable`, from the stored
+    # status, and required with no default for the same reason: the ledger
+    # refunds on it, and a missing flag must not read as true. ADR 0025.
+    voidable: bool
+
+    # [BE] #221. Both null unless `voided`. The reason is the only
+    # explanation a trader gets of their refund. ADR 0025.
+    voided_at: datetime | None
+    void_reason: str | None
+
     @model_validator(mode="after")
     def _hide_an_undecided_proposal(self) -> PublicMarketOut:
         """Hide a proposed winner until it is decided. D-026.
@@ -651,6 +690,8 @@ class MarketOverviewRowOut(_UtcTimestamps):
     settleable: bool
     # [3.3] #11. The stored column, for the countdown, as on the public detail.
     dispute_window_ends_at: datetime | None
+    # [BE] #221. The public detail's flag, against the same instant. ADR 0025.
+    voidable: bool
 
 
 class MarketOverviewResponse(BaseModel):

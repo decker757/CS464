@@ -137,8 +137,8 @@ def _refuse_if_window_empty(
         "and there is nothing to distinguish them from if those are "
         "missing.\n\n"
         "`status` narrows to one of `open`, `closed`, `pending_resolution`, "
-        "`approved` or `settled`; `status=open` is the narrower query a "
-        "trader gets by choosing the first group explicitly. `draft` and "
+        "`approved`, `settled` or `voided`; `status=open` is the narrower "
+        "query a trader gets by choosing the first group explicitly. `draft` and "
         "`submitted` are never visible here and are not accepted values. `q` "
         "searches the question, case-insensitively, and composes with "
         "`status`.\n\n"
@@ -249,7 +249,16 @@ async def browse_markets(
         "writes it (ADR 0011).\n\n"
         "`settleable` ([3.4] #12) is true from five minutes after the dispute "
         "window ends and stays true once the market is `settled`; false for "
-        "every other status."
+        "every other status, `voided` included.\n\n"
+        "A `voided` market ([BE] #221) has no winning outcome: "
+        "`proposed_outcome_id` is null, even on one voided after its outcome "
+        "was approved. `voided_at` and `void_reason` say when and why, and "
+        "are null on every other market; show the reason to traders.\n\n"
+        "`voidable` ([BE] #221) is true on a `closed` or `pending_resolution` "
+        "market, on an `approved` one while its dispute window is open, and "
+        "on a `voided` one; false for every other status. It reads the stored "
+        "status, so a market past its `close_time` that the sweep has not yet "
+        "closed reads `closed` here and is not yet voidable."
     ),
     responses={404: {"description": "No such market, or it is a draft or submitted."}},
 )
