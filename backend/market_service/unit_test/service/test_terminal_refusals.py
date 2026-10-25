@@ -5,7 +5,7 @@ published, closed early, proposed for, approved or rejected; each is refused
 with `409 market_already_settled`." ADR 0025: on a voided market "Every later
 write is `409 market_already_voided`: save, submit, publish, close early,
 propose, approve, reject, send-back and settle." The repeated void, the one
-exception, arrives with the route. That a refused autosave leaves the market
+exception, is `test_voiding.py`'s. That a refused autosave leaves the market
 intact is the controller suite's, because it must be read back from a second
 session after the request has finished.
 """
