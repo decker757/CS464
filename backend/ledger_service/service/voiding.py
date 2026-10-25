@@ -77,6 +77,7 @@ from service import (
     market_status,
     market_terms,
     posting,
+    settlement,
     trading,
 )
 from service.audit import Actor
@@ -117,10 +118,6 @@ def refund_key(market_id: uuid.UUID, user_id: uuid.UUID, outcome_id: uuid.UUID) 
     """One position's refund's key, which the portfolio joins on (DECISIONS.md,
     "A voided row's `payout` is its refund")."""
     return f"void-refund:{market_id}:{user_id}:{outcome_id}"
-
-
-def _residue_key(market_id: uuid.UUID) -> str:
-    return f"void-residue:{market_id}"
 
 
 def _result_of(
@@ -369,19 +366,6 @@ def _refund_of(
     )
 
 
-def _residue_of(
-    market_id: uuid.UUID, residue: Decimal, *, pool: Account, platform: Account
-) -> Movement:
-    """What the pool still holds after the refunds, to PLATFORM, or what it
-    lacks, from PLATFORM. The pool ends at zero either way."""
-    return Movement(
-        idempotency_key=_residue_key(market_id),
-        kind=TransactionKind.VOID_RESIDUE,
-        legs=[Leg(account=pool, amount=-residue), Leg(account=platform, amount=residue)],
-        context={"market_id": str(market_id)},
-    )
-
-
 async def _movements_of(
     session: AsyncSession,
     market_id: uuid.UUID,
@@ -407,7 +391,16 @@ async def _movements_of(
     ]
     if cut.residue != ZERO:
         platform = await accounts.ensure_platform(session)
-        movements.append(_residue_of(market_id, cut.residue, pool=pool, platform=platform))
+        movements.append(
+            settlement.residue_of(
+                market_id,
+                cut.residue,
+                pool=pool,
+                platform=platform,
+                kind=TransactionKind.VOID_RESIDUE,
+                key_prefix="void-residue",
+            )
+        )
     return movements
 
 

@@ -97,10 +97,6 @@ def _payout_key(market_id: uuid.UUID, user_id: uuid.UUID) -> str:
     return f"settlement:{market_id}:{user_id}"
 
 
-def _residue_key(market_id: uuid.UUID) -> str:
-    return f"settlement_residue:{market_id}"
-
-
 def _result_of(
     market_id: uuid.UUID,
     *,
@@ -268,14 +264,23 @@ def _payout_of(
     )
 
 
-def _residue_of(
-    market_id: uuid.UUID, residue: Decimal, *, pool: Account, platform: Account
+def residue_of(
+    market_id: uuid.UUID,
+    residue: Decimal,
+    *,
+    pool: Account,
+    platform: Account,
+    kind: TransactionKind,
+    key_prefix: str,
 ) -> Movement:
-    """What the pool still holds after the payouts, to PLATFORM, or what it
-    lacks, from PLATFORM. The pool ends at zero either way."""
+    """What a market's pool still holds once its payouts or refunds are built,
+    to PLATFORM, or what it lacks, from PLATFORM, so the pool ends at zero
+    either way. Keyed `{key_prefix}:{market_id}`: one residue per market and
+    kind. Settlement's and the void's, which differ only in `kind` and
+    `key_prefix`."""
     return Movement(
-        idempotency_key=_residue_key(market_id),
-        kind=TransactionKind.SETTLEMENT_RESIDUE,
+        idempotency_key=f"{key_prefix}:{market_id}",
+        kind=kind,
         legs=[
             Leg(account=pool, amount=-residue),
             Leg(account=platform, amount=residue),
@@ -363,7 +368,16 @@ async def pay_out(
     movements = [_payout_of(market_id, outcome_id, winner, pool) for winner in winners]
     if residue != ZERO:
         platform = await accounts.ensure_platform(session)
-        movements.append(_residue_of(market_id, residue, pool=pool, platform=platform))
+        movements.append(
+            residue_of(
+                market_id,
+                residue,
+                pool=pool,
+                platform=platform,
+                kind=TransactionKind.SETTLEMENT_RESIDUE,
+                key_prefix="settlement_residue",
+            )
+        )
 
     result = _result_of(
         market_id,
