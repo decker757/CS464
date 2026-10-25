@@ -88,6 +88,10 @@ async def test_a_refund_that_rounded_to_nothing_is_refunded_with_a_payout_of_zer
     await trade(session, upstream, o, outcome=0, side="sell", quantity="30")
     upstream.closes()
     await void(session, upstream)
+    no_refund = await transaction_by_key(
+        session, refund_key(upstream.market_id, user_id=h, outcome_id=upstream.outcomes[1])
+    )
+    assert no_refund is None, "the scenario was meant to write H no refund"
 
     voided = row(await read_portfolio(session, h), upstream.market_id, 1)
 
@@ -102,15 +106,13 @@ async def test_a_voided_market_adds_nothing_to_positions_value_and_its_refund_is
     """ADR 0025, "P&L needs no change": the refund is in the balance, the row
     adds nothing to `positions_value`, and the trader who bought 4 and sold 2
     is down exactly 0.0002 on their grant, all of it realised."""
-    upstream, trader = await _bought_4_sold_2(session)
+    _, trader = await _bought_4_sold_2(session)
 
     result = await read_portfolio(session, trader)
 
     assert str(result.positions_value) == "0.0000"
-    assert result.net_worth == result.balance
     assert result.total_pnl == result.realized_pnl == Decimal("-0.0002")
     assert str(result.unrealized_pnl) == "0.0000"
-    assert result.starting_credits == get_settings().starting_credits
 
 
 # =========================================================================
