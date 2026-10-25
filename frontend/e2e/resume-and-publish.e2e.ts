@@ -81,12 +81,14 @@ test('an admin publishes a market submitted in the form, after reloading the pag
   await expect(page.getByLabel('Question *')).toHaveValue(question)
   // Published or submitted, this form is read-only (ADR 0008).
   await expect(page.getByLabel('Question *')).toBeDisabled()
-  await page.getByRole('button', { name: /publish market/i }).click()
+  await page.getByRole('button', { name: 'Publish Market', exact: true }).click()
+  await page.getByRole('button', { name: 'Confirm Publish', exact: true }).click()
 
-  // Publishing sends the admin to the trader list, and the market is on it:
-  // the only proof that market_service wrote OPEN, rather than a button
-  // merely stopping complaining.
-  await expect(page).toHaveURL(/\/markets$/)
+  // Publishing sends the admin to the admin markets list (#512). The market
+  // is on the trader list: the only proof that market_service wrote OPEN,
+  // rather than a button merely stopping complaining.
+  await expect(page).toHaveURL(/\/admin\/markets$/)
+  await page.goto('/markets')
   await page.getByRole('searchbox', { name: /search markets/i }).fill(question)
   await page.keyboard.press('Enter')
   await expect(marketCard(page, question)).toBeVisible()

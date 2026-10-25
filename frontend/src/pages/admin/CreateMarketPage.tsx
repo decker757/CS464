@@ -9,6 +9,7 @@ import {
   saveMarket,
 } from '../../api/marketApi'
 import AppLayout from '../../components/layout/AppLayout'
+import PublishConfirmModal from '../../components/markets/PublishConfirmModal'
 import type { AdminMarketStatus } from '../../components/markets/marketStatus'
 import BackLink from '../../components/ui/BackLink'
 import Badge from '../../components/ui/Badge'
@@ -278,13 +279,19 @@ export default function CreateMarketPage() {
   // this form survives a reload and can sit open long enough for somebody else
   // to publish the market from the list. The one refusal they answer
   // differently is draft_incomplete: the list shows the hook's message, and
-  // this form passes the callback below and reopens its fields instead.
+  // this form passes the callback below and reopens its fields instead. Both
+  // ask before publishing, in the same words, and a confirmed publish lands
+  // on the admin markets list, where the admin can see the market go live
+  // (#512).
   const {
+    showPublishModal,
+    openPublishModal,
+    closePublishModal,
     publishing,
     formError: publishError,
     superseded: publishSuperseded,
     handlePublish,
-  } = usePublishMarket(marketId, () => navigate('/markets'), details => {
+  } = usePublishMarket(marketId, () => navigate('/admin/markets'), details => {
     // The reasons go where a refused submission's do, so the next answer —
     // accepted or refused — replaces them rather than sitting beside them.
     setRefusalDetails(details)
@@ -765,7 +772,7 @@ export default function CreateMarketPage() {
                   <Badge tone="warning">Submitted</Badge>
                   Market is ready to be published.
                 </div>
-                <Button variant="gold" size="lg" onClick={handlePublish} disabled={publishing}>
+                <Button variant="gold" size="lg" onClick={openPublishModal} disabled={publishing}>
                   {publishing ? 'Publishing…' : 'Publish Market'}
                 </Button>
               </>
@@ -773,6 +780,14 @@ export default function CreateMarketPage() {
           </>
         )}
       </div>
+
+      {/* Outside the block above, so the dialog shows exactly when
+          showPublishModal says so: a hook that forgot to close it stays
+          visible, rather than reappearing when a draft_incomplete refusal
+          unmounts that block and a resubmission mounts it again (#512). */}
+      {showPublishModal && (
+        <PublishConfirmModal isSubmitting={publishing} onCancel={closePublishModal} onConfirm={handlePublish} />
+      )}
     </AppLayout>
   )
 }
