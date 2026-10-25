@@ -945,10 +945,14 @@ Each must fail with the line it guards removed.
   position's refund and fails nothing; on a position with no other lot, the
   position writes no transaction. Red if the core module lets
   `ProceedsBelowTick` escape.
-- **The cut's arithmetic.** Three holders owed equal thirds of a short pool:
-  each cut refund is the same tick whichever builder computes it. Red if the
-  cut divides first or runs at the default precision. A refund the cut floors
-  to zero writes nothing and is not counted.
+- **The cut's arithmetic.** Three holders each owed 3.0000, with `P = 2` and
+  `S = 1`, so the pool is 7 short and every refund is cut by `3/9`: each cut
+  refund is **1.0000**. Red if the cut divides first, which gives **0.9999**.
+  The illustration above, `P = 40` and `S = 10` with 50 and 20 owed, cut
+  inside a caller's context set to precision 6: 50 still cuts to
+  **35.7142**. Red if the cut runs in the caller's context rather than the
+  engine's, which gives **35.7143**. A refund the cut floors to zero writes
+  nothing and is not counted.
 - **Honest profit stands.** A holder buys, another trader's buy raises the
   price, the holder sells part: they keep the sale and are refunded exactly
   the bottom shares' cost.
@@ -960,10 +964,13 @@ Each must fail with the line it guards removed.
   refused `403 admin_has_a_stake` and nothing is written. A different
   administrator can then void. An administrator whose order never filled is
   not refused.
-- **The replay guard.** A position that disagrees with the replay, and a
-  `state_version` gap, are each refused `500 void_replay_mismatch` with
-  nothing written. The shared 1..N check keeps the price history's tests
-  green.
+- **The replay guard.** Each of these refuses the void: a position that
+  disagrees with the replay, compared both ways, so a position with shares
+  and no trades is refused as well as a replayed position the table lacks; a
+  replayed `q` that disagrees with `market_outcomes.q`; a `state_version`
+  gap; and trades that end below the book's `state_version`. A refusal is
+  `500 void_replay_mismatch` with nothing written. The shared 1..N check
+  keeps the price history's tests green.
 - **Money adds up.** After a void the pool is `0.0000`, the whole ledger sums
   to zero, and so does every void transaction. A pool surplus, a shortfall
   within one seed, and a market nobody traded (the whole seed goes back).
@@ -971,7 +978,9 @@ Each must fail with the line it guards removed.
   PLATFORM puts in exactly one seed, every refund is cut by the same
   fraction, the cut refunds add up to no more than pool plus seed, and the
   pair's gain is at most two seeds. Red if PLATFORM covers the whole gap, and
-  red if refunds are cut within one seed.
+  red if refunds are cut within one seed. The boundary: short by exactly one
+  seed, `R − P = S`, every refund is paid in full and nothing is cut; one tick
+  more and every refund is cut.
 - **Never an empty batch.** A market whose every refund rounds to zero posts
   the residue alone.
 - **Retry after the window.** Refunds commit inside the window, `/void` fails
