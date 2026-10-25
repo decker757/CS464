@@ -20,6 +20,7 @@ from core.config import get_settings
 from model.entities import Market, MarketStatus
 from unit_test.conftest import (
     SOURCE_URL,
+    VOID_REASON,
     actor,
     approved_market,
     closed_market,
@@ -28,6 +29,7 @@ from unit_test.conftest import (
     published_market,
     settleable_edge,
     settled_market,
+    voided_market,
 )
 from service import market_service
 
@@ -488,6 +490,50 @@ async def test_the_browse_accepts_a_settled_filter(
     assert response.status_code == 200
     assert [m["id"] for m in response.json()["markets"]] == [str(settled_id)]
     assert response.json()["markets"][0]["status"] == "settled"
+
+
+# --- [BE] #221: voided ---------------------------------------------------------
+async def test_the_browse_accepts_a_voided_filter(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """ADR 0025: `voided` is "an accepted value of the trader browse's
+    `status` filter, as `settled` is".
+
+    The literal string, so it fails while `PublicMarketStatus` lacks it. The
+    settled decoy fails a filter that matches every finished market.
+    """
+    await settled_market(session, actor())
+    voided_id = (await voided_market(session, actor())).id
+
+    response = await client.get(
+        _LIST, params={"status": "voided"}, headers=trader_headers
+    )
+
+    assert response.status_code == 200
+    assert [m["id"] for m in response.json()["markets"]] == [str(voided_id)]
+    assert response.json()["markets"][0]["status"] == "voided"
+
+
+async def test_the_detail_carries_a_voided_markets_reason_and_time(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """ADR 0025: "The public detail and `MarketOut` carry `voided_at` and
+    `void_reason`, required keys with nullable values"; traders must see why
+    they were refunded. A closed market beside it reads both null.
+
+    Fails with either field missing from `PublicMarketOut`.
+    """
+    voided = await voided_market(session, actor())
+    voided_id, stored_at = voided.id, voided.voided_at
+    closed_id = (await closed_market(session, actor())).id
+
+    shown = (await client.get(_detail(voided_id), headers=trader_headers)).json()
+    other = (await client.get(_detail(closed_id), headers=trader_headers)).json()
+
+    assert shown["void_reason"] == VOID_REASON
+    assert datetime.fromisoformat(shown["voided_at"]) == stored_at
+    assert other["void_reason"] is None
+    assert other["voided_at"] is None
 
 
 async def test_settleable_on_the_wire_follows_the_routes_clock(

@@ -1,5 +1,5 @@
-"""Whether a market may be settled, bound to this service's statuses and settings.
-[3.4] #12, [3.3] #11, ADR 0019, ADR 0023.
+"""Whether a market may be settled or voided, bound to this service's statuses
+and settings. [3.4] #12, [3.3] #11, [BE] #221, ADR 0019, ADR 0023, ADR 0025.
 
 The rule itself is `core/settling.py`; this maps a `MarketStatus` onto it, and
 turns an approval's time into the window's end from the settings, so every
@@ -12,8 +12,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from core.config import get_settings
-from core.settling import is_settleable
-from model.entities import MarketStatus
+from core.settling import is_settleable, is_voidable
+from model.entities import AWAITING_OUTCOME_STATUSES, MarketStatus
 
 
 def dispute_window_ends_at(approved_at: datetime) -> datetime:
@@ -40,6 +40,25 @@ def settleable(
     return is_settleable(
         approved=status is MarketStatus.APPROVED,
         settled=status is MarketStatus.SETTLED,
+        ends_at=dispute_window_ends_at,
+        now=now,
+    )
+
+
+def voidable(
+    status: MarketStatus, dispute_window_ends_at: datetime | None, *, now: datetime
+) -> bool:
+    """The `voidable` flag for one market, against the caller's clock. [BE] #221.
+
+    Stamped before projection, like `settleable`. Reads the stored status,
+    never the derived one: a market past `close_time` that the sweep has not
+    written CLOSED is not voidable, because the void step gates on the column
+    too and the two must agree. Do not pass the displayed status. ADR 0025.
+    """
+    return is_voidable(
+        awaiting_outcome=status in AWAITING_OUTCOME_STATUSES,
+        approved=status is MarketStatus.APPROVED,
+        voided=status is MarketStatus.VOIDED,
         ends_at=dispute_window_ends_at,
         now=now,
     )

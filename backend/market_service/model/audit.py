@@ -50,3 +50,10 @@ class AdminAction(StrEnum):
     # the ledger's `market.settled`; one with no `market.settled` before it
     # is a direct call that paid nobody. ADR 0019's amendment.
     MARKET_MARKED_SETTLED = "market.marked_settled"
+
+    # [BE] #221. The void step's flip to VOIDED, never a repeat. The reason in
+    # `reason`; in `context` the status it left and any proposal it cleared,
+    # snapshotted before the clear. Beside the ledger's `market.voided`; one
+    # with no `market.voided` before it is a direct call that refunded nobody.
+    # ADR 0025.
+    MARKET_MARKED_VOIDED = "market.marked_voided"
