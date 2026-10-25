@@ -25,6 +25,7 @@ from unit_test.settlement_fixtures import (
     admin,
     book_lock_waiters,
     finish,
+    queued_on_the_book_or_finished,
     raise_any,
     reached,
     result_count,
@@ -48,6 +49,7 @@ from unit_test.void_fixtures import (
     figures,
     gate_open_view,
     open_book,
+    queued_on_a_lock_or_finished,
     refunds_by_holder,
     trade,
     void,
@@ -224,7 +226,10 @@ async def test_a_placement_that_took_the_lock_first_is_in_the_replay_and_release
     commits first. On a book at `q = (90, 0)`, `b = 100`, a resting buy of
     100 outcome-1 shares at 0.4500 fills in part on arrival; the void, queued
     behind it, refunds that fill and releases the rest. Remove the void's
-    `books.lock_book`: it never queues, and the wait for it times out."""
+    `books.lock_book`: it reads a replay with no fill in it, locks the
+    accounts in `post_all`, and waits on the book row through its record's
+    foreign key; the placement, released, waits on the pool account, and the
+    two deadlock (ADR 0015, "the wider lock goes first")."""
     upstream = VoidUpstream(b=FLAT_B, seed=FLAT_SEED)
     await open_book(session, upstream)
     await trade(session, upstream, uuid.uuid4(), outcome=0, side="buy", quantity="90")
@@ -256,10 +261,11 @@ async def test_a_placement_that_took_the_lock_first_is_in_the_replay_and_release
         return await void(voiding, upstream)
 
     try:
-        tasks = [asyncio.create_task(run_placement()), asyncio.create_task(run_void())]
+        void_task = asyncio.create_task(run_void())
+        tasks = [asyncio.create_task(run_placement()), void_task]
         try:
             await reached(pause.reached, "the placement never held the book lock", tasks)
-            await book_lock_waiters(1, "the void never queued on the book lock", tasks)
+            await queued_on_a_lock_or_finished(void_task)
         finally:
             outcomes = await finish(tasks, pause.release, pause.reached)
     finally:
@@ -272,7 +278,9 @@ async def test_a_placement_that_took_the_lock_first_is_in_the_replay_and_release
     filled_quantity, filled_value = filled.filled_quantity, filled.filled_value
     assert filled_quantity > 0, "the placement was meant to fill in part"
     refunds = await refunds_by_holder(session, upstream.market_id)
-    assert refunds[(owner, upstream.outcomes[1])] == filled_value
+    assert refunds.get((owner, upstream.outcomes[1])) == filled_value, (
+        "the void did not refund the fill that committed before it"
+    )
     from unit_test.placement_fixtures import reserved_credits_of  # noqa: PLC0415
 
     assert await reserved_credits_of(session, owner) == Decimal("0.0000")
@@ -419,8 +427,8 @@ async def test_a_void_and_an_administrators_cancel_serialise_on_the_book(
     the order is cancelled, with one `order.cancelled_by_admin` entry, and the
     void then voids. The void first: the cancel, queued behind it, finds the
     order released, `409 order_released`, and writes no entry. Remove the
-    cancel's `books.lock_book`: it never queues behind the void, and the wait
-    for it times out."""
+    cancel's `books.lock_book`: with the void first, the cancel reads the
+    order still live and cancels it, and its entry is written."""
     from service import cancellation  # noqa: PLC0415
     from service.cancellation import AdminCancel  # noqa: PLC0415
 
@@ -470,10 +478,12 @@ async def test_a_void_and_an_administrators_cancel_serialise_on_the_book(
         return "cancelled"
 
     try:
-        tasks = [asyncio.create_task(run_void()), asyncio.create_task(run_cancel())]
+        void_task = asyncio.create_task(run_void())
+        cancel_task = asyncio.create_task(run_cancel())
+        tasks = [void_task, cancel_task]
         try:
             await reached(pause.reached, f"the {first} never held the book lock", tasks)
-            await book_lock_waiters(1, "the other party never queued on the book lock", tasks)
+            await queued_on_the_book_or_finished(cancel_task if first == "void" else void_task)
         finally:
             outcomes = await finish(tasks, pause.release, pause.reached)
     finally:
