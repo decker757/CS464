@@ -66,10 +66,9 @@ def _assert_refused(response, status: int, code: str) -> None:  # noqa: ANN001
 
 @pytest.fixture
 def upstream() -> VoidUpstream:
-    """Closed and voidable, unless a test changes it."""
-    market = VoidUpstream()
-    market.closes()
-    return market
+    """Open, so a test can trade in it first; `_held` and the tests that trade
+    nothing close it, which makes it voidable."""
+    return VoidUpstream()
 
 
 @pytest.fixture
@@ -88,10 +87,12 @@ async def void_client(app_under_test, upstream: VoidUpstream):
 
 async def _held(session: AsyncSession, upstream: VoidUpstream) -> uuid.UUID:
     """A warm book where one holder bought 12 of outcome 1 at `b = 10`, for
-    7.7014 (`test_void.py`'s figure). The pool holds that plus the seed of 2."""
+    7.7014 (`test_void.py`'s figure), then closed. The pool holds that plus
+    the seed of 2."""
     await open_book(session, upstream)
     holder = uuid.uuid4()
     await trade(session, upstream, holder, outcome=1, side="buy", quantity="12")
+    upstream.closes()
     return holder
 
 
@@ -166,6 +167,8 @@ async def test_a_reason_may_be_5000_characters_and_no_more(
     """ADR 0025, step 1: market_service's ceiling for every reason it stores,
     both edges. Over it is `422 invalid_request`, before market_service is
     asked."""
+    upstream.closes()
+
     response = await void_client.post(
         _path(upstream.market_id),
         json={"reason": "r" * length},
@@ -186,6 +189,8 @@ async def test_a_short_reason_is_void_incomplete_with_no_details(
     like the administrator's cancel's `cancellation_incomplete`. Five
     characters, so a floor moved into the body's schema would answer
     `invalid_request` here."""
+    upstream.closes()
+
     response = await void_client.post(
         _path(upstream.market_id),
         json={"reason": "short"},
@@ -303,6 +308,7 @@ async def _staked(
 ) -> None:
     await open_book(session, upstream)
     await trade(session, upstream, actor.id, outcome=0, side="buy", quantity="3")
+    upstream.closes()
 
 
 async def _replay_disagrees(
