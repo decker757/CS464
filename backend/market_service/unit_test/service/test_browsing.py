@@ -9,6 +9,7 @@ suites; prices are the ledger's (ADR 0005).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -26,6 +27,7 @@ from model.entities import (
 from core.database import get_session_factory
 from model.schemas import PublicMarketOut
 from service import browsing, market_service
+from service.audit import Actor
 from unit_test.conftest import approved_market as _approved_market
 from unit_test.conftest import (
     actor,
@@ -1031,47 +1033,43 @@ async def test_the_browse_card_carries_the_derived_status_not_the_column(
     assert not hasattr(listed[stopped_id], "raw_status")
 
 
-# --- [3.4] #12: settled is a status a trader can browse and filter on -------
-async def test_a_settled_market_is_listed_and_filterable_as_settled(
+# --- [3.4] #12, [BE] #221: settled and voided can be browsed and filtered on
+@pytest.mark.parametrize(
+    ("build", "status", "build_decoy", "decoy_status"),
+    [
+        (settled_market, "settled", _approved_market, "approved"),
+        (voided_market, "voided", settled_market, "settled"),
+    ],
+    ids=["settled", "voided"],
+)
+async def test_a_finished_market_is_listed_and_filterable_by_its_status(
     session: AsyncSession,
+    build: Callable[[AsyncSession, Actor], Awaitable[Market]],
+    status: str,
+    build_decoy: Callable[[AsyncSession, Actor], Awaitable[Market]],
+    decoy_status: str,
 ) -> None:
     """[3.4] #12: `settled` "is an accepted status on the trader browse".
-
-    Fails with SETTLED left out of `_visible`'s allowlist (not listed), or
-    out of the status filter. The approved market is the decoy.
-    """
-    approved_id = (await _approved_market(session, actor())).id
-    settled_id = (await settled_market(session, actor())).id
-
-    listed = {card.id: card for card in await _browse(session)}
-    filtered = await _browse(session, status=MarketStatus.SETTLED)
-
-    assert listed[settled_id].status is MarketStatus.SETTLED
-    assert listed[approved_id].status is MarketStatus.APPROVED
-    assert _ids(filtered) == [settled_id]
-
-
-# --- [BE] #221: voided is a status a trader can browse and filter on ---------
-async def test_a_voided_market_is_listed_and_filterable_as_voided(
-    session: AsyncSession,
-) -> None:
-    """ADR 0025: VOIDED "joins `PublicMarketStatus`, the allowlist the public
+    ADR 0025: VOIDED "joins `PublicMarketStatus`, the allowlist the public
     reads filter on, so a voided market stays visible to traders", and
     `voided` is "an accepted value of the trader browse's `status` filter,
     as `settled` is".
 
-    Fails with VOIDED left out of `PublicMarketStatus` (not listed). The
-    settled market is the decoy for a filter that matches every finished one.
+    The literal string, so a case fails while `MarketStatus` lacks it. Fails
+    with the status left out of `PublicMarketStatus` (not listed), or out of
+    the status filter. The approved decoy fails a settled filter that matches
+    every decided market; the settled decoy, a voided filter that matches
+    every finished one.
     """
-    settled_id = (await settled_market(session, actor())).id
-    voided_id = (await voided_market(session, actor())).id
+    decoy_id = (await build_decoy(session, actor())).id
+    finished_id = (await build(session, actor())).id
 
     listed = {card.id: card for card in await _browse(session)}
-    filtered = await _browse(session, status=MarketStatus.VOIDED)
+    filtered = await _browse(session, status=MarketStatus(status))
 
-    assert listed[voided_id].status is MarketStatus.VOIDED
-    assert listed[settled_id].status is MarketStatus.SETTLED
-    assert _ids(filtered) == [voided_id]
+    assert listed[finished_id].status is MarketStatus(status)
+    assert listed[decoy_id].status is MarketStatus(decoy_status)
+    assert _ids(filtered) == [finished_id]
 
 
 # --- #442: narrowing the list by when markets close -------------------------

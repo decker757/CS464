@@ -6,6 +6,7 @@ Everything the frontend parses; business rules belong in unit_test/service.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 
 import pytest
@@ -1481,7 +1482,7 @@ async def test_an_approval_with_no_proposal_id_is_fastapis_422_not_ours(
     assert "error" not in response.json()
 
 
-# --- [3.4] #12: a settled market is frozen ----------------------------------
+# --- [3.4] #12, [BE] #221: a settled or voided market is frozen ------------
 async def _stored_status_and_outcome_ids(
     market_id: uuid.UUID,
 ) -> tuple[str, list[uuid.UUID]]:
@@ -1501,27 +1502,43 @@ async def _stored_status_and_outcome_ids(
 
 
 @pytest.mark.parametrize("requested", ["draft", "submitted"])
-async def test_saving_a_settled_market_is_409_and_leaves_it_as_it_was(
+@pytest.mark.parametrize(
+    ("build", "status", "code"),
+    [
+        (settled_market, "settled", "market_already_settled"),
+        (voided_market, "voided", "market_already_voided"),
+    ],
+    ids=["settled", "voided"],
+)
+async def test_saving_a_settled_or_voided_market_is_409_and_leaves_it_as_it_was(
     client: AsyncClient,
     session: AsyncSession,
     admin_id: uuid.UUID,
     admin_headers: dict[str, str],
     requested: str,
+    build: Callable[[AsyncSession, Actor], Awaitable[Market]],
+    status: str,
+    code: str,
 ) -> None:
     """[3.4] #12: a settled market's terms "can no longer be saved" or
     submitted, `409 market_already_settled`. "SETTLED joins the frozen,
     resolution and decided status tables": without the frozen entry an
-    autosave reaches `_clear_children` and `status = DRAFT`.
+    autosave reaches `_clear_children` and `status = DRAFT`. ADR 0025: VOIDED
+    "joins the frozen and resolution tables in the same commit as the enum
+    member, so no autosave can turn it back into a draft (the bug #220 found
+    for SETTLED)", and the save is `409 market_already_voided`.
 
     Read back from a second session after the request has finished, so the
     deletion is seen wherever the commit lives. Fails with SETTLED removed from
-    `_FROZEN_STATUS_ERRORS`: the outcome ids change and the status reads draft.
+    `_FROZEN_STATUS_ERRORS`, or VOIDED from `_PAST_DECISION_STATUS_ERRORS`,
+    which the frozen table spreads: the outcome ids change and the status
+    reads draft.
     """
     creator = Actor(id=admin_id, username="ernest_t", role="admin")
-    market = await settled_market(session, creator)
+    market = await build(session, creator)
     market_id, draft_key = market.id, market.draft_key
     before = await _stored_status_and_outcome_ids(market_id)
-    assert before[0] == "settled", "the fixture must have settled this market"
+    assert before[0] == status, f"the fixture must have {status} this market"
 
     response = await client.post(
         "/markets",
@@ -1532,43 +1549,7 @@ async def test_saving_a_settled_market_is_409_and_leaves_it_as_it_was(
     # First, so a 200 does not hide the deletion it committed.
     assert await _stored_status_and_outcome_ids(market_id) == before
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "market_already_settled"
-
-
-# --- [BE] #221: a voided market is frozen -----------------------------------
-@pytest.mark.parametrize("requested", ["draft", "submitted"])
-async def test_saving_a_voided_market_is_409_and_leaves_it_as_it_was(
-    client: AsyncClient,
-    session: AsyncSession,
-    admin_id: uuid.UUID,
-    admin_headers: dict[str, str],
-    requested: str,
-) -> None:
-    """ADR 0025: VOIDED "joins the frozen and resolution tables in the same
-    commit as the enum member, so no autosave can turn it back into a draft
-    (the bug #220 found for SETTLED)", and the save is
-    `409 market_already_voided`.
-
-    Read back from a second session after the request has finished. Fails
-    with VOIDED removed from `_PAST_DECISION_STATUS_ERRORS`, which the frozen
-    table spreads: the outcome ids change and the status reads draft.
-    """
-    creator = Actor(id=admin_id, username="ernest_t", role="admin")
-    market = await voided_market(session, creator)
-    market_id, draft_key = market.id, market.draft_key
-    before = await _stored_status_and_outcome_ids(market_id)
-    assert before[0] == "voided", "the fixture must have voided this market"
-
-    response = await client.post(
-        "/markets",
-        json=_payload(draft_key=str(draft_key), status=requested),
-        headers=admin_headers,
-    )
-
-    # First, so a 200 does not hide the deletion it committed.
-    assert await _stored_status_and_outcome_ids(market_id) == before
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "market_already_voided"
+    assert response.json()["error"]["code"] == code
 
 
 async def test_reading_a_voided_market_carries_its_reason_and_time(
