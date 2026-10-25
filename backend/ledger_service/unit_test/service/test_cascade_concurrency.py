@@ -30,7 +30,8 @@ from unit_test.sell_fixtures import assert_q_matches_positions, hold, holding
 from unit_test.settlement_fixtures import (
     Pause,
     finish,
-    queued_on_the_book_or_finished,
+    ON_THE_BOOK,
+    queued_or_finished,
     reached,
 )
 from unit_test.trade_fixtures import (
@@ -135,7 +136,7 @@ async def test_two_trades_crossing_the_same_orders_keep_every_invariant(
         tasks = [first, second]
         try:
             await reached(pause.reached, "the first trade never reached its cascade", tasks)
-            await queued_on_the_book_or_finished(second)
+            await queued_or_finished(second, query_like=ON_THE_BOOK)
         finally:
             outcomes = await finish(tasks, pause.release, pause.reached)
     finally:
