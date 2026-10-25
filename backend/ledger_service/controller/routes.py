@@ -1360,8 +1360,8 @@ _VOID_DESCRIPTION = (
     "comes from market_service (`voidable`), and the holders and amounts from "
     "this service's own trades and positions.\n\n"
     "**`200` on the request that refunds and on every repeat**, with the same "
-    "nine fields summed from the entries the first request wrote, and its "
-    "reason, never the repeating administrator's. A repeat writes nothing "
+    "nine fields as the first request, its reason and administrator included, "
+    "never the repeating administrator's. A repeat writes nothing "
     "here and retries the last step, so it is how a `503 void_unconfirmed` is "
     "finished.\n\n"
     "**No price frame is published**: a void moves neither `q` nor any "
@@ -1418,9 +1418,11 @@ _VOID_DESCRIPTION = (
             "description": (
                 "`market_terms_unavailable`: market_service could not be "
                 "reached, or answered with terms no void can use; nothing was "
-                "refunded. `void_unconfirmed`: every holder is refunded and "
-                "the void is recorded, and market_service did not confirm. "
-                "Repeat the request."
+                "refunded by this request. On a repeat after `void_unconfirmed` "
+                "the earlier refunds stand, so repeat again; never read this as "
+                "the void having failed. `void_unconfirmed`: every holder is "
+                "refunded and the void is recorded, and market_service did not "
+                "confirm. Repeat the request."
             )
         },
     },
