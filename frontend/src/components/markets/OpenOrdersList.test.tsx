@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import type { Order } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
+import { holdUntilReleased } from '../../test/holdUntilReleased'
 import { server } from '../../test/server'
 import OpenOrdersList from './OpenOrdersList'
 
@@ -112,19 +113,39 @@ describe('OpenOrdersList', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  // A second cancel would release the same credits twice over as far as the
+  // screen is concerned, and the ledger answers the replay `order_not_open`
+  // — so the control refuses while one is on its way.
+  //
+  // The in-flight window is the test's own, not a timer's: the handler waits
+  // on a promise this test releases, so "while one is in flight" means exactly
+  // that however slow the machine is. Held open with a 50ms timer, the first
+  // cancel could answer before the second click landed under load, the button
+  // would re-enable, and a passing guard would look like a bug (#489).
   it('does not send a second cancel while one is in flight', async () => {
+    const { held, release } = holdUntilReleased()
     let calls = 0
     server.use(http.post(CANCEL('ord-1'), async () => {
       calls += 1
-      await new Promise(resolve => setTimeout(resolve, 50))
+      await held
       return HttpResponse.json({ order: order({ status: 'cancelled' }), released_credits: '15.0000', released_shares: null })
     }))
     const { actor } = renderList()
     const button = screen.getByRole('button', { name: /cancel/i })
 
     await actor.click(button)
+    // The request is out and waiting on `release`, which is what makes the
+    // click below a click during the window rather than after it.
+    await waitFor(() => expect(calls).toBe(1))
+    expect(button).toBeDisabled()
+
     await actor.click(button)
 
-    await waitFor(() => expect(calls).toBe(1))
+    expect(calls).toBe(1)
+
+    // And the control comes back once the cancel has answered, so the guard
+    // is a window and not a one-way latch.
+    release()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancelling…' })).not.toBeInTheDocument())
   })
 })
