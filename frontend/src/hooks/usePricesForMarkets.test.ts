@@ -222,6 +222,41 @@ describe('usePricesForMarkets', () => {
     await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')?.prices[0].price).toBe('0.7000'))
   })
 
+  // A refusal belongs to the connection that gave it: the ceiling counts one
+  // connection's own subscriptions, so a reconnect starts with room. Held past
+  // the drop, a market refused once would be polled for the life of the page
+  // while the new connection pushed its frames — both at once, and the poll is
+  // what #444 exists to remove.
+  it('follows a refused market again after a reconnect', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const reads = serveChangingPrices(['0.6000', '0.7000', '0.8800'])
+
+    renderHook(() => usePricesForMarkets(TRADING))
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      latestSocket().receive({
+        type: 'error',
+        error: { code: 'too_many_subscriptions', message: 'at its ceiling' },
+      })
+    })
+    // Refused, so the timer is carrying it.
+    const whileRefused = reads.count
+    await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
+    await waitFor(() => expect(reads.count).toBeGreaterThan(whileRefused))
+
+    // The connection drops and the next one has room.
+    await act(async () => { latestSocket().serverClose(1006) })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2), { timeout: 3000 })
+    acked.clear()
+    await connectAndAck()
+
+    // Followed again, so the timer lets it go: the socket is carrying it now.
+    const whenFollowedAgain = reads.count
+    await act(async () => { vi.advanceTimersByTime(3 * PRICE_REFRESH_MS) })
+
+    expect(reads.count).toBe(whenFollowedAgain)
+  })
+
   // [X-1] #444: a market the relay is pushing needs no poll, and polling it
   // anyway costs the ledger an LMSR evaluation per card twice a minute for a
   // price it has already sent. The thirty-second re-read was the old way a
