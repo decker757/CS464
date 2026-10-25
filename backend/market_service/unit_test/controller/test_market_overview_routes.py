@@ -26,6 +26,7 @@ from unit_test.conftest import (
     published_market_closing_at,
     settleable_edge,
     settled_market,
+    voided_market,
 )
 
 # The one place the path is written.
@@ -132,6 +133,26 @@ async def test_settled_is_an_accepted_overview_filter(
 
     assert response.status_code == 200
     assert [row["id"] for row in response.json()["markets"]] == [str(settled_id)]
+
+
+async def test_voided_is_an_accepted_overview_filter(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """ADR 0025: "The overview accepts `voided` in its filter". The literal
+    string, so it fails while `MarketStatus` lacks the member; the settled
+    decoy fails a filter that matches every finished market."""
+    await settled_market(session, _admin(admin_id))
+    voided_id = (await voided_market(session, _admin(admin_id))).id
+
+    response = await client.get(
+        _OVERVIEW, params={"status": "voided"}, headers=admin_headers
+    )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["markets"]] == [str(voided_id)]
 
 
 # --- what reaches the wire -------------------------------------------------

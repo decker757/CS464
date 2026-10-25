@@ -38,6 +38,7 @@ from unit_test.conftest import (
     published_market_closing_at,
     recorded_statements,
     settled_market,
+    voided_market,
 )
 
 
@@ -1048,6 +1049,29 @@ async def test_a_settled_market_is_listed_and_filterable_as_settled(
     assert listed[settled_id].status is MarketStatus.SETTLED
     assert listed[approved_id].status is MarketStatus.APPROVED
     assert _ids(filtered) == [settled_id]
+
+
+# --- [BE] #221: voided is a status a trader can browse and filter on ---------
+async def test_a_voided_market_is_listed_and_filterable_as_voided(
+    session: AsyncSession,
+) -> None:
+    """ADR 0025: VOIDED "joins `PublicMarketStatus`, the allowlist the public
+    reads filter on, so a voided market stays visible to traders", and
+    `voided` is "an accepted value of the trader browse's `status` filter,
+    as `settled` is".
+
+    Fails with VOIDED left out of `PublicMarketStatus` (not listed). The
+    settled market is the decoy for a filter that matches every finished one.
+    """
+    settled_id = (await settled_market(session, actor())).id
+    voided_id = (await voided_market(session, actor())).id
+
+    listed = {card.id: card for card in await _browse(session)}
+    filtered = await _browse(session, status=MarketStatus.VOIDED)
+
+    assert listed[voided_id].status is MarketStatus.VOIDED
+    assert listed[settled_id].status is MarketStatus.SETTLED
+    assert _ids(filtered) == [voided_id]
 
 
 # --- #442: narrowing the list by when markets close -------------------------

@@ -51,7 +51,7 @@ from model.entities import (
     displayed_status,
 )
 from service.closing import open_for_trading, was_open_for_trading_at
-from service.settling import settleable
+from service.settling import settleable, voidable
 
 # The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
 # doubling is Python's, not SQL's.
@@ -361,7 +361,8 @@ async def get_published(
     invisibility would go with no test failing. The derived status goes on an
     unmapped attribute, never on `status`; see `TRADER_FACING_STATUS`. D-027.
     `settleable` goes beside it, against the same `now`, for the same reason:
-    a computed field would re-run on a clock it cannot see. [3.4] #12.
+    a computed field would re-run on a clock it cannot see. [3.4] #12. So
+    does `voidable`, from the stored status. [BE] #221.
     """
     now = now or datetime.now(UTC)
 
@@ -378,15 +379,19 @@ async def get_published(
     market.settleable = settleable(
         market.status, market.dispute_window_ends_at, now=now
     )
+    market.voidable = voidable(market.status, market.dispute_window_ends_at, now=now)
     return market
 
 
 # --- the administrator's overview. [2.1] #5, #210 --------------------------
-# Its two groups, in order: every market still in play, then the settled ones.
-# Settled markets are finished, and an action queue ordered by oldest close
-# would otherwise put every one of them first.
+# Its two groups, in order: every market still in play, then the finished
+# ones, settled or voided. An action queue ordered by oldest close would
+# otherwise put every finished one first. ADR 0025.
 _ACTIVE_GROUP = 0
-_SETTLED_GROUP = 1
+_FINISHED_GROUP = 1
+
+# The statuses no action follows: both are final. [3.4] #12, [BE] #221.
+_FINISHED_STATUSES = (MarketStatus.SETTLED, MarketStatus.VOIDED)
 
 
 def _visible_to_admin(caller_id: uuid.UUID) -> ColumnElement[bool]:
@@ -399,27 +404,28 @@ def _visible_to_admin(caller_id: uuid.UUID) -> ColumnElement[bool]:
     return or_(_visible(), Market.creator_id == caller_id)
 
 
-def _is_settled() -> ColumnElement[bool]:
-    """Is the market settled? Decides its overview group. #210.
+def _is_finished() -> ColumnElement[bool]:
+    """Is the market settled or voided? Decides its overview group. #210.
 
-    Switched on by [3.4] #12 (#227), which added `MarketStatus.SETTLED`. The
-    order, the keyset and the cursor carried the group already, so this is the
-    only line that changed.
+    The stored status: both are final, so the column cannot lag. One group,
+    so a voided market sorts among the settled ones by close time.
+    DECISIONS.md, "Settled markets sink in the overview's unfiltered view,
+    and the counts are unchanged", as amended for ADR 0025.
     """
-    return Market.status == MarketStatus.SETTLED
+    return Market.status.in_(_FINISHED_STATUSES)
 
 
 def _overview_group() -> ColumnElement[int]:
-    """0 for a market still in play, 1 for a settled one, which sorts last.
+    """0 for a market still in play, 1 for a finished one, which sorts last.
 
     A CASE rather than the boolean, so the group is an integer: the keyset
     compares it with the cursor's group, and the cursor reads it back.
     """
-    return case((_is_settled(), _SETTLED_GROUP), else_=_ACTIVE_GROUP)
+    return case((_is_finished(), _FINISHED_GROUP), else_=_ACTIVE_GROUP)
 
 
 def _overview_order() -> tuple[ColumnElement[object], ...]:
-    """Settled last; then soonest close, none last; then id.
+    """Finished last; then soonest close, none last; then id.
 
     "The admin overview orders by soonest close, missing close times last,
     then id", with #210's group in front. Nothing here reads the clock, so a
@@ -451,7 +457,7 @@ def _after_in_overview(position: OverviewPosition) -> ColumnElement[bool]:
     """Every market `_overview_order` puts after `position`: the rest of its
     group, then every later group."""
     group = _overview_group()
-    position_group = _SETTLED_GROUP if position.settled else _ACTIVE_GROUP
+    position_group = _FINISHED_GROUP if position.finished else _ACTIVE_GROUP
     if position.close_time is None:
         rest_of_group = _after_an_undated_market(position)
     else:
@@ -463,7 +469,7 @@ def _overview_cursor_after(row: Row) -> str:
     """The cursor that continues the overview after `row`."""
     return encode_overview_cursor(
         OverviewPosition(
-            settled=row.overview_group == _SETTLED_GROUP,
+            finished=row.overview_group == _FINISHED_GROUP,
             close_time=row.close_time,
             market_id=row.id,
         )
@@ -560,7 +566,7 @@ async def overview(
     """One page of what an administrator can see, with counts over all of it. [2.1] #5, #210.
 
     Published markets plus the caller's own drafts and submissions: settled
-    last, then soonest close with none last, then id. At most `limit`;
+    and voided last, then soonest close with none last, then id. At most `limit`;
     `next_cursor` is None on the last page. The counts cover every market the
     caller can see, whatever `status` and `cursor` say. The page and the
     counts are two statements in one REPEATABLE READ transaction, so they
@@ -606,6 +612,7 @@ async def overview(
             close_time=row.close_time,
             settleable=settleable(row.status, row.dispute_window_ends_at, now=now),
             dispute_window_ends_at=row.dispute_window_ends_at,
+            voidable=voidable(row.status, row.dispute_window_ends_at, now=now),
         )
         for row in shown
     ]
