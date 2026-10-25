@@ -576,11 +576,14 @@ def _without(field: str) -> dict[str, object]:
     return fields
 
 
-@pytest.mark.parametrize("field", ["settleable", "proposed_outcome_id"])
-def test_market_terms_without_a_settlement_field_cannot_be_built(field: str) -> None:
+@pytest.mark.parametrize("field", ["settleable", "proposed_outcome_id", "voidable"])
+def test_market_terms_without_a_required_terms_field_cannot_be_built(field: str) -> None:
     """ADR 0019 gives `settleable` no default: `False` hides a broken deploy as
-    a window that never closes, and `True` pays out inside it. The `match`
-    makes this pass only for a missing field, not an unknown one.
+    a window that never closes, and `True` pays out inside it. ADR 0025's
+    ruling D gives `voidable` none either: true would refund a market whose
+    result is final, and false hides a broken deploy as a market that can
+    never be voided. The `match` makes this pass only for a missing field, not
+    an unknown one.
     """
     with pytest.raises(TypeError, match=rf"missing .*'{field}'"):
         _terms().MarketTerms(**_without(field))
@@ -613,14 +616,22 @@ def test_market_terms_without_a_settlement_field_cannot_be_built(field: str) -> 
             "proposed_outcome_id is a 32-digit number",
             _terms_body(proposed_outcome_id=12345678901234567890123456789012),
         ),
+        (
+            "voidable is absent",
+            {k: v for k, v in _terms_body().items() if k != "voidable"},
+        ),
+        # Truthy: coerced, it would refund a market whose result is final.
+        ("voidable is the string false", _terms_body(voidable="false")),
     ],
 )
-async def test_a_malformed_settlement_field_is_unavailable(
+async def test_a_malformed_required_terms_field_is_unavailable(
     label: str, body: object
 ) -> None:
     """Each body differs from a valid one in exactly this key, so nothing
     else can be what refuses it. A 503 on every pull, the trade path's
-    included (ADR 0017's amendment).
+    included (ADR 0017's amendment; for `voidable`, ADR 0025's ruling D).
+    `voidable` shares `settleable`'s parse, so its number and null cases
+    would repeat `settleable`'s.
     """
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
@@ -643,38 +654,6 @@ async def test_voidable_is_carried_through(voidable: bool) -> None:
     )
 
     assert terms.voidable is voidable
-
-
-def test_market_terms_without_voidable_cannot_be_built() -> None:
-    """ADR 0025, ruling D: `voidable` has no default. True would refund a
-    market whose result is final; false hides a broken deploy as a market
-    that can never be voided."""
-    with pytest.raises(TypeError, match=r"missing .*'voidable'"):
-        _terms().MarketTerms(**_without("voidable"))
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        pytest.param(
-            {k: v for k, v in _terms_body().items() if k != "voidable"}, id="absent"
-        ),
-        # Truthy: coerced, it would refund a market whose result is final.
-        pytest.param(_terms_body(voidable="false"), id="the string false"),
-        # `bool` subclasses `int`, so `isinstance(v, int)` would take this.
-        pytest.param(_terms_body(voidable=0), id="the number 0"),
-        pytest.param(_terms_body(voidable=None), id="null"),
-    ],
-)
-async def test_a_malformed_voidable_is_unavailable(body: object) -> None:
-    """Each body differs from a valid one in `voidable` alone, so nothing else
-    can refuse it. A 503 on every pull (ADR 0025, ruling D)."""
-    with pytest.raises(_errors().MarketTermsUnavailable):
-        await _terms().fetch(
-            _MARKET_ID,
-            access_token=_token(),
-            terms_client=terms_client_over(_responds(body=body)),
-        )
 
 
 async def test_a_ten_outcome_market_still_parses() -> None:
