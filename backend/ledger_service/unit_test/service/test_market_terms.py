@@ -1027,37 +1027,14 @@ async def test_mark_voided_posts_the_reason_to_void_with_the_token() -> None:
     assert seen[0].headers["Authorization"] == f"Bearer {token}"
 
 
-async def test_mark_voided_does_not_read_the_body_of_a_200() -> None:
-    """The status code is the whole answer, as for `mark_settled`."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<html>not json</html>")
-
-    assert await _mark_voided(httpx.MockTransport(handler)) is None
-
-
-@pytest.mark.parametrize(
-    "transport",
-    [
-        pytest.param(_answers(401, "invalid_token"), id="401"),
-        pytest.param(_answers(404, "market_not_found"), id="404"),
-        pytest.param(_answers(409, "market_not_voidable"), id="409 not voidable"),
-        pytest.param(_answers(409, "market_already_settled"), id="409 settled"),
-        pytest.param(_answers(500, "internal_error"), id="500"),
-        # "Anything but a `200`": a success that is not one confirms nothing.
-        pytest.param(_answers(204), id="204"),
-        pytest.param(_raises(httpx.ConnectError("nope")), id="connect error"),
-        pytest.param(_raises(httpx.ReadTimeout("slow")), id="read timeout"),
-    ],
-)
-async def test_every_answer_but_200_is_void_unconfirmed(
-    transport: httpx.MockTransport,
-) -> None:
+async def test_every_answer_but_200_is_void_unconfirmed() -> None:
     """ADR 0025, step 8: the refunds have committed, so every failure has the
-    one remedy, repeat the request. A 409 or a 404 mapped as `fetch` maps
-    them would say nothing happened."""
+    one remedy, repeat the request. Which answers count as failures, the
+    unread body and the ERROR log are `_confirm`'s, held for both callers by
+    `mark_settled`'s tests above; this is the one case that shows the void's
+    error is the one raised."""
     with pytest.raises(_errors().VoidUnconfirmed):
-        await _mark_voided(transport)
+        await _mark_voided(_raises(httpx.ConnectError("nope")))
 
 
 async def test_void_unconfirmed_is_a_503_named_void_unconfirmed() -> None:
@@ -1068,31 +1045,3 @@ async def test_void_unconfirmed_is_a_503_named_void_unconfirmed() -> None:
     assert isinstance(raised.value, _errors().VoidUnconfirmed)
     assert raised.value.status_code == 503
     assert raised.value.code == "void_unconfirmed"
-
-
-@pytest.mark.parametrize(
-    ("transport", "cause"),
-    [
-        pytest.param(_answers(409, "market_not_voidable"), "409", id="a status code"),
-        pytest.param(
-            _raises(httpx.ConnectError("nope")), "ConnectError", id="an exception"
-        ),
-    ],
-)
-async def test_a_mark_voided_failure_is_logged_at_error_naming_the_cause(
-    caplog: pytest.LogCaptureFixture, transport: httpx.MockTransport, cause: str
-) -> None:
-    """Refunds have moved and the market is not marked until a person repeats
-    the request: logged at ERROR, as `mark_settled`'s failure is."""
-    with caplog.at_level(logging.DEBUG):
-        with pytest.raises(_errors().VoidUnconfirmed):
-            await _mark_voided(transport)
-
-    errors = [
-        record.getMessage()
-        for record in caplog.records
-        if record.levelno == logging.ERROR
-    ]
-    assert any(
-        str(_MARKET_ID) in message and cause in message for message in errors
-    ), f"no ERROR record names {_MARKET_ID} and {cause}: {caplog.records}"
