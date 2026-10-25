@@ -120,6 +120,22 @@ async def test_a_trader_may_not_void(
     assert await committed_counts(upstream.market_id) == before
 
 
+async def test_a_request_with_no_token_is_401(
+    void_client: AsyncClient, session: AsyncSession, upstream: VoidUpstream
+) -> None:
+    """#221: "no token is `401 invalid_token`", with nothing asked and nothing
+    written. The body is complete and the market voidable, so only the
+    missing token can refuse."""
+    await _held(session, upstream)
+    before = await committed_counts(upstream.market_id)
+
+    response = await void_client.post(_path(upstream.market_id), json={"reason": REASON})
+
+    _assert_refused(response, 401, "invalid_token")
+    assert (upstream.gets, upstream.voids) == (0, 0)
+    assert await committed_counts(upstream.market_id) == before
+
+
 # =========================================================================
 # The body: a reason, and nothing else
 # =========================================================================
@@ -156,6 +172,23 @@ async def test_a_body_that_is_not_one_reason_is_refused_before_anything_runs(
     _assert_refused(response, 422, "invalid_request")
     assert (upstream.gets, upstream.voids) == (0, 0)
     assert await committed_counts(upstream.market_id) == before
+
+
+async def test_a_market_id_that_is_not_a_uuid_is_refused_before_anything_runs(
+    void_client: AsyncClient, upstream: VoidUpstream
+) -> None:
+    """The contract's validation row and the route's own `422` description: a
+    `market_id` that is not a UUID is `422 invalid_request`, and market_service
+    is never asked. An admin token and a complete body, so only the path can
+    refuse."""
+    response = await void_client.post(
+        "/ledger/markets/not-a-uuid/void",
+        json={"reason": REASON},
+        headers=bearer(uuid.uuid4(), UserRole.ADMIN),
+    )
+
+    _assert_refused(response, 422, "invalid_request")
+    assert (upstream.gets, upstream.voids) == (0, 0)
 
 
 @pytest.mark.parametrize(
