@@ -286,7 +286,8 @@ export function backdateDisputeWindow(marketId: string): void {
 /**
  * Settles an approved market whose dispute window has passed ([3.4] #12): the
  * ledger's own request, paying every winning holder (ADR 0019). The suite
- * settles through the browser; the demo seed (#454) settles through this.
+ * settles through the browser in settle-market.e2e.ts; the demo seed (#454)
+ * and balance-on-return.e2e.ts settle through this.
  */
 export async function settleMarket(admin: Session, marketId: string): Promise<void> {
   await call('POST', `${LEDGER_URL}/ledger/markets/${marketId}/settlement`, admin.accessToken)
