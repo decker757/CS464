@@ -73,10 +73,6 @@ class LotReplay:
     q: tuple[Decimal, ...]
     traders: frozenset[uuid.UUID]
 
-    @property
-    def total_owed(self) -> Decimal:
-        return sum(self.owed.values(), _ZERO_AMOUNT)
-
 
 @dataclass(frozen=True)
 class Cut:
