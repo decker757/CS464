@@ -44,6 +44,7 @@ from unit_test.conftest import close_request as _close
 from unit_test.conftest import market_terms as _request
 from unit_test.conftest import proposal_request as _proposal
 from unit_test.conftest import rejection_request as _rejection
+from unit_test.conftest import void_request as _void
 
 _ENTRIES = text(
     "SELECT * FROM audit.admin_actions WHERE actor_id = :actor "
@@ -988,7 +989,7 @@ async def test_a_publication_whose_entry_fails_leaves_the_market_submitted(
     }
 
 
-# The five below patch the `market_audit` writer rather than `audit.record`,
+# The ones below patch the `market_audit` writer rather than `audit.record`,
 # so they hold wherever the shared writer lives.
 async def test_an_early_close_whose_entry_fails_leaves_the_market_open(
     session: AsyncSession,
@@ -1109,6 +1110,32 @@ async def test_a_settle_whose_entry_fails_leaves_the_market_approved(
 
     assert status is MarketStatus.APPROVED
     assert await _entries(audit_reader, settler) == []
+
+
+async def test_a_void_whose_entry_fails_leaves_the_market_closed(
+    session: AsyncSession,
+    audit_reader: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0006, for the entry ADR 0025 adds: the void route can be called
+    directly, refunding nobody, so a market must not reach VOIDED unobserved."""
+    creator, voider = _actor(), _actor(username="ihsan_b")
+    market_id = (await closed_market(session, creator)).id
+    monkeypatch.setattr(market_audit, "record_marked_voided", _fail_to_record)
+
+    with pytest.raises(_AuditInsertFailed):
+        await market_service.void(session, voider, market_id, _void())
+    await session.rollback()
+
+    async with get_session_factory()() as fresh:
+        stored = await market_service.get(fresh, creator.id, market_id)
+        status = stored.status
+        voided_at, void_reason = stored.voided_at, stored.void_reason
+
+    assert status is MarketStatus.CLOSED
+    assert voided_at is None
+    assert void_reason is None
+    assert await _entries(audit_reader, voider) == []
 
 
 async def test_an_entry_is_not_committed_by_its_writer(

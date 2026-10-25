@@ -8,6 +8,7 @@ prices from `b` and the subsidy here (D-008, D-016).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from model.entities import Market, MarketStatus
+from service.audit import Actor
 from unit_test.conftest import (
     SOURCE_URL,
     VOID_REASON,
@@ -470,48 +472,41 @@ async def test_the_browse_list_derived_status_reaches_the_wire_too(
     assert [m["status"] for m in payload["markets"]] == [MarketStatus.OPEN.value]
 
 
-# --- [3.4] #12: settled, and settleable ------------------------------------
-async def test_the_browse_accepts_a_settled_filter(
-    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+# --- [3.4] #12, [BE] #221: settled and voided, and settleable --------------
+@pytest.mark.parametrize(
+    ("build", "status", "build_decoy"),
+    [
+        (settled_market, "settled", approved_market),
+        (voided_market, "voided", settled_market),
+    ],
+    ids=["settled", "voided"],
+)
+async def test_the_browse_accepts_a_finished_status_filter(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    build: Callable[[AsyncSession, Actor], Awaitable[Market]],
+    status: str,
+    build_decoy: Callable[[AsyncSession, Actor], Awaitable[Market]],
 ) -> None:
-    """[3.4] #12: `settled` "is an accepted status on the trader browse".
+    """[3.4] #12: `settled` "is an accepted status on the trader browse". ADR
+    0025: `voided` is "an accepted value of the trader browse's `status`
+    filter, as `settled` is".
 
-    The literal string, so it fails while `PublicMarketStatus` lacks it. The
-    approved decoy fails a filter that matches every decided market.
+    The literal string, so a case fails while `PublicMarketStatus` lacks it.
+    The approved decoy fails a settled filter that matches every decided
+    market; the settled decoy, a voided filter that matches every finished
+    one.
     """
     await _published(session)
-    await approved_market(session, actor())
-    settled_id = (await settled_market(session, actor())).id
+    await build_decoy(session, actor())
+    finished_id = (await build(session, actor())).id
 
-    response = await client.get(
-        _LIST, params={"status": "settled"}, headers=trader_headers
-    )
+    response = await client.get(_LIST, params={"status": status}, headers=trader_headers)
 
     assert response.status_code == 200
-    assert [m["id"] for m in response.json()["markets"]] == [str(settled_id)]
-    assert response.json()["markets"][0]["status"] == "settled"
-
-
-# --- [BE] #221: voided ---------------------------------------------------------
-async def test_the_browse_accepts_a_voided_filter(
-    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
-) -> None:
-    """ADR 0025: `voided` is "an accepted value of the trader browse's
-    `status` filter, as `settled` is".
-
-    The literal string, so it fails while `PublicMarketStatus` lacks it. The
-    settled decoy fails a filter that matches every finished market.
-    """
-    await settled_market(session, actor())
-    voided_id = (await voided_market(session, actor())).id
-
-    response = await client.get(
-        _LIST, params={"status": "voided"}, headers=trader_headers
-    )
-
-    assert response.status_code == 200
-    assert [m["id"] for m in response.json()["markets"]] == [str(voided_id)]
-    assert response.json()["markets"][0]["status"] == "voided"
+    assert [m["id"] for m in response.json()["markets"]] == [str(finished_id)]
+    assert response.json()["markets"][0]["status"] == status
 
 
 async def test_the_detail_carries_a_voided_markets_reason_and_time(
