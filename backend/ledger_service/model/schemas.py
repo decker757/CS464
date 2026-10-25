@@ -852,6 +852,81 @@ class SettlementOut(BaseModel):
     )
 
 
+class VoidIn(BaseModel):
+    """The body of a void: why, and nothing else. [BE] #221, ADR 0025.
+
+    Split as `AdminCancelIn` splits its reason: the key and the 5,000-character
+    ceiling, market_service's for every reason it stores, are shape, checked
+    here as `422 invalid_request`; the floor of ten characters once trimmed is
+    content, so a short reason parses and `service/voiding.py` refuses it as
+    `void_incomplete`. `extra="forbid"`, `SettlementIn`'s reason: a body
+    naming an outcome, a holder or an amount is refused, not dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(
+        max_length=5000,
+        description=(
+            "Why the market is voided. At least 10 characters once trimmed. "
+            "Stored trimmed, on this service's record and on the market, "
+            "where traders read it, and in the audit log."
+        ),
+        examples=["The match was abandoned after ten overs; there is no result."],
+    )
+
+
+class VoidOut(BaseModel):
+    """What one void refunded. [BE] #221, ADR 0025.
+
+    Built from `service/voiding.py::VoidResult`, which is the same on the
+    request that refunds and on every repeat, so a repeat returns this
+    byte for byte.
+    """
+
+    market_id: uuid.UUID
+    reason: str = Field(
+        description=(
+            "The reason recorded by the void that refunded, trimmed. On a "
+            "repeat, that one, not the repeating administrator's."
+        )
+    )
+    voided_by: uuid.UUID = Field(
+        description="The administrator whose request refunded. On a repeat, the same."
+    )
+    recorded_at: datetime = Field(
+        description=(
+            "When the void was recorded, with its UTC offset: read after the "
+            "book lock, the same instant as the audit entry's."
+        )
+    )
+    positions_refunded: int = Field(
+        description=(
+            "The positions refunded more than zero. One holder of two "
+            "outcomes counts twice."
+        )
+    )
+    total_owed: Decimal = Field(
+        description="What the refunds add up to before any cut."
+    )
+    total_refunded: Decimal = Field(
+        description="What was refunded. Equal to `total_owed` unless refunds were cut."
+    )
+    refunds_cut: bool = Field(
+        description=(
+            "True when the pool plus one seed could not cover `total_owed`, so "
+            "every refund was cut by the same fraction."
+        )
+    )
+    residue: Decimal = Field(
+        description=(
+            "What moved between the pool and the platform after the refunds, "
+            "signed. Positive went to the platform, negative came from it, and "
+            "the pool ends at exactly 0.0000 either way."
+        )
+    )
+
+
 # One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared
 # separately and field for field the same — same three fields, same bounds,
 # same `str(value)` serializer — with only `OutcomePrice` pinned against
