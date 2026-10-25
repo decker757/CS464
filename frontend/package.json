@@ -12,7 +12,8 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "knip": "knip",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "seed:demo": "playwright test --config e2e/seed/seed.config.ts"
   },
   "dependencies": {
     "axios": "^1.20.0",
