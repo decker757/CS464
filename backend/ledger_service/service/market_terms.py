@@ -18,6 +18,7 @@ import httpx
 
 from core.config import get_settings
 from core.errors import (
+    LedgerError,
     MarketNotFound,
     MarketTermsUnavailable,
     NotAuthenticated,
@@ -298,43 +299,76 @@ async def fetch(
     return _parse(market_id, body)
 
 
+async def _confirm(
+    market_id: uuid.UUID,
+    step: str,
+    *,
+    body: dict[str, str] | None,
+    access_token: str,
+    terms_client: httpx.AsyncClient,
+    error: type[LedgerError],
+    action: str,
+) -> None:
+    """Send market_service's last step, `POST /markets/{market_id}/{step}`,
+    with `body` as JSON if there is one and the administrator's token.
+
+    Returns `None` on a `200` and raises `error` on anything else, including
+    `httpx.RequestError`. The response body is never read, and the 404 cache
+    is neither consulted nor fed: a 404 here comes from a market whose book
+    exists. Logs the failure at ERROR, naming `action`, the market and what
+    came back, because the money has moved and the market stays unmarked
+    until a person repeats the request. DECISIONS.md,
+    "`market_terms.mark_settled` accepts only a `200`".
+    """
+    try:
+        response = await terms_client.post(
+            f"/markets/{market_id}/{step}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=body,
+        )
+    except httpx.RequestError as exc:
+        _log.error(
+            "%s of market %s was not confirmed: %s",
+            action,
+            market_id,
+            type(exc).__name__,
+        )
+        raise error from exc
+
+    if response.status_code != 200:
+        _log.error(
+            "%s of market %s was not confirmed: market_service answered %s",
+            action,
+            market_id,
+            response.status_code,
+        )
+        raise error
+
+
 async def mark_settled(
     market_id: uuid.UUID,
     *,
     access_token: str,
     terms_client: httpx.AsyncClient,
 ) -> None:
-    """Tell market_service the payouts committed: `POST /markets/{id}/settle`.
+    """Tell market_service the payouts committed: `POST /markets/{id}/settle`,
+    with no body.
 
     Returns `None` on a `200` and raises `SettlementUnconfirmed` on anything
-    else, including `httpx.RequestError`. The response body is never read, and
-    the 404 cache is neither consulted nor fed: a 404 here comes from a market
-    whose book exists. Logs the failure at ERROR, the only 503 in the service
-    logged above WARNING, because it leaves money moved and the market unmarked
-    until a person repeats the request. DECISIONS.md, "`market_terms.mark_settled`
-    accepts only a `200`".
+    else, through `_confirm`, which logs it at ERROR. `mark_voided`'s
+    `void_unconfirmed` is the only other 503 in the service logged above
+    WARNING, for the same reason: money moved and the market unmarked until a
+    person repeats the request.
     """
-    try:
-        response = await terms_client.post(
-            f"/markets/{market_id}/settle",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    except httpx.RequestError as exc:
-        _log.error(
-            "settlement of market %s was not confirmed: %s",
-            market_id,
-            type(exc).__name__,
-        )
-        raise SettlementUnconfirmed from exc
-
-    if response.status_code != 200:
-        _log.error(
-            "settlement of market %s was not confirmed: market_service "
-            "answered %s",
-            market_id,
-            response.status_code,
-        )
-        raise SettlementUnconfirmed
+    await _confirm(
+        market_id,
+        "settle",
+        body=None,
+        access_token=access_token,
+        terms_client=terms_client,
+        error=SettlementUnconfirmed,
+        action="settlement",
+    )
 
 
 async def mark_voided(
@@ -348,28 +382,15 @@ async def mark_voided(
     with `{"reason": ...}`, the reason the ledger recorded.
 
     Returns `None` on a `200` and raises `VoidUnconfirmed` on anything else,
-    including `httpx.RequestError`. The response body is never read, and the
-    404 cache is neither consulted nor fed, as for `mark_settled`. Logs the
-    failure at ERROR, for `mark_settled`'s reason: the refunds have moved and
-    the market is unmarked until a person repeats the request. ADR 0025,
-    step 8.
+    through `_confirm`, which logs it at ERROR as it logs `mark_settled`'s.
+    ADR 0025, step 8.
     """
-    try:
-        response = await terms_client.post(
-            f"/markets/{market_id}/void",
-            headers={"Authorization": f"Bearer {access_token}"},
-            json={"reason": reason},
-        )
-    except httpx.RequestError as exc:
-        _log.error(
-            "void of market %s was not confirmed: %s", market_id, type(exc).__name__
-        )
-        raise VoidUnconfirmed from exc
-
-    if response.status_code != 200:
-        _log.error(
-            "void of market %s was not confirmed: market_service answered %s",
-            market_id,
-            response.status_code,
-        )
-        raise VoidUnconfirmed
+    await _confirm(
+        market_id,
+        "void",
+        body={"reason": reason},
+        access_token=access_token,
+        terms_client=terms_client,
+        error=VoidUnconfirmed,
+        action="void",
+    )

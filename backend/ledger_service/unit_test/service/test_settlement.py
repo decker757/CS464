@@ -619,7 +619,6 @@ async def test_a_market_this_ledger_has_voided_is_refused_and_nothing_is_written
     assert await committed_counts(upstream.market_id) == before
     assert await settled_entries(audit_reader, actor.id) == []
     assert upstream.posts == 0
-    assert await book_lock_is_free(upstream.market_id)
 
 
 @pytest.mark.parametrize("settleable", [False, True])

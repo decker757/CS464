@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import SCHEMA
 from unit_test.market_fixtures import market_with_outcomes
 from unit_test.schema_fixtures import refusing_constraint
+from unit_test.settlement_fixtures import voided_row
 
 LIQUIDITY_B = Decimal("100.0000")
 
@@ -42,21 +43,6 @@ def _result(market_id: uuid.UUID, outcome_id: uuid.UUID | None):
         kind=_entities().ResultKind.SETTLED,
         outcome_id=outcome_id,
         recorded_at=datetime.now(UTC),
-    )
-
-
-def _voided(market_id: uuid.UUID, **overrides):
-    """The row a void writes: no outcome, a reason and the administrator.
-    `overrides` replaces one column, so a refusal names one rule."""
-    columns = {
-        "kind": _entities().ResultKind.VOIDED,
-        "outcome_id": None,
-        "reason": "The event was cancelled; there is no result.",
-        "voided_by": uuid.uuid4(),
-    }
-    columns.update(overrides)
-    return _entities().MarketResult(
-        market_id=market_id, recorded_at=datetime.now(UTC), **columns
     )
 
 
@@ -156,7 +142,7 @@ async def test_a_voided_result_with_a_reason_an_administrator_and_no_outcome_is_
     market_id, _ = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
     voided_by = uuid.uuid4()
 
-    session.add(_voided(market_id, voided_by=voided_by))
+    session.add(voided_row(market_id, voided_by=voided_by))
     await session.flush()
     session.expire_all()
 
@@ -182,7 +168,7 @@ async def test_a_voided_result_naming_an_outcome_is_refused(
     kind to test until now."""
     market_id, outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
 
-    session.add(_voided(market_id, outcome_id=outcome_ids[0]))
+    session.add(voided_row(market_id, outcome_id=outcome_ids[0]))
 
     with pytest.raises(IntegrityError) as refusal:
         await session.flush()
@@ -209,7 +195,7 @@ async def test_a_reason_and_an_administrator_are_set_exactly_on_a_voided_result(
     so only its own CHECK can refuse."""
     market_id, outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
     if kind == "voided":
-        row = _voided(market_id, **{column: None})
+        row = voided_row(market_id, **{column: None})
     else:
         row = _result(market_id, outcome_ids[0])
         setattr(row, column, "A reason." if column == "reason" else uuid.uuid4())

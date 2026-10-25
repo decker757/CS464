@@ -10,6 +10,8 @@ to.
 
 from __future__ import annotations
 
+import dataclasses
+import re
 import uuid
 from decimal import Decimal
 
@@ -228,11 +230,16 @@ def test_a_position_sold_to_zero_is_not_a_disagreement() -> None:
     )
 
 
+_NOT_THE_POSITIONS = "the shares left in the lots are not the positions"
+
+
 @pytest.mark.parametrize(
-    "book",
+    ("book", "message"),
     [
         pytest.param(
-            {"positions": {(HOLDER, 0): Decimal("4")}}, id="a-position-missing"
+            {"positions": {(HOLDER, 0): Decimal("4")}},
+            _NOT_THE_POSITIONS,
+            id="a-position-missing",
         ),
         pytest.param(
             {
@@ -242,23 +249,30 @@ def test_a_position_sold_to_zero_is_not_a_disagreement() -> None:
                     (THIRD, 1): Decimal("1"),
                 }
             },
+            _NOT_THE_POSITIONS,
             id="a-position-with-no-trades",
         ),
         pytest.param(
             {"positions": {(HOLDER, 0): Decimal("4"), (OTHER, 1): Decimal("2.0001")}},
+            _NOT_THE_POSITIONS,
             id="a-position-off-by-a-tick",
         ),
-        pytest.param({"q": [Decimal("4"), Decimal("3")]}, id="q"),
-        pytest.param({"state_version": 3}, id="the-book-past-the-last-trade"),
+        pytest.param({"q": [Decimal("4"), Decimal("3")]}, "the replay ends at q =", id="q"),
+        pytest.param(
+            {"state_version": 3},
+            "the trades end at 2, the book at 3",
+            id="the-book-past-the-last-trade",
+        ),
     ],
 )
-def test_a_replay_that_disagrees_with_the_book_is_refused(book: dict) -> None:
+def test_a_replay_that_disagrees_with_the_book_is_refused(book: dict, message: str) -> None:
     """ADR 0025, "The guard": the shares left against the positions, compared
     both ways, so a position with shares and no trades is caught too; the
     replayed `q` against the book's; and the last trade's version against the
     book's `state_version`, the half of the version check that is the void's
-    alone."""
-    with pytest.raises(ValueError):
+    alone. Each case names the check that refuses it, so a refusal from
+    another check does not pass for this one."""
+    with pytest.raises(ValueError, match=re.escape(message)):
         _guarded(_trades(*_TWO_HOLDERS), **book)
 
 
@@ -266,7 +280,7 @@ def test_a_version_gap_is_refused_by_the_guard() -> None:
     """The half of the version check the price history shares: versions 1 and
     3, with the book at 3, so only the run from 1 can refuse."""
     trades = _trades(*_TWO_HOLDERS)
-    gapped = [trades[0], VoidTrade(**{**trades[1].__dict__, "state_version": 3})]
+    gapped = [trades[0], dataclasses.replace(trades[1], state_version=3)]
 
     with pytest.raises(ValueError, match="expected state_version 2, got 3"):
         _guarded(gapped, state_version=3)
@@ -276,7 +290,7 @@ def test_a_market_nobody_traded_passes_the_guard_only_at_version_zero() -> None:
     """No trades end at version 0, so a book at 0 agrees and one at 1 does
     not."""
     _guarded([], state_version=0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="the trades end at 0, the book at 1"):
         _guarded([], state_version=1)
 
 
