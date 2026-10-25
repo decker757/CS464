@@ -25,7 +25,9 @@ from unit_test.settlement_fixtures import (
     admin,
     book_lock_waiters,
     finish,
-    queued_on_the_book_or_finished,
+    ON_ANY_LOCK,
+    ON_THE_BOOK,
+    queued_or_finished,
     raise_any,
     reached,
     result_count,
@@ -49,7 +51,6 @@ from unit_test.void_fixtures import (
     figures,
     gate_open_view,
     open_book,
-    queued_on_a_lock_or_finished,
     refunds_by_holder,
     trade,
     void,
@@ -265,7 +266,7 @@ async def test_a_placement_that_took_the_lock_first_is_in_the_replay_and_release
         tasks = [asyncio.create_task(run_placement()), void_task]
         try:
             await reached(pause.reached, "the placement never held the book lock", tasks)
-            await queued_on_a_lock_or_finished(void_task)
+            await queued_or_finished(void_task, query_like=ON_ANY_LOCK)
         finally:
             outcomes = await finish(tasks, pause.release, pause.reached)
     finally:
@@ -483,7 +484,8 @@ async def test_a_void_and_an_administrators_cancel_serialise_on_the_book(
         tasks = [void_task, cancel_task]
         try:
             await reached(pause.reached, f"the {first} never held the book lock", tasks)
-            await queued_on_the_book_or_finished(cancel_task if first == "void" else void_task)
+            queued = cancel_task if first == "void" else void_task
+            await queued_or_finished(queued, query_like=ON_THE_BOOK)
         finally:
             outcomes = await finish(tasks, pause.release, pause.reached)
     finally:

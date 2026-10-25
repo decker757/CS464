@@ -9,7 +9,6 @@ name fails each test on its own rather than collection (D-007).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
@@ -18,14 +17,13 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
-import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import mint_token, terms_client_over
 from unit_test.sell_fixtures import version_of
 from unit_test.settlement_fixtures import _audit_rows, _audit_table, admin, admin_token
-from unit_test.trade_fixtures import PROBE_TIMEOUT, books, buy, entities
+from unit_test.trade_fixtures import books, buy, entities
 
 ZERO = Decimal(0)
 REASON = "The match was abandoned after ten overs; there is no result."
@@ -211,7 +209,7 @@ async def void(
     )
 
 
-def refund_key(market_id: uuid.UUID, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
+def refund_key(market_id: uuid.UUID, *, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
     """Restated, not imported: the key is the portfolio's join condition, so a
     change to it must turn a test red rather than follow along."""
     return f"void-refund:{market_id}:{user_id}:{outcome_id}"
@@ -252,39 +250,6 @@ async def voided_entries(reader: AsyncSession, *actor_ids: uuid.UUID) -> list:
         table.c.action_type == "market.voided",
         table.c.actor_id.in_(actor_ids),
     )
-
-
-_LOCK_WAITERS = text(
-    "SELECT count(*) FROM pg_stat_activity "
-    "WHERE datname = current_database() "
-    "AND usename = current_user "
-    "AND wait_event_type = 'Lock' "
-    "AND pid <> pg_backend_pid()"
-)
-
-
-async def queued_on_a_lock_or_finished(party: asyncio.Task) -> None:
-    """Return once a backend waits on any lock or `party` has finished,
-    whichever comes first, or fail on the timeout.
-
-    `queued_on_the_book_or_finished` for a party that, with its book lock
-    removed, still queues, on a lock its query text does not name: a void's
-    record is an INSERT into `market_results`, whose foreign key takes a share
-    lock on the book row another party holds `FOR UPDATE`. Only for a test
-    whose every other party is paused in Python rather than in Postgres, so
-    the waiting backend can only be `party`'s.
-    """
-    from core.database import get_engine  # noqa: PLC0415
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + PROBE_TIMEOUT
-    while not party.done():
-        async with get_engine().connect() as conn:
-            if (await conn.execute(_LOCK_WAITERS)).scalar_one() == 1:
-                return
-        if loop.time() > deadline:
-            pytest.fail("timed out: the party neither queued on a lock nor finished")
-        await asyncio.sleep(0.01)
 
 
 def figures(result) -> tuple:  # noqa: ANN001

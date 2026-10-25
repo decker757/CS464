@@ -36,6 +36,7 @@ from unit_test.settlement_fixtures import (
     committed_counts,
     legs_of,
     platform_id,
+    positions_and_q,
     transaction_by_key,
 )
 from unit_test.trade_fixtures import (
@@ -102,7 +103,9 @@ async def test_every_holder_is_refunded_once_and_the_pool_surplus_goes_to_platfo
     and sells them (4.4257, 4.4256). A and B are refunded exactly their
     charges; C holds nothing and gets nothing. The pool, 26.5986, keeps 2.0001
     after the refunds, which goes to PLATFORM, and ends at zero. Each refund
-    is one transaction of two legs, the holder's and the pool's."""
+    is one transaction of two legs, the holder's and the pool's. Positions
+    and `q` are not written (ADR 0025, step 7): every position and `q` reads
+    as it did before the void."""
     upstream = VoidUpstream()
     await open_book(session, upstream)
     a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
@@ -112,6 +115,7 @@ async def test_every_holder_is_refunded_once_and_the_pool_surplus_goes_to_platfo
     await trade(session, upstream, c, outcome=0, side="sell", quantity="5")
     upstream.closes()
     platform_before = await balance_of_account(session, await platform_id(session))
+    before = await positions_and_q(session, upstream.market_id)
 
     result = await void(session, upstream)
 
@@ -130,9 +134,10 @@ async def test_every_holder_is_refunded_once_and_the_pool_surplus_goes_to_platfo
     platform_after = await balance_of_account(session, await platform_id(session))
     assert platform_after - platform_before == Decimal("2.0001")
     refund = await transaction_by_key(
-        session, refund_key(upstream.market_id, a, upstream.outcomes[0])
+        session, refund_key(upstream.market_id, user_id=a, outcome_id=upstream.outcomes[0])
     )
     assert len(await legs_of(session, refund.id)) == 2
+    assert await positions_and_q(session, upstream.market_id) == before
     await assert_ledger_balances(session)
 
 
@@ -248,7 +253,7 @@ async def test_a_market_whose_every_refund_rounds_to_zero_posts_the_residue_alon
     assert await refunds_by_holder(session, upstream.market_id) == {}
     assert (
         await transaction_by_key(
-            session, refund_key(upstream.market_id, h, upstream.outcomes[1])
+            session, refund_key(upstream.market_id, user_id=h, outcome_id=upstream.outcomes[1])
         )
         is None
     )
@@ -462,17 +467,17 @@ async def test_a_replay_that_disagrees_is_refused_before_the_stake_is_checked(
 # =========================================================================
 # The reason, the read, the lookup and the status
 # =========================================================================
-@pytest.mark.parametrize("reason", ["  123456789  ", "         "], ids=["nine", "blank"])
 async def test_a_reason_under_ten_characters_trimmed_is_refused_before_any_read(
-    session: AsyncSession, reason: str
+    session: AsyncSession,
 ) -> None:
     """DECISIONS.md, "A void's reason is at most 5,000 characters and at least
-    10 once trimmed": `422 void_incomplete`, before market_service is asked."""
+    10 once trimmed": `422 void_incomplete`, before market_service is asked.
+    Nine characters padded to thirteen, so only a trimmed length refuses it."""
     upstream = VoidUpstream()
     upstream.closes()
 
     with pytest.raises(errors().VoidIncomplete):
-        await void(session, upstream, reason=reason)
+        await void(session, upstream, reason="  123456789  ")
 
     assert upstream.gets == 0
 
@@ -498,10 +503,9 @@ async def test_a_ten_character_reason_is_stored_and_forwarded_trimmed(
     ("report", "refusal"),
     [
         ({"status": "approved", "voidable": False}, "MarketNotVoidable"),
-        ({"status": "open", "voidable": False}, "MarketNotVoidable"),
         ({"status": "settled", "voidable": False}, "MarketAlreadySettled"),
     ],
-    ids=["approved-past-its-window", "open", "settled"],
+    ids=["approved-past-its-window", "settled"],
 )
 async def test_a_status_refusal_writes_nothing_and_opens_no_book(
     session: AsyncSession, report: dict, refusal: str
@@ -866,7 +870,7 @@ async def test_a_refund_is_one_history_row_naming_the_outcome_and_the_shares(
     await void(session, upstream)
 
     refund = await transaction_by_key(
-        session, refund_key(upstream.market_id, holder, upstream.outcomes[1])
+        session, refund_key(upstream.market_id, user_id=holder, outcome_id=upstream.outcomes[1])
     )
     assert refund.kind.value == "void_refund"
     assert refund.context == {

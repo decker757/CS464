@@ -54,7 +54,8 @@ from unit_test.settlement_fixtures import (
     admin,
     entries_naming,
     finish,
-    queued_on_the_book_or_finished,
+    ON_THE_BOOK,
+    queued_or_finished,
     reached,
 )
 from unit_test.trade_fixtures import (
@@ -151,7 +152,7 @@ async def _fill_then_cancel(
         tasks = [trade_task, cancel_task]
         try:
             await reached(pause.reached, "the trade never reached its cascade", tasks)
-            await queued_on_the_book_or_finished(cancel_task)
+            await queued_or_finished(cancel_task, query_like=ON_THE_BOOK)
         finally:
             outcomes = await finish(tasks, pause.release, pause.reached)
     finally:
@@ -258,7 +259,7 @@ async def test_a_cancel_that_takes_the_book_first_leaves_the_order_unfilled(
         tasks = [cancel_task, trade_task]
         try:
             await reached(pause.reached, "the cancel never read the order", tasks)
-            await queued_on_the_book_or_finished(trade_task)
+            await queued_or_finished(trade_task, query_like=ON_THE_BOOK)
         finally:
             cancelled, traded = await finish(tasks, pause.release, pause.reached)
     finally:
@@ -328,7 +329,7 @@ async def _admin_and_owner_cancel(
         tasks = [admin_task, owner_task]
         try:
             await reached(pause.reached, "the first cancel never read the order", tasks)
-            await queued_on_the_book_or_finished(second_task)
+            await queued_or_finished(second_task, query_like=ON_THE_BOOK)
         finally:
             answers = await finish(tasks, pause.release, pause.reached)
     finally:
