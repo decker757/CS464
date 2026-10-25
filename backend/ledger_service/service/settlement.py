@@ -85,6 +85,16 @@ class SettlementResult:
 
 
 @dataclass(frozen=True)
+class PoolTotal:
+    """One kind's transactions on a market's pool: how many, and what they
+    took out of it, signed, so a residue that came from PLATFORM is
+    negative."""
+
+    count: int
+    taken: Decimal
+
+
+@dataclass(frozen=True)
 class _Winner:
     """One holder of the winning outcome, and their USER account."""
 
@@ -140,7 +150,7 @@ async def _replay(
     """Answer a recorded settlement from its entries, write nothing, and tell
     market_service again.
 
-    One `GROUP BY` kind over the pool's settlement entries: the count and sum
+    `pool_totals_of` over the pool's settlement entries: the count and sum
     of the payout legs, and the residue leg. The record's own values are
     taken before the rollback, which expires it; the rollback also releases
     the book lock when a locked lookup found the record. No statement runs
@@ -151,31 +161,20 @@ async def _replay(
     recorded_at = record.recorded_at
     assert outcome_id is not None  # a settled row names its winner, by CHECK
 
-    stmt = (
-        select(Transaction.kind, func.count(Entry.id), func.sum(Entry.amount))
-        .join(Entry, Entry.transaction_id == Transaction.id)
-        .join(MarketBook, MarketBook.pool_account_id == Entry.account_id)
-        .where(
-            MarketBook.market_id == market_id,
-            Transaction.kind.in_(
-                [TransactionKind.SETTLEMENT, TransactionKind.SETTLEMENT_RESIDUE]
-            ),
-        )
-        .group_by(Transaction.kind)
+    totals = await pool_totals_of(
+        session,
+        market_id,
+        [TransactionKind.SETTLEMENT, TransactionKind.SETTLEMENT_RESIDUE],
     )
-    by_kind = {
-        kind: (count, total) for kind, count, total in (await session.execute(stmt)).all()
-    }
-    holders_paid, paid_from_pool = by_kind.get(TransactionKind.SETTLEMENT, (0, ZERO))
-    _, residue_from_pool = by_kind.get(TransactionKind.SETTLEMENT_RESIDUE, (0, ZERO))
+    payouts = totals[TransactionKind.SETTLEMENT]
 
     result = _result_of(
         market_id,
         outcome_id=outcome_id,
         recorded_at=recorded_at,
-        holders_paid=holders_paid,
-        total_paid=-paid_from_pool,
-        residue=-residue_from_pool,
+        holders_paid=payouts.count,
+        total_paid=payouts.taken,
+        residue=totals[TransactionKind.SETTLEMENT_RESIDUE].taken,
     )
 
     await session.rollback()
@@ -262,6 +261,27 @@ def _payout_of(
             "quantity": str(winner.quantity),
         },
     )
+
+
+async def pool_totals_of(
+    session: AsyncSession, market_id: uuid.UUID, kinds: Sequence[TransactionKind]
+) -> dict[TransactionKind, PoolTotal]:
+    """Each of `kinds`, counted and summed over its entries on the market's
+    pool account, in one `GROUP BY` kind. A kind with no entry reads as none
+    taken. The repeat's figures for settlement and the void, which differ
+    only in the kinds."""
+    stmt = (
+        select(Transaction.kind, func.count(Entry.id), func.sum(Entry.amount))
+        .join(Entry, Entry.transaction_id == Transaction.id)
+        .join(MarketBook, MarketBook.pool_account_id == Entry.account_id)
+        .where(MarketBook.market_id == market_id, Transaction.kind.in_(kinds))
+        .group_by(Transaction.kind)
+    )
+    totals = {kind: PoolTotal(count=0, taken=ZERO) for kind in kinds}
+    for kind, count, pool_sum in (await session.execute(stmt)).all():
+        # The pool's own legs: negative is what left it.
+        totals[kind] = PoolTotal(count=count, taken=-pool_sum)
+    return totals
 
 
 def residue_of(
