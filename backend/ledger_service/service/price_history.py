@@ -72,15 +72,10 @@ def _replayed_trade_of(row: Row, position_of: Mapping[uuid.UUID, int]) -> Replay
 async def _replayed_trades_of(
     session: AsyncSession, pool_account_id: uuid.UUID, outcomes: Sequence[Row]
 ) -> list[ReplayedTrade]:
-    """Every trade on the pool's feed, oldest first.
-
-    Ordered like `ix_ledger_entries_account_feed`, so the order is the order
-    the trades committed in, which is `state_version` order.
-    """
+    """Every trade on the pool's feed, oldest first, in `state_version`
+    order (`ledger_service.pool_trades_oldest_first`)."""
     position_of = {row.outcome_id: row.position for row in outcomes}
-    query = ledger_service.pool_trade_query(pool_account_id).order_by(
-        Entry.created_at, Entry.id
-    )
+    query = ledger_service.pool_trades_oldest_first(pool_account_id)
     rows = (await session.execute(query)).all()
     return [_replayed_trade_of(row, position_of) for row in rows]
 

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
+import { useMarketClock } from '../../hooks/useMarketClock'
 import { formatTimeAgo } from '../../utils/formatDateTime'
 import { formatPrice } from '../../utils/formatPrice'
 import Button from '../ui/Button'
@@ -18,11 +18,6 @@ interface MarketCardProps {
   /** Reads this market's snapshot again, behind the Retry control. */
   onRetryPrice?: () => void
 }
-
-// How often the card re-reads the clock. The countdown's smallest unit is a
-// minute, so ten seconds keeps it honest to within a tick without re-rendering
-// the grid every second.
-const COUNTDOWN_TICK_MS = 10_000
 
 // What a market nobody has traded says instead of a price. An untouched LMSR
 // book sits at its seed — a uniform 50.0% on a binary market — so a grid of
@@ -48,13 +43,9 @@ const PRICES_LOADING = 'Loading prices…'
 const PRICES_FAILED = 'Prices could not be loaded.'
 
 export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice }: MarketCardProps) {
-  // A countdown computed once at render freezes, and a frozen one says a market
-  // is still trading after it has closed. Trading stops on the clock, not when
-  // the sweep writes CLOSED (ADR 0011), so the card keeps its own clock.
-  const [now, setNow] = useState(() => new Date())
-  // A market that has already stopped reads "Closed" for as long as the tab is
-  // open, so there is nothing for a clock to change. The last tick before this
-  // turns true is the one that writes "Closed", and it stops the clock itself.
+  // The card keeps a clock for its countdown, and stops it once the market
+  // has stopped trading (useMarketClock).
+  const now = useMarketClock(market)
   const hasStopped = tradingStopped(market.status, market.close_time, now)
   // Zero is the book's own statement that it has never been traded, and the
   // only thing that distinguishes that from a market the crowd has priced at
@@ -77,12 +68,6 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
   // list's "Prices updated" line is what goes stale.
   const isLoadingPrices = !snapshot && !priceReadFailed
   const hasFailedPrices = !snapshot && priceReadFailed
-
-  useEffect(() => {
-    if (hasStopped) return
-    const ticker = setInterval(() => setNow(new Date()), COUNTDOWN_TICK_MS)
-    return () => clearInterval(ticker)
-  }, [hasStopped])
 
   return (
     <Card interactive className="h-full">

@@ -10,6 +10,7 @@ not move.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -26,6 +27,7 @@ from unit_test.conftest import (
     published_market_closing_at,
     settleable_edge,
     settled_market,
+    voided_market,
 )
 
 # The one place the path is written.
@@ -114,24 +116,37 @@ async def test_an_unknown_status_filter_is_422(
     assert _status_error_is_on_the_query(response.json())
 
 
-async def test_settled_is_an_accepted_overview_filter(
+@pytest.mark.parametrize(
+    ("build", "status", "build_decoy"),
+    [
+        (settled_market, "settled", approved_market),
+        (voided_market, "voided", settled_market),
+    ],
+    ids=["settled", "voided"],
+)
+async def test_a_finished_status_is_an_accepted_overview_filter(
     client: AsyncClient,
     session: AsyncSession,
     admin_id: uuid.UUID,
     admin_headers: dict[str, str],
+    build: Callable[[AsyncSession, Actor], Awaitable[Market]],
+    status: str,
+    build_decoy: Callable[[AsyncSession, Actor], Awaitable[Market]],
 ) -> None:
-    """[3.4] #12: "`settled` appears in [2.1] #5's overview filter". The literal
-    string, so it fails while `MarketStatus` lacks the member; the approved
-    decoy fails a filter that matches every decided market."""
-    await approved_market(session, _admin(admin_id))
-    settled_id = (await settled_market(session, _admin(admin_id))).id
+    """[3.4] #12: "`settled` appears in [2.1] #5's overview filter"; ADR 0025:
+    "The overview accepts `voided` in its filter". The literal string, so a
+    case fails while `MarketStatus` lacks the member; the approved decoy fails
+    a settled filter that matches every decided market, the settled decoy a
+    voided filter that matches every finished one."""
+    await build_decoy(session, _admin(admin_id))
+    finished_id = (await build(session, _admin(admin_id))).id
 
     response = await client.get(
-        _OVERVIEW, params={"status": "settled"}, headers=admin_headers
+        _OVERVIEW, params={"status": status}, headers=admin_headers
     )
 
     assert response.status_code == 200
-    assert [row["id"] for row in response.json()["markets"]] == [str(settled_id)]
+    assert [row["id"] for row in response.json()["markets"]] == [str(finished_id)]
 
 
 # --- what reaches the wire -------------------------------------------------

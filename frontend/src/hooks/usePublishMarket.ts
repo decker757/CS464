@@ -56,7 +56,7 @@ const SUPERSEDING_CODES = new Set([
  * because it can reopen those fields for a resubmission (#381).
  * `marketId` may be null while a caller has not got one yet; publishing is
  * then refused here rather than guarded at each call site. Publication is one
- * way (ADR 0008), which is why the row confirms it first. */
+ * way (ADR 0008), which is why both screens confirm it first (#512). */
 export function usePublishMarket(
   marketId: string | null,
   onPublished: () => void,

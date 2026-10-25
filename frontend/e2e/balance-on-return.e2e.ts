@@ -1,5 +1,5 @@
 import { expect, test } from './support/fixtures'
-import { approveOutcome, backdateDisputeWindow, buy, closeEarly, proposeOutcome, publishMarket, registerAdmin, registerTrader, settle, uniqueName } from './support/backend'
+import { approveOutcome, backdateDisputeWindow, buy, closeEarly, proposeOutcome, publishMarket, registerAdmin, registerTrader, settleMarket, uniqueName } from './support/backend'
 import { logIn } from './support/browser'
 import { creditsPlus, formatRoundedCredits } from './support/credits'
 
@@ -28,7 +28,7 @@ test("a payout reaches the trader's header when they come back to the tab, with 
   await expect(header).toHaveText(/^[\d,.]+ credits$/)
   const before = (await header.innerText()).replace(' credits', '').replaceAll(',', '')
 
-  await settle(admin, market.id)
+  await settleMarket(admin, market.id)
 
   // Ten winning shares pay ten credits. Coming back to the tab, as clicking
   // into this window from another one does.

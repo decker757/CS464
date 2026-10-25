@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom'
 import { getMyPortfolio, type Order } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
-import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
+import { formatCloseCountdown, type MarketStatus } from '../components/markets/marketStatus'
 import OpenOrdersList from '../components/markets/OpenOrdersList'
 import PriceHistorySection from '../components/markets/PriceHistorySection'
 import ResolutionDetails from '../components/markets/ResolutionDetails'
@@ -15,12 +15,12 @@ import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
 import { useBalance } from '../context/BalanceContext'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { useMarketClock } from '../hooks/useMarketClock'
 import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
 import { addCredits } from '../utils/formatCredits'
-import { formatDateTime as formatDate } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
 // Why trading is closed, for a market that cannot be traded right now.
@@ -92,6 +92,9 @@ export default function MarketDetailPage() {
   const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
   const pastClose = market !== null && !closeTimeStillAhead
   const tradeable = market?.status === 'open' && !pastClose
+  // The browse card's clock and the card's words for it, so the two screens
+  // say the same thing about the same market at the same minute (#429).
+  const now = useMarketClock(market)
 
   // What the trader holds of each of this market's outcomes, for the sell
   // clamp ([T-2] #357). The portfolio route carries every market's positions
@@ -207,14 +210,6 @@ export default function MarketDetailPage() {
     refetchHeld()
   }, [refetchHeld])
 
-  // An early close leaves close_time in the future, so "Closed <close_time>"
-  // would name a date that has not happened yet.
-  function closeLabel(m: PublicMarketDetail): string {
-    if (!pastClose && !tradingStopped(m.status, m.close_time)) return `Closes ${formatDate(m.close_time)}`
-    if (pastClose) return `Closed ${formatDate(m.close_time)}`
-    return 'Closed early'
-  }
-
   // The badge reads the same answer the panel is gated on rather than the raw
   // status column. The clock closes a market and the sweep writes CLOSED a
   // few seconds later (ADR 0011), so for that window the column still says
@@ -245,7 +240,7 @@ export default function MarketDetailPage() {
           <div className="mb-8">
             <div className="mb-4 flex items-center gap-3">
               <StatusBadge status={badgeStatus(market)} />
-              <span className="text-[13px] text-subtle">{closeLabel(market)}</span>
+              <span className="text-[13px] text-subtle">{formatCloseCountdown(market.status, market.close_time, now)}</span>
             </div>
             <h1 className="text-[26px] leading-[1.4] font-extrabold tracking-[-0.3px] text-smu-navy">{market.question}</h1>
             {market.description && (
@@ -278,10 +273,25 @@ export default function MarketDetailPage() {
               return (
                 <Card key={outcome.id} borderColor={isWinner ? 'border-info/40' : undefined} className="px-6 py-5 text-center">
                   <p className="mb-2 text-[13px] font-semibold tracking-[0.5px] text-muted uppercase">{outcome.label}</p>
-                  <p aria-label={`${outcome.label} price`} className="mb-1 text-[32px] font-extrabold tracking-[-1px] text-smu-navy">
-                    {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
-                  </p>
-                  <p className="text-xs text-subtle">{outcomePrice ? 'implied probability' : 'loading price…'}</p>
+                  {/* Once the result is decided it takes the price's place
+                      (#429): the last trade's price under "Approved outcome:
+                      Yes" read as the market doubting its own answer. The
+                      public read names the winner only once a second
+                      administrator has approved it (market-service.md), so a
+                      pending market keeps its price. Nothing here reads
+                      `prices`, so no price frame can paint over the result. */}
+                  {winningOutcome ? (
+                    <p aria-label={`${outcome.label} result`} className={`mb-1 text-[32px] font-extrabold tracking-[-1px] ${isWinner ? 'text-smu-navy' : 'text-subtle'}`}>
+                      {isWinner ? 'Won' : 'Lost'}
+                    </p>
+                  ) : (
+                    <>
+                      <p aria-label={`${outcome.label} price`} className="mb-1 text-[32px] font-extrabold tracking-[-1px] text-smu-navy">
+                        {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
+                      </p>
+                      <p className="text-xs text-subtle">{outcomePrice ? 'implied probability' : 'loading price…'}</p>
+                    </>
+                  )}
                 </Card>
               )
             })}

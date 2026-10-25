@@ -194,6 +194,7 @@ class Upstream:
             "published_at": published_at,
             "proposed_outcome_id": None,
             "settleable": False,
+            "voidable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)

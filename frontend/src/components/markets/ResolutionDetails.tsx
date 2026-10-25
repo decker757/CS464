@@ -1,9 +1,19 @@
 import type { PublicMarketDetail } from '../../api/marketApi'
 import DetailItem from '../ui/DetailItem'
 import { formatDateTime } from '../../utils/formatDateTime'
+import { tradingStopped } from './marketStatus'
 
 interface ResolutionDetailsProps {
-  market: Pick<PublicMarketDetail, 'resolution_criteria' | 'resolution_sources' | 'close_time' | 'resolution_time'>
+  market: Pick<PublicMarketDetail, 'status' | 'resolution_criteria' | 'resolution_sources' | 'close_time' | 'resolution_time'>
+}
+
+// What the close date is called. Once trading has stopped it is the schedule
+// the market was published with rather than a close still to come: an admin's
+// early close leaves close_time in the future (market-service.md), and the
+// page above already says "Closed". Stopped is the clock rule (ADR 0011), not
+// the status column alone (#429).
+function closeDateLabel(market: ResolutionDetailsProps['market']): string {
+  return tradingStopped(market.status, market.close_time) ? 'Scheduled to close' : 'Closes'
 }
 
 /** The rules a market resolves by: the criteria, when it closes and resolves,
@@ -17,7 +27,7 @@ export default function ResolutionDetails({ market }: ResolutionDetailsProps) {
         <p className="leading-[1.6]">{market.resolution_criteria}</p>
       </DetailItem>
       <div className="grid grid-cols-2 gap-4">
-        <DetailItem label="Closes">
+        <DetailItem label={closeDateLabel(market)}>
           <p>{formatDateTime(market.close_time)}</p>
         </DetailItem>
         <DetailItem label="Resolves by">

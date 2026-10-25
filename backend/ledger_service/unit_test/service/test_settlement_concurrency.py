@@ -27,13 +27,16 @@ from unit_test.settlement_fixtures import (
     Pause,
     SettleUpstream,
     admin,
+    book_lock_is_free,
     book_lock_waiters,
+    committed_counts,
     hold,
     payout_key,
     raise_any,
     residue_key,
     settle,
     settled_entries,
+    voided_row,
     warm,
 )
 from unit_test.trade_fixtures import (
@@ -204,6 +207,76 @@ async def test_two_settlements_pay_once_and_answer_alike(
     assert len(await settled_entries(audit_reader, first.id, second.id)) == 1
     assert upstream.posts == 2
     await assert_ledger_balances(session)
+
+
+async def test_a_void_committed_while_a_settlement_queues_is_refused_under_the_lock(
+    session: AsyncSession, audit_reader: AsyncSession
+) -> None:
+    """ADR 0025, "Settlement learns the record's kind": the lookup after the
+    book lock branches on `kind` too, so a void that commits while a
+    settlement waits for the book is `409 market_already_voided`, and the
+    settlement writes nothing.
+
+    The voiding session takes the book lock and stages its row. The
+    settlement is seen queued on the book lock, which it takes only after its
+    unlocked lookup has missed, so only the locked lookup can find the row.
+    Then the void commits. Remove the kind branch after `books.lock_book`:
+    the settlement replays the voided row, and `_replay`'s assertion that a
+    record names its winner fails.
+    """
+    upstream = await _market_with_holders(session)
+    actor = admin()
+    transactions, entries, results = await committed_counts(upstream.market_id)
+
+    factory = session_factory()
+    start = asyncio.Barrier(2)
+    voiding, settling = factory(), factory()
+    staged, release = asyncio.Event(), asyncio.Event()
+
+    async def run_void():
+        await voiding.connection()
+        await start.wait()
+        await books().lock_book(voiding, upstream.market_id)
+        voiding.add(voided_row(upstream.market_id))
+        await voiding.flush()
+        staged.set()
+        await release.wait()
+        await voiding.commit()
+
+    async def run_settlement():
+        await settling.connection()
+        await start.wait()
+        await staged.wait()
+        try:
+            await settle(settling, upstream, actor=actor)
+        except errors().MarketAlreadyVoided:
+            return "market_already_voided"
+        return "settled"
+
+    try:
+        tasks = [asyncio.create_task(run_void()), asyncio.create_task(run_settlement())]
+        try:
+            await reached(staged, "the void never held the book lock", tasks)
+            await book_lock_waiters(1, "the settlement never queued on the book lock", tasks)
+        finally:
+            outcomes = await finish(tasks, release, staged)
+        # Before either session closes, so only the refusal's own rollback
+        # can have released the lock.
+        lock_released = await book_lock_is_free(upstream.market_id)
+    finally:
+        await voiding.close()
+        await settling.close()
+
+    raise_any(outcomes)
+    assert outcomes[1] == "market_already_voided"
+    assert await committed_counts(upstream.market_id) == (
+        transactions,
+        entries,
+        results + 1,
+    ), "the settlement wrote beside the void"
+    assert await settled_entries(audit_reader, actor.id) == []
+    assert upstream.posts == 0
+    assert lock_released, "the refusal under the book lock left it held"
 
 
 async def _winners(session: AsyncSession, upstream: SettleUpstream) -> list[uuid.UUID]:

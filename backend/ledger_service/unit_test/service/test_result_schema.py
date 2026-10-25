@@ -5,8 +5,9 @@ One record per finished market (ADR 0019's 2026-10-09 amendment; DECISIONS.md,
 Asserted against Postgres, for `test_book_schema.py`'s reason. Each refusal is
 pinned to the constraint that made it, so a refusal from some other rule does
 not pass for this one. Column types and nullability are held by the catalog
-comparison in `test_migrations.py`; the CHECK's non-settled half waits for a
-second kind ([BE] #221).
+comparison in `test_migrations.py`. A voided row ([BE] #221, ADR 0025) names
+no outcome and carries its reason and its administrator, each by its own
+CHECK.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import SCHEMA
 from unit_test.market_fixtures import market_with_outcomes
 from unit_test.schema_fixtures import refusing_constraint
+from unit_test.settlement_fixtures import voided_row
 
 LIQUIDITY_B = Decimal("100.0000")
 
@@ -129,4 +131,79 @@ async def test_a_result_naming_another_markets_outcome_is_refused(
         await session.flush()
 
     assert refusing_constraint(refusal) == "fk_market_results_market_outcome"
+    await session.rollback()
+
+
+async def test_a_voided_result_with_a_reason_an_administrator_and_no_outcome_is_accepted(
+    session: AsyncSession,
+) -> None:
+    """The row a void writes (ADR 0025, ledger revision 0007). Red if either
+    new CHECK is inverted, or if the enum has no `voided` member."""
+    market_id, _ = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
+    voided_by = uuid.uuid4()
+
+    session.add(voided_row(market_id, voided_by=voided_by))
+    await session.flush()
+    session.expire_all()
+
+    stored = (
+        await session.execute(
+            select(_entities().MarketResult).where(
+                _entities().MarketResult.market_id == market_id
+            )
+        )
+    ).scalar_one()
+    assert stored.kind is _entities().ResultKind.VOIDED
+    assert (stored.outcome_id, stored.reason, stored.voided_by) == (
+        None,
+        "The event was cancelled; there is no result.",
+        voided_by,
+    )
+
+
+async def test_a_voided_result_naming_an_outcome_is_refused(
+    session: AsyncSession,
+) -> None:
+    """A void has no winner. The CHECK's non-settled half, which had no second
+    kind to test until now."""
+    market_id, outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
+
+    session.add(voided_row(market_id, outcome_id=outcome_ids[0]))
+
+    with pytest.raises(IntegrityError) as refusal:
+        await session.flush()
+
+    assert refusing_constraint(refusal) == "ck_market_results_outcome_iff_settled"
+    await session.rollback()
+
+
+@pytest.mark.parametrize(
+    ("kind", "column", "constraint"),
+    [
+        ("voided", "reason", "ck_market_results_reason_iff_voided"),
+        ("settled", "reason", "ck_market_results_reason_iff_voided"),
+        ("voided", "voided_by", "ck_market_results_voided_by_iff_voided"),
+        ("settled", "voided_by", "ck_market_results_voided_by_iff_voided"),
+    ],
+)
+async def test_a_reason_and_an_administrator_are_set_exactly_on_a_voided_result(
+    session: AsyncSession, kind: str, column: str, constraint: str
+) -> None:
+    """ADR 0025: `reason` and `voided_by` are each set exactly when `kind =
+    'voided'`. Both halves of each CHECK: a voided row missing the column, and
+    a settled row carrying it. Only that one column differs from a valid row,
+    so only its own CHECK can refuse."""
+    market_id, outcome_ids = await market_with_outcomes(session, liquidity_b=LIQUIDITY_B)
+    if kind == "voided":
+        row = voided_row(market_id, **{column: None})
+    else:
+        row = _result(market_id, outcome_ids[0])
+        setattr(row, column, "A reason." if column == "reason" else uuid.uuid4())
+
+    session.add(row)
+
+    with pytest.raises(IntegrityError) as refusal:
+        await session.flush()
+
+    assert refusing_constraint(refusal) == constraint
     await session.rollback()
