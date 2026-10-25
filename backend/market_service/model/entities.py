@@ -58,8 +58,8 @@ class MarketStatus(StrEnum):
     It is what [3.1] #9 gates on — an outcome may only be proposed for a market
     nobody can still trade — and one of the buckets [2.1] #5 counts.
 
-    PENDING_RESOLUTION arrives with [3.1] #9, APPROVED with [3.2] #10, and
-    SETTLED with [3.4] #12.
+    PENDING_RESOLUTION arrives with [3.1] #9, APPROVED with [3.2] #10,
+    SETTLED with [3.4] #12, and VOIDED with [BE] #221.
     Members are added here as those land, which is why this is stored as a
     VARCHAR rather than a native Postgres enum: a new member is a Python change
     and never an ALTER TYPE against a live database. SQLAlchemy writes no CHECK
@@ -92,6 +92,13 @@ class MarketStatus(StrEnum):
     # the ledger. ADR 0019.
     SETTLED = "settled"
 
+    # [BE] #221. Terminal: the market ended with no winner, and the ledger
+    # refunds its holders. Every write but a repeated void refuses it with
+    # `market_already_voided`. Like SETTLED, reaching it does not prove the
+    # ledger refunded anybody. Not a decided status: a void from APPROVED
+    # keeps the approval, and no winner is shown. ADR 0025.
+    VOIDED = "voided"
+
 
 # The statuses a trader may see, defined once. [1.1] #1.
 #
@@ -105,6 +112,7 @@ class PublicMarketStatus(StrEnum):
     PENDING_RESOLUTION = MarketStatus.PENDING_RESOLUTION.value
     APPROVED = MarketStatus.APPROVED.value
     SETTLED = MarketStatus.SETTLED.value
+    VOIDED = MarketStatus.VOIDED.value
 
 
 PUBLIC_STATUSES: tuple[MarketStatus, ...] = tuple(
@@ -114,10 +122,19 @@ PUBLIC_STATUSES: tuple[MarketStatus, ...] = tuple(
 # The statuses in which a proposed winner is decided and may be shown to
 # traders. PENDING_RESOLUTION is absent on purpose: it can still be rejected.
 # D-026. SETTLED is here so the winner stays public once the market is
-# settled. [3.4] #12.
+# settled. [3.4] #12. VOIDED is absent on purpose: a voided market has no
+# winner, even with its approval kept. ADR 0025.
 DECIDED_STATUSES: tuple[MarketStatus, ...] = (
     MarketStatus.APPROVED,
     MarketStatus.SETTLED,
+)
+
+
+# The statuses in which trading has stopped and no outcome is decided yet:
+# a void may end either whatever the clock says. ADR 0025.
+AWAITING_OUTCOME_STATUSES: tuple[MarketStatus, ...] = (
+    MarketStatus.CLOSED,
+    MarketStatus.PENDING_RESOLUTION,
 )
 
 
@@ -162,7 +179,8 @@ class AdminMarketCard:
     lacks (D-019). `status` is the derived value with no raw one beside it.
     `settleable` is derived against the same `now`. [3.4] #12.
     `dispute_window_ends_at` is the stored column, passed through for the
-    countdown. [3.3] #11, ADR 0023.
+    countdown. [3.3] #11, ADR 0023. `voidable` is derived against the same
+    `now`, from the stored status. [BE] #221, ADR 0025.
     """
 
     id: uuid.UUID
@@ -172,6 +190,7 @@ class AdminMarketCard:
     close_time: datetime | None
     settleable: bool
     dispute_window_ends_at: datetime | None
+    voidable: bool
 
 
 @dataclass(frozen=True)
@@ -350,6 +369,19 @@ class Market(Base):
     dispute_window_ends_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # --- the void. [BE] #221 -------------------------------------------------
+    #
+    # Null unless VOIDED, and set together: the clock read after the row lock,
+    # and the reason as the ledger forwards it. The one reason kept on the
+    # row rather than only in the audit log, because traders must see why
+    # they were refunded and this service cannot read the log. No
+    # `voided_by`: the audit entries name the administrator. No CHECK, as for
+    # `dispute_window_ends_at`. ADR 0025.
+    voided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    void_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     outcomes: Mapped[list[MarketOutcome]] = relationship(
         back_populates="market",
