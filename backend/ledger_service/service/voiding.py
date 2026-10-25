@@ -190,9 +190,7 @@ async def _list_trades(
     """Every trade and fill on the market's pool feed, oldest first, in the
     price history's order (ruling B). Raises `LookupError` for a trade on an
     outcome the book does not hold."""
-    query = ledger_service.pool_trade_query(book.pool_account_id).order_by(
-        Entry.created_at, Entry.id
-    )
+    query = ledger_service.pool_trades_oldest_first(book.pool_account_id)
     rows = (await session.execute(query)).all()
     return [_void_trade_of(row, position_of) for row in rows]
 
