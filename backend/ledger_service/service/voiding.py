@@ -114,7 +114,7 @@ class VoidResult:
     residue: Decimal
 
 
-def refund_key(market_id: uuid.UUID, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
+def refund_key(market_id: uuid.UUID, *, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
     """One position's refund's key, which the portfolio joins on (DECISIONS.md,
     "A voided row's `payout` is its refund")."""
     return f"void-refund:{market_id}:{user_id}:{outcome_id}"
@@ -205,14 +205,18 @@ async def _positions_of(
     }
 
 
+def _position_by_outcome(outcomes: Sequence[MarketOutcome]) -> dict[uuid.UUID, int]:
+    """Each outcome's position, by its id."""
+    return {outcome.outcome_id: outcome.position for outcome in outcomes}
+
+
 async def _replay_lots(
-    session: AsyncSession, book: MarketBook, outcomes: Sequence[MarketOutcome]
+    session: AsyncSession, book: MarketBook, position_of: Mapping[uuid.UUID, int]
 ) -> tuple[LotReplay, list[VoidTrade]]:
     """The market's trades, and the lots they leave. Raises `ValueError` or
     `LookupError` for trades that cannot be replayed."""
-    position_of = {outcome.outcome_id: outcome.position for outcome in outcomes}
     trades = await _list_trades(session, book, position_of)
-    replay = lot_replay_of(trades, outcome_count=len(outcomes), b=book.liquidity_b)
+    replay = lot_replay_of(trades, outcome_count=len(position_of), b=book.liquidity_b)
     return replay, trades
 
 
@@ -222,9 +226,9 @@ async def _guarded_replay(
     """The lot replay, held to the book under its lock. Any disagreement rolls
     back, which releases the lock, and raises `VoidReplayMismatch`: a bug,
     with nothing written. ADR 0025, "The guard"."""
-    position_of = {outcome.outcome_id: outcome.position for outcome in outcomes}
+    position_of = _position_by_outcome(outcomes)
     try:
-        replay, trades = await _replay_lots(session, book, outcomes)
+        replay, trades = await _replay_lots(session, book, position_of)
         positions = await _positions_of(session, book.market_id, position_of)
         refuse_if_replay_disagrees(
             replay,
@@ -262,20 +266,24 @@ async def _repeat(
     """Answer a recorded void from its entries, write nothing, and tell
     market_service again with the recorded reason.
 
-    One `GROUP BY` kind over the pool's void entries gives the count and sum
-    of the refunds and the residue. `total_owed`, which no entry records, and
-    `refunds_cut` are `cut_of`'s, over the lot replay run again and the pool
-    those entries emptied, so they come from the one place the first request
-    took them. The replay runs with no guard and no stake check: the record
-    refuses every later trade, so it reads what the first request read. The rollback expires the record, so its values are read first, and
-    releases the book lock when a locked lookup found it. Raises
-    `VoidUnconfirmed` from `mark_voided`.
+    One `GROUP BY` kind over the void's entries on the market's own pool
+    account gives the count and sum of the refunds and the residue. That
+    finds the same entries as ADR 0025's step 3, "found by their derived
+    keys": the pool belongs to this market alone, and only the void writes
+    those two kinds. `total_owed`, which no entry records, and `refunds_cut`
+    are `cut_of`'s, over the lot replay run again and the pool those entries
+    emptied, so they come from the one place the first request took them.
+    The replay runs with no guard and no stake check: the record refuses
+    every later trade, so it reads what the first request read. The rollback
+    expires the record, so its values are read first, and releases the book
+    lock when a locked lookup found it. Raises `VoidUnconfirmed` from
+    `mark_voided`.
     """
     market_id = record.market_id
     book = await books.find(session, market_id)
     assert book is not None  # the record's foreign key names it
     outcomes = await trading.list_outcomes(session, market_id)
-    replay, _ = await _replay_lots(session, book, outcomes)
+    replay, _ = await _replay_lots(session, book, _position_by_outcome(outcomes))
 
     stmt = (
         select(Transaction.kind, func.count(Entry.id), func.sum(Entry.amount))
@@ -354,7 +362,9 @@ def _refund_of(
     """One position's refund, from the pool: one leg on the holder, one on the
     pool, so it is one history row naming the outcome and the shares."""
     return Movement(
-        idempotency_key=refund_key(market_id, holder.owner_id, outcome.outcome_id),
+        idempotency_key=refund_key(
+            market_id, user_id=holder.owner_id, outcome_id=outcome.outcome_id
+        ),
         kind=TransactionKind.VOID_REFUND,
         legs=[Leg(account=pool, amount=-refund), Leg(account=holder, amount=refund)],
         context={
@@ -421,8 +431,9 @@ async def void_market(
     Commits once, through `posting.post_all`, after `books.ensure_open`'s own
     commit on a cold book. Raises `VoidIncomplete`, what
     `market_status.read_terms` raises, `MarketAlreadySettled`,
-    `MarketNotVoidable`, `VoidReplayMismatch`, `AdminHasAStake`, and
-    `VoidUnconfirmed` once the refunds have committed. **Call this with
+    `MarketNotVoidable`, `MarketTermsUnavailable` from `books.ensure_open`'s
+    cold path, `VoidReplayMismatch`, `AdminHasAStake`, and `VoidUnconfirmed`
+    once the refunds have committed. **Call this with
     nothing pending on the session.** `now` is injectable for tests.
     """
     # 1. Before any read, as the administrator's order cancel checks its own.
