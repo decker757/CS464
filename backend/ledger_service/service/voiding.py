@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import Row, func, select
+from sqlalchemy import ColumnElement, Row, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
@@ -114,10 +114,27 @@ class VoidResult:
     residue: Decimal
 
 
+_REFUND_KEY_PREFIX = "void-refund"
+
+
 def refund_key(market_id: uuid.UUID, *, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
     """One position's refund's key, which the portfolio joins on (DECISIONS.md,
     "A voided row's `payout` is its refund")."""
-    return f"void-refund:{market_id}:{user_id}:{outcome_id}"
+    return f"{_REFUND_KEY_PREFIX}:{market_id}:{user_id}:{outcome_id}"
+
+
+def refund_key_column(
+    market_id: ColumnElement[uuid.UUID],
+    *,
+    user_id: uuid.UUID,
+    outcome_id: ColumnElement[uuid.UUID],
+) -> ColumnElement[str]:
+    """`refund_key` in SQL, for a statement that joins a held outcome's row to
+    its refund. Postgres writes a uuid as text exactly as `str(uuid)` does,
+    lower case with hyphens, so the two build the same key."""
+    return func.concat(
+        f"{_REFUND_KEY_PREFIX}:", market_id, ":", str(user_id), ":", outcome_id
+    )
 
 
 def _result_of(
