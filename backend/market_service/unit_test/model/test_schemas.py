@@ -165,6 +165,9 @@ class _FakeMarket:
         self.approved_by_id = None
         self.approved_by_username = None
         self.approved_at = None
+        # Not voided. [BE] #221.
+        self.voided_at = None
+        self.void_reason = None
 
 
 def test_naive_timestamps_are_stamped_as_utc_on_the_way_out() -> None:

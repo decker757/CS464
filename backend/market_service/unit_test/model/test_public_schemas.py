@@ -48,6 +48,7 @@ class _FakePublishedMarket:
         liquidity_b: Decimal | None = Decimal("100.0000"),
         proposed: bool | None = None,
         settleable: bool = False,
+        voidable: bool = False,
     ) -> None:
         now = datetime.now(UTC).replace(tzinfo=None)
 
@@ -107,6 +108,10 @@ class _FakePublishedMarket:
         self.trader_facing_status = displayed_status(self.status, self.close_time)
         # What `get_published` stamps beside it. [3.4] #12.
         self.settleable = settleable
+        # And beside that, with the void's two columns. [BE] #221.
+        self.voidable = voidable
+        self.voided_at = None
+        self.void_reason = None
 
 
 def _detail_json(**kwargs: object) -> dict[str, Any]:
@@ -256,4 +261,15 @@ def test_no_status_before_approval_exposes_a_winner(status: MarketStatus) -> Non
     would pass with the gate deleted."""
     payload = _detail_json(status=status, proposed=True)
 
+    assert payload["proposed_outcome_id"] is None
+
+
+def test_a_voided_market_shows_no_winner_though_its_approval_is_kept() -> None:
+    """ADR 0025: "VOIDED is not in `DECIDED_STATUSES`, so no winner is shown,
+    even when the approval columns are kept." `proposed=True`, as a void
+    from APPROVED leaves it, so the gate has something to hide. Fails with
+    VOIDED added to `DECIDED_STATUSES`."""
+    payload = _detail_json(status=MarketStatus.VOIDED, proposed=True)
+
+    assert payload["status"] == "voided"
     assert payload["proposed_outcome_id"] is None

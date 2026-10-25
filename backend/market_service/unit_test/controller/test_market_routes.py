@@ -20,6 +20,7 @@ from model.entities import Market, MarketOutcome
 from service import market_service, settling
 from service.audit import Actor
 from unit_test.conftest import (
+    VOID_REASON,
     approved_market,
     closed_market,
     database_now,
@@ -27,6 +28,7 @@ from unit_test.conftest import (
     proposed_market,
     settled_market,
     time_until_settleable,
+    voided_market,
 )
 from unit_test.conftest import approval_terms as _approval
 from unit_test.conftest import close_terms as _close
@@ -34,6 +36,7 @@ from unit_test.conftest import market_json as _payload
 from unit_test.conftest import proposal_json as _proposal
 from unit_test.conftest import rejection_terms as _rejection
 from unit_test.conftest import send_back_terms as _send_back
+from unit_test.conftest import void_terms as _void
 
 
 # --- the guard ------------------------------------------------------------
@@ -1532,6 +1535,60 @@ async def test_saving_a_settled_market_is_409_and_leaves_it_as_it_was(
     assert response.json()["error"]["code"] == "market_already_settled"
 
 
+# --- [BE] #221: a voided market is frozen -----------------------------------
+@pytest.mark.parametrize("requested", ["draft", "submitted"])
+async def test_saving_a_voided_market_is_409_and_leaves_it_as_it_was(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    requested: str,
+) -> None:
+    """ADR 0025: VOIDED "joins the frozen and resolution tables in the same
+    commit as the enum member, so no autosave can turn it back into a draft
+    (the bug #220 found for SETTLED)", and the save is
+    `409 market_already_voided`.
+
+    Read back from a second session after the request has finished. Fails
+    with VOIDED removed from `_PAST_DECISION_STATUS_ERRORS`, which the frozen
+    table spreads: the outcome ids change and the status reads draft.
+    """
+    creator = Actor(id=admin_id, username="ernest_t", role="admin")
+    market = await voided_market(session, creator)
+    market_id, draft_key = market.id, market.draft_key
+    before = await _stored_status_and_outcome_ids(market_id)
+    assert before[0] == "voided", "the fixture must have voided this market"
+
+    response = await client.post(
+        "/markets",
+        json=_payload(draft_key=str(draft_key), status=requested),
+        headers=admin_headers,
+    )
+
+    # First, so a 200 does not hide the deletion it committed.
+    assert await _stored_status_and_outcome_ids(market_id) == before
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "market_already_voided"
+
+
+async def test_reading_a_voided_market_carries_its_reason_and_time(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """ADR 0025: `MarketOut` carries `voided_at` and `void_reason`, the admin
+    market page's read. Fails with either field missing from `MarketOut`."""
+    creator = Actor(id=admin_id, username="ernest_t", role="admin")
+    market = await voided_market(session, creator)
+    market_id, stored_at = market.id, market.voided_at
+
+    shown = (await client.get(f"/markets/{market_id}", headers=admin_headers)).json()
+
+    assert shown["void_reason"] == VOID_REASON
+    assert datetime.fromisoformat(shown["voided_at"]) == stored_at
+
+
 # --- [3.4] #12: settling, the ledger's last step ------------------------------
 # `admin_headers` is the creator and proposer; `other_admin_headers` is any
 # other administrator. ADR 0019, step 5.
@@ -1663,6 +1720,150 @@ async def test_the_window_is_judged_on_the_database_clock(
     assert response.status_code == expected
     if expected == 409:
         assert response.json()["error"]["code"] == "dispute_window_open"
+
+
+# --- [BE] #221: voiding, the ledger's last step ---------------------------------
+# `admin_headers` is the creator and proposer; `other_admin_headers` is any
+# other administrator. ADR 0025.
+async def test_voiding_returns_the_voided_market_to_any_administrator(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """ADR 0025: `POST /markets/{id}/void` "takes `{"reason": "..."}`" and
+    answers "`200`, and the whole `market` object exactly as `GET
+    /markets/{id}` returns it, with `status` `voided`, `voided_at` and
+    `void_reason` set". Another administrator's token, on a market they did
+    not create: any administrator may void (`get_any`)."""
+    market = await closed_market(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+    market_id = str(market.id)
+
+    response = await client.post(
+        f"/markets/{market_id}/void", json=_void(), headers=other_admin_headers
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == market_id
+    assert body["status"] == "voided"
+    assert body["void_reason"] == _void()["reason"]
+    assert body["voided_at"] is not None
+
+
+async def test_voiding_twice_answers_the_same_market_both_times(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    other_admin_headers: dict[str, str],
+) -> None:
+    """ADR 0025: "A market that is already `voided` is answered the same way:
+    `200` and the same market ... That is what makes the ledger's request
+    safe to repeat." Fails with a repeat answered `409 market_already_voided`."""
+    market = await closed_market(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+    path = f"/markets/{market.id}/void"
+
+    first = await client.post(path, json=_void(), headers=other_admin_headers)
+    second = await client.post(path, json=_void(), headers=other_admin_headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+@pytest.mark.parametrize(
+    ("length", "expected"), [(5000, 200), (5001, 422)], ids=["at_the_ceiling", "past_it"]
+)
+async def test_the_void_reason_is_capped_at_the_columns_ceiling(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    length: int,
+    expected: int,
+) -> None:
+    """ADR 0025, question 3: the reason is stored in `market.void_reason`, "so
+    the owner of that column sets the limit", 5,000 characters, the ceiling
+    the ledger already applies before it writes. A direct call cannot store a
+    longer one. Both edges, so it fails with the ceiling missing or moved by
+    one; a refused void leaves the market closed."""
+    market = await closed_market(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+    market_id = market.id
+
+    response = await client.post(
+        f"/markets/{market_id}/void",
+        json=_void(reason="x" * length),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == expected
+    async with get_session_factory()() as fresh:
+        status = await fresh.scalar(select(Market.status).where(Market.id == market_id))
+    assert status == ("voided" if expected == 200 else "closed")
+
+
+async def test_a_trader_cannot_void(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    trader_headers: dict[str, str],
+) -> None:
+    """ADR 0025's refusal table: a trader is `403 not_an_administrator`, on a
+    market that would otherwise be voided."""
+    market = await closed_market(
+        session, Actor(id=admin_id, username="ernest_t", role="admin")
+    )
+
+    response = await client.post(
+        f"/markets/{market.id}/void", json=_void(), headers=trader_headers
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_an_administrator"
+
+
+@pytest.mark.parametrize(
+    ("python_clock", "edge_from_database_now", "expected"),
+    [
+        (timedelta(hours=1), timedelta(minutes=30), 200),
+        (-timedelta(hours=1), -timedelta(minutes=30), 409),
+    ],
+    ids=["python_ahead_database_inside", "python_behind_database_past"],
+)
+async def test_the_void_step_is_judged_on_the_database_clock(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    python_clock: timedelta,
+    edge_from_database_now: timedelta,
+    expected: int,
+) -> None:
+    """ADR 0025: an APPROVED market is accepted while "`clock_timestamp() <
+    dispute_window_ends_at + SETTLEMENT_GAP`, read after the row lock".
+
+    The edge is the settle step's, so `_approved_with_edge_at` builds it.
+    Python's clock and the database's disagree in each case, and each goes
+    red if Python's is read, in the controller or below.
+    """
+    edge = await database_now(session) + edge_from_database_now
+    market_id = await _approved_with_edge_at(session, admin_id, edge)
+    _shift_python_clock(monkeypatch, python_clock)
+
+    response = await client.post(
+        f"/markets/{market_id}/void", json=_void(), headers=admin_headers
+    )
+
+    assert response.status_code == expected
+    if expected == 409:
+        assert response.json()["error"]["code"] == "market_not_voidable"
 
 
 # --- [3.3] #11: sending an approved result back --------------------------------
