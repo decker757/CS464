@@ -958,8 +958,9 @@ async def test_a_mark_settled_failure_is_logged_at_error_naming_the_cause(
     caplog: pytest.LogCaptureFixture, transport: httpx.MockTransport, cause: str
 ) -> None:
     """Money has moved and the market is not marked until a person repeats the
-    request, so this is the one 503 above WARNING. Captured at DEBUG, so it is
-    the record's own level that is asserted, not the capture's.
+    request, so this 503 is logged above WARNING, as `_confirm` logs
+    `mark_voided`'s too. Captured at DEBUG, so it is the record's own level
+    that is asserted, not the capture's.
     """
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(_errors().SettlementUnconfirmed):
