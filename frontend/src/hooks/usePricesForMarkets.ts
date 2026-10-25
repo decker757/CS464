@@ -170,6 +170,11 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
         return next
       })
     },
+    // A refusal belongs to the connection that gave it. The ceiling counts one
+    // connection's own subscriptions, so a reconnect starts with room — and a
+    // market still named here would be polled for the life of the page while
+    // the new connection pushed its frames.
+    onConnectionReset: () => setRefusedMarkets(previous => (previous.size === 0 ? previous : new Set())),
   })
 
   // What the socket is carrying: followed, and not refused a subscription.

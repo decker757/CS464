@@ -51,6 +51,17 @@ export interface PriceSocketOptions {
    */
   onRefused?: (marketIds: string[]) => void
   /**
+   * Called when a new connection starts subscribing from scratch, so a caller
+   * holding refusals from the old one can forget them.
+   *
+   * A refusal belongs to the connection that gave it: the ceiling counts a
+   * connection's own subscriptions, and a reconnect holds none of the last
+   * one's. Without this a market refused once is treated as never-pushed-to
+   * for the life of the page, so it keeps being polled while the new
+   * connection pushes its frames.
+   */
+  onConnectionReset?: () => void
+  /**
    * Read whatever this caller shows, as the hook mounts, and hand each answer
    * to `apply`.
    *
@@ -95,7 +106,7 @@ type PriceFrame = PriceState & { type: 'price' }
 // rebuilds the connection.
 export function usePriceSocket(
   marketIds: string[],
-  { onOrderFrame, onSubscribed, onRefused, onMount, onAck, onSessionRefresh }: PriceSocketOptions = {},
+  { onOrderFrame, onSubscribed, onRefused, onConnectionReset, onMount, onAck, onSessionRefresh }: PriceSocketOptions = {},
 ): {
   snapshotsByMarket: Map<string, PriceState>
   status: ConnectionStatus
@@ -117,6 +128,7 @@ export function usePriceSocket(
   const onOrderFrameRef = useRef(onOrderFrame)
   const onSubscribedRef = useRef(onSubscribed)
   const onRefusedRef = useRef(onRefused)
+  const onConnectionResetRef = useRef(onConnectionReset)
   const onMountRef = useRef(onMount)
   const onAckRef = useRef(onAck)
   const onSessionRefreshRef = useRef(onSessionRefresh)
@@ -124,6 +136,7 @@ export function usePriceSocket(
     onOrderFrameRef.current = onOrderFrame
     onSubscribedRef.current = onSubscribed
     onRefusedRef.current = onRefused
+    onConnectionResetRef.current = onConnectionReset
     onMountRef.current = onMount
     onAckRef.current = onAck
     onSessionRefreshRef.current = onSessionRefresh
@@ -211,8 +224,11 @@ export function usePriceSocket(
         // A reconnect re-subscribes from scratch: the new connection holds
         // none of the old one's subscriptions, and the ack is what triggers
         // the refetch that covers everything published while we were away.
+        // The old connection's refusals go with its subscriptions — the
+        // ceiling is per connection, so this one may well have room.
         subscribedRef.current = new Set()
         pendingRef.current = []
+        onConnectionResetRef.current?.()
         reconcile()
       }
 
