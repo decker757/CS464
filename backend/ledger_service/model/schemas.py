@@ -93,14 +93,17 @@ class BalanceOut(BaseModel):
 
 
 class PositionResult(StrEnum):
-    """What a settled market did to one held outcome. [3.4] #12.
+    """What a settled or voided market did to one held outcome. [3.4] #12,
+    [BE] #221.
 
-    The wire's own values. A row the ledger has not settled has no result,
-    which is `None` and not a third member.
+    The wire's own values. A row whose market the ledger has not ended has no
+    result, which is `None` and not another member. REFUNDED is every row of
+    a voided market (ADR 0025, ruling A).
     """
 
     PAID_OUT = "paid_out"
     WORTHLESS = "worthless"
+    REFUNDED = "refunded"
 
 
 class PortfolioPositionOut(BaseModel):
@@ -108,9 +111,10 @@ class PortfolioPositionOut(BaseModel):
 
     On a market the ledger has not settled, `value` is what selling the whole
     position now would credit — never `quantity * price` (ADR 0018) — and
-    `result` and `payout` are null. On a settled market it is the other way
-    round: `result` and `payout` are set, and `price`, `value` and
-    `unrealized_pnl` are null, because the payout is already in the balance.
+    `result` and `payout` are null. On a settled or voided market it is the
+    other way round: `result` and `payout` are set, and `price`, `value` and
+    `unrealized_pnl` are null, because the payout or the refund is already in
+    the balance.
     Every key is always present. See `GET /ledger/portfolio/me` in
     `docs/api/ledger-service.md`.
     """
@@ -157,13 +161,18 @@ class PortfolioPositionOut(BaseModel):
     result: PositionResult | None = Field(
         description=(
             "`paid_out` for the winning outcome of a settled market, "
-            "`worthless` for any other. Null until the market is settled."
+            "`worthless` for any other, and `refunded` for every outcome of a "
+            "voided market. Null until the market is settled or voided."
         )
     )
     payout: Decimal | None = Field(
         description=(
             "What this row was paid: its quantity on a `paid_out` row, "
-            "`0.0000` on a `worthless` one. Null until the market is settled."
+            "`0.0000` on a `worthless` one, and on a `refunded` one what the "
+            "void refunded this position, `0.0000` if that rounded down to "
+            "nothing. A refund follows what each share still held cost, so it "
+            "can differ from `cost_basis`. Null until the market is settled or "
+            "voided."
         )
     )
     state_version: int = Field(
@@ -311,8 +320,9 @@ class LedgerEntryOut(BaseModel):
     market_id: uuid.UUID | None = Field(
         default=None,
         description=(
-            "Set on a `trade_buy`, `trade_sell` or `settlement` row; `null` "
-            "on every other kind, the grant included. [T-5] #25, [3.4] #12."
+            "Set on a `trade_buy`, `trade_sell`, `settlement` or `void_refund` "
+            "row; `null` on every other kind, the grant included. [T-5] #25, "
+            "[3.4] #12, [BE] #221."
         ),
     )
     outcome_id: uuid.UUID | None = Field(
@@ -329,9 +339,9 @@ class LedgerEntryOut(BaseModel):
     quantity: Decimal | None = Field(
         default=None,
         description=(
-            "The trade's quantity, or on a `settlement` row the winning "
-            "shares paid out, at scale 4 whatever the trader sent. Null on "
-            "every other row."
+            "The trade's quantity, on a `settlement` row the winning shares "
+            "paid out, or on a `void_refund` row the shares refunded, at "
+            "scale 4 whatever the trader sent. Null on every other row."
         ),
     )
     average_price: Decimal | None = Field(
