@@ -36,6 +36,7 @@ from unit_test.conftest import (
     proposed_market,
     published_market_closing_at,
     settled_market,
+    voided_market,
 )
 
 # More than any test here creates, so a test about order or counts reads one page.
@@ -175,6 +176,7 @@ async def population(session: AsyncSession, hour_long_window: None) -> _Populati
         "pending": (await proposed_market(session, caller)).id,
         "approved": (await approved_market(session, caller)).id,
         "settled": (await settled_market(session, caller)).id,
+        "voided": (await voided_market(session, caller)).id,
     }
     return _Population(caller=caller, now=now, ids=ids)
 
@@ -568,6 +570,39 @@ async def test_settled_markets_sort_last_and_a_cursor_crosses_into_their_group(
     assert _ids(walked) == [approved, still_open, first_settled, second_settled]
 
 
+# --- [BE] #221: voided markets sink with the settled ones --------------------
+async def test_voided_markets_sort_last_among_the_settled_ones_by_close_time(
+    session: AsyncSession,
+) -> None:
+    """ADR 0025: the overview "sinks voided markets with settled ones to the
+    end of its unfiltered view", "in the same order among themselves".
+
+    The finished markets are made first, so their close times precede the
+    rest and, without the group, they would lead. The voided one is made
+    between the two settled ones, so it sorts between them by close time.
+    One market a page, so the cursor is cut between the groups and inside the
+    finished one. Fails with VOIDED left out of the finished group (it leads),
+    or put in a group of its own after the settled one (it trails).
+    """
+    caller = actor()
+    now = _injected_now()
+    first_settled = (await settled_market(session, caller)).id
+    voided = (await voided_market(session, caller)).id
+    second_settled = (await settled_market(session, caller)).id
+    approved = (await approved_market(session, caller)).id
+    still_open = await _open_until(session, caller, now + timedelta(days=1))
+
+    walked = await _walk(session, caller, limit=1, now=now)
+
+    assert _ids(walked) == [
+        approved,
+        still_open,
+        first_settled,
+        voided,
+        second_settled,
+    ]
+
+
 # --- #210: the page and the counts read one snapshot ----------------------
 async def test_the_page_and_the_counts_read_one_snapshot(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
@@ -654,6 +689,28 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
     assert rows, "the population must be listed for this to mean anything"
     for row in rows:
         assert row.settleable is (row.id in decided), row
+
+
+async def test_each_rows_voidable_follows_the_public_details_rule(
+    session: AsyncSession, population: _Population
+) -> None:
+    """ADR 0025: "The public detail and every overview row carry `voidable`",
+    judged on the stored status against the page's clock.
+
+    Through `MarketOverviewRowOut`, so it fails with the flag missing from the
+    card or the schema. The injected clock is past the approved row's window
+    (`hour_long_window`), so it fails if the window is not read; `past_close`
+    reads `closed` and is stored OPEN, so it fails if the derived status is.
+    """
+    ids = population.ids
+    voidable = {ids["swept_closed"], ids["pending"], ids["voided"]}
+
+    rows, _ = await _overview(session, population.caller, now=population.now)
+
+    shown = [MarketOverviewRowOut.model_validate(row) for row in rows]
+    assert shown, "the population must be listed for this to mean anything"
+    for row in shown:
+        assert row.voidable is (row.id in voidable), row
 
 
 async def test_a_settled_rows_settleable_stays_true_even_with_no_window_end(

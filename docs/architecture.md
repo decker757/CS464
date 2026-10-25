@@ -181,7 +181,9 @@ authority and `status` is written down afterwards),
 [ADR 0016](adr/0016-deciding-a-proposal.md) (the proposal columns, and
 `proposal_id` on a decision),
 [ADR 0023](adr/0023-sending-an-approved-outcome-back.md)
-(`dispute_window_ends_at` stored at approval), and
+(`dispute_window_ends_at` stored at approval),
+[ADR 0025](adr/0025-voiding-a-flawed-market.md) (`void_reason` kept on the
+row for traders, and no `voided_by`), and
 [ADR 0003](adr/0003-market-service-boundary.md) (`creator_id` is not a foreign
 key).
 
@@ -197,6 +199,7 @@ erDiagram
         uuid proposal_id "one of seven proposal columns, all nulled on a reject"
         uuid approved_by_id "with approved_by_username and approved_at"
         timestamptz dispute_window_ends_at "approved_at plus the setting as it was then"
+        timestamptz voided_at "with void_reason, set only when voided"
         numeric liquidity_b "b, handed to the ledger at first touch"
         numeric seed_subsidy
     }
