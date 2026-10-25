@@ -1062,14 +1062,17 @@ class PriceHistoryOut(BaseModel):
     result: ResultKind | None = Field(
         description=(
             "Null until the ledger records how the market ended; then that "
-            "record's kind, today always `settled`. The exposure read's values."
+            "record's kind, `settled` or `voided`. The exposure read's values."
         )
     )
     winning_outcome_id: uuid.UUID | None = Field(
         description="Null until the market is settled; then the outcome that paid."
     )
     result_recorded_at: datetime | None = Field(
-        description="Null until the market is settled; then the settlement's `recorded_at`."
+        description=(
+            "Null until the market is settled or voided; then that record's "
+            "`recorded_at`, the instant its own route reports."
+        )
     )
 
     @field_serializer("result_recorded_at")
@@ -1139,7 +1142,7 @@ class ExposureOut(BaseModel):
     result: ResultKind | None = Field(
         description=(
             "Null until the ledger records how the market ended; then that "
-            "record's kind, today always `settled`."
+            "record's kind, `settled` or `voided`."
         )
     )
     winning_outcome_id: uuid.UUID | None = Field(
