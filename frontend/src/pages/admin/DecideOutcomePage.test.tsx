@@ -141,7 +141,9 @@ describe('DecideOutcomePage', () => {
 
     expect(screen.getByText('Resolves YES if the MSS rain gauge records over 1mm.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'MSS climate record' })).toHaveAttribute('href', 'https://weather.gov.sg/climate')
-    expect(screen.getByText('Closes').nextElementSibling).toHaveTextContent(/1 Jan 2025/)
+    // A market being decided has stopped trading, so its close date is the
+    // one it was scheduled for (#429's review; ResolutionDetails).
+    expect(screen.getByText('Scheduled to close').nextElementSibling).toHaveTextContent(/1 Jan 2025/)
 
     // Both indices are checked, because a missing heading reads as -1, which
     // is below every real index — an ordering assertion on its own would pass

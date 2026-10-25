@@ -31,6 +31,7 @@ export interface Market {
   id: string
   question: string
   outcomes: { id: string; label: string }[]
+  close_time: string
 }
 
 const RUN_ID = Math.random().toString(36).slice(2, 8)
@@ -161,6 +162,7 @@ interface MarketOut {
   id: string
   question: string
   outcomes: { id: string; label: string }[]
+  close_time: string
 }
 
 export const HOURS_PER_DAY = 24

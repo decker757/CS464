@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import MarketCard from '../components/markets/MarketCard'
 import type { User } from '../context/AuthContext'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
@@ -226,15 +227,18 @@ describe('MarketDetailPage', () => {
     expect(screen.getByLabelText('No price')).toHaveTextContent('30.0%')
   })
 
-  it('says closed early, not a future closing date, for a market an admin closed', async () => {
+  // The card's words, not a future closing date (#429): the badge and the
+  // close label both say Closed, as they do on the market's browse card.
+  it('says Closed, not a future closing date, for a market an admin closed', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
         HttpResponse.json({ ...baseMarket, status: 'closed' }),
       ),
     )
     renderPage()
-    expect(await screen.findByText('Closed early')).toBeInTheDocument()
-    expect(screen.queryByText(/^Closes \d/)).not.toBeInTheDocument()
+    await screen.findByText(baseMarket.question)
+    expect(screen.getAllByText('Closed')).toHaveLength(2)
+    expect(screen.queryByText(/^Closes /)).not.toBeInTheDocument()
   })
 
   it('shows the trading panel for open markets', async () => {
@@ -408,6 +412,26 @@ describe('MarketDetailPage', () => {
     expect(screen.getByRole('link', { name: 'MAS statistics' })).toHaveAttribute('href', 'https://www.mas.gov.sg/statistics')
   })
 
+  // #429's review: with the header reading "Closed", About this market said
+  // "Closes 5 Jan 2099" under it for a market an admin had closed early — an
+  // early close leaves close_time in the future. Once trading has stopped the
+  // date is the schedule the market was published with, not a close still to
+  // come. Stopped is the clock rule (ADR 0011), so the third case is still
+  // `open` in the status column, inside the sweep window.
+  it.each([
+    { name: 'an open market', status: 'open', closeTime: '2099-01-05T12:00:00Z', label: 'Closes', date: /5 Jan 2099/ },
+    { name: 'a market an admin closed early', status: 'closed', closeTime: '2099-01-05T12:00:00Z', label: 'Scheduled to close', date: /5 Jan 2099/ },
+    { name: 'a market the clock has closed and the sweep has not', status: 'open', closeTime: '2025-08-09T12:00:00Z', label: 'Scheduled to close', date: /9 Aug 2025/ },
+  ])('labels the close date under About as "$label" for $name', async ({ status, closeTime, label, date }) => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status, close_time: closeTime })),
+    )
+    renderPage()
+    await screen.findByText(baseMarket.question)
+
+    expect(screen.getByText(label, { exact: true }).nextElementSibling).toHaveTextContent(date)
+  })
+
   it('shows an error when the API fails', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.error()),
@@ -484,8 +508,9 @@ describe('MarketDetailPage', () => {
       // #357's fourth finding: this is the sweep window, where the status
       // column still reads `open` because CLOSED is written a few seconds
       // later (ADR 0011). A badge read straight off the column would say Open
-      // directly above the line asserted above.
-      expect(screen.getByText('Closed')).toBeInTheDocument()
+      // directly above the line asserted above. The close label beside the
+      // badge is the second Closed (#429).
+      expect(screen.getAllByText('Closed')).toHaveLength(2)
       expect(screen.queryByText('Open')).not.toBeInTheDocument()
     })
 
@@ -504,6 +529,113 @@ describe('MarketDetailPage', () => {
 
       expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+    })
+  })
+
+  // #429 point 1: the browse card said "Closes in 23m" while this page said
+  // "Closes 21 Oct 2026, 01:24 pm" for the same market at the same minute. The
+  // clock is the authority (ADR 0011), so the screen a trader commits money on
+  // counts down the way the card does, and keeps counting.
+  describe('the close countdown', () => {
+    const NOW = new Date('2026-10-18T12:00:00Z')
+    const fromNow = (ms: number) => new Date(NOW.getTime() + ms).toISOString()
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      vi.setSystemTime(NOW)
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    function serveMarket(overrides: Record<string, unknown>) {
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, ...overrides })),
+      )
+    }
+
+    // Ten seconds across a minute boundary, the card's tick. A full minute
+    // would also pass on the dispute-window timer's once-a-minute render,
+    // which is not the clock this page's countdown is meant to keep. The
+    // first two seconds let the page's other reads land, since any render
+    // they cause reads the clock too; the label has not moved by the end of
+    // them, so what moves it after is the tick.
+    it('counts the close down as time passes rather than freezing at first render', async () => {
+      serveMarket({ close_time: fromNow((3 * 60 + 12) * 60_000 + 8_000) })
+      renderPage()
+      expect(await screen.findByText('Closes in 3h 12m')).toBeInTheDocument()
+      await act(() => vi.advanceTimersByTimeAsync(2_000))
+      expect(screen.getByText('Closes in 3h 12m')).toBeInTheDocument()
+
+      await act(() => vi.advanceTimersByTimeAsync(8_000))
+
+      expect(screen.getByText('Closes in 3h 11m')).toBeInTheDocument()
+    })
+
+    // The DoD's first item: the card and this page, given the same market and
+    // the same clock, say the same thing about its close — near, far, and
+    // after trading has stopped.
+    it.each([
+      { name: 'an open market closing within two days', status: 'open' as const, closeTime: fromNow((3 * 60 + 12) * 60_000 + 30_000), label: 'Closes in 3h 12m' },
+      { name: 'an open market closing in three days', status: 'open' as const, closeTime: '2026-10-21T12:00:00Z', label: 'Closes 21 Oct 2026' },
+      { name: 'an approved market', status: 'approved' as const, closeTime: fromNow(-60_000), label: 'Closed' },
+    ])('reads "$label" on both the card and the page for $name', async ({ status, closeTime, label }) => {
+      serveMarket({ status, close_time: closeTime, proposed_outcome_id: status === 'approved' ? 'o1' : null, dispute_window_ends_at: null })
+      const { id, question, outcomes } = baseMarket
+      const card = render(
+        <MemoryRouter>
+          <MarketCard market={{ id, status, question, close_time: closeTime, outcomes }} />
+        </MemoryRouter>,
+      )
+      const page = renderPage()
+
+      expect(await within(page.container).findByText(label)).toBeInTheDocument()
+      expect(within(card.container).getByText(label)).toBeInTheDocument()
+    })
+
+    // The panel locks at close_time on a timer of its own (#36). A label on a
+    // ten-second tick would go on saying "Closes in under a minute" beside
+    // "Trading is closed" until its next tick came round.
+    it('stops counting at the instant the trading panel locks', async () => {
+      serveMarket({ close_time: fromNow(5_000) })
+      renderPage()
+      expect(await screen.findByText('Closes in under a minute')).toBeInTheDocument()
+
+      await act(() => vi.advanceTimersByTimeAsync(5_000))
+
+      expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
+      expect(screen.queryByText('Closes in under a minute')).not.toBeInTheDocument()
+    })
+  })
+
+  // #429 point 3: an approved market read "Approved outcome: Yes" above YES
+  // 48.8% and NO 51.3%, each labelled "implied probability" — the answer is
+  // known, and the largest thing on the page said the market thought it
+  // unlikely. Past PENDING_RESOLUTION the result takes the price's place.
+  describe('a market with a decided result', () => {
+    it.each(['approved', 'settled'])('shows the result in place of the price once the market is %s', async status => {
+      let snapshotServed = false
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, status, close_time: '2026-01-05T12:00:00Z', proposed_outcome_id: 'o1', dispute_window_ends_at: null }),
+        ),
+        http.get(SNAPSHOT, () => {
+          snapshotServed = true
+          return HttpResponse.json(priceFrame(9, '0.4880', '0.5130'))
+        }),
+      )
+      renderPage()
+
+      expect(await screen.findByLabelText('Yes result')).toHaveTextContent('Won')
+      expect(screen.getByLabelText('No result')).toHaveTextContent('Lost')
+      // The last trade's price has reached the page by now; it must not be
+      // what the page shows, under any caption.
+      await waitFor(() => expect(snapshotServed).toBe(true))
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+      expect(screen.queryByText('implied probability')).not.toBeInTheDocument()
+      expect(screen.queryByText('48.8%')).not.toBeInTheDocument()
+      expect(screen.queryByText('51.3%')).not.toBeInTheDocument()
     })
   })
 
