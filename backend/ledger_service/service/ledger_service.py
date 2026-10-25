@@ -29,6 +29,10 @@ _TRADE_SIDE_OF_KIND = {
     TransactionKind.TRADE_SELL: Side.SELL,
 }
 
+# A payout or a refund to one holder: its row names a market, an outcome and a
+# quantity, and no side or price.
+_PAYOUT_KINDS = frozenset({TransactionKind.SETTLEMENT, TransactionKind.VOID_REFUND})
+
 
 @dataclass(frozen=True)
 class UserBalance:
@@ -96,7 +100,7 @@ _TradeRow = tuple[uuid.UUID, uuid.UUID, Decimal, datetime, TransactionKind, dict
 
 def trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
     """market_id, outcome_id, side, quantity and average_price for one row,
-    for the two trade kinds and for `settlement`.
+    for the two trade kinds, `settlement` and `void_refund`.
 
     `side` comes from `kind`, never from `context` — `kind` is the column the
     ledger indexes and validates. The rest is read from `context` by
@@ -113,12 +117,16 @@ def trade_fields_of(transaction: Transaction, amount: Decimal) -> TradeFields:
     payout's history row is kind `settlement`, with market, outcome and
     quantity".
 
+    A `void_refund` row ([BE] #221) is read the same way: its `context` names
+    the market, the outcome and the shares refunded, and it is not a trade
+    either. ADR 0025, "What readers show".
+
     Every other kind — the grant, and anything this row builder does not
     recognise, `context` included — renders with all five fields null. Not an
     error: a new kind reaches the history the day it is written.
     """
     context = transaction.context
-    if transaction.kind == TransactionKind.SETTLEMENT and context is not None:
+    if transaction.kind in _PAYOUT_KINDS and context is not None:
         return TradeFields(
             market_id=uuid.UUID(str(context["market_id"])),
             outcome_id=uuid.UUID(str(context["outcome_id"])),
