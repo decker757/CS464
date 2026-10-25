@@ -241,6 +241,14 @@ export function backdateDisputeWindow(marketId: string): void {
   runSql(`UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`, `backdating ${marketId} changed no row`)
 }
 
+/**
+ * Pays out an approved market ([3.4] #12), as an administrator through the
+ * ledger. Its dispute window must already have passed: `backdateDisputeWindow`.
+ */
+export async function settle(admin: Session, marketId: string): Promise<void> {
+  await call('POST', `${LEDGER_URL}/ledger/markets/${marketId}/settlement`, admin.accessToken)
+}
+
 interface Snapshot {
   state_version: number
   prices: { outcome_id: string; price: string }[]
