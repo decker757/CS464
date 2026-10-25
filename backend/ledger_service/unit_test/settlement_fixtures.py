@@ -267,17 +267,20 @@ async def settled_market(
     return upstream
 
 
-def voided_row(market_id: uuid.UUID):
+def voided_row(market_id: uuid.UUID, **overrides):
     """The `ledger.market_results` row a void records (ADR 0025), unsaved: no
     outcome, a reason and the administrator. A settlement test stages it to
-    stand for a void without the void's money."""
+    stand for a void without the void's money. `overrides` replaces one
+    column, so a schema test's refusal names one rule."""
+    columns = {
+        "kind": entities().ResultKind.VOIDED,
+        "outcome_id": None,
+        "reason": "The event was cancelled; there is no result.",
+        "voided_by": uuid.uuid4(),
+    }
+    columns.update(overrides)
     return entities().MarketResult(
-        market_id=market_id,
-        kind=entities().ResultKind.VOIDED,
-        outcome_id=None,
-        reason="The event was cancelled; there is no result.",
-        voided_by=uuid.uuid4(),
-        recorded_at=datetime.now(UTC),
+        market_id=market_id, recorded_at=datetime.now(UTC), **columns
     )
 
 
