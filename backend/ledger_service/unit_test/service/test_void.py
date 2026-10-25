@@ -134,7 +134,7 @@ async def test_every_holder_is_refunded_once_and_the_pool_surplus_goes_to_platfo
     platform_after = await balance_of_account(session, await platform_id(session))
     assert platform_after - platform_before == Decimal("2.0001")
     refund = await transaction_by_key(
-        session, refund_key(upstream.market_id, a, upstream.outcomes[0])
+        session, refund_key(upstream.market_id, user_id=a, outcome_id=upstream.outcomes[0])
     )
     assert len(await legs_of(session, refund.id)) == 2
     assert await positions_and_q(session, upstream.market_id) == before
@@ -253,7 +253,7 @@ async def test_a_market_whose_every_refund_rounds_to_zero_posts_the_residue_alon
     assert await refunds_by_holder(session, upstream.market_id) == {}
     assert (
         await transaction_by_key(
-            session, refund_key(upstream.market_id, h, upstream.outcomes[1])
+            session, refund_key(upstream.market_id, user_id=h, outcome_id=upstream.outcomes[1])
         )
         is None
     )
@@ -870,7 +870,7 @@ async def test_a_refund_is_one_history_row_naming_the_outcome_and_the_shares(
     await void(session, upstream)
 
     refund = await transaction_by_key(
-        session, refund_key(upstream.market_id, holder, upstream.outcomes[1])
+        session, refund_key(upstream.market_id, user_id=holder, outcome_id=upstream.outcomes[1])
     )
     assert refund.kind.value == "void_refund"
     assert refund.context == {

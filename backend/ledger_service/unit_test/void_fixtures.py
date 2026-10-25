@@ -209,7 +209,7 @@ async def void(
     )
 
 
-def refund_key(market_id: uuid.UUID, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
+def refund_key(market_id: uuid.UUID, *, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
     """Restated, not imported: the key is the portfolio's join condition, so a
     change to it must turn a test red rather than follow along."""
     return f"void-refund:{market_id}:{user_id}:{outcome_id}"
