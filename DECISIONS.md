@@ -6581,6 +6581,15 @@ logged above WARNING.
 step 5 goes. The function and the error go with it ("A settlement whose last
 step fails answers `503 settlement_unconfirmed`").
 
+**Amended 2026-10-25.** [BE] #221 adds `mark_voided`, the void's last step
+(ADR 0025, step 8), and both now call one private `_confirm`, so everything
+above but the path and the body holds for it too: only a `200` confirms, the
+body is never read, the 404 cache is neither consulted nor fed, and every
+failure is logged at ERROR, as `503 void_unconfirmed`. So "the only 503 in
+the service logged above WARNING" now names two, `settlement_unconfirmed`
+and `void_unconfirmed`, for the same reason: money has moved and the market
+stays unmarked until a person repeats the request.
+
 ---
 
 ### D-NEW — A recorded settlement replays before any status check; the lookup before the lock can only short-circuit
