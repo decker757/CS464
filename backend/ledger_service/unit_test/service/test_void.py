@@ -29,6 +29,7 @@ from core.config import get_settings
 from core.database import get_engine
 from unit_test.conftest import idle_in_transaction
 from unit_test.placement_fixtures import order_row, place, record_result, reserved_credits_of
+from unit_test.sell_fixtures import version_of
 from unit_test.settlement_fixtures import (
     admin,
     balance_of_account,
@@ -103,9 +104,10 @@ async def test_every_holder_is_refunded_once_and_the_pool_surplus_goes_to_platfo
     and sells them (4.4257, 4.4256). A and B are refunded exactly their
     charges; C holds nothing and gets nothing. The pool, 26.5986, keeps 2.0001
     after the refunds, which goes to PLATFORM, and ends at zero. Each refund
-    is one transaction of two legs, the holder's and the pool's. Positions
-    and `q` are not written (ADR 0025, step 7): every position and `q` reads
-    as it did before the void."""
+    is one transaction of two legs, the holder's and the pool's. Positions,
+    `q` and the book's `state_version` are not written (ADR 0025, step 7, and
+    "The void does not raise `state_version`"): each reads as it did before
+    the void."""
     upstream = VoidUpstream()
     await open_book(session, upstream)
     a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
@@ -115,7 +117,10 @@ async def test_every_holder_is_refunded_once_and_the_pool_surplus_goes_to_platfo
     await trade(session, upstream, c, outcome=0, side="sell", quantity="5")
     upstream.closes()
     platform_before = await balance_of_account(session, await platform_id(session))
-    before = await positions_and_q(session, upstream.market_id)
+    before = (
+        await positions_and_q(session, upstream.market_id),
+        await version_of(session, upstream.market_id),
+    )
 
     result = await void(session, upstream)
 
@@ -137,7 +142,11 @@ async def test_every_holder_is_refunded_once_and_the_pool_surplus_goes_to_platfo
         session, refund_key(upstream.market_id, user_id=a, outcome_id=upstream.outcomes[0])
     )
     assert len(await legs_of(session, refund.id)) == 2
-    assert await positions_and_q(session, upstream.market_id) == before
+    after = (
+        await positions_and_q(session, upstream.market_id),
+        await version_of(session, upstream.market_id),
+    )
+    assert after == before
     await assert_ledger_balances(session)
 
 
@@ -623,6 +632,36 @@ async def test_a_repeat_answers_the_first_body_and_writes_nothing(
     assert await committed_counts(upstream.market_id) == written
     assert len(await voided_entries(audit_reader, first.id, repeater.id)) == 1
     assert upstream.void_reasons == [REASON, REASON]
+
+
+async def test_a_repeat_on_a_market_short_by_under_two_seeds_still_reads_its_refunds_cut(
+    session: AsyncSession,
+) -> None:
+    """ADR 0025, "A repeat answers the first body", on a market short by more
+    than one seed and less than two. At `b = 10`, seed 2: A buys 15
+    (10.0827), the helper H buys 30 (28.0964), and A sells 15 (14.6246). The
+    pool, 25.5545, is 2.5419 short of H's refund, so it is cut to 27.5545 and
+    PLATFORM puts in 2.0000. The repeat works the cut out again from the pool
+    the refunds and the residue emptied: red if it takes the refunds alone,
+    27.5545, which is short by less than one seed and reads as not cut."""
+    upstream = VoidUpstream()
+    await open_book(session, upstream)
+    a, helper = uuid.uuid4(), uuid.uuid4()
+    await trade(session, upstream, a, outcome=0, side="buy", quantity="15")
+    await trade(session, upstream, helper, outcome=0, side="buy", quantity="30")
+    await trade(session, upstream, a, outcome=0, side="sell", quantity="15")
+    upstream.closes()
+
+    original = await void(session, upstream)
+    repeated = await void(session, upstream)
+
+    assert (
+        original.total_owed,
+        original.total_refunded,
+        original.refunds_cut,
+        original.residue,
+    ) == (Decimal("28.0964"), Decimal("27.5545"), True, Decimal("-2.0000"))
+    assert figures(repeated) == figures(original)
 
 
 async def test_an_unconfirmed_void_stands_and_a_retry_past_the_window_finishes_it(

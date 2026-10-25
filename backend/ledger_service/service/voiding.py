@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import Row, func, select
+from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
@@ -60,7 +60,6 @@ from model.audit import AdminAction
 from model.entities import (
     Account,
     AccountKind,
-    Entry,
     MarketBook,
     MarketOutcome,
     MarketResult,
@@ -266,8 +265,8 @@ async def _repeat(
     """Answer a recorded void from its entries, write nothing, and tell
     market_service again with the recorded reason.
 
-    One `GROUP BY` kind over the void's entries on the market's own pool
-    account gives the count and sum of the refunds and the residue. That
+    `settlement.pool_totals_of` over the void's entries on the market's own
+    pool account gives the count and sum of the refunds and the residue. That
     finds the same entries as ADR 0025's step 3, "found by their derived
     keys": the pool belongs to this market alone, and only the void writes
     those two kinds. `total_owed`, which no entry records, and `refunds_cut`
@@ -285,30 +284,21 @@ async def _repeat(
     outcomes = await trading.list_outcomes(session, market_id)
     replay, _ = await _replay_lots(session, book, _position_by_outcome(outcomes))
 
-    stmt = (
-        select(Transaction.kind, func.count(Entry.id), func.sum(Entry.amount))
-        .join(Entry, Entry.transaction_id == Transaction.id)
-        .where(
-            Entry.account_id == book.pool_account_id,
-            Transaction.kind.in_([TransactionKind.VOID_REFUND, TransactionKind.VOID_RESIDUE]),
-        )
-        .group_by(Transaction.kind)
+    totals = await settlement.pool_totals_of(
+        session,
+        market_id,
+        [TransactionKind.VOID_REFUND, TransactionKind.VOID_RESIDUE],
     )
-    by_kind = {
-        kind: (count, total) for kind, count, total in (await session.execute(stmt)).all()
-    }
-    positions_refunded, refunded_from_pool = by_kind.get(TransactionKind.VOID_REFUND, (0, ZERO))
-    _, residue_from_pool = by_kind.get(TransactionKind.VOID_RESIDUE, (0, ZERO))
-    total_refunded = -refunded_from_pool
-    residue = -residue_from_pool
+    refunds = totals[TransactionKind.VOID_REFUND]
+    residue = totals[TransactionKind.VOID_RESIDUE].taken
     # The pool held what the refunds and the residue took out of it.
-    cut = cut_of(replay.owed, pool=total_refunded + residue, seed=book.seed_subsidy)
+    cut = cut_of(replay.owed, pool=refunds.taken + residue, seed=book.seed_subsidy)
 
     result = _result_of(
         record,
-        positions_refunded=positions_refunded,
+        positions_refunded=refunds.count,
         total_owed=cut.total_owed,
-        total_refunded=total_refunded,
+        total_refunded=refunds.taken,
         refunds_cut=cut.refunds_cut,
         residue=residue,
     )
