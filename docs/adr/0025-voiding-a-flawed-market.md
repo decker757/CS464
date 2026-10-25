@@ -945,14 +945,14 @@ Each must fail with the line it guards removed.
   position's refund and fails nothing; on a position with no other lot, the
   position writes no transaction. Red if the core module lets
   `ProceedsBelowTick` escape.
-- **The cut's arithmetic.** Three holders each owed 3.0000, with `P = 2` and
-  `S = 1`, so the pool is 7 short and every refund is cut by `3/9`: each cut
-  refund is **1.0000**. Red if the cut divides first, which gives **0.9999**.
-  The illustration above, `P = 40` and `S = 10` with 50 and 20 owed, cut
-  inside a caller's context set to precision 6: 50 still cuts to
-  **35.7142**. Red if the cut runs in the caller's context rather than the
-  engine's, which gives **35.7143**. A refund the cut floors to zero writes
-  nothing and is not counted.
+- **The cut's arithmetic.** Three holders each owed 13936071511245.7845,
+  with `P = 29999999998999.9997` and `S = 1000`, so `P + S` is three times
+  9999999999999.9999: each cut refund is exactly **9999999999999.9999**.
+  Red if the cut divides first, or runs in the ambient 28-digit context
+  instead of the engine's: either gives **9999999999999.9998**. Dividing first
+  is short at small figures too: owed 3.0000 three times, with `P = 2` and
+  `S = 1`, it cuts each to 0.9999 rather than 1.0000. A refund the cut floors
+  to zero writes nothing and is not counted.
 - **Honest profit stands.** A holder buys, another trader's buy raises the
   price, the holder sells part: they keep the sale and are refunded exactly
   the bottom shares' cost.
