@@ -26,8 +26,8 @@ from decimal import ROUND_FLOOR, Decimal
 
 from core.errors import ProceedsBelowTick
 from core.lmsr import engine_context
-from core.state_versions import require_consecutive_versions
 from core.pricing import QUANTUM, Side, trade_cost_of
+from core.state_versions import refuse_if_versions_not_consecutive
 
 ZERO = Decimal(0)
 _ZERO_AMOUNT = Decimal("0.0000")
@@ -187,7 +187,7 @@ def refuse_if_replay_disagrees(
     book's. ADR 0025, "The guard".
     """
     versions = [trade.state_version for trade in trades]
-    require_consecutive_versions(versions)
+    refuse_if_versions_not_consecutive(versions)
     last = versions[-1] if versions else 0
     if last != state_version:
         raise ValueError(f"the trades end at {last}, the book at {state_version}")
@@ -199,11 +199,9 @@ def refuse_if_replay_disagrees(
         raise ValueError(f"the replay ends at q = {replay.q}, the book at {tuple(q)}")
 
 
-def refunds_are_cut(*, total_owed: Decimal, pool: Decimal, seed: Decimal) -> bool:
+def _is_short_beyond_one_seed(*, total_owed: Decimal, pool: Decimal, seed: Decimal) -> bool:
     """Whether the refunds owe more than the pool plus one more seed, so each
-    is cut. Exactly one seed short is covered in full. A repeat asks this
-    again of the figures its entries give back, so it answers as the first
-    request did."""
+    is cut. Exactly one seed short is covered in full."""
     return total_owed - pool > seed
 
 
@@ -221,7 +219,7 @@ def cut_of(
     is left out. ADR 0025, "Two accounts, and the cap of one more seed".
     """
     total_owed = sum(owed.values(), _ZERO_AMOUNT)
-    refunds_cut = refunds_are_cut(total_owed=total_owed, pool=pool, seed=seed)
+    refunds_cut = _is_short_beyond_one_seed(total_owed=total_owed, pool=pool, seed=seed)
 
     paid: dict[HolderOutcome, Decimal] = {}
     for key, refund in owed.items():

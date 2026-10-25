@@ -25,7 +25,7 @@ from decimal import Decimal
 
 from core.lmsr import _engine_context, prices
 from core.pricing import Side
-from core.state_versions import require_consecutive_versions
+from core.state_versions import refuse_if_versions_not_consecutive
 
 
 @dataclass(frozen=True)
@@ -56,12 +56,12 @@ def price_history_of(
 ) -> list[PricePoint]:
     """The opening point, then one point per trade, oldest first.
 
-    Raises `ValueError` through `require_consecutive_versions` unless the
+    Raises `ValueError` through `refuse_if_versions_not_consecutive` unless the
     trades' `state_version`s run 1, 2, 3, ... in order. The reason is in
     DECISIONS.md, "The price-history replay refuses trades whose state versions
     do not run 1, 2, 3, ... in order".
     """
-    require_consecutive_versions(trade.state_version for trade in trades)
+    refuse_if_versions_not_consecutive(trade.state_version for trade in trades)
 
     q = [Decimal(0)] * outcome_count
     points = [PricePoint(0, opened_at, tuple(prices(q, b)))]

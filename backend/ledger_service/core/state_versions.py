@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
-def require_consecutive_versions(versions: Iterable[int]) -> None:
+def refuse_if_versions_not_consecutive(versions: Iterable[int]) -> None:
     """Raise `ValueError`, naming the expected and the actual value, unless
     `versions` run 1, 2, 3, ... in order. None at all is a run.
 
