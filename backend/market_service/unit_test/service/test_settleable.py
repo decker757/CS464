@@ -35,6 +35,7 @@ from unit_test.conftest import (
     published_market,
     settleable_edge,
     settled_market,
+    voided_market,
 )
 
 _ONE_MICROSECOND = timedelta(microseconds=1)
@@ -182,6 +183,16 @@ async def _settled(session: AsyncSession, creator: Actor) -> uuid.UUID:
     return (await settled_market(session, creator)).id
 
 
+async def _voided_with_stale_approval(
+    session: AsyncSession, creator: Actor
+) -> uuid.UUID:
+    """Voided from APPROVED, which keeps the approval ([BE] #221), with that
+    approval's window long over. Only the status rule can make it unsettleable."""
+    market_id = (await voided_market(session, creator)).id
+    await _set_stale_approval(session, market_id)
+    return market_id
+
+
 _Build = Callable[[AsyncSession, Actor], Awaitable[uuid.UUID]]
 
 
@@ -197,6 +208,8 @@ _Build = Callable[[AsyncSession, Actor], Awaitable[uuid.UUID]]
         (_approved, -timedelta(minutes=1), False),
         (_approved, timedelta(hours=1), True),
         (_settled, timedelta(hours=1), True),
+        # [BE] #221: never settleable, however long ago its window ended.
+        (_voided_with_stale_approval, timedelta(hours=1), False),
     ],
     ids=[
         "open_with_stale_approved_at",
@@ -205,6 +218,7 @@ _Build = Callable[[AsyncSession, Actor], Awaitable[uuid.UUID]]
         "approved_inside_the_gap",
         "approved_after_the_gap",
         "settled",
+        "voided_with_stale_approval",
     ],
 )
 async def test_settleable_by_status(
@@ -214,7 +228,9 @@ async def test_settleable_by_status(
     `settled`, and is false for every other status".
 
     `settled` fails with the settled half of the rule dropped; the stale
-    rows fail with the approved half dropped.
+    rows fail with the approved half dropped. `voided_with_stale_approval` is
+    ADR 0025's: for a voided market "`settleable` is `false`", and it fails
+    if VOIDED is read as settled or as approved.
     """
     market_id = await build(session, actor())
     edge = settleable_edge(await _approved_at(session, market_id))
