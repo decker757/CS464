@@ -224,6 +224,24 @@ class SettlementUnconfirmed(LedgerError):
     )
 
 
+class VoidUnconfirmed(LedgerError):
+    """The refunds committed and market_service was not told. [BE] #221,
+    ADR 0025.
+
+    `SettlementUnconfirmed`'s twin, for the void's last step, and for the same
+    reason every failure means the same thing: the refunds stand and the
+    market does not read `voided` yet, and the administrator repeats the
+    request, which writes nothing in the ledger. 503, as that one is.
+    """
+
+    status_code = 503
+    code = "void_unconfirmed"
+    message = (
+        "Every holder was refunded, but the market could not be marked voided. "
+        "Repeat the request."
+    )
+
+
 class MarketClosed(LedgerError):
     """This market is not open for trading. [F-8] #109, ADR 0017.
 
@@ -258,6 +276,92 @@ class MarketNotApproved(LedgerError):
     status_code = 409
     code = "market_not_approved"
     message = "This market has no approved outcome to settle."
+
+
+class MarketAlreadyVoided(LedgerError):
+    """A settlement asked for a market that has been voided. [BE] #221,
+    ADR 0025.
+
+    Raised when this ledger holds a voided record for the market, at either
+    of settlement's lookups, and when market_service reports `voided` with
+    nothing recorded here. Spelled as market_service spells it for every
+    write on a voided market. 409: the request is well formed and the
+    market's state refuses it, for good.
+    """
+
+    status_code = 409
+    code = "market_already_voided"
+    message = "This market has been voided, so it has no outcome to settle."
+
+
+class MarketAlreadySettled(LedgerError):
+    """A void asked for a market that has been settled. [BE] #221, ADR 0025.
+
+    Raised when this ledger holds a settled record for the market, at either
+    of the void's lookups, and when market_service reports `settled` with
+    nothing recorded here. The ledger's first use of a code market_service
+    already has, spelled as it spells it. 409: the market has ended, for good.
+    """
+
+    status_code = 409
+    code = "market_already_settled"
+    message = "This market has been settled, so it can no longer be voided."
+
+
+class MarketNotVoidable(LedgerError):
+    """A void asked for a market market_service does not report `voidable`.
+    [BE] #221, ADR 0025.
+
+    Asked only when the ledger holds no record. market_service decides the
+    flag, on the stored status and the stored dispute window, and the ledger
+    reads it rather than working it out. 409: well formed, and the market's
+    state refuses it; an open market is closed early first.
+    """
+
+    status_code = 409
+    code = "market_not_voidable"
+    message = "This market cannot be voided now."
+
+
+class AdminHasAStake(LedgerError):
+    """The administrator has traded the market they asked to void. [BE] #221,
+    ADR 0025, "Who may void".
+
+    A trade or a fill in the market's replay names them, a position since sold
+    to zero included. 403: the session is fine and this administrator will
+    never be allowed to void this market; another one has to.
+    """
+
+    status_code = 403
+    code = "admin_has_a_stake"
+    message = "You have traded this market, so another administrator has to void it."
+
+
+class VoidIncomplete(LedgerError):
+    """A void's reason is under ten characters once trimmed. [BE] #221.
+
+    Checked before any read, as the administrator's order cancel checks its
+    own. No `details`, as `CancellationIncomplete` has none: the code names
+    the one field, and there is no figure to report (ADR 0025).
+    """
+
+    status_code = 422
+    code = "void_incomplete"
+    message = "Give a reason of at least 10 characters for voiding this market."
+
+
+class VoidReplayMismatch(LedgerError):
+    """The market's trades disagree with its positions or its book. [BE] #221,
+    ADR 0025, "The guard".
+
+    A bug, never a state a client can fix: nothing is written, and a retry
+    replays the same trades. 500, and logged with its cause, as every 500 in
+    this service is.
+    """
+
+    status_code = 500
+    code = "void_replay_mismatch"
+    message = "This market's trades could not be reconciled, so nothing was refunded."
 
 
 class DisputeWindowOpen(LedgerError):

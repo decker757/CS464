@@ -43,6 +43,7 @@ from unit_test.portfolio_fixtures import market_at, row, sequence_values
 from unit_test.sell_fixtures import footprint, hold, q_now
 from unit_test.settlement_fixtures import B as SETTLED_B
 from unit_test.settlement_fixtures import LOSER, PAID, UNPAID, WINNER
+from unit_test.void_fixtures import VoidUpstream, open_book, trade, void
 from unit_test.trade_fixtures import (
     SMALL_QUANTITY,
     ZERO,
@@ -156,6 +157,28 @@ async def _settled(session: AsyncSession, directory: Directory) -> list[uuid.UUI
     return [winner, loser, both]
 
 
+async def _voided(session: AsyncSession, directory: Directory) -> list[uuid.UUID]:
+    """A market traded through the real trade path and then voided: a holder
+    of 12 of outcome 1, a trader who bought 4 of outcome 0 and sold 2, and a
+    holder of outcome 0. #221 and ADR 0025's "Tests that matter": "the
+    leaderboard's net worth is unchanged by the join". The refresh calls
+    `valuation_of` with no `refunds`, so its voided rows read only the
+    fallback: catches a refresh that fails while anyone holds a voided market,
+    and one that values that market at its frozen book."""
+    upstream = VoidUpstream()
+    await open_book(session, upstream)
+    holder = await granted(session, directory, "voided_holder")
+    seller = await granted(session, directory, "voided_seller")
+    other_side = await granted(session, directory, "voided_other_side")
+    await trade(session, upstream, holder, outcome=1, side="buy", quantity="12")
+    await trade(session, upstream, seller, outcome=0, side="buy", quantity="4")
+    await trade(session, upstream, seller, outcome=0, side="sell", quantity="2")
+    await trade(session, upstream, other_side, outcome=0, side="buy", quantity="5")
+    upstream.closes()
+    await void(session, upstream)
+    return [holder, seller, other_side]
+
+
 async def _no_positions(session: AsyncSession, directory: Directory) -> list[uuid.UUID]:
     """Three holders with nothing but their grant, beside one who trades.
     Catches an inner join from the accounts to their positions, which drops a
@@ -170,8 +193,8 @@ async def _no_positions(session: AsyncSession, directory: Directory) -> list[uui
 
 @pytest.mark.parametrize(
     "scenario",
-    [_multi_outcome, _settled, _no_positions],
-    ids=["multi-outcome", "settled", "no-positions"],
+    [_multi_outcome, _settled, _voided, _no_positions],
+    ids=["multi-outcome", "settled", "voided", "no-positions"],
 )
 async def test_every_ranked_user_s_net_worth_is_their_portfolio_s(
     session: AsyncSession, scenario: Scenario

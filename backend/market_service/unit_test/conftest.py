@@ -66,6 +66,7 @@ from model.entities import Market, MarketStatus  # noqa: E402
 from model.schemas import (  # noqa: E402
     MarketCloseRequest,
     MarketDraftRequest,
+    MarketVoidRequest,
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
@@ -555,6 +556,38 @@ async def settled_market(session, creator: Actor, **overrides: object) -> Market
         await approved_market(session, creator, approved_at=approved_at, **overrides)
     ).id
     await market_service.settle(session, actor(), market_id)
+    session.expire_all()
+    return await market_service.get(session, creator.id, market_id)
+
+
+# [BE] #221. The reason a void forwards, kept on the market for traders.
+VOID_REASON = "The match was abandoned after ten overs; there is no result."
+
+
+def void_terms(**overrides: object) -> dict[str, object]:
+    """The body the ledger forwards to `POST /markets/{id}/void`. [BE] #221."""
+    base: dict[str, object] = {"reason": VOID_REASON}
+    base.update(overrides)
+    return base
+
+
+def void_request(**overrides: object) -> MarketVoidRequest:
+    """`void_terms` parsed, for driving the service layer without HTTP."""
+    return MarketVoidRequest(**void_terms(**overrides))  # type: ignore[arg-type]
+
+
+async def voided_market(session, creator: Actor, **overrides: object) -> Market:
+    """The same market, approved with its window still open, then voided.
+    [BE] #221, ADR 0025.
+
+    Voided from APPROVED, so its proposal and approval are kept, as a void
+    keeps them, and a decision or a send-back can quote its `proposal_id`.
+    Voided through `market_service.void` on the real clock, by a fresh
+    administrator, so no caller's actor gains an entry. Overrides are
+    `proposed_market`'s. Returns the market reloaded from the database.
+    """
+    market_id = (await approved_market(session, creator, **overrides)).id
+    await market_service.void(session, actor(), market_id, void_request())
     session.expire_all()
     return await market_service.get(session, creator.id, market_id)
 

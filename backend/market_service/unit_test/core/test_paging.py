@@ -92,7 +92,7 @@ def test_a_naive_timestamp_in_a_cursor_is_read_as_utc() -> None:
 _MARKET_ID = "410465f3-2852-4833-964b-f42e23b8227c"
 
 
-@pytest.mark.parametrize("settled", [False, True], ids=["active", "settled"])
+@pytest.mark.parametrize("finished", [False, True], ids=["active", "finished"])
 @pytest.mark.parametrize(
     "close_time",
     [
@@ -102,16 +102,33 @@ _MARKET_ID = "410465f3-2852-4833-964b-f42e23b8227c"
     ids=["dated", "undated"],
 )
 def test_an_overview_cursor_round_trips(
-    settled: bool, close_time: datetime | None
+    finished: bool, close_time: datetime | None
 ) -> None:
     """#210: exactly, microseconds and both groups included, and a missing close
     time stays missing: "the cursor encodes the nulls-last group as well as the
     value, and a page boundary inside the drafts can be named"."""
     position = OverviewPosition(
-        settled=settled, close_time=close_time, market_id=uuid.UUID(_MARKET_ID)
+        finished=finished, close_time=close_time, market_id=uuid.UUID(_MARKET_ID)
     )
 
     assert decode_overview_cursor(encode_overview_cursor(position)) == position
+
+
+def test_a_cursor_issued_before_the_rename_still_names_the_finished_group() -> None:
+    """ADR 0025: the cursor's `settled` flag "is renamed `finished` and keeps
+    its encoding, so a cursor issued before the change still decodes to the
+    same place". Built by hand as the old encoder wrote a settled market's
+    position: a leading `1`. Fails if the rename changes the flag's encoding
+    or its place in the cursor."""
+    issued_before = _cursor_of("1", "1", _WHEN, _MARKET_ID)
+
+    position = decode_overview_cursor(issued_before)
+
+    assert position == OverviewPosition(
+        finished=True,
+        close_time=datetime(2026, 10, 4, 9, 15, tzinfo=UTC),
+        market_id=uuid.UUID(_MARKET_ID),
+    )
 
 
 @pytest.mark.parametrize(
@@ -161,7 +178,7 @@ def test_a_browse_cursor_and_an_overview_cursor_are_not_interchangeable() -> Non
     )
     overview_cursor = encode_overview_cursor(
         OverviewPosition(
-            settled=False,
+            finished=False,
             close_time=datetime(2026, 12, 31, tzinfo=UTC),
             market_id=uuid.UUID(_MARKET_ID),
         )

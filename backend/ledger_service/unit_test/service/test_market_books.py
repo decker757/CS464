@@ -99,6 +99,7 @@ class _Upstream:
             "published_at": published_at,
             "proposed_outcome_id": None,
             "settleable": False,
+            "voidable": False,
             # Raw dicts pass straight through, for a malformed outcome list.
             # `is not None`, not truthiness: `outcomes=[]` must stay empty.
             "outcomes": (
