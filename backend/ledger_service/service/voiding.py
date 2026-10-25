@@ -9,8 +9,9 @@ settlement's order"):
    connection. A failure refuses here, even for a market already voided.
 3. The record, looked up without a lock. A voided hit is a repeat: the
    figures are summed from the void's own entries, `total_owed` is worked out
-   again by the lot replay alone, the session rolls back, and market_service
-   is told again with the recorded reason. A settled hit is
+   again from the lot replay alone, with no guard and no stake check, the
+   session rolls back, and market_service is told again with the recorded
+   reason. A settled hit is
    `409 market_already_settled`.
 4. Only with no record, the status: `settled` is `market_already_settled`,
    and anything else not `voidable` is `market_not_voidable`. A refusal
@@ -53,7 +54,6 @@ from core.voiding import (
     VoidTrade,
     cut_of,
     lot_replay_of,
-    refunds_are_cut,
     refuse_if_replay_disagrees,
 )
 from model.audit import AdminAction
@@ -268,10 +268,11 @@ async def _repeat(
     market_service again with the recorded reason.
 
     One `GROUP BY` kind over the pool's void entries gives the count and sum
-    of the refunds and the residue. `total_owed`, which no entry records, is
-    the lot replay run again, with no guard and no stake check: the record
-    refuses every later trade, so the replay reads what the first request
-    read. The rollback expires the record, so its values are read first, and
+    of the refunds and the residue. `total_owed`, which no entry records, and
+    `refunds_cut` are `cut_of`'s, over the lot replay run again and the pool
+    those entries emptied, so they come from the one place the first request
+    took them. The replay runs with no guard and no stake check: the record
+    refuses every later trade, so it reads what the first request read. The rollback expires the record, so its values are read first, and
     releases the book lock when a locked lookup found it. Raises
     `VoidUnconfirmed` from `mark_voided`.
     """
@@ -297,18 +298,15 @@ async def _repeat(
     _, residue_from_pool = by_kind.get(TransactionKind.VOID_RESIDUE, (0, ZERO))
     total_refunded = -refunded_from_pool
     residue = -residue_from_pool
+    # The pool held what the refunds and the residue took out of it.
+    cut = cut_of(replay.owed, pool=total_refunded + residue, seed=book.seed_subsidy)
 
     result = _result_of(
         record,
         positions_refunded=positions_refunded,
-        total_owed=replay.total_owed,
+        total_owed=cut.total_owed,
         total_refunded=total_refunded,
-        # The pool held what the refunds and the residue took out of it.
-        refunds_cut=refunds_are_cut(
-            total_owed=replay.total_owed,
-            pool=total_refunded + residue,
-            seed=book.seed_subsidy,
-        ),
+        refunds_cut=cut.refunds_cut,
         residue=residue,
     )
 
