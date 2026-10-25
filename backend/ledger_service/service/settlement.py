@@ -128,7 +128,7 @@ async def _refuse_if_voided(session: AsyncSession, record: MarketResult) -> None
     when a locked lookup found it, and raise `MarketAlreadyVoided`. A voided
     record is never replayed: it names no winner. ADR 0025, "Settlement learns
     the record's kind"."""
-    if record.kind == ResultKind.VOIDED:
+    if record.kind != ResultKind.SETTLED:
         await session.rollback()
         raise MarketAlreadyVoided
 
