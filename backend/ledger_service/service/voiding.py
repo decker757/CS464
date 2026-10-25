@@ -96,6 +96,10 @@ _MIN_REASON_LENGTH = 10
 # the void refuses by name. Every other is `voidable`'s to decide.
 _SETTLED = "settled"
 
+# The start of every refund's key, shared by `refund_key` and its SQL twin
+# `refund_key_column`, so the portfolio's join and the void build one string.
+_REFUND_KEY_PREFIX = "void-refund"
+
 
 @dataclass(frozen=True)
 class VoidResult:
@@ -112,9 +116,6 @@ class VoidResult:
     total_refunded: Decimal
     refunds_cut: bool
     residue: Decimal
-
-
-_REFUND_KEY_PREFIX = "void-refund"
 
 
 def refund_key(market_id: uuid.UUID, *, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
