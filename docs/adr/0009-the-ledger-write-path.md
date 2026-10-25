@@ -263,6 +263,29 @@ only by the suite.
 > token stays open for a background settlement and for any later background
 > path.
 
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
+> and not built yet. A sixth write route, and it takes no money.**
+> `POST /ledger/markets/{market_id}/void` voids a flawed market: no winner,
+> and every share still held is refunded at what it cost. It is the sixth
+> write route, after the trade, the placement, the owner's cancel, the
+> administrator's cancel and the settlement. It accepts an administrator's
+> token and a body of one field, `reason` (`extra="forbid"`). The rule this
+> record set down still holds. Checked input by input:
+>
+> | Input | Why it cannot move money it should not |
+> | --- | --- |
+> | `market_id` | Path only. Credits move between *that* market's pool, its holders and PLATFORM, and nowhere else |
+> | `reason` | Text. It is trimmed, checked for length, stored on the result row and logged, and it decides nothing |
+> | whether the market may be voided | Not an input. Read from market_service's `voidable`, and then from the ledger's own `market_results` row under the book lock |
+> | the credited accounts | Not an input. The holders found by replaying this market's trades from the pool's feed under the book lock, checked against `ledger.positions` |
+> | the amounts | Not an input. Each held lot's own recorded charge, or its remaining shares priced at its own `q` and rounded down, cut by one common fraction only when the pool plus one seed falls short |
+> | the debited accounts | Not an input. The pool and, for at most one seed, PLATFORM. Never the caller, never a holder |
+> | idempotency keys | Not an input. Derived by the server: `void-refund:{market_id}:{user_id}:{outcome_id}` per refunded position and `void-residue:{market_id}` for the residue, namespaces no other route writes |
+> | the token | Must carry the admin role, and its `sub` must appear in none of the market's trades (`403 admin_has_a_stake`). It names no account |
+>
+> The question of a caller with no token stays open, as above. The reversal
+> trigger of the 2026-10-04 amendment covers this route too.
+
 ## Consequences
 
 **Every read of a balance can write.** One insert per user, ever, and it is the

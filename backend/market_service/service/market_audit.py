@@ -1,5 +1,6 @@
 """The audit entries a market's lifecycle appends, and what each one carries.
-[4.3] #15, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.3] #11, [3.4] #12.
+[4.3] #15, [1.3] #3, [2.3] #7, [3.1] #9, [3.2] #10, [3.3] #11, [3.4] #12,
+[BE] #221.
 
 Every function appends on the caller's session without committing, so the
 entry commits with the action it records. ADR 0006.
@@ -13,7 +14,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model.audit import AdminAction
-from model.entities import Market
+from model.entities import Market, MarketStatus
 from model.schemas import PRICING_DECIMAL_PLACES
 from service import audit
 from service.audit import Actor
@@ -288,4 +289,35 @@ async def record_marked_settled(
         AdminAction.MARKET_MARKED_SETTLED,
         now,
         context=decision_snapshot(market),
+    )
+
+
+async def record_marked_voided(
+    session: AsyncSession,
+    actor: Actor,
+    market: Market,
+    reason: str,
+    *,
+    from_status: MarketStatus,
+    cleared_proposal: dict[str, object] | None,
+    now: datetime,
+) -> None:
+    """Append `market.marked_voided`, under the administrator whose token it
+    carried. [BE] #221.
+
+    Takes the cleared proposal rather than building it, for the reason
+    `record_rejection` gives: by now a void from PENDING_RESOLUTION has
+    cleared it. None when the void cleared none. ADR 0025.
+    """
+    await _record(
+        session,
+        actor,
+        market,
+        AdminAction.MARKET_MARKED_VOIDED,
+        now,
+        reason=reason,
+        context={
+            "from_status": from_status.value,
+            "cleared_proposal": cleared_proposal,
+        },
     )
