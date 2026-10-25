@@ -1937,8 +1937,13 @@ already `voided`.
 Every holder has been refunded and the void is recorded. What failed is the
 last step, telling market_service, so the market still reads its old status.
 **Repeat the request.** It writes nothing here and retries the last step.
-Do not tell the administrator that the void failed. This is the opposite of
-`503 market_terms_unavailable`, which here means nothing was refunded.
+Do not tell the administrator that the void failed.
+
+`503 market_terms_unavailable` is different: it means *this request*
+refunded nothing, because it stopped at the read, before it looked for a
+recorded void. On a first void nobody has been refunded. On a repeat after
+`void_unconfirmed` the earlier refunds still stand. Repeat again once
+market_service answers.
 
 A repeat works after the dispute window has ended: market_service's step
 accepts an `approved` market until five minutes after the window's end, which
