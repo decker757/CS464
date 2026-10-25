@@ -46,9 +46,9 @@ Refunds = Mapping[tuple[uuid.UUID, uuid.UUID], Decimal]
 class PortfolioPosition:
     """One outcome the caller still holds.
 
-    Valued at liquidation (ADR 0018) when its market is not settled, and then
-    `result` and `payout` are None. On a settled market it is the other way
-    round: `price`, `value` and `unrealized_pnl` are None.
+    Valued at liquidation (ADR 0018) when its market is not settled or voided,
+    and then `result` and `payout` are None. On a settled or voided market it
+    is the other way round: `price`, `value` and `unrealized_pnl` are None.
     """
 
     market_id: uuid.UUID
@@ -303,7 +303,8 @@ def profit_and_loss_of(
     open_cost_basis = _ZERO_AMOUNT
     unrealized_pnl = _ZERO_AMOUNT
     for position in positions:
-        # A settled row: both its basis and its payout are already realised.
+        # A settled or voided row: its basis and its payout or refund are
+        # already realised.
         if position.unrealized_pnl is None:
             continue
         open_cost_basis += position.cost_basis
