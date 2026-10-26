@@ -754,9 +754,10 @@ describe('MarketsPage', () => {
       expectChosen('Open')
       await actor.keyboard('{ArrowLeft}')
       expectChosen('All')
+      // Wraps to the last pill, which is Voided since #526.
       await actor.keyboard('{ArrowLeft}')
-      expectChosen('Resolved')
-      await waitFor(() => expect(statusesSent.at(-1)).toBe('settled'))
+      expectChosen('Voided')
+      await waitFor(() => expect(statusesSent.at(-1)).toBe('voided'))
       await actor.keyboard('{ArrowRight}')
       expectChosen('All')
     })
