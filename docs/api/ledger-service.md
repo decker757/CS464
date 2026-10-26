@@ -2309,11 +2309,11 @@ same shape one layer down, in `service/posting.py` — a caller of the write
 primitive reaching its replay branch with work still pending, which every caller
 this service has is built not to do.
 `malformed_batch` (500) is the same again, in the batch form of that
-primitive (`posting.post_all`, new in [3.4] #12), whose one caller is the
-settlement route: a batch with no movements, or two movements sharing an
-idempotency key. The route builds every batch from this service's own
-positions, with one payout per winner keyed by user id and at most one
-residue, so no request can provoke it.
+primitive (`posting.post_all`, new in [3.4] #12): a batch with no movements,
+or two movements sharing an idempotency key. Every caller builds its batch
+from this service's own rows, one key per movement: a settlement pays one
+payout per winner and at most one residue, and a void one refund per
+position and at most one residue. No request can provoke it.
 `cascade_fill_refused` (500, new in [T-7] #27) is the trade route's and the
 placement route's guard on their cascades: the overdraft check refused a
 batch anywhere but at the trade's own movement, or, on a placement, refused
