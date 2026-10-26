@@ -129,6 +129,34 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('shows a market whose book is open but untraded as no trades yet, like one with no book', async () => {
+    // #517. Every page that lists markets reads each one's snapshot, and the
+    // first snapshot opens the market's book (ledger-service.md). From then on
+    // its exposure reads state_version 0 with every outcome at zero, and
+    // nobody has traded in it any more than before. Naming a worst case here
+    // would pick an outcome nobody holds.
+    mockMarket('mkt-1', market())
+    mockExposure('mkt-1', {
+      opened_at: '2026-01-01T00:00:00Z',
+      state_version: 0,
+      seed_subsidy: '250.0000',
+      pool: '250.0000',
+      payout_exceeds_pool: false,
+      result: null,
+      winning_outcome_id: null,
+      outcomes: [
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '0.0000', payout_if_wins: '0.0000', residue_if_wins: '250.0000' },
+        { outcome_id: 'o-no', position: 1, shares_outstanding: '0.0000', payout_if_wins: '0.0000', residue_if_wins: '250.0000' },
+      ],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText(/no trades yet/i)).toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByText(/if yes wins/i)).not.toBeInTheDocument()
+  })
+
   it('passes over a residue it cannot read, rather than naming it the worst case', async () => {
     // A figure that does not parse shows as "—", so calling it the worst
     // case would hide a real shortfall behind a dash.
