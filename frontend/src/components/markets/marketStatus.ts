@@ -13,6 +13,8 @@ type KnownMarketStatus = AdminMarketStatus | MarketStatus
 
 // `approved` is "approved, waiting for the ledger's payout"; `settled` is final
 // ([3.4] #12; the status alone does not prove the ledger paid, ADR 0019).
+// `voided` is final too, with no winner: every holder was refunded instead
+// (ADR 0025). Both read the same to a trader and an administrator.
 export const STATUS_CONFIG: Record<KnownMarketStatus, { label: string; tone: Tone }> = {
   draft:              { label: 'Draft',     tone: 'neutral' },
   submitted:          { label: 'Submitted', tone: 'warning' },
@@ -21,6 +23,7 @@ export const STATUS_CONFIG: Record<KnownMarketStatus, { label: string; tone: Ton
   pending_resolution: { label: 'Pending',   tone: 'warning' },
   approved:           { label: 'Approved',  tone: 'info' },
   settled:            { label: 'Settled',   tone: 'neutral' },
+  voided:             { label: 'Voided',    tone: 'neutral' },
 }
 
 /** Whose words a status is shown in: an administrator's, or a trader's. */

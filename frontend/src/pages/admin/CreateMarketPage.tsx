@@ -69,6 +69,7 @@ const LOCKED_BECAUSE: Record<LockedStatus, string> = {
   pending_resolution: 'This market already has an outcome waiting for a second administrator.',
   approved: 'This market already has an approved outcome.',
   settled: 'This market has already been settled and paid out.',
+  voided: 'This market has been voided and every holder refunded.',
 }
 
 function createDefaultForm(): FormState {

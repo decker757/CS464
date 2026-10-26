@@ -7,7 +7,7 @@ import { statusDisplay } from './marketStatus'
 
 // The statuses GET /public/markets accepts, in the order market-service.md
 // lists them; draft and submitted are never listed to a trader.
-const STATUS_FILTERS = ['open', 'closed', 'pending_resolution', 'approved', 'settled'] as const
+const STATUS_FILTERS = ['open', 'closed', 'pending_resolution', 'approved', 'settled', 'voided'] as const
 export type StatusFilter = (typeof STATUS_FILTERS)[number]
 
 // The trader's words, not the lifecycle's: "Pending" and "Approved" are
