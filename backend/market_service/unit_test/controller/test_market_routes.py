@@ -205,6 +205,43 @@ async def test_a_naive_timestamp_is_422(
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        # The last hour of year 9999 at UTC-5 is an instant in year 10000.
+        ("close_time", "9999-12-31T23:00:00-05:00"),
+        # Year 1 at UTC+1 is an instant in year 0 in UTC.
+        ("resolution_time", "0001-01-01T00:30:00+01:00"),
+    ],
+)
+async def test_a_draft_time_with_no_instant_in_utc_is_422_naming_it(
+    client: AsyncClient, admin_headers: dict[str, str], field: str, value: str
+) -> None:
+    """#547: asyncpg converts the time to UTC before sending it and overflows,
+    which was a 500, and the autosave would have hit it every three seconds."""
+    response = await client.post(
+        "/markets", json=_payload(**{field: value}), headers=admin_headers
+    )
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [["body", field]]
+
+
+async def test_the_last_instant_in_utc_is_still_a_draft_time(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """#547's guard refuses only what cannot be encoded: the last microsecond
+    of year 9999 in UTC is a real time and still saves."""
+    response = await client.post(
+        "/markets",
+        json=_payload(close_time="9999-12-31T23:59:59.999999+00:00"),
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["market"]["close_time"].startswith("9999-12-31T23:59:59.999999")
+
+
 async def test_a_missing_draft_key_is_422(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
