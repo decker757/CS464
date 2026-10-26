@@ -1,8 +1,10 @@
 """`as_utc`: a naive value is stamped UTC, not read as local time. [#320]
 `has_utc_instant`: a time with no instant in UTC is caught before asyncpg. [#490]
 
-No database, no HTTP. The twin of `ledger_service/unit_test/core/test_clock.py`;
-copied, not shared, like the function.
+No database, no HTTP. The `as_utc` tests are the twin of
+`ledger_service/unit_test/core/test_clock.py`, copied, not shared, like the
+function. `has_utc_instant` has no twin: only this service sends a time to
+Postgres.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Normalising a datetime before it is compared, and checking it can be sent.
 
 In `core/` so every caller can import it: `service/validation.py` and
-`core/closing.py` call `as_utc`, and `controller/public_routes.py` calls
-`has_utc_instant`.
+`core/closing.py` call `as_utc`, and `controller/public_routes.py` and
+`model/schemas.py` call `has_utc_instant`.
 """
 
 from __future__ import annotations
