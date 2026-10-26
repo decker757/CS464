@@ -10,13 +10,14 @@ const CODE_MESSAGES: Record<string, string> = {
   market_not_approved: 'Somebody else acted on this market first.',
   market_already_settled: 'Somebody else acted on this market first.',
   market_pending_resolution: 'Somebody else acted on this market first.',
+  market_already_voided: 'This market has been voided, so its result is gone.',
 }
 
-// All five documented 409s mean a retry cannot succeed without a fresh read
+// All six documented 409s mean a retry cannot succeed without a fresh read
 // of the row — there is no "reason too short" case to recover from in place.
 const SUPERSEDING_CODES = new Set([
   'dispute_window_closed', 'proposal_superseded',
-  'market_not_approved', 'market_already_settled', 'market_pending_resolution',
+  'market_not_approved', 'market_already_settled', 'market_pending_resolution', 'market_already_voided',
 ])
 
 /** Sending an approved result back to closed during its dispute window

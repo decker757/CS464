@@ -8,10 +8,11 @@ const CODE_MESSAGES: Record<string, string> = {
   market_not_approved: 'This market is no longer approved. Reload to see its current state.',
   dispute_window_open: 'The dispute window has not closed yet. Nothing was paid.',
   market_terms_unavailable: 'The market service could not be reached. Nothing was paid; try again.',
+  market_already_voided: 'This market has been voided, so it has no winner to pay. Reload to see its current state.',
 }
 
 // These mean a retry cannot succeed without a fresh read of the row.
-const SUPERSEDING_CODES = new Set(['market_not_approved'])
+const SUPERSEDING_CODES = new Set(['market_not_approved', 'market_already_voided'])
 // These mean the row's own data is stale and needs a reload, but Settle
 // should stay available — the window's edge passes in seconds.
 const RELOAD_CODES = new Set(['dispute_window_open'])

@@ -11,12 +11,15 @@ const CODE_MESSAGES: Record<string, string> = {
   market_pending_resolution: 'This market has already stopped and has a proposed outcome.',
   market_already_approved: 'This market has already stopped and its outcome is approved.',
   market_already_settled: 'This market has already stopped and been settled. Reload to see its current state.',
+  market_already_voided: 'This market has already been voided. Reload to see its current state.',
 }
 
 // These mean the market already stopped some other way — reload rather than
 // retry (market-service.md's notes for #56, point 6, and the close endpoint's
 // "Only an open market" table).
-const SUPERSEDING_CODES = new Set(['market_closed', 'market_pending_resolution', 'market_already_approved', 'market_already_settled'])
+const SUPERSEDING_CODES = new Set([
+  'market_closed', 'market_pending_resolution', 'market_already_approved', 'market_already_settled', 'market_already_voided',
+])
 
 /** Closing a market early ([2.3] #7): the reason popup's state, the close
  * call, and what to show for each documented error. `onClosed` fires once
