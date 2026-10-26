@@ -31,7 +31,7 @@ interface ReasonActionOptions<T> {
 
 /** The reason-popup shape shared by every admin action that collects a
  * reason and submits it: close ([2.3] #7), suspend/unsuspend ([4.2] #14),
- * and dispute a result ([3.3] #11). A caller owns its own
+ * dispute a result ([3.3] #11) and void a market (#526). A caller owns its own
  * "which modal, if any, is open" state — `useSuspension`'s is a direction,
  * `useCloseMarket`'s is a boolean — so this only owns the reason field, the
  * submit, and sorting one error into a field message, a looked-up message,
