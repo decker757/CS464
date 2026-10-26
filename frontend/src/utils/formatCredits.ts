@@ -136,7 +136,7 @@ export function addCredits(left: string, right: string): string | null {
 // say it is never a gain on a book nobody else has traded, and the same is
 // true of a signed amount that happens to land on exactly zero. Only colour
 // an actual loss or an actual gain; zero stays neutral. So does a value that
-// is not a plain decimal, which the formatters above show as "—": colouring
+// is not a plain decimal, which this file's formatters show as "—": colouring
 // it would mean reading its sign, and that throws on undefined (#436).
 export function signedAmountColor(value: string): string {
   if (!isPlainCredits(value) || isZeroCredits(value)) return 'text-muted'
