@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, closeEarly, proposeOutcome, publishMarket, registerAdmin, registerTrader, saveDraft, uniqueName } from './support/backend'
-import { boxOf, logIn, overflowingScreens, type Screen } from './support/browser'
+import { boxOf, documentWidth, loadUntilShown, logIn, overflowingScreens, selectTab, type Screen } from './support/browser'
 
 // [FE] #438. Every signed-in screen used to be two to three times the width
 // of a phone: the navbar was one row that never wrapped, and the create form
@@ -71,6 +71,39 @@ test('no administrator screen scrolls sideways on a phone or on a desktop', asyn
 
   expect(await overflowingScreens(page, screens, PHONE)).toEqual([])
   expect(await overflowingScreens(page, screens, DESKTOP)).toEqual([])
+})
+
+// [FE] #516. The test above failed now and then at 1440px, on these two lists
+// alone and by one to four pixels, depending on the run's random username: the
+// account button drew the whole name, so a wide one pushed the bar past its
+// frame, and the bold link to the page that is open tipped it over. So the
+// widest of each thing these lists draw is set up here, rather than left to
+// whatever else is in the database: the longest username auth allows, in its
+// widest letter, a question with no space to wrap at, and a winner with none.
+test('neither admin list scrolls sideways with the longest username, question and outcome', async ({ page }) => {
+  // uniqueName adds up to twelve characters, which makes 32, auth's limit.
+  const admin = await registerAdmin('W'.repeat(20))
+  const question = `${'W'.repeat(400)}${uniqueName('q')}`
+  // The longest label market_service accepts.
+  const winner = 'W'.repeat(120)
+  const market = await publishMarket(admin, question, [winner, 'No'])
+  await closeEarly(admin, market.id)
+  await proposeOutcome(admin, market, winner)
+
+  await logIn(page, admin)
+
+  for (const viewport of [PHONE, DESKTOP]) {
+    await page.setViewportSize(viewport)
+    await page.goto('/admin/markets')
+    // Its own tab, so the paged list reaches it in a page or two.
+    await selectTab(page, /^pending/i)
+    await expect(await loadUntilShown(page, question)).toBeVisible()
+    expect((await documentWidth(page)).scrollWidth, `/admin/markets at ${viewport.width}px`).toBe(viewport.width)
+
+    expect(await overflowingScreens(page, [{ path: '/admin/proposals', heading: 'Proposals Awaiting Decision' }], viewport)).toEqual([])
+    // The list just measured had this market on it.
+    await expect(page.getByText(`winner: ${winner}`)).toBeVisible()
+  }
 })
 
 test('on a phone the navigation sits behind a menu button, and on a desktop it is in the bar', async ({ page }) => {
