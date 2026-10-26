@@ -162,8 +162,10 @@ export interface LedgerEntry {
   // bump (ledger-service.md).
   kind: string
   context: Record<string, unknown>
-  // Set only on trade_buy / trade_sell; null on every other kind, including
-  // one this app does not recognise.
+  // market_id, outcome_id and quantity are set on trade_buy, trade_sell,
+  // settlement and void_refund; side and average_price on the two trades only.
+  // All are null on every other kind, including one this app does not
+  // recognise.
   market_id: string | null
   outcome_id: string | null
   side: TradeSide | null

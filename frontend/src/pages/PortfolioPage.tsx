@@ -30,8 +30,8 @@ interface StatCardProps {
   children?: React.ReactNode
 }
 
-// A settled position is no longer valued: its price, value and P&L arrive as
-// null, and are shown as a dash rather than as zero ([3.4] #12).
+// A settled or voided position is no longer valued: its price, value and P&L
+// arrive as null, and are shown as a dash rather than as zero ([3.4] #12, #526).
 const NOT_VALUED = '—'
 
 function toRow(position: Position, markets: Map<string, PublicMarketDetail>): PositionRow {
