@@ -206,7 +206,9 @@ async def lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
     an unlocked read such as `ensure_open`'s, would otherwise get that copy
     back unchanged: SQLAlchemy keeps an object it holds over the row a query
     returns. A trade that committed between the two reads would then be
-    invisible under the lock (#543).
+    invisible under the lock (#543). The reload also overwrites any unflushed
+    change to that book, and autoflush is off, so take the lock before
+    changing it.
     """
     stmt = (
         select(MarketBook)
