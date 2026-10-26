@@ -96,7 +96,8 @@ another administrator's draft or submitted market with
 | `voided` | (ADR 0025) `POST /markets/{id}/void`, which the ledger calls after its refunds commit ([BE] #221) | yes, with the reason and no winning outcome |
 
 The path is `draft → submitted → open → closed → pending_resolution →
-approved → settled` and nothing skips a step. Every save on a market past `submitted` is
+approved → settled` and nothing skips a step; a void is the one other way
+out, below. Every save on a market past `submitted` is
 a `409`, whatever the request asks for — the terms are final from `open`
 onwards.
 
@@ -1024,7 +1025,8 @@ Checked in this order, and the first that applies answers.
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed | log in again |
 | 403 | `not_an_administrator` | a trader | nothing; only an administrator can settle |
 | 404 | `market_not_found` | no such market | nothing; it is not there |
-| 409 | `market_not_approved` | its outcome has not been approved — any status short of `approved`, including another administrator's draft or submitted market | nothing to settle yet |
+| 409 | `market_already_voided` | the market has been voided; checked after a `settled` market's `200` and before the clock is read (ADR 0025) | nothing; a voided market is final |
+| 409 | `market_not_approved` | its outcome has not been approved — any status short of `approved` other than `voided`, including another administrator's draft or submitted market | nothing to settle yet |
 | 409 | `dispute_window_open` | approved, but not yet `settleable`: settlement opens five minutes after the dispute window ends | retry once it is `settleable` |
 
 `settled` is answered before the clock is read, so a market already settled is
@@ -1043,10 +1045,6 @@ request once the edge has passed completes it. An approved market with no
 
 **A refused settle writes nothing.** The market keeps its status and no audit
 entry is appended.
-
-**ADR 0025.** A `voided` market is
-`409 market_already_voided`, after the `settled` check and before the clock is
-read.
 
 ### Who may call it
 
@@ -1234,15 +1232,14 @@ GET /markets/overview?status=closed&limit=50
 - **Order** is soonest `close_time` first, markets with no `close_time` last,
   then by `id`, with or without a filter. So the `closed` tab reads oldest
   close first: the one waiting longest for an administrator. This differs from
-  `GET /public/markets` on purpose. Settled markets sort last, after all of
-  those, in the unfiltered view.
+  `GET /public/markets` on purpose. Settled and voided markets sort last, after
+  all of those, in the unfiltered view.
 - **`creator_id`** is on every row, so the caller can tell their own by
   comparing it with their own id.
 
 **ADR 0025. What a void adds here.**
 
-- `?status=` accepts `voided`, and `counts` gains a `voided` key, `0` when
-  there are none. The status table below accepts all eight.
+- `counts` gains a `voided` key, `0` when there are none.
 - **`voidable`** is a boolean on every row, the same flag as on the public
   detail below, derived against the same instant as the rest of the page.
 - Voided markets sort last with settled ones in the unfiltered view, after
@@ -1407,7 +1404,7 @@ the first group explicitly.
 
 | Query parameter | Rule |
 | --- | --- |
-| `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`; anything else is a `422` |
+| `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`, `voided`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
 | `closes_from` | a time with an offset (`Z` or `+08:00`): markets that stopped trading, or will stop, at or after it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC |
 | `closes_before` | a time with an offset: markets that stopped trading, or will stop, strictly before it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC, or a value at or before `closes_from` |

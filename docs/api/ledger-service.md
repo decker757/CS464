@@ -1109,13 +1109,13 @@ whole pool goes back to the platform.
 | `opened_at` | When this service opened the market's book. `null` means it never has (below). |
 | `state_version` | The same counter the snapshot and every price frame report: which trade this read reflects. `null` when there is no book. |
 | `seed_subsidy` | What the platform put up at book creation. |
-| `pool` | What the market pool holds now: the seed plus every buy, minus every sell. Derived from the pool's entries, like every balance. `null` once the market is settled. |
-| `payout_exceeds_pool` | True when any outcome's payout is strictly greater than `pool`, i.e. any `residue_if_wins` is negative. Always `false` once the market is settled. |
+| `pool` | What the market pool holds now: the seed plus every buy, minus every sell. Derived from the pool's entries, like every balance. `null` once the market is settled or voided. |
+| `payout_exceeds_pool` | True when any outcome's payout is strictly greater than `pool`, i.e. any `residue_if_wins` is negative. Always `false` once the market is settled or voided. |
 | `result` | `null` until the ledger records how the market ended; then that record's kind, `"settled"` or `"voided"`. |
-| `winning_outcome_id` | `null` until the market is settled; then the outcome that paid. |
+| `winning_outcome_id` | `null` until the market is settled; then the outcome that paid. Still `null` on a voided market. |
 | `shares_outstanding` | Every trader's shares in this outcome, summed. |
-| `payout_if_wins` | One credit per share outstanding. `null` once the market is settled. |
-| `residue_if_wins` | `pool − payout_if_wins`. Positive goes to the platform at settlement; negative is what the platform tops up. `null` once the market is settled. |
+| `payout_if_wins` | One credit per share outstanding. `null` once the market is settled or voided. |
+| `residue_if_wins` | `pool − payout_if_wins`. Positive goes to the platform at settlement; negative is what the platform tops up. `null` once the market is settled or voided. |
 
 Money and shares are decimal strings at scale 4, as everywhere in this service.
 `outcomes` carries every outcome, ordered by `position`. The largest payout is
@@ -1794,8 +1794,10 @@ the settle step.
 | read | 401 | `invalid_token` | market_service refused the forwarded token. |
 | read | 404 | `market_not_found` | No such market, including a draft or a submitted one, which market_service's public detail refuses with the same 404. |
 | read | 503 | `market_terms_unavailable` | market_service could not be reached, answered with unusable terms, or answered `404` for a market this service holds a book for. |
+| lookup | 409 | `market_already_voided` | This service has voided the market. Checked again under the book lock. |
+| status | 409 | `market_already_voided` | Nothing is recorded here, and market_service reports the market `voided`: a direct call to its void step. |
 | status | 409 | `dispute_window_open` | Nothing is recorded here, and the market is `approved` but not yet `settleable`. Retry once it is. |
-| status | 409 | `market_not_approved` | Nothing is recorded here, and the market is in any status other than `approved` or `settled`. |
+| status | 409 | `market_not_approved` | Nothing is recorded here, and the market is in any status other than `approved`, `settled` or `voided`. |
 | book | 503 | `market_terms_unavailable` | On a market nobody has touched, opening its book reads market_service again, and that read failed or answered terms no book can be opened from. If market_service's answer has changed since the read step, this read can also answer that step's `401` or `404`. |
 | winner | 503 | `market_terms_unavailable` | market_service reported a winner that is null or not one of this market's outcomes. |
 | settle step | 503 | `settlement_unconfirmed` | The payouts are committed, by this request or by an earlier one, and market_service did not answer `200`. Repeat the request; see above. |
@@ -1806,12 +1808,9 @@ touched comes after the book was opened, as a preview's first request would
 open it. That happens once per market, and it is the only write such a
 refusal leaves.
 
-**ADR 0025. A voided market is
-`409 market_already_voided`.** At the lookup step, before the status check,
-and again under the book lock: a market this service has voided is refused
-with nothing written, never treated as a settlement to replay. At the status
-step, a market market_service reports `voided` with nothing recorded here
-gets the same code.
+**ADR 0025. A voided market is `409 market_already_voided`**, at the lookup
+and status steps above: refused with nothing written, and never treated as a
+settlement to replay.
 
 ## POST /ledger/markets/{market_id}/void
 
@@ -2096,8 +2095,8 @@ reported beside the points:
 | Field | Meaning |
 | --- | --- |
 | `result` | `null` until the ledger records how the market ended. Then that record's kind, `"settled"` or `"voided"`. The same values as the exposure read's `result`. Treat an unrecognised value as opaque. |
-| `winning_outcome_id` | `null` until the market is settled. Then the outcome that paid. |
-| `result_recorded_at` | `null` until the market is settled. Then the settlement's `recorded_at`, the same instant the settlement route reports. |
+| `winning_outcome_id` | `null` until the market is settled. Then the outcome that paid. Still `null` on a voided market. |
+| `result_recorded_at` | `null` until the market is settled or voided. Then that record's `recorded_at`, the same instant the settlement or void route reports. |
 
 **ADR 0025. A voided market** ends its points at the
 last trade too, since a void moves no price. `result` is `"voided"`,
