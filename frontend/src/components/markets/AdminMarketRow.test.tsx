@@ -21,6 +21,7 @@ const OPEN_MARKET: MarketOverviewRow = {
   close_time: '2099-01-05T12:00:00Z',
   settleable: false,
   dispute_window_ends_at: null,
+  voidable: false,
 }
 
 const SETTLEABLE_MARKET: MarketOverviewRow = {
@@ -31,6 +32,7 @@ const SETTLEABLE_MARKET: MarketOverviewRow = {
   close_time: '2025-01-01T00:00:00Z',
   settleable: true,
   dispute_window_ends_at: '2025-01-01T00:05:00Z',
+  voidable: false,
 }
 
 function renderRow(market: MarketOverviewRow, isMine = false, approvalEntry?: AdminAction) {
@@ -396,6 +398,7 @@ describe('AdminMarketRow', () => {
       close_time: '2025-01-01T00:00:00Z',
       settleable: false,
       dispute_window_ends_at: '2099-01-01T00:05:00Z',
+      voidable: true,
     }
 
     function approvedEntry(overrides: Partial<AdminAction> = {}): AdminAction {
