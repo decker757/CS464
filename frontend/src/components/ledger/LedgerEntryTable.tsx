@@ -4,7 +4,7 @@ import { formatAveragePrice, formatCreditsPrecise, signedAmountColor } from '../
 import { kindLabel, type EntryRow } from '../../utils/ledgerEntries'
 
 function EntryDescription({ row }: { row: EntryRow }) {
-  if (!row.isTrade && !row.isSettlement) {
+  if (!row.isTrade && !row.isSettlement && !row.isRefund) {
     return <span className="text-smu-navy">{kindLabel(row.kind)}</span>
   }
   return (
