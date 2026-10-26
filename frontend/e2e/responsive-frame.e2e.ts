@@ -102,7 +102,7 @@ test('neither admin list scrolls sideways with the longest username, question an
 
     expect(await overflowingScreens(page, [{ path: '/admin/proposals', heading: 'Proposals Awaiting Decision' }], viewport)).toEqual([])
     // The list just measured had this market on it.
-    await expect(page.getByText(`winner: ${winner}`)).toBeVisible()
+    await expect(page.getByText(question)).toBeVisible()
   }
 })
 
