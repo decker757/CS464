@@ -254,6 +254,7 @@ describe('AdminMarketsPage', () => {
     renderPage()
     await screen.findByText('Was the final played?')
     expect(tab(/^voided/i)).toHaveTextContent(/^Voided 1$/)
+    // A voided market is not counted as a settled one.
     expect(tab(/^settled/i)).toHaveTextContent(/^Settled 1$/)
 
     await actor.click(tab(/^voided/i))

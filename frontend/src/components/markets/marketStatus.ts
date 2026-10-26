@@ -34,8 +34,9 @@ export type StatusAudience = 'admin' | 'trader'
 // both mean "the result is being decided": an outcome has been proposed, a
 // second administrator has to agree with it (ADR 0016), and even an approved
 // one goes back to CLOSED if it is sent back inside its dispute window
-// (ADR 0023). Neither is final and only `settled` is, so the trader's words
-// say what a trader is waiting for and never mention who decides it.
+// (ADR 0023). Neither is final and only `settled` and `voided` are, so the
+// trader's words say what a trader is waiting for and never mention who
+// decides it.
 //
 // Still one label per status, rather than the single "Resolving" pill #431
 // offers: `?status=` on GET /public/markets takes exactly one status

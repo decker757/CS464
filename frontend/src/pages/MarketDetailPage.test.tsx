@@ -662,7 +662,7 @@ describe('MarketDetailPage', () => {
       expect(banner).toHaveTextContent('The match was abandoned after ten overs; there is no result.')
       expect(banner).toHaveTextContent(formatDateTime('2026-01-07T09:41:02.411000Z'))
       expect(screen.getByText('This market has been voided. Trading is closed.')).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: /buy yes/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
     })
 
     // The public read sends a voided market's proposed_outcome_id as null,
@@ -683,8 +683,9 @@ describe('MarketDetailPage', () => {
       await screen.findByRole('region', { name: 'Voided' })
       await waitFor(() => expect(snapshotServed).toBe(true))
       await act(() => new Promise(resolve => setTimeout(resolve, 50)))
-      expect(screen.queryByText('Won')).not.toBeInTheDocument()
-      expect(screen.queryByText('Lost')).not.toBeInTheDocument()
+      // Void in each outcome's result slot, which is also neither Won nor Lost.
+      expect(screen.getByLabelText('Yes result')).toHaveTextContent('Void')
+      expect(screen.getByLabelText('No result')).toHaveTextContent('Void')
       // The outcome banner, under any of its three labels ("Proposed outcome:",
       // "Approved outcome:", "Settled:").
       expect(screen.queryByText(/outcome:|settled:/i)).not.toBeInTheDocument()

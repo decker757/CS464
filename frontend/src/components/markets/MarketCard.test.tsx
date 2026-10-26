@@ -146,3 +146,15 @@ it('shows a voided market as Voided, with no price even though its snapshot carr
   expect(screen.queryByText('62.0%')).not.toBeInTheDocument()
   expect(screen.queryByText(/last trade/i)).not.toBeInTheDocument()
 })
+
+// A voided card shows no prices at all, so a failed read of them is nothing
+// to retry: offering Retry for a price the card will never draw would send
+// the trader after a number that does not exist.
+it('offers no Retry and no price error on a voided card whose price read failed', () => {
+  renderCard({ ...MARKET, status: 'voided', close_time: '2026-10-10T00:00:00Z' }, { priceReadFailed: true, onRetryPrice: () => {} })
+
+  expect(screen.getByText('Voided')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(screen.queryByText(/loading prices/i)).not.toBeInTheDocument()
+})
