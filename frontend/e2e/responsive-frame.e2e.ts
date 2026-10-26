@@ -80,7 +80,9 @@ test('no administrator screen scrolls sideways on a phone or on a desktop', asyn
 // widest of each thing these lists draw is set up here, rather than left to
 // whatever else is in the database: the longest username auth allows, in its
 // widest letter, a question with no space to wrap at, and a winner with none.
-test('neither admin list scrolls sideways with the longest username, question and outcome', async ({ page }) => {
+// The browse list is measured too, because this market stays in the database
+// for every later run, and a trader's card drew its question unwrapped.
+test('no market list scrolls sideways with the longest username, an unbroken question or an unbroken outcome', async ({ page }) => {
   // uniqueName adds up to twelve characters, which makes 32, auth's limit.
   const admin = await registerAdmin('W'.repeat(20))
   const question = `${'W'.repeat(400)}${uniqueName('q')}`
@@ -98,11 +100,20 @@ test('neither admin list scrolls sideways with the longest username, question an
     // Its own tab, so the paged list reaches it in a page or two.
     await selectTab(page, /^pending/i)
     await expect(await loadUntilShown(page, question)).toBeVisible()
-    expect((await documentWidth(page)).scrollWidth, `/admin/markets at ${viewport.width}px`).toBe(viewport.width)
+    const adminList = await documentWidth(page)
+    expect(adminList.scrollWidth, `/admin/markets at ${viewport.width}px`).toBeLessThanOrEqual(adminList.clientWidth)
 
     expect(await overflowingScreens(page, [{ path: '/admin/proposals', heading: 'Proposals Awaiting Decision' }], viewport)).toEqual([])
     // The list just measured had this market on it.
     await expect(page.getByText(question)).toBeVisible()
+
+    await page.goto('/markets')
+    // Stopped markets are listed most recently stopped first, so this one,
+    // closed a moment ago, leads its filter.
+    await page.getByRole('radio', { name: 'Resolving', exact: true }).click()
+    await expect(page.getByText(question)).toBeVisible()
+    const browseList = await documentWidth(page)
+    expect(browseList.scrollWidth, `/markets at ${viewport.width}px`).toBeLessThanOrEqual(browseList.clientWidth)
   }
 })
 
