@@ -13,8 +13,9 @@ const CODE_MESSAGES: Record<string, string> = {
   market_already_voided: 'This market has been voided, so its result is gone.',
 }
 
-// All six documented 409s mean a retry cannot succeed without a fresh read
-// of the row — there is no "reason too short" case to recover from in place.
+// All six 409s (five from send-back's own table, plus market_already_voided
+// from market-service.md's error table) mean a retry cannot succeed without a
+// fresh read of the row — there is no "reason too short" case to recover from in place.
 const SUPERSEDING_CODES = new Set([
   'dispute_window_closed', 'proposal_superseded',
   'market_not_approved', 'market_already_settled', 'market_pending_resolution', 'market_already_voided',

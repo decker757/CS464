@@ -15,8 +15,8 @@ const CODE_MESSAGES: Record<string, string> = {
 }
 
 // These mean the market already stopped some other way — reload rather than
-// retry (market-service.md's notes for #56, point 6, and the close endpoint's
-// "Only an open market" table).
+// retry (market-service.md's notes for #56, point 6, the close endpoint's
+// "Only an open market" table, and its error table for market_already_voided).
 const SUPERSEDING_CODES = new Set([
   'market_closed', 'market_pending_resolution', 'market_already_approved', 'market_already_settled', 'market_already_voided',
 ])
