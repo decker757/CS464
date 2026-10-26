@@ -374,6 +374,33 @@ export async function settleMarket(marketId: string): Promise<SettlementResult> 
   return res.data
 }
 
+export interface VoidResult {
+  market_id: string
+  // On a repeat these two are the void that refunded, not the repeating
+  // administrator's (ledger-service.md).
+  reason: string
+  voided_by: string
+  recorded_at: string
+  positions_refunded: number
+  total_owed: string
+  total_refunded: string
+  // True when the pool plus one more seed could not cover every refund, so
+  // each was cut by the same fraction (ADR 0025).
+  refunds_cut: boolean
+  residue: string
+}
+
+/** Voids a flawed market and refunds every holder at what their remaining
+ * shares cost (ADR 0025, #221). The body is the reason and nothing else: the
+ * holders and the amounts come from this service's own book. This is the
+ * only void route a client calls; market_service's own step refunds nobody.
+ * A repeat answers the same 200, which is what Finish relies on after
+ * `void_unconfirmed` (ledger-service.md). */
+export async function voidMarket(marketId: string, reason: string): Promise<VoidResult> {
+  const res = await api.post<VoidResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/void`, { reason })
+  return res.data
+}
+
 export interface LeaderboardRow {
   rank: number
   username: string
