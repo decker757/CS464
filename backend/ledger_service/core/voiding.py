@@ -103,6 +103,12 @@ def _sell_newest_first(lots: list[_Lot], quantity: Decimal) -> None:
             lots.pop()
 
 
+def _is_short_beyond_one_seed(*, total_owed: Decimal, pool: Decimal, seed: Decimal) -> bool:
+    """Whether the refunds owe more than the pool plus one more seed, so each
+    is cut. Exactly one seed short is covered in full."""
+    return total_owed - pool > seed
+
+
 def _refund_of(lot: _Lot, position: int, b: Decimal) -> Decimal:
     """What one lot's remaining shares cost.
 
@@ -195,12 +201,6 @@ def refuse_if_replay_disagrees(
         raise ValueError(f"the replay ends at q = {replay.q}, the book at {tuple(q)}")
 
 
-def _is_short_beyond_one_seed(*, total_owed: Decimal, pool: Decimal, seed: Decimal) -> bool:
-    """Whether the refunds owe more than the pool plus one more seed, so each
-    is cut. Exactly one seed short is covered in full."""
-    return total_owed - pool > seed
-
-
 def cut_of(
     owed: Mapping[HolderOutcome, Decimal], *, pool: Decimal, seed: Decimal
 ) -> Cut:
@@ -219,13 +219,14 @@ def cut_of(
 
     paid: dict[HolderOutcome, Decimal] = {}
     for key, refund in owed.items():
+        to_pay = refund
         if refunds_cut:
             with engine_context():
-                refund = ((refund * (pool + seed)) / total_owed).quantize(
+                to_pay = ((refund * (pool + seed)) / total_owed).quantize(
                     QUANTUM, rounding=ROUND_FLOOR
                 )
-        if refund > 0:
-            paid[key] = refund
+        if to_pay > 0:
+            paid[key] = to_pay
 
     total_refunded = sum(paid.values(), _ZERO_AMOUNT)
     return Cut(
