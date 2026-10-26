@@ -39,11 +39,13 @@ const CODE_MESSAGES: Record<string, string> = {
   market_not_closed: NOT_CLOSED_MESSAGES.open,
   market_pending_resolution: NOT_CLOSED_MESSAGES.pending_resolution,
   market_already_approved: NOT_CLOSED_MESSAGES.approved,
+  market_already_voided: NOT_CLOSED_MESSAGES.voided,
 }
 
 // Somebody got there first. The page reloads the market and shows their
-// proposal or approval instead of the form (market-service.md, notes for #52).
-const DECIDED_ELSEWHERE_CODES = ['market_pending_resolution', 'market_already_approved']
+// proposal or approval instead of the form (market-service.md, notes for #52),
+// or that it was voided (#526).
+const DECIDED_ELSEWHERE_CODES = ['market_pending_resolution', 'market_already_approved', 'market_already_voided']
 
 // Says who proposed or approved, when the market says so.
 function describeNotClosed(market: MarketOut): string {

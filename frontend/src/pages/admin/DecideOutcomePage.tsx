@@ -22,10 +22,12 @@ const CODE_MESSAGES: Record<string, string> = {
   market_not_pending_resolution: 'This proposal is no longer waiting on a decision. Reload to see its current state.',
   market_already_approved: 'This proposal has already been approved by another administrator.',
   proposal_superseded: 'This proposal was rejected and a new one made since you loaded this page. Reload to review it.',
+  market_already_voided: 'This market has been voided, so the proposal no longer stands. Reload to see its current state.',
 }
 
-// These three codes mean somebody else settled it — reload rather than retry.
-const SUPERSEDING_CODES = new Set(['market_not_pending_resolution', 'market_already_approved', 'proposal_superseded'])
+// These mean somebody else settled it, or voided the market — reload rather
+// than retry.
+const SUPERSEDING_CODES = new Set(['market_not_pending_resolution', 'market_already_approved', 'proposal_superseded', 'market_already_voided'])
 
 // What the confirmation says before the approval is posted. It restates both
 // the winner and the question, because approving is the step that pays:
