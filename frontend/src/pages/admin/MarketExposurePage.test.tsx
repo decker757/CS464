@@ -167,10 +167,10 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByText('Pool')).not.toBeInTheDocument()
   })
 
-  it('says a voided market has no winner and was refunded, instead of drawing a live pool', async () => {
+  it('says a voided market has no winner and an emptied pool, instead of drawing a live pool', async () => {
     // #526: a void empties the pool as settlement does, so pool and every
     // payout are null and the flag is false (ledger-service.md).
-    mockMarket('mkt-1', market())
+    mockMarket('mkt-1', market({ status: 'voided' }))
     mockExposure('mkt-1', {
       pool: null,
       payout_exceeds_pool: false,
@@ -183,7 +183,7 @@ describe('MarketExposurePage', () => {
 
     renderPage()
 
-    expect(await screen.findByText('This market was voided, so it has no winner, and every holder has been refunded.')).toBeInTheDocument()
+    expect(await screen.findByText('This market was voided, so it has no winner, and its pool has been emptied. What it refunded is in the audit entry for the void.')).toBeInTheDocument()
     expect(screen.queryByText('Pool')).not.toBeInTheDocument()
     expect(screen.queryByText(/won/)).not.toBeInTheDocument()
     expect(screen.queryByText(/settled/i)).not.toBeInTheDocument()
