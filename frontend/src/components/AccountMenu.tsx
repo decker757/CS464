@@ -68,22 +68,29 @@ export default function AccountMenu({ username, email, isLoggingOut, onLogout }:
   useCloseOnClickElsewhere(menuRef, isOpen, () => setIsOpen(false))
 
   return (
-    <div ref={menuRef} className="relative">
+    <div ref={menuRef} className="relative min-w-0">
       <button
         type="button"
         onClick={() => setIsOpen(open => !open)}
         aria-expanded={isOpen}
         aria-controls={PANEL_ID}
-        className="flex cursor-pointer items-center gap-2 rounded-full py-1 pr-3 pl-1 text-sm text-white transition hover:bg-white/15"
+        className="flex max-w-full cursor-pointer items-center gap-2 rounded-full py-1 pr-3 pl-1 text-sm text-white transition hover:bg-white/15"
       >
         {/* Decorative: the username is right beside it, and a screen reader
             reading "A alice" would be reading the same name twice. */}
-        <span aria-hidden="true" className="flex h-7 w-7 items-center justify-center rounded-full bg-smu-gold text-xs font-bold text-smu-navy">
+        <span aria-hidden="true" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-smu-gold text-xs font-bold text-smu-navy">
           {username.slice(0, 1).toUpperCase()}
         </span>
         {/* Out of sight on a phone, where the bar has no room for a long
-            name, and still the button's accessible name (#438). */}
-        <span className="sr-only sm:not-sr-only">{username}</span>
+            name, and still the button's accessible name (#438). Elsewhere it
+            is cut short with an ellipsis when the bar runs out of room, which
+            an administrator's row of links can leave it on a laptop (#516):
+            drawn whole, a 32-character name pushed the page sideways. The
+            inner span truncates because `sm:not-sr-only` turns the outer
+            one's overflow and wrapping back on. */}
+        <span className="sr-only min-w-0 sm:not-sr-only">
+          <span title={username} className="block truncate">{username}</span>
+        </span>
         <ChevronDownIcon className={isOpen ? 'rotate-180' : undefined} />
       </button>
       {isOpen && (
