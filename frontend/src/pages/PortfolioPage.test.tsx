@@ -415,6 +415,35 @@ describe('PortfolioPage', () => {
     expect(screen.queryByText('1,005')).not.toBeInTheDocument()
   })
 
+  it('shows a refunded position as Refunded with what the void paid back, zero included', async () => {
+    // #526: payout on a refunded row is what each share still held cost, not
+    // one credit per share, and a refund that rounded down reads 0.0000
+    // (ledger-service.md). Price, value and P&L are null, shown as dashes.
+    const refunded = { ...portfolio().positions[0], price: null, value: null, unrealized_pnl: null, result: 'refunded', payout: '1.4337' }
+    const refundedToZero = { ...refunded, outcome_id: 'o-no', outcome_position: 1, payout: '0.0000' }
+    mockPortfolio(portfolio({ positions: [refunded, refundedToZero] }))
+    mockMarket('mkt-1', market({ status: 'voided' }))
+    renderPage()
+
+    expect(await screen.findByText('Refunded 1.4337')).toBeInTheDocument()
+    expect(screen.getByText('Refunded 0.0000')).toBeInTheDocument()
+    expect(screen.getAllByText('—')).toHaveLength(4)
+  })
+
+  it('does not add a refunded position\'s payout into positions value or net worth', async () => {
+    // #526: the refund is already in balance, and the row is no longer valued,
+    // so positions_value and net_worth are shown as the server sends them.
+    const refunded = { ...portfolio().positions[0], price: null, value: null, unrealized_pnl: null, result: 'refunded', payout: '1.4337' }
+    mockPortfolio(portfolio({ balance: '1000.0000', positions_value: '0.0000', net_worth: '1000.0000', positions: [refunded] }))
+    mockMarket('mkt-1', market({ status: 'voided' }))
+    renderPage()
+
+    expect(await screen.findByText('Refunded 1.4337')).toBeInTheDocument()
+    expect(screen.getAllByText('1,000')).toHaveLength(2)
+    // The wrong answer, spelled out: the refund counted a second time.
+    expect(screen.queryByText('1,001.43')).not.toBeInTheDocument()
+  })
+
   it('fetches each distinct market only once across multiple positions in it', async () => {
     let calls = 0
     server.use(http.get(`${MARKET_BASE}/public/markets/mkt-1`, () => { calls += 1; return HttpResponse.json(market()) }))

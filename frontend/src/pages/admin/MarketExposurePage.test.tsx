@@ -167,6 +167,27 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByText('Pool')).not.toBeInTheDocument()
   })
 
+  it('says a voided market has no winner and was refunded, instead of drawing a live pool', async () => {
+    // #526: a void empties the pool as settlement does, so pool and every
+    // payout are null and the flag is false (ledger-service.md).
+    mockMarket('mkt-1', market())
+    mockExposure('mkt-1', {
+      pool: null,
+      payout_exceeds_pool: false,
+      result: 'voided',
+      winning_outcome_id: null,
+      outcomes: [
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '500.0000', payout_if_wins: null, residue_if_wins: null },
+      ],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('This market was voided, so it has no winner, and every holder has been refunded.')).toBeInTheDocument()
+    expect(screen.queryByText('Pool')).not.toBeInTheDocument()
+    expect(screen.queryByText(/won/)).not.toBeInTheDocument()
+  })
+
   it('says when the figures were read, which trade they reflect, and reads them again on Refresh', async () => {
     // Exposure moves with every trade, so an admin who left the tab open
     // through a burst must be able to see that and ask again (#361).

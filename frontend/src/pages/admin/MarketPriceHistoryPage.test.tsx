@@ -181,6 +181,19 @@ describe('MarketPriceHistoryPage', () => {
     expect(screen.getByText(/no price history yet/i)).toBeInTheDocument()
   })
 
+  it('says when a market was voided, with no winner', async () => {
+    // #526: result_recorded_at is the void's recorded_at, and a void moves no
+    // price, so the points end at the last trade (ledger-service.md).
+    mockMarket('mkt-1', market({ status: 'voided' }))
+    mockPriceHistory('mkt-1', [], { result: 'voided', winning_outcome_id: null, result_recorded_at: '2026-02-01T00:00:00Z' })
+    mockTrades('mkt-1', [])
+
+    renderPage()
+
+    expect(await screen.findByText(/^this market was voided on .*, with no winner\.$/i)).toBeInTheDocument()
+    expect(screen.queryByText(/won/)).not.toBeInTheDocument()
+  })
+
   it('says when the screen was read, and reads the chart and the trade log again on Refresh', async () => {
     // Prices move with every trade, so an admin who left the tab open through
     // a burst must be able to see that and ask again (#361).
