@@ -321,28 +321,20 @@ describe('AdminMarketRow', () => {
       expect(screen.getByRole('button', { name: /^settle$/i })).toBeEnabled()
     })
 
-    it('offers a Reload control and drops Settle once the market is no longer approved', async () => {
+    // #526: the ledger answers market_already_voided before its status check
+    // for a voided market (ledger-service.md), so the row is stale and Settle
+    // cannot work.
+    it.each([
+      { code: 'market_not_approved', message: /no longer approved/i, when: 'is no longer approved' },
+      { code: 'market_already_voided', message: /been voided/i, when: 'has been voided' },
+    ])('offers a Reload control and drops Settle once the market $when', async ({ code, message }) => {
       server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
-        { error: { code: 'market_not_approved', message: 'not approved' } }, { status: 409 },
+        { error: { code, message: 'refused' } }, { status: 409 },
       )))
 
       await settle()
 
-      expect(await screen.findByRole('alert')).toHaveTextContent(/no longer approved/i)
-      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
-    })
-
-    // #526: the ledger answers this before its status check for a voided
-    // market (ledger-service.md), so the row is stale and Settle cannot work.
-    it('says the market has been voided, offers a Reload and drops Settle', async () => {
-      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
-        { error: { code: 'market_already_voided', message: 'voided' } }, { status: 409 },
-      )))
-
-      await settle()
-
-      expect(await screen.findByRole('alert')).toHaveTextContent(/been voided/i)
+      expect(await screen.findByRole('alert')).toHaveTextContent(message)
       expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
     })
@@ -1007,31 +999,21 @@ describe('AdminMarketRow', () => {
       expect(publishButton()).toBeInTheDocument()
     })
 
-    it('offers a Reload control and drops Publish once somebody else has published it', async () => {
+    // #526: every admin action but a read answers market_already_voided on a
+    // voided market.
+    it.each([
+      { code: 'market_already_open', message: /already live for traders/i, when: 'somebody else has published it' },
+      { code: 'market_already_voided', message: /been voided/i, when: 'the market has been voided' },
+    ])('offers a Reload control and drops Publish once $when', async ({ code, message }) => {
       server.use(
         http.post(PUBLISH(MY_SUBMITTED.id), () =>
-          HttpResponse.json({ error: { code: 'market_already_open', message: 'refused' } }, { status: 409 })),
+          HttpResponse.json({ error: { code, message: 'refused' } }, { status: 409 })),
       )
       const actor = await openPublishModal()
 
       await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
 
-      expect(await screen.findByRole('alert')).toHaveTextContent(/already live for traders/i)
-      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
-      expect(publishButton()).not.toBeInTheDocument()
-    })
-
-    // #526: every admin action but a read answers this on a voided market.
-    it('offers a Reload control and drops Publish once the market has been voided', async () => {
-      server.use(
-        http.post(PUBLISH(MY_SUBMITTED.id), () =>
-          HttpResponse.json({ error: { code: 'market_already_voided', message: 'refused' } }, { status: 409 })),
-      )
-      const actor = await openPublishModal()
-
-      await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
-
-      expect(await screen.findByRole('alert')).toHaveTextContent(/been voided/i)
+      expect(await screen.findByRole('alert')).toHaveTextContent(message)
       expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
       expect(publishButton()).not.toBeInTheDocument()
     })
