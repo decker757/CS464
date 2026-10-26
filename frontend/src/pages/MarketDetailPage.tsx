@@ -66,7 +66,10 @@ function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
 }
 
 // A banner with a `label` is a named region, so a screen reader can jump to
-// it by name: the voided one carries the only explanation of a refund.
+// it by name: the voided one carries the only explanation of a refund. It
+// says where a refund shows rather than that one was paid: a market marked
+// voided by a direct call to market_service reads the same and has refunded
+// nobody yet (ADR 0025, "Known edges, accepted").
 function Banner({ className, label, children }: { className: string; label?: string; children: React.ReactNode }) {
   return (
     <div role={label ? 'region' : undefined} aria-label={label} className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>
@@ -279,7 +282,7 @@ export default function MarketDetailPage() {
           {isVoided && (
             <Banner label="Voided" className="border-muted/25 bg-muted/5 text-secondary">
               <p className="font-semibold text-smu-navy">
-                Voided{market.voided_at && ` on ${formatDateTime(market.voided_at)}`}. Every share still held was refunded.
+                Voided{market.voided_at && ` on ${formatDateTime(market.voided_at)}`}, with no result. Refunds show in each holder's portfolio and history.
               </p>
               {market.void_reason && <p className="mt-1">{market.void_reason}</p>}
             </Banner>

@@ -44,8 +44,10 @@ const PRICES_FAILED = 'Prices could not be loaded.'
 // A voided market has no result, so it has no price either: its last prices
 // are what the crowd thought of a question that turned out to have no answer
 // (ADR 0025). The batch snapshot goes on carrying them, so the card is what
-// drops them. Not "refunded what they cost": the refunds can be cut.
-const VOIDED_NOTE = 'Voided with no result. Every share still held was refunded.'
+// drops them. It claims nothing about refunds: a market marked voided by a
+// direct call to market_service reads the same and has refunded nobody yet
+// (ADR 0025, "Known edges, accepted"), and refunds can be cut.
+const VOIDED_NOTE = 'Voided with no result.'
 
 export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice }: MarketCardProps) {
   // The card keeps a clock for its countdown, and stops it once the market
