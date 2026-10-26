@@ -12,6 +12,8 @@ const CLOSE = (id: string) => `http://localhost:8001/markets/${id}/close`
 const SETTLE = (id: string) => `http://localhost:8003/ledger/markets/${id}/settlement`
 const SEND_BACK = (id: string) => `http://localhost:8001/markets/${id}/send-back-outcome`
 const PUBLISH = (id: string) => `http://localhost:8001/markets/${id}/publish`
+const VOID = (id: string) => `http://localhost:8003/ledger/markets/${id}/void`
+const MARKET_VOID = (id: string) => `http://localhost:8001/markets/${id}/void`
 
 const OPEN_MARKET: MarketOverviewRow = {
   id: 'm1',
@@ -386,6 +388,259 @@ describe('AdminMarketRow', () => {
       expect(screen.queryByRole('alert')).not.toHaveTextContent(/nothing was paid/i)
       expect(screen.getByRole('button', { name: /^settle$/i })).toBeEnabled()
       expect(calls).toBe(2)
+    })
+  })
+
+  // #526, and market-service.md's void-screen notes. The control reads
+  // `voidable` and never works it out; the request goes to the ledger, which
+  // refunds, and never to market_service's step, which refunds nobody.
+  describe('voiding', () => {
+    const VOIDABLE_MARKET: MarketOverviewRow = {
+      id: 'm4',
+      creator_id: 'u1',
+      status: 'closed',
+      question: 'Was the final played?',
+      close_time: '2025-01-01T00:00:00Z',
+      settleable: false,
+      dispute_window_ends_at: null,
+      voidable: true,
+    }
+    const REASON = 'The match was abandoned after ten overs; there is no result.'
+
+    function voidResult(overrides: Record<string, unknown> = {}) {
+      return {
+        market_id: VOIDABLE_MARKET.id, reason: REASON, voided_by: 'u1', recorded_at: '2026-01-01T00:00:00Z',
+        positions_refunded: 3, total_owed: '140.0000', total_refunded: '140.0000', refunds_cut: false, residue: '12.3456',
+        ...overrides,
+      }
+    }
+
+    function refuse(status: number, code: string) {
+      return HttpResponse.json({ error: { code, message: code } }, { status })
+    }
+
+    async function openVoidModal(market: MarketOverviewRow = VOIDABLE_MARKET) {
+      renderRow(market)
+      const actor = userEvent.setup()
+      await actor.click(screen.getByRole('button', { name: /^void market$/i }))
+      return actor
+    }
+
+    async function voidWithReason(market: MarketOverviewRow = VOIDABLE_MARKET) {
+      const actor = await openVoidModal(market)
+      await actor.type(screen.getByLabelText(/reason/i), REASON)
+      await actor.click(screen.getByRole('button', { name: /^confirm void$/i }))
+      return actor
+    }
+
+    it('offers Void market while the row reads voidable', () => {
+      renderRow(VOIDABLE_MARKET)
+      expect(screen.getByRole('button', { name: /^void market$/i })).toBeInTheDocument()
+    })
+
+    it('hides Void market when the row is not voidable, whatever its status', () => {
+      // An approved market past its dispute window, which is settleable instead.
+      renderRow({ ...SETTLEABLE_MARKET, voidable: false })
+      expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+    })
+
+    // A market voided by a direct call to market_service reads voidable: true
+    // so the ledger can still refund it, but this screen builds no repeat for
+    // it (ADR 0025, "Known edges, accepted").
+    it('hides Void market on a voided market, even one that reads voidable', () => {
+      renderRow({ ...VOIDABLE_MARKET, status: 'voided', voidable: true })
+      expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+    })
+
+    it('says the void cannot be undone, refunds what remaining shares cost, and shows the reason to traders', async () => {
+      await openVoidModal()
+
+      const dialog = screen.getByRole('dialog', { name: /void market/i })
+      expect(dialog).toHaveTextContent(/cannot be undone/i)
+      expect(dialog).toHaveTextContent(/refunded what their remaining shares cost/i)
+      expect(dialog).toHaveTextContent(/shown to traders/i)
+    })
+
+    it('sends nothing until a reason of 10 trimmed characters is confirmed', async () => {
+      let calls = 0
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => { calls += 1; return HttpResponse.json(voidResult()) }))
+      const actor = await openVoidModal()
+      const confirm = screen.getByRole('button', { name: /^confirm void$/i })
+      expect(confirm).toBeDisabled()
+
+      await actor.type(screen.getByLabelText(/reason/i), '   too short   ')
+      expect(confirm).toBeDisabled()
+      await actor.clear(screen.getByLabelText(/reason/i))
+      await actor.type(screen.getByLabelText(/reason/i), 'Ten chars!')
+
+      expect(confirm).toBeEnabled()
+      expect(calls).toBe(0)
+    })
+
+    it('cancels without sending anything', async () => {
+      let calls = 0
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => { calls += 1; return HttpResponse.json(voidResult()) }))
+      const actor = await openVoidModal()
+      await actor.type(screen.getByLabelText(/reason/i), REASON)
+
+      await actor.click(screen.getByRole('button', { name: /cancel/i }))
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(calls).toBe(0)
+      expect(screen.getByRole('button', { name: /^void market$/i })).toBeInTheDocument()
+    })
+
+    it("sends the trimmed reason and nothing else to the ledger's route, never to market_service's step", async () => {
+      let body: unknown = null
+      let marketServiceCalls = 0
+      server.use(
+        http.post(VOID(VOIDABLE_MARKET.id), async ({ request }) => {
+          body = await request.json()
+          return HttpResponse.json(voidResult())
+        }),
+        http.post(MARKET_VOID(VOIDABLE_MARKET.id), () => { marketServiceCalls += 1; return HttpResponse.json({}) }),
+      )
+      const actor = await openVoidModal()
+      await actor.type(screen.getByLabelText(/reason/i), `  ${REASON}  `)
+
+      await actor.click(screen.getByRole('button', { name: /^confirm void$/i }))
+
+      await screen.findByText('Voided')
+      expect(body).toEqual({ reason: REASON })
+      expect(marketServiceCalls).toBe(0)
+    })
+
+    it('repaints the row as voided, without a refetch, and drops the control', async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => HttpResponse.json(voidResult())))
+
+      await voidWithReason()
+
+      await screen.findByText('Voided')
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+      expect(screen.queryByText(/cut by the same share/i)).not.toBeInTheDocument()
+    })
+
+    it('says every refund was cut by the same share when the pool could not cover them', async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => HttpResponse.json(voidResult({ total_refunded: '120.0000', refunds_cut: true }))))
+
+      await voidWithReason()
+
+      expect(await screen.findByText('The pool could not cover every refund, so each was cut by the same share.')).toBeInTheDocument()
+      expect(screen.getByText('Voided')).toBeInTheDocument()
+    })
+
+    it('says another admin has to void it when this one traded the market, and drops the control', async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => refuse(403, 'admin_has_a_stake')))
+
+      await voidWithReason()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('You traded in this market, so another admin has to void it.')
+      expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+    })
+
+    it('says the market can no longer be voided, and offers a Reload rather than the control', async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => refuse(409, 'market_not_voidable')))
+
+      await voidWithReason()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('This market can no longer be voided.')
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+    })
+
+    it('says someone settled it first, and offers a Reload rather than the control', async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => refuse(409, 'market_already_settled')))
+
+      await voidWithReason()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/settled first/i)
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+    })
+
+    it('says market_service could not be reached, claims nothing about refunds, and keeps the control for a retry', async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => refuse(503, 'market_terms_unavailable')))
+
+      await voidWithReason()
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent('The market service could not be reached; try again.')
+      expect(alert).not.toHaveTextContent(/refund/i)
+      expect(screen.getByRole('button', { name: /^void market$/i })).toBeInTheDocument()
+    })
+
+    it("says the market's records do not add up and offers no retry", async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => refuse(500, 'void_replay_mismatch')))
+
+      await voidWithReason()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        "This market's records do not add up, so it cannot be voided. Nothing was refunded.",
+      )
+      expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /reload|finish|try again/i })).not.toBeInTheDocument()
+    })
+
+    describe('when the refunds went through but market_service was not told', () => {
+      it('offers Finish, never says the void failed, and Finish repeats the same reason', async () => {
+        const bodies: unknown[] = []
+        server.use(http.post(VOID(VOIDABLE_MARKET.id), async ({ request }) => {
+          bodies.push(await request.json())
+          return bodies.length === 1 ? refuse(503, 'void_unconfirmed') : HttpResponse.json(voidResult())
+        }))
+        const actor = await voidWithReason()
+
+        const alert = await screen.findByRole('alert')
+        expect(alert).toHaveTextContent(/refunds went through/i)
+        expect(alert).not.toHaveTextContent(/fail/i)
+        expect(screen.queryByRole('button', { name: /^void market$/i })).not.toBeInTheDocument()
+
+        await actor.click(screen.getByRole('button', { name: /^finish$/i }))
+
+        await screen.findByText('Voided')
+        expect(bodies).toEqual([{ reason: REASON }, { reason: REASON }])
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /^finish$/i })).not.toBeInTheDocument()
+      })
+
+      // On a Finish the refunds have already gone through, so no first-attempt
+      // message may be read for whatever the repeat answers.
+      it('keeps Finish, and still never says the void failed, when the repeat cannot reach market_service', async () => {
+        let calls = 0
+        server.use(http.post(VOID(VOIDABLE_MARKET.id), () => {
+          calls += 1
+          return calls === 1 ? refuse(503, 'void_unconfirmed') : refuse(503, 'market_terms_unavailable')
+        }))
+        const actor = await voidWithReason()
+        await screen.findByRole('button', { name: /^finish$/i })
+
+        await actor.click(screen.getByRole('button', { name: /^finish$/i }))
+
+        await vi.waitFor(() => expect(calls).toBe(2))
+        const alert = await screen.findByRole('alert')
+        expect(alert).toHaveTextContent('The market service could not be reached; try again.')
+        expect(alert).not.toHaveTextContent(/fail|nothing was refunded/i)
+        expect(screen.getByRole('button', { name: /^finish$/i })).toBeEnabled()
+      })
+
+      it('keeps Finish, and says the refunds stand, when the repeat errors in a way the contract does not name', async () => {
+        let calls = 0
+        server.use(http.post(VOID(VOIDABLE_MARKET.id), () => {
+          calls += 1
+          return calls === 1 ? refuse(503, 'void_unconfirmed') : new HttpResponse(null, { status: 502 })
+        }))
+        const actor = await voidWithReason()
+        await screen.findByRole('button', { name: /^finish$/i })
+
+        await actor.click(screen.getByRole('button', { name: /^finish$/i }))
+
+        await vi.waitFor(() => expect(calls).toBe(2))
+        const alert = await screen.findByRole('alert')
+        expect(alert).toHaveTextContent(/refunds went through/i)
+        expect(alert).not.toHaveTextContent(/voiding this market failed/i)
+        expect(screen.getByRole('button', { name: /^finish$/i })).toBeEnabled()
+      })
     })
   })
 
