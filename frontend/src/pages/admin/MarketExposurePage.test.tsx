@@ -130,11 +130,11 @@ describe('MarketExposurePage', () => {
   })
 
   it('shows a market whose book is open but untraded as no trades yet, like one with no book', async () => {
-    // #517. Every page that lists markets reads each one's snapshot, and the
-    // first snapshot opens the market's book (ledger-service.md). From then on
-    // its exposure reads state_version 0 with every outcome at zero, and
-    // nobody has traded in it any more than before. Naming a worst case here
-    // would pick an outcome nobody holds.
+    // #517. A book opens on the market's first preview or snapshot, before
+    // anyone trades (ledger-service.md). From then on its exposure reads
+    // state_version 0 with every outcome at zero, and nobody has traded in it
+    // any more than before. Naming a worst case here would pick an outcome
+    // nobody holds.
     mockMarket('mkt-1', market())
     mockExposure('mkt-1', {
       opened_at: '2026-01-01T00:00:00Z',

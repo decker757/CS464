@@ -44,11 +44,11 @@ test('an admin sees shares outstanding for a traded outcome, with no flag', asyn
 test('a market nobody has traded shows no trades yet, with its book open', async ({ page }) => {
   const admin = await registerAdmin('exp_empty_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('untraded')} resolve yes?`)
-  // #517. Every page that lists markets reads each one's snapshot, and the
-  // first snapshot opens the market's book. Another worker's browse page may
-  // do that before this test looks, or may not, so open it here: every run
-  // then checks the same state. With no book the page reads `outcomes: []`,
-  // which only a unit test can hold still.
+  // #517. A book opens on the market's first preview or snapshot, before
+  // anyone trades. Another worker's browse page reads a snapshot for every
+  // market it lists, so it may open this one before this test looks, or may
+  // not. Open it here, and every run checks the same state. With no book the
+  // page reads `outcomes: []`, which only a unit test can hold still.
   await snapshot(admin, market.id)
 
   await logIn(page, admin)
