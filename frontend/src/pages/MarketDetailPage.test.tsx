@@ -685,7 +685,9 @@ describe('MarketDetailPage', () => {
       await act(() => new Promise(resolve => setTimeout(resolve, 50)))
       expect(screen.queryByText('Won')).not.toBeInTheDocument()
       expect(screen.queryByText('Lost')).not.toBeInTheDocument()
-      expect(screen.queryByText(/approved outcome|settled:/i)).not.toBeInTheDocument()
+      // The outcome banner, under any of its three labels ("Proposed outcome:",
+      // "Approved outcome:", "Settled:").
+      expect(screen.queryByText(/outcome:|settled:/i)).not.toBeInTheDocument()
       expect(screen.queryByText('48.8%')).not.toBeInTheDocument()
       expect(screen.queryByText('implied probability')).not.toBeInTheDocument()
     })
