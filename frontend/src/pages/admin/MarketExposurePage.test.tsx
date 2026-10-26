@@ -186,6 +186,7 @@ describe('MarketExposurePage', () => {
     expect(await screen.findByText('This market was voided, so it has no winner, and every holder has been refunded.')).toBeInTheDocument()
     expect(screen.queryByText('Pool')).not.toBeInTheDocument()
     expect(screen.queryByText(/won/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/settled/i)).not.toBeInTheDocument()
   })
 
   it('says when the figures were read, which trade they reflect, and reads them again on Refresh', async () => {

@@ -192,6 +192,7 @@ describe('MarketPriceHistoryPage', () => {
 
     expect(await screen.findByText(/^this market was voided on .*, with no winner\.$/i)).toBeInTheDocument()
     expect(screen.queryByText(/won/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/settled/i)).not.toBeInTheDocument()
   })
 
   it('says when the screen was read, and reads the chart and the trade log again on Refresh', async () => {
