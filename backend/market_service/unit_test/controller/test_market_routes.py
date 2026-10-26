@@ -218,7 +218,8 @@ async def test_a_draft_time_with_no_instant_in_utc_is_422_naming_it(
     client: AsyncClient, admin_headers: dict[str, str], field: str, value: str
 ) -> None:
     """#547: asyncpg converts the time to UTC before sending it and overflows,
-    which was a 500, and the autosave would have hit it every three seconds."""
+    which was a 500. The create form always sends UTC, so this is a client
+    calling the API with an offset, which the contract invites."""
     response = await client.post(
         "/markets", json=_payload(**{field: value}), headers=admin_headers
     )
