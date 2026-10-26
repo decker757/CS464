@@ -22,9 +22,11 @@ interface ReasonActionOptions<T> {
    * Fires once the call fails with anything other than the field error on
    * `reason`. Every caller closes its modal here: the error message is
    * painted on the page behind the modal's full-screen overlay, so a modal
-   * left open hides it as surely as not showing it at all.
+   * left open hides it as surely as not showing it at all. Given the error's
+   * code, for a caller whose next step depends on which refusal it was (the
+   * void's Finish, #526); undefined when the error carries none.
    */
-  onError: () => void
+  onError: (code: string | undefined) => void
 }
 
 /** The reason-popup shape shared by every admin action that collects a
@@ -66,7 +68,7 @@ export function useReasonAction<T>({
       }
       setFormError((code && codeMessages[code]) || genericFailureMessage)
       setSuperseded(!!code && !!supersedingCodes?.has(code))
-      onError()
+      onError(code)
     } finally {
       setSubmitting(false)
     }
