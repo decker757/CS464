@@ -134,11 +134,19 @@ export default function MarketExposurePage() {
 
           {exposure && (
             <>
-              {exposure.result === 'settled' ? (
+              {exposure.result === 'settled' && (
                 <p className="mb-6 text-sm text-muted">
                   This market has settled{winnerLabel === null ? '' : `; ${winnerLabel} won`} and the pool has been paid out.
                 </p>
-              ) : (
+              )}
+              {/* A void empties the pool as settlement does, so there is no
+                  live pool to draw (#526). */}
+              {exposure.result === 'voided' && (
+                <p className="mb-6 text-sm text-muted">
+                  This market was voided, so it has no winner, and every holder has been refunded.
+                </p>
+              )}
+              {exposure.result === null && (
                 <SectionCard title="Pool" className="mb-6">
                   <div className="grid gap-5 sm:grid-cols-2">
                     <DetailItem label="Seed plus every buy, minus every sell">
