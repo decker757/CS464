@@ -102,7 +102,11 @@ export default function MarketExposurePage() {
     setReadCount(count => count + 1)
   }
 
-  const worstCase = exposure === null ? null : worstCaseOutcome(exposure.outcomes)
+  // No book yet (no outcomes), or a book nobody has traded in (state_version
+  // 0). Every page that lists markets opens a book with its snapshot, so the
+  // two read the same here: whoever browsed first is not a trade (#517).
+  const hasNeverTraded = exposure !== null && (exposure.outcomes.length === 0 || exposure.state_version === 0)
+  const worstCase = exposure === null || hasNeverTraded ? null : worstCaseOutcome(exposure.outcomes)
   const worstCaseLabel = worstCase === null ? '' : outcomeLabels.get(worstCase.outcomeId) ?? worstCase.outcomeId
   const winningOutcomeId = exposure?.winning_outcome_id ?? null
   const winnerLabel = winningOutcomeId === null ? null : outcomeLabels.get(winningOutcomeId) ?? winningOutcomeId
@@ -160,7 +164,7 @@ export default function MarketExposurePage() {
                 </SectionCard>
               )}
 
-              {exposure.outcomes.length === 0 ? (
+              {hasNeverTraded ? (
                 <p className="text-sm text-muted">No trades yet, so there is no exposure to show.</p>
               ) : (
                 <MarketExposureTable outcomes={exposure.outcomes} outcomeLabels={outcomeLabels} />
