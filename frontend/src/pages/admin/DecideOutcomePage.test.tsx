@@ -305,6 +305,28 @@ describe('DecideOutcomePage', () => {
     expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
   })
 
+  // #526: a market voided while the reviewer read the proposal. The void
+  // cleared it, so no decision can land.
+  it('disables the controls and offers reload once the market has been voided', async () => {
+    mockGetMarket(publicMarket())
+    mockAuditActions([proposedAction()])
+    server.use(
+      http.post(`${MARKET_BASE}/markets/mkt-1/approve-outcome`, () =>
+        HttpResponse.json({ error: { code: 'market_already_voided', message: 'Voided.' } }, { status: 409 }),
+      ),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Will it rain?')
+
+    await approve(actor)
+
+    expect(await screen.findByText(/been voided/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^approve$/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^reject$/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+  })
+
   // The audit log still holds the old proposal after a rejection or an
   // approval, e.g. when the reviewer presses Back after rejecting.
   it.each([

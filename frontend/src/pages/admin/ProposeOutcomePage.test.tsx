@@ -51,6 +51,12 @@ const PENDING = {
   proposed_at: '2025-01-02T09:00:00Z',
 }
 
+const VOIDED = {
+  status: 'voided',
+  voided_at: '2025-01-03T09:00:00Z',
+  void_reason: 'The match was abandoned; there is no result.',
+}
+
 const APPROVED = {
   ...PENDING,
   status: 'approved',
@@ -189,6 +195,8 @@ describe('ProposeOutcomePage', () => {
   it.each([
     ['market_pending_resolution', PENDING, /awaiting approval: proposed by admin2 on .*2025/i],
     ['market_already_approved', APPROVED, /approved by admin3 on .*2025/i],
+    // #526: a market voided while this page sat open.
+    ['market_already_voided', VOIDED, /been voided, so it takes no outcome/i],
   ])('reloads and shows who got there first on a 409 %s', async (code, decided, expected) => {
     // The first load finds the market closed; by the time the admin submits,
     // another tab or administrator has moved it on.

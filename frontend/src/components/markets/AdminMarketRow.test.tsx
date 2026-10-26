@@ -133,6 +133,8 @@ describe('AdminMarketRow', () => {
   it.each([
     { code: 'market_closed', message: /somebody else closed/i },
     { code: 'market_already_settled', message: /been settled/i },
+    // #526: every admin action but a read answers this on a voided market.
+    { code: 'market_already_voided', message: /been voided/i },
   ])('offers a Reload control and drops Close on a 409 $code', async ({ code, message }) => {
     // market-service.md's notes for #56, point 6, and the close table: the
     // market already stopped some other way — reload rather than retry.
@@ -327,6 +329,20 @@ describe('AdminMarketRow', () => {
       await settle()
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/no longer approved/i)
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
+    })
+
+    // #526: the ledger answers this before its status check for a voided
+    // market (ledger-service.md), so the row is stale and Settle cannot work.
+    it('says the market has been voided, offers a Reload and drops Settle', async () => {
+      server.use(http.post(SETTLE(SETTLEABLE_MARKET.id), () => HttpResponse.json(
+        { error: { code: 'market_already_voided', message: 'voided' } }, { status: 409 },
+      )))
+
+      await settle()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/been voided/i)
       expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /^settle$/i })).not.toBeInTheDocument()
     })
@@ -844,6 +860,7 @@ describe('AdminMarketRow', () => {
       { code: 'dispute_window_closed', message: /dispute window has closed/i },
       { code: 'proposal_superseded', message: /already replaced/i },
       { code: 'market_already_settled', message: /acted on this market first/i },
+      { code: 'market_already_voided', message: /been voided/i },
     ])('offers a Reload control and drops Dispute result on a 409 $code', async ({ code, message }) => {
       server.use(
         http.post(SEND_BACK(DISPUTABLE_MARKET.id), () => HttpResponse.json({ error: { code, message: 'stopped' } }, { status: 409 })),
@@ -985,6 +1002,21 @@ describe('AdminMarketRow', () => {
       await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/already live for traders/i)
+      expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+      expect(publishButton()).not.toBeInTheDocument()
+    })
+
+    // #526: every admin action but a read answers this on a voided market.
+    it('offers a Reload control and drops Publish once the market has been voided', async () => {
+      server.use(
+        http.post(PUBLISH(MY_SUBMITTED.id), () =>
+          HttpResponse.json({ error: { code: 'market_already_voided', message: 'refused' } }, { status: 409 })),
+      )
+      const actor = await openPublishModal()
+
+      await actor.click(screen.getByRole('button', { name: /confirm publish/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/been voided/i)
       expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
       expect(publishButton()).not.toBeInTheDocument()
     })
