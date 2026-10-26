@@ -133,16 +133,6 @@ class MarketDraftRequest(BaseModel):
         examples=["2027-01-20T12:00:00Z"],
     )
 
-    @field_validator("close_time", "resolution_time")
-    @classmethod
-    def _encodable_in_utc(cls, value: datetime | None) -> datetime | None:
-        """asyncpg converts each time to UTC before sending it, and overflows
-        past either end of `datetime`'s range: a 422 here, not that 500
-        (#547)."""
-        if value is not None and not has_utc_instant(value):
-            raise ValueError("has no instant between year 1 and 9999 in UTC")
-        return value
-
     resolution_criteria: str | None = Field(
         default=None,
         max_length=MAX_PROSE_LENGTH,
@@ -182,6 +172,16 @@ class MarketDraftRequest(BaseModel):
         ),
         examples=[100],
     )
+
+    @field_validator("close_time", "resolution_time")
+    @classmethod
+    def _encodable_in_utc(cls, value: datetime | None) -> datetime | None:
+        """asyncpg converts each time to UTC before sending it, and overflows
+        past either end of `datetime`'s range: a 422 here, not that 500
+        (#547)."""
+        if value is not None and not has_utc_instant(value):
+            raise ValueError("has no instant between year 1 and 9999 in UTC")
+        return value
 
 
 class OutcomeProposalRequest(BaseModel):
