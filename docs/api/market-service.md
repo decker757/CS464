@@ -248,7 +248,9 @@ request can change a market and expose it to traders at the same time.
 
 **Timestamps must carry an offset.** `2027-01-05T12:00:00Z` or
 `2027-01-05T20:00:00+08:00`. A value without one is a 422 rather than a guess,
-because guessing UTC would put a Singapore close time eight hours out.
+because guessing UTC would put a Singapore close time eight hours out. So is
+one with no instant between year 1 and 9999 in UTC, such as
+`9999-12-31T23:00:00-05:00`: it cannot be stored, and every real time can.
 
 **`creator_id` in the body is ignored.** The creator is taken from the token.
 
