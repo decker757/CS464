@@ -143,7 +143,7 @@ export default function MarketExposurePage() {
                   live pool to draw (#526). */}
               {exposure.result === 'voided' && (
                 <p className="mb-6 text-sm text-muted">
-                  This market was voided, so it has no winner, and every holder has been refunded.
+                  This market was voided, so it has no winner, and its pool has been emptied. What it refunded is in the audit entry for the void.
                 </p>
               )}
               {exposure.result === null && (
