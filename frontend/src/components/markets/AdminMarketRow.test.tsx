@@ -586,6 +586,21 @@ describe('AdminMarketRow', () => {
       expect(screen.getByRole('button', { name: /^void market$/i })).toBeInTheDocument()
     })
 
+    // A first attempt whose answer never arrives — a dropped connection, a
+    // proxy's 502 — may still have refunded every holder, so the screen cannot
+    // say it failed. A repeat answers 200 and refunds nobody twice
+    // (ledger-service.md, "A repeat writes nothing here").
+    it('says the void could not be confirmed, never that it failed, and keeps the control, when a first attempt gets no answer', async () => {
+      server.use(http.post(VOID(VOIDABLE_MARKET.id), () => new HttpResponse(null, { status: 502 })))
+
+      await voidWithReason()
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(/could not be confirmed/i)
+      expect(alert).not.toHaveTextContent(/fail/i)
+      expect(screen.getByRole('button', { name: /^void market$/i })).toBeInTheDocument()
+    })
+
     it("says the market's records do not add up and offers no retry", async () => {
       server.use(http.post(VOID(VOIDABLE_MARKET.id), () => refuse(500, 'void_replay_mismatch')))
 
@@ -654,7 +669,7 @@ describe('AdminMarketRow', () => {
         await vi.waitFor(() => expect(calls).toBe(2))
         const alert = await screen.findByRole('alert')
         expect(alert).toHaveTextContent(/refunds went through/i)
-        expect(alert).not.toHaveTextContent(/voiding this market failed/i)
+        expect(alert).not.toHaveTextContent(/fail/i)
         expect(screen.getByRole('button', { name: /^finish$/i })).toBeEnabled()
       })
     })

@@ -29,6 +29,10 @@ const FINISH_MESSAGES: Record<string, string> = {
   market_terms_unavailable: MARKET_SERVICE_UNREACHABLE,
 }
 const FINISH_FALLBACK = 'The refunds went through, but finishing the void did not complete. Press Finish to try again.'
+// A first attempt with no documented answer — a dropped connection, a proxy's
+// 502 — may still have refunded, so it is unconfirmed rather than failed. A
+// repeat answers 200 and refunds nobody twice (ledger-service.md).
+const FIRST_ATTEMPT_FALLBACK = 'The void could not be confirmed. Try again; a repeat never refunds twice.'
 
 // The market changed under the row: reload rather than retry.
 const SUPERSEDING_CODES = new Set(['market_not_voidable', 'market_already_settled'])
@@ -59,7 +63,7 @@ export function useVoidMarket(marketId: string, onVoided: () => void) {
     incompleteCode: 'void_incomplete',
     codeMessages: awaitingFinish ? FINISH_MESSAGES : CODE_MESSAGES,
     supersedingCodes: awaitingFinish ? undefined : SUPERSEDING_CODES,
-    genericFailureMessage: awaitingFinish ? FINISH_FALLBACK : 'Voiding this market failed. Please try again.',
+    genericFailureMessage: awaitingFinish ? FINISH_FALLBACK : FIRST_ATTEMPT_FALLBACK,
     onDone: result => {
       setShowVoidModal(false)
       setAwaitingFinish(false)
@@ -69,7 +73,7 @@ export function useVoidMarket(marketId: string, onVoided: () => void) {
     onError: code => {
       setShowVoidModal(false)
       if (code === 'void_unconfirmed') setAwaitingFinish(true)
-      if (!awaitingFinish && code && WITHDRAWING_CODES.has(code)) setWithdrawn(true)
+      if (code && WITHDRAWING_CODES.has(code)) setWithdrawn(true)
     },
   })
 
