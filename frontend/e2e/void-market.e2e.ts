@@ -27,7 +27,7 @@ test('an admin voids a closed market, and a holder sees the refund in their port
 
   const confirm = page.getByRole('button', { name: /confirm void/i })
   await expect(confirm).toBeDisabled()
-  await page.getByLabel(/reason/i).fill('Voided by the end-to-end test: the question had no answer.')
+  await page.getByRole('dialog', { name: 'Void market' }).getByLabel(/reason/i).fill('Voided by the end-to-end test: the question had no answer.')
   await confirm.click()
 
   // The status badge is the only "Voided" on the card.
@@ -40,14 +40,18 @@ test('an admin voids a closed market, and a holder sees the refund in their port
 
   await traderPage.goto('/portfolio')
   await expect(traderPage.getByText(market.question)).toBeVisible()
-  await expect(traderPage.getByText('Refunded 2.5313')).toBeVisible()
+  await expect(traderPage.getByText('Refunded 2.5313', { exact: true })).toBeVisible()
 
   await traderPage.goto('/history')
-  // Newest first: the refund is above the buy it pays back.
-  const refundRow = traderPage.getByRole('row').nth(1)
+  // Newest first: the refund is above the buy it pays back, and gives back
+  // exactly what the buy took.
+  const rows = traderPage.getByRole('row')
+  const refundRow = rows.nth(1)
   await expect(refundRow).toContainText(market.question)
   await expect(refundRow).toContainText('Refund Yes')
   await expect(refundRow.getByText('5.0000', { exact: true })).toBeVisible()
   await expect(refundRow.getByText('+2.5313', { exact: true })).toBeVisible()
+  await expect(rows.nth(2)).toContainText('Buy Yes')
+  await expect(rows.nth(2).getByText('-2.5313', { exact: true })).toBeVisible()
   await traderContext.close()
 })
