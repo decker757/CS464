@@ -1028,7 +1028,7 @@ async def test_mark_voided_posts_the_reason_to_void_with_the_token() -> None:
     assert seen[0].headers["Authorization"] == f"Bearer {token}"
 
 
-async def test_every_answer_but_200_is_void_unconfirmed() -> None:
+async def test_a_void_step_that_fails_raises_void_unconfirmed() -> None:
     """ADR 0025, step 8: the refunds have committed, so every failure has the
     one remedy, repeat the request. Which answers count as failures, the
     unread body and the ERROR log are `_confirm`'s, held for both callers by

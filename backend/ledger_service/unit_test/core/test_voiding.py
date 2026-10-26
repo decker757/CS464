@@ -150,7 +150,8 @@ def test_a_sale_takes_the_newest_lot_first_across_lots() -> None:
     top of the one below. At `b = 1`: buys of 4 (3.3251) and 2 (1.9844), then
     a sale of 3. Newest first, the 2 lot goes and the 4 lot keeps its bottom
     3 shares, refunded `C(3,0) - C(0,0)` floored, 2.3554. Oldest first
-    would leave the 2 lot's top 2 and the 4 lot's untouched 1."""
+    would take the 4 lot's bottom 3 and refund the untouched 2 lot, 1.9844,
+    plus the 4 lot's top share, `C(4,0) - C(3,0)` floored, 0.9695."""
     trades = _trades(
         (HOLDER, 0, "buy", "4", "3.3251"),
         (HOLDER, 0, "buy", "2", "1.9844"),
