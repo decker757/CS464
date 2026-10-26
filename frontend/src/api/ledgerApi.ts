@@ -97,12 +97,15 @@ export interface Position {
   value: string | null
   // value − cost_basis. Can be negative.
   unrealized_pnl: string | null
-  // Null on every row until the ledger settles its market. `result` is
-  // `paid_out` for the winning outcome and `worthless` for any other;
+  // Null on every row until the ledger settles or voids its market. `result`
+  // is `paid_out` for the winning outcome and `worthless` for any other;
   // `payout` is the credits this row was paid — the row's quantity on a
-  // `paid_out` row, "0.0000" on a `worthless` one. Already in `balance`, so
-  // it is not added into `positions_value` again (ledger-service.md).
-  result: 'paid_out' | 'worthless' | null
+  // `paid_out` row, "0.0000" on a `worthless` one. On a voided market every
+  // row is `refunded`, and `payout` is what the void refunded, which follows
+  // what each share still held cost and can be "0.0000" (#526). Already in
+  // `balance`, so it is not added into `positions_value` again
+  // (ledger-service.md).
+  result: 'paid_out' | 'worthless' | 'refunded' | null
   payout: string | null
   state_version: number
 }
@@ -281,8 +284,9 @@ export interface MarketExposure {
   // True when any outcome's payout_if_wins is strictly greater than pool.
   // Always false once the market is settled.
   payout_exceeds_pool: boolean
-  // null until the ledger records how the market ended.
-  result: 'settled' | null
+  // null until the ledger records how the market ended. A voided market has
+  // no winner, and its pool and payouts are null as a settled one's are (#526).
+  result: 'settled' | 'voided' | null
   winning_outcome_id: string | null
   outcomes: OutcomeExposure[]
 }
@@ -313,7 +317,9 @@ export interface PriceHistory {
   // Oldest first. Empty, with every field below null, on a market the
   // ledger has never opened a book for.
   points: PricePoint[]
-  result: 'settled' | null
+  // The same values as the exposure read's. On a voided market,
+  // winning_outcome_id is null and result_recorded_at is the void's (#526).
+  result: 'settled' | 'voided' | null
   winning_outcome_id: string | null
   result_recorded_at: string | null
 }
