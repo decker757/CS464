@@ -82,6 +82,43 @@ async function refuseEverySubscription() {
   })
 }
 
+// A relay that answers the socket's commands in the order they were sent and
+// refuses a subscribe past its ceiling, as the real one does
+// (realtime_service/service/subscriptions.py). Each call answers what was
+// sent since the last one and returns the markets the relay now holds.
+function relayWithCeiling(ceiling: number) {
+  const held = new Set<string>()
+  let answered = 0
+  return async () => {
+    const socket = latestSocket()
+    const commands = socket.sent.slice(answered)
+    answered = socket.sent.length
+    await act(async () => {
+      for (const { action, market_id: id } of commands) {
+        if (action === 'unsubscribe') {
+          held.delete(id)
+          socket.receive({ type: 'unsubscribed', market_id: id })
+        } else if (!held.has(id) && held.size >= ceiling) {
+          socket.receive({ type: 'error', error: { code: 'too_many_subscriptions', message: 'at its ceiling' } })
+        } else {
+          held.add(id)
+          socket.receive({ type: 'subscribed', market_id: id })
+        }
+      }
+    })
+    return held
+  }
+}
+
+// Markets m<from> to m<to - 1>, all still trading.
+function marketsNumbered(from: number, to: number) {
+  return Array.from({ length: to - from }, (_, index) => ({
+    id: `m${from + index}`,
+    status: 'open' as const,
+    close_time: '2099-01-05T12:00:00Z',
+  }))
+}
+
 const subscribedTo = () =>
   latestSocket().sent.filter(c => c.action === 'subscribe').map(c => c.market_id)
 const unsubscribedFrom = () =>
@@ -175,6 +212,29 @@ describe('usePricesForMarkets', () => {
     await connectAndAck()
 
     expect(subscribedTo()).toEqual(['m1', 'm2'])
+  })
+
+  // [X-1] #444 AC 1 and AC 2: a page of fifty already holds the relay's
+  // default ceiling, and Load more moves the followed set onto the fifty it
+  // appended. The relay answers in order, so the cards that left have to be
+  // unsubscribed before the new ones ask, or every new subscribe is refused
+  // and the socket ends up carrying nothing.
+  it('keeps the cards Load more appends live when the page already holds the ceiling', async () => {
+    serveChangingPrices(['0.6000'])
+    const firstPage = marketsNumbered(0, 50)
+    const twoPages = [...firstPage, ...marketsNumbered(50, 100)]
+    const relay = relayWithCeiling(50)
+
+    const { rerender } = renderHook(({ markets }) => usePricesForMarkets(markets), {
+      initialProps: { markets: firstPage },
+    })
+    await act(async () => { latestSocket().open() })
+    await relay()
+
+    rerender({ markets: twoPages })
+    const held = await relay()
+
+    expect([...held].sort()).toEqual(twoPages.slice(50).map(market => market.id).sort())
   })
 
   // [X-1] #444 AC 1: a card that leaves the page stops being followed. The
