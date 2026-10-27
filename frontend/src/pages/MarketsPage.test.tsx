@@ -29,6 +29,12 @@ const mockMarkets = [
   { id: 'b2', status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z', outcomes: outcomesFor('b2', ['Yes', 'No']) },
 ]
 
+// One more card than StrictMode mounts the page, for counting reads per card.
+const threeMarkets = [
+  ...mockMarkets,
+  { id: 'c3', status: 'open', question: 'Will the library open on Sundays?', close_time: '2099-01-05T12:00:00Z', outcomes: outcomesFor('c3', ['Yes', 'No']) },
+]
+
 // The ledger's snapshot for a market, pricing its outcomes in position order.
 function snapshotFor(marketId: string, prices: string[]) {
   return {
@@ -106,6 +112,37 @@ function mockTwoPages(secondPage: () => Response | Promise<Response>) {
     ),
   )
 }
+
+// The trader's positions as the ledger reports them: ids only, since the
+// labels are the frontend's own join.
+function portfolioHolding(positions: { market_id: string; outcome_id: string; quantity: string }[]) {
+  return {
+    user_id: '1',
+    account_id: 'acct-1',
+    balance: '1000.0000',
+    positions_value: '0.0000',
+    net_worth: '1000.0000',
+    positions: positions.map(position => ({
+      ...position,
+      outcome_position: 0,
+      cost_basis: '20.0000',
+      average_entry_price: '0.5000',
+      price: '0.6000',
+      value: '24.0000',
+      unrealized_pnl: '4.0000',
+      result: null,
+      payout: null,
+      state_version: 3,
+    })),
+  }
+}
+
+// Every page reads the trader's portfolio once, for the holdings on its cards
+// ([X-1] #450). Tests about other things get a trader who holds nothing,
+// rather than an unhandled request on every render.
+beforeEach(() => {
+  server.use(http.get(PORTFOLIO, () => HttpResponse.json(portfolioHolding([]))))
+})
 
 describe('MarketsPage', () => {
   // Every card asks the ledger for its prices; tests about other things get a
@@ -1144,6 +1181,14 @@ describe('the price feed in trouble', () => {
     await waitFor(() =>
       expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
     )
+    // Connected and acked: the healthy state itself, not the moment before
+    // the socket has opened.
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      for (const command of latestSocket().sent.filter(sent => sent.action === 'subscribe')) {
+        latestSocket().receive({ type: 'subscribed', market_id: command.market_id })
+      }
+    })
 
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
@@ -1153,30 +1198,6 @@ describe('the price feed in trouble', () => {
 // themselves, so a market they hold forty shares in looked exactly like the
 // forty-nine they had never touched.
 describe('the trader\'s own position on a card', () => {
-  // The trader's positions as the ledger reports them: ids only, since the
-  // labels are the frontend's own join.
-  function portfolioHolding(positions: { market_id: string; outcome_id: string; quantity: string }[]) {
-    return {
-      user_id: '1',
-      account_id: 'acct-1',
-      balance: '1000.0000',
-      positions_value: '0.0000',
-      net_worth: '1000.0000',
-      positions: positions.map(position => ({
-        ...position,
-        outcome_position: 0,
-        cost_basis: '20.0000',
-        average_entry_price: '0.5000',
-        price: '0.6000',
-        value: '24.0000',
-        unrealized_pnl: '4.0000',
-        result: null,
-        payout: null,
-        state_version: 3,
-      })),
-    }
-  }
-
   beforeEach(() => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
@@ -1233,6 +1254,7 @@ describe('the trader\'s own position on a card', () => {
   it('reads the portfolio once per page, however many cards it shows', async () => {
     let reads = 0
     server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: threeMarkets, next_cursor: null })),
       http.get(PORTFOLIO, () => {
         reads += 1
         return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
@@ -1242,9 +1264,32 @@ describe('the trader\'s own position on a card', () => {
     await screen.findByText('Will SMU win SUNIG?')
     await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
 
-    // Two cards on screen. One read per mount, and StrictMode mounts twice.
-    expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    // Three cards on screen, more than StrictMode's two mounts: a read per
+    // card would make at least three.
+    expect(screen.getByText('Will the library open on Sundays?')).toBeInTheDocument()
     expect(reads).toBeLessThanOrEqual(2)
+  })
+
+  // The same read serves every list the filters make. A status, a search or a
+  // closing preset is a new list (MarketsPage keys it), and the trader's
+  // holdings did not change because they narrowed what they were looking at.
+  it('does not read the portfolio again when a filter changes the list', async () => {
+    let reads = 0
+    server.use(
+      http.get(PORTFOLIO, () => {
+        reads += 1
+        return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    const readsOnLoad = reads
+
+    await actor.click(screen.getByRole('radio', { name: 'Open' }))
+
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    expect(reads).toBe(readsOnLoad)
   })
 
   // AC 5: the position is an enhancement on a card whose job is the price, so
@@ -1269,20 +1314,23 @@ describe('the trader\'s own position on a card', () => {
       http.get(PORTFOLIO, () =>
         HttpResponse.json({
           ...portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]),
-          positions: [{
-            market_id: 'a1', outcome_id: 'a1-0', outcome_position: 0, quantity: '40.0000',
-            cost_basis: '20.0000', average_entry_price: '0.5000', price: null, value: null,
-            unrealized_pnl: null, result: 'paid_out', payout: '40.0000', state_version: 3,
-          }],
+          positions: [
+            {
+              market_id: 'a1', outcome_id: 'a1-0', outcome_position: 0, quantity: '40.0000',
+              cost_basis: '20.0000', average_entry_price: '0.5000', price: null, value: null,
+              unrealized_pnl: null, result: 'paid_out', payout: '40.0000', state_version: 3,
+            },
+            ...portfolioHolding([{ market_id: 'b2', outcome_id: 'b2-1', quantity: '12.0000' }]).positions,
+          ],
         }),
       ),
     )
     renderPage()
-    await screen.findByText('Will SMU win SUNIG?')
 
-    const card = within(cardFor('Will SMU win SUNIG?'))
-    await waitFor(() => expect(card.getByLabelText('Yes price')).toBeInTheDocument())
-    expect(card.queryByText('You hold')).not.toBeInTheDocument()
+    // The portfolio has landed once the market still held shows it; before
+    // that, a card with no holding proves nothing.
+    await waitFor(() => expect(within(cardFor('Will inflation fall below 2%?')).getByText('12.0000 No')).toBeInTheDocument())
+    expect(within(cardFor('Will SMU win SUNIG?')).queryByText('You hold')).not.toBeInTheDocument()
   })
 })
 
@@ -1290,6 +1338,10 @@ describe('the trader\'s own position on a card', () => {
 // so the list gains a few short curated bands above it. Each states its rule,
 // an empty one disappears, and a filtered view collapses back to one list.
 describe('the curated sections above the list', () => {
+  // One test here stubs the socket to send a price frame; this puts the real
+  // global back even when that test fails part way.
+  afterEach(() => vi.unstubAllGlobals())
+
   // Closing within the day puts a market in "Closing soon"; a1's close_time in
   // mockMarkets is years out, so a band needs its own market.
   const closingSoon = {
@@ -1386,7 +1438,7 @@ describe('the curated sections above the list', () => {
 
     const featured = await screen.findByRole('heading', { name: 'Featured' })
     expect(featured).toBeInTheDocument()
-    expect(screen.getByText('Most traded right now')).toBeInTheDocument()
+    expect(screen.getByText('Busiest market by credits traded')).toBeInTheDocument()
     // The only traded market is the hero, so Trending has nothing left and
     // disappears rather than repeating it directly underneath.
     expect(screen.queryByRole('heading', { name: 'Trending' })).not.toBeInTheDocument()
@@ -1422,5 +1474,45 @@ describe('the curated sections above the list', () => {
     expect(trending).not.toBeNull()
     expect(within(trending as HTMLElement).getByText('Will the runner-up be banded?')).toBeInTheDocument()
     expect(within(trending as HTMLElement).queryByText('Will SMU win SUNIG?')).not.toBeInTheDocument()
+  })
+
+  // A price frame carries the prices and nothing else: no `credits_traded`,
+  // no `prices_7d_ago` (ledger-service.md). The bands rank on those, so a
+  // trade arriving on the socket must reprice the card without emptying the
+  // band it sits in.
+  it('keeps Trending when a price frame arrives for a market in it', async () => {
+    const second = {
+      id: 'c3',
+      status: 'open',
+      question: 'Will the runner-up be banded?',
+      close_time: '2099-02-05T12:00:00Z',
+      outcomes: outcomesFor('c3', ['Yes', 'No']),
+    }
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0], second], next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '30.0000',
+      prices_7d_ago: null,
+    }))
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    renderPage()
+    await screen.findByRole('heading', { name: 'Trending' })
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      for (const command of latestSocket().sent.filter(sent => sent.action === 'subscribe')) {
+        latestSocket().receive({ type: 'subscribed', market_id: command.market_id })
+      }
+    })
+
+    await act(async () => {
+      latestSocket().receive({ type: 'price', ...snapshotFor('c3', ['0.7000', '0.3000']), state_version: 4 })
+    })
+
+    const trending = screen.getByRole('region', { name: 'Trending' })
+    await waitFor(() => expect(within(trending).getByLabelText(/^Yes price/)).toHaveTextContent('70.0%'))
+    expect(within(trending).getByText('Will the runner-up be banded?')).toBeInTheDocument()
   })
 })
