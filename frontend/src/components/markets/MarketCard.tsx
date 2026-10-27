@@ -153,7 +153,7 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
           <p className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-secondary">
             <span>You hold</span>
             {heldOutcomes.map(held => (
-              <Badge key={held.outcomeId} tone="info">{held.quantity} {held.label}</Badge>
+              <Badge key={held.outcomeId} tone="info" wraps>{held.quantity} {held.label}</Badge>
             ))}
           </p>
         )}
