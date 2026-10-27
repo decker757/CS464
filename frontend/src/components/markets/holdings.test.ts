@@ -35,6 +35,14 @@ describe('heldOutcomesOf', () => {
     expect(held).toEqual([{ outcomeId: 'm1-0', label: 'Yes', quantity: '40.0000' }])
   })
 
+  // A quantity is shown the way the portfolio shows one (formatCreditsPrecise),
+  // grouped and to four places, not as the ledger's raw string.
+  it('formats the quantity as the portfolio does', () => {
+    const held = heldOutcomesOf([position('m1-0', '1234.5000')], OUTCOMES)
+
+    expect(held[0].quantity).toBe('1,234.5000')
+  })
+
   // AC 4: a market held on more than one outcome renders sensibly. On a
   // binary book holding both sides is the ordinary case, not an oddity.
   it('names every held outcome, in the market order', () => {
@@ -52,13 +60,6 @@ describe('heldOutcomesOf', () => {
   it('holds nothing for a market with no positions', () => {
     expect(heldOutcomesOf(undefined, OUTCOMES)).toEqual([])
     expect(heldOutcomesOf([], OUTCOMES)).toEqual([])
-  })
-
-  // An outcome the trader has no row for is not a holding of zero.
-  it('leaves out an outcome with no position', () => {
-    const held = heldOutcomesOf([position('m1-0', '40.0000')], OUTCOMES)
-
-    expect(held.map(entry => entry.label)).toEqual(['Yes'])
   })
 
   // The ledger keeps a settled market's rows to report what they were paid

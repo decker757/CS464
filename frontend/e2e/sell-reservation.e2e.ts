@@ -5,10 +5,11 @@ import { logIn } from './support/browser'
 // #410's frontend half (#494): the sell control offers
 // `quantity - reserved_shares`, and both come from `GET /ledger/portfolio/me`.
 //
-// The ledger derives `reserved_shares` from the order rows in the statement
-// that reads the position, so only an end-to-end run proves the figure the
-// panel shows is the ledger's own and not the browser's arithmetic. A unit
-// test fakes the portfolio, which is exactly the thing under test here.
+// A unit test fakes the portfolio, so only this run checks that the ledger's
+// real `reserved_shares` reaches the panel: a resting sell lowers what it
+// offers, and a cancel gives it back. It cannot tell that figure from the
+// browser adding up the orders list itself — both come to 30 here — so the
+// unit tests are what pin which of the two the panel reads.
 test('a resting sell order lowers what the panel offers to sell, and cancelling gives it back', async ({ page }) => {
   const admin = await registerAdmin('sr_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('reserve')} be reserved?`)
@@ -55,4 +56,6 @@ test('a resting sell order lowers what the panel offers to sell, and cancelling 
   await page.getByRole('button', { name: 'Cancel sell Yes at 0.9500', exact: true }).click()
 
   await expect(sharesHeld).toContainText('You hold 50.0000 shares')
+  await page.getByRole('button', { name: 'Max', exact: true }).click()
+  await expect(page.getByLabel('Quantity (shares)')).toHaveValue('50.0000')
 })

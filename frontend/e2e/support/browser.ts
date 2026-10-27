@@ -32,6 +32,10 @@ export async function logOut(page: Page, session: Session): Promise<void> {
  * the last match is the one a test can rely on. Every other list shows a
  * market once, where last and only are the same card.
  */
+export function marketCard(page: Page, question: string): Locator {
+  return page.getByText(question, { exact: true }).locator('xpath=../..').last()
+}
+
 /**
  * The browse page's full market list, apart from the curated bands above it
  * ([X-1] #448). Use it to count what the list holds: a market in a band is on
@@ -42,11 +46,7 @@ export async function logOut(page: Page, session: Session): Promise<void> {
  * none, because nothing is on screen twice there.
  */
 export function browseList(page: Page): Locator {
-  return page.locator('section', { has: page.getByRole('heading', { name: 'Browse all' }) })
-}
-
-export function marketCard(page: Page, question: string): Locator {
-  return page.getByText(question, { exact: true }).locator('xpath=../..').last()
+  return page.getByRole('region', { name: 'Browse all' })
 }
 
 /**
