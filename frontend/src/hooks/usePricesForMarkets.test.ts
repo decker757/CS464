@@ -199,6 +199,31 @@ describe('usePricesForMarkets', () => {
     expect([...asked[1]].sort()).toEqual(['m1', 'm2', 'm3'])
   })
 
+  // The acks are reported once every subscribe has an answer, and a market id
+  // the relay cannot read is answered with `invalid_market_id` rather than an
+  // ack (realtime-service.md). Left waiting, it would hold back every ack
+  // after it, and the read each ack owes the card would never happen.
+  it('keeps reading acked markets after the relay rejects a market id', async () => {
+    const asked: string[][] = []
+    server.use(http.post(BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      asked.push(ids)
+      return HttpResponse.json({ snapshots: ids.map(id => snapshotPriced('0.6000', id)) })
+    }))
+    const twoMarkets = marketsNumbered(1, 3)
+
+    const { result } = renderHook(() => usePricesForMarkets(twoMarkets))
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(2))
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      latestSocket().receive({ type: 'error', error: { code: 'invalid_market_id', message: 'not a UUID' } })
+      latestSocket().receive({ type: 'subscribed', market_id: 'm2' })
+    })
+
+    await waitFor(() => expect(asked).toHaveLength(2))
+    expect(asked[1]).toEqual(['m2'])
+  })
+
   // [X-1] #444 AC 4: the snapshot is first paint for every card, not only for
   // the fifty the socket follows. A card past the follow cap that waited for
   // the timer would say "Loading prices…" for half a minute.
