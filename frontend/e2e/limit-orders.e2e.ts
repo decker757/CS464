@@ -125,3 +125,48 @@ test('a limit order priced through the market fills on arrival', async ({ page }
   // Nothing rests, so there is no open-orders section at all.
   await expect(page.getByText('Your open orders', { exact: true })).toHaveCount(0)
 })
+
+// [T-6] #496's Definition of Done: the limit ticket driven through the same
+// steps as #478's market-ticket test.
+//
+// Only a browser sees this one: the dead end was four steps long — choose
+// Sell, pick the outcome, fill in a price and a quantity — and what it costs
+// a trader is the walk, not any single state. The ledger is never asked,
+// which is the point.
+test('selling on the limit ticket with nothing held offers to buy it instead', async ({ page }) => {
+  const admin = await registerAdmin('ln_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('limit_none')} happen?`)
+  const trader = await registerTrader('ln_trader')
+  // Some Yes and no No, so the empty holding sits beside one that is not.
+  await buy(trader, market, 'Yes', '2')
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  const buyToggle = page.getByRole('button', { name: 'Buy', exact: true })
+  const noToggle = page.getByRole('button', { name: 'No', exact: true })
+  const holdsNone = page.getByRole('status').filter({ hasText: "You don't hold any No shares." })
+
+  await page.getByRole('button', { name: 'Limit', exact: true }).click()
+  await page.getByRole('button', { name: 'Sell', exact: true }).click()
+  await noToggle.click()
+
+  // The sentence, announced, and no form to fill in behind it.
+  await expect(holdsNone).toBeVisible()
+  await expect(page.getByLabel('Limit price')).toHaveCount(0)
+  await expect(page.getByLabel('Quantity (shares)')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /place sell order/i })).toHaveCount(0)
+
+  // The offer turns the ticket into the buy it names, as on the market ticket.
+  await page.getByRole('button', { name: 'Buy No instead' }).click()
+  await expect(buyToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByLabel('Limit price')).toBeVisible()
+
+  // The outcome the trader does hold keeps its form: this is about an empty
+  // holding, not about selling on the limit ticket at all.
+  await page.getByRole('button', { name: 'Sell', exact: true }).click()
+  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await expect(page.getByLabel('shares held')).toContainText('You hold 2.0000 shares')
+  await expect(page.getByLabel('Limit price')).toBeVisible()
+})
