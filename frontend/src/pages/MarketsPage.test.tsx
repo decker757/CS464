@@ -1139,6 +1139,14 @@ describe('the price feed in trouble', () => {
     await waitFor(() =>
       expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
     )
+    // Connected and acked: the healthy state itself, not the moment before
+    // the socket has opened.
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      for (const command of latestSocket().sent.filter(sent => sent.action === 'subscribe')) {
+        latestSocket().receive({ type: 'subscribed', market_id: command.market_id })
+      }
+    })
 
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })

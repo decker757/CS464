@@ -82,6 +82,43 @@ async function refuseEverySubscription() {
   })
 }
 
+// A relay that answers the socket's commands in the order they were sent and
+// refuses a subscribe past its ceiling, as the real one does
+// (realtime_service/service/subscriptions.py). Each call answers what was
+// sent since the last one and returns the markets the relay now holds.
+function relayWithCeiling(ceiling: number) {
+  const held = new Set<string>()
+  let answered = 0
+  return async () => {
+    const socket = latestSocket()
+    const commands = socket.sent.slice(answered)
+    answered = socket.sent.length
+    await act(async () => {
+      for (const { action, market_id: id } of commands) {
+        if (action === 'unsubscribe') {
+          held.delete(id)
+          socket.receive({ type: 'unsubscribed', market_id: id })
+        } else if (!held.has(id) && held.size >= ceiling) {
+          socket.receive({ type: 'error', error: { code: 'too_many_subscriptions', message: 'at its ceiling' } })
+        } else {
+          held.add(id)
+          socket.receive({ type: 'subscribed', market_id: id })
+        }
+      }
+    })
+    return held
+  }
+}
+
+// Markets m<from> to m<to - 1>, all still trading.
+function marketsNumbered(from: number, to: number) {
+  return Array.from({ length: to - from }, (_, index) => ({
+    id: `m${from + index}`,
+    status: 'open' as const,
+    close_time: '2099-01-05T12:00:00Z',
+  }))
+}
+
 const subscribedTo = () =>
   latestSocket().sent.filter(c => c.action === 'subscribe').map(c => c.market_id)
 const unsubscribedFrom = () =>
@@ -139,6 +176,61 @@ describe('usePricesForMarkets', () => {
     expect([...asked[0]].sort()).toEqual(['m1', 'm2', 'm3'])
   })
 
+  // [X-1] #432 and #444 AC 4: the acks for a page arrive as one frame per
+  // market, and each is a reason to read that market again. Read one at a
+  // time, a page of fifty is fifty-one batch requests on every load and every
+  // reconnect — the per-card round #432 removed — so the acks are read
+  // together once the socket has heard back about every subscribe it sent.
+  it('reads the markets a burst of acks names in one request, not one per ack', async () => {
+    const asked: string[][] = []
+    server.use(http.post(BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      asked.push(ids)
+      return HttpResponse.json({ snapshots: ids.map(id => snapshotPriced('0.6000', id)) })
+    }))
+    const pageOfThree = marketsNumbered(1, 4)
+
+    const { result } = renderHook(() => usePricesForMarkets(pageOfThree))
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(3))
+    await connectAndAck()
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(asked).toHaveLength(2)
+    expect([...asked[1]].sort()).toEqual(['m1', 'm2', 'm3'])
+  })
+
+  // [X-1] #444 AC 4: the snapshot is first paint for every card, not only for
+  // the fifty the socket follows. A card past the follow cap that waited for
+  // the timer would say "Loading prices…" for half a minute.
+  it('prices every card on first paint, past the markets the socket follows', async () => {
+    serveChangingPrices(['0.6000'])
+    const fiftyOne = marketsNumbered(0, 51)
+
+    const { result } = renderHook(() => usePricesForMarkets(fiftyOne))
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(51))
+  })
+
+  // The batch route takes at most 200 ids and refuses a 201st with a 422
+  // (ledger-service.md). Load more appends past that, and every market the
+  // socket is not carrying is read on the timer, so a long list has to go as
+  // several requests or every one of its reads fails.
+  it('splits a read of more than 200 markets into requests the batch route accepts', async () => {
+    const asked: string[][] = []
+    server.use(http.post(BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      asked.push(ids)
+      return HttpResponse.json({ snapshots: ids.map(id => snapshotPriced('0.6000', id)) })
+    }))
+    // Fifty followed, and 201 past the cap: one read of those would be a 201.
+    const longList = marketsNumbered(0, 251)
+
+    const { result } = renderHook(() => usePricesForMarkets(longList))
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(251))
+    expect(Math.max(...asked.map(ids => ids.length))).toBeLessThanOrEqual(200)
+  })
+
   // [X-1] #444 AC 1: one socket per page, following every market rendered.
   it('subscribes every rendered market on one socket', async () => {
     serveChangingPrices(['0.6000'])
@@ -175,6 +267,72 @@ describe('usePricesForMarkets', () => {
     await connectAndAck()
 
     expect(subscribedTo()).toEqual(['m1', 'm2'])
+  })
+
+  // [X-1] #444 AC 1 and AC 2: a page of fifty already holds the relay's
+  // default ceiling, and Load more moves the followed set onto the fifty it
+  // appended. The relay answers in order, so the cards that left have to be
+  // unsubscribed before the new ones ask, or every new subscribe is refused
+  // and the socket ends up carrying nothing.
+  it('keeps the cards Load more appends live when the page already holds the ceiling', async () => {
+    serveChangingPrices(['0.6000'])
+    const firstPage = marketsNumbered(0, 50)
+    const twoPages = [...firstPage, ...marketsNumbered(50, 100)]
+    const relay = relayWithCeiling(50)
+
+    const { rerender } = renderHook(({ markets }) => usePricesForMarkets(markets), {
+      initialProps: { markets: firstPage },
+    })
+    await act(async () => { latestSocket().open() })
+    await relay()
+
+    rerender({ markets: twoPages })
+    const held = await relay()
+
+    expect([...held].sort()).toEqual(twoPages.slice(50).map(market => market.id).sort())
+  })
+
+  // [X-1] #444 AC 2: the page asks the socket for at most fifty markets, the
+  // relay's default ceiling, and the newest win — the ones a trader just asked
+  // for with Load more. The rest are read on the timer.
+  it('follows the fifty newest cards when the page holds more', async () => {
+    serveChangingPrices(['0.6000'])
+    const fiftyOne = marketsNumbered(0, 51)
+
+    renderHook(() => usePricesForMarkets(fiftyOne))
+    await act(async () => { latestSocket().open() })
+
+    expect(subscribedTo()).toHaveLength(50)
+    expect(subscribedTo()).not.toContain('m0')
+  })
+
+  // The refusal frame names no market, so the hook matches it to the oldest
+  // subscribe still waiting for an answer. A subscribe already acked is not
+  // waiting, and must not be the one blamed.
+  it('falls back for the market refused, not the one acked before it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const polled: string[][] = []
+    server.use(http.post(BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      polled.push(ids)
+      return HttpResponse.json({ snapshots: ids.map(id => snapshotPriced('0.6000', id)) })
+    }))
+    const twoMarkets = marketsNumbered(1, 3)
+
+    const { result } = renderHook(() => usePricesForMarkets(twoMarkets))
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(2))
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      latestSocket().receive({ type: 'subscribed', market_id: 'm1' })
+      latestSocket().receive({ type: 'error', error: { code: 'too_many_subscriptions', message: 'at its ceiling' } })
+    })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+    polled.length = 0
+
+    await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
+
+    await waitFor(() => expect(polled).toHaveLength(1))
+    expect(polled[0]).toEqual(['m2'])
   })
 
   // [X-1] #444 AC 1: a card that leaves the page stops being followed. The
@@ -273,6 +431,45 @@ describe('usePricesForMarkets', () => {
     await act(async () => { vi.advanceTimersByTime(3 * PRICE_REFRESH_MS) })
 
     expect(reads.count).toBe(afterSubscribe)
+  })
+
+  // [X-1] #444 AC 5: a socket that has dropped carries nothing, so the markets
+  // it was following go back on the timer until it is connected again. A
+  // market counted as pushed while nothing can push it is the silently frozen
+  // list the criterion rules out.
+  it('keeps reading the prices on the timer while the socket is away', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const reads = serveChangingPrices(['0.6000'])
+
+    const { result } = renderHook(() => usePricesForMarkets(TRADING))
+    await connectAndAck()
+    await act(async () => { latestSocket().serverClose(1006) })
+    await waitFor(() => expect(result.current.status).toBe('reconnecting'))
+    const whileAway = reads.count
+
+    await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
+
+    await waitFor(() => expect(reads.count).toBeGreaterThan(whileAway))
+  })
+
+  // A browser socket cannot send a fresh token, so when the relay closes for
+  // an expired one (4408) something has to go through the axios interceptor
+  // before the reconnect, or every retry is refused the same way. The detail
+  // page does this already; the list follows markets on the same socket.
+  it('refreshes the session before reconnecting when the token expired', async () => {
+    serveChangingPrices(['0.6000'])
+    let singleReads = 0
+    server.use(http.get(SNAPSHOT, () => {
+      singleReads += 1
+      return HttpResponse.json(snapshotPriced('0.6000'))
+    }))
+
+    renderHook(() => usePricesForMarkets(TRADING))
+    await connectAndAck()
+    await act(async () => { latestSocket().serverClose(4408) })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2), { timeout: 3000 })
+
+    expect(singleReads).toBe(1)
   })
 
   // [X-1] #444 AC 1 and AC 3: a price frame repaints the card it names, and
@@ -383,6 +580,49 @@ describe('usePricesForMarkets', () => {
 
     await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')?.prices[0].price).toBe('0.5000'))
     expect(singleReads).toBe(1)
+  })
+
+  // Asked once per market per page: a market the batch keeps leaving out —
+  // an unknown id reads the same way — is not opened again on every tick.
+  it('asks the single snapshot only once for a market the batch keeps leaving out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let batchReads = 0
+    let singleReads = 0
+    server.use(
+      http.post(BATCH, () => {
+        batchReads += 1
+        return HttpResponse.json({ snapshots: [] })
+      }),
+      http.get(SNAPSHOT, () => {
+        singleReads += 1
+        return HttpResponse.json(snapshotPriced('0.5000'))
+      }),
+    )
+
+    const { result } = renderHook(() => usePricesForMarkets(TRADING))
+    await waitFor(() => expect(result.current.snapshotsByMarket.has('m1')).toBe(true))
+    for (const tick of [2, 3]) {
+      await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
+      await waitFor(() => expect(batchReads).toBe(tick))
+    }
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(singleReads).toBe(1)
+  })
+
+  // #104 amendment D, for the market the batch leaves out. StrictMode's
+  // discarded first mount sends its own batch read; if that answer marks the
+  // market's book as opened, the single read it starts lands on the discarded
+  // mount, and the remount's answer must not then skip the market as done.
+  it('still prices a market the batch left out when StrictMode cancels the first mount', async () => {
+    server.use(
+      http.post(BATCH, () => HttpResponse.json({ snapshots: [] })),
+      http.get(SNAPSHOT, () => HttpResponse.json(snapshotPriced('0.5000'))),
+    )
+
+    const { result } = renderHook(() => usePricesForMarkets(TRADING), { wrapper: StrictMode })
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')?.prices[0].price).toBe('0.5000'))
   })
 
   // The timer serves the markets the socket is not carrying — past the
