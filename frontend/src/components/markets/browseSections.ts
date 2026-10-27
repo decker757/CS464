@@ -62,6 +62,19 @@ function weeklyMoveOf(snapshot: PriceState | undefined, figures: MarketFigures |
   return largest
 }
 
+/** The markets that have traded at all, the most credits traded first. The
+ *  hero and Trending rank the same way, so they are one ranking: the hero is
+ *  its first market, and Trending the next three. */
+function mostTradedFirst(
+  markets: PublicMarketSummary[],
+  marketFigures: Map<string, MarketFigures>,
+): PublicMarketSummary[] {
+  const tradedOf = (market: PublicMarketSummary) => marketFigures.get(market.id)?.credits_traded ?? '0'
+  return markets
+    .filter(market => compareCredits(tradedOf(market), '0') > 0)
+    .sort((left, right) => compareCredits(tradedOf(right), tradedOf(left)))
+}
+
 /**
  * The one market at the top of the page, or null when nothing earns the slot
  * ([X-1] #448).
@@ -78,18 +91,7 @@ export function featuredMarketOf(
   marketFigures: Map<string, MarketFigures>,
   now: Date,
 ): FeaturedMarket | null {
-  const busiest = stillTrading(markets, now)
-    .filter(market => {
-      const traded = marketFigures.get(market.id)?.credits_traded
-      return traded !== undefined && compareCredits(traded, '0') > 0
-    })
-    .sort((left, right) => {
-      const leftTraded = marketFigures.get(left.id)?.credits_traded ?? '0'
-      const rightTraded = marketFigures.get(right.id)?.credits_traded ?? '0'
-      return compareCredits(rightTraded, leftTraded)
-    })
-
-  const [market] = busiest
+  const [market] = mostTradedFirst(stillTrading(markets, now), marketFigures)
   if (!market) return null
   return { market, rule: 'Busiest market by credits traded' }
 }
@@ -139,17 +141,7 @@ export function browseSectionsOf(
   // Most traded first. A market nobody has traded is left out rather than
   // ranked last at zero: "trending" over untraded books is the confident name
   // on an arbitrary order that #447 exists to make honest.
-  const trending = tradeable
-    .filter(market => {
-      const traded = marketFigures.get(market.id)?.credits_traded
-      return traded !== undefined && compareCredits(traded, '0') > 0
-    })
-    .sort((left, right) => {
-      const leftTraded = marketFigures.get(left.id)?.credits_traded ?? '0'
-      const rightTraded = marketFigures.get(right.id)?.credits_traded ?? '0'
-      return compareCredits(rightTraded, leftTraded)
-    })
-    .slice(0, SECTION_SIZE)
+  const trending = mostTradedFirst(tradeable, marketFigures).slice(0, SECTION_SIZE)
 
   // Biggest price change over the week, either direction: a market that fell
   // thirty points is every bit as interesting as one that rose.
