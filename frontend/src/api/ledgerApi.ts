@@ -40,6 +40,18 @@ export async function getMarketSnapshot(marketId: string): Promise<PriceState> {
 // single snapshot nor the `price` frame does (ledger-service.md) — so it is
 // optional on the type a card renders from all three.
 export interface MarketSnapshot extends PriceState {
+  /**
+   * Each outcome's price seven days before the request, in the shape and
+   * order of `prices` ([X-1] #446). A card's change over the week is `price`
+   * minus the entry here with the same `outcome_id`.
+   *
+   * **Null when there is no change to measure**, which is three cases the card
+   * treats alike: the market has no trade that old (never traded, or only
+   * within the week — a book standing at its seed price is not a price anybody
+   * chose), or the ledger could not rebuild it. Equal to `prices` is different
+   * again: a real change of zero, not missing data.
+   */
+  prices_7d_ago: OutcomePrice[] | null
   credits_traded: string
 }
 
