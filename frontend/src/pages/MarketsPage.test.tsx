@@ -29,6 +29,12 @@ const mockMarkets = [
   { id: 'b2', status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z', outcomes: outcomesFor('b2', ['Yes', 'No']) },
 ]
 
+// One more card than StrictMode mounts the page, for counting reads per card.
+const threeMarkets = [
+  ...mockMarkets,
+  { id: 'c3', status: 'open', question: 'Will the library open on Sundays?', close_time: '2099-01-05T12:00:00Z', outcomes: outcomesFor('c3', ['Yes', 'No']) },
+]
+
 // The ledger's snapshot for a market, pricing its outcomes in position order.
 function snapshotFor(marketId: string, prices: string[]) {
   return {
@@ -101,6 +107,37 @@ function mockTwoPages(secondPage: () => Response | Promise<Response>) {
     ),
   )
 }
+
+// The trader's positions as the ledger reports them: ids only, since the
+// labels are the frontend's own join.
+function portfolioHolding(positions: { market_id: string; outcome_id: string; quantity: string }[]) {
+  return {
+    user_id: '1',
+    account_id: 'acct-1',
+    balance: '1000.0000',
+    positions_value: '0.0000',
+    net_worth: '1000.0000',
+    positions: positions.map(position => ({
+      ...position,
+      outcome_position: 0,
+      cost_basis: '20.0000',
+      average_entry_price: '0.5000',
+      price: '0.6000',
+      value: '24.0000',
+      unrealized_pnl: '4.0000',
+      result: null,
+      payout: null,
+      state_version: 3,
+    })),
+  }
+}
+
+// Every page reads the trader's portfolio once, for the holdings on its cards
+// ([X-1] #450). Tests about other things get a trader who holds nothing,
+// rather than an unhandled request on every render.
+beforeEach(() => {
+  server.use(http.get(PORTFOLIO, () => HttpResponse.json(portfolioHolding([]))))
+})
 
 describe('MarketsPage', () => {
   // Every card asks the ledger for its prices; tests about other things get a
@@ -1156,30 +1193,6 @@ describe('the price feed in trouble', () => {
 // themselves, so a market they hold forty shares in looked exactly like the
 // forty-nine they had never touched.
 describe('the trader\'s own position on a card', () => {
-  // The trader's positions as the ledger reports them: ids only, since the
-  // labels are the frontend's own join.
-  function portfolioHolding(positions: { market_id: string; outcome_id: string; quantity: string }[]) {
-    return {
-      user_id: '1',
-      account_id: 'acct-1',
-      balance: '1000.0000',
-      positions_value: '0.0000',
-      net_worth: '1000.0000',
-      positions: positions.map(position => ({
-        ...position,
-        outcome_position: 0,
-        cost_basis: '20.0000',
-        average_entry_price: '0.5000',
-        price: '0.6000',
-        value: '24.0000',
-        unrealized_pnl: '4.0000',
-        result: null,
-        payout: null,
-        state_version: 3,
-      })),
-    }
-  }
-
   beforeEach(() => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
@@ -1236,6 +1249,7 @@ describe('the trader\'s own position on a card', () => {
   it('reads the portfolio once per page, however many cards it shows', async () => {
     let reads = 0
     server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: threeMarkets, next_cursor: null })),
       http.get(PORTFOLIO, () => {
         reads += 1
         return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
@@ -1245,8 +1259,9 @@ describe('the trader\'s own position on a card', () => {
     await screen.findByText('Will SMU win SUNIG?')
     await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
 
-    // Two cards on screen. One read per mount, and StrictMode mounts twice.
-    expect(screen.getByText('Will inflation fall below 2%?')).toBeInTheDocument()
+    // Three cards on screen, more than StrictMode's two mounts: a read per
+    // card would make at least three.
+    expect(screen.getByText('Will the library open on Sundays?')).toBeInTheDocument()
     expect(reads).toBeLessThanOrEqual(2)
   })
 
@@ -1272,19 +1287,22 @@ describe('the trader\'s own position on a card', () => {
       http.get(PORTFOLIO, () =>
         HttpResponse.json({
           ...portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]),
-          positions: [{
-            market_id: 'a1', outcome_id: 'a1-0', outcome_position: 0, quantity: '40.0000',
-            cost_basis: '20.0000', average_entry_price: '0.5000', price: null, value: null,
-            unrealized_pnl: null, result: 'paid_out', payout: '40.0000', state_version: 3,
-          }],
+          positions: [
+            {
+              market_id: 'a1', outcome_id: 'a1-0', outcome_position: 0, quantity: '40.0000',
+              cost_basis: '20.0000', average_entry_price: '0.5000', price: null, value: null,
+              unrealized_pnl: null, result: 'paid_out', payout: '40.0000', state_version: 3,
+            },
+            ...portfolioHolding([{ market_id: 'b2', outcome_id: 'b2-1', quantity: '12.0000' }]).positions,
+          ],
         }),
       ),
     )
     renderPage()
-    await screen.findByText('Will SMU win SUNIG?')
 
-    const card = within(cardFor('Will SMU win SUNIG?'))
-    await waitFor(() => expect(card.getByLabelText('Yes price')).toBeInTheDocument())
-    expect(card.queryByText('You hold')).not.toBeInTheDocument()
+    // The portfolio has landed once the market still held shows it; before
+    // that, a card with no holding proves nothing.
+    await waitFor(() => expect(within(cardFor('Will inflation fall below 2%?')).getByText('12.0000 No')).toBeInTheDocument())
+    expect(within(cardFor('Will SMU win SUNIG?')).queryByText('You hold')).not.toBeInTheDocument()
   })
 })
