@@ -5,6 +5,7 @@ import { formatAveragePrice, isZeroCredits } from '../../utils/formatCredits'
 import { formatLimitPrice } from '../../utils/formatPrice'
 import { describeSharesToSell, limitPriceError, quantityError } from '../../utils/orderInput'
 import Button from '../ui/Button'
+import HoldsNoneToSell from './HoldsNoneToSell'
 import { controlClass } from '../ui/controlClass'
 
 interface LimitOrderFieldsProps {
@@ -20,6 +21,11 @@ interface LimitOrderFieldsProps {
   // The part of that no open sell order holds back, which is all a new sell
   // order can offer; null exactly when `heldQuantity` is.
   sellableQuantity: string | null
+  // True once the trader has chosen Sell on an outcome they hold none of.
+  // Computed in the panel above, so both tickets answer it the same way.
+  holdsNoneToSell: boolean
+  // Switches the panel to a buy of this outcome, behind the offer below.
+  onBuyInstead: () => void
   // An order was placed, or may have been, so the open-orders list, the
   // balance and the holdings are all stale. The page re-reads all three.
   onPlaced: () => void
@@ -64,7 +70,7 @@ function mayHavePlaced(err: unknown): boolean {
  * implementation of that rounding could only disagree with it.
  */
 export default function LimitOrderFields({
-  marketId, side, outcomeId, outcomeLabel, heldQuantity, sellableQuantity, onPlaced,
+  marketId, side, outcomeId, outcomeLabel, heldQuantity, sellableQuantity, holdsNoneToSell, onBuyInstead, onPlaced,
 }: LimitOrderFieldsProps) {
   const [limitPrice, setLimitPrice] = useState('')
   const [quantity, setQuantity] = useState('')
@@ -131,6 +137,29 @@ export default function LimitOrderFields({
         </p>
       )}
 
+      {/* The same offer the market ticket makes, in place of the form: a
+          limit price and a quantity for shares the trader does not hold lead
+          only to the ledger's refusal ([T-6] #496).
+          
+          Its live region is mounted whenever this ticket is on a sell, and
+          empty until there is something to say — a screen reader announces a
+          region whose content changes and may not announce one that arrives
+          with its content already in it. Only on a sell, because the placed
+          line above is this ticket's other region and the two must not both
+          be present: the side is chosen in the panel, so turning to sell
+          mounts this one well before any sentence lands in it. */}
+      {side === 'sell' && (
+        <div role="status">
+          <HoldsNoneToSell
+            holdsNone={holdsNoneToSell}
+            outcomeLabel={outcomeLabel}
+            onBuyInstead={onBuyInstead}
+          />
+        </div>
+      )}
+
+      {holdsNoneToSell ? null : (
+      <>
       <label htmlFor="limit-price" className="mb-1.5 block text-[13px] font-semibold text-smu-navy">
         Limit price
       </label>
@@ -180,6 +209,8 @@ export default function LimitOrderFields({
       <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit} className="mt-2">
         {submitting ? 'Placing…' : `Place ${side} order`}
       </Button>
+      </>
+      )}
     </div>
   )
 }
