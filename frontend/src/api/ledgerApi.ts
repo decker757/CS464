@@ -55,12 +55,16 @@ export interface MarketSnapshot extends PriceState {
   credits_traded: string
 }
 
+// The batch route's own limit (`MAX_SNAPSHOT_IDS` in the ledger's schemas.py).
+const MAX_SNAPSHOT_IDS = 200
+
 /**
  * The current prices of many markets in one request ([X-1] #432).
  *
- * At most 200 ids — market_service's largest page, so one page of the browse
- * list always fits. A 201st is a 422 naming `market_ids` rather than a short
- * answer, so a caller with more than that splits the request.
+ * At most 200 ids go in one request — market_service's largest page, so one
+ * page of the browse list always fits. A 201st is a 422 naming `market_ids`
+ * rather than a short answer, so a longer list is sent here as several
+ * requests and answered as one: a browse list grows past 200 by Load more.
  *
  * A market is absent from the answer rather than erroring when this service
  * holds no book for it — an unknown id, a draft, and a published market
@@ -70,11 +74,16 @@ export interface MarketSnapshot extends PriceState {
  * answers it. An empty list is a request worth not sending.
  */
 export async function getMarketSnapshots(marketIds: string[]): Promise<MarketSnapshot[]> {
-  const res = await api.post<{ snapshots: MarketSnapshot[] }>(
-    `${LEDGER_BASE}/ledger/markets/snapshots`,
-    { market_ids: marketIds },
-  )
-  return res.data.snapshots
+  const requests: Promise<MarketSnapshot[]>[] = []
+  for (let start = 0; start < marketIds.length; start += MAX_SNAPSHOT_IDS) {
+    const chunk = marketIds.slice(start, start + MAX_SNAPSHOT_IDS)
+    requests.push(
+      api.post<{ snapshots: MarketSnapshot[] }>(`${LEDGER_BASE}/ledger/markets/snapshots`, { market_ids: chunk })
+        .then(res => res.data.snapshots),
+    )
+  }
+  const answers = await Promise.all(requests)
+  return answers.flat()
 }
 
 export interface Balance {
@@ -133,11 +142,11 @@ export interface Position {
    * hold back, so a sell — instant or a new order — may take
    * `quantity - reserved_shares` and no more (#410).
    *
-   * Never null, unlike the same name on an `Order`, and never above
-   * `quantity`: the ledger derives it from the order rows in the same
-   * statement that reads the position, so the two cannot disagree. `"0.0000"`
-   * where no live sell order holds any, and on a settled row, since no order
-   * on a market with a result is live.
+   * Never null, unlike the same name on an `Order`. The ledger works it out
+   * from the order rows in the same query that reads `quantity`
+   * (ledger_service/service/portfolio.py), so both describe the same moment.
+   * `"0.0000"` where no live sell order holds any, and on a settled row,
+   * since no order on a market with a result is live.
    */
   reserved_shares: string
   cost_basis: string

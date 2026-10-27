@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { logIn, marketCard } from './support/browser'
+import { boxOf, logIn, marketCard } from './support/browser'
 
 // [X-1] #450: a card showed what the crowd thinks and nothing about the
 // trader, so a market they hold shares in looked exactly like one they had
@@ -52,4 +52,32 @@ test('a browse card shows what the trader holds, and says nothing about a market
   const untouchedCard = marketCard(page, untouched.question)
   await expect(untouchedCard.getByText('Lakers')).toBeVisible()
   await expect(untouchedCard.getByText('You hold')).toHaveCount(0)
+})
+
+// An outcome label is the market author's text and may run to 120 characters
+// (market_service's MAX_LABEL_LENGTH). The holding names it, and on a phone a
+// pill held to one line would push the card, and the page, wider than the
+// screen. jsdom lays nothing out, so only a browser can measure it.
+test('a long held label wraps inside its card on a phone', async ({ page }) => {
+  const admin = await registerAdmin('bh_long')
+  const longLabel = 'Lakers by more than ten points after the fourth quarter overtime'
+  const market = await publishMarket(
+    admin,
+    `Will ${uniqueName('bh_long')} fit a phone?`,
+    [longLabel, 'Celtics'],
+    { closesInHours: 1 },
+  )
+  const trader = await registerTrader('bh_long_trader')
+  await buy(trader, market, longLabel, '40.0000')
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await logIn(page, trader)
+  await page.goto('/markets')
+
+  const card = marketCard(page, market.question)
+  const holding = card.getByText(`40.0000 ${longLabel}`)
+  await expect(holding).toBeVisible()
+  const cardBox = await boxOf(card)
+  const holdingBox = await boxOf(holding)
+  expect(holdingBox.x + holdingBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width)
 })

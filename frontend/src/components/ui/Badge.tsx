@@ -10,10 +10,23 @@ const TONES: Record<Tone, string> = {
   danger: 'border-danger/25 bg-danger/10 text-danger-strong',
 }
 
-/** A small uppercase pill for a status. */
-export default function Badge({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+interface BadgeProps {
+  tone: Tone
+  /**
+   * Lets a long label wrap inside the pill instead of holding it to one line.
+   * A status is a word or two and never needs it; a badge carrying an author's
+   * own text — an outcome label runs to 120 characters — does, or one long
+   * label pushes a card wider than a phone (#516).
+   */
+  wraps?: boolean
+  children: React.ReactNode
+}
+
+/** A small uppercase pill, for a status or a short label. */
+export default function Badge({ tone, wraps = false, children }: BadgeProps) {
+  const fit = wraps ? 'min-w-0 break-words' : 'shrink-0'
   return (
-    <span className={`inline-block shrink-0 rounded-full border px-2.5 py-[3px] text-[11px] font-bold tracking-[0.5px] uppercase ${TONES[tone]}`}>
+    <span className={`inline-block ${fit} rounded-full border px-2.5 py-[3px] text-[11px] font-bold tracking-[0.5px] uppercase ${TONES[tone]}`}>
       {children}
     </span>
   )

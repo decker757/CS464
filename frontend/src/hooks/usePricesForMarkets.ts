@@ -56,7 +56,7 @@ export interface MarketFigures {
 // How often the prices on screen are read again. The socket carries every
 // trade on a market this page is subscribed to, so this is no longer how a
 // price arrives — it is the fallback for markets past the subscription ceiling
-// ([X-1] #444) and the backstop for anything the socket missed.
+// ([X-1] #444), and for every market while the socket is away.
 export const PRICE_REFRESH_MS = 30_000
 
 // How many markets this page asks the socket to follow. The server's own
@@ -123,19 +123,27 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
   // and a request that was still out when that happened has its answer applied
   // to state the remount threw away. Left set, it would block the remount's own
   // read and the card would wait for a price for good (#104 amendment D).
+  //
+  // The books already opened are replaced, not cleared, for the same reason:
+  // a batch answer for the discarded mount marks the set its own request was
+  // sent with, so the remount's answer still opens the book and gets a price.
   const inFlight = useRef(new Set<string>())
-  useEffect(() => () => inFlight.current.clear(), [])
   const openedBooks = useRef(new Set<string>())
-  const openBookRef = useRef((marketId: string, apply: (snapshot: PriceState) => void) => {
-    if (openedBooks.current.has(marketId)) return
-    openedBooks.current.add(marketId)
+  useEffect(() => () => {
+    inFlight.current.clear()
+    openedBooks.current = new Set()
+  }, [])
+  const openBookRef = useRef((books: Set<string>, marketId: string, apply: (snapshot: PriceState) => void) => {
+    if (books.has(marketId)) return
+    books.add(marketId)
     getMarketSnapshot(marketId).then(apply, () => {
       setFailedMarkets(previous => new Set(previous).add(marketId))
     })
   })
 
-  // The batch read, for the markets the socket hook asks about: first paint,
-  // and every reconnect's ack. One request for the page, not one per card.
+  // The batch read, for every path that needs prices: first paint and each
+  // ack (from the socket hook), the first read past the follow cap, and the
+  // timer. One request for the page, not one per card.
   const readSnapshots = useCallback((apply: (snapshot: PriceState) => void, ids: string[]) => {
     if (ids.length === 0) return
     // A tick that fired while the ledger was still answering the last one
@@ -145,6 +153,7 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     const wanted = ids.filter(id => !inFlight.current.has(id))
     if (wanted.length === 0) return
     for (const id of wanted) inFlight.current.add(id)
+    const books = openedBooks.current
     const settle = () => {
       for (const id of wanted) inFlight.current.delete(id)
     }
@@ -173,7 +182,7 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
           return remaining.size === previous.size ? previous : remaining
         })
         const missing = wanted.filter(id => !answered.has(id))
-        for (const id of missing) openBookRef.current(id, apply)
+        for (const id of missing) openBookRef.current(books, id, apply)
       },
       () => {
         settle()
@@ -204,16 +213,42 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     // market still named here would be polled for the life of the page while
     // the new connection pushed its frames.
     onConnectionReset: () => setRefusedMarkets(previous => (previous.size === 0 ? previous : new Set())),
+    // One request through `api`, so its interceptor refreshes the session
+    // cookie before a socket closed for an expired token is retried. Any
+    // followed market will do; the answer is applied like any other read.
+    onSessionRefresh: followed.length > 0 ? () => getMarketSnapshot(followed[0]) : undefined,
   })
 
-  // What the socket is carrying: followed, and not refused a subscription.
+  // What the socket is carrying: followed, and not refused a subscription —
+  // and nothing at all while it is not connected, because a dropped or
+  // refused socket pushes no frames however many markets it once followed.
   const liveMarkets = useMemo(
-    () => new Set(followed.filter(id => !refusedMarkets.has(id))),
-    [followed, refusedMarkets],
+    () => (status === 'connected' ? new Set(followed.filter(id => !refusedMarkets.has(id))) : new Set<string>()),
+    [followed, refusedMarkets, status],
   )
 
+  // The first read of the cards past the follow cap. The socket hook reads
+  // only what it follows, so without this a card past the fiftieth would wait
+  // for the timer's first tick to get any price at all (AC 4). Each market is
+  // read here once; from then on the timer below keeps it fresh. Read through
+  // `applySnapshot`, which always reaches the live connection, so a read that
+  // StrictMode's discarded first mount sent still lands.
+  const firstReadPastCap = useRef(new Set<string>())
+  const followedIds = new Set(followed)
+  const pastCap = markets
+    .map(market => market.id)
+    .filter(id => !followedIds.has(id))
+    .join(',')
+  useEffect(() => {
+    if (!pastCap) return
+    const unread = pastCap.split(',').filter(id => !firstReadPastCap.current.has(id))
+    for (const id of unread) firstReadPastCap.current.add(id)
+    readSnapshots(applySnapshot, unread)
+  }, [pastCap, readSnapshots, applySnapshot])
+
   // The markets the socket is *not* carrying, re-read on the timer: the ones
-  // past the subscription ceiling, and nothing else. A market the relay is
+  // past the subscription ceiling, every market while the socket is away, and
+  // nothing else. A market the relay is
   // pushing needs no poll — that is the whole point of #444 — and polling it
   // anyway would cost the ledger an LMSR evaluation per card twice a minute
   // for a price it has already sent.

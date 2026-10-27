@@ -822,9 +822,10 @@ describe('TradingPanel', () => {
     expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(4)
   })
 
-  it('offers nothing to sell, not a negative, while the orders list lags a smaller holding', async () => {
-    // A sell order's fill lowers the position and its reservation together,
-    // but they arrive on two reads, and the holdings read can land first.
+  it('offers nothing to sell, not a negative, when the reservation is above the holding', async () => {
+    // Both figures come off one portfolio row (#410), so this would be the
+    // ledger contradicting itself. The clamp keeps the line and the refusal
+    // from going negative if it ever does.
     mockPreview(previewResponse({ side: 'sell', quantity: '0.5000', total: '0.2500' }))
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     renderPanel({ heldByOutcome: { 'o-yes': '1.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })

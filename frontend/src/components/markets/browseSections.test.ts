@@ -90,6 +90,12 @@ describe('browseSectionsOf', () => {
     expect(sections[0].rule).toBeTruthy()
   })
 
+  // Soonest first is what the band is about, so it sorts for itself rather than
+  // borrowing the list's order: #448 is what lets the list stop being ordered by
+  // close time (#433), and a band that followed it would then show three
+  // markets closing within the day without the one closing in ten minutes.
+  // Only markets still trading are here, so the early-closed market that
+  // market-service.md warns a browser re-sort would misplace never is.
   it('puts a market closing within the day in Closing soon, soonest first', () => {
     const markets = [
       market('later', '2026-10-26T06:00:00Z'),
@@ -100,6 +106,41 @@ describe('browseSectionsOf', () => {
     const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
 
     expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['sooner', 'later'])
+  })
+
+  // By the instant, not the text: an offset written out is the same moment as
+  // the Z it stands for, and a string order would put it in the wrong place.
+  it('orders Closing soon by the moment, whatever the offset is written as', () => {
+    // 13:00Z and 14:00Z, listed the wrong way round; as text, "T14" sorts
+    // before "T21" and would keep them so.
+    const markets = [
+      market('written_in_utc', '2026-10-25T14:00:00Z'),
+      market('written_with_offset', '2026-10-25T21:00:00+08:00'),
+    ]
+
+    const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
+
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['written_with_offset', 'written_in_utc'])
+  })
+
+  // The window is a day, edge included: a market closing in exactly 24 hours
+  // is closing soon, and one closing an hour later is not.
+  it('bands a market closing in exactly 24 hours, and not one closing in 25', () => {
+    const markets = [market('edge', '2026-10-26T12:00:00Z'), market('past_edge', '2026-10-26T13:00:00Z')]
+
+    const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
+
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['edge'])
+  })
+
+  // A band is a shortcut, not a second copy of the list: three cards at most,
+  // however many qualify.
+  it('holds at most three markets in a band', () => {
+    const markets = ['a', 'b', 'c', 'd'].map(id => market(id, '2026-10-25T18:00:00Z'))
+
+    const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
+
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['a', 'b', 'c'])
   })
 
   // #447 exists so "trending" is a real figure rather than a confident name on
@@ -147,6 +188,35 @@ describe('browseSectionsOf', () => {
     expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['fell', 'rose', 'crept'])
   })
 
+  // A market's move is its largest outcome's move. Only on a binary book is
+  // the second outcome the first one's mirror: on three outcomes the first can
+  // sit still while the other two trade places. Two markets whose order turns
+  // on that: `swing` moved 0.05, 0.30 and 0.10, `drift` 0.20 on every outcome,
+  // so the first, the last and the sum of the moves all rank `drift` first.
+  it('ranks a move by its largest outcome, on markets of three outcomes', () => {
+    const threeWay = (id: string): PublicMarketSummary => ({
+      ...market(id, FAR_OFF),
+      outcomes: [0, 1, 2].map(position => ({ id: `${id}-${position}`, position, label: `Outcome ${position}` })),
+    })
+    const pricesOf = (id: string, three: [string, string, string]) =>
+      three.map((price, position) => ({ outcome_id: `${id}-${position}`, position, price }))
+    const reads = (id: string, now: [string, string, string], weekAgo: [string, string, string]) => ({
+      snapshot: { ...snapshot(id), prices: pricesOf(id, now) },
+      figures: { credits_traded: '80.0000', prices_7d_ago: pricesOf(id, weekAgo) },
+    })
+    const swing = reads('swing', ['0.3800', '0.0400', '0.4300'], ['0.3300', '0.3400', '0.3300'])
+    const drift = reads('drift', ['0.5300', '0.1400', '0.5300'], ['0.3300', '0.3400', '0.3300'])
+
+    const sections = browseSectionsOf(
+      [threeWay('drift'), threeWay('swing')],
+      new Map([['swing', swing.snapshot], ['drift', drift.snapshot]]),
+      new Map([['swing', swing.figures], ['drift', drift.figures]]),
+      NOW,
+    )
+
+    expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['swing', 'drift'])
+  })
+
   // ledger-service.md: `prices_7d_ago` is null when there is no change to
   // measure — never traded, traded only within the week, or a price the ledger
   // could not rebuild. No delta is shown, so the market is in no movers band.
@@ -181,32 +251,25 @@ describe('browseSectionsOf', () => {
 
     expect(sections).toEqual([])
   })
-
-  // A band is a shortcut into the list, not a partition of it (AC 5): a market
-  // in a band is still in the list below, so the band must not consume it.
-  it('leaves the markets it bands in the list it was given', () => {
-    const markets = [market('m1', '2026-10-25T18:00:00Z')]
-    const reads = readsOf(snapshot('m1'))
-
-    const sections = browseSectionsOf(markets, reads.snapshots, reads.figures, NOW)
-
-    expect(sectionNamed(sections, 'closing_soon')?.markets).toHaveLength(1)
-    expect(markets).toHaveLength(1)
-  })
 })
 
 describe('featuredMarketOf', () => {
   // #448: one featured market at the top. Volume is the only honest basis —
   // the one figure that says other people are here, which is what the slot is
-  // for.
-  it('features the busiest market the page has loaded', () => {
+  // for. It says so, so a featured slot is never an unexplained promotion, and
+  // says no more than the figure does: `credits_traded` is every credit the
+  // market has ever traded (ledger-service.md), not a measure of right now.
+  it('features the busiest market the page has loaded, and says why', () => {
     const markets = [market('quiet', FAR_OFF), market('busy', FAR_OFF)]
     const reads = readsOf(
       snapshot('quiet', { traded: '30.0000' }),
       snapshot('busy', { traded: '1200.0000' }),
     )
 
-    expect(featuredMarketOf(markets, reads.figures, NOW)?.market.id).toBe('busy')
+    const featured = featuredMarketOf(markets, reads.figures, NOW)
+
+    expect(featured?.market.id).toBe('busy')
+    expect(featured?.rule).toBe('Busiest market by credits traded')
   })
 
   // Promoting an untouched book is how the screen came to read as dead in the
@@ -226,15 +289,6 @@ describe('featuredMarketOf', () => {
     const reads = readsOf(snapshot('stopped', { traded: '900.0000' }))
 
     expect(featuredMarketOf(markets, reads.figures, NOW)).toBeNull()
-  })
-
-  // It states why it was chosen, so a featured slot is never an unexplained
-  // promotion.
-  it('says why the market was featured', () => {
-    const markets = [market('busy', FAR_OFF)]
-    const reads = readsOf(snapshot('busy', { traded: '1200.0000' }))
-
-    expect(featuredMarketOf(markets, reads.figures, NOW)?.rule).toBeTruthy()
   })
 
   // The hero would otherwise lead Trending as well and sit above the list

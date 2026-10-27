@@ -100,14 +100,10 @@ interface TradeToCheck {
 }
 
 /** What the trader's own live sell orders hold back of a holding, never more
- *  than the holding itself.
- *
- *  Both figures now come from the same portfolio row, derived in the one
- *  statement that reads the position (#410), so `reserved` above `quantity`
- *  would be the ledger contradicting itself rather than the two reads
- *  disagreeing as they once could. The clamp stays because it is a comparison
- *  against a figure already in hand, and the alternative is a negative in the
- *  line above the field and in the refusal under it alike. */
+ *  than the holding itself. Both come off one portfolio row (#410), so the
+ *  clamp matters only if the ledger ever contradicts itself — and then it
+ *  keeps a negative out of the line above the field and the refusal under
+ *  it. */
 function sharesReservedOf(held: string, reserved: string | undefined): string | undefined {
   if (reserved === undefined) return undefined
   return compareCredits(reserved, held) > 0 ? held : reserved
