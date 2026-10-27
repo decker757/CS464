@@ -539,6 +539,21 @@ describe('usePricesForMarkets', () => {
     expect(singleReads).toBe(1)
   })
 
+  // #104 amendment D, for the market the batch leaves out. StrictMode's
+  // discarded first mount sends its own batch read; if that answer marks the
+  // market's book as opened, the single read it starts lands on the discarded
+  // mount, and the remount's answer must not then skip the market as done.
+  it('still prices a market the batch left out when StrictMode cancels the first mount', async () => {
+    server.use(
+      http.post(BATCH, () => HttpResponse.json({ snapshots: [] })),
+      http.get(SNAPSHOT, () => HttpResponse.json(snapshotPriced('0.5000'))),
+    )
+
+    const { result } = renderHook(() => usePricesForMarkets(TRADING), { wrapper: StrictMode })
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.get('m1')?.prices[0].price).toBe('0.5000'))
+  })
+
   // The timer serves the markets the socket is not carrying — past the
   // ceiling, or refused. A followed market gets its updates pushed instead,
   // which is what #444 changed.
