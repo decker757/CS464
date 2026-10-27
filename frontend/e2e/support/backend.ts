@@ -4,10 +4,13 @@
 // Every name the suite makes carries a per-run suffix, so a run never collides
 // with an earlier one or with data already in a local database. The demo seed
 // (#454) also builds on these helpers, and only it uses the fixed-name ones.
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { isBelow } from './credits'
+
+const execFileAsync = promisify(execFile)
 
 // The same variables the app is built with, and the same defaults. Exported
 // for the demo seed's local-only guard (#454), which checks these and no copy.
@@ -119,25 +122,33 @@ async function readStartingGrant(): Promise<string> {
  */
 export async function registerAdmin(label: string): Promise<Session> {
   const trader = await registerTrader(label)
-  promoteToAdmin(trader.username)
+  await promoteToAdmin(trader.username)
   return logInThroughApi(trader.username)
 }
 
-/** Runs one UPDATE as the superuser, the way a first admin is made by hand, and checks it changed exactly one row. */
-function runSql(sql: string, failure: string): void {
-  const output = execFileSync(
+/**
+ * Runs one UPDATE as the superuser, the way a first admin is made by hand, and
+ * checks it changed exactly one row.
+ *
+ * Awaited, never blocking (#492): `docker compose exec` can take seconds on a
+ * loaded machine, and a blocked event loop cannot see uvicorn close an idle
+ * keep-alive socket, so the next fetch goes out on a dead one
+ * (`UND_ERR_SOCKET`).
+ */
+async function runSql(sql: string, failure: string): Promise<void> {
+  const { stdout } = await execFileAsync(
     'docker',
     ['compose', 'exec', '-T', 'db', 'psql', '-U', process.env.POSTGRES_USER ?? 'cs464', '-d', process.env.POSTGRES_DB ?? 'cs464', '-v', 'ON_ERROR_STOP=1', '-c', sql],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   )
-  if (!output.includes('UPDATE 1')) throw new Error(`${failure}: ${output}`)
+  if (!stdout.includes('UPDATE 1')) throw new Error(`${failure}: ${stdout}`)
 }
 
-export function promoteToAdmin(username: string): void {
+export async function promoteToAdmin(username: string): Promise<void> {
   // Interpolated into SQL below, and only ever a name uniqueName() made or one
   // of the demo seed's fixed names.
   if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
-  runSql(`UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
+  await runSql(`UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
 }
 
 /** Suspends an account ([4.2] #14), as an administrator through the auth service. */
@@ -278,9 +289,9 @@ export async function approveOutcome(admin: Session, marketId: string, proposalI
  * out either, so it reaches the stored column directly rather than the
  * setting or `approved_at`.
  */
-export function backdateDisputeWindow(marketId: string): void {
+export async function backdateDisputeWindow(marketId: string): Promise<void> {
   if (!/^[\w-]+$/.test(marketId)) throw new Error(`refusing to backdate ${marketId}`)
-  runSql(`UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`, `backdating ${marketId} changed no row`)
+  await runSql(`UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`, `backdating ${marketId} changed no row`)
 }
 
 /**
