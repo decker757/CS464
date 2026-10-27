@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { logIn, marketCard } from './support/browser'
+import { browseList, logIn, marketCard } from './support/browser'
 
 // [X-1] #448: the browse list gains a few short curated bands above it, each
 // named for the rule it was built from.
@@ -20,11 +20,21 @@ test('the browse list bands its markets, and a search collapses the bands', asyn
     ['Lakers', 'Celtics'],
     { closesInHours: 1 },
   )
+  // A second traded market, so the spec holds on a database with no other
+  // trades: the busiest market is the hero and is left out of every band, so
+  // with one traded market Trending and Closing soon would both be empty.
+  const runnerUp = await publishMarket(
+    admin,
+    `Will ${uniqueName('bs_next')} be traded?`,
+    ['Lakers', 'Celtics'],
+    { closesInHours: 1 },
+  )
   const trader = await registerTrader('bs_trader')
 
   // The trade is what the band is about: before it, `credits_traded` is zero
   // and the market is in no band at all.
   await buy(trader, traded, 'Lakers', '50.0000')
+  await buy(trader, runnerUp, 'Lakers', '20.0000')
 
   await logIn(page, trader)
   await page.goto('/markets')
@@ -34,11 +44,11 @@ test('the browse list bands its markets, and a search collapses the bands', asyn
   await expect(page.getByRole('heading', { name: 'Featured' })).toBeVisible()
   await expect(page.getByText('Busiest market by credits traded', { exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Trending' })).toBeVisible()
-  await expect(page.getByText('Most credits traded')).toBeVisible()
+  await expect(page.getByText('Most credits traded', { exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Browse all' })).toBeVisible()
 
   // The hero is one market, not a band of them.
-  const featuredBand = page.locator('section', { has: page.getByRole('heading', { name: 'Featured' }) })
+  const featuredBand = page.getByRole('region', { name: 'Featured' })
   await expect(featuredBand.getByRole('link')).toHaveCount(1)
 
   // Trending holds real markets, ranked on a figure the ledger maintains as
@@ -46,20 +56,20 @@ test('the browse list bands its markets, and a search collapses the bands', asyn
   // its own traded markets behind, and the band holds the three busiest of
   // them — so asserting that *this* market ranks would be asserting a total,
   // which this suite never does.
-  const trendingBand = page.locator('section', { has: page.getByRole('heading', { name: 'Trending' }) })
+  const trendingBand = page.getByRole('region', { name: 'Trending' })
   await expect(trendingBand.getByRole('link').first()).toBeVisible()
 
   // Closing soon holds markets too, and every market in a band is a market
   // the list below also holds: a band is a shortcut into the list, not a
   // partition of it (AC 5). Checked through the band's own first card, whose
   // question is then looked for outside every band.
-  const closingBand = page.locator('section', { has: page.getByRole('heading', { name: 'Closing soon' }) })
+  const closingBand = page.getByRole('region', { name: 'Closing soon' })
   const bandedQuestion = await closingBand.getByRole('link').first().locator('p').first().innerText()
-  const fullList = page.locator('section', { has: page.getByRole('heading', { name: 'Browse all' }) })
+  const fullList = browseList(page)
   await expect(fullList.getByText(bandedQuestion, { exact: true })).toBeVisible()
 
   // And this run's own market is on the page at all, banded or not.
-  await expect(marketCard(page, traded.question).first()).toBeVisible()
+  await expect(marketCard(page, traded.question)).toBeVisible()
 
   // A search collapses to one plain result list (AC 4), while still finding
   // the market — this drops the bands, not the results.
