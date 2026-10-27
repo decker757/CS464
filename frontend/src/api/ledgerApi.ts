@@ -137,6 +137,18 @@ export interface Position {
   outcome_id: string
   outcome_position: number
   quantity: string
+  /**
+   * The part of `quantity` the trader's own live sell orders of this outcome
+   * hold back, so a sell — instant or a new order — may take
+   * `quantity - reserved_shares` and no more (#410).
+   *
+   * Never null, unlike the same name on an `Order`. The ledger works it out
+   * from the order rows in the same query that reads `quantity`
+   * (ledger_service/service/portfolio.py), so both describe the same moment.
+   * `"0.0000"` where no live sell order holds any, and on a settled row,
+   * since no order on a market with a result is live.
+   */
+  reserved_shares: string
   cost_basis: string
   average_entry_price: string
   // The outcome's marginal price, informational only — not the basis for `value`.

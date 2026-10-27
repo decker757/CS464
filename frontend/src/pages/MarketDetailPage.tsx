@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMyPortfolio, type Order } from '../api/ledgerApi'
+import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
 import PriceFeedStatus from '../components/markets/PriceFeedStatus'
@@ -21,7 +21,6 @@ import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
-import { addCredits } from '../utils/formatCredits'
 import { formatPrice } from '../utils/formatPrice'
 
 // Why trading is closed, for a market that cannot be traded right now.
@@ -39,20 +38,6 @@ function outcomeBannerLabel(status: MarketStatus): string {
   if (status === 'settled') return 'Settled'
   if (status === 'approved') return 'Approved outcome'
   return 'Proposed outcome'
-}
-
-// What the trader's own open sell orders hold back of each outcome, summed:
-// the ledger will not sell those shares a second time
-// (insufficient_shares_held, ledger-service.md), so the panel's sell check
-// stops short of them. A buy reserves credits, and carries null here.
-function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
-  const reserved: Record<string, string> = {}
-  for (const order of orders) {
-    if (order.reserved_shares === null) continue
-    const total = addCredits(reserved[order.outcome_id] ?? '0', order.reserved_shares)
-    if (total !== null) reserved[order.outcome_id] = total
-  }
-  return reserved
 }
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
@@ -98,16 +83,24 @@ export default function MarketDetailPage() {
   const now = useMarketClock(market)
 
   // What the trader holds of each of this market's outcomes, for the sell
-  // clamp ([T-2] #357). The portfolio route carries every market's positions
-  // and names no questions or labels (ledger-service.md), so picking out this
-  // market's is the page's own join.
+  // clamp ([T-2] #357): the whole position, and the part of it their own live
+  // sell orders hold back. Both come off the one portfolio read that already
+  // carries them (#410), so the two can never disagree. The route carries
+  // every market's positions and names no questions or labels
+  // (ledger-service.md), so picking out this market's is the page's own join.
   //
   // Tagged with the market it was read for, like `loaded` above: outcome ids
   // differ between markets, so an untagged map would read as "holds nothing"
   // on the next market until its own read landed, and clamp every sell on
   // that. Null says the holdings are unknown, which clamps nothing at all.
-  const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, string> } | null>(null)
-  const heldByOutcome = held !== null && held.id === id ? held.byOutcome : null
+  const [held, setHeld] = useState<{
+    id: string
+    quantityByOutcome: Record<string, string>
+    reservedByOutcome: Record<string, string>
+  } | null>(null)
+  const heldHere = held !== null && held.id === id ? held : null
+  const heldByOutcome = heldHere?.quantityByOutcome ?? null
+  const reservedByOutcome = heldHere?.reservedByOutcome ?? {}
 
   // The most recent read's own number, so an answer that arrives after a
   // newer one is dropped instead of overwriting it. BalanceContext keeps the
@@ -129,7 +122,11 @@ export default function MarketDetailPage() {
       portfolio => {
         if (requestId !== latestHeldReadRef.current) return
         const mine = portfolio.positions.filter(position => position.market_id === id)
-        setHeld({ id, byOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])) })
+        setHeld({
+          id,
+          quantityByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])),
+          reservedByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.reserved_shares])),
+        })
       },
       // Leave the last known holdings up rather than blanking them, the same
       // way BalanceContext keeps the last balance on a failed refetch.
@@ -147,8 +144,10 @@ export default function MarketDetailPage() {
     setTradesMade(count => count + 1)
   }, [refetchHeld])
 
-  // A placement or a cancel moves credits, or what they reserve, and a
-  // placement that filled also changed the holdings the sell clamp reads.
+  // A placement or a cancel moves credits, or what they reserve. A sell's
+  // reservation is read off the portfolio row (#410), so every sell placement
+  // and cancel changes the holdings the sell clamp reads, not only one that
+  // filled.
   // The balance comes back through BalanceContext, as it does after a trade.
   // Every subscribe ack re-reads all three too, the first one included: a
   // fill whose frame was published before the socket was listening — while
@@ -307,7 +306,7 @@ export default function MarketDetailPage() {
                 outcomes={market.outcomes}
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
-                reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
+                reservedSharesByOutcome={reservedByOutcome}
                 onTraded={handleTraded}
                 onOrderPlaced={handleOrderPlaced}
               />

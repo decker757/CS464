@@ -43,15 +43,20 @@ const baseMarket = {
 }
 
 // The trader's own positions, which the page reads for the sell clamp
-// (#357). `position` carries only the three fields the page joins on.
-function portfolio(positions: { market_id: string; outcome_id: string; quantity: string }[] = []) {
+// (#357). `position` carries only the fields the page reads: the three it
+// joins on, and `reserved_shares` where a test holds some back.
+function portfolio(
+  positions: { market_id: string; outcome_id: string; quantity: string; reserved_shares?: string }[] = [],
+) {
   return {
     user_id: '1',
     account_id: 'acct-1',
     balance: '1000.0000',
     positions_value: '0.0000',
     net_worth: '1000.0000',
-    positions: positions.map(p => ({ ...p, outcome_position: 0, cost_basis: '0.0000', average_entry_price: '0.5000', price: '0.5000', value: '0.0000', unrealized_pnl: '0.0000', result: null, payout: null, state_version: 1 })),
+    // `reserved_shares` defaults to nothing held back, and is never null on a
+    // position (ledger-service.md) — unlike the same name on an order.
+    positions: positions.map(p => ({ reserved_shares: '0.0000', ...p, outcome_position: 0, cost_basis: '0.0000', average_entry_price: '0.5000', price: '0.5000', value: '0.0000', unrealized_pnl: '0.0000', result: null, payout: null, state_version: 1 })),
   }
 }
 
@@ -971,17 +976,19 @@ describe('MarketDetailPage', () => {
       reReadAfterFill.release()
     })
 
-    it('gives the trading panel what the sell orders on this market reserve, so it offers only the rest', async () => {
-      // The join is the page's: the holdings come from the portfolio, the
-      // reservations from the open-orders list. A buy reserves no shares, and
-      // an order on another market belongs to that market's page.
+    // #410: the panel offers `quantity - reserved_shares`, and both figures
+    // come from the portfolio row. The ledger sums the trader's live sell
+    // orders itself, in the statement that reads the position — so the page no
+    // longer adds up the orders list, and the orders here deliberately say a
+    // different thing from the portfolio to prove which one is read.
+    it('offers only the part of the holding the portfolio says is not reserved', async () => {
       server.use(
-        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([{ market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000' }]))),
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([
+          { market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000', reserved_shares: '2.0000' },
+        ]))),
+        // Were the page still summing these, it would offer 4.5000.
         http.get(ORDERS, () => HttpResponse.json({ orders: [
           restingOrder({ id: 'ord-1', side: 'sell', limit_price: '0.7000', quantity: '1.5000', reserved_credits: null, reserved_shares: '1.5000' }),
-          restingOrder({ id: 'ord-2', side: 'sell', limit_price: '0.8000', quantity: '0.5000', reserved_credits: null, reserved_shares: '0.5000' }),
-          restingOrder({ id: 'ord-3', market_id: 'mkt-other', side: 'sell', reserved_credits: null, reserved_shares: '3.0000' }),
-          restingOrder({ id: 'ord-4' }),
         ] })),
       )
       const actor = userEvent.setup()
@@ -989,6 +996,23 @@ describe('MarketDetailPage', () => {
       await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
 
       await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 4.0000 of your 6.0000 shares'))
+    })
+
+    // #451 / #478: a trader whose shares are all held back still holds them,
+    // so the line says so rather than "You don't hold any", which would offer
+    // to buy shares they already own.
+    it('says a fully reserved holding can sell nothing, not that none is held', async () => {
+      server.use(
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([
+          { market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000', reserved_shares: '6.0000' },
+        ]))),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
+
+      await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 6.0000 shares'))
+      expect(screen.queryByText(/don't hold any/i)).not.toBeInTheDocument()
     })
 
     it('re-reads the balance and the holdings, not only the orders, after a reconnect', async () => {
