@@ -31,9 +31,7 @@ export interface BrowseSection {
 const SECTION_SIZE = 3
 
 // What counts as closing soon: long enough to catch a market worth hurrying
-// for. The list below is already soonest first, so this band is its top three
-// within the day — pulled up beside the other bands, where a trader scanning
-// them sees it, rather than a different ranking.
+// for, short enough that the band means "today" rather than "eventually".
 const CLOSING_SOON_HOURS = 24
 
 /** Markets that can still be traded: a band of closed markets helps nobody. */
@@ -134,8 +132,12 @@ export function browseSectionsOf(
       const hoursLeft = (new Date(market.close_time).getTime() - now.getTime()) / 3_600_000
       return hoursLeft <= CLOSING_SOON_HOURS
     })
-    // In the list's own order, which market_service sets soonest first:
-    // market-service.md asks the browser not to re-sort by close time.
+    // Soonest first, sorted here rather than taken from the list: the band's
+    // rule is the order, and the list below need not stay ordered by close
+    // time (#433). market-service.md's case against a browser re-sort is the
+    // early-closed market, and `stillTrading` has dropped every one of those.
+    // By the instant, not the text, which a written offset would misorder.
+    .sort((left, right) => new Date(left.close_time).getTime() - new Date(right.close_time).getTime())
     .slice(0, SECTION_SIZE)
 
   // Most traded first. A market nobody has traded is left out rather than

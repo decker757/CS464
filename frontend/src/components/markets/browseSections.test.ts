@@ -90,20 +90,37 @@ describe('browseSectionsOf', () => {
     expect(sections[0].rule).toBeTruthy()
   })
 
-  // The list arrives in market_service's order, soonest close first among the
-  // markets still trading, and market-service.md says to keep it rather than
-  // re-sort by `close_time` in the browser. The band takes the list's order,
-  // so it agrees with the list below it whatever that order becomes.
-  it('puts a market closing within the day in Closing soon, in the order the list gave', () => {
+  // Soonest first is what the band is about, so it sorts for itself rather than
+  // borrowing the list's order: #448 is what lets the list stop being ordered by
+  // close time (#433), and a band that followed it would then show three
+  // markets closing within the day without the one closing in ten minutes.
+  // Only markets still trading are here, so the early-closed market that
+  // market-service.md warns a browser re-sort would misplace never is.
+  it('puts a market closing within the day in Closing soon, soonest first', () => {
     const markets = [
-      market('first_listed', '2026-10-26T06:00:00Z'),
-      market('second_listed', '2026-10-25T18:00:00Z'),
+      market('later', '2026-10-26T06:00:00Z'),
+      market('sooner', '2026-10-25T18:00:00Z'),
       market('next_month', '2026-11-25T12:00:00Z'),
     ]
 
     const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
 
-    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['first_listed', 'second_listed'])
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['sooner', 'later'])
+  })
+
+  // By the instant, not the text: an offset written out is the same moment as
+  // the Z it stands for, and a string order would put it in the wrong place.
+  it('orders Closing soon by the moment, whatever the offset is written as', () => {
+    // 13:00Z and 14:00Z, listed the wrong way round; as text, "T14" sorts
+    // before "T21" and would keep them so.
+    const markets = [
+      market('written_in_utc', '2026-10-25T14:00:00Z'),
+      market('written_with_offset', '2026-10-25T21:00:00+08:00'),
+    ]
+
+    const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
+
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['written_with_offset', 'written_in_utc'])
   })
 
   // The window is a day, edge included: a market closing in exactly 24 hours
@@ -173,27 +190,31 @@ describe('browseSectionsOf', () => {
 
   // A market's move is its largest outcome's move. Only on a binary book is
   // the second outcome the first one's mirror: on three outcomes the first can
-  // sit still while the other two trade places.
-  it('measures a move on every outcome, not only the first', () => {
-    const threeWay: PublicMarketSummary = {
-      ...market('three_way', FAR_OFF),
-      outcomes: [
-        { id: 'three_way-0', position: 0, label: 'Home' },
-        { id: 'three_way-1', position: 1, label: 'Draw' },
-        { id: 'three_way-2', position: 2, label: 'Away' },
-      ],
-    }
-    const prices = (home: string, draw: string, away: string) => [
-      { outcome_id: 'three_way-0', position: 0, price: home },
-      { outcome_id: 'three_way-1', position: 1, price: draw },
-      { outcome_id: 'three_way-2', position: 2, price: away },
-    ]
-    const snapshots = new Map([['three_way', { ...snapshot('three_way'), prices: prices('0.3300', '0.6000', '0.0700') }]])
-    const figures = new Map([['three_way', { credits_traded: '80.0000', prices_7d_ago: prices('0.3300', '0.3400', '0.3300') }]])
+  // sit still while the other two trade places. Two markets whose order turns
+  // on that: `swing` moved 0.05, 0.30 and 0.10, `drift` 0.20 on every outcome,
+  // so the first, the last and the sum of the moves all rank `drift` first.
+  it('ranks a move by its largest outcome, on markets of three outcomes', () => {
+    const threeWay = (id: string): PublicMarketSummary => ({
+      ...market(id, FAR_OFF),
+      outcomes: [0, 1, 2].map(position => ({ id: `${id}-${position}`, position, label: `Outcome ${position}` })),
+    })
+    const pricesOf = (id: string, three: [string, string, string]) =>
+      three.map((price, position) => ({ outcome_id: `${id}-${position}`, position, price }))
+    const reads = (id: string, now: [string, string, string], weekAgo: [string, string, string]) => ({
+      snapshot: { ...snapshot(id), prices: pricesOf(id, now) },
+      figures: { credits_traded: '80.0000', prices_7d_ago: pricesOf(id, weekAgo) },
+    })
+    const swing = reads('swing', ['0.3800', '0.0400', '0.4300'], ['0.3300', '0.3400', '0.3300'])
+    const drift = reads('drift', ['0.5300', '0.1400', '0.5300'], ['0.3300', '0.3400', '0.3300'])
 
-    const sections = browseSectionsOf([threeWay], snapshots, figures, NOW)
+    const sections = browseSectionsOf(
+      [threeWay('drift'), threeWay('swing')],
+      new Map([['swing', swing.snapshot], ['drift', drift.snapshot]]),
+      new Map([['swing', swing.figures], ['drift', drift.figures]]),
+      NOW,
+    )
 
-    expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['three_way'])
+    expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['swing', 'drift'])
   })
 
   // ledger-service.md: `prices_7d_ago` is null when there is no change to
