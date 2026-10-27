@@ -126,7 +126,6 @@ export async function registerAdmin(label: string): Promise<Session> {
   return logInThroughApi(trader.username)
 }
 
-
 /**
  * Runs one UPDATE as the superuser, the way a first admin is made by hand, and
  * checks it changed exactly one row.
