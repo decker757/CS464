@@ -205,16 +205,16 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
   // StrictMode's discarded first mount sent still lands.
   const firstReadPastCap = useRef(new Set<string>())
   const followedIds = new Set(followed)
-  const unreadPastCap = markets
+  const pastCap = markets
     .map(market => market.id)
-    .filter(id => !followedIds.has(id) && !firstReadPastCap.current.has(id))
+    .filter(id => !followedIds.has(id))
     .join(',')
   useEffect(() => {
-    if (!unreadPastCap) return
-    const ids = unreadPastCap.split(',').filter(id => !firstReadPastCap.current.has(id))
-    for (const id of ids) firstReadPastCap.current.add(id)
-    readSnapshots(applySnapshot, ids)
-  }, [unreadPastCap, readSnapshots, applySnapshot])
+    if (!pastCap) return
+    const unread = pastCap.split(',').filter(id => !firstReadPastCap.current.has(id))
+    for (const id of unread) firstReadPastCap.current.add(id)
+    readSnapshots(applySnapshot, unread)
+  }, [pastCap, readSnapshots, applySnapshot])
 
   // The markets the socket is *not* carrying, re-read on the timer: the ones
   // past the subscription ceiling, every market while the socket is away, and
