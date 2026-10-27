@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getMyPortfolio, type Position } from '../api/ledgerApi'
 
 export interface MyPositions {
@@ -14,8 +14,6 @@ export interface MyPositions {
    * portfolio table has to.
    */
   positionsByMarket: Map<string, Position[]>
-  /** Reads the portfolio again — after a trade, or a card's retry. */
-  refetch: () => void
 }
 
 // Every position the signed-in trader holds, for the browse list's cards
@@ -33,13 +31,10 @@ export interface MyPositions {
 // trader trades, and the pages that let them trade re-read it themselves.
 export function useMyPositions(): MyPositions {
   const [positionsByMarket, setPositionsByMarket] = useState<Map<string, Position[]>>(new Map())
-  // Bumped by `refetch`, and read by the effect below, which is what asks the
-  // ledger again.
-  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
-    // Set by the cleanup, so an answer for a page the trader has left — or a
-    // read a newer one has replaced — cannot write into it.
+    // Set by the cleanup, so an answer for a page the trader has left cannot
+    // write into it.
     let cancelled = false
 
     getMyPortfolio().then(
@@ -60,9 +55,7 @@ export function useMyPositions(): MyPositions {
     )
 
     return () => { cancelled = true }
-  }, [attempt])
+  }, [])
 
-  const refetch = useCallback(() => setAttempt(count => count + 1), [])
-
-  return { positionsByMarket, refetch }
+  return { positionsByMarket }
 }
