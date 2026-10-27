@@ -114,9 +114,10 @@ describe('OpenOrdersList', () => {
   })
 
   // A second cancel of the same order is one the ledger answers
-  // `order_already_cancelled` (ledger-service.md), so the control refuses while
-  // one is on its way. The handler waits on a promise this test releases, so
-  // "in flight" holds however slow the machine is (#489).
+  // `order_already_cancelled` (ledger-service.md), and the list shows that as
+  // "already cancelled" over the cancel that worked — so the control refuses
+  // while one is on its way. The handler waits on a promise this test
+  // releases, so "in flight" holds however slow the machine is (#489).
   it('does not send a second cancel while one is in flight', async () => {
     const { held, release } = holdUntilReleased()
     let calls = 0
