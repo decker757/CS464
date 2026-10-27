@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { getMyPortfolio, type Order } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
+import PriceFeedStatus from '../components/markets/PriceFeedStatus'
 import { formatCloseCountdown, type MarketStatus } from '../components/markets/marketStatus'
 import OpenOrdersList from '../components/markets/OpenOrdersList'
 import PriceHistorySection from '../components/markets/PriceHistorySection'
@@ -297,15 +298,7 @@ export default function MarketDetailPage() {
             })}
           </div>
 
-          {(priceStatus === 'reconnecting' || priceStatus === 'degraded') && (
-            <div
-              role="status"
-              className={`mb-6 flex items-center gap-2 text-xs font-medium ${priceStatus === 'degraded' ? 'text-danger' : 'text-warning-strong'}`}
-            >
-              <span className={`h-2 w-2 shrink-0 rounded-full ${priceStatus === 'degraded' ? 'bg-danger' : 'animate-pulse bg-warning'}`} />
-              {priceStatus === 'reconnecting' ? 'Reconnecting to live prices…' : 'Live prices unavailable.'}
-            </div>
-          )}
+          <PriceFeedStatus status={priceStatus} className="mb-6" />
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (

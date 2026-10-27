@@ -29,11 +29,35 @@ interface PriceProps {
 }
 
 function renderCard(market: PublicMarketSummary, prices: PriceProps = {}) {
-  render(
+  const view = render(
     <MemoryRouter>
       <MarketCard market={market} {...prices} />
     </MemoryRouter>,
   )
+  // Re-renders with a new snapshot, the way the list does when a price frame
+  // arrives on the socket ([X-1] #444).
+  return {
+    repriceWith(next: PriceState) {
+      view.rerender(
+        <MemoryRouter>
+          <MarketCard market={market} {...prices} snapshot={next} />
+        </MemoryRouter>,
+      )
+    },
+  }
+}
+
+// A snapshot pricing this market's two outcomes, at a given book version.
+function pricedAt(version: number, yes: string, no: string): PriceState {
+  return {
+    market_id: 'm1',
+    state_version: version,
+    prices: [
+      { outcome_id: 'm1-0', position: 0, price: yes },
+      { outcome_id: 'm1-1', position: 1, price: no },
+    ],
+    occurred_at: '2026-10-18T11:59:00Z',
+  }
 }
 
 describe('MarketCard', () => {
@@ -123,4 +147,60 @@ it("names a market being resolved in the trader's words", () => {
 
   expect(screen.getByText('Resolving')).toBeInTheDocument()
   expect(screen.queryByText('Pending')).not.toBeInTheDocument()
+})
+
+// [X-1] #444 AC 3: a price that changes is visibly marked as having changed,
+// and the cue is not colour alone. The arrow is the half that survives a
+// trader who cannot tell the two tints apart, and the accessible name is the
+// half that survives not seeing the card at all.
+describe('a price that has just moved', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('marks the outcome that rose, in words and not only in colour', () => {
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    act(() => repriceWith(pricedAt(2, '0.6200', '0.3800')))
+
+    // Said in words, for a screen reader and for the colour-blind case.
+    expect(screen.getByLabelText('Yes price rose')).toHaveTextContent('62.0%')
+    expect(screen.getByLabelText('No price fell')).toHaveTextContent('38.0%')
+    // And drawn as a shape, not only as a tint.
+    expect(screen.getByLabelText('Yes price rose')).toHaveTextContent('▲')
+    expect(screen.getByLabelText('No price fell')).toHaveTextContent('▼')
+  })
+
+  // Every card would flash on load otherwise, which says "everything just
+  // changed" on a page where nothing has.
+  it('does not mark the first price it is given', () => {
+    renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    expect(screen.getByLabelText('Yes price')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Yes price rose')).not.toBeInTheDocument()
+  })
+
+  // A repaint that does not move the number is not an event. The list re-reads
+  // every still-trading market twice a minute, so most repaints are this.
+  it('does not mark a price that was re-read unchanged', () => {
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    act(() => repriceWith(pricedAt(2, '0.5000', '0.5000')))
+
+    expect(screen.getByLabelText('Yes price')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/rose|fell/)).not.toBeInTheDocument()
+  })
+
+  // The cue is temporary: two trades in quick succession have to read as two
+  // events, not as one that never ends.
+  it('stops marking the price after a moment', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    act(() => repriceWith(pricedAt(2, '0.6200', '0.3800')))
+    expect(screen.getByLabelText('Yes price rose')).toBeInTheDocument()
+
+    act(() => { vi.advanceTimersByTime(2_000) })
+
+    expect(screen.getByLabelText('Yes price')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Yes price rose')).not.toBeInTheDocument()
+  })
 })
