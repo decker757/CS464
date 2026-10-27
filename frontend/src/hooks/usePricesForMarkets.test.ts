@@ -176,6 +176,29 @@ describe('usePricesForMarkets', () => {
     expect([...asked[0]].sort()).toEqual(['m1', 'm2', 'm3'])
   })
 
+  // [X-1] #432 and #444 AC 4: the acks for a page arrive as one frame per
+  // market, and each is a reason to read that market again. Read one at a
+  // time, a page of fifty is fifty-one batch requests on every load and every
+  // reconnect — the per-card round #432 removed — so the acks are read
+  // together once the socket has heard back about every subscribe it sent.
+  it('reads the markets a burst of acks names in one request, not one per ack', async () => {
+    const asked: string[][] = []
+    server.use(http.post(BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      asked.push(ids)
+      return HttpResponse.json({ snapshots: ids.map(id => snapshotPriced('0.6000', id)) })
+    }))
+    const pageOfThree = marketsNumbered(1, 4)
+
+    const { result } = renderHook(() => usePricesForMarkets(pageOfThree))
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(3))
+    await connectAndAck()
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(asked).toHaveLength(2)
+    expect([...asked[1]].sort()).toEqual(['m1', 'm2', 'm3'])
+  })
+
   // [X-1] #444 AC 1: one socket per page, following every market rendered.
   it('subscribes every rendered market on one socket', async () => {
     serveChangingPrices(['0.6000'])
