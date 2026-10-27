@@ -28,7 +28,7 @@ export interface HeldOutcome {
  * enhancement here.
  */
 export function heldOutcomesOf(positions: Position[] | undefined, outcomes: PublicOutcome[]): HeldOutcome[] {
-  if (!positions || positions.length === 0) return []
+  if (!positions) return []
 
   const held: HeldOutcome[] = []
   for (const outcome of outcomes) {

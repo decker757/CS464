@@ -55,12 +55,16 @@ export interface MarketSnapshot extends PriceState {
   credits_traded: string
 }
 
+// The batch route's own limit (`MAX_SNAPSHOT_IDS` in the ledger's schemas.py).
+const MAX_SNAPSHOT_IDS = 200
+
 /**
  * The current prices of many markets in one request ([X-1] #432).
  *
- * At most 200 ids — market_service's largest page, so one page of the browse
- * list always fits. A 201st is a 422 naming `market_ids` rather than a short
- * answer, so a caller with more than that splits the request.
+ * At most 200 ids go in one request — market_service's largest page, so one
+ * page of the browse list always fits. A 201st is a 422 naming `market_ids`
+ * rather than a short answer, so a longer list is sent here as several
+ * requests and answered as one: a browse list grows past 200 by Load more.
  *
  * A market is absent from the answer rather than erroring when this service
  * holds no book for it — an unknown id, a draft, and a published market
@@ -70,11 +74,16 @@ export interface MarketSnapshot extends PriceState {
  * answers it. An empty list is a request worth not sending.
  */
 export async function getMarketSnapshots(marketIds: string[]): Promise<MarketSnapshot[]> {
-  const res = await api.post<{ snapshots: MarketSnapshot[] }>(
-    `${LEDGER_BASE}/ledger/markets/snapshots`,
-    { market_ids: marketIds },
-  )
-  return res.data.snapshots
+  const requests: Promise<MarketSnapshot[]>[] = []
+  for (let start = 0; start < marketIds.length; start += MAX_SNAPSHOT_IDS) {
+    const chunk = marketIds.slice(start, start + MAX_SNAPSHOT_IDS)
+    requests.push(
+      api.post<{ snapshots: MarketSnapshot[] }>(`${LEDGER_BASE}/ledger/markets/snapshots`, { market_ids: chunk })
+        .then(res => res.data.snapshots),
+    )
+  }
+  const answers = await Promise.all(requests)
+  return answers.flat()
 }
 
 export interface Balance {
