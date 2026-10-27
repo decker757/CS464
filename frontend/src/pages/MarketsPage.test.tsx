@@ -1265,6 +1265,28 @@ describe('the trader\'s own position on a card', () => {
     expect(reads).toBeLessThanOrEqual(2)
   })
 
+  // The same read serves every list the filters make. A status, a search or a
+  // closing preset is a new list (MarketsPage keys it), and the trader's
+  // holdings did not change because they narrowed what they were looking at.
+  it('does not read the portfolio again when a filter changes the list', async () => {
+    let reads = 0
+    server.use(
+      http.get(PORTFOLIO, () => {
+        reads += 1
+        return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    const readsOnLoad = reads
+
+    await actor.click(screen.getByRole('radio', { name: 'Open' }))
+
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    expect(reads).toBe(readsOnLoad)
+  })
+
   // AC 5: the position is an enhancement on a card whose job is the price, so
   // a portfolio the ledger will not answer must not take the list down.
   it('still renders the list, prices and all, when the portfolio read fails', async () => {
