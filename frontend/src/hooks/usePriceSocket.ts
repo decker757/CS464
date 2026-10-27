@@ -32,7 +32,9 @@ export interface PriceSocketOptions {
   onOrderFrame?: (frame: OrderFrame) => void
   /**
    * Called with the markets this socket has just subscribed to, the first ack
-   * included. Frames published before an ack never reached this socket —
+   * included, once the relay has answered every subscribe outstanding — so a
+   * burst of acks arrives here as one call. Frames published before an ack
+   * never reached this socket —
    * while a dropped connection was away, or between the caller's own read and
    * the ack — so a caller that tracks state re-reads those markets here
    * ([X-4] #37's recovery path, realtime-service.md "Reconnecting").
@@ -277,6 +279,14 @@ export function usePriceSocket(
             onRefusedRef.current?.([refused])
           }
           // A refusal is an answer too, and may be the last one outstanding.
+          reportAcked()
+        } else if (msg.type === 'error' && msg.error?.code === 'invalid_market_id') {
+          // A market id the relay could not read answers its subscribe as
+          // surely as an ack does, and the acks after it wait for every
+          // subscribe to be answered. Nothing falls back to polling for it: an
+          // id the relay cannot parse is one the ledger cannot price either.
+          const rejected = pendingRef.current.shift()
+          if (rejected !== undefined) subscribedRef.current.delete(rejected)
           reportAcked()
         }
       }
