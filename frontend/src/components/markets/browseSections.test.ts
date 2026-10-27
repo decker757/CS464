@@ -167,6 +167,31 @@ describe('browseSectionsOf', () => {
     expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['fell', 'rose', 'crept'])
   })
 
+  // A market's move is its largest outcome's move. Only on a binary book is
+  // the second outcome the first one's mirror: on three outcomes the first can
+  // sit still while the other two trade places.
+  it('measures a move on every outcome, not only the first', () => {
+    const threeWay: PublicMarketSummary = {
+      ...market('three_way', FAR_OFF),
+      outcomes: [
+        { id: 'three_way-0', position: 0, label: 'Home' },
+        { id: 'three_way-1', position: 1, label: 'Draw' },
+        { id: 'three_way-2', position: 2, label: 'Away' },
+      ],
+    }
+    const prices = (home: string, draw: string, away: string) => [
+      { outcome_id: 'three_way-0', position: 0, price: home },
+      { outcome_id: 'three_way-1', position: 1, price: draw },
+      { outcome_id: 'three_way-2', position: 2, price: away },
+    ]
+    const snapshots = new Map([['three_way', { ...snapshot('three_way'), prices: prices('0.3300', '0.6000', '0.0700') }]])
+    const figures = new Map([['three_way', { credits_traded: '80.0000', prices_7d_ago: prices('0.3300', '0.3400', '0.3300') }]])
+
+    const sections = browseSectionsOf([threeWay], snapshots, figures, NOW)
+
+    expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['three_way'])
+  })
+
   // ledger-service.md: `prices_7d_ago` is null when there is no change to
   // measure — never traded, traded only within the week, or a price the ledger
   // could not rebuild. No delta is shown, so the market is in no movers band.
