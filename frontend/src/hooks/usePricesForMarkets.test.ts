@@ -199,6 +199,37 @@ describe('usePricesForMarkets', () => {
     expect([...asked[1]].sort()).toEqual(['m1', 'm2', 'm3'])
   })
 
+  // [X-1] #444 AC 4: the snapshot is first paint for every card, not only for
+  // the fifty the socket follows. A card past the follow cap that waited for
+  // the timer would say "Loading prices…" for half a minute.
+  it('prices every card on first paint, past the markets the socket follows', async () => {
+    serveChangingPrices(['0.6000'])
+    const fiftyOne = marketsNumbered(0, 51)
+
+    const { result } = renderHook(() => usePricesForMarkets(fiftyOne))
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(51))
+  })
+
+  // The batch route takes at most 200 ids and refuses a 201st with a 422
+  // (ledger-service.md). Load more appends past that, and every market the
+  // socket is not carrying is read on the timer, so a long list has to go as
+  // several requests or every one of its reads fails.
+  it('splits a read of more than 200 markets into requests the batch route accepts', async () => {
+    const asked: string[][] = []
+    server.use(http.post(BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      asked.push(ids)
+      return HttpResponse.json({ snapshots: ids.map(id => snapshotPriced('0.6000', id)) })
+    }))
+    const longList = marketsNumbered(0, 201)
+
+    const { result } = renderHook(() => usePricesForMarkets(longList))
+
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(201))
+    expect(asked.map(ids => ids.length).sort((left, right) => right - left)).toEqual([200, 1])
+  })
+
   // [X-1] #444 AC 1: one socket per page, following every market rendered.
   it('subscribes every rendered market on one socket', async () => {
     serveChangingPrices(['0.6000'])
