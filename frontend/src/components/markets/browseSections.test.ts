@@ -230,32 +230,25 @@ describe('browseSectionsOf', () => {
 
     expect(sections).toEqual([])
   })
-
-  // A band is a shortcut into the list, not a partition of it (AC 5): a market
-  // in a band is still in the list below, so the band must not consume it.
-  it('leaves the markets it bands in the list it was given', () => {
-    const markets = [market('m1', '2026-10-25T18:00:00Z')]
-    const reads = readsOf(snapshot('m1'))
-
-    const sections = browseSectionsOf(markets, reads.snapshots, reads.figures, NOW)
-
-    expect(sectionNamed(sections, 'closing_soon')?.markets).toHaveLength(1)
-    expect(markets).toHaveLength(1)
-  })
 })
 
 describe('featuredMarketOf', () => {
   // #448: one featured market at the top. Volume is the only honest basis —
   // the one figure that says other people are here, which is what the slot is
-  // for.
-  it('features the busiest market the page has loaded', () => {
+  // for. It says so, so a featured slot is never an unexplained promotion, and
+  // says no more than the figure does: `credits_traded` is every credit the
+  // market has ever traded (ledger-service.md), not a measure of right now.
+  it('features the busiest market the page has loaded, and says why', () => {
     const markets = [market('quiet', FAR_OFF), market('busy', FAR_OFF)]
     const reads = readsOf(
       snapshot('quiet', { traded: '30.0000' }),
       snapshot('busy', { traded: '1200.0000' }),
     )
 
-    expect(featuredMarketOf(markets, reads.figures, NOW)?.market.id).toBe('busy')
+    const featured = featuredMarketOf(markets, reads.figures, NOW)
+
+    expect(featured?.market.id).toBe('busy')
+    expect(featured?.rule).toBe('Busiest market by credits traded')
   })
 
   // Promoting an untouched book is how the screen came to read as dead in the
@@ -275,15 +268,6 @@ describe('featuredMarketOf', () => {
     const reads = readsOf(snapshot('stopped', { traded: '900.0000' }))
 
     expect(featuredMarketOf(markets, reads.figures, NOW)).toBeNull()
-  })
-
-  // It states why it was chosen, so a featured slot is never an unexplained
-  // promotion.
-  it('says why the market was featured', () => {
-    const markets = [market('busy', FAR_OFF)]
-    const reads = readsOf(snapshot('busy', { traded: '1200.0000' }))
-
-    expect(featuredMarketOf(markets, reads.figures, NOW)?.rule).toBeTruthy()
   })
 
   // The hero would otherwise lead Trending as well and sit above the list

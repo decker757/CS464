@@ -1434,7 +1434,7 @@ describe('the curated sections above the list', () => {
 
     const featured = await screen.findByRole('heading', { name: 'Featured' })
     expect(featured).toBeInTheDocument()
-    expect(screen.getByText('Most traded right now')).toBeInTheDocument()
+    expect(screen.getByText('Busiest market by credits traded')).toBeInTheDocument()
     // The only traded market is the hero, so Trending has nothing left and
     // disappears rather than repeating it directly underneath.
     expect(screen.queryByRole('heading', { name: 'Trending' })).not.toBeInTheDocument()
