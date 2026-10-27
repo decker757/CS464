@@ -113,15 +113,10 @@ describe('OpenOrdersList', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  // A second cancel would release the same credits twice over as far as the
-  // screen is concerned, and the ledger answers the replay `order_not_open`
-  // — so the control refuses while one is on its way.
-  //
-  // The in-flight window is the test's own, not a timer's: the handler waits
-  // on a promise this test releases, so "while one is in flight" means exactly
-  // that however slow the machine is. Held open with a 50ms timer, the first
-  // cancel could answer before the second click landed under load, the button
-  // would re-enable, and a passing guard would look like a bug (#489).
+  // A second cancel of the same order is one the ledger answers
+  // `order_already_cancelled` (ledger-service.md), so the control refuses while
+  // one is on its way. The handler waits on a promise this test releases, so
+  // "in flight" holds however slow the machine is (#489).
   it('does not send a second cancel while one is in flight', async () => {
     const { held, release } = holdUntilReleased()
     let calls = 0
@@ -130,7 +125,7 @@ describe('OpenOrdersList', () => {
       await held
       return HttpResponse.json({ order: order({ status: 'cancelled' }), released_credits: '15.0000', released_shares: null })
     }))
-    const { actor } = renderList()
+    const { actor, onCancelled } = renderList()
     const button = screen.getByRole('button', { name: /cancel/i })
 
     await actor.click(button)
@@ -138,14 +133,13 @@ describe('OpenOrdersList', () => {
     // click below a click during the window rather than after it.
     await waitFor(() => expect(calls).toBe(1))
     expect(button).toBeDisabled()
-
     await actor.click(button)
 
-    expect(calls).toBe(1)
-
-    // And the control comes back once the cancel has answered, so the guard
-    // is a window and not a one-way latch.
+    // The control comes back once the cancel has answered — a window, not a
+    // one-way latch — and by then any second request would have been counted.
     release()
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancelling…' })).not.toBeInTheDocument())
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(calls).toBe(1)
+    expect(onCancelled).toHaveBeenCalledTimes(1)
   })
 })
