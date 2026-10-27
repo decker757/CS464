@@ -70,10 +70,12 @@ test('coming back from a market returns the browse list to where it was', async 
   //
   // This wait is a guess at #502's cause, not a confirmed fix. The flake never
   // reproduced locally: 20 runs, and 20 more each under four workers, under
-  // eight busy cores and with the batch snapshot delayed. And in the CI
-  // failure the viewport check below retried for its whole five seconds with
-  // the card at ratio 0. A restore that was only late would have passed inside
-  // that time, so the page may be restoring to the wrong offset instead.
+  // eight busy cores and with the batch snapshot delayed. And in both CI
+  // failures the viewport check below retried for its whole five seconds with
+  // the card at ratio 0, in runs of 6.4s and 7.4s from start to finish. So
+  // the list had settled well inside ScrollRestoration's RESTORE_WINDOW_MS,
+  // and a restore that was only late would have passed inside those five
+  // seconds; the page may be restoring to the wrong offset instead.
   for (const question of questions) {
     await expect(marketCard(page, question).getByText(/no trades yet/i)).toBeVisible()
   }
