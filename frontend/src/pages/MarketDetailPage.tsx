@@ -40,10 +40,6 @@ function outcomeBannerLabel(status: MarketStatus): string {
   return 'Proposed outcome'
 }
 
-// What the panel is told is held back while the holdings are unknown: nothing.
-// One identity, so the panel's props do not change on every render.
-const NOTHING_RESERVED: Record<string, string> = {}
-
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
   return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
 }
@@ -104,7 +100,7 @@ export default function MarketDetailPage() {
   } | null>(null)
   const heldHere = held !== null && held.id === id ? held : null
   const heldByOutcome = heldHere?.quantityByOutcome ?? null
-  const reservedByOutcome = heldHere?.reservedByOutcome ?? NOTHING_RESERVED
+  const reservedByOutcome = heldHere?.reservedByOutcome ?? {}
 
   // The most recent read's own number, so an answer that arrives after a
   // newer one is dropped instead of overwriting it. BalanceContext keeps the
@@ -149,8 +145,8 @@ export default function MarketDetailPage() {
   }, [refetchHeld])
 
   // A placement or a cancel moves credits, or what they reserve. A sell's
-  // reservation is read off the portfolio row (#410), so every placement and
-  // cancel changes the holdings the sell clamp reads, not only one that
+  // reservation is read off the portfolio row (#410), so every sell placement
+  // and cancel changes the holdings the sell clamp reads, not only one that
   // filled.
   // The balance comes back through BalanceContext, as it does after a trade.
   // Every subscribe ack re-reads all three too, the first one included: a
