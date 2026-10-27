@@ -81,13 +81,14 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
   // longer trade can no longer move its book either, and the whole card is a
   // frozen read at that point (the list's own "Prices updated" line says when).
   const lastTradeAgo = snapshot && !hasNeverTraded ? formatTimeAgo(snapshot.occurred_at, now) : null
+  // What the trader holds here. The join is a lookup, not a fetch: the card
+  // already has its outcomes.
+  const heldOutcomes = heldOutcomesOf(positions, market.outcomes)
   // A card with no snapshot is waiting for one or has been refused one, and
   // those are different things to a trader: one is worth waiting out, the
   // other is worth a retry (#431). A failed refresh of a market that already
   // has a price is not either — the card keeps the price it had, and the
   // list's "Prices updated" line is what goes stale.
-  // The join is a lookup, not a fetch: the card already has its outcomes.
-  const heldOutcomes = heldOutcomesOf(positions, market.outcomes)
   const isLoadingPrices = !snapshot && !priceReadFailed
   const hasFailedPrices = !snapshot && priceReadFailed
 
