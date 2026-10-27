@@ -102,6 +102,26 @@ describe('browseSectionsOf', () => {
     expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['sooner', 'later'])
   })
 
+  // The window is a day, edge included: a market closing in exactly 24 hours
+  // is closing soon, and one closing an hour later is not.
+  it('bands a market closing in exactly 24 hours, and not one closing in 25', () => {
+    const markets = [market('edge', '2026-10-26T12:00:00Z'), market('past_edge', '2026-10-26T13:00:00Z')]
+
+    const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
+
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['edge'])
+  })
+
+  // A band is a shortcut, not a second copy of the list: three cards at most,
+  // however many qualify.
+  it('holds at most three markets in a band', () => {
+    const markets = ['a', 'b', 'c', 'd'].map(id => market(id, '2026-10-25T18:00:00Z'))
+
+    const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
+
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['a', 'b', 'c'])
+  })
+
   // #447 exists so "trending" is a real figure rather than a confident name on
   // an arbitrary order. A market nobody has traded is not trending at zero.
   it('ranks Trending by credits traded and leaves out an untraded market', () => {
