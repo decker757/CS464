@@ -335,6 +335,45 @@ describe('usePricesForMarkets', () => {
     expect(reads.count).toBe(afterSubscribe)
   })
 
+  // [X-1] #444 AC 5: a socket that has dropped carries nothing, so the markets
+  // it was following go back on the timer until it is connected again. A
+  // market counted as pushed while nothing can push it is the silently frozen
+  // list the criterion rules out.
+  it('keeps reading the prices on the timer while the socket is away', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const reads = serveChangingPrices(['0.6000'])
+
+    const { result } = renderHook(() => usePricesForMarkets(TRADING))
+    await connectAndAck()
+    await act(async () => { latestSocket().serverClose(1006) })
+    await waitFor(() => expect(result.current.status).toBe('reconnecting'))
+    const whileAway = reads.count
+
+    await act(async () => { vi.advanceTimersByTime(PRICE_REFRESH_MS) })
+
+    await waitFor(() => expect(reads.count).toBeGreaterThan(whileAway))
+  })
+
+  // A browser socket cannot send a fresh token, so when the relay closes for
+  // an expired one (4408) something has to go through the axios interceptor
+  // before the reconnect, or every retry is refused the same way. The detail
+  // page does this already; the list follows markets on the same socket.
+  it('refreshes the session before reconnecting when the token expired', async () => {
+    serveChangingPrices(['0.6000'])
+    let singleReads = 0
+    server.use(http.get(SNAPSHOT, () => {
+      singleReads += 1
+      return HttpResponse.json(snapshotPriced('0.6000'))
+    }))
+
+    renderHook(() => usePricesForMarkets(TRADING))
+    await connectAndAck()
+    await act(async () => { latestSocket().serverClose(4408) })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2), { timeout: 3000 })
+
+    expect(singleReads).toBe(1)
+  })
+
   // [X-1] #444 AC 1 and AC 3: a price frame repaints the card it names, and
   // nothing else, without waiting for the timer.
   it('applies a price frame to the market it names', async () => {
