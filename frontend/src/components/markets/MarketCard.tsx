@@ -1,12 +1,14 @@
 import { Link } from 'react-router-dom'
-import type { PriceState } from '../../api/ledgerApi'
+import type { Position, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import { useMarketClock } from '../../hooks/useMarketClock'
 import { usePriceMovements } from '../../hooks/usePriceMovements'
 import { formatTimeAgo } from '../../utils/formatDateTime'
 import { formatPrice } from '../../utils/formatPrice'
+import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
+import { heldOutcomesOf } from './holdings'
 import { formatCloseCountdown, tradingStopped } from './marketStatus'
 import { movementLabel, type PriceMovement } from './priceMovement'
 import StatusBadge from './StatusBadge'
@@ -19,6 +21,12 @@ interface MarketCardProps {
   priceReadFailed?: boolean
   /** Reads this market's snapshot again, behind the Retry control. */
   onRetryPrice?: () => void
+  /**
+   * The trader's own positions in this market, from the page's one portfolio
+   * read ([X-1] #450). Undefined for a market they hold nothing in, which is
+   * most of them, and for a portfolio read that failed.
+   */
+  positions?: Position[]
 }
 
 // What a market nobody has traded says instead of a price. An untouched LMSR
@@ -53,7 +61,7 @@ function movementTint(movement: PriceMovement | undefined): string {
   return 'bg-smu-cream'
 }
 
-export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice }: MarketCardProps) {
+export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice, positions }: MarketCardProps) {
   // The card keeps a clock for its countdown, and stops it once the market
   // has stopped trading (useMarketClock).
   const now = useMarketClock(market)
@@ -74,6 +82,9 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
   // longer trade can no longer move its book either, and the whole card is a
   // frozen read at that point (the list's own "Prices updated" line says when).
   const lastTradeAgo = snapshot && !hasNeverTraded ? formatTimeAgo(snapshot.occurred_at, now) : null
+  // What the trader holds here. The join is a lookup, not a fetch: the card
+  // already has its outcomes.
+  const heldOutcomes = heldOutcomesOf(positions, market.outcomes)
   // A card with no snapshot is waiting for one or has been refused one, and
   // those are different things to a trader: one is worth waiting out, the
   // other is worth a retry (#431). A failed refresh of a market that already
@@ -134,6 +145,18 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
             )
           })}
         </div>
+        {/* What the trader holds here, which turns a catalogue into their own
+            markets ([X-1] #450). Nothing renders for a market they hold
+            nothing in: an empty slot or a dash would make fifty untouched
+            cards noisier rather than more personal (AC 2). */}
+        {heldOutcomes.length > 0 && (
+          <p className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-secondary">
+            <span>You hold</span>
+            {heldOutcomes.map(held => (
+              <Badge key={held.outcomeId} tone="info" wraps>{held.quantity} {held.label}</Badge>
+            ))}
+          </p>
+        )}
         {hasNeverTraded && (
           <p className="mt-3 text-xs text-secondary">{hasStopped ? UNTRADED_AND_STOPPED : UNTRADED_INVITATION}</p>
         )}

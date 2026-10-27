@@ -14,6 +14,7 @@ import MarketsPage from './MarketsPage'
 const MARKET_BASE = 'http://localhost:8001'
 const SNAPSHOT = 'http://localhost:8003/ledger/markets/:id/snapshot'
 const SNAPSHOT_BATCH = 'http://localhost:8003/ledger/markets/snapshots'
+const PORTFOLIO = 'http://localhost:8003/ledger/portfolio/me'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
@@ -26,6 +27,12 @@ function outcomesFor(marketId: string, labels: string[]) {
 const mockMarkets = [
   { id: 'a1', status: 'open',   question: 'Will SMU win SUNIG?',          close_time: '2099-01-05T12:00:00Z', outcomes: outcomesFor('a1', ['Yes', 'No']) },
   { id: 'b2', status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z', outcomes: outcomesFor('b2', ['Yes', 'No']) },
+]
+
+// One more card than StrictMode mounts the page, for counting reads per card.
+const threeMarkets = [
+  ...mockMarkets,
+  { id: 'c3', status: 'open', question: 'Will the library open on Sundays?', close_time: '2099-01-05T12:00:00Z', outcomes: outcomesFor('c3', ['Yes', 'No']) },
 ]
 
 // The ledger's snapshot for a market, pricing its outcomes in position order.
@@ -100,6 +107,37 @@ function mockTwoPages(secondPage: () => Response | Promise<Response>) {
     ),
   )
 }
+
+// The trader's positions as the ledger reports them: ids only, since the
+// labels are the frontend's own join.
+function portfolioHolding(positions: { market_id: string; outcome_id: string; quantity: string }[]) {
+  return {
+    user_id: '1',
+    account_id: 'acct-1',
+    balance: '1000.0000',
+    positions_value: '0.0000',
+    net_worth: '1000.0000',
+    positions: positions.map(position => ({
+      ...position,
+      outcome_position: 0,
+      cost_basis: '20.0000',
+      average_entry_price: '0.5000',
+      price: '0.6000',
+      value: '24.0000',
+      unrealized_pnl: '4.0000',
+      result: null,
+      payout: null,
+      state_version: 3,
+    })),
+  }
+}
+
+// Every page reads the trader's portfolio once, for the holdings on its cards
+// ([X-1] #450). Tests about other things get a trader who holds nothing,
+// rather than an unhandled request on every render.
+beforeEach(() => {
+  server.use(http.get(PORTFOLIO, () => HttpResponse.json(portfolioHolding([]))))
+})
 
 describe('MarketsPage', () => {
   // Every card asks the ledger for its prices; tests about other things get a
@@ -1148,5 +1186,145 @@ describe('the price feed in trouble', () => {
     })
 
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+})
+
+// [X-1] #450: a card told a trader what the crowd thinks and nothing about
+// themselves, so a market they hold forty shares in looked exactly like the
+// forty-nine they had never touched.
+describe('the trader\'s own position on a card', () => {
+  beforeEach(() => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
+    )
+  })
+
+  // AC 1, and AC 2 in the same assertion: the held market says so and names
+  // the side, and the unheld one carries no empty slot or dash.
+  it('shows the holding on a market the trader holds, and nothing on one they do not', async () => {
+    server.use(
+      http.get(PORTFOLIO, () =>
+        HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }])),
+      ),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    const held = within(cardFor('Will SMU win SUNIG?'))
+    expect(await held.findByText('40.0000 Yes')).toBeInTheDocument()
+    expect(held.getByText('You hold')).toBeInTheDocument()
+
+    // b2 is the market the trader holds nothing in.
+    const unheld = within(cardFor('Will inflation fall below 2%?'))
+    expect(unheld.queryByText('You hold')).not.toBeInTheDocument()
+  })
+
+  // AC 4: holding both sides of a binary book is the ordinary case, not an
+  // oddity, and both have to be visible.
+  it('names every outcome of a market held on more than one', async () => {
+    server.use(
+      http.get(PORTFOLIO, () =>
+        HttpResponse.json(portfolioHolding([
+          { market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' },
+          { market_id: 'a1', outcome_id: 'a1-1', quantity: '12.0000' },
+        ])),
+      ),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    const card = within(cardFor('Will SMU win SUNIG?'))
+    expect(await card.findByText('40.0000 Yes')).toBeInTheDocument()
+    expect(card.getByText('12.0000 No')).toBeInTheDocument()
+  })
+
+  // AC 3: one request per page, not per card. The cost must not scale with
+  // the number of cards — that is the distinction #432 exists to make, and
+  // this is the same one for the portfolio.
+  //
+  // Counted against the cards rather than pinned to 1, because this renders
+  // under StrictMode as main.tsx does: its double mount reads twice, for the
+  // same reason every other mount-time read here does. What would be a bug is
+  // a read per card, which is what this asserts cannot happen.
+  it('reads the portfolio once per page, however many cards it shows', async () => {
+    let reads = 0
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: threeMarkets, next_cursor: null })),
+      http.get(PORTFOLIO, () => {
+        reads += 1
+        return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
+      }),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+
+    // Three cards on screen, more than StrictMode's two mounts: a read per
+    // card would make at least three.
+    expect(screen.getByText('Will the library open on Sundays?')).toBeInTheDocument()
+    expect(reads).toBeLessThanOrEqual(2)
+  })
+
+  // The same read serves every list the filters make. A status, a search or a
+  // closing preset is a new list (MarketsPage keys it), and the trader's
+  // holdings did not change because they narrowed what they were looking at.
+  it('does not read the portfolio again when a filter changes the list', async () => {
+    let reads = 0
+    server.use(
+      http.get(PORTFOLIO, () => {
+        reads += 1
+        return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    const readsOnLoad = reads
+
+    await actor.click(screen.getByRole('radio', { name: 'Open' }))
+
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    expect(reads).toBe(readsOnLoad)
+  })
+
+  // AC 5: the position is an enhancement on a card whose job is the price, so
+  // a portfolio the ledger will not answer must not take the list down.
+  it('still renders the list, prices and all, when the portfolio read fails', async () => {
+    server.use(http.get(PORTFOLIO, () => HttpResponse.error()))
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+
+    await screen.findByText('Will SMU win SUNIG?')
+    const card = within(cardFor('Will SMU win SUNIG?'))
+    await waitFor(() => expect(card.getByLabelText('Yes price')).toHaveTextContent('62.0%'))
+    expect(card.queryByText('You hold')).not.toBeInTheDocument()
+    // And no error is put in front of the trader about it.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // The ledger keeps a settled market's rows to report what they paid
+  // (ledger-service.md), but the shares are gone: the market paid them out.
+  it('does not claim a holding in a market that has settled', async () => {
+    server.use(
+      http.get(PORTFOLIO, () =>
+        HttpResponse.json({
+          ...portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]),
+          positions: [
+            {
+              market_id: 'a1', outcome_id: 'a1-0', outcome_position: 0, quantity: '40.0000',
+              cost_basis: '20.0000', average_entry_price: '0.5000', price: null, value: null,
+              unrealized_pnl: null, result: 'paid_out', payout: '40.0000', state_version: 3,
+            },
+            ...portfolioHolding([{ market_id: 'b2', outcome_id: 'b2-1', quantity: '12.0000' }]).positions,
+          ],
+        }),
+      ),
+    )
+    renderPage()
+
+    // The portfolio has landed once the market still held shows it; before
+    // that, a card with no holding proves nothing.
+    await waitFor(() => expect(within(cardFor('Will inflation fall below 2%?')).getByText('12.0000 No')).toBeInTheDocument())
+    expect(within(cardFor('Will SMU win SUNIG?')).queryByText('You hold')).not.toBeInTheDocument()
   })
 })

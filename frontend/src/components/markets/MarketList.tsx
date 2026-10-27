@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react'
+import type { Position } from '../../api/ledgerApi'
 import { listMarkets, type PublicMarketPage, type PublicMarketSummary } from '../../api/marketApi'
 import { closingWindowOf, type ClosingPreset } from '../../utils/closingWindow'
 import { usePagedList } from '../../hooks/usePagedList'
@@ -15,6 +16,8 @@ interface MarketListProps {
   status: StatusFilter | null
   /** null for any closing time (#442). */
   closing: ClosingPreset | null
+  /** The trader's positions by market id, from the page's one portfolio read (useMyPositions). */
+  positionsByMarket: Map<string, Position[]>
 }
 
 const pagedMarketsOptions = {
@@ -27,7 +30,7 @@ const pagedMarketsOptions = {
 // different one of any is a different list: the page gives this a new `key`,
 // so the paging state and the prices start over (usePricesForMarkets says to
 // do exactly that).
-export default function MarketList({ query, status, closing }: MarketListProps) {
+export default function MarketList({ query, status, closing, positionsByMarket }: MarketListProps) {
   // The preset's window as of the moment this list started, and kept for its
   // life: every page asks for the same window even if a midnight passes while
   // the trader pages, and a list started after midnight, by a new search or a
@@ -99,6 +102,7 @@ export default function MarketList({ query, status, closing }: MarketListProps) 
                 snapshot={snapshotsByMarket.get(market.id)}
                 priceReadFailed={failedMarkets.has(market.id)}
                 onRetryPrice={() => retryMarket(market.id)}
+                positions={positionsByMarket.get(market.id)}
               />
             ))}
           </div>
