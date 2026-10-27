@@ -175,16 +175,23 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     // market still named here would be polled for the life of the page while
     // the new connection pushed its frames.
     onConnectionReset: () => setRefusedMarkets(previous => (previous.size === 0 ? previous : new Set())),
+    // One request through `api`, so its interceptor refreshes the session
+    // cookie before a socket closed for an expired token is retried. Any
+    // followed market will do; the answer is applied like any other read.
+    onSessionRefresh: followed.length > 0 ? () => getMarketSnapshot(followed[0]) : undefined,
   })
 
-  // What the socket is carrying: followed, and not refused a subscription.
+  // What the socket is carrying: followed, and not refused a subscription —
+  // and nothing at all while it is not connected, because a dropped or
+  // refused socket pushes no frames however many markets it once followed.
   const liveMarkets = useMemo(
-    () => new Set(followed.filter(id => !refusedMarkets.has(id))),
-    [followed, refusedMarkets],
+    () => (status === 'connected' ? new Set(followed.filter(id => !refusedMarkets.has(id))) : new Set<string>()),
+    [followed, refusedMarkets, status],
   )
 
   // The markets the socket is *not* carrying, re-read on the timer: the ones
-  // past the subscription ceiling, and nothing else. A market the relay is
+  // past the subscription ceiling, every market while the socket is away, and
+  // nothing else. A market the relay is
   // pushing needs no poll — that is the whole point of #444 — and polling it
   // anyway would cost the ledger an LMSR evaluation per card twice a minute
   // for a price it has already sent.
