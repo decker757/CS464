@@ -104,12 +104,19 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
   // and a request that was still out when that happened has its answer applied
   // to state the remount threw away. Left set, it would block the remount's own
   // read and the card would wait for a price for good (#104 amendment D).
+  //
+  // The books already opened are replaced, not cleared, for the same reason:
+  // a batch answer for the discarded mount marks the set its own request was
+  // sent with, so the remount's answer still opens the book and gets a price.
   const inFlight = useRef(new Set<string>())
-  useEffect(() => () => inFlight.current.clear(), [])
   const openedBooks = useRef(new Set<string>())
-  const openBookRef = useRef((marketId: string, apply: (snapshot: PriceState) => void) => {
-    if (openedBooks.current.has(marketId)) return
-    openedBooks.current.add(marketId)
+  useEffect(() => () => {
+    inFlight.current.clear()
+    openedBooks.current = new Set()
+  }, [])
+  const openBookRef = useRef((books: Set<string>, marketId: string, apply: (snapshot: PriceState) => void) => {
+    if (books.has(marketId)) return
+    books.add(marketId)
     getMarketSnapshot(marketId).then(apply, () => {
       setFailedMarkets(previous => new Set(previous).add(marketId))
     })
@@ -126,6 +133,7 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     const wanted = ids.filter(id => !inFlight.current.has(id))
     if (wanted.length === 0) return
     for (const id of wanted) inFlight.current.add(id)
+    const books = openedBooks.current
     const settle = () => {
       for (const id of wanted) inFlight.current.delete(id)
     }
@@ -144,7 +152,7 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
           return remaining.size === previous.size ? previous : remaining
         })
         const missing = wanted.filter(id => !answered.has(id))
-        for (const id of missing) openBookRef.current(id, apply)
+        for (const id of missing) openBookRef.current(books, id, apply)
       },
       () => {
         settle()
