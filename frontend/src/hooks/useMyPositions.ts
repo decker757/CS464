@@ -4,8 +4,7 @@ import { getMyPortfolio, type Position } from '../api/ledgerApi'
 export interface MyPositions {
   /**
    * Every outcome the trader holds, by market id. A market absent from the
-   * map is one they hold nothing in — which is most of them, and the reason
-   * a card asks rather than being told.
+   * map is one they hold nothing in, which is most of them.
    *
    * The positions are the ledger's own rows, so a card reads `quantity` and
    * matches `outcome_id` against the outcomes it already has. Nothing here
