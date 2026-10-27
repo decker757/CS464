@@ -142,11 +142,11 @@ export interface Position {
    * hold back, so a sell — instant or a new order — may take
    * `quantity - reserved_shares` and no more (#410).
    *
-   * Never null, unlike the same name on an `Order`, and never above
-   * `quantity`: the ledger derives it from the order rows in the same
-   * statement that reads the position, so the two cannot disagree. `"0.0000"`
-   * where no live sell order holds any, and on a settled row, since no order
-   * on a market with a result is live.
+   * Never null, unlike the same name on an `Order`. The ledger works it out
+   * from the order rows in the same query that reads `quantity`
+   * (ledger_service/service/portfolio.py), so both describe the same moment.
+   * `"0.0000"` where no live sell order holds any, and on a settled row,
+   * since no order on a market with a result is live.
    */
   reserved_shares: string
   cost_basis: string

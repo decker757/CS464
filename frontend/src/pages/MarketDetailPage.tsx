@@ -154,8 +154,10 @@ export default function MarketDetailPage() {
     setTradesMade(count => count + 1)
   }, [refetchHeld])
 
-  // A placement or a cancel moves credits, or what they reserve, and a
-  // placement that filled also changed the holdings the sell clamp reads.
+  // A placement or a cancel moves credits, or what they reserve. A sell's
+  // reservation is read off the portfolio row (#410), so every placement and
+  // cancel changes the holdings the sell clamp reads, not only one that
+  // filled.
   // The balance comes back through BalanceContext, as it does after a trade.
   // Every subscribe ack re-reads all three too, the first one included: a
   // fill whose frame was published before the socket was listening — while

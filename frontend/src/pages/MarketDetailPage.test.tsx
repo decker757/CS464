@@ -43,7 +43,8 @@ const baseMarket = {
 }
 
 // The trader's own positions, which the page reads for the sell clamp
-// (#357). `position` carries only the three fields the page joins on.
+// (#357). `position` carries only the fields the page reads: the three it
+// joins on, and `reserved_shares` where a test holds some back.
 function portfolio(
   positions: { market_id: string; outcome_id: string; quantity: string; reserved_shares?: string }[] = [],
 ) {
