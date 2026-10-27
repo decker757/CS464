@@ -90,16 +90,20 @@ describe('browseSectionsOf', () => {
     expect(sections[0].rule).toBeTruthy()
   })
 
-  it('puts a market closing within the day in Closing soon, soonest first', () => {
+  // The list arrives in market_service's order, soonest close first among the
+  // markets still trading, and market-service.md says to keep it rather than
+  // re-sort by `close_time` in the browser. The band takes the list's order,
+  // so it agrees with the list below it whatever that order becomes.
+  it('puts a market closing within the day in Closing soon, in the order the list gave', () => {
     const markets = [
-      market('later', '2026-10-26T06:00:00Z'),
-      market('sooner', '2026-10-25T18:00:00Z'),
+      market('first_listed', '2026-10-26T06:00:00Z'),
+      market('second_listed', '2026-10-25T18:00:00Z'),
       market('next_month', '2026-11-25T12:00:00Z'),
     ]
 
     const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
 
-    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['sooner', 'later'])
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['first_listed', 'second_listed'])
   })
 
   // The window is a day, edge included: a market closing in exactly 24 hours
