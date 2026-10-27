@@ -91,7 +91,7 @@ export function featuredMarketOf(
 
   const [market] = busiest
   if (!market) return null
-  return { market, rule: 'Most traded right now' }
+  return { market, rule: 'Busiest market by credits traded' }
 }
 
 /**
