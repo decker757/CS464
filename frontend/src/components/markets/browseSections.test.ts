@@ -173,27 +173,31 @@ describe('browseSectionsOf', () => {
 
   // A market's move is its largest outcome's move. Only on a binary book is
   // the second outcome the first one's mirror: on three outcomes the first can
-  // sit still while the other two trade places.
-  it('measures a move on every outcome, not only the first', () => {
-    const threeWay: PublicMarketSummary = {
-      ...market('three_way', FAR_OFF),
-      outcomes: [
-        { id: 'three_way-0', position: 0, label: 'Home' },
-        { id: 'three_way-1', position: 1, label: 'Draw' },
-        { id: 'three_way-2', position: 2, label: 'Away' },
-      ],
-    }
-    const prices = (home: string, draw: string, away: string) => [
-      { outcome_id: 'three_way-0', position: 0, price: home },
-      { outcome_id: 'three_way-1', position: 1, price: draw },
-      { outcome_id: 'three_way-2', position: 2, price: away },
-    ]
-    const snapshots = new Map([['three_way', { ...snapshot('three_way'), prices: prices('0.3300', '0.6000', '0.0700') }]])
-    const figures = new Map([['three_way', { credits_traded: '80.0000', prices_7d_ago: prices('0.3300', '0.3400', '0.3300') }]])
+  // sit still while the other two trade places. Two markets whose order turns
+  // on that: `swing` moved 0.05, 0.30 and 0.10, `drift` 0.20 on every outcome,
+  // so the first, the last and the sum of the moves all rank `drift` first.
+  it('ranks a move by its largest outcome, on markets of three outcomes', () => {
+    const threeWay = (id: string): PublicMarketSummary => ({
+      ...market(id, FAR_OFF),
+      outcomes: [0, 1, 2].map(position => ({ id: `${id}-${position}`, position, label: `Outcome ${position}` })),
+    })
+    const pricesOf = (id: string, three: [string, string, string]) =>
+      three.map((price, position) => ({ outcome_id: `${id}-${position}`, position, price }))
+    const reads = (id: string, now: [string, string, string], weekAgo: [string, string, string]) => ({
+      snapshot: { ...snapshot(id), prices: pricesOf(id, now) },
+      figures: { credits_traded: '80.0000', prices_7d_ago: pricesOf(id, weekAgo) },
+    })
+    const swing = reads('swing', ['0.3800', '0.0400', '0.4300'], ['0.3300', '0.3400', '0.3300'])
+    const drift = reads('drift', ['0.5300', '0.1400', '0.5300'], ['0.3300', '0.3400', '0.3300'])
 
-    const sections = browseSectionsOf([threeWay], snapshots, figures, NOW)
+    const sections = browseSectionsOf(
+      [threeWay('drift'), threeWay('swing')],
+      new Map([['swing', swing.snapshot], ['drift', drift.snapshot]]),
+      new Map([['swing', swing.figures], ['drift', drift.figures]]),
+      NOW,
+    )
 
-    expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['three_way'])
+    expect(sectionNamed(sections, 'movers')?.markets.map(m => m.id)).toEqual(['swing', 'drift'])
   })
 
   // ledger-service.md: `prices_7d_ago` is null when there is no change to
