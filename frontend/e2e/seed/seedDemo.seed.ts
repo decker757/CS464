@@ -103,11 +103,6 @@ async function registerPromotedAdmin(promoter: Session, username: string): Promi
 // 200 (ledger-service.md, "A repeat writes nothing here"). The retry is for
 // `503 settlement_unconfirmed` — the winners are paid and only telling
 // market_service failed, and the same doc says to repeat the request.
-//
-// It used to cover a network failure too: the backdate's blocking
-// execFileSync outlived the ledger's keep-alive and the settlement went out on
-// a closed socket. #492 made that call await rather than block, so the
-// network arm is gone with its cause.
 async function settle(admin: Session, marketId: string): Promise<void> {
   try {
     await settleMarket(admin, marketId)

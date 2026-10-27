@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { isBelow } from './credits'
 
+const execFileAsync = promisify(execFile)
+
 // The same variables the app is built with, and the same defaults. Exported
 // for the demo seed's local-only guard (#454), which checks these and no copy.
 export const AUTH_URL = process.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -124,23 +126,18 @@ export async function registerAdmin(label: string): Promise<Session> {
   return logInThroughApi(trader.username)
 }
 
-const run = promisify(execFile)
 
 /**
  * Runs one UPDATE as the superuser, the way a first admin is made by hand, and
  * checks it changed exactly one row.
  *
- * **Awaited rather than blocking** (#492). `docker compose exec` takes about
- * 0.2s on an idle machine and far longer on a loaded one, and the synchronous
- * version held the event loop for all of it. Node's fetch pool keeps its
- * sockets alive, uvicorn closes an idle one after five seconds, and nothing
- * could service the pool while the loop was blocked — so a call that ran long
- * left a dead socket behind and the next request went out on it, failing as
- * `TypeError` / `UND_ERR_SOCKET`. Awaiting leaves the loop free to notice the
- * close and open a fresh connection.
+ * Awaited, never blocking (#492): `docker compose exec` can take seconds on a
+ * loaded machine, and a blocked event loop cannot see uvicorn close an idle
+ * keep-alive socket, so the next fetch goes out on a dead one
+ * (`UND_ERR_SOCKET`).
  */
 async function runSql(sql: string, failure: string): Promise<void> {
-  const { stdout } = await run(
+  const { stdout } = await execFileAsync(
     'docker',
     ['compose', 'exec', '-T', 'db', 'psql', '-U', process.env.POSTGRES_USER ?? 'cs464', '-d', process.env.POSTGRES_DB ?? 'cs464', '-v', 'ON_ERROR_STOP=1', '-c', sql],
     { cwd: REPO_ROOT, encoding: 'utf8' },
