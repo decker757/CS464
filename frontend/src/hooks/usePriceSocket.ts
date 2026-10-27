@@ -71,7 +71,9 @@ export interface PriceSocketOptions {
    */
   onMount?: (apply: (snapshot: PriceState) => void, marketIds: string[]) => void
   /**
-   * The same read, after a `subscribed` ack, for the markets just acked.
+   * The same read, after a `subscribed` ack, for the markets just acked —
+   * all of them in one call once the relay has answered every subscribe
+   * outstanding, so a page of acks is one read and not one per market.
    *
    * Frames published before an ack never reached this socket — while a dropped
    * connection was away, or between the caller's own read and the ack — so
@@ -160,6 +162,10 @@ export function usePriceSocket(
   // Subscribes sent and not yet answered, oldest first. A `too_many_subscriptions`
   // names no market, so the oldest outstanding subscribe is the one it refused.
   const pendingRef = useRef<string[]>([])
+  // Markets acked since the caller was last told, handed over together once
+  // nothing is pending: a page's acks arrive one frame per market, and a read
+  // per ack would be a request per card.
+  const ackedRef = useRef<string[]>([])
   // The current connection's reconciliation, for the followed-set effect below.
   const reconcileRef = useRef<() => void>(() => {})
   // Markets the caller has already been asked to read. The socket's own reads
@@ -219,6 +225,16 @@ export function usePriceSocket(
     }
     reconcileRef.current = reconcile
 
+    // Tell the caller about the markets acked since it was last told, once the
+    // relay has answered every subscribe this connection has outstanding.
+    const reportAcked = () => {
+      if (pendingRef.current.length > 0 || ackedRef.current.length === 0) return
+      const acked = ackedRef.current
+      ackedRef.current = []
+      onAckRef.current?.(apply, acked)
+      onSubscribedRef.current?.(acked)
+    }
+
     const connect = () => {
       const socket = new WebSocket(`${WS_BASE}/ws/prices`)
       socketRef.current = socket
@@ -231,6 +247,7 @@ export function usePriceSocket(
         // ceiling is per connection, so this one may well have room.
         subscribedRef.current = new Set()
         pendingRef.current = []
+        ackedRef.current = []
         onConnectionResetRef.current?.()
         reconcile()
       }
@@ -245,8 +262,8 @@ export function usePriceSocket(
           // traded brings a snapshot that `apply` drops as not newer.
           if (!cancelled) setStatus('connected')
           pendingRef.current = pendingRef.current.filter(id => id !== msg.market_id)
-          onAckRef.current?.(apply, [msg.market_id as string])
-          onSubscribedRef.current?.([msg.market_id as string])
+          ackedRef.current.push(msg.market_id as string)
+          reportAcked()
         } else if (msg.type === 'price') {
           apply(msg as PriceFrame)
         } else if (msg.type === 'order') {
@@ -259,6 +276,8 @@ export function usePriceSocket(
             subscribedRef.current.delete(refused)
             onRefusedRef.current?.([refused])
           }
+          // A refusal is an answer too, and may be the last one outstanding.
+          reportAcked()
         }
       }
 
@@ -266,6 +285,7 @@ export function usePriceSocket(
         if (cancelled) return
         subscribedRef.current = new Set()
         pendingRef.current = []
+        ackedRef.current = []
 
         // Origin refused: retrying cannot help. Mark degraded but keep the
         // last known prices visible (AC 7).
