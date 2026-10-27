@@ -39,7 +39,7 @@ export interface MarketPrices {
 // How often the prices on screen are read again. The socket carries every
 // trade on a market this page is subscribed to, so this is no longer how a
 // price arrives — it is the fallback for markets past the subscription ceiling
-// ([X-1] #444) and the backstop for anything the socket missed.
+// ([X-1] #444), and for every market while the socket is away.
 export const PRICE_REFRESH_MS = 30_000
 
 // How many markets this page asks the socket to follow. The server's own
@@ -122,8 +122,9 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     })
   })
 
-  // The batch read, for the markets the socket hook asks about: first paint,
-  // and every reconnect's ack. One request for the page, not one per card.
+  // The batch read, for every path that needs prices: first paint and each
+  // ack (from the socket hook), the first read past the follow cap, and the
+  // timer. One request for the page, not one per card.
   const readSnapshots = useCallback((apply: (snapshot: PriceState) => void, ids: string[]) => {
     if (ids.length === 0) return
     // A tick that fired while the ledger was still answering the last one
