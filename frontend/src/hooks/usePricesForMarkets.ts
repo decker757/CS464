@@ -189,6 +189,25 @@ export function usePricesForMarkets(markets: PricedMarket[]): MarketPrices {
     [followed, refusedMarkets, status],
   )
 
+  // The first read of the cards past the follow cap. The socket hook reads
+  // only what it follows, so without this a card past the fiftieth would wait
+  // for the timer's first tick to get any price at all (AC 4). Each market is
+  // read here once; from then on the timer below keeps it fresh. Read through
+  // `applySnapshot`, which always reaches the live connection, so a read that
+  // StrictMode's discarded first mount sent still lands.
+  const firstReadPastCap = useRef(new Set<string>())
+  const followedIds = new Set(followed)
+  const unreadPastCap = markets
+    .map(market => market.id)
+    .filter(id => !followedIds.has(id) && !firstReadPastCap.current.has(id))
+    .join(',')
+  useEffect(() => {
+    if (!unreadPastCap) return
+    const ids = unreadPastCap.split(',').filter(id => !firstReadPastCap.current.has(id))
+    for (const id of ids) firstReadPastCap.current.add(id)
+    readSnapshots(applySnapshot, ids)
+  }, [unreadPastCap, readSnapshots, applySnapshot])
+
   // The markets the socket is *not* carrying, re-read on the timer: the ones
   // past the subscription ceiling, every market while the socket is away, and
   // nothing else. A market the relay is
