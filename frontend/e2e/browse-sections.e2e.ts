@@ -32,7 +32,7 @@ test('the browse list bands its markets, and a search collapses the bands', asyn
   // A hero at the top, the bands under it, and the full list still below
   // them. Every band states its own rule (AC 2).
   await expect(page.getByRole('heading', { name: 'Featured' })).toBeVisible()
-  await expect(page.getByText('Most traded right now')).toBeVisible()
+  await expect(page.getByText('Busiest market by credits traded', { exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Trending' })).toBeVisible()
   await expect(page.getByText('Most credits traded')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Browse all' })).toBeVisible()
