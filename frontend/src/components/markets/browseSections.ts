@@ -1,7 +1,7 @@
 import type { PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import type { MarketFigures } from '../../hooks/usePricesForMarkets'
-import { compareCredits, subtractCredits } from '../../utils/formatCredits'
+import { compareCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
 import { tradingStopped } from './marketStatus'
 
 /** The page's single featured market, and why it was chosen. */
@@ -40,21 +40,25 @@ function stillTrading(markets: PublicMarketSummary[], now: Date): PublicMarketSu
   return markets.filter(market => !tradingStopped(market.status, market.close_time, now))
 }
 
-/** How far `market`'s leading outcome has moved over the last seven days, as
- *  an absolute decimal string; null when there is no change to measure. */
+/** How far `market` has moved over the last seven days — the largest move of
+ *  any of its outcomes, as an absolute decimal string; null when there is no
+ *  change to measure. */
 function weeklyMoveOf(snapshot: PriceState | undefined, figures: MarketFigures | undefined): string | null {
   if (!snapshot || !figures?.prices_7d_ago) return null
 
-  // The first outcome is the one a card leads with, and on a binary book the
-  // other is its mirror — so one outcome's move is the market's move.
-  const [leading] = [...snapshot.prices].sort((a, b) => a.position - b.position)
-  if (!leading) return null
-  const before = figures.prices_7d_ago.find(price => price.outcome_id === leading.outcome_id)
-  if (!before) return null
-
-  const change = subtractCredits(leading.price, before.price)
-  if (change === null) return null
-  return change.startsWith('-') ? change.slice(1) : change
+  // Every outcome, not the first: only on a binary book is the second the
+  // first one's mirror. On three outcomes the first can hold still while the
+  // other two trade places, and that market has moved.
+  let largest: string | null = null
+  for (const price of snapshot.prices) {
+    const before = figures.prices_7d_ago.find(old => old.outcome_id === price.outcome_id)
+    if (!before) continue
+    const change = subtractCredits(price.price, before.price)
+    if (change === null) continue
+    const move = unsignedCredits(change)
+    if (largest === null || compareCredits(move, largest) > 0) largest = move
+  }
+  return largest
 }
 
 /**
