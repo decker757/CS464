@@ -40,13 +40,9 @@ function outcomeBannerLabel(status: MarketStatus): string {
   return 'Proposed outcome'
 }
 
-/** One outcome's holding as the trading panel needs it: the whole position,
- *  and the part of it the trader's own live sell orders hold back. Both come
- *  from the same portfolio row, so they cannot disagree (#410). */
-interface HeldPosition {
-  quantity: string
-  reserved: string
-}
+// What the panel is told is held back while the holdings are unknown: nothing.
+// One identity, so the panel's props do not change on every render.
+const NOTHING_RESERVED: Record<string, string> = {}
 
 function Banner({ className, children }: { className: string; children: React.ReactNode }) {
   return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
@@ -101,14 +97,14 @@ export default function MarketDetailPage() {
   // differ between markets, so an untagged map would read as "holds nothing"
   // on the next market until its own read landed, and clamp every sell on
   // that. Null says the holdings are unknown, which clamps nothing at all.
-  const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, HeldPosition> } | null>(null)
-  const heldHere = held !== null && held.id === id ? held.byOutcome : null
-  const heldByOutcome = heldHere === null ? null : Object.fromEntries(
-    Object.entries(heldHere).map(([outcomeId, position]) => [outcomeId, position.quantity]),
-  )
-  const reservedByOutcome = Object.fromEntries(
-    Object.entries(heldHere ?? {}).map(([outcomeId, position]) => [outcomeId, position.reserved]),
-  )
+  const [held, setHeld] = useState<{
+    id: string
+    quantityByOutcome: Record<string, string>
+    reservedByOutcome: Record<string, string>
+  } | null>(null)
+  const heldHere = held !== null && held.id === id ? held : null
+  const heldByOutcome = heldHere?.quantityByOutcome ?? null
+  const reservedByOutcome = heldHere?.reservedByOutcome ?? NOTHING_RESERVED
 
   // The most recent read's own number, so an answer that arrives after a
   // newer one is dropped instead of overwriting it. BalanceContext keeps the
@@ -130,13 +126,11 @@ export default function MarketDetailPage() {
       portfolio => {
         if (requestId !== latestHeldReadRef.current) return
         const mine = portfolio.positions.filter(position => position.market_id === id)
-        const byOutcome = Object.fromEntries(
-          mine.map(position => [
-            position.outcome_id,
-            { quantity: position.quantity, reserved: position.reserved_shares },
-          ]),
-        )
-        setHeld({ id, byOutcome })
+        setHeld({
+          id,
+          quantityByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])),
+          reservedByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.reserved_shares])),
+        })
       },
       // Leave the last known holdings up rather than blanking them, the same
       // way BalanceContext keeps the last balance on a failed refetch.
