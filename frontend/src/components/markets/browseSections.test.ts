@@ -90,20 +90,37 @@ describe('browseSectionsOf', () => {
     expect(sections[0].rule).toBeTruthy()
   })
 
-  // The list arrives in market_service's order, soonest close first among the
-  // markets still trading, and market-service.md says to keep it rather than
-  // re-sort by `close_time` in the browser. The band takes the list's order,
-  // so it agrees with the list below it whatever that order becomes.
-  it('puts a market closing within the day in Closing soon, in the order the list gave', () => {
+  // Soonest first is what the band is about, so it sorts for itself rather than
+  // borrowing the list's order: #448 is what lets the list stop being ordered by
+  // close time (#433), and a band that followed it would then show three
+  // markets closing within the day without the one closing in ten minutes.
+  // Only markets still trading are here, so the early-closed market that
+  // market-service.md warns a browser re-sort would misplace never is.
+  it('puts a market closing within the day in Closing soon, soonest first', () => {
     const markets = [
-      market('first_listed', '2026-10-26T06:00:00Z'),
-      market('second_listed', '2026-10-25T18:00:00Z'),
+      market('later', '2026-10-26T06:00:00Z'),
+      market('sooner', '2026-10-25T18:00:00Z'),
       market('next_month', '2026-11-25T12:00:00Z'),
     ]
 
     const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
 
-    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['first_listed', 'second_listed'])
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['sooner', 'later'])
+  })
+
+  // By the instant, not the text: an offset written out is the same moment as
+  // the Z it stands for, and a string order would put it in the wrong place.
+  it('orders Closing soon by the moment, whatever the offset is written as', () => {
+    // 13:00Z and 14:00Z, listed the wrong way round; as text, "T14" sorts
+    // before "T21" and would keep them so.
+    const markets = [
+      market('written_in_utc', '2026-10-25T14:00:00Z'),
+      market('written_with_offset', '2026-10-25T21:00:00+08:00'),
+    ]
+
+    const sections = browseSectionsOf(markets, new Map(), new Map(), NOW)
+
+    expect(sectionNamed(sections, 'closing_soon')?.markets.map(m => m.id)).toEqual(['written_with_offset', 'written_in_utc'])
   })
 
   // The window is a day, edge included: a market closing in exactly 24 hours
