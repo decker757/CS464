@@ -5,6 +5,7 @@ import { useMarketClock } from '../../hooks/useMarketClock'
 import { usePriceMovements } from '../../hooks/usePriceMovements'
 import { formatTimeAgo } from '../../utils/formatDateTime'
 import { formatPrice } from '../../utils/formatPrice'
+import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
 import { heldOutcomesOf } from './holdings'
@@ -152,12 +153,7 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
           <p className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-secondary">
             <span>You hold</span>
             {heldOutcomes.map(held => (
-              <span
-                key={held.outcomeId}
-                className="rounded-full border border-info/25 bg-info/10 px-2 py-[2px] font-semibold text-info-strong"
-              >
-                {held.quantity} {held.label}
-              </span>
+              <Badge key={held.outcomeId} tone="info">{held.quantity} {held.label}</Badge>
             ))}
           </p>
         )}
