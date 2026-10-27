@@ -199,19 +199,22 @@ export function usePriceSocket(
       const socket = socketRef.current
       if (!socket || socket.readyState !== WebSocket.OPEN) return
 
+      // A card that has left the page stops being paid for: the ceiling counts
+      // markets, so an unsubscribe is what makes room for the next page. The
+      // relay answers commands in order, so these go first — sent after the
+      // subscribes, they would free the room only once every new subscribe
+      // had already been refused.
       const wanted = new Set(wantedRef.current)
+      for (const id of [...subscribedRef.current]) {
+        if (wanted.has(id)) continue
+        subscribedRef.current.delete(id)
+        socket.send(JSON.stringify({ action: 'unsubscribe', market_id: id }))
+      }
       for (const id of wantedRef.current) {
         if (subscribedRef.current.has(id)) continue
         subscribedRef.current.add(id)
         pendingRef.current.push(id)
         socket.send(JSON.stringify({ action: 'subscribe', market_id: id }))
-      }
-      // A card that has left the page stops being paid for: the ceiling counts
-      // markets, so an unsubscribe is what makes room for the next page.
-      for (const id of [...subscribedRef.current]) {
-        if (wanted.has(id)) continue
-        subscribedRef.current.delete(id)
-        socket.send(JSON.stringify({ action: 'unsubscribe', market_id: id }))
       }
     }
     reconcileRef.current = reconcile
