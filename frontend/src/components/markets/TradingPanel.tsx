@@ -10,6 +10,7 @@ import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 import { selectableClass } from '../ui/selectableClass'
+import HoldsNoneToSell from './HoldsNoneToSell'
 import LimitOrderFields from './LimitOrderFields'
 import TradePreviewSummary from './TradePreviewSummary'
 
@@ -315,6 +316,8 @@ export default function TradingPanel({
           outcomeLabel={selectedOutcome?.label ?? ''}
           heldQuantity={heldQuantity}
           sellableQuantity={sellableQuantity}
+          holdsNoneToSell={holdsNoneToSell}
+          onBuyInstead={handleBuyInstead}
           onPlaced={onOrderPlaced}
         />
       ) : (
@@ -328,18 +331,16 @@ export default function TradingPanel({
       {/* Always on the market ticket and empty until there is something to
           say: a screen reader announces a live region's content changing,
           and may not announce one that arrives with its content already in
-          it. */}
+          it. The offer itself is shared with the limit ticket (#496). */}
       <div role="status">
-        {holdsNoneToSell && (
-          <p className="mb-3 text-sm text-smu-navy">You don't hold any {selectedOutcome?.label ?? ''} shares.</p>
-        )}
+        <HoldsNoneToSell
+          holdsNone={holdsNoneToSell}
+          outcomeLabel={selectedOutcome?.label ?? ''}
+          onBuyInstead={handleBuyInstead}
+        />
       </div>
 
-      {holdsNoneToSell ? (
-        <Button variant="primary" size="block" onClick={handleBuyInstead}>
-          Buy {selectedOutcome?.label ?? ''} instead
-        </Button>
-      ) : (
+      {holdsNoneToSell ? null : (
         <>
           <div className="mb-1.5 flex items-baseline justify-between">
             <label htmlFor="trade-quantity" className="block text-[13px] font-semibold text-smu-navy">
