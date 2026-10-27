@@ -1126,6 +1126,118 @@ describe('MarketDetailPage — price history', () => {
     expect(within(legend).getByText('No')).toBeInTheDocument()
   })
 
+  // [T-5] #495's first criterion: the chart adds a point for every live price
+  // frame. Before this, Alice's price cards moved on Bob's trade and her chart
+  // did not, with nothing to say it was behind.
+  it('adds a point when another trader moves the price', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // Somebody else's trade, arriving as a frame on this page's socket.
+    await act(async () => {
+      wsClient?.send(JSON.stringify({
+        type: 'price',
+        market_id: 'mkt-abc',
+        state_version: 3,
+        prices: [
+          { outcome_id: 'o1', position: 0, price: '0.7000' },
+          { outcome_id: 'o2', position: 1, price: '0.3000' },
+        ],
+        occurred_at: '2026-09-16T09:00:00Z',
+      }))
+    })
+
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's second: a frame whose state_version the chart already holds is
+  // skipped, so a refetch and the frames around it never draw a trade twice.
+  it('ignores a frame for a trade already on the chart', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // state_version 2 is the newest point the history already carries. A
+    // later `occurred_at` must not make it look like a new trade: the same
+    // trade carries one time on its point and another on its frame
+    // (ledger-service.md, "Dedupe on state_version, never on time").
+    await act(async () => {
+      wsClient?.send(JSON.stringify({
+        type: 'price',
+        market_id: 'mkt-abc',
+        state_version: 2,
+        prices: [
+          { outcome_id: 'o1', position: 0, price: '0.5744' },
+          { outcome_id: 'o2', position: 1, price: '0.4256' },
+        ],
+        occurred_at: '2026-09-15T09:00:09Z',
+      }))
+    })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(screen.getByText(/showing all 3 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's third: frames published while a dropped connection was away are
+  // gone (ADR 0010), so a reconnect re-reads the history rather than trusting
+  // the frames it missed.
+  it('re-reads the history after a reconnect', async () => {
+    let reads = 0
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => {
+        reads += 1
+        // The second read sees a trade that happened while the socket was away.
+        const points = reads === 1 ? threeTrades : [...threeTrades, pricePoint(3, '2026-09-16T09:00:00Z', '0.7000', '0.3000')]
+        return HttpResponse.json(priceHistory('mkt-abc', points))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // An abnormal close, so the hook reconnects and subscribes again.
+    act(() => wsClient!.close(1006))
+
+    expect(await screen.findByText(/showing all 4 price points/i, undefined, { timeout: 5000 })).toBeInTheDocument()
+  })
+
   it('charts the history of a market that has stopped trading', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status: 'settled' })),
