@@ -222,12 +222,13 @@ describe('usePricesForMarkets', () => {
       asked.push(ids)
       return HttpResponse.json({ snapshots: ids.map(id => snapshotPriced('0.6000', id)) })
     }))
-    const longList = marketsNumbered(0, 201)
+    // Fifty followed, and 201 past the cap: one read of those would be a 201.
+    const longList = marketsNumbered(0, 251)
 
     const { result } = renderHook(() => usePricesForMarkets(longList))
 
-    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(201))
-    expect(asked.map(ids => ids.length).sort((left, right) => right - left)).toEqual([200, 1])
+    await waitFor(() => expect(result.current.snapshotsByMarket.size).toBe(251))
+    expect(Math.max(...asked.map(ids => ids.length))).toBeLessThanOrEqual(200)
   })
 
   // [X-1] #444 AC 1: one socket per page, following every market rendered.
