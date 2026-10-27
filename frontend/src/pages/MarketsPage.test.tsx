@@ -1338,6 +1338,10 @@ describe('the trader\'s own position on a card', () => {
 // so the list gains a few short curated bands above it. Each states its rule,
 // an empty one disappears, and a filtered view collapses back to one list.
 describe('the curated sections above the list', () => {
+  // One test here stubs the socket to send a price frame; this puts the real
+  // global back even when that test fails part way.
+  afterEach(() => vi.unstubAllGlobals())
+
   // Closing within the day puts a market in "Closing soon"; a1's close_time in
   // mockMarkets is years out, so a band needs its own market.
   const closingSoon = {
@@ -1470,5 +1474,45 @@ describe('the curated sections above the list', () => {
     expect(trending).not.toBeNull()
     expect(within(trending as HTMLElement).getByText('Will the runner-up be banded?')).toBeInTheDocument()
     expect(within(trending as HTMLElement).queryByText('Will SMU win SUNIG?')).not.toBeInTheDocument()
+  })
+
+  // A price frame carries the prices and nothing else: no `credits_traded`,
+  // no `prices_7d_ago` (ledger-service.md). The bands rank on those, so a
+  // trade arriving on the socket must reprice the card without emptying the
+  // band it sits in.
+  it('keeps Trending when a price frame arrives for a market in it', async () => {
+    const second = {
+      id: 'c3',
+      status: 'open',
+      question: 'Will the runner-up be banded?',
+      close_time: '2099-02-05T12:00:00Z',
+      outcomes: outcomesFor('c3', ['Yes', 'No']),
+    }
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0], second], next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '30.0000',
+      prices_7d_ago: null,
+    }))
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    renderPage()
+    await screen.findByRole('heading', { name: 'Trending' })
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      for (const command of latestSocket().sent.filter(sent => sent.action === 'subscribe')) {
+        latestSocket().receive({ type: 'subscribed', market_id: command.market_id })
+      }
+    })
+
+    await act(async () => {
+      latestSocket().receive({ type: 'price', ...snapshotFor('c3', ['0.7000', '0.3000']), state_version: 4 })
+    })
+
+    const trending = screen.getByRole('region', { name: 'Trending' })
+    await waitFor(() => expect(within(trending).getByLabelText(/^Yes price/)).toHaveTextContent('70.0%'))
+    expect(within(trending).getByText('Will the runner-up be banded?')).toBeInTheDocument()
   })
 })
