@@ -155,7 +155,9 @@ export default function MarketDetailPage() {
   // (realtime-service.md, "Reconnecting": the orders and the balance again).
   const onOrdersChanged = useCallback(() => {
     refetchOrders()
-    refetchBalance()
+    // `void`: BalanceContext's refetch catches its own failure and settles
+    // either way, and this caller has nothing to do with the answer (#551).
+    void refetchBalance()
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
 
@@ -178,16 +180,27 @@ export default function MarketDetailPage() {
   const onFrame = useCallback((frame: OrderFrame) => {
     applyFrame(frame)
     refetchOrders()
-    refetchBalance()
+    // `void`, as above.
+    void refetchBalance()
     refetchHeld()
   }, [applyFrame, refetchOrders, refetchBalance, refetchHeld])
 
   // One socket for the page: price frames keep the prices above current, and
   // order frames the list below it. Order frames need no subscribe, so they
   // arrive on this same connection (realtime-service.md, "Order updates").
-  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
+  // Bumped on every `subscribed` ack, the first included: frames published
+  // while a dropped connection was away are gone (ADR 0010), so the price
+  // history has to be read again rather than caught up from frames ([T-5]
+  // #495). The first ack's read is a harmless repeat of the mount's.
+  const [subscribes, setSubscribes] = useState(0)
+  const onSubscribed = useCallback(() => {
+    onOrdersChanged()
+    setSubscribes(count => count + 1)
+  }, [onOrdersChanged])
+
+  const { prices, status: priceStatus, snapshot: livePrice } = useMarketPrices(market?.id ?? null, {
     onOrderFrame: onFrame,
-    onSubscribed: onOrdersChanged,
+    onSubscribed,
   })
   // Re-evaluates the instant the dispute window closes, rather than only at
   // whatever render happens to run next — an approved market has no trades
@@ -334,7 +347,17 @@ export default function MarketDetailPage() {
               them, so the history arriving after first paint never moves the
               controls a trader is reaching for (#453). Every status: a closed
               market's history still says how it got there. */}
-          <PriceHistorySection key={tradesMade} marketId={market.id} outcomes={market.outcomes} />
+          {/* The chart follows the socket, so another trader's trade reaches
+              it without a remount ([T-5] #495). `key` still restarts it on
+              the trader's own trade: that read is the one that turns "no
+              trades yet" into a chart on a market whose book had none. */}
+          <PriceHistorySection
+            key={tradesMade}
+            marketId={market.id}
+            outcomes={market.outcomes}
+            liveSnapshot={livePrice}
+            reconnects={subscribes}
+          />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />
