@@ -1,5 +1,5 @@
 import { expect, test } from './support/fixtures'
-import { buy, closeEarly, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
+import { buy, closeEarly, publishMarket, registerAdmin, registerTrader, uniqueName, voidMarket } from './support/backend'
 import { loadUntilShown, logIn, selectTab } from './support/browser'
 
 // [FE] #526, across market_service and the ledger: the control reads
@@ -78,3 +78,24 @@ test('an admin voids a closed market, and a holder sees the refund in their port
   await traderContext.close()
 })
 
+// [FE] #526: a market voided while an admin has the propose form open. The
+// void lands through the API after the page has drawn the form and before it
+// is sent, so the proposal is refused as `market_already_voided` every run,
+// rather than only when two admins happen to race.
+test('a proposal sent after the market was voided says it was voided, not that it failed', async ({ page }) => {
+  const admin = await registerAdmin('vm_propose')
+  const market = await publishMarket(admin, `Will ${uniqueName('voidpropose')} resolve yes?`)
+  await closeEarly(admin, market.id)
+
+  await logIn(page, admin)
+  await page.goto(`/admin/markets/${market.id}/propose-outcome`)
+  await expect(page.getByRole('heading', { level: 1, name: 'Propose Outcome', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await page.getByLabel('Written note').fill('Proposed by the end-to-end test after the market was voided.')
+
+  await voidMarket(admin, market.id, 'Voided by the end-to-end test while the propose form was open.')
+  await page.getByRole('button', { name: 'Propose Outcome', exact: true }).click()
+
+  await expect(page.getByText('This market has been voided, so it takes no outcome.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Propose Outcome', exact: true })).toHaveCount(0)
+})

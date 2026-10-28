@@ -293,6 +293,16 @@ export async function settleMarket(admin: Session, marketId: string): Promise<vo
   await call('POST', `${LEDGER_URL}/ledger/markets/${marketId}/settlement`, admin.accessToken)
 }
 
+/**
+ * Voids a market with no winner ([FE] #526, ADR 0025): the ledger's own
+ * request, refunding every holder and then telling market_service. The suite
+ * voids through the browser in void-market.e2e.ts; this is for a test that
+ * needs the void to land at an exact moment, between two clicks.
+ */
+export async function voidMarket(admin: Session, marketId: string, reason: string): Promise<void> {
+  await call('POST', `${LEDGER_URL}/ledger/markets/${marketId}/void`, admin.accessToken, { reason })
+}
+
 interface Snapshot {
   state_version: number
   prices: { outcome_id: string; price: string }[]
