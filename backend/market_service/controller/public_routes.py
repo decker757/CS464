@@ -14,11 +14,16 @@ from fastapi import APIRouter, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import AwareDatetime
 
-from controller.dependencies import CurrentUser, DbSession, PageCursor, PageLimit
+from controller.dependencies import (
+    CurrentUser,
+    DbSession,
+    PageCursor,
+    PageLimit,
+    QuestionSearch,
+)
 from core.paging import page_size_of
 from model.entities import MarketStatus, PublicMarketStatus
 from model.schemas import (
-    MAX_QUESTION_LENGTH,
     PublicMarketListResponse,
     PublicMarketOut,
     PublicMarketSummaryOut,
@@ -186,20 +191,7 @@ def _refuse_if_window_empty(
 async def browse_markets(
     user: CurrentUser,
     session: DbSession,
-    q: str | None = Query(
-        default=None,
-        alias="q",
-        max_length=MAX_QUESTION_LENGTH,
-        # No NUL: Postgres text cannot hold one, and asyncpg's error would be
-        # a 500. Refused as a 422 rather than stripped, which would answer a
-        # question the trader did not ask.
-        pattern=r"^[^\x00]*$",
-        description=(
-            "Case-insensitive containment search over the question. "
-            "Surrounding whitespace is ignored, and a blank search is the "
-            "same as omitting it."
-        ),
-    ),
+    q: QuestionSearch = None,
     status: PublicStatusFilter | None = Query(
         default=None,
         description=(
