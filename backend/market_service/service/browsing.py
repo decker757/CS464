@@ -84,6 +84,16 @@ def _question_contains(query: str) -> ColumnElement[bool]:
     return Market.question.ilike(f"%{escaped}%", escape=_LIKE_ESCAPE)
 
 
+def _question_search(query: str | None) -> list[ColumnElement[bool]]:
+    """The WHERE of a question search: `_question_contains` on the stripped
+    input, or nothing when that is blank, so `?q=%20%20` means what `?q=` does.
+    """
+    search = (query or "").strip()
+    if not search:
+        return []
+    return [_question_contains(search)]
+
+
 def _closes_within(
     closes_from: datetime | None, closes_before: datetime | None
 ) -> list[ColumnElement[bool]]:
@@ -313,10 +323,7 @@ async def browse(
     if status is not None:
         stmt = stmt.where(_status_matches(status, now))
 
-    # Blank after stripping is no filter, so `?q=%20%20` means what `?q=` does.
-    search = (query or "").strip()
-    if search:
-        stmt = stmt.where(_question_contains(search))
+    stmt = stmt.where(*_question_search(query))
 
     # A WHERE that leaves the order alone, so the keyset below pages the
     # filtered rows exactly as it pages all of them.
