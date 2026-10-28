@@ -1192,6 +1192,41 @@ describe('MarketDetailPage — price history', () => {
     expect(await screen.findByText(/showing all 5 price points/i)).toBeInTheDocument()
   })
 
+  // #495's second, from the other side: "never goes backwards". A read begun
+  // before a trade can land after that trade's frame, and must not take the
+  // trade's point off the chart when it does.
+  it('keeps a frame that arrived while the history was still being read', async () => {
+    let releaseHistory = () => {}
+    const historyHeld = new Promise<void>(resolve => { releaseHistory = resolve })
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, async () => {
+        await historyHeld
+        return HttpResponse.json(priceHistory('mkt-abc', threeTrades))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/loading price history/i)).toBeInTheDocument()
+    await waitFor(() => expect(wsClient).not.toBeNull())
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(3, '0.7000', '0.3000') })))
+    await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('70.0%'))
+
+    // The read answers with what the ledger held before the trade.
+    releaseHistory()
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+  })
+
   // #495's second: a frame whose state_version the chart already holds is
   // skipped, so a refetch and the frames around it never draw a trade twice.
   it('ignores a frame for a trade already on the chart', async () => {
