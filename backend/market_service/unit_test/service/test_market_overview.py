@@ -798,9 +798,9 @@ async def test_the_search_narrows_the_overview_to_questions_containing_it(
 async def test_the_search_treats_like_wildcards_and_the_escape_as_text(
     session: AsyncSession,
 ) -> None:
-    """#555: "`%`, `_` and `\` match as text", as on `/public/markets`. The
+    """#555: "`%`, `_` and `\\` match as text", as on `/public/markets`. The
     overview's own wiring: a bare `ilike` passes the test above and fails
-    here. Unescaped, `2%` and `_` match every question below, and `\T` is a
+    here. Unescaped, `2%` and `_` match every question below, and `\\T` is a
     dangling escape that raises."""
     caller = actor()
     now = _injected_now()
@@ -818,12 +818,12 @@ async def test_the_search_treats_like_wildcards_and_the_escape_as_text(
         session,
         caller,
         now + timedelta(days=4),
-        question="Will the C:\Temp retention policy be published in 2027?",
+        question="Will the C:\\Temp retention policy be published in 2027?",
     )
 
     by_percent, _ = await _overview(session, caller, query="2%", now=now)
     by_underscore, _ = await _overview(session, caller, query="_", now=now)
-    by_backslash, _ = await _overview(session, caller, query="C:\Temp", now=now)
+    by_backslash, _ = await _overview(session, caller, query="C:\\Temp", now=now)
 
     assert _ids(by_percent) == [percent]
     assert _ids(by_underscore) == [underscored]
