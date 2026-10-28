@@ -328,17 +328,13 @@ export default function TradingPanel({
         </p>
       )}
 
-      {/* Always on the market ticket and empty until there is something to
-          say: a screen reader announces a live region's content changing,
-          and may not announce one that arrives with its content already in
-          it. The offer itself is shared with the limit ticket (#496). */}
-      <div role="status">
-        <HoldsNoneToSell
-          holdsNone={holdsNoneToSell}
-          outcomeLabel={selectedOutcome?.label ?? ''}
-          onBuyInstead={handleBuyInstead}
-        />
-      </div>
+      {/* Always on the market ticket: its live region is empty until there is
+          something to say. Shared with the limit ticket (#496). */}
+      <HoldsNoneToSell
+        holdsNone={holdsNoneToSell}
+        outcomeLabel={selectedOutcome?.label ?? ''}
+        onBuyInstead={handleBuyInstead}
+      />
 
       {holdsNoneToSell ? null : (
         <>
