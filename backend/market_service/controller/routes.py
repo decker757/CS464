@@ -17,6 +17,7 @@ from controller.dependencies import (
     DbSession,
     PageCursor,
     PageLimit,
+    QuestionSearch,
 )
 from core.paging import page_size_of
 from model.entities import MarketStatus
@@ -515,7 +516,10 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
 @router.get(
     "/overview",
     response_model=MarketOverviewResponse,
-    summary="Every market I can see, a page at a time, filtered by status, with counts",
+    summary=(
+        "Every market I can see, a page at a time, filtered by status or "
+        "question, with counts"
+    ),
     description=(
         "[2.1] #5, #210. Every published market, plus the calling "
         "administrator's own drafts and submissions; another administrator's "
@@ -537,10 +541,14 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
         "unfiltered view, in the same order among themselves. One settled "
         "or voided between two page reads moves to the end and can appear "
         "twice.\n\n"
+        "`q` (#555) searches the question exactly as `GET /public/markets`'s "
+        "`q` does, the caller's own drafts and submissions included, and "
+        "composes with `status`. Like `status`, it narrows the list and "
+        "leaves `counts` alone.\n\n"
         "Paged by keyset (#210). Send `next_cursor` back as `cursor`, with the "
-        "same `status` and `limit`, to continue; null means there is nothing "
-        "after this page. `limit` defaults to the server's page size (50) and "
-        "a value above its maximum (200) is clamped."
+        "same `q`, `status` and `limit`, to continue; null means there is "
+        "nothing after this page. `limit` defaults to the server's page size "
+        "(50) and a value above its maximum (200) is clamped."
     ),
     responses={
         400: {
@@ -549,12 +557,19 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
             )
         },
         403: {"description": "`not_an_administrator` — a trader."},
-        422: {"description": "`status` is not one of the eight, or `limit` is below 1."},
+        422: {
+            "description": (
+                "`status` is not one of the eight, `q` is longer than a "
+                "question may be or contains a NUL character, or `limit` is "
+                "below 1."
+            )
+        },
     },
 )
 async def market_overview(
     admin: CurrentAdmin,
     session: DbSession,
+    q: QuestionSearch = None,
     status: MarketStatus | None = Query(
         default=None,
         description="Restrict the list to one status. Counts are unaffected.",
@@ -570,6 +585,7 @@ async def market_overview(
         session,
         caller_id=admin.user_id,
         limit=page_size_of(limit),
+        query=q,
         status=status,
         now=now,
         cursor=cursor,
