@@ -161,7 +161,8 @@ test('selling on the limit ticket with nothing held offers to buy it instead', a
   await page.getByRole('button', { name: 'Buy No instead' }).click()
   await expect(buyToggle).toHaveAttribute('aria-pressed', 'true')
   await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.getByLabel('Limit price')).toBeVisible()
+  // The clicked button has gone, so focus moves on to the form's first field.
+  await expect(page.getByLabel('Limit price')).toBeFocused()
 
   // The outcome the trader does hold keeps its form: this is about an empty
   // holding, not about selling on the limit ticket at all.
