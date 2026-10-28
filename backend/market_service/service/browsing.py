@@ -4,8 +4,9 @@ Browse ([X-1] #34), search and filter ([X-2] #35), detail ([X-3] #36), and the
 per-status counts (D-020), which the admin overview ([2.1] #5) reuses, as it
 does the status filter and the question search (#555). Every filter, count
 and status here derives from the clock through `service/closing.py`, never
-from the status column alone (ADR 0011, D-022). No prices: `q` lives with the ledger (ADR 0005).
-Each browse card names its outcomes (#214), so a card never guesses a label.
+from the status column alone (ADR 0011, D-022). No prices: `q` lives with the
+ledger (ADR 0005). Each browse card names its outcomes (#214), so a card never
+guesses a label.
 """
 
 from __future__ import annotations
