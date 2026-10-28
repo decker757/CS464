@@ -12,9 +12,9 @@ interface PriceHistorySectionProps {
    * first one arrives ([T-5] #495).
    *
    * A point is a `price` frame without `type` and `market_id`
-   * (ledger-service.md), so the newest one folds straight into the history —
-   * which is what keeps the chart level with the price cards above it after
-   * somebody else's trade.
+   * (ledger-service.md), so each one this section sees is kept and folded
+   * into the history — which is what keeps the chart level with the price
+   * cards above it after somebody else's trade.
    */
   liveSnapshot?: PriceState | null
   /**
@@ -58,6 +58,18 @@ export default function PriceHistorySection({
 }: PriceHistorySectionProps) {
   const [read, setRead] = useState<HistoryRead>({ status: 'loading' })
 
+  // Every book state the socket has reported since this section mounted,
+  // oldest first. The socket hook keeps only the newest per market, so drawing
+  // that alone would drop one trade's point as soon as the next one arrived.
+  // Kept apart from the read, so a read that lands after a frame — begun
+  // before that trade, or re-read after a reconnect — cannot wipe it out.
+  const [liveFrames, setLiveFrames] = useState<PricePoint[]>(() => (liveSnapshot ? [liveSnapshot] : []))
+  const [lastSnapshot, setLastSnapshot] = useState(liveSnapshot)
+  if (liveSnapshot !== lastSnapshot) {
+    setLastSnapshot(liveSnapshot)
+    setLiveFrames(frames => withLiveFrame(frames, liveSnapshot))
+  }
+
   useEffect(() => {
     let cancelled = false
     getMarketPriceHistory(marketId).then(
@@ -69,11 +81,15 @@ export default function PriceHistorySection({
     // this effect, which is the re-read a reconnect needs.
   }, [marketId, reconnects])
 
-  // The history the chart draws: what the ledger returned, plus the newest
-  // frame when it is newer than the last point. A frame the history already
-  // holds is dropped, so the read after a reconnect and the frames that
-  // follow it cannot draw the same trade twice.
-  const points = read.status === 'loaded' ? withLiveFrame(read.points, liveSnapshot) : []
+  // The history the chart draws: what the ledger returned, plus each frame
+  // newer than its last point. A frame the history already holds is dropped,
+  // so the read after a reconnect and the frames around it cannot draw the
+  // same trade twice.
+  let points: PricePoint[] = []
+  if (read.status === 'loaded') {
+    points = read.points
+    for (const frame of liveFrames) points = withLiveFrame(points, frame)
+  }
 
   return (
     <SectionCard title="Price History" className="mb-6">
