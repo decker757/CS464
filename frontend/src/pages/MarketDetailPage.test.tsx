@@ -1238,12 +1238,16 @@ describe('MarketDetailPage — price history', () => {
   // the frames it missed.
   it('re-reads the history after a reconnect', async () => {
     let reads = 0
+    let dropped = false
     let wsClient: { close(code?: number): void } | null = null
     server.use(
       http.get(THIS_MARKETS_HISTORY, () => {
         reads += 1
-        // The second read sees a trade that happened while the socket was away.
-        const points = reads === 1 ? threeTrades : [...threeTrades, pricePoint(3, '2026-09-16T09:00:00Z', '0.7000', '0.3000')]
+        // Only a read after the drop sees the trade made while the socket was
+        // away. Keyed on the drop and not on the read count, because the
+        // first ack re-reads too: a count would hand that read the trade, and
+        // the test would pass with no re-read on the reconnect at all.
+        const points = dropped ? [...threeTrades, pricePoint(3, '2026-09-16T09:00:00Z', '0.7000', '0.3000')] : threeTrades
         return HttpResponse.json(priceHistory('mkt-abc', points))
       }),
       priceService.addEventListener('connection', ({ client }) => {
@@ -1258,12 +1262,17 @@ describe('MarketDetailPage — price history', () => {
     )
 
     renderPage()
+    // The mount's read and the first ack's, both before the drop.
+    await waitFor(() => expect(reads).toBe(2))
     expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
 
     // An abnormal close, so the hook reconnects and subscribes again.
+    dropped = true
     act(() => wsClient!.close(1006))
 
-    expect(await screen.findByText(/showing all 4 price points/i, undefined, { timeout: 5000 })).toBeInTheDocument()
+    // The first retry waits one second. Three is room for it and still under
+    // the test's own five, so a missing re-read fails here and not as a timeout.
+    expect(await screen.findByText(/showing all 4 price points/i, undefined, { timeout: 3000 })).toBeInTheDocument()
   })
 
   it('charts the history of a market that has stopped trading', async () => {
