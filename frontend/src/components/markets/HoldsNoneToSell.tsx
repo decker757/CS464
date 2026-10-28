@@ -1,11 +1,14 @@
+import type { ReactNode } from 'react'
 import Button from '../ui/Button'
 
 interface HoldsNoneToSellProps {
   /** True once the trader has chosen Sell on an outcome they hold none of. */
   holdsNone: boolean
   outcomeLabel: string
-  /** Switches the ticket to a buy of this outcome, and focuses the quantity. */
+  /** Switches the ticket to a buy of this outcome. */
   onBuyInstead: () => void
+  /** Any other line the ticket announces, which shares this live region. */
+  children?: ReactNode
 }
 
 // What a ticket says instead of offering a form, when the trader has chosen
@@ -16,21 +19,25 @@ interface HoldsNoneToSellProps {
 // ticket carried this inline from #478; the limit ticket needed the same
 // thing, so it is one component rather than two copies.
 //
-// **The sentence goes in the caller's own live region, and the caller renders
-// that region whether or not there is anything to say.** A screen reader
-// announces a live region whose content changes and may not announce one that
-// arrives with its content already in it — and each ticket has exactly one
-// such region, shared with its "placed" and "traded" lines, so this cannot
-// bring a second one of its own.
-export default function HoldsNoneToSell({ holdsNone, outcomeLabel, onBuyInstead }: HoldsNoneToSellProps) {
-  if (!holdsNone) return null
-
+// **The live region is rendered whenever the ticket is, on either side, and
+// is empty until there is something to say.** A screen reader announces a
+// live region whose content changes and may not announce one that arrives
+// with its content already in it — and the holding is usually known before
+// Sell is pressed, so a region mounted by Sell would arrive with the sentence
+// in it. The button sits after the region, as #478 shipped it: the region
+// announces the fact, and the offer is an ordinary button.
+export default function HoldsNoneToSell({ holdsNone, outcomeLabel, onBuyInstead, children }: HoldsNoneToSellProps) {
   return (
     <>
-      <p className="mb-3 text-sm text-smu-navy">You don't hold any {outcomeLabel} shares.</p>
-      <Button variant="primary" size="block" onClick={onBuyInstead}>
-        Buy {outcomeLabel} instead
-      </Button>
+      <div role="status">
+        {children}
+        {holdsNone && <p className="mb-3 text-sm text-smu-navy">You don't hold any {outcomeLabel} shares.</p>}
+      </div>
+      {holdsNone && (
+        <Button variant="primary" size="block" onClick={onBuyInstead}>
+          Buy {outcomeLabel} instead
+        </Button>
+      )}
     </>
   )
 }
