@@ -74,7 +74,10 @@ export default function PriceHistorySection({
     let cancelled = false
     getMarketPriceHistory(marketId).then(
       history => { if (!cancelled) setRead({ status: 'loaded', points: history.points }) },
-      () => { if (!cancelled) setRead({ status: 'failed' }) },
+      // A re-read that fails leaves a history already drawn where it is, as the
+      // price cards keep their last price through a drop (#37 AC 7). Only a
+      // section with nothing to show yet shows the error.
+      () => { if (!cancelled) setRead(previous => (previous.status === 'loaded' ? previous : { status: 'failed' })) },
     )
     return () => { cancelled = true }
     // `reconnects` is not read in here, and is the point: a new value re-runs
