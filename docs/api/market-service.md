@@ -55,7 +55,7 @@ has not traded it, and why the reason is kept on the market:
 | POST | `/markets/{id}/settle` | Mark an approved market settled — **the ledger's call only** |
 | POST | `/markets/{id}/void` | Mark a market voided — **the ledger's call only** (ADR 0025, not built yet) |
 | GET | `/markets` | List my own markets |
-| GET | `/markets/overview` | Every market I can see, a page at a time, by status, with counts |
+| GET | `/markets/overview` | Every market I can see, a page at a time, by status or question, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
 
@@ -1158,15 +1158,15 @@ first. A summary, not the whole market:
 }
 ```
 
-## GET /markets/overview — [2.1] #5, #210
+## GET /markets/overview — [2.1] #5, #210, #555
 
-One page of the markets the calling administrator can see, filtered by status,
-with a count for every status over all of them. Declared before
-`GET /markets/{id}`, so `overview` is never parsed as an id. A trader is
-refused with `403 not_an_administrator`.
+One page of the markets the calling administrator can see, filtered by status
+or searched by question, with a count for every status over all of them.
+Declared before `GET /markets/{id}`, so `overview` is never parsed as an id. A
+trader is refused with `403 not_an_administrator`.
 
 ```
-GET /markets/overview?status=closed&limit=50
+GET /markets/overview?status=closed&q=inflation&limit=50
 ```
 
 ```json
@@ -1209,6 +1209,13 @@ GET /markets/overview?status=closed&limit=50
   once ADR 0025 is built; until then it is a `422`), including `draft` and
   `submitted`, which the trader filter refuses, and `settled`. Anything else is
   a `422`.
+- **`?q=`** (#555) is the same question search as
+  [`GET /public/markets`](#get-publicmarkets)'s `q`: case-insensitive
+  containment, `%`, `_` and `\` matched as text, surrounding whitespace
+  ignored, and a blank `q` the same as none. It searches everything the
+  caller can see, so the caller's own drafts and submitted markets too, and
+  composes with `?status=`. A `q` that holds a NUL or is longer than a
+  question may be (500 characters) is a `422`, on both routes.
 - **`settleable`** ([3.4] #12) is a boolean on every row, so the settle control
   can be hidden until a click could succeed. It is `true` on an `approved`
   market from five minutes after the dispute window ends, and always `true` on
@@ -1227,10 +1234,11 @@ GET /markets/overview?status=closed&limit=50
   settle control reads `settleable`, never this.
 - **`counts`** is an object of integers keyed by every status, `0` when there
   are none, over **every market the caller can see — every page, not just this
-  one**. It ignores `?status=` and `cursor`, so each count equals the length of
-  that status's whole filtered list and the counts sum to the length of the
-  whole unfiltered list. An "All" total is the sum of the counts, not the
-  length of `markets`. The page and the counts are two reads in one
+  one**. It ignores `?status=`, `?q=` and `cursor`, so each count equals the
+  length of that status's whole filtered list and the counts sum to the length
+  of the whole unfiltered list. A search changes the list and never the tabs'
+  numbers. An "All" total is the sum of the counts, not the length of
+  `markets`. The page and the counts are two reads in one
   transaction at `REPEATABLE READ`, so they describe the same snapshot of the
   data, and both judge `status` by the same instant.
 - **Order** is soonest `close_time` first, markets with no `close_time` last,
@@ -1256,13 +1264,14 @@ GET /markets/overview?status=closed&limit=50
 | Query parameter | Rule |
 | --- | --- |
 | `status` | one of the statuses above (seven built, and `voided` not built yet); anything else is a `422` |
+| `q` | case-insensitive containment search over the question, as on `GET /public/markets`; a NUL or more than 500 characters is a `422` |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
 ### Paging
 
 Paged by keyset (#210). Send the previous response's `next_cursor` back as
-`cursor`, with the same `status` and `limit`, for the next page.
+`cursor`, with the same `q`, `status` and `limit`, for the next page.
 `next_cursor: null` means there is nothing after this page, including when the
 page is empty. The cursor is opaque: do not build or edit one.
 
@@ -1281,9 +1290,9 @@ Pages read in turn do not repeat or skip a market that kept its place:
   end and can appear twice. Show each `id` once, and start again without a
   cursor for an exact list.
 
-The cursor does not record `status`. Changing the filter and sending an old
-cursor is not an error, but it continues from a position in the old list;
-start again without a cursor instead.
+The cursor does not record `q` or `status`. Changing either and sending an
+old cursor is not an error, but it continues from a position in the old
+list; start again without a cursor instead.
 
 ### When it is refused
 
@@ -1292,7 +1301,7 @@ start again without a cursor instead.
 | 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
 | 403 | `not_an_administrator` | a trader |
-| 422 | — | `status` is not one of the seven built statuses (`voided` too, until ADR 0025 is built), or `limit` is below 1 |
+| 422 | — | `status` is not one of the seven built statuses (`voided` too, until ADR 0025 is built), `q` is too long or holds a NUL, or `limit` is below 1 |
 
 ## GET /markets/{id}
 
