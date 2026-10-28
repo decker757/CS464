@@ -1310,6 +1310,46 @@ describe('MarketDetailPage — price history', () => {
     expect(await screen.findByText(/showing all 4 price points/i, undefined, { timeout: 3000 })).toBeInTheDocument()
   })
 
+  // The re-read on a reconnect is a top-up, not the chart's only source: if it
+  // fails, the history already drawn stays, as the price cards keep their last
+  // price through a drop (#37 AC 7). Swapping it for an error would take the
+  // chart off the page over a request the trader never asked for.
+  it('keeps the chart when the re-read after a reconnect fails', async () => {
+    let reads = 0
+    let dropped = false
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => {
+        reads += 1
+        if (dropped) {
+          return HttpResponse.json({ error: { code: 'internal_error', message: 'Boom.' } }, { status: 500 })
+        }
+        return HttpResponse.json(priceHistory('mkt-abc', threeTrades))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    await waitFor(() => expect(reads).toBe(2))
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    dropped = true
+    act(() => wsClient!.close(1006))
+    await waitFor(() => expect(reads).toBe(3), { timeout: 3000 })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(screen.getByText(/showing all 3 price points/i)).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load price history.')).not.toBeInTheDocument()
+  })
+
   it('charts the history of a market that has stopped trading', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status: 'settled' })),
