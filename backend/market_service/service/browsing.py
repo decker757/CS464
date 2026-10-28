@@ -2,7 +2,7 @@
 
 Browse ([X-1] #34), search and filter ([X-2] #35), detail ([X-3] #36), and the
 per-status counts (D-020), which the admin overview ([2.1] #5) reuses, as it
-does the status filter. Every filter, count and status here derives from the
+does the status filter and the question search (#555). Every filter, count and status here derives from the
 clock through `service/closing.py`, never from the status column alone
 (ADR 0011, D-022). No prices: `q` lives with the ledger (ADR 0005).
 Each browse card names its outcomes (#214), so a card never guesses a label.
@@ -488,14 +488,16 @@ async def _list_overview_rows(
     *,
     caller_id: uuid.UUID,
     limit: int,
+    query: str | None,
     status: MarketStatus | None,
     now: datetime,
     after: OverviewPosition | None,
 ) -> Sequence[Row]:
     """Up to `limit + 1` overview rows after `after`, in the overview's order.
 
-    The status filter is the browse's (`_status_matches`), in the query and
-    so before the limit. Columns, not entities, for the reason `browse` gives.
+    The question search and the status filter are the browse's
+    (`_question_search`, `_status_matches`), in the query and so before the
+    limit. Columns, not entities, for the reason `browse` gives.
     """
     stmt = select(
         Market.id,
@@ -509,6 +511,8 @@ async def _list_overview_rows(
 
     if status is not None:
         stmt = stmt.where(_status_matches(status, now))
+
+    stmt = stmt.where(*_question_search(query))
 
     if after is not None:
         stmt = stmt.where(_after_in_overview(after))
@@ -566,6 +570,7 @@ async def overview(
     *,
     caller_id: uuid.UUID,
     limit: int,
+    query: str | None = None,
     status: MarketStatus | None = None,
     now: datetime,
     cursor: str | None = None,
@@ -573,9 +578,11 @@ async def overview(
     """One page of what an administrator can see, with counts over all of it. [2.1] #5, #210.
 
     Published markets plus the caller's own drafts and submissions: settled
-    and voided last, then soonest close with none last, then id. At most `limit`;
-    `next_cursor` is None on the last page. The counts cover every market the
-    caller can see, whatever `status` and `cursor` say. The page and the
+    and voided last, then soonest close with none last, then id. `query`
+    searches the question as `browse`'s does (#555) and composes with
+    `status`. At most `limit`; `next_cursor` is None on the last page. The
+    counts cover every market the caller can see, whatever `query`, `status`
+    and `cursor` say. The page and the
     counts are two statements in one REPEATABLE READ transaction, so they
     describe one snapshot, and read one `now` (D-025). Raises `MalformedCursor`
     for a cursor this service did not issue, and `InvalidRequestError` if the
@@ -599,6 +606,7 @@ async def overview(
             session,
             caller_id=caller_id,
             limit=limit,
+            query=query,
             status=status,
             now=now,
             after=after,
