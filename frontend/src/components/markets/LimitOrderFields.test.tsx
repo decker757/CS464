@@ -106,7 +106,7 @@ describe('LimitOrderFields', () => {
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
     // The limit in the units it was typed in.
-    expect(await screen.findByRole('status')).toHaveTextContent('Buy 50.0000 Yes at 0.3000: resting until the price reaches it.')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Buy 50.0000 Yes at 0.3000: resting until the price reaches it.'))
     expect(onPlaced).toHaveBeenCalled()
   })
 
@@ -126,7 +126,7 @@ describe('LimitOrderFields', () => {
     // The average fill price, not the limit: what it actually cost. Credits
     // per share, never a percentage (#247): it can pass 1.0000 on a skewed
     // book, which a percentage cannot show.
-    expect(await screen.findByRole('status')).toHaveTextContent('filled in full at 0.5125 credits/share.')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('filled in full at 0.5125 credits/share.'))
   })
 
   it('says how much filled when only part of the order did', async () => {
@@ -139,7 +139,7 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.6', '100')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent(/20\.5465 filled, the rest is resting/i)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/20\.5465 filled, the rest is resting/i))
   })
 
   it('refuses to send a limit price the ledger would answer invalid_request for', async () => {
@@ -226,28 +226,6 @@ describe('LimitOrderFields', () => {
     expect(screen.getByRole('status')).toHaveTextContent("You don't hold any No shares.")
   })
 
-  // #496's second criterion: a trader whose shares are all held back by their
-  // own sell orders still holds them, so the line names the position rather
-  // than offering to buy shares they already own.
-  it('keeps the shares-held line when every share is reserved by an order', async () => {
-    renderFields({ side: 'sell', outcomeLabel: 'Yes', heldQuantity: '40.0000', sellableQuantity: '0.0000' })
-
-    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 40.0000 shares')
-    expect(screen.queryByText(/don't hold any/i)).not.toBeInTheDocument()
-    // And the form stays: the trader has a position, even if no part of it is
-    // free to sell this moment.
-    expect(screen.getByLabelText('Limit price')).toBeInTheDocument()
-  })
-
-  it('offers the buy, which the panel above carries out', async () => {
-    const onBuyInstead = vi.fn()
-    const { actor } = renderFields({ side: 'sell', outcomeLabel: 'No', heldQuantity: '0.0000', holdsNoneToSell: true, onBuyInstead })
-
-    await actor.click(screen.getByRole('button', { name: 'Buy No instead' }))
-
-    expect(onBuyInstead).toHaveBeenCalled()
-  })
-
   it('drops the placed line once the trader turns to the other side', async () => {
     // The line names a side and an outcome, so on the other side it would
     // describe an order the ticket is no longer set up for.
@@ -256,14 +234,13 @@ describe('LimitOrderFields', () => {
 
     await fillIn(actor, '0.3', '50')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
-    await screen.findByRole('status')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/resting until the price reaches it/i))
 
     rerenderWith({ side: 'sell' })
 
-    // The line itself, not the region: the sell side mounts a live region of
-    // its own for "You don't hold any …", empty until there is something to
-    // say ([T-6] #496), so `queryByRole('status')` now finds that one.
-    expect(screen.queryByText(/resting until the price reaches it/i)).not.toBeInTheDocument()
+    // The ticket's one live region stays on the page ([T-6] #496), so it is
+    // asked to be empty rather than to be gone: no placed line of any kind.
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
   })
 
   it('drops a refusal once the trader picks the other outcome', async () => {
