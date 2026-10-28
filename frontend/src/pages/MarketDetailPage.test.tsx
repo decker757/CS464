@@ -1164,6 +1164,34 @@ describe('MarketDetailPage — price history', () => {
     expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
   })
 
+  // "A point for every live price frame", not only the newest: the socket
+  // hook keeps one snapshot per market, so a chart that drew only that
+  // snapshot lost the first of two trades the moment the second arrived.
+  it('keeps a point for each of two trades by others', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(3, '0.7000', '0.3000') })))
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(4, '0.8000', '0.2000') })))
+    expect(await screen.findByText(/showing all 5 price points/i)).toBeInTheDocument()
+  })
+
   // #495's second: a frame whose state_version the chart already holds is
   // skipped, so a refetch and the frames around it never draw a trade twice.
   it('ignores a frame for a trade already on the chart', async () => {
