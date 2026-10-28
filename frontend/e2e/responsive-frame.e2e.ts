@@ -81,8 +81,11 @@ test('no administrator screen scrolls sideways on a phone or on a desktop', asyn
 // whatever else is in the database: the longest username auth allows, in its
 // widest letter, a question with no space to wrap at, and a winner with none.
 // The browse list is measured too, because this market stays in the database
-// for every later run, and a trader's card drew its question unwrapped.
-test('no market list scrolls sideways with the longest username, an unbroken question or an unbroken outcome', async ({ page }) => {
+// for every later run, and a trader's card drew its question unwrapped. So are
+// the user list and the user's own page, found by searching for this admin
+// rather than left to whoever else is newest: the email is the username and
+// more, and both screens drew it unwrapped.
+test('no list scrolls sideways with the longest username, an unbroken question or an unbroken outcome', async ({ page }) => {
   // uniqueName adds up to twelve characters, which makes 32, auth's limit.
   const admin = await registerAdmin('W'.repeat(20))
   const question = `${'W'.repeat(400)}${uniqueName('q')}`
@@ -114,6 +117,27 @@ test('no market list scrolls sideways with the longest username, an unbroken que
     await expect(page.getByText(question)).toBeVisible()
     const browseList = await documentWidth(page)
     expect(browseList.scrollWidth, `/markets at ${viewport.width}px`).toBeLessThanOrEqual(browseList.clientWidth)
+
+    await page.goto('/admin/users')
+    await page.getByLabel('Search by username or email').fill(admin.username)
+    await page.getByRole('button', { name: 'Search' }).click()
+    // One card, and it is this admin's, so the list measured is the searched
+    // one and it draws this email. Before the search answers, there are more.
+    const userCards = page.getByRole('link').filter({ hasText: /@example\.com/i })
+    await expect(userCards).toHaveCount(1)
+    const userCard = userCards.filter({ has: page.getByText(admin.username, { exact: true }) })
+    await expect(userCard).toBeVisible()
+    const userList = await documentWidth(page)
+    expect(userList.scrollWidth, `/admin/users at ${viewport.width}px`).toBeLessThanOrEqual(userList.clientWidth)
+
+    // Opened from the card, since the email rides in on the link: a page
+    // opened by its address alone has no email to draw.
+    await userCard.click()
+    await expect(page.getByRole('heading', { level: 1, name: `${admin.username}'s History`, exact: true })).toBeVisible()
+    await expect(page.getByText(/@example\.com$/i)).toBeVisible()
+    await expect(page.getByText(/^Loading\b/)).toHaveCount(0)
+    const userPage = await documentWidth(page)
+    expect(userPage.scrollWidth, `/admin/users/${admin.id} at ${viewport.width}px`).toBeLessThanOrEqual(userPage.clientWidth)
   }
 })
 
