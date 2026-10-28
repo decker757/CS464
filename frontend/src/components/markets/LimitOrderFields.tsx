@@ -90,6 +90,7 @@ export default function LimitOrderFields({
   // order, and the only safe retry reuses the key so the ledger's own replay
   // recognises it rather than resting a second order (ledger-service.md).
   const idempotencyKeyRef = useRef(crypto.randomUUID())
+  const limitPriceInputRef = useRef<HTMLInputElement>(null)
 
   const priceError = limitPriceError(limitPrice)
   const sizeError = quantityError(quantity)
@@ -129,34 +130,33 @@ export default function LimitOrderFields({
     }
   }
 
+  // The button that was clicked goes with the notice, so focus moves on to
+  // this ticket's first field rather than dropping to the top of the page.
+  // The panel renders the buy side under flushSync before onBuyInstead
+  // returns, so the field is there to take it.
+  const handleBuyInstead = () => {
+    onBuyInstead()
+    limitPriceInputRef.current?.focus()
+  }
+
   return (
     <div>
-      {visiblePlaced && (
-        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
-          {visiblePlaced}
-        </p>
-      )}
-
       {/* The same offer the market ticket makes, in place of the form: a
           limit price and a quantity for shares the trader does not hold lead
-          only to the ledger's refusal ([T-6] #496).
-          
-          Its live region is mounted whenever this ticket is on a sell, and
-          empty until there is something to say — a screen reader announces a
-          region whose content changes and may not announce one that arrives
-          with its content already in it. Only on a sell, because the placed
-          line above is this ticket's other region and the two must not both
-          be present: the side is chosen in the panel, so turning to sell
-          mounts this one well before any sentence lands in it. */}
-      {side === 'sell' && (
-        <div role="status">
-          <HoldsNoneToSell
-            holdsNone={holdsNoneToSell}
-            outcomeLabel={outcomeLabel}
-            onBuyInstead={onBuyInstead}
-          />
-        </div>
-      )}
+          only to the ledger's refusal ([T-6] #496). Rendered on both sides,
+          so its live region is on the page before Sell is pressed, and the
+          placed line shares that region rather than being a second one. */}
+      <HoldsNoneToSell
+        holdsNone={holdsNoneToSell}
+        outcomeLabel={outcomeLabel}
+        onBuyInstead={handleBuyInstead}
+      >
+        {visiblePlaced && (
+          <p className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
+            {visiblePlaced}
+          </p>
+        )}
+      </HoldsNoneToSell>
 
       {holdsNoneToSell ? null : (
       <>
@@ -164,6 +164,7 @@ export default function LimitOrderFields({
         Limit price
       </label>
       <input
+        ref={limitPriceInputRef}
         id="limit-price"
         type="number"
         min="0.0001"

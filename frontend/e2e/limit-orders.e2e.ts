@@ -131,8 +131,9 @@ test('a limit order priced through the market fills on arrival', async ({ page }
 //
 // Only a browser sees this one: the dead end was four steps long — choose
 // Sell, pick the outcome, fill in a price and a quantity — and what it costs
-// a trader is the walk, not any single state. The ledger is never asked,
-// which is the point.
+// a trader is the walk, not any single state. No sell order reaches the
+// ledger, which is the point; the one buy at the end is how a real holding
+// arrives to turn the offer off.
 test('selling on the limit ticket with nothing held offers to buy it instead', async ({ page }) => {
   const admin = await registerAdmin('ln_admin')
   const market = await publishMarket(admin, `Will ${uniqueName('limit_none')} happen?`)
@@ -161,7 +162,24 @@ test('selling on the limit ticket with nothing held offers to buy it instead', a
   await page.getByRole('button', { name: 'Buy No instead' }).click()
   await expect(buyToggle).toHaveAttribute('aria-pressed', 'true')
   await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
+  // The clicked button has gone, so focus moves on to the form's first field.
+  await expect(page.getByLabel('Limit price')).toBeFocused()
+
+  // #478's last step: buy one No, priced through the market so it fills at
+  // once, and the offer gives way to the sell form. The holding the panel
+  // reads comes from the real ledger's portfolio, so this is the check that
+  // its answer, and not only a faked one, turns the offer off.
+  await page.getByLabel('Limit price').fill('0.90')
+  await page.getByLabel('Quantity (shares)').fill('1')
+  await page.getByRole('button', { name: 'Place buy order', exact: true }).click()
+  await expect(page.getByText(/^Buy 1\.0000 No at 0\.9000: filled in full at /)).toBeVisible()
+
+  await page.getByRole('button', { name: 'Sell', exact: true }).click()
+  await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByLabel('shares held')).toContainText('You hold 1.0000 shares')
+  await expect(holdsNone).toHaveCount(0)
   await expect(page.getByLabel('Limit price')).toBeVisible()
+  await expect(page.getByLabel('Quantity (shares)')).toBeVisible()
 
   // The outcome the trader does hold keeps its form: this is about an empty
   // holding, not about selling on the limit ticket at all.

@@ -134,10 +134,10 @@ export default function MarketDetailPage() {
     )
   }, [id, tradeable])
 
-  // The price history is read once, so the trader's own trade would leave it
-  // behind: on a fresh market it would go on saying nobody has traded. Each
-  // trade or limit placement here re-reads it (#453). Other traders' trades
-  // are not followed, nor a resting order's later fill (an order frame).
+  // Each trade or limit placement here re-reads the price history (#453).
+  // Other traders' trades reach the chart as price frames ([T-5] #495); the
+  // trader's own is read again as well, for the two cases a frame cannot
+  // cover, which the section's `key` below names.
   const [tradesMade, setTradesMade] = useState(0)
   const handleTraded = useCallback(() => {
     refetchHeld()
@@ -349,8 +349,9 @@ export default function MarketDetailPage() {
               market's history still says how it got there. */}
           {/* The chart follows the socket, so another trader's trade reaches
               it without a remount ([T-5] #495). `key` still restarts it on
-              the trader's own trade: that read is the one that turns "no
-              trades yet" into a chart on a market whose book had none. */}
+              the trader's own trade, for what a frame cannot carry: a socket
+              that is down or degraded sends none, and a trade that fills
+              resting orders makes a point per fill but one frame (ADR 0024). */}
           <PriceHistorySection
             key={tradesMade}
             marketId={market.id}
