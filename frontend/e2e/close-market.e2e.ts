@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { loadUntilShown, logIn } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [FE][2.3] #56, through the real market service: POST /markets/{id}/close
 // is already on dev, so this does not wait on a backend ticket. Any admin can
@@ -12,8 +12,9 @@ test('any admin can close another admin\'s market early, and new trades are then
   const market = await publishMarket(creator, `Will ${uniqueName('closeearly')} resolve yes?`)
 
   await logIn(page, closer)
+  await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  const card = await loadUntilShown(page, market.question)
+  const card = marketCard(page, market.question)
   await card.getByRole('button', { name: /^close$/i }).click()
 
   const confirm = page.getByRole('button', { name: /confirm close/i })
@@ -28,7 +29,7 @@ test('any admin can close another admin\'s market early, and new trades are then
   await expect(card.getByRole('button', { name: /^close$/i })).toHaveCount(0)
 
   await page.reload()
-  const reloadedCard = await loadUntilShown(page, market.question)
+  const reloadedCard = marketCard(page, market.question)
   await expect(reloadedCard.getByText('Closed').first()).toBeVisible()
   await expect(reloadedCard.getByRole('button', { name: /^close$/i })).toHaveCount(0)
 
