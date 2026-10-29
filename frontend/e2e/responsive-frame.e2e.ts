@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, closeEarly, proposeOutcome, publishMarket, registerAdmin, registerTrader, saveDraft, uniqueName } from './support/backend'
-import { boxOf, documentWidth, loadUntilShown, logIn, overflowingScreens, selectTab, type Screen } from './support/browser'
+import { boxOf, documentWidth, loadUntilShown, logIn, marketCard, overflowingScreens, selectTab, type Screen } from './support/browser'
 
 // [FE] #438. Every signed-in screen used to be two to three times the width
 // of a phone: the navbar was one row that never wrapped, and the create form
@@ -92,12 +92,17 @@ test('no list scrolls sideways with the longest username, an unbroken question o
   // The longest label market_service accepts.
   const winner = 'W'.repeat(120)
   const market = await publishMarket(admin, question, [winner, 'No'])
-  // Priced, so the browse card draws its sides in proportion (#441), and
-  // priced against the long label, so that side is held at its narrowest:
-  // 200 No shares at b = 100 leave the winner 11.9%.
-  await buy(await registerTrader('frame_skew'), market, 'No', '200')
   await closeEarly(admin, market.id)
   await proposeOutcome(admin, market, winner)
+  // The same again, traded, because a priced card draws its two sides above
+  // a split bar rather than as chips (#441), and that row has its own way to
+  // be too wide. Priced against the long label, so its side is the short end
+  // of the bar: 200 No shares at b = 100 leave the winner 11.9%.
+  const pricedQuestion = `${'W'.repeat(400)}${uniqueName('q_priced')}`
+  const priced = await publishMarket(admin, pricedQuestion, [winner, 'No'])
+  await buy(await registerTrader('frame_skew'), priced, 'No', '200')
+  await closeEarly(admin, priced.id)
+  await proposeOutcome(admin, priced, winner)
 
   await logIn(page, admin)
 
@@ -119,6 +124,7 @@ test('no list scrolls sideways with the longest username, an unbroken question o
     // closed a moment ago, leads its filter.
     await page.getByRole('radio', { name: 'Resolving', exact: true }).click()
     await expect(page.getByText(question)).toBeVisible()
+    await expect(marketCard(page, pricedQuestion).getByRole('img', { name: /^W+ 11\.9%, No 88\.1%$/ })).toBeVisible()
     const browseList = await documentWidth(page)
     expect(browseList.scrollWidth, `/markets at ${viewport.width}px`).toBeLessThanOrEqual(browseList.clientWidth)
 

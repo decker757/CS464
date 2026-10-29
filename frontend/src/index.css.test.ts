@@ -80,8 +80,7 @@ const SURFACE_ONLY = ['smu-gold', 'smu-cream', 'line', 'track', 'surface-muted']
 // `Badge`: 11px bold text on a 10% tint of its own tone, on either surface.
 // The same danger and success pairs at the same 10% are also TradingPanel's
 // active Buy/Sell toggle and the trade and placed-order confirmation
-// banners, and a browse card's Yes and No sides, so this table measures those
-// too (#380, #441).
+// banners, so this table measures those too (#380).
 const BADGE_TONES = [
   { tone: 'danger', text: 'danger-strong', tint: 'danger' },
   { tone: 'success', text: 'success-strong', tint: 'success' },
@@ -102,14 +101,11 @@ const BADGE_TONES = [
 const TONE_ON_OWN_TINT = [
   // AuthLayout's login/register error message.
   { site: 'the auth error message', text: 'danger-strong', tint: 'danger', alpha: 0.05 },
-  // LandingFeatures' numbered pill, MarketPreviewCard's "Example" pill and a
-  // browse card's gold side (#441): small bold gold text on a gold tint,
-  // which needs the darker gold-for-text token rather than the brand gold
-  // itself — and all three sit inside a white Card, never straight on cream.
+  // LandingFeatures' numbered pill and MarketPreviewCard's "Example" pill:
+  // small bold gold text on a gold tint, which needs the darker
+  // gold-for-text token rather than the brand gold itself — and both sit
+  // inside a white Card, never straight on cream.
   { site: 'small gold text on a gold tint', text: 'smu-gold-text', tint: 'smu-gold', alpha: 0.1, surfaces: ['a white card'] },
-  // A browse card's navy side, for an outcome that is neither Yes nor No
-  // (#441). Inside a white Card too.
-  { site: "a browse card's navy side", text: 'smu-navy', tint: 'smu-navy', alpha: 0.1, surfaces: ['a white card'] },
 ]
 
 // Without this, a token added later is simply absent from the lists above and
