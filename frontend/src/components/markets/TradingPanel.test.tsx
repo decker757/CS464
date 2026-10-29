@@ -162,16 +162,15 @@ describe('TradingPanel', () => {
     // the side row keeps the green/red trading convention rather than the
     // order type row's navy fill. The headings are what stops a trader
     // reading the pair as one control disagreeing with itself, and they are
-    // the groups' names for a screen reader too. The outcome row this used to
-    // ask about is now the page's price blocks (#429).
+    // the groups' names for a screen reader too.
     renderPanel({ limitOrdersAllowed: true })
 
     expect(screen.getByRole('group', { name: 'Order type' })).toContainElement(screen.getByRole('button', { name: 'Market' }))
     expect(screen.getByRole('group', { name: 'Buy or sell' })).toContainElement(screen.getByRole('button', { name: 'Buy' }))
   })
 
-  // #429: the outcome is chosen on the page's price blocks, so the panel no
-  // longer offers a choice of its own — it says which one it is trading,
+  // #429: the outcome is chosen on the page's price blocks, so the panel
+  // offers no choice of its own — it says which one it is trading,
   // which the limit ticket's button otherwise never names.
   it('names the outcome it trades, and offers no outcome choice of its own', () => {
     renderPanel({ outcomeId: 'o-no', limitOrdersAllowed: true })
@@ -615,7 +614,7 @@ describe('TradingPanel', () => {
     await screen.findByLabelText('trade preview')
 
     // No chosen on the page's price blocks (#429), which reach the panel as
-    // a new prop rather than a click inside it.
+    // a new prop.
     rerender(panel({ outcomeId: 'o-no' }))
 
     expect(screen.queryByLabelText('trade preview')).not.toBeInTheDocument()

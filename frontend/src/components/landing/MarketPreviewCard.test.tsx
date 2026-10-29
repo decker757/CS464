@@ -60,14 +60,23 @@ describe('MarketPreviewCard', () => {
     expect(container.querySelector('svg')).toBeNull()
   })
 
-  // The trading panel has one buy button, named after the outcome chosen in
-  // the toggle above it as the label is written ("Buy Yes", not "Buy YES"),
-  // with no price on it. The card used to draw a priced button for each side
-  // (#435).
+  // The trading panel has one buy button, named after the outcome chosen on
+  // the price blocks as the label is written ("Buy Yes", not "Buy YES"), with
+  // no price on it (#435).
   it('draws one buy control, for the chosen side, with no price on it', () => {
     render(<MarketPreviewCard />)
 
     expect(screen.getByText('Buy Yes')).toBeInTheDocument()
     expect(screen.queryByText(/buy no/i)).not.toBeInTheDocument()
+  })
+
+  // On the market page the price block is what chooses the side (#429), so
+  // the picture names each side once, on its price, and draws no outcome
+  // toggle beside the buy button.
+  it('names each side once, on its price, with no separate outcome toggle', () => {
+    render(<MarketPreviewCard />)
+
+    expect(screen.getAllByText('Yes')).toHaveLength(1)
+    expect(screen.getAllByText('No')).toHaveLength(1)
   })
 })
