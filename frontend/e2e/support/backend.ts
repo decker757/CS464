@@ -152,11 +152,8 @@ export async function promoteToAdmin(username: string): Promise<void> {
 }
 
 /** Suspends an account ([4.2] #14), as an administrator through the auth service. */
-export async function suspend(admin: Session, userId: string): Promise<void> {
-  await call('PATCH', `${AUTH_URL}/admin/users/${userId}/suspension`, admin.accessToken, {
-    suspended: true,
-    reason: 'Suspended by the end-to-end test.',
-  })
+export async function suspend(admin: Session, userId: string, reason = 'Suspended by the end-to-end test.'): Promise<void> {
+  await call('PATCH', `${AUTH_URL}/admin/users/${userId}/suspension`, admin.accessToken, { suspended: true, reason })
 }
 
 /**
@@ -336,14 +333,19 @@ export function withGuardHint(refusal: unknown, quantity: string): unknown {
   )
 }
 
-/** Buys `quantity` shares of one outcome at the current quote. */
-export async function buy(trader: Session, market: Market, outcomeLabel: string, quantity: string): Promise<void> {
+function outcomeIdOf(market: Market, outcomeLabel: string): string {
   const outcome = market.outcomes.find(candidate => candidate.label === outcomeLabel)
   if (!outcome) throw new Error(`no outcome ${outcomeLabel} on ${market.question}`)
+  return outcome.id
+}
+
+/** Buys `quantity` shares of one outcome at the current quote. */
+export async function buy(trader: Session, market: Market, outcomeLabel: string, quantity: string): Promise<void> {
+  const outcomeId = outcomeIdOf(market, outcomeLabel)
   const { state_version } = await snapshot(trader, market.id)
   try {
     await call('POST', `${LEDGER_URL}/ledger/markets/${market.id}/trades`, trader.accessToken, {
-      outcome_id: outcome.id,
+      outcome_id: outcomeId,
       side: 'buy',
       quantity,
       state_version,
@@ -352,4 +354,31 @@ export async function buy(trader: Session, market: Market, outcomeLabel: string,
   } catch (refusal) {
     throw withGuardHint(refusal, quantity)
   }
+}
+
+interface PlacedOrder {
+  order: { status: string }
+  fills: unknown[]
+}
+
+/**
+ * Places a limit buy ([T-6] #26) through the ledger. Below the outcome's
+ * current price it rests, holding `limitPrice` × `quantity` of the trader's
+ * credits, until a trade moves the price down to it (ADR 0024). Returns what
+ * the placement filled on arrival, so a caller that meant it to rest can say
+ * so when it did not.
+ */
+export async function placeLimitBuy(
+  trader: Session,
+  market: Market,
+  outcomeLabel: string,
+  { limitPrice, quantity }: { limitPrice: string; quantity: string },
+): Promise<PlacedOrder> {
+  return call<PlacedOrder>('POST', `${LEDGER_URL}/ledger/markets/${market.id}/orders`, trader.accessToken, {
+    outcome_id: outcomeIdOf(market, outcomeLabel),
+    side: 'buy',
+    limit_price: limitPrice,
+    quantity,
+    idempotency_key: randomUUID(),
+  })
 }
