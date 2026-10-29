@@ -134,10 +134,10 @@ export default function MarketDetailPage() {
     )
   }, [id, tradeable])
 
-  // The price history is read once, so the trader's own trade would leave it
-  // behind: on a fresh market it would go on saying nobody has traded. Each
-  // trade or limit placement here re-reads it (#453). Other traders' trades
-  // are not followed, nor a resting order's later fill (an order frame).
+  // Each trade or limit placement here re-reads the price history (#453).
+  // Other traders' trades reach the chart as price frames ([T-5] #495); the
+  // trader's own is read again as well, for the two cases a frame cannot
+  // cover, which the section's `key` below names.
   const [tradesMade, setTradesMade] = useState(0)
   const handleTraded = useCallback(() => {
     refetchHeld()
@@ -155,7 +155,9 @@ export default function MarketDetailPage() {
   // (realtime-service.md, "Reconnecting": the orders and the balance again).
   const onOrdersChanged = useCallback(() => {
     refetchOrders()
-    refetchBalance()
+    // `void`: BalanceContext's refetch catches its own failure and settles
+    // either way, and this caller has nothing to do with the answer (#551).
+    void refetchBalance()
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
 
@@ -178,16 +180,27 @@ export default function MarketDetailPage() {
   const onFrame = useCallback((frame: OrderFrame) => {
     applyFrame(frame)
     refetchOrders()
-    refetchBalance()
+    // `void`, as above.
+    void refetchBalance()
     refetchHeld()
   }, [applyFrame, refetchOrders, refetchBalance, refetchHeld])
 
   // One socket for the page: price frames keep the prices above current, and
   // order frames the list below it. Order frames need no subscribe, so they
   // arrive on this same connection (realtime-service.md, "Order updates").
-  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
+  // Bumped on every `subscribed` ack, the first included: frames published
+  // while a dropped connection was away are gone (ADR 0010), so the price
+  // history has to be read again rather than caught up from frames ([T-5]
+  // #495). The first ack's read is a harmless repeat of the mount's.
+  const [subscribes, setSubscribes] = useState(0)
+  const onSubscribed = useCallback(() => {
+    onOrdersChanged()
+    setSubscribes(count => count + 1)
+  }, [onOrdersChanged])
+
+  const { prices, status: priceStatus, snapshot: livePrice } = useMarketPrices(market?.id ?? null, {
     onOrderFrame: onFrame,
-    onSubscribed: onOrdersChanged,
+    onSubscribed,
   })
   // Re-evaluates the instant the dispute window closes, rather than only at
   // whatever render happens to run next — an approved market has no trades
@@ -334,7 +347,18 @@ export default function MarketDetailPage() {
               them, so the history arriving after first paint never moves the
               controls a trader is reaching for (#453). Every status: a closed
               market's history still says how it got there. */}
-          <PriceHistorySection key={tradesMade} marketId={market.id} outcomes={market.outcomes} />
+          {/* The chart follows the socket, so another trader's trade reaches
+              it without a remount ([T-5] #495). `key` still restarts it on
+              the trader's own trade, for what a frame cannot carry: a socket
+              that is down or degraded sends none, and a trade that fills
+              resting orders makes a point per fill but one frame (ADR 0024). */}
+          <PriceHistorySection
+            key={tradesMade}
+            marketId={market.id}
+            outcomes={market.outcomes}
+            liveSnapshot={livePrice}
+            reconnects={subscribes}
+          />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />

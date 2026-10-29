@@ -22,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.clock import has_utc_instant
 from core.opening_prices import max_platform_loss, uniform_initial_price
 from model.entities import DECIDED_STATUSES, TRADER_FACING_STATUS, MarketStatus
 
@@ -171,6 +172,16 @@ class MarketDraftRequest(BaseModel):
         ),
         examples=[100],
     )
+
+    @field_validator("close_time", "resolution_time")
+    @classmethod
+    def _encodable_in_utc(cls, value: datetime | None) -> datetime | None:
+        """asyncpg converts each time to UTC before sending it, and overflows
+        past either end of `datetime`'s range: a 422 here, not that 500
+        (#547)."""
+        if value is not None and not has_utc_instant(value):
+            raise ValueError("has no instant between year 1 and 9999 in UTC")
+        return value
 
 
 class OutcomeProposalRequest(BaseModel):

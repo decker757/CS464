@@ -4,11 +4,11 @@ Revision ID: 0003
 Revises: 0002
 Create Date: 2026-10-25
 
-Two nullable columns and their drops, the operations autogenerate writes for
-them. No CHECK, no index and no backfill: no market is voided before this
-revision, and no database rule here reads a status string. So nothing here is
-invisible to autogenerate, and unit_test/test_migrations.py proves this
-builds what the model builds. ADR 0025.
+Two nullable columns and their drops, written by hand in the shape
+autogenerate gives them. No CHECK, no index and no backfill: no market is
+voided before this revision, and no database rule here reads a status string.
+So nothing here is invisible to autogenerate, and unit_test/test_migrations.py
+proves this builds what the model builds. ADR 0025.
 """
 
 from __future__ import annotations

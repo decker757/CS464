@@ -105,7 +105,8 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
           <StatusBadge status={market.status} audience="trader" />
           <span className="text-right text-xs text-subtle">{formatCloseCountdown(market.status, market.close_time, now)}</span>
         </div>
-        <p className="text-[15px] leading-normal font-semibold text-smu-navy">{market.question}</p>
+        {/* break-words: a question can be one unbroken word, wider than the page (#516). */}
+        <p className="text-[15px] leading-normal font-semibold break-words text-smu-navy">{market.question}</p>
         {/* Wraps onto more rows for a market with many outcomes (up to ten). */}
         <div className="mt-4 flex flex-wrap gap-2">
           {market.outcomes.map(outcome => {

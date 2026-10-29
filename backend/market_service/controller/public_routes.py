@@ -21,6 +21,7 @@ from controller.dependencies import (
     PageLimit,
     QuestionSearch,
 )
+from core.clock import has_utc_instant
 from core.paging import page_size_of
 from model.entities import MarketStatus, PublicMarketStatus
 from model.schemas import (
@@ -62,21 +63,6 @@ ClosesBefore = Annotated[
 ]
 
 
-def _has_utc_instant(moment: datetime) -> bool:
-    """Does `moment` name an instant inside year 1 to 9999 in UTC? #490.
-
-    asyncpg converts every bound to UTC before it sends it, and a time near
-    either end of `datetime`'s range can fall outside it there: the last hour
-    of year 9999 at UTC-5, or year 1 at UTC+1. Only that is refused; every
-    instant a `datetime` can hold in UTC still passes.
-    """
-    try:
-        moment.astimezone(UTC)
-    except OverflowError:
-        return False
-    return True
-
-
 def _window_problem(parameter: str, value: datetime, message: str) -> dict:
     """One closing-window end's item in a `422`, shaped like FastAPI's own."""
     return {
@@ -100,7 +86,7 @@ def _refuse_if_window_unencodable(
         ("closes_from", closes_from),
         ("closes_before", closes_before),
     ):
-        if value is not None and not _has_utc_instant(value):
+        if value is not None and not has_utc_instant(value):
             message = f"`{parameter}` has no instant between year 1 and 9999 in UTC."
             problems.append(_window_problem(parameter, value, message))
     if problems:

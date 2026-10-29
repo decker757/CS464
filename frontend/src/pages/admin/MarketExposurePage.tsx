@@ -25,7 +25,8 @@ interface WorstCase {
  * like every other figure in this service. Choosing is a comparison and
  * nothing is computed: `compareCredits` orders the ledger's own strings, and
  * the one that wins is displayed as it arrived. Null once the market has
- * settled, where every residue is null, and on a market with no book yet. */
+ * settled, where every residue is null, and on a market with no book yet. A
+ * market nobody has traded in never gets here: see `hasNeverTraded`. */
 function worstCaseOutcome(outcomes: OutcomeExposure[]): WorstCase | null {
   let worst: WorstCase | null = null
   for (const outcome of outcomes) {
@@ -102,7 +103,11 @@ export default function MarketExposurePage() {
     setReadCount(count => count + 1)
   }
 
-  const worstCase = exposure === null ? null : worstCaseOutcome(exposure.outcomes)
+  // No book yet (no outcomes), or a book nobody has traded in (state_version
+  // 0). A book opens on the market's first preview or snapshot, before anyone
+  // trades, so the two read the same here (#517).
+  const hasNeverTraded = exposure !== null && (exposure.outcomes.length === 0 || exposure.state_version === 0)
+  const worstCase = exposure === null || hasNeverTraded ? null : worstCaseOutcome(exposure.outcomes)
   const worstCaseLabel = worstCase === null ? '' : outcomeLabels.get(worstCase.outcomeId) ?? worstCase.outcomeId
   const winningOutcomeId = exposure?.winning_outcome_id ?? null
   const winnerLabel = winningOutcomeId === null ? null : outcomeLabels.get(winningOutcomeId) ?? winningOutcomeId
@@ -160,7 +165,7 @@ export default function MarketExposurePage() {
                 </SectionCard>
               )}
 
-              {exposure.outcomes.length === 0 ? (
+              {hasNeverTraded ? (
                 <p className="text-sm text-muted">No trades yet, so there is no exposure to show.</p>
               ) : (
                 <MarketExposureTable outcomes={exposure.outcomes} outcomeLabels={outcomeLabels} />

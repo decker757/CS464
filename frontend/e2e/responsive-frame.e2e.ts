@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, closeEarly, proposeOutcome, publishMarket, registerAdmin, registerTrader, saveDraft, uniqueName } from './support/backend'
-import { boxOf, logIn, overflowingScreens, type Screen } from './support/browser'
+import { boxOf, documentWidth, loadUntilShown, logIn, overflowingScreens, selectTab, type Screen } from './support/browser'
 
 // [FE] #438. Every signed-in screen used to be two to three times the width
 // of a phone: the navbar was one row that never wrapped, and the create form
@@ -71,6 +71,74 @@ test('no administrator screen scrolls sideways on a phone or on a desktop', asyn
 
   expect(await overflowingScreens(page, screens, PHONE)).toEqual([])
   expect(await overflowingScreens(page, screens, DESKTOP)).toEqual([])
+})
+
+// [FE] #516. The test above failed now and then at 1440px, on these two lists
+// alone and by one to four pixels, depending on the run's random username: the
+// account button drew the whole name, so a wide one pushed the bar past its
+// frame, and the bold link to the page that is open tipped it over. So the
+// widest of each thing these lists draw is set up here, rather than left to
+// whatever else is in the database: the longest username auth allows, in its
+// widest letter, a question with no space to wrap at, and a winner with none.
+// The browse list is measured too, because this market stays in the database
+// for every later run, and a trader's card drew its question unwrapped. So are
+// the user list and the user's own page, found by searching for this admin
+// rather than left to whoever else is newest: the email is the username and
+// more, and both screens drew it unwrapped.
+test('no list scrolls sideways with the longest username, an unbroken question or an unbroken outcome', async ({ page }) => {
+  // uniqueName adds up to twelve characters, which makes 32, auth's limit.
+  const admin = await registerAdmin('W'.repeat(20))
+  const question = `${'W'.repeat(400)}${uniqueName('q')}`
+  // The longest label market_service accepts.
+  const winner = 'W'.repeat(120)
+  const market = await publishMarket(admin, question, [winner, 'No'])
+  await closeEarly(admin, market.id)
+  await proposeOutcome(admin, market, winner)
+
+  await logIn(page, admin)
+
+  for (const viewport of [PHONE, DESKTOP]) {
+    await page.setViewportSize(viewport)
+    await page.goto('/admin/markets')
+    // Its own tab, so the paged list reaches it in a page or two.
+    await selectTab(page, /^pending/i)
+    await expect(await loadUntilShown(page, question)).toBeVisible()
+    const adminList = await documentWidth(page)
+    expect(adminList.scrollWidth, `/admin/markets at ${viewport.width}px`).toBeLessThanOrEqual(adminList.clientWidth)
+
+    expect(await overflowingScreens(page, [{ path: '/admin/proposals', heading: 'Proposals Awaiting Decision' }], viewport)).toEqual([])
+    // The list just measured had this market on it.
+    await expect(page.getByText(question)).toBeVisible()
+
+    await page.goto('/markets')
+    // Stopped markets are listed most recently stopped first, so this one,
+    // closed a moment ago, leads its filter.
+    await page.getByRole('radio', { name: 'Resolving', exact: true }).click()
+    await expect(page.getByText(question)).toBeVisible()
+    const browseList = await documentWidth(page)
+    expect(browseList.scrollWidth, `/markets at ${viewport.width}px`).toBeLessThanOrEqual(browseList.clientWidth)
+
+    await page.goto('/admin/users')
+    await page.getByLabel('Search by username or email').fill(admin.username)
+    await page.getByRole('button', { name: 'Search' }).click()
+    // One card, and it is this admin's, so the list measured is the searched
+    // one and it draws this email. Before the search answers, there are more.
+    const userCards = page.getByRole('link').filter({ hasText: /@example\.com/i })
+    await expect(userCards).toHaveCount(1)
+    const userCard = userCards.filter({ has: page.getByText(admin.username, { exact: true }) })
+    await expect(userCard).toBeVisible()
+    const userList = await documentWidth(page)
+    expect(userList.scrollWidth, `/admin/users at ${viewport.width}px`).toBeLessThanOrEqual(userList.clientWidth)
+
+    // Opened from the card, since the email rides in on the link: a page
+    // opened by its address alone has no email to draw.
+    await userCard.click()
+    await expect(page.getByRole('heading', { level: 1, name: `${admin.username}'s History`, exact: true })).toBeVisible()
+    await expect(page.getByText(/@example\.com$/i)).toBeVisible()
+    await expect(page.getByText(/^Loading\b/)).toHaveCount(0)
+    const userPage = await documentWidth(page)
+    expect(userPage.scrollWidth, `/admin/users/${admin.id} at ${viewport.width}px`).toBeLessThanOrEqual(userPage.clientWidth)
+  }
 })
 
 test('on a phone the navigation sits behind a menu button, and on a desktop it is in the bar', async ({ page }) => {

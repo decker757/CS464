@@ -26,7 +26,19 @@ interface MarketPriceOptions {
 export function useMarketPrices(
   marketId: string | null,
   { onOrderFrame, onSubscribed }: MarketPriceOptions = {},
-): { prices: OutcomePrice[] | null; status: ConnectionStatus } {
+): {
+  prices: OutcomePrice[] | null
+  status: ConnectionStatus
+  /**
+   * The whole book state behind `prices`, for a caller that needs more than
+   * the current number.
+   *
+   * A price chart does: a point is a `price` frame without `type` and
+   * `market_id` (ledger-service.md), so it appends this and dedupes on
+   * `state_version` — which `prices` alone cannot tell it ([T-5] #495).
+   */
+  snapshot: PriceState | null
+} {
   // A fresh array each render is fine: the socket hook keys on the ids.
   const followed = useMemo(() => (marketId ? [marketId] : []), [marketId])
 
@@ -59,6 +71,7 @@ export function useMarketPrices(
     onSessionRefresh: followed.length > 0 ? () => getMarketSnapshot(followed[0]) : undefined,
   })
 
-  if (!marketId) return { prices: null, status: 'connecting' }
-  return { prices: snapshotsByMarket.get(marketId)?.prices ?? null, status }
+  if (!marketId) return { prices: null, status: 'connecting', snapshot: null }
+  const snapshot = snapshotsByMarket.get(marketId) ?? null
+  return { prices: snapshot?.prices ?? null, status, snapshot }
 }
