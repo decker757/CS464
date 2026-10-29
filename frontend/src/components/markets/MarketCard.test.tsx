@@ -2,7 +2,7 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { PriceState } from '../../api/ledgerApi'
+import type { OutcomePrice, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import MarketCard from './MarketCard'
 
@@ -26,6 +26,7 @@ interface PriceProps {
   snapshot?: PriceState
   priceReadFailed?: boolean
   onRetryPrice?: () => void
+  pricesWeekAgo?: OutcomePrice[] | null
 }
 
 function renderCard(market: PublicMarketSummary, prices: PriceProps = {}) {
@@ -305,5 +306,67 @@ describe('the split bar on a priced card', () => {
     const bar = screen.getByRole('img', { name: 'Red 40.0%, Blue 30.0%, Green 15.0%, Gold 10.0%, Grey 5.0%' })
     expect(segmentsOf(bar)[0]).toHaveStyle({ flexGrow: '0.4' })
     expect(segmentsOf(bar)[4]).toHaveStyle({ flexGrow: '0.05' })
+  })
+})
+
+// [X-1] #564: a card says where each outcome is going, not only where it is.
+// The figure is the batch snapshot's `prices_7d_ago` (#446), which the page
+// reads once for every card.
+describe("a card's change over the week", () => {
+  // The two prices a week ago, in the snapshot's own shape.
+  function weekAgo(yes: string, no: string): OutcomePrice[] {
+    return pricedAt(1, yes, no).prices
+  }
+
+  // AC 1: direction and size, and the direction as a symbol rather than a
+  // colour; the label says it in words for a trader who hears the card.
+  it('shows each outcome\'s change in points, up or down', () => {
+    renderCard(MARKET, { snapshot: pricedAt(5, '0.6200', '0.3800'), pricesWeekAgo: weekAgo('0.5000', '0.5000') })
+
+    expect(screen.getByLabelText('Yes up 12.0 points over the last 7 days')).toHaveTextContent('▲ +12.0 pts')
+    expect(screen.getByLabelText('No down 12.0 points over the last 7 days')).toHaveTextContent('▼ -12.0 pts')
+  })
+
+  // The chips of a market with more outcomes are drawn apart from the split,
+  // so they are asked separately.
+  it('shows the change on a market with more than two outcomes too', () => {
+    const threeWay: PublicMarketSummary = {
+      ...MARKET,
+      outcomes: [...MARKET.outcomes, { id: 'm1-2', position: 2, label: 'Draw' }],
+    }
+    const pricesOf = (yes: string, no: string, draw: string): OutcomePrice[] => [
+      ...pricedAt(1, yes, no).prices,
+      { outcome_id: 'm1-2', position: 2, price: draw },
+    ]
+    renderCard(threeWay, {
+      snapshot: { ...pricedAt(5, '0.5000', '0.2000'), prices: pricesOf('0.5000', '0.2000', '0.3000') },
+      pricesWeekAgo: pricesOf('0.3500', '0.3500', '0.3000'),
+    })
+
+    expect(screen.getByLabelText('Yes up 15.0 points over the last 7 days')).toHaveTextContent('▲ +15.0 pts')
+    expect(screen.getByLabelText('No down 15.0 points over the last 7 days')).toHaveTextContent('▼ -15.0 pts')
+    expect(screen.getByLabelText('Draw unchanged over the last 7 days')).toHaveTextContent('No change')
+  })
+
+  // AC 2 and the first Definition of Done item. Null is a market with no
+  // trade a week old — never traded, or only within the week — and a book
+  // that was open then stood at its seed price, which nobody chose. A zero
+  // would claim the crowd held still, and a change from the seed would claim
+  // it moved from an opinion nobody held (ledger-service.md).
+  it('draws no change at all when there is no price a week ago', () => {
+    renderCard(MARKET, { snapshot: pricedAt(5, '0.6200', '0.3800'), pricesWeekAgo: null })
+
+    expect(screen.getByLabelText('Yes price')).toHaveTextContent('62.0%')
+    expect(screen.queryByLabelText(/over the last 7 days/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/pts|No change/)).not.toBeInTheDocument()
+  })
+
+  // ledger-service.md: equal to `prices` is a real change of zero over the
+  // window, not missing data, so it is said rather than left out.
+  it('says a price that has not moved all week is unchanged', () => {
+    renderCard(MARKET, { snapshot: pricedAt(5, '0.6200', '0.3800'), pricesWeekAgo: weekAgo('0.6200', '0.3800') })
+
+    expect(screen.getByLabelText('Yes unchanged over the last 7 days')).toHaveTextContent('No change')
+    expect(screen.queryByText(/pts/)).not.toBeInTheDocument()
   })
 })

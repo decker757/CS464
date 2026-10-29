@@ -323,6 +323,21 @@ export async function snapshot(session: Session, marketId: string): Promise<Snap
   return call<Snapshot>('GET', `${LEDGER_URL}/ledger/markets/${marketId}/snapshot`, session.accessToken)
 }
 
+/** Each outcome's price a week ago, as the batch snapshot reports it for one
+ * market ([X-1] #446): null when the ledger has no trade that old to measure
+ * from. Only the batch carries it, so this reads the batch. */
+export async function pricesWeekAgo(session: Session, marketId: string): Promise<Snapshot['prices'] | null> {
+  const { snapshots } = await call<{ snapshots: { market_id: string; prices_7d_ago: Snapshot['prices'] | null }[] }>(
+    'POST',
+    `${LEDGER_URL}/ledger/markets/snapshots`,
+    session.accessToken,
+    { market_ids: [marketId] },
+  )
+  const item = snapshots.find(candidate => candidate.market_id === marketId)
+  if (!item) throw new Error(`the batch snapshot has no book for ${marketId}`)
+  return item.prices_7d_ago
+}
+
 // A buy the grant cannot cover means LARGEST_SPEND above is out of date, not
 // that the ledger is wrong — and `insufficient_funds` on its own points at the
 // balance rather than at the configuration, which is the failure #373 is
