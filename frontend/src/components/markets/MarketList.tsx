@@ -79,7 +79,7 @@ export default function MarketList({ query, status, closing, positionsByMarket }
     : browseSectionsOf(markets, snapshotsByMarket, marketFigures, new Date(), featured?.market.id)
   const hasBandsAbove = featured !== null || sections.length > 0
   // Everything every band hands its cards, which differs only by market.
-  const cardProps = { snapshotsByMarket, failedMarkets, positionsByMarket, onRetryPrice: retryMarket }
+  const cardProps = { snapshotsByMarket, marketFigures, failedMarkets, positionsByMarket, onRetryPrice: retryMarket }
 
   return (
     <>
