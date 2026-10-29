@@ -15,10 +15,10 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped, both sides: overview, early close, exposure, price history, and a trade log that names traders (#273) |
 | Resolution | [3.1]–[3.4] #9–#12, UI #52, #59, #87, #216 | shipped, both sides: propose, a second admin approves, the dispute window and send-back, settlement |
 | Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
-| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60 | shipped, both sides; promoting an admin is an API call with no screen, by design (ADR 0007) |
+| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60 | shipped, both sides; promoting an admin is an API call and has no screen yet |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41 | shipped; every balance is derived from append-only entries |
-| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61 | shipped, both sides, including limit orders that fill inside the trade that moves the price (ADR 0024) |
-| Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209, #444, #448, #450 | shipped: search, live prices, the trader's own holdings, and bands for trending, closing soon and biggest movers; the seven-day change on each card is #564 |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61 | shipped, both sides, including limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024) |
+| Discovery | [X-1]–[X-4] #34–#37, #447, UI #54, #126, #209, #444, #448, #450 | shipped: search, live prices, the trader's own holdings, and bands for closing soon, trending and biggest movers; the seven-day change on each card has its backend (#446) and its UI is #564 |
 | Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
@@ -27,7 +27,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 
 ## Running it
 
-You need Docker for the backend, and Node 20 for the frontend.
+You need Docker for the backend, and Node 20.19 or later for the frontend.
 
 ```bash
 cp .env.example .env
@@ -85,8 +85,8 @@ docker compose exec db psql -U cs464 -d cs464 \
 ```
 
 Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
-`.env` and point `TEST_DATABASE_URL` at the same port. Same for Redis on 6379
-and `REDIS_PORT`.
+`.env`, and use the same port in each `<SERVICE>_TEST_DATABASE_URL`. Same for
+Redis on 6379 and `REDIS_PORT`.
 
 ### A demo database
 
@@ -217,10 +217,12 @@ They live in their own file rather than inline so that each exists once.
 ```
 backend/auth_service/     registration, login, logout, sessions
 backend/market_service/   markets from draft to publication, closing them,
-                          and the outcome a second administrator approves
+                          the outcome a second administrator approves, and
+                          sending it back or voiding the market
 backend/audit_service/    reading the shared admin action log
-backend/ledger_service/   credits, trades, positions, settlement and the
-                          leaderboard: append-only entries, derived balances
+backend/ledger_service/   credits, trades, limit orders, positions,
+                          settlement, void refunds and the leaderboard:
+                          append-only entries, derived balances
 backend/realtime_service/ live prices over a websocket; owns no data
 backend/shared/           the only code the services import from each other
 backend/*/migrations/     auth, market, ledger: each schema's Alembic history,
