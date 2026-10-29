@@ -140,6 +140,10 @@ async def test_a_refund_is_a_void_refund_row_naming_its_market_outcome_and_share
     rows = (await read_history(session, holder)).rows
 
     assert transaction_ids(rows)[0] == refund.id
+    # The pool keeps the seed, so this void also wrote a residue, between the
+    # pool and PLATFORM: not a row of this holder's.
+    kinds = {row.entry.transaction.kind for row in rows}
+    assert entities().TransactionKind.VOID_RESIDUE not in kinds
     newest = rows[0]
     assert newest.entry.transaction.kind == entities().TransactionKind.VOID_REFUND
     assert newest.entry.amount == Decimal("7.7014")

@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import type { Order } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
+import { holdUntilReleased } from '../../test/holdUntilReleased'
 import { server } from '../../test/server'
 import OpenOrdersList from './OpenOrdersList'
 
@@ -112,19 +113,34 @@ describe('OpenOrdersList', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  // A second cancel of the same order is one the ledger answers
+  // `order_already_cancelled` (ledger-service.md), and the list shows that as
+  // "already cancelled" over the cancel that worked — so the control refuses
+  // while one is on its way. The handler waits on a promise this test
+  // releases, so "in flight" holds however slow the machine is (#489).
   it('does not send a second cancel while one is in flight', async () => {
+    const { held, release } = holdUntilReleased()
     let calls = 0
     server.use(http.post(CANCEL('ord-1'), async () => {
       calls += 1
-      await new Promise(resolve => setTimeout(resolve, 50))
+      await held
       return HttpResponse.json({ order: order({ status: 'cancelled' }), released_credits: '15.0000', released_shares: null })
     }))
-    const { actor } = renderList()
+    const { actor, onCancelled } = renderList()
     const button = screen.getByRole('button', { name: /cancel/i })
 
     await actor.click(button)
+    // The request is out and waiting on `release`, which is what makes the
+    // click below a click during the window rather than after it.
+    await waitFor(() => expect(calls).toBe(1))
+    expect(button).toBeDisabled()
     await actor.click(button)
 
-    await waitFor(() => expect(calls).toBe(1))
+    // The control comes back once the cancel has answered — a window, not a
+    // one-way latch — and by then any second request would have been counted.
+    release()
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(calls).toBe(1)
+    expect(onCancelled).toHaveBeenCalledTimes(1)
   })
 })

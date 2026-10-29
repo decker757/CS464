@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { logIn, marketCard, setQueryParams } from './support/browser'
+import { browseList, logIn, marketCard, setQueryParams } from './support/browser'
 
 // [X-1] #104: the browse page's Load more against the real keyset paging. Two
 // things are added to each request on the way out, so the test does not depend
@@ -30,9 +30,19 @@ test('Load more adds the next page of markets and repeats none', async ({ page }
   await page.getByRole('button', { name: 'Load more' }).click()
 
   await expect(marketCard(page, thirdQuestion)).toBeVisible()
-  // Appended, not replaced, and nothing shown twice.
+  // Appended, not replaced, and nothing shown twice *in the list*.
+  //
+  // Counted inside the list rather than across the page: this run's markets
+  // close within the day, so a curated band shows some of them above the list
+  // as well ([X-1] #448), and a market in a band is deliberately on screen
+  // twice. The paging promise is about the list, which is where a repeat would
+  // mean a cursor served the same market on two pages.
+  //
+  // `q` here is injected into the request rather than typed, so the page does
+  // not know it is filtered and still renders its bands.
+  const list = browseList(page)
   for (const question of [firstQuestion, secondQuestion, thirdQuestion]) {
-    await expect(page.getByText(question, { exact: true })).toHaveCount(1)
+    await expect(list.getByText(question, { exact: true })).toHaveCount(1)
   }
   // The real last page: nothing left to load.
   await expect(page.getByRole('button', { name: 'Load more' })).toHaveCount(0)

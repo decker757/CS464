@@ -798,6 +798,51 @@ describe('TradingPanel', () => {
     expect(screen.queryByLabelText('Quantity (shares)')).not.toBeInTheDocument()
   })
 
+  // [T-6] #496: the limit ticket makes the market ticket's offer, through the
+  // panel that decides it. The holding is known before Sell is pressed, which
+  // is the usual case, so the region has to be on the page already on the
+  // buy side for the sentence to arrive in it rather than with it.
+  it('says on the limit ticket that the trader holds none of the outcome, and offers to buy it instead', async () => {
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ limitOrdersAllowed: true, heldByOutcome: { 'o-yes': '6.0000' } })
+
+    await actor.click(screen.getByRole('button', { name: 'Limit' }))
+    await actor.click(screen.getByRole('button', { name: 'No' }))
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    // The sentence alone: the offer is a button after the region, not part
+    // of what the region announces.
+    expect(screen.getByRole('status')).toHaveTextContent(/^You don't hold any No shares\.$/)
+    expect(screen.queryByLabelText('Limit price')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /place sell order/i })).not.toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: 'Buy No instead' }))
+
+    expect(screen.getByRole('button', { name: 'Buy' })).toBePressed()
+    expect(screen.getByRole('button', { name: 'No' })).toBePressed()
+    // The limit ticket's first field, as the market ticket's offer moves on
+    // to its quantity, rather than dropping focus to the top of the page.
+    expect(screen.getByLabelText('Limit price')).toHaveFocus()
+  })
+
+  // #496's second criterion, asked of the panel because the panel is what
+  // decides whether a holding counts as none.
+  it('keeps the limit ticket for a holding its own sell orders reserve in full', async () => {
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({
+      limitOrdersAllowed: true,
+      heldByOutcome: { 'o-yes': '40.0000' },
+      reservedSharesByOutcome: { 'o-yes': '40.0000' },
+    })
+
+    await actor.click(screen.getByRole('button', { name: 'Limit' }))
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 40.0000 shares')
+  })
+
   it('blocks a sell of shares that open sell orders already reserve, before any request', async () => {
     // The ledger refuses a sell on the position less what the trader's open
     // sell orders hold back (ledger-service.md's insufficient_shares_held),
@@ -822,9 +867,10 @@ describe('TradingPanel', () => {
     expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(4)
   })
 
-  it('offers nothing to sell, not a negative, while the orders list lags a smaller holding', async () => {
-    // A sell order's fill lowers the position and its reservation together,
-    // but they arrive on two reads, and the holdings read can land first.
+  it('offers nothing to sell, not a negative, when the reservation is above the holding', async () => {
+    // Both figures come off one portfolio row (#410), so this would be the
+    // ledger contradicting itself. The clamp keeps the line and the refusal
+    // from going negative if it ever does.
     mockPreview(previewResponse({ side: 'sell', quantity: '0.5000', total: '0.2500' }))
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     renderPanel({ heldByOutcome: { 'o-yes': '1.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })

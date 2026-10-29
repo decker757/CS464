@@ -97,7 +97,7 @@ export default function ProposeOutcomePage() {
         evidence_url: evidenceUrl.trim() || undefined,
         evidence_note: evidenceNote.trim() || undefined,
       })
-      navigate('/admin/markets')
+      await navigate('/admin/markets')
     } catch (err) {
       const code = errorCode(err)
       if (code && DECIDED_ELSEWHERE_CODES.includes(code)) {

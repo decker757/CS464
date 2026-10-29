@@ -64,7 +64,9 @@ export function BalanceProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    if (user) refetch()
+    // `void`: `refetch` handles its own failure and settles either way, so
+    // there is nothing here to await or to catch (#551).
+    if (user) void refetch()
   }, [user, refetch])
 
   // Re-read whenever the trader comes back to this tab. A payout, or a fill
@@ -79,7 +81,9 @@ export function BalanceProvider({ children }: { children: React.ReactNode }) {
     if (!user) return
 
     function handleReturn() {
-      if (document.visibilityState === 'visible') refetch()
+      // `void`, as above: an event handler cannot await, and `refetch`
+      // catches its own failure.
+      if (document.visibilityState === 'visible') void refetch()
     }
 
     window.addEventListener('focus', handleReturn)
