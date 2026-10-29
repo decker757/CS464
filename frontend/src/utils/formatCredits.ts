@@ -124,9 +124,11 @@ export function subtractCredits(left: string, right: string): string | null {
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
 // say it is never a gain on a book nobody else has traded, and the same is
 // true of a signed amount that happens to land on exactly zero. Only colour
-// an actual loss or an actual gain; zero stays neutral.
+// an actual loss or an actual gain; zero stays neutral. So does a value that
+// is not a plain decimal, which this file's formatters show as "—": colouring
+// it would mean reading its sign, and that throws on undefined (#436).
 export function signedAmountColor(value: string): string {
-  if (isZeroCredits(value)) return 'text-muted'
+  if (!isPlainCredits(value) || isZeroCredits(value)) return 'text-muted'
   if (isNegativeCredits(value)) return 'text-danger'
   return 'text-success'
 }

@@ -276,4 +276,13 @@ describe('signedAmountColor', () => {
     expect(signedAmountColor('0.0001')).toBe('text-success')
     expect(signedAmountColor('-0.0001')).toBe('text-danger')
   })
+
+  it('stays neutral, rather than throwing, on a value that is not a plain decimal', () => {
+    // #436: a money field the ledger renamed or stopped sending arrives as
+    // undefined, and a throw here during render took the whole portfolio down
+    // to the error boundary. The formatters beside it show "—" for the same
+    // input; this is the colour that goes with that dash.
+    expect(signedAmountColor(undefined as unknown as string)).toBe('text-muted')
+    expect(signedAmountColor('1E-4')).toBe('text-muted')
+  })
 })
