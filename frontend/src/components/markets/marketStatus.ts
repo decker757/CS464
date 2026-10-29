@@ -13,6 +13,8 @@ type KnownMarketStatus = AdminMarketStatus | MarketStatus
 
 // `approved` is "approved, waiting for the ledger's payout"; `settled` is final
 // ([3.4] #12; the status alone does not prove the ledger paid, ADR 0019).
+// `voided` is final too, with no winner: every holder was refunded instead
+// (ADR 0025). Both read the same to a trader and an administrator.
 export const STATUS_CONFIG: Record<KnownMarketStatus, { label: string; tone: Tone }> = {
   draft:              { label: 'Draft',     tone: 'neutral' },
   submitted:          { label: 'Submitted', tone: 'warning' },
@@ -21,6 +23,7 @@ export const STATUS_CONFIG: Record<KnownMarketStatus, { label: string; tone: Ton
   pending_resolution: { label: 'Pending',   tone: 'warning' },
   approved:           { label: 'Approved',  tone: 'info' },
   settled:            { label: 'Settled',   tone: 'neutral' },
+  voided:             { label: 'Voided',    tone: 'neutral' },
 }
 
 /** Whose words a status is shown in: an administrator's, or a trader's. */
@@ -31,8 +34,9 @@ export type StatusAudience = 'admin' | 'trader'
 // both mean "the result is being decided": an outcome has been proposed, a
 // second administrator has to agree with it (ADR 0016), and even an approved
 // one goes back to CLOSED if it is sent back inside its dispute window
-// (ADR 0023). Neither is final and only `settled` is, so the trader's words
-// say what a trader is waiting for and never mention who decides it.
+// (ADR 0023). Neither is final and only `settled` and `voided` are, so the
+// trader's words say what a trader is waiting for and never mention who
+// decides it.
 //
 // Still one label per status, rather than the single "Resolving" pill #431
 // offers: `?status=` on GET /public/markets takes exactly one status

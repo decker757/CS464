@@ -21,6 +21,7 @@ import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
+import { formatDateTime } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
 // Why trading is closed, for a market that cannot be traded right now.
@@ -28,6 +29,7 @@ function closedMessage(status: MarketStatus): string {
   if (status === 'pending_resolution') return 'Trading is closed while the outcome is decided.'
   if (status === 'approved') return 'The outcome is approved and payouts are pending. Trading is closed.'
   if (status === 'settled') return 'This market has been settled. Trading is closed.'
+  if (status === 'voided') return 'This market has been voided. Trading is closed.'
   return 'Trading is closed for this market.'
 }
 
@@ -40,8 +42,26 @@ function outcomeBannerLabel(status: MarketStatus): string {
   return 'Proposed outcome'
 }
 
-function Banner({ className, children }: { className: string; children: React.ReactNode }) {
-  return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
+// What an outcome's card says in place of its price once the market has an
+// ending, or null while it is still priced. A voided market has no winner, so
+// every outcome reads Void rather than Lost (ADR 0025).
+function outcomeResultWord({ isVoided, hasWinner, isWinner }: { isVoided: boolean; hasWinner: boolean; isWinner: boolean }): string | null {
+  if (isVoided) return 'Void'
+  if (!hasWinner) return null
+  return isWinner ? 'Won' : 'Lost'
+}
+
+// A banner with a `label` is a named region, so a screen reader can jump to
+// it by name: the voided one carries the only explanation of a refund. It
+// says where a refund shows rather than that one was paid: a market marked
+// voided by a direct call to market_service reads the same and has refunded
+// nobody yet (ADR 0025, "Known edges, accepted").
+function Banner({ className, label, children }: { className: string; label?: string; children: React.ReactNode }) {
+  return (
+    <div role={label ? 'region' : undefined} aria-label={label} className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>
+      {children}
+    </div>
+  )
 }
 
 export default function MarketDetailPage() {
@@ -232,7 +252,12 @@ export default function MarketDetailPage() {
     return m.status === 'open' && !tradeable ? 'closed' : m.status
   }
 
-  const winningOutcome = market?.proposed_outcome_id
+  // A voided market has no winner, even one voided while approved
+  // (market-service.md sends its proposed_outcome_id as null; #526 asks the
+  // page not to lean on that), and no price either: the last prices are what
+  // the crowd thought of a question with no answer (ADR 0025).
+  const isVoided = market?.status === 'voided'
+  const winningOutcome = market?.proposed_outcome_id && !isVoided
     ? market.outcomes.find(o => o.id === market.proposed_outcome_id)
     : null
 
@@ -267,6 +292,15 @@ export default function MarketDetailPage() {
             </Banner>
           )}
 
+          {isVoided && (
+            <Banner label="Voided" className="border-muted/25 bg-muted/5 text-secondary">
+              <p className="font-semibold text-smu-navy">
+                Voided{market.voided_at && ` on ${formatDateTime(market.voided_at)}`}, with no result. Refunds show in each holder's portfolio and history.
+              </p>
+              {market.void_reason && <p className="mt-1">{market.void_reason}</p>}
+            </Banner>
+          )}
+
           {market.status === 'pending_resolution' && (
             <Banner className="border-warning/20 bg-warning/5 text-warning-strong">
               Awaiting outcome decision from a second administrator.
@@ -282,7 +316,8 @@ export default function MarketDetailPage() {
           <div className="mb-3 grid gap-3" style={{ gridTemplateColumns: `repeat(${market.outcomes.length}, 1fr)` }}>
             {market.outcomes.map(outcome => {
               const outcomePrice = prices?.find(p => p.outcome_id === outcome.id)
-              const isWinner = outcome.id === market.proposed_outcome_id
+              const isWinner = outcome.id === winningOutcome?.id
+              const resultWord = outcomeResultWord({ isVoided, hasWinner: !!winningOutcome, isWinner })
               return (
                 <Card key={outcome.id} borderColor={isWinner ? 'border-info/40' : undefined} className="px-6 py-5 text-center">
                   <p className="mb-2 text-[13px] font-semibold tracking-[0.5px] text-muted uppercase">{outcome.label}</p>
@@ -293,9 +328,9 @@ export default function MarketDetailPage() {
                       administrator has approved it (market-service.md), so a
                       pending market keeps its price. Nothing here reads
                       `prices`, so no price frame can paint over the result. */}
-                  {winningOutcome ? (
-                    <p aria-label={`${outcome.label} result`} className={`mb-1 text-[32px] font-extrabold tracking-[-1px] ${isWinner ? 'text-smu-navy' : 'text-subtle'}`}>
-                      {isWinner ? 'Won' : 'Lost'}
+                  {resultWord ? (
+                    <p aria-label={`${outcome.label} result`} className={`mb-1 text-[32px] font-extrabold tracking-[-1px] ${resultWord === 'Won' ? 'text-smu-navy' : 'text-subtle'}`}>
+                      {resultWord}
                     </p>
                   ) : (
                     <>

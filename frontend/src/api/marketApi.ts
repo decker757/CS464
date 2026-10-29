@@ -8,7 +8,7 @@ const MARKET_BASE = import.meta.env.VITE_MARKET_API_URL ?? 'http://localhost:800
 
 export interface PublicMarketSummary {
   id: string
-  status: 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
+  status: 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled' | 'voided'
   question: string
   close_time: string
   /** Every outcome, in position order (#214). */
@@ -71,7 +71,7 @@ export interface PublicSource {
 
 export interface PublicMarketDetail {
   id: string
-  status: 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
+  status: 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled' | 'voided'
   question: string
   description: string | null
   outcomes: PublicOutcome[]
@@ -89,6 +89,15 @@ export interface PublicMarketDetail {
   // (market-service.md, [3.4] #12).
   settleable: boolean
   dispute_window_ends_at: string | null
+  // True on a closed or pending_resolution market, on an approved one inside
+  // its dispute window, and on a voided one market_service marked directly.
+  // Judged on the stored status, so a void control reads it rather than
+  // working it out (market-service.md, ADR 0025).
+  voidable: boolean
+  // Both set on a voided market, null on every other. The reason is the only
+  // explanation a trader gets of their refund.
+  voided_at: string | null
+  void_reason: string | null
 }
 
 export async function getMarket(id: string): Promise<PublicMarketDetail> {
@@ -119,7 +128,7 @@ export interface MarketOut {
   // Every status, the same set as `MarketSummaryOut`: the service types this
   // as its whole `MarketStatus` enum, and one of this administrator's own
   // markets can be settled like any other.
-  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
+  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled' | 'voided'
   question: string | null
   description: string | null
   outcomes: OutcomeOut[]
@@ -187,7 +196,7 @@ export async function closeMarket(id: string, reason: string): Promise<MarketOut
 export interface MarketSummaryOut {
   id: string
   draft_key: string
-  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled'
+  status: 'draft' | 'submitted' | 'open' | 'closed' | 'pending_resolution' | 'approved' | 'settled' | 'voided'
   question: string | null
   close_time: string | null
   updated_at: string
@@ -205,6 +214,10 @@ export interface MarketOverviewRow {
   // (market-service.md, [3.4] #12). The settle control reads this, not the clock.
   settleable: boolean
   dispute_window_ends_at: string | null
+  // The same flag as PublicMarketDetail.voidable, read against the same
+  // instant as the rest of the page. The void control reads this, not the
+  // status or the clock (ADR 0025).
+  voidable: boolean
 }
 
 interface MarketOverviewResponse {

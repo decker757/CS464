@@ -8,6 +8,7 @@ import type { User } from '../context/AuthContext'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
 import { WithProviders } from '../test/renderWithProviders'
+import { formatDateTime } from '../utils/formatDateTime'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
@@ -641,6 +642,60 @@ describe('MarketDetailPage', () => {
       expect(screen.queryByText('implied probability')).not.toBeInTheDocument()
       expect(screen.queryByText('48.8%')).not.toBeInTheDocument()
       expect(screen.queryByText('51.3%')).not.toBeInTheDocument()
+    })
+  })
+
+  // #526, and market-service.md's void-screen notes (6): a voided market has
+  // no result, and the reason is the only explanation of a trader's refund.
+  describe('a voided market', () => {
+    const voidedMarket = {
+      ...baseMarket,
+      status: 'voided',
+      close_time: '2026-01-05T12:00:00Z',
+      voidable: true,
+      voided_at: '2026-01-07T09:41:02.411000Z',
+      void_reason: 'The match was abandoned after ten overs; there is no result.',
+      settleable: false,
+      dispute_window_ends_at: null,
+    }
+
+    it('shows the Voided banner with the reason and when it was voided, and no trading', async () => {
+      server.use(http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...voidedMarket, proposed_outcome_id: null })))
+      renderPage()
+
+      const banner = await screen.findByRole('region', { name: 'Voided' })
+      expect(banner).toHaveTextContent('The match was abandoned after ten overs; there is no result.')
+      expect(banner).toHaveTextContent(formatDateTime('2026-01-07T09:41:02.411000Z'))
+      expect(screen.getByText('This market has been voided. Trading is closed.')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+    })
+
+    // The public read sends a voided market's proposed_outcome_id as null,
+    // even one voided while approved (market-service.md). #526 asks for no
+    // winner "even for a market voided while approved", so the page does not
+    // lean on that: a stale outcome id must not be drawn as a winner either.
+    it('shows no probability and no winner, even with the last prices and an outcome id to hand', async () => {
+      let snapshotServed = false
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...voidedMarket, proposed_outcome_id: 'o1' })),
+        http.get(SNAPSHOT, () => {
+          snapshotServed = true
+          return HttpResponse.json(priceFrame(9, '0.4880', '0.5130'))
+        }),
+      )
+      renderPage()
+
+      await screen.findByRole('region', { name: 'Voided' })
+      await waitFor(() => expect(snapshotServed).toBe(true))
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+      // Void in each outcome's result slot, which is also neither Won nor Lost.
+      expect(screen.getByLabelText('Yes result')).toHaveTextContent('Void')
+      expect(screen.getByLabelText('No result')).toHaveTextContent('Void')
+      // The outcome banner, under any of its three labels ("Proposed outcome:",
+      // "Approved outcome:", "Settled:").
+      expect(screen.queryByText(/outcome:|settled:/i)).not.toBeInTheDocument()
+      expect(screen.queryByText('48.8%')).not.toBeInTheDocument()
+      expect(screen.queryByText('implied probability')).not.toBeInTheDocument()
     })
   })
 

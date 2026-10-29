@@ -149,6 +149,40 @@ it("names a market being resolved in the trader's words", () => {
   expect(screen.queryByText('Pending')).not.toBeInTheDocument()
 })
 
+// #526, and market-service.md's void-screen notes (7): a voided market has no
+// result, so a probability on its card would read as a market still priced.
+// The batch snapshot goes on carrying its last prices, so the card must
+// ignore them rather than wait for them to stop arriving.
+it('shows a voided market as Voided, with no price even though its snapshot carries prices', () => {
+  const snapshot: PriceState = {
+    market_id: 'm1',
+    state_version: 7,
+    prices: [
+      { outcome_id: 'm1-0', position: 0, price: '0.6200' },
+      { outcome_id: 'm1-1', position: 1, price: '0.3800' },
+    ],
+    occurred_at: '2026-10-18T11:00:00Z',
+  }
+  renderCard({ ...MARKET, status: 'voided', close_time: '2026-10-10T00:00:00Z' }, { snapshot })
+
+  expect(screen.getByText('Voided')).toBeInTheDocument()
+  expect(screen.queryByLabelText('Yes price')).not.toBeInTheDocument()
+  expect(screen.queryByText('62.0%')).not.toBeInTheDocument()
+  expect(screen.queryByText(/last trade/i)).not.toBeInTheDocument()
+})
+
+// A voided card shows no prices at all, so a failed read of them is nothing
+// to retry: offering Retry for a price the card will never draw would send
+// the trader after a number that does not exist.
+it('offers no Retry and no price error on a voided card whose price read failed', () => {
+  renderCard({ ...MARKET, status: 'voided', close_time: '2026-10-10T00:00:00Z' }, { priceReadFailed: true, onRetryPrice: () => {} })
+
+  expect(screen.getByText('Voided')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(screen.queryByText(/loading prices/i)).not.toBeInTheDocument()
+})
+
 // [X-1] #444 AC 3: a price that changes is visibly marked as having changed,
 // and the cue is not colour alone. The arrow is the half that survives a
 // trader who cannot tell the two tints apart, and the accessible name is the

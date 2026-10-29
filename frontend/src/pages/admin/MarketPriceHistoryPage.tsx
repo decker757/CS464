@@ -111,6 +111,11 @@ export default function MarketPriceHistoryPage() {
                     {winnerLabel === null ? '' : `; ${winnerLabel} won`}.
                   </p>
                 )}
+                {history.result === 'voided' && (
+                  <p className="mb-4 text-sm text-muted">
+                    This market was voided on {new Date(history.result_recorded_at ?? '').toLocaleString('en-SG')}, with no winner.
+                  </p>
+                )}
                 <PriceHistoryChart outcomes={market.outcomes} points={history.points} />
               </>
             )}

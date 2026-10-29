@@ -639,6 +639,32 @@ describe('MarketsPage', () => {
       expect(within(cardFor('Did the referendum pass?')).getByText('Resolved')).toBeInTheDocument()
     })
 
+    // #526: voided is a status everywhere a trader filters by one, and a
+    // voided market is neither resolved nor settled, so it has its own pill.
+    it('asks the server for voided markets when Voided is chosen', async () => {
+      const statusesSent: (string | null)[] = []
+      const voided = {
+        id: 'v9', status: 'voided', question: 'Was the final played?', close_time: '2025-02-01T00:00:00Z',
+        outcomes: outcomesFor('v9', ['Yes', 'No']),
+      }
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets`, ({ request }) => {
+          const status = new URL(request.url).searchParams.get('status')
+          statusesSent.push(status)
+          return HttpResponse.json({ markets: status === 'voided' ? [voided] : mockMarkets, next_cursor: null })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await screen.findByText('Will SMU win SUNIG?')
+
+      await actor.click(screen.getByRole('radio', { name: 'Voided' }))
+
+      expect(await screen.findByText('Was the final played?')).toBeInTheDocument()
+      expect(statusesSent.at(-1)).toBe('voided')
+      expect(within(cardFor('Was the final played?')).getByText('Voided')).toBeInTheDocument()
+    })
+
     // [X-1] #431 AC 3: the pills read the admin's lifecycle words, and
     // "Pending" and "Approved" are steps of a state machine that exists for a
     // rule (ADR 0016) a trader knows nothing about. Each pill still asks for
@@ -803,9 +829,10 @@ describe('MarketsPage', () => {
       expectChosen('Open')
       await actor.keyboard('{ArrowLeft}')
       expectChosen('All')
+      // Wraps to the last pill, which is Voided since #526.
       await actor.keyboard('{ArrowLeft}')
-      expectChosen('Resolved')
-      await waitFor(() => expect(statusesSent.at(-1)).toBe('settled'))
+      expectChosen('Voided')
+      await waitFor(() => expect(statusesSent.at(-1)).toBe('voided'))
       await actor.keyboard('{ArrowRight}')
       expectChosen('All')
     })

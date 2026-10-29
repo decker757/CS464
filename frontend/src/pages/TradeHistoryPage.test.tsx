@@ -189,6 +189,21 @@ describe('TradeHistoryPage', () => {
     expect(within(row).getByRole('cell', { name: '—' })).toBeInTheDocument()
   })
 
+  it('shows a void refund as a refund, with its market, outcome, quantity and amount', async () => {
+    // #526: a void_refund row names its market and outcome like a settlement
+    // row; side and average_price are null, because a refund is not a trade.
+    mockEntries([settlementEntry({ id: 'e4', kind: 'void_refund', amount: '1.4337', balance_after: '998.9024', quantity: '2.0000' })])
+    mockMarket('mkt-1', market())
+    renderPage()
+
+    expect(await screen.findByRole('link', { name: 'Will it rain in Singapore tomorrow?' })).toBeInTheDocument()
+    expect(screen.getByText('Refund Yes')).toBeInTheDocument()
+    expect(screen.getByText('2.0000')).toBeInTheDocument()
+    expect(screen.getByText('+1.4337')).toBeInTheDocument()
+    const row = screen.getAllByRole('row')[1]
+    expect(within(row).getByRole('cell', { name: '—' })).toBeInTheDocument()
+  })
+
   it('links a settlement row to its market, the same as a trade row', async () => {
     mockEntries([settlementEntry()])
     mockMarket('mkt-1', market())

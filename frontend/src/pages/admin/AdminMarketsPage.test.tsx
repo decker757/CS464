@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -28,11 +28,11 @@ const admin: User = { id: 'u1', username: 'admin1', email: 'admin@smu.edu.sg', r
 
 const OTHER_ADMIN_ID = 'u2'
 
-// Every row carries settleable/dispute_window_ends_at regardless of status
+// Every row carries settleable/voidable/dispute_window_ends_at regardless of status
 // (market-service.md); false/null fits every status in this fixture set
 // unless a test overrides it for a market past its dispute window.
-function row(overrides: Partial<Pick<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>> & Omit<MarketOverviewRow, 'settleable' | 'dispute_window_ends_at'>): MarketOverviewRow {
-  return { settleable: false, dispute_window_ends_at: null, ...overrides }
+function row(overrides: Partial<Pick<MarketOverviewRow, 'settleable' | 'voidable' | 'dispute_window_ends_at'>> & Omit<MarketOverviewRow, 'settleable' | 'voidable' | 'dispute_window_ends_at'>): MarketOverviewRow {
+  return { settleable: false, voidable: false, dispute_window_ends_at: null, ...overrides }
 }
 
 // The admin's own markets, one in each status, in the order the server sends
@@ -48,7 +48,7 @@ const mockMarkets: MarketOverviewRow[] = [
 
 type Counts = Record<MarketOverviewRow['status'], number>
 
-const ONE_OF_EACH: Counts = { draft: 1, submitted: 1, open: 1, closed: 1, pending_resolution: 1, approved: 1, settled: 0 }
+const ONE_OF_EACH: Counts = { draft: 1, submitted: 1, open: 1, closed: 1, pending_resolution: 1, approved: 1, settled: 0, voided: 0 }
 
 // Under StrictMode, as main.tsx renders the app: its double mount asks for page
 // one twice, which is what a page that keeps a late answer gets wrong.
@@ -69,7 +69,7 @@ function renderPage() {
 
 // The counts the server would send for these rows: every status, zero when none.
 function countsOf(markets: MarketOverviewRow[]): Counts {
-  const counts: Counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0, settled: 0 }
+  const counts: Counts = { draft: 0, submitted: 0, open: 0, closed: 0, pending_resolution: 0, approved: 0, settled: 0, voided: 0 }
   for (const market of markets) counts[market.status] += 1
   return counts
 }
@@ -233,6 +233,35 @@ describe('AdminMarketsPage', () => {
     await screen.findByText('Did the match go to overtime?')
     expect(tab(/^settled/i)).toHaveTextContent(/^Settled 1$/)
     expect(tab(/^approved/i)).toHaveTextContent(/^Approved 0$/)
+  })
+
+  // #526: voided is a status everywhere statuses are shown or filtered, with
+  // its own tab and count (`counts` always carries a `voided` key), and the
+  // tab asks the server for it like every other.
+  it('offers a Voided filter tab with its own count, and asks the server for voided markets', async () => {
+    const voided = row({ id: 'v9', creator_id: admin.id, status: 'voided', question: 'Was the final played?', close_time: '2025-04-02T00:00:00Z', voidable: true })
+    const settled = row({ id: 'h8', creator_id: admin.id, status: 'settled', question: 'Did the match go to overtime?', close_time: '2025-04-01T00:00:00Z', settleable: true })
+    const statuses: (string | null)[] = []
+    server.use(
+      http.get(OVERVIEW, ({ request }) => {
+        const status = new URL(request.url).searchParams.get('status')
+        statuses.push(status)
+        const rows = status === 'voided' ? [voided] : [settled, voided]
+        return HttpResponse.json({ markets: rows, counts: countsOf([settled, voided]), next_cursor: null })
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByText('Was the final played?')
+    expect(tab(/^voided/i)).toHaveTextContent(/^Voided 1$/)
+    // A voided market is not counted as a settled one.
+    expect(tab(/^settled/i)).toHaveTextContent(/^Settled 1$/)
+
+    await actor.click(tab(/^voided/i))
+
+    await waitFor(() => expect(screen.queryByText('Did the match go to overtime?')).not.toBeInTheDocument())
+    expect(statuses.at(-1)).toBe('voided')
+    expect(screen.getByText('Was the final played?')).toBeInTheDocument()
   })
 
   it('does not show a future closing date on a market closed early', async () => {

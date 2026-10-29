@@ -30,8 +30,8 @@ interface StatCardProps {
   children?: React.ReactNode
 }
 
-// A settled position is no longer valued: its price, value and P&L arrive as
-// null, and are shown as a dash rather than as zero ([3.4] #12).
+// A settled or voided position is no longer valued: its price, value and P&L
+// arrive as null, and are shown as a dash rather than as zero ([3.4] #12, #526).
 const NOT_VALUED = '—'
 
 function toRow(position: Position, markets: Map<string, PublicMarketDetail>): PositionRow {
@@ -40,10 +40,12 @@ function toRow(position: Position, markets: Map<string, PublicMarketDetail>): Po
 
 // A settled row has no P&L — it is no longer valued — so this cell shows
 // what it paid instead: the result and, for the winner, the payout. Never
-// recomputed and never rendered as a zero P&L ([3.4] #12).
+// recomputed and never rendered as a zero P&L ([3.4] #12). A voided market's
+// row shows its refund the same way, "0.0000" included (#526).
 function PnlCell({ pnl, result, payout }: { pnl: string | null; result: Position['result']; payout: string | null }) {
   if (result === 'worthless') return <span className="text-muted">Worthless</span>
   if (result === 'paid_out') return <span className="text-success">Paid out {formatCreditsPrecise(payout ?? '0')}</span>
+  if (result === 'refunded') return <span className="text-muted">Refunded {formatCreditsPrecise(payout ?? '0')}</span>
   if (pnl === null) return <span className="text-muted">{NOT_VALUED}</span>
 
   return (

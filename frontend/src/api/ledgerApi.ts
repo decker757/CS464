@@ -160,12 +160,15 @@ export interface Position {
   value: string | null
   // value − cost_basis. Can be negative.
   unrealized_pnl: string | null
-  // Null on every row until the ledger settles its market. `result` is
-  // `paid_out` for the winning outcome and `worthless` for any other;
+  // Null on every row until the ledger settles or voids its market. `result`
+  // is `paid_out` for the winning outcome and `worthless` for any other;
   // `payout` is the credits this row was paid — the row's quantity on a
-  // `paid_out` row, "0.0000" on a `worthless` one. Already in `balance`, so
-  // it is not added into `positions_value` again (ledger-service.md).
-  result: 'paid_out' | 'worthless' | null
+  // `paid_out` row, "0.0000" on a `worthless` one. On a voided market every
+  // row is `refunded`, and `payout` is what the void refunded, which follows
+  // what each share still held cost and can be "0.0000" (#526). Already in
+  // `balance`, so it is not added into `positions_value` again
+  // (ledger-service.md).
+  result: 'paid_out' | 'worthless' | 'refunded' | null
   payout: string | null
   state_version: number
 }
@@ -222,8 +225,10 @@ export interface LedgerEntry {
   // bump (ledger-service.md).
   kind: string
   context: Record<string, unknown>
-  // Set only on trade_buy / trade_sell; null on every other kind, including
-  // one this app does not recognise.
+  // market_id, outcome_id and quantity are set on trade_buy, trade_sell,
+  // settlement and void_refund; side and average_price on the two trades only.
+  // All are null on every other kind, including one this app does not
+  // recognise.
   market_id: string | null
   outcome_id: string | null
   side: TradeSide | null
@@ -344,8 +349,9 @@ export interface MarketExposure {
   // True when any outcome's payout_if_wins is strictly greater than pool.
   // Always false once the market is settled.
   payout_exceeds_pool: boolean
-  // null until the ledger records how the market ended.
-  result: 'settled' | null
+  // null until the ledger records how the market ended. A voided market has
+  // no winner, and its pool and payouts are null as a settled one's are (#526).
+  result: 'settled' | 'voided' | null
   winning_outcome_id: string | null
   outcomes: OutcomeExposure[]
 }
@@ -376,7 +382,9 @@ export interface PriceHistory {
   // Oldest first. Empty, with every field below null, on a market the
   // ledger has never opened a book for.
   points: PricePoint[]
-  result: 'settled' | null
+  // The same values as the exposure read's. On a voided market,
+  // winning_outcome_id is null and result_recorded_at is the void's (#526).
+  result: 'settled' | 'voided' | null
   winning_outcome_id: string | null
   result_recorded_at: string | null
 }
@@ -434,6 +442,33 @@ export interface SettlementResult {
  * (ledger-service.md). */
 export async function settleMarket(marketId: string): Promise<SettlementResult> {
   const res = await api.post<SettlementResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/settlement`)
+  return res.data
+}
+
+export interface VoidResult {
+  market_id: string
+  // On a repeat these two are the void that refunded, not the repeating
+  // administrator's (ledger-service.md).
+  reason: string
+  voided_by: string
+  recorded_at: string
+  positions_refunded: number
+  total_owed: string
+  total_refunded: string
+  // True when the pool plus one more seed could not cover every refund, so
+  // each was cut by the same fraction (ADR 0025).
+  refunds_cut: boolean
+  residue: string
+}
+
+/** Voids a flawed market and refunds every holder at what their remaining
+ * shares cost (ADR 0025, #221). The body is the reason and nothing else: the
+ * holders and the amounts come from this service's own book. This is the
+ * only void route a client calls; market_service's own step refunds nobody.
+ * A repeat answers the same 200, which is what Finish relies on after
+ * `void_unconfirmed` (ledger-service.md). */
+export async function voidMarket(marketId: string, reason: string): Promise<VoidResult> {
+  const res = await api.post<VoidResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/void`, { reason })
   return res.data
 }
 

@@ -285,12 +285,17 @@ describe('DecideOutcomePage', () => {
     expect(sentBody).toEqual({ proposal_id: 'prop-1', reason: 'too short1' })
   })
 
-  it('disables the controls and offers reload on a superseded proposal', async () => {
+  // #526: market_already_voided is a market voided while the reviewer read the
+  // proposal. The void cleared it, so no decision can land.
+  it.each([
+    { code: 'proposal_superseded', message: /rejected and a new one made/i, when: 'on a superseded proposal' },
+    { code: 'market_already_voided', message: /been voided/i, when: 'once the market has been voided' },
+  ])('disables the controls and offers reload $when', async ({ code, message }) => {
     mockGetMarket(publicMarket())
     mockAuditActions([proposedAction()])
     server.use(
       http.post(`${MARKET_BASE}/markets/mkt-1/approve-outcome`, () =>
-        HttpResponse.json({ error: { code: 'proposal_superseded', message: 'Superseded.' } }, { status: 409 }),
+        HttpResponse.json({ error: { code, message: 'Refused.' } }, { status: 409 }),
       ),
     )
     const actor = userEvent.setup()
@@ -299,7 +304,7 @@ describe('DecideOutcomePage', () => {
 
     await approve(actor)
 
-    expect(await screen.findByText(/rejected and a new one made/i)).toBeInTheDocument()
+    expect(await screen.findByText(message)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^approve$/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /^reject$/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
