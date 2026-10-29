@@ -108,6 +108,16 @@ const TONE_ON_OWN_TINT = [
   { site: 'small gold text on a gold tint', text: 'smu-gold-text', tint: 'smu-gold', alpha: 0.1, surfaces: ['a white card'] },
 ]
 
+// Every text on a browse chip while its price is marked as moved
+// (OutcomeChips' movementTint): a 10% success or danger tint, inside a white
+// Card. The label is neutral text rather than the tone's own, so neither table
+// above measures it; muted measured 4.14–4.23:1 here, short of AA (#574).
+const ON_A_MOVED_CHIP = [
+  { site: 'the outcome label and the weekly change', text: 'secondary' },
+  { site: 'the price and its arrow', text: 'smu-navy' },
+]
+const MOVED_CHIP_TINTS = ['success', 'danger']
+
 // Without this, a token added later is simply absent from the lists above and
 // nothing below ever measures it.
 it('sorts every colour token into text or surface', () => {
@@ -147,6 +157,15 @@ describe('a tone on its own tint, elsewhere in the app', () => {
     ),
   )('$site, on $surface', ({ text, tint, alpha, surface }) => {
     const background = tintOver(tokens[tint], SURFACES[surface], alpha)
+    expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})
+
+describe('text on a browse chip that has just moved', () => {
+  it.each(
+    ON_A_MOVED_CHIP.flatMap((site) => MOVED_CHIP_TINTS.map((tint) => ({ ...site, tint }))),
+  )('$site, on the $tint tint', ({ text, tint }) => {
+    const background = tintOver(tokens[tint], WHITE, 0.1)
     expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
   })
 })
