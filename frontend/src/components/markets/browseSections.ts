@@ -1,7 +1,8 @@
 import type { PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import type { MarketFigures } from '../../hooks/usePricesForMarkets'
-import { compareCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
+import { compareCredits, unsignedCredits } from '../../utils/formatCredits'
+import { weeklyChangesOf } from '../../utils/weeklyChange'
 import { tradingStopped } from './marketStatus'
 
 /** The page's single featured market, and why it was chosen. */
@@ -43,17 +44,13 @@ function stillTrading(markets: PublicMarketSummary[], now: Date): PublicMarketSu
  *  any of its outcomes, as an absolute decimal string; null when there is no
  *  change to measure. */
 function weeklyMoveOf(snapshot: PriceState | undefined, figures: MarketFigures | undefined): string | null {
-  if (!snapshot || !figures?.prices_7d_ago) return null
+  const changes = weeklyChangesOf(snapshot, figures?.prices_7d_ago)
+  if (!changes) return null
 
-  // Every outcome, not the first: only on a binary book is the second the
-  // first one's mirror. On three outcomes the first can hold still while the
-  // other two trade places, and that market has moved.
+  // The largest of every outcome's move: on three outcomes the first can hold
+  // still while the other two trade places, and that market has moved.
   let largest: string | null = null
-  for (const price of snapshot.prices) {
-    const before = figures.prices_7d_ago.find(old => old.outcome_id === price.outcome_id)
-    if (!before) continue
-    const change = subtractCredits(price.price, before.price)
-    if (change === null) continue
+  for (const change of changes.values()) {
     const move = unsignedCredits(change)
     if (largest === null || compareCredits(move, largest) > 0) largest = move
   }
