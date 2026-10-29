@@ -219,7 +219,10 @@ export default function TradingPanel({
       setLastTradeFor(`${marketId}:${outcomeId}:${side}:`)
       setLastTrade({ side, quantity: result.quantity, outcomeLabel: selectedOutcome?.label ?? '', total: result.total })
       setQuantity('')
-      refetchBalance()
+      // `void`: BalanceContext's refetch catches its own failure, and the
+      // trade is already committed — the confirmation above does not wait on
+      // the new balance arriving (#551).
+      void refetchBalance()
       onTraded()
     } catch (err) {
       const code = errorCode(err)

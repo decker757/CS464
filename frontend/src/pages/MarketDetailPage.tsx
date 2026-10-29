@@ -155,7 +155,9 @@ export default function MarketDetailPage() {
   // (realtime-service.md, "Reconnecting": the orders and the balance again).
   const onOrdersChanged = useCallback(() => {
     refetchOrders()
-    refetchBalance()
+    // `void`: BalanceContext's refetch catches its own failure and settles
+    // either way, and this caller has nothing to do with the answer (#551).
+    void refetchBalance()
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
 
@@ -178,7 +180,8 @@ export default function MarketDetailPage() {
   const onFrame = useCallback((frame: OrderFrame) => {
     applyFrame(frame)
     refetchOrders()
-    refetchBalance()
+    // `void`, as above.
+    void refetchBalance()
     refetchHeld()
   }, [applyFrame, refetchOrders, refetchBalance, refetchHeld])
 
