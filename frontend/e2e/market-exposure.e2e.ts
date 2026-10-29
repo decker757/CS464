@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, snapshot, uniqueName } from './support/backend'
-import { loadUntilShown, logIn } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [FE][2.2] #55, through the real ledger: a unit test fakes #6's response
 // with MSW, so a field #6 renamed (as it did: exceeds_pool -> payout_exceeds_pool,
@@ -13,8 +13,9 @@ test('an admin sees shares outstanding for a traded outcome, with no flag', asyn
   await buy(trader, market, 'Yes', '5')
 
   await logIn(page, admin)
+  await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  const card = await loadUntilShown(page, market.question)
+  const card = marketCard(page, market.question)
   await card.getByRole('link', { name: 'Exposure' }).click()
 
   await expect(page.getByRole('heading', { name: market.question })).toBeVisible()
@@ -52,8 +53,9 @@ test('a market nobody has traded shows no trades yet, with its book open', async
   await snapshot(admin, market.id)
 
   await logIn(page, admin)
+  await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  const card = await loadUntilShown(page, market.question)
+  const card = marketCard(page, market.question)
   await card.getByRole('link', { name: 'Exposure' }).click()
 
   // The book is open, and nothing has traded in it.
