@@ -55,7 +55,8 @@ describe('axios refresh interceptor', () => {
 
   it('reports the session as ended when /auth/refresh fails, and redirects nobody', async () => {
     const sessionEnded = listenForSessionEnd()
-    const location = { ...window.location, href: 'http://localhost:3000/' }
+    // Only href is read back: a redirect from here would change it.
+    const location = { href: 'http://localhost:3000/' }
     vi.stubGlobal('location', location)
 
     server.use(

@@ -38,7 +38,7 @@ function renderCard(market: PublicMarketSummary, prices: PriceProps = {}) {
   // Re-renders with a new snapshot, the way the list does when a price frame
   // arrives on the socket ([X-1] #444).
   return {
-    repriceWith(next: PriceState) {
+    repriceWith: (next: PriceState) => {
       view.rerender(
         <MemoryRouter>
           <MarketCard market={market} {...prices} snapshot={next} />
