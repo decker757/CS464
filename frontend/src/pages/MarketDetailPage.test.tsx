@@ -1578,8 +1578,8 @@ describe('MarketDetailPage — the browser tab', () => {
     // the one page that has to title itself (#356).
     renderPage()
 
-    await screen.findByText(baseMarket.question)
-
-    expect(document.title).toBe(`${baseMarket.question} · PredictSMU`)
+    // The title is set in an effect, after the question is drawn, so wait for
+    // the title itself rather than for the text (#559).
+    await waitFor(() => expect(document.title).toBe(`${baseMarket.question} · PredictSMU`))
   })
 })

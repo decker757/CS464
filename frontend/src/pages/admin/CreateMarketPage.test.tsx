@@ -600,8 +600,8 @@ describe('CreateMarketPage', () => {
     renderPage()
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
     await publishAndConfirm(actor)
-    const closeTimeField = (await screen.findByLabelText('Closes at *')).parentElement!
-    expect(within(closeTimeField).getByText('The close time has already passed.')).toBeInTheDocument()
+    const closeTimeField = screen.getByLabelText('Closes at *').parentElement!
+    expect(await within(closeTimeField).findByText('The close time has already passed.')).toBeInTheDocument()
   })
 
   // Publishing re-runs every submission rule against the clock (ADR 0008), so
@@ -651,8 +651,8 @@ describe('CreateMarketPage', () => {
     const actor = userEvent.setup({ delay: null })
     renderPage()
     await actor.click(screen.getByRole('button', { name: /submit for review/i }))
-    const closeTimeField = (await screen.findByLabelText('Closes at *')).parentElement!
-    expect(within(closeTimeField).getByText('A close time is required.')).toBeInTheDocument()
+    const closeTimeField = screen.getByLabelText('Closes at *').parentElement!
+    expect(await within(closeTimeField).findByText('A close time is required.')).toBeInTheDocument()
   })
 
   it('names every resolution-source row in the accessibility tree', async () => {
