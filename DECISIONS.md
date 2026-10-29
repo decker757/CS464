@@ -6646,7 +6646,7 @@ logged above WARNING.
 step 5 goes. The function and the error go with it ("A settlement whose last
 step fails answers `503 settlement_unconfirmed`").
 
-**Amended 2026-10-25.** [BE] #221 adds `mark_voided`, the void's last step
+*Amended 2026-10-25.* [BE] #221 adds `mark_voided`, the void's last step
 (ADR 0025, step 8), and both now call one private `_confirm`, so everything
 above but the path and the body holds for it too: only a `200` confirms, the
 body is never read, the 404 cache is neither consulted nor fed, and every
