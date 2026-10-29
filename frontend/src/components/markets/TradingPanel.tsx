@@ -10,6 +10,7 @@ import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 import { selectableClass } from '../ui/selectableClass'
+import HoldsNoneToSell from './HoldsNoneToSell'
 import LimitOrderFields from './LimitOrderFields'
 import TradePreviewSummary from './TradePreviewSummary'
 
@@ -244,7 +245,9 @@ export default function TradingPanel({
   // Keeps the outcome: the offer is to buy the one the trader was looking at.
   // The button that was clicked goes with the notice, so focus moves on to
   // the quantity field rather than dropping to the top of the page; flushSync
-  // renders that field first, so there is something to focus.
+  // renders that field first, so there is something to focus. On the limit
+  // ticket there is no quantity field here, and LimitOrderFields focuses its
+  // own first field once this returns.
   const handleBuyInstead = () => {
     flushSync(() => setSide('buy'))
     quantityInputRef.current?.focus()
@@ -315,6 +318,8 @@ export default function TradingPanel({
           outcomeLabel={selectedOutcome?.label ?? ''}
           heldQuantity={heldQuantity}
           sellableQuantity={sellableQuantity}
+          holdsNoneToSell={holdsNoneToSell}
+          onBuyInstead={handleBuyInstead}
           onPlaced={onOrderPlaced}
         />
       ) : (
@@ -325,21 +330,15 @@ export default function TradingPanel({
         </p>
       )}
 
-      {/* Always on the market ticket and empty until there is something to
-          say: a screen reader announces a live region's content changing,
-          and may not announce one that arrives with its content already in
-          it. */}
-      <div role="status">
-        {holdsNoneToSell && (
-          <p className="mb-3 text-sm text-smu-navy">You don't hold any {selectedOutcome?.label ?? ''} shares.</p>
-        )}
-      </div>
+      {/* Always on the market ticket: its live region is empty until there is
+          something to say. Shared with the limit ticket (#496). */}
+      <HoldsNoneToSell
+        holdsNone={holdsNoneToSell}
+        outcomeLabel={selectedOutcome?.label ?? ''}
+        onBuyInstead={handleBuyInstead}
+      />
 
-      {holdsNoneToSell ? (
-        <Button variant="primary" size="block" onClick={handleBuyInstead}>
-          Buy {selectedOutcome?.label ?? ''} instead
-        </Button>
-      ) : (
+      {holdsNoneToSell ? null : (
         <>
           <div className="mb-1.5 flex items-baseline justify-between">
             <label htmlFor="trade-quantity" className="block text-[13px] font-semibold text-smu-navy">
