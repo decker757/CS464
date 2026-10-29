@@ -325,7 +325,7 @@ export default function TradingPanel({
       ) : (
       <>
       {visibleLastTrade && (
-        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
+        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] break-words text-success-strong">
           {visibleLastTrade.side === 'buy' ? 'Bought' : 'Sold'} {visibleLastTrade.quantity} {visibleLastTrade.outcomeLabel} for {formatCreditsPrecise(unsignedCredits(visibleLastTrade.total))} credits.
         </p>
       )}
@@ -386,9 +386,14 @@ export default function TradingPanel({
           {visibleSubmitError && <p role="alert" className="mb-3 text-xs text-danger">{visibleSubmitError}</p>}
 
           <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit}>
-            {submitting
-              ? 'Submitting…'
-              : `${side === 'buy' ? 'Buy' : 'Sell'} ${selectedOutcome?.label ?? ''}`}
+            {/* Cut short rather than wrapped: the button is one line high, a
+                label can be 120 unbroken characters, and the line at the top
+                of the panel names the outcome in full (#429). */}
+            <span className="min-w-0 truncate px-4">
+              {submitting
+                ? 'Submitting…'
+                : `${side === 'buy' ? 'Buy' : 'Sell'} ${selectedOutcome?.label ?? ''}`}
+            </span>
           </Button>
         </>
       )}
