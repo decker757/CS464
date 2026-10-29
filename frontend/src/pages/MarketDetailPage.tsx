@@ -6,6 +6,7 @@ import AppLayout from '../components/layout/AppLayout'
 import PriceFeedStatus from '../components/markets/PriceFeedStatus'
 import { formatCloseCountdown, type MarketStatus } from '../components/markets/marketStatus'
 import OpenOrdersList from '../components/markets/OpenOrdersList'
+import OutcomePrices from '../components/markets/OutcomePrices'
 import PriceHistorySection from '../components/markets/PriceHistorySection'
 import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
@@ -22,7 +23,6 @@ import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
 import { formatDateTime } from '../utils/formatDateTime'
-import { formatPrice } from '../utils/formatPrice'
 
 // Why trading is closed, for a market that cannot be traded right now.
 function closedMessage(status: MarketStatus): string {
@@ -40,15 +40,6 @@ function outcomeBannerLabel(status: MarketStatus): string {
   if (status === 'settled') return 'Settled'
   if (status === 'approved') return 'Approved outcome'
   return 'Proposed outcome'
-}
-
-// What an outcome's card says in place of its price once the market has an
-// ending, or null while it is still priced. A voided market has no winner, so
-// every outcome reads Void rather than Lost (ADR 0025).
-function outcomeResultWord({ isVoided, hasWinner, isWinner }: { isVoided: boolean; hasWinner: boolean; isWinner: boolean }): string | null {
-  if (isVoided) return 'Void'
-  if (!hasWinner) return null
-  return isWinner ? 'Won' : 'Lost'
 }
 
 // A banner with a `label` is a named region, so a screen reader can jump to
@@ -101,6 +92,14 @@ export default function MarketDetailPage() {
   // The browse card's clock and the card's words for it, so the two screens
   // say the same thing about the same market at the same minute (#429).
   const now = useMarketClock(market)
+
+  // The outcome the trading panel trades, chosen on the price blocks (#429):
+  // one choice, made where its price is shown, rather than a second toggle in
+  // the panel kept in step with it. Derived rather than seeded, so a move to
+  // another market, whose outcome ids differ, starts on its first outcome
+  // instead of an id it does not have.
+  const [chosenOutcomeId, setChosenOutcomeId] = useState<string | null>(null)
+  const tradedOutcomeId = market?.outcomes.find(o => o.id === chosenOutcomeId)?.id ?? market?.outcomes[0]?.id ?? ''
 
   // What the trader holds of each of this market's outcomes, for the sell
   // clamp ([T-2] #357): the whole position, and the part of it their own live
@@ -313,37 +312,15 @@ export default function MarketDetailPage() {
             </Banner>
           )}
 
-          <div className="mb-3 grid gap-3" style={{ gridTemplateColumns: `repeat(${market.outcomes.length}, 1fr)` }}>
-            {market.outcomes.map(outcome => {
-              const outcomePrice = prices?.find(p => p.outcome_id === outcome.id)
-              const isWinner = outcome.id === winningOutcome?.id
-              const resultWord = outcomeResultWord({ isVoided, hasWinner: !!winningOutcome, isWinner })
-              return (
-                <Card key={outcome.id} borderColor={isWinner ? 'border-info/40' : undefined} className="px-6 py-5 text-center">
-                  <p className="mb-2 text-[13px] font-semibold tracking-[0.5px] text-muted uppercase">{outcome.label}</p>
-                  {/* Once the result is decided it takes the price's place
-                      (#429): the last trade's price under "Approved outcome:
-                      Yes" read as the market doubting its own answer. The
-                      public read names the winner only once a second
-                      administrator has approved it (market-service.md), so a
-                      pending market keeps its price. Nothing here reads
-                      `prices`, so no price frame can paint over the result. */}
-                  {resultWord ? (
-                    <p aria-label={`${outcome.label} result`} className={`mb-1 text-[32px] font-extrabold tracking-[-1px] ${resultWord === 'Won' ? 'text-smu-navy' : 'text-subtle'}`}>
-                      {resultWord}
-                    </p>
-                  ) : (
-                    <>
-                      <p aria-label={`${outcome.label} price`} className="mb-1 text-[32px] font-extrabold tracking-[-1px] text-smu-navy">
-                        {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
-                      </p>
-                      <p className="text-xs text-subtle">{outcomePrice ? 'implied probability' : 'loading price…'}</p>
-                    </>
-                  )}
-                </Card>
-              )
-            })}
-          </div>
+          <OutcomePrices
+            marketId={market.id}
+            outcomes={market.outcomes}
+            prices={prices}
+            isVoided={isVoided}
+            winningOutcomeId={winningOutcome?.id ?? null}
+            choice={tradeable ? { outcomeId: tradedOutcomeId, onChoose: setChosenOutcomeId } : null}
+            className="mb-3"
+          />
 
           <PriceFeedStatus status={priceStatus} className="mb-6" />
 
@@ -352,6 +329,7 @@ export default function MarketDetailPage() {
               <TradingPanel
                 marketId={market.id}
                 outcomes={market.outcomes}
+                outcomeId={tradedOutcomeId}
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
                 reservedSharesByOutcome={reservedByOutcome}

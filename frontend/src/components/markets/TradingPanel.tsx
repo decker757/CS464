@@ -19,6 +19,9 @@ type OrderType = 'market' | 'limit'
 interface TradingPanelProps {
   marketId: string
   outcomes: PublicOutcome[]
+  // The outcome to trade. It is chosen on the page's price blocks, where its
+  // price is shown, so the panel offers no choice of its own (#429).
+  outcomeId: string
   // Whether this market takes limit orders at all: they are binary-markets
   // only, and anything else is refused market_not_binary, so the choice is
   // hidden rather than offered and refused (ledger-service.md, ADR 0024).
@@ -52,10 +55,12 @@ interface TradingPanelProps {
 // use, and here it is also the colour the rest of the panel speaks: the
 // confirmation banner is `success`, a refusal is `danger`, a profit figure is
 // whichever its sign makes it. So this row keeps its tint rather than taking
-// the navy fill the outcome row below it uses. What #430 found is real all the
-// same — two same-shaped rows a few pixels apart disagreeing about what "on"
-// looks like — and `ToggleRow` answers it by giving each row its own heading,
-// so they read as two questions and not as one control in two halves.
+// the navy fill the order type row above it uses. What #430 found is real all
+// the same — two same-shaped rows a few pixels apart disagreeing about what
+// "on" looks like — and `ToggleRow` answers it by giving each row its own
+// heading, so they read as two questions and not as one control in two
+// halves. (#430 found it beside an outcome row, which is now the page's price
+// blocks, #429.)
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
   // Text reads the `-strong` tone, not the plain one: the plain tone on its
   // own 10% tint is 4.14–4.39:1, short of AA's 4.5:1 for text this size
@@ -146,13 +151,12 @@ function refusalBeforeSending({
 }
 
 export default function TradingPanel({
-  marketId, outcomes, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
+  marketId, outcomes, outcomeId, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
 }: TradingPanelProps) {
   const { available, refetch: refetchBalance } = useBalance()
 
   const [orderType, setOrderType] = useState<OrderType>('market')
   const [side, setSide] = useState<TradeSide>('buy')
-  const [outcomeId, setOutcomeId] = useState(outcomes[0]?.id ?? '')
   const [quantity, setQuantity] = useState('')
   const inputKey = `${marketId}:${outcomeId}:${side}:${quantity}`
 
@@ -260,9 +264,16 @@ export default function TradingPanel({
 
   return (
     <div>
+      {/* Which outcome this trades, in words: the choice itself is the price
+          blocks above the panel (#429), and the limit ticket's button never
+          names it. */}
+      <p className="mb-4 text-[13px] break-words text-muted">
+        Trading <strong className="font-semibold text-smu-navy">{selectedOutcome?.label}</strong>. Pick another outcome by its price above.
+      </p>
+
       {/* Market or limit first, since it decides which fields follow. Each
           toggle row carries its own heading (#430's ToggleRow), so a screen
-          reader meets three labelled questions rather than six loose
+          reader meets two labelled questions rather than four loose
           buttons. */}
       {limitOrdersAllowed && (
         <ToggleRow id="order-type-label" label="Order type">
@@ -297,20 +308,6 @@ export default function TradingPanel({
         >
           Sell
         </button>
-      </ToggleRow>
-
-      <ToggleRow id="trade-outcome-label" label="Outcome">
-        {outcomes.map(outcome => (
-          <button
-            key={outcome.id}
-            type="button"
-            onClick={() => setOutcomeId(outcome.id)}
-            aria-pressed={outcomeId === outcome.id}
-            className={`flex-1 cursor-pointer rounded-control border px-3 py-2.5 text-sm font-medium transition ${selectableClass(outcomeId === outcome.id)}`}
-          >
-            {outcome.label}
-          </button>
-        ))}
       </ToggleRow>
 
       {orderType === 'limit' ? (
