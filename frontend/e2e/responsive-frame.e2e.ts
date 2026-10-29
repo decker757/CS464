@@ -92,6 +92,10 @@ test('no list scrolls sideways with the longest username, an unbroken question o
   // The longest label market_service accepts.
   const winner = 'W'.repeat(120)
   const market = await publishMarket(admin, question, [winner, 'No'])
+  // Priced, so the browse card draws its sides in proportion (#441), and
+  // priced against the long label, so that side is held at its narrowest:
+  // 200 No shares at b = 100 leave the winner 11.9%.
+  await buy(await registerTrader('frame_skew'), market, 'No', '200')
   await closeEarly(admin, market.id)
   await proposeOutcome(admin, market, winner)
 
