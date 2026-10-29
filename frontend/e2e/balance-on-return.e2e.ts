@@ -19,7 +19,7 @@ test("a payout reaches the trader's header when they come back to the tab, with 
   const proposed = await proposeOutcome(admin, market, 'Yes')
   await approveOutcome(approver, market.id, proposed.proposal_id)
   // Settling waits out the dispute window and five minutes more (ADR 0019).
-  backdateDisputeWindow(market.id)
+  await backdateDisputeWindow(market.id)
 
   // The browse page, not the market's own: the market page's order frame
   // refetches the balance by itself, and would pass this without the fix.

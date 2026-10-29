@@ -201,8 +201,21 @@ async def lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
 
     "Lock order: book row before account rows": the wider lock, taken before
     any account lock, on every path that writes a market's money.
+
+    `populate_existing`, because a session that already holds the book, from
+    an unlocked read such as `ensure_open`'s, would otherwise get that copy
+    back unchanged: SQLAlchemy keeps an object it holds over the row a query
+    returns. A trade that committed between the two reads would then be
+    invisible under the lock (#543). The reload also overwrites any unflushed
+    change to that book, and autoflush is off, so take the lock before
+    changing it.
     """
-    stmt = select(MarketBook).where(MarketBook.market_id == market_id).with_for_update()
+    stmt = (
+        select(MarketBook)
+        .where(MarketBook.market_id == market_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     return (await session.execute(stmt)).scalar_one()
 
 

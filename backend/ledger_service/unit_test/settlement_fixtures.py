@@ -268,7 +268,7 @@ async def settled_market(
     return upstream
 
 
-def voided_row(market_id: uuid.UUID, **overrides):
+def voided_row(market_id: uuid.UUID, **overrides: object) -> Any:
     """The `ledger.market_results` row a void records (ADR 0025), unsaved: no
     outcome, a reason and the administrator. A settlement test stages it to
     stand for a void without the void's money. `overrides` replaces one

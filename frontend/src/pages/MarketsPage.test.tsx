@@ -1,10 +1,11 @@
 import { StrictMode } from 'react'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '../context/AuthContext'
+import { FakeSocket, latestSocket } from '../test/fakeSocket'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { WithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
@@ -12,6 +13,8 @@ import MarketsPage from './MarketsPage'
 
 const MARKET_BASE = 'http://localhost:8001'
 const SNAPSHOT = 'http://localhost:8003/ledger/markets/:id/snapshot'
+const SNAPSHOT_BATCH = 'http://localhost:8003/ledger/markets/snapshots'
+const PORTFOLIO = 'http://localhost:8003/ledger/portfolio/me'
 
 const trader: User = { id: '1', username: 'alice', email: 'alice@smu.edu.sg', role: 'trader', created_at: '2026-01-01' }
 
@@ -26,6 +29,12 @@ const mockMarkets = [
   { id: 'b2', status: 'closed', question: 'Will inflation fall below 2%?', close_time: '2025-01-01T00:00:00Z', outcomes: outcomesFor('b2', ['Yes', 'No']) },
 ]
 
+// One more card than StrictMode mounts the page, for counting reads per card.
+const threeMarkets = [
+  ...mockMarkets,
+  { id: 'c3', status: 'open', question: 'Will the library open on Sundays?', close_time: '2099-01-05T12:00:00Z', outcomes: outcomesFor('c3', ['Yes', 'No']) },
+]
+
 // The ledger's snapshot for a market, pricing its outcomes in position order.
 function snapshotFor(marketId: string, prices: string[]) {
   return {
@@ -33,7 +42,38 @@ function snapshotFor(marketId: string, prices: string[]) {
     state_version: 3,
     prices: prices.map((price, position) => ({ outcome_id: `${marketId}-${position}`, position, price })),
     occurred_at: '2026-09-15T09:12:44.318000+00:00',
+    // The two the batch route carries and the single snapshot does not
+    // (ledger-service.md). Untraded by default, with no week-old price to
+    // compare, so a test only lands in a curated band when it says so.
+    credits_traded: '0.0000',
+    prices_7d_ago: null,
   }
+}
+
+
+// The browse list reads its whole page in one request ([X-1] #432) and keeps
+// the single snapshot for a retry and for a market the batch left out. A test
+// says what one market's snapshot is, and this serves it on both routes, so
+// each test still reads as "this market is priced like so".
+//
+// `snapshotOf` returns the snapshot body for an id, or null for a market the
+// ledger holds no book for — absent from the batch's answer, which is how the
+// route reports exactly that.
+function serveSnapshots(snapshotOf: (marketId: string) => object | null) {
+  server.use(
+    http.post(SNAPSHOT_BATCH, async ({ request }) => {
+      const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+      const snapshots = ids.map(snapshotOf).filter(snapshot => snapshot !== null)
+      return HttpResponse.json({ snapshots })
+    }),
+    http.get(SNAPSHOT, ({ params }) => {
+      const snapshot = snapshotOf(String(params.id))
+      if (!snapshot) {
+        return HttpResponse.json({ error: { code: 'market_not_found', message: 'No book.' } }, { status: 404 })
+      }
+      return HttpResponse.json(snapshot)
+    }),
+  )
 }
 
 // The card holding this question: the whole panel, not the link inside it, so
@@ -73,13 +113,42 @@ function mockTwoPages(secondPage: () => Response | Promise<Response>) {
   )
 }
 
+// The trader's positions as the ledger reports them: ids only, since the
+// labels are the frontend's own join.
+function portfolioHolding(positions: { market_id: string; outcome_id: string; quantity: string }[]) {
+  return {
+    user_id: '1',
+    account_id: 'acct-1',
+    balance: '1000.0000',
+    positions_value: '0.0000',
+    net_worth: '1000.0000',
+    positions: positions.map(position => ({
+      ...position,
+      outcome_position: 0,
+      cost_basis: '20.0000',
+      average_entry_price: '0.5000',
+      price: '0.6000',
+      value: '24.0000',
+      unrealized_pnl: '4.0000',
+      result: null,
+      payout: null,
+      state_version: 3,
+    })),
+  }
+}
+
+// Every page reads the trader's portfolio once, for the holdings on its cards
+// ([X-1] #450). Tests about other things get a trader who holds nothing,
+// rather than an unhandled request on every render.
+beforeEach(() => {
+  server.use(http.get(PORTFOLIO, () => HttpResponse.json(portfolioHolding([]))))
+})
+
 describe('MarketsPage', () => {
   // Every card asks the ledger for its prices; tests about other things get a
   // plain answer rather than an unhandled request.
   beforeEach(() => {
-    server.use(
-      http.get(SNAPSHOT, ({ params }) => HttpResponse.json(snapshotFor(String(params.id), ['0.5000', '0.5000']))),
-    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
   })
 
   it('shows a card for each market returned by the API', async () => {
@@ -191,11 +260,9 @@ describe('MarketsPage', () => {
   it("shows each card's YES/NO prices from that market's snapshot", async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
-      http.get(SNAPSHOT, ({ params }) =>
-        params.id === 'a1'
-          ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
-          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000'])),
-      ),
+    )
+    serveSnapshots(id =>
+      id === 'a1' ? snapshotFor('a1', ['0.1235', '0.8765']) : snapshotFor('b2', ['0.7000', '0.3000']),
     )
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
@@ -215,13 +282,13 @@ describe('MarketsPage', () => {
   it('shows a dash for a price that cannot be loaded, and still shows the market', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
-      http.get(SNAPSHOT, ({ params }) =>
-        params.id === 'a1'
-          ? HttpResponse.json(
-              { error: { code: 'market_terms_unavailable', message: 'Try again.' } },
-              { status: 503 },
-            )
-          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000'])),
+    )
+    server.use(
+      http.post(SNAPSHOT_BATCH, () => HttpResponse.json({ snapshots: [snapshotFor('b2', ['0.7000', '0.3000'])] })),
+      // a1 is absent from the batch, so the card asks for it directly — and
+      // the ledger cannot price that book either.
+      http.get(SNAPSHOT, () =>
+        HttpResponse.json({ error: { code: 'market_terms_unavailable', message: 'Try again.' } }, { status: 503 }),
       ),
     )
     renderPage()
@@ -251,6 +318,11 @@ describe('MarketsPage', () => {
     let failing = true
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })),
+    )
+    server.use(
+      http.post(SNAPSHOT_BATCH, () =>
+        failing ? HttpResponse.error() : HttpResponse.json({ snapshots: [snapshotFor('b2', ['0.7000', '0.3000'])] }),
+      ),
       http.get(SNAPSHOT, () =>
         failing ? HttpResponse.error() : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000'])),
       ),
@@ -276,8 +348,8 @@ describe('MarketsPage', () => {
   it('invites the first trade on a market nobody has traded, rather than showing its seed price', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('a1', ['0.5000', '0.5000']), state_version: 0 })),
     )
+    serveSnapshots(() => ({ ...snapshotFor('a1', ['0.5000', '0.5000']), state_version: 0 }))
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
     const card = cardFor('Will SMU win SUNIG?')
@@ -297,8 +369,8 @@ describe('MarketsPage', () => {
   it('does not invite a trade on a market that closed untraded', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('b2', ['0.5000', '0.5000']), state_version: 0 })),
     )
+    serveSnapshots(() => ({ ...snapshotFor('b2', ['0.5000', '0.5000']), state_version: 0 }))
     renderPage()
     await screen.findByText('Will inflation fall below 2%?')
     const card = cardFor('Will inflation fall below 2%?')
@@ -314,8 +386,8 @@ describe('MarketsPage', () => {
     const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({ ...snapshotFor('a1', ['0.6200', '0.3800']), occurred_at: threeHoursAgo })),
     )
+    serveSnapshots(() => ({ ...snapshotFor('a1', ['0.6200', '0.3800']), occurred_at: threeHoursAgo }))
     renderPage()
     await screen.findByText('Will SMU win SUNIG?')
     const card = cardFor('Will SMU win SUNIG?')
@@ -334,8 +406,8 @@ describe('MarketsPage', () => {
     }
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json(snapshotFor('d4', ['0.5000', '0.3000', '0.2000']))),
     )
+    serveSnapshots(() => snapshotFor('d4', ['0.5000', '0.3000', '0.2000']))
     renderPage()
     await screen.findByText('Who wins the NBA Finals?')
     const card = cardFor('Who wins the NBA Finals?')
@@ -356,16 +428,16 @@ describe('MarketsPage', () => {
     }
     server.use(
       http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [final], next_cursor: null })),
-      http.get(SNAPSHOT, () => HttpResponse.json({
-        market_id: 'e5',
-        state_version: 3,
-        prices: [
-          { outcome_id: 'e5-1', position: 1, price: '0.3000' },
-          { outcome_id: 'e5-0', position: 0, price: '0.7000' },
-        ],
-        occurred_at: '2026-09-15T09:12:44.318000+00:00',
-      })),
     )
+    serveSnapshots(() => ({
+      market_id: 'e5',
+      state_version: 3,
+      prices: [
+        { outcome_id: 'e5-1', position: 1, price: '0.3000' },
+        { outcome_id: 'e5-0', position: 0, price: '0.7000' },
+      ],
+      occurred_at: '2026-09-15T09:12:44.318000+00:00',
+    }))
     renderPage()
     await screen.findByText('Lakers or Celtics?')
     const card = cardFor('Lakers or Celtics?')
@@ -472,11 +544,14 @@ describe('MarketsPage', () => {
     const snapshotRequests: string[] = []
     mockTwoPages(() => HttpResponse.json({ markets: [mockMarkets[1]], next_cursor: null }))
     server.use(
-      http.get(SNAPSHOT, ({ params }) => {
-        snapshotRequests.push(String(params.id))
-        return params.id === 'a1'
-          ? HttpResponse.json(snapshotFor('a1', ['0.1235', '0.8765']))
-          : HttpResponse.json(snapshotFor('b2', ['0.7000', '0.3000']))
+    )
+    server.use(
+      // The ids the page asked about, however many requests they arrived in:
+      // the point is which markets are read, not how the read is shaped.
+      http.post(SNAPSHOT_BATCH, async ({ request }) => {
+        const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
+        snapshotRequests.push(...ids)
+        return HttpResponse.json({ snapshots: ids.map(id => snapshotFor(id, id === 'a1' ? ['0.1235', '0.8765'] : ['0.7000', '0.3000'])) })
       }),
     )
     const actor = userEvent.setup()
@@ -804,9 +879,15 @@ describe('MarketsPage', () => {
       let snapshotRequests = 0
       server.use(
         http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
-        http.get(SNAPSHOT, ({ params }) => {
+        http.post(SNAPSHOT_BATCH, async ({ request }) => {
+          const { market_ids: ids } = (await request.json()) as { market_ids: string[] }
           snapshotRequests += 1
-          return HttpResponse.json(snapshotFor(String(params.id), snapshotRequests === 1 ? ['0.1200', '0.8800'] : ['0.7000', '0.3000']))
+          const prices = snapshotRequests === 1 ? ['0.1200', '0.8800'] : ['0.7000', '0.3000']
+          // A later read reports a higher `state_version`: the version is what
+          // decides whether an answer is newer (realtime-service.md).
+          return HttpResponse.json({
+            snapshots: ids.map(id => ({ ...snapshotFor(id, prices), state_version: snapshotRequests })),
+          })
         }),
       )
       renderPage()
@@ -1071,5 +1152,394 @@ describe('MarketsPage closing-time presets', () => {
     expect(await screen.findByText('Will SMU win SUNIG?')).toBeInTheDocument()
     expect(windowsSent.at(-1)).toEqual({ closesFrom: null, closesBefore: null })
     expect(closesFilter().getByRole('radio', { name: 'Any time' })).toBeChecked()
+  })
+})
+
+// [X-1] #444 AC 5: the degraded and reconnecting states the detail page shows
+// apply to the list too. Both keep the last known price on screen, so without
+// this the list would look exactly as authoritative as a live one.
+describe('the price feed in trouble', () => {
+  beforeEach(() => {
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
+    )
+  })
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('says the feed is reconnecting, and keeps the prices it has', async () => {
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() =>
+      expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
+    )
+
+    // 1006 is an abnormal close: worth retrying, so the feed is reconnecting.
+    await act(async () => { latestSocket().serverClose(1006) })
+
+    expect(await screen.findByRole('status')).toHaveTextContent(/reconnecting to live prices/i)
+    expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%')
+  })
+
+  it('says live prices are unavailable when the socket is refused outright', async () => {
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() =>
+      expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
+    )
+
+    // 4403 is the socket's own origin check refusing the handshake: retrying
+    // cannot help, so this is not "reconnecting" (realtime-service.md).
+    await act(async () => { latestSocket().serverClose(4403) })
+
+    expect(await screen.findByRole('status')).toHaveTextContent(/live prices unavailable/i)
+  })
+
+  // A working feed is the normal case, and a badge for it would be noise on
+  // every page load.
+  it('says nothing while the feed is healthy', async () => {
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() =>
+      expect(within(cardFor('Will SMU win SUNIG?')).getByLabelText('Yes price')).toHaveTextContent('62.0%'),
+    )
+    // Connected and acked: the healthy state itself, not the moment before
+    // the socket has opened.
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      for (const command of latestSocket().sent.filter(sent => sent.action === 'subscribe')) {
+        latestSocket().receive({ type: 'subscribed', market_id: command.market_id })
+      }
+    })
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+})
+
+// [X-1] #450: a card told a trader what the crowd thinks and nothing about
+// themselves, so a market they hold forty shares in looked exactly like the
+// forty-nine they had never touched.
+describe('the trader\'s own position on a card', () => {
+  beforeEach(() => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
+    )
+  })
+
+  // AC 1, and AC 2 in the same assertion: the held market says so and names
+  // the side, and the unheld one carries no empty slot or dash.
+  it('shows the holding on a market the trader holds, and nothing on one they do not', async () => {
+    server.use(
+      http.get(PORTFOLIO, () =>
+        HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }])),
+      ),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    const held = within(cardFor('Will SMU win SUNIG?'))
+    expect(await held.findByText('40.0000 Yes')).toBeInTheDocument()
+    expect(held.getByText('You hold')).toBeInTheDocument()
+
+    // b2 is the market the trader holds nothing in.
+    const unheld = within(cardFor('Will inflation fall below 2%?'))
+    expect(unheld.queryByText('You hold')).not.toBeInTheDocument()
+  })
+
+  // AC 4: holding both sides of a binary book is the ordinary case, not an
+  // oddity, and both have to be visible.
+  it('names every outcome of a market held on more than one', async () => {
+    server.use(
+      http.get(PORTFOLIO, () =>
+        HttpResponse.json(portfolioHolding([
+          { market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' },
+          { market_id: 'a1', outcome_id: 'a1-1', quantity: '12.0000' },
+        ])),
+      ),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    const card = within(cardFor('Will SMU win SUNIG?'))
+    expect(await card.findByText('40.0000 Yes')).toBeInTheDocument()
+    expect(card.getByText('12.0000 No')).toBeInTheDocument()
+  })
+
+  // AC 3: one request per page, not per card. The cost must not scale with
+  // the number of cards — that is the distinction #432 exists to make, and
+  // this is the same one for the portfolio.
+  //
+  // Counted against the cards rather than pinned to 1, because this renders
+  // under StrictMode as main.tsx does: its double mount reads twice, for the
+  // same reason every other mount-time read here does. What would be a bug is
+  // a read per card, which is what this asserts cannot happen.
+  it('reads the portfolio once per page, however many cards it shows', async () => {
+    let reads = 0
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: threeMarkets, next_cursor: null })),
+      http.get(PORTFOLIO, () => {
+        reads += 1
+        return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
+      }),
+    )
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+
+    // Three cards on screen, more than StrictMode's two mounts: a read per
+    // card would make at least three.
+    expect(screen.getByText('Will the library open on Sundays?')).toBeInTheDocument()
+    expect(reads).toBeLessThanOrEqual(2)
+  })
+
+  // The same read serves every list the filters make. A status, a search or a
+  // closing preset is a new list (MarketsPage keys it), and the trader's
+  // holdings did not change because they narrowed what they were looking at.
+  it('does not read the portfolio again when a filter changes the list', async () => {
+    let reads = 0
+    server.use(
+      http.get(PORTFOLIO, () => {
+        reads += 1
+        return HttpResponse.json(portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]))
+      }),
+    )
+    const actor = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    const readsOnLoad = reads
+
+    await actor.click(screen.getByRole('radio', { name: 'Open' }))
+
+    await waitFor(() => expect(within(cardFor('Will SMU win SUNIG?')).getByText('40.0000 Yes')).toBeInTheDocument())
+    expect(reads).toBe(readsOnLoad)
+  })
+
+  // AC 5: the position is an enhancement on a card whose job is the price, so
+  // a portfolio the ledger will not answer must not take the list down.
+  it('still renders the list, prices and all, when the portfolio read fails', async () => {
+    server.use(http.get(PORTFOLIO, () => HttpResponse.error()))
+    serveSnapshots(id => snapshotFor(id, ['0.6200', '0.3800']))
+    renderPage()
+
+    await screen.findByText('Will SMU win SUNIG?')
+    const card = within(cardFor('Will SMU win SUNIG?'))
+    await waitFor(() => expect(card.getByLabelText('Yes price')).toHaveTextContent('62.0%'))
+    expect(card.queryByText('You hold')).not.toBeInTheDocument()
+    // And no error is put in front of the trader about it.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // The ledger keeps a settled market's rows to report what they paid
+  // (ledger-service.md), but the shares are gone: the market paid them out.
+  it('does not claim a holding in a market that has settled', async () => {
+    server.use(
+      http.get(PORTFOLIO, () =>
+        HttpResponse.json({
+          ...portfolioHolding([{ market_id: 'a1', outcome_id: 'a1-0', quantity: '40.0000' }]),
+          positions: [
+            {
+              market_id: 'a1', outcome_id: 'a1-0', outcome_position: 0, quantity: '40.0000',
+              cost_basis: '20.0000', average_entry_price: '0.5000', price: null, value: null,
+              unrealized_pnl: null, result: 'paid_out', payout: '40.0000', state_version: 3,
+            },
+            ...portfolioHolding([{ market_id: 'b2', outcome_id: 'b2-1', quantity: '12.0000' }]).positions,
+          ],
+        }),
+      ),
+    )
+    renderPage()
+
+    // The portfolio has landed once the market still held shows it; before
+    // that, a card with no holding proves nothing.
+    await waitFor(() => expect(within(cardFor('Will inflation fall below 2%?')).getByText('12.0000 No')).toBeInTheDocument())
+    expect(within(cardFor('Will SMU win SUNIG?')).queryByText('You hold')).not.toBeInTheDocument()
+  })
+})
+
+// [X-1] #448: a flat grid of fifty equally weighted cards has no entry point,
+// so the list gains a few short curated bands above it. Each states its rule,
+// an empty one disappears, and a filtered view collapses back to one list.
+describe('the curated sections above the list', () => {
+  // One test here stubs the socket to send a price frame; this puts the real
+  // global back even when that test fails part way.
+  afterEach(() => vi.unstubAllGlobals())
+
+  // Closing within the day puts a market in "Closing soon"; a1's close_time in
+  // mockMarkets is years out, so a band needs its own market.
+  const closingSoon = {
+    id: 'soon',
+    status: 'open',
+    question: 'Will this close within the day?',
+    close_time: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+    outcomes: outcomesFor('soon', ['Yes', 'No']),
+  }
+
+  // AC 1: the list has named sections rather than one undifferentiated grid,
+  // with the full browse list still reachable below them. AC 2: the heading
+  // states the rule.
+  it('bands a market closing within the day, and names the rule', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [closingSoon], next_cursor: null })),
+    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Closing soon' })).toBeInTheDocument()
+    expect(screen.getByText(/trading stops within/i)).toBeInTheDocument()
+    // The full list is still there, under its own heading.
+    expect(screen.getByRole('heading', { name: 'Browse all' })).toBeInTheDocument()
+  })
+
+  // AC 3: a section with nothing in it disappears rather than rendering an
+  // empty row. On a young database most will be empty, which is the normal
+  // case here and not an edge case.
+  it('shows no section at all for a page with nothing to band', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
+    )
+    // Untraded, so nothing is trending and nothing has moved; a1 closes years
+    // out, so nothing is closing soon either.
+    serveSnapshots(id => ({ ...snapshotFor(id, ['0.5000', '0.5000']), state_version: 0, credits_traded: '0.0000', prices_7d_ago: null }))
+    renderPage()
+    await screen.findByText('Will SMU win SUNIG?')
+
+    expect(screen.queryByRole('heading', { name: 'Closing soon' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Trending' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Biggest movers' })).not.toBeInTheDocument()
+    // And no "All markets" heading either: without a band above it, the list
+    // is not given a heading it never had.
+    expect(screen.queryByRole('heading', { name: 'Browse all' })).not.toBeInTheDocument()
+  })
+
+  // AC 4: filtering or searching collapses back to a single plain result list;
+  // sections are for the unfiltered view only. A band would otherwise be
+  // answering a question the trader did not ask.
+  it('drops the sections once the trader searches', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [closingSoon], next_cursor: null })),
+    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
+    const actor = userEvent.setup()
+    renderPage()
+    await screen.findByRole('heading', { name: 'Closing soon' })
+
+    await actor.type(screen.getByRole('searchbox', { name: /search markets/i }), 'close{Enter}')
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Closing soon' })).not.toBeInTheDocument())
+    // The market itself is still listed — this collapsed the bands, not the
+    // results.
+    expect(screen.getByText('Will this close within the day?')).toBeInTheDocument()
+  })
+
+  // AC 5: a market appearing in a section does not vanish from the list. A
+  // band is a shortcut into the list, not a partition of it.
+  it('keeps a banded market in the list below as well', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [closingSoon], next_cursor: null })),
+    )
+    serveSnapshots(id => snapshotFor(id, ['0.5000', '0.5000']))
+    renderPage()
+    await screen.findByRole('heading', { name: 'Closing soon' })
+
+    // Once in the band, once in the full list.
+    expect(screen.getAllByText('Will this close within the day?')).toHaveLength(2)
+  })
+
+  // The busiest market the page has loaded, and the only honest basis for a
+  // featured slot: volume is the one figure that says other people are here.
+  it('features the busiest market, and leaves it out of the bands', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: mockMarkets, next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '0.0000',
+      prices_7d_ago: null,
+    }))
+    renderPage()
+
+    const featured = await screen.findByRole('heading', { name: 'Featured' })
+    expect(featured).toBeInTheDocument()
+    expect(screen.getByText('Busiest market by credits traded')).toBeInTheDocument()
+    // The only traded market is the hero, so Trending has nothing left and
+    // disappears rather than repeating it directly underneath.
+    expect(screen.queryByRole('heading', { name: 'Trending' })).not.toBeInTheDocument()
+  })
+
+  // #447 exists so "Trending" is a real figure rather than a confident name on
+  // an arbitrary order, which is what it would be over untraded books. A
+  // second traded market is what gives the band something the hero is not.
+  it('bands the next most traded market under Trending', async () => {
+    // b2 in mockMarkets is closed, and a closed market is in no band — so the
+    // runner-up has to be one that can still trade.
+    const second = {
+      id: 'c3',
+      status: 'open',
+      question: 'Will the runner-up be banded?',
+      close_time: '2099-02-05T12:00:00Z',
+      outcomes: outcomesFor('c3', ['Yes', 'No']),
+    }
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0], second], next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '30.0000',
+      prices_7d_ago: null,
+    }))
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Trending' })).toBeInTheDocument()
+    expect(screen.getByText('Most credits traded')).toBeInTheDocument()
+    // The hero is a1; the band holds the runner-up, not a second copy of a1.
+    const trending = screen.getByRole('heading', { name: 'Trending' }).closest('section')
+    expect(trending).not.toBeNull()
+    expect(within(trending as HTMLElement).getByText('Will the runner-up be banded?')).toBeInTheDocument()
+    expect(within(trending as HTMLElement).queryByText('Will SMU win SUNIG?')).not.toBeInTheDocument()
+  })
+
+  // A price frame carries the prices and nothing else: no `credits_traded`,
+  // no `prices_7d_ago` (ledger-service.md). The bands rank on those, so a
+  // trade arriving on the socket must reprice the card without emptying the
+  // band it sits in.
+  it('keeps Trending when a price frame arrives for a market in it', async () => {
+    const second = {
+      id: 'c3',
+      status: 'open',
+      question: 'Will the runner-up be banded?',
+      close_time: '2099-02-05T12:00:00Z',
+      outcomes: outcomesFor('c3', ['Yes', 'No']),
+    }
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0], second], next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.5000', '0.5000']),
+      credits_traded: id === 'a1' ? '1200.0000' : '30.0000',
+      prices_7d_ago: null,
+    }))
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    renderPage()
+    await screen.findByRole('heading', { name: 'Trending' })
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      for (const command of latestSocket().sent.filter(sent => sent.action === 'subscribe')) {
+        latestSocket().receive({ type: 'subscribed', market_id: command.market_id })
+      }
+    })
+
+    await act(async () => {
+      latestSocket().receive({ type: 'price', ...snapshotFor('c3', ['0.7000', '0.3000']), state_version: 4 })
+    })
+
+    const trending = screen.getByRole('region', { name: 'Trending' })
+    await waitFor(() => expect(within(trending).getByLabelText(/^Yes price/)).toHaveTextContent('70.0%'))
+    expect(within(trending).getByText('Will the runner-up be banded?')).toBeInTheDocument()
   })
 })

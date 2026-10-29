@@ -109,7 +109,7 @@ export default function DecideOutcomePage() {
     setFormError('')
     try {
       await rejectOutcome(id, proposal.proposalId, reason.trim())
-      navigate('/admin/proposals')
+      await navigate('/admin/proposals')
     } catch (err) {
       const code = errorCode(err)
       setFormError((code && CODE_MESSAGES[code]) || 'Rejection failed. Please try again.')

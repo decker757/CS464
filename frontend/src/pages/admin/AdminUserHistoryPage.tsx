@@ -111,7 +111,8 @@ export default function AdminUserHistoryPage() {
         <PageTitle className="min-w-0 wrap-anywhere">{username ? `${username}'s History` : `History for ${userId}`}</PageTitle>
         {currentUser?.is_suspended && <Badge tone="danger">Suspended</Badge>}
       </div>
-      {currentUser && <p className="mb-2 text-sm text-subtle">{currentUser.email}</p>}
+      {/* break-words, like the heading: an email can be one unbroken word (#516). */}
+      {currentUser && <p className="mb-2 text-sm break-words text-subtle">{currentUser.email}</p>}
       {/* The id, once the heading names the user instead: it is what support
           and the audit log quote, and the heading was where it used to be
           copied from. Still in the heading while no name is known. */}
