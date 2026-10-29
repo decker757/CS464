@@ -1,5 +1,6 @@
 // #454. Seeds a demo database: real-sounding SMU markets, traded apart over a
-// few minutes, with one market at each later stage of its life. `npm run
+// few minutes, with one market at each later stage of its life, a voided one,
+// a few resting limit orders and a suspended trader (#570). `npm run
 // seed:demo`, against a stack on this machine; README.md says how.
 //
 // It runs as a Playwright test only to use the runtime the e2e helpers already
@@ -24,6 +25,7 @@ import {
   LEDGER_URL,
   logInThroughApi,
   MARKET_URL,
+  placeLimitBuy,
   promoteToAdmin,
   proposeOutcome,
   publishMarket,
@@ -31,10 +33,12 @@ import {
   REPO_ROOT,
   settleMarket,
   snapshot,
+  suspend,
+  voidMarket,
   type Market,
   type Session,
 } from '../support/backend'
-import { ADMINS, DEMO_MARKETS, TRADERS, type DemoMarket, type DemoTrade } from './demoMarkets'
+import { ADMINS, DEMO_MARKETS, ORDER_TRADER, SUSPENDED, TRADERS, type DemoMarket, type DemoTrade } from './demoMarkets'
 import { refuseDevComposeProject, refuseUnlessLocal } from './localTarget'
 import { refuseUnlessAdmin } from './promotion'
 import { inRounds } from './rounds'
@@ -99,17 +103,19 @@ async function registerPromotedAdmin(promoter: Session, username: string): Promi
   return logInThroughApi(trader.username)
 }
 
-// Settlement is safe to repeat: a repeat writes nothing and answers the same
-// 200 (ledger-service.md, "A repeat writes nothing here"). The retry is for
-// `503 settlement_unconfirmed` — the winners are paid and only telling
-// market_service failed, and the same doc says to repeat the request.
-async function settle(admin: Session, marketId: string): Promise<void> {
+// Settlement and a void both move the money first and tell market_service
+// last, and both are safe to repeat: a repeat writes nothing (ledger-service.md,
+// "A repeat writes nothing here"). `503 settlement_unconfirmed` and `503
+// void_unconfirmed` mean only that last step failed, and the same doc says to
+// repeat the request. Without this, one blip ends a one-shot run that needs a
+// fresh database to start again.
+async function repeatOnceIfUnconfirmed(unconfirmedCode: string, request: () => Promise<void>): Promise<void> {
   try {
-    await settleMarket(admin, marketId)
+    await request()
   } catch (failure) {
-    const isUnconfirmed = failure instanceof Error && failure.message.includes('settlement_unconfirmed')
+    const isUnconfirmed = failure instanceof Error && failure.message.includes(unconfirmedCode)
     if (!isUnconfirmed) throw failure
-    await settleMarket(admin, marketId)
+    await request()
   }
 }
 
@@ -117,6 +123,12 @@ async function driveToItsEnd(demo: DemoMarket, market: Market, creator: Session,
   if (demo.endsAs === 'open') return
   await closeEarly(creator, market.id, demo.closeReason)
   if (demo.endsAs === 'closed') return
+  // A void needs a closed market and an administrator with no stake in it
+  // (ADR 0025); the creator never trades.
+  if (demo.endsAs === 'voided') {
+    await repeatOnceIfUnconfirmed('void_unconfirmed', () => voidMarket(creator, market.id, demo.voidReason))
+    return
+  }
   // The proposer is always the market's creator, and the approver must be a
   // second administrator (ADR 0016).
   const proposed = await proposeOutcome(creator, market, demo.winner, demo.evidenceNote)
@@ -124,7 +136,7 @@ async function driveToItsEnd(demo: DemoMarket, market: Market, creator: Session,
   await approveOutcome(approver, market.id, proposed.proposal_id)
   if (demo.endsAs === 'approved') return
   await backdateDisputeWindow(market.id)
-  await settle(creator, market.id)
+  await repeatOnceIfUnconfirmed('settlement_unconfirmed', () => settleMarket(creator, market.id))
 }
 
 function priceLine(demo: DemoMarket, market: Market, prices: { outcome_id: string; price: string }[]): string {
@@ -178,9 +190,31 @@ test('seed the demo database', async () => {
     if (index < rounds.length - 1) await new Promise(resolve => setTimeout(resolve, PAUSE_BETWEEN_ROUNDS_MS))
   }
 
+  // After the rounds, so each limit is measured against the price the trades
+  // left. One that fills on arrival means the trades above changed and the
+  // limit no longer sits below the price: stop rather than seed an order
+  // that will never be there to fill during the demo.
+  const orderTrader = traders.get(ORDER_TRADER)
+  if (!orderTrader) throw new Error(`${ORDER_TRADER} is not one of the demo traders`)
+  for (const [index, demo] of DEMO_MARKETS.entries()) {
+    if (demo.endsAs !== 'open' || !demo.restingOrder) continue
+    const { outcome, limitPrice, quantity } = demo.restingOrder
+    const placed = await placeLimitBuy(orderTrader, markets[index], outcome, { limitPrice, quantity })
+    if (placed.fills.length > 0 || placed.order.status !== 'open') {
+      throw new Error(`${ORDER_TRADER}'s order on "${demo.question}" filled on arrival instead of resting`)
+    }
+    console.log(`${ORDER_TRADER} rests a buy of ${quantity} ${outcome} at ${limitPrice} on "${demo.question}".`)
+  }
+
   for (const [index, demo] of DEMO_MARKETS.entries()) {
     await driveToItsEnd(demo, markets[index], creator, approver)
   }
+
+  // Last, so the account has traded and been paid like any other first.
+  const suspended = traders.get(SUSPENDED.trader)
+  if (!suspended) throw new Error(`${SUSPENDED.trader} is not one of the demo traders`)
+  await suspend(creator, suspended.id, SUSPENDED.reason)
+  console.log(`Suspended ${SUSPENDED.trader}.`)
 
   console.log('\nWhere every market ended up:')
   for (const [index, demo] of DEMO_MARKETS.entries()) {

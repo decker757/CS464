@@ -11,21 +11,21 @@ type OpenDemoMarket = Extract<DemoMarket, { endsAs: 'open' }>
 
 const openMarkets = DEMO_MARKETS.filter((market): market is OpenDemoMarket => market.endsAs === 'open')
 
-// The Yes price after the market's trades, worked out here rather than read
-// from the app: every demo market is priced at b = 100 (the e2e helpers pin
-// it), and a two-outcome LMSR quotes Yes at 1 / (1 + e^((qNo - qYes) / b)).
-function yesPrice(market: OpenDemoMarket): number {
-  let yesShares = 0
-  let noShares = 0
+// An outcome's price after the market's trades, worked out here rather than
+// read from the app: every demo market is priced at b = 100 (the e2e helpers
+// pin it), and LMSR quotes outcome i at e^(q_i / b) / Σ e^(q_j / b).
+function priceOf(market: OpenDemoMarket, outcome: string): number {
+  const sharesByOutcome = new Map(market.outcomes.map(label => [label, 0]))
   for (const trade of market.trades) {
-    if (trade.outcome === 'Yes') yesShares += Number(trade.quantity)
-    else noShares += Number(trade.quantity)
+    sharesByOutcome.set(trade.outcome, (sharesByOutcome.get(trade.outcome) ?? 0) + Number(trade.quantity))
   }
-  return 1 / (1 + Math.exp((noShares - yesShares) / 100))
+  let total = 0
+  for (const shares of sharesByOutcome.values()) total += Math.exp(shares / 100)
+  return Math.exp((sharesByOutcome.get(outcome) ?? 0) / 100) / total
 }
 
 function distanceFromEven(market: OpenDemoMarket): number {
-  return Math.abs(yesPrice(market) - 0.5)
+  return Math.abs(priceOf(market, 'Yes') - 0.5)
 }
 
 describe('the open demo markets', () => {
@@ -58,5 +58,37 @@ describe('the open demo markets', () => {
     const soonest = Math.min(...openMarkets.map(market => market.closesInDays))
 
     expect(soonest).toBeGreaterThanOrEqual(21)
+  })
+})
+
+// #570: a buy limit at or above the price fills on arrival, and the seed stops
+// on one. Far below it, no trade a presenter would make live reaches it, and
+// the order never gets to fill in front of anyone (ADR 0024).
+describe('the resting limit orders', () => {
+  // Each mistake here would otherwise surface minutes into a one-shot run:
+  // limit orders are refused on a market with more than two outcomes
+  // (`409 market_not_binary`), and the seed looks the outcome up by label.
+  it('are on two-outcome markets, and name one of their outcomes', () => {
+    const withOrders = openMarkets.filter(market => market.restingOrder)
+    expect(withOrders.length).toBeGreaterThan(0)
+
+    for (const market of withOrders) {
+      expect(market.outcomes).toHaveLength(2)
+      expect(market.outcomes).toContain(market.restingOrder?.outcome)
+    }
+  })
+
+  it('sit below their outcome\'s seeded price, and within ten points of it', () => {
+    const withOrders = openMarkets.filter(market => market.restingOrder)
+    expect(withOrders.length).toBeGreaterThan(0)
+
+    for (const market of withOrders) {
+      // Only narrows the type: the filter above has already kept these.
+      if (!market.restingOrder) continue
+      const seeded = priceOf(market, market.restingOrder.outcome)
+      const limit = Number(market.restingOrder.limitPrice)
+      expect(limit).toBeLessThan(seeded)
+      expect(seeded - limit).toBeLessThanOrEqual(0.1)
+    }
   })
 })

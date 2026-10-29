@@ -9,18 +9,42 @@
 // week or two before the showcase is still open on the day. Names are SMU's
 // where they are certain, and generic ("the campus green") where they are not.
 //
-// The browse list puts the markets still trading first, soonest close first
-// (market_service's `_browse_order`). So the four `headline` markets, the
+// The full browse list puts the markets still trading first, soonest close
+// first (market_service's `_browse_order`). So the four `headline` markets, the
 // Yes/No ones that end furthest from 50/50 and the five-way one, close before
-// every other open market, and are the first screen a visitor sees.
+// every other open market, and lead the list below the featured market and
+// its bands (#448).
 
 export const ADMINS = { creator: 'admin_rachel', approver: 'admin_kumar' }
 
-export const TRADERS = ['wei_ling', 'arjun_k', 'marcus_tan', 'priya_s', 'jun_hao', 'sarah_lim', 'daniel_ng', 'aisyah_r']
+// `nur_h` places the resting limit orders below and trades nothing else, so
+// what those orders hold is everything that account has committed.
+export const ORDER_TRADER = 'nur_h'
+
+export const TRADERS = ['wei_ling', 'arjun_k', 'marcus_tan', 'priya_s', 'jun_hao', 'sarah_lim', 'daniel_ng', 'aisyah_r', ORDER_TRADER]
+
+// Suspended once the seed has finished, so the admin users list has an
+// account to show suspended, with its reason ([4.2] #14).
+export const SUSPENDED = {
+  trader: 'aisyah_r',
+  reason: 'Two students were sharing this account, against the one-person-per-account rule.',
+}
 
 export interface DemoTrade {
   trader: string
   outcome: string
+  quantity: string
+}
+
+/**
+ * A limit buy placed after the trading rounds ([T-6] #26). Its limit sits a
+ * few points under the outcome's seeded price, so it rests when placed, and a
+ * modest trade on the other side during the demo pulls the price down to it
+ * and fills it inside that trade (ADR 0024).
+ */
+export interface DemoOrder {
+  outcome: string
+  limitPrice: string
   quantity: string
 }
 
@@ -36,8 +60,9 @@ interface DemoMarketBase {
 /** Where the seed leaves a market, and what it needs to get it there. */
 export type DemoMarket = DemoMarketBase &
   (
-    | { endsAs: 'open'; headline?: true }
+    | { endsAs: 'open'; headline?: true; restingOrder?: DemoOrder }
     | { endsAs: 'closed'; closeReason: string }
+    | { endsAs: 'voided'; closeReason: string; voidReason: string }
     | { endsAs: 'pending_resolution' | 'approved' | 'settled'; closeReason: string; winner: string; evidenceNote: string }
   )
 
@@ -67,6 +92,7 @@ export const DEMO_MARKETS: DemoMarket[] = [
     ],
     endsAs: 'open',
     headline: true,
+    restingOrder: { outcome: 'No', limitPrice: '0.2000', quantity: '50' },
   },
   {
     question: "Will more than half of SMU's undergraduates vote in next year's student council election?",
@@ -120,6 +146,7 @@ export const DEMO_MARKETS: DemoMarket[] = [
     ],
     endsAs: 'open',
     headline: true,
+    restingOrder: { outcome: 'Yes', limitPrice: '0.8500', quantity: '40' },
   },
   {
     question: 'Will the CS464 project showcase still be running at 6pm on the day?',
@@ -136,6 +163,7 @@ export const DEMO_MARKETS: DemoMarket[] = [
       trade('priya_s', 'Yes', 15),
     ],
     endsAs: 'open',
+    restingOrder: { outcome: 'Yes', limitPrice: '0.5500', quantity: '40' },
   },
   {
     question: "Which school will top the medal table at next year's inter-school games?",
@@ -190,6 +218,17 @@ export const DEMO_MARKETS: DemoMarket[] = [
     resolutionSource: { url: 'https://www.smu.edu.sg', label: 'SMU events calendar' },
     trades: [],
     endsAs: 'open',
+  },
+  {
+    question: 'Will the new café on the campus green open before recess week?',
+    outcomes: YES_NO,
+    closesInDays: 12,
+    resolutionCriteria: 'Resolves YES if the café serves its first customer before the first day of recess week.',
+    resolutionSource: { url: 'https://www.smu.edu.sg', label: 'SMU campus news' },
+    trades: [trade('marcus_tan', 'Yes', 25), trade('jun_hao', 'No', 15), trade('priya_s', 'Yes', 10)],
+    endsAs: 'voided',
+    closeReason: 'The café has been postponed. Stopping trading while we check whether this question can still resolve.',
+    voidReason: 'The café was postponed with no new date, so the question can no longer resolve either way. Every holder is refunded what they paid.',
   },
   {
     question: 'Will the SMU Libraries extend the laptop loan scheme to postgraduate students this term?',

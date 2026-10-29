@@ -107,25 +107,51 @@ refuses to start when that project is `cs464`, your dev stack, which is what
 compose picks when the variable is unset: nothing it writes there could be
 taken out again without wiping your dev data.
 
-It makes two administrators, `admin_rachel` and `admin_kumar`, eight traders
+It makes two administrators, `admin_rachel` and `admin_kumar`, nine traders
 (`wei_ling`, `arjun_k`, `marcus_tan`, `priya_s`, `jun_hao`, `sarah_lim`,
-`daniel_ng`, `aisyah_r`) and thirteen SMU markets. Every account's password is
-`PASSWORD` in `frontend/e2e/support/backend.ts`. Nine markets stay open: seven
-traded until their prices sit well apart (the six Yes/No ones between about
-13% and 90% Yes, and a five-way one), and two left untraded. The other four
-are traded and then taken one stage further each: closed, pending resolution,
-approved, and settled with its winners paid. The seed prints every market's
-final prices when it finishes.
+`daniel_ng`, `aisyah_r`, `nur_h`) and fourteen SMU markets. Every account's
+password is `PASSWORD` in `frontend/e2e/support/backend.ts`. Nine markets stay
+open: seven traded until their prices sit well apart (the six Yes/No ones
+between about 13% and 90% Yes, and a five-way one), and two left untraded. The
+other five are traded and then taken one stage further each: closed, pending
+resolution, approved, settled with its winners paid, and voided with every
+holder refunded (#570). The seed prints every market's final prices when it
+finishes.
+
+Three things are there to show live (#570):
+
+- **A limit order filling.** `nur_h` has three resting limit buys, each a few
+  points under its market's price: Yes at 55% on the CS464 showcase market
+  (61% now), No at 20% on the IS111 bidding market (25% now) and Yes at 85% on
+  the library market (90% now). Log in as another trader and buy the other
+  side: about 35 shares on the showcase market, 40 on IS111 or 60 on the
+  library. The trade pulls the price past the limit, fills part of `nur_h`'s
+  order inside that same trade, and leaves the price sitting at the limit
+  (ADR 0024). Buy more and the order fills further. A trade that only just
+  reaches the limit fills nothing: the sliver it could fill costs a tick more
+  than the limit once the cost is rounded, so the order waits.
+- **A voided market.** The campus café market was closed early and voided.
+  Its page and card say so, and `marcus_tan`, `jun_hao` and `priya_s` see the
+  refund in their history (ADR 0025).
+- **A suspended trader.** `aisyah_r` is suspended, with a reason, once the
+  trading is done. Admin → Users shows it, and the account cannot log in
+  until an administrator lifts it.
 
 The four liveliest open markets, the Yes/No ones that end furthest from 50/50
-and the five-way one, close soonest, so the browse list, which shows the
-soonest-closing market first, opens on them.
+and the five-way one, close soonest, so the full browse list, which shows the
+soonest-closing market first, opens on them below the featured market and the
+bands.
 
 The trades go in eight rounds, twenty seconds apart, so each market's price
 history has a shape. That is why it takes minutes: a trade's time is the
 ledger's own clock, and no API backdates one. The open markets close three
 weeks or more after seeding; if you seeded long before the showcase, seed
 again.
+
+The browse list's "Biggest movers" band measures from the last trade at least
+seven days old, so a database seeded on the day shows none. Seed one to two
+weeks before the showcase, then trade during it, and it appears. #564 adds the
+same change to each card, measured the same way.
 
 It goes through the services' own APIs, using the end-to-end helpers in
 `frontend/e2e/support/backend.ts`, and takes the same two SQL steps they do,
